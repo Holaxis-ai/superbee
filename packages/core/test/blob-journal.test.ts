@@ -243,7 +243,9 @@ test("queued admissions capture guards and named metadata before the caller can 
     patch.attempts = 99; snapshot.guard.intents.length = 0;
     assert.equal((await update).attempts, 1);
     const shared = (await f.backend.readBlobWithJournal(value.intent.key)).guard;
-    const answers = await Promise.allSettled([f.backend.admitPreparedBlob(prepared(input("replace", value.intent.key)), { guard: shared }), f.backend.admitPreparedBlob(prepared(input("replace", value.intent.key)), { guard: shared })]);
+    // The claimed row is unsettled on the same bundle and key, so both admissions name it as their premise.
+    const unsettled = shared.intents;
+    const answers = await Promise.allSettled([f.backend.admitPreparedBlob(prepared(input("replace", value.intent.key)), { guard: shared, unsettled }), f.backend.admitPreparedBlob(prepared(input("replace", value.intent.key)), { guard: shared, unsettled })]);
     assert.equal(answers.filter(answer => answer.status === "fulfilled").length, 1);
     assert.equal((await f.backend.listBlobIntents()).length, 2);
   } finally { await f.cleanup(); }

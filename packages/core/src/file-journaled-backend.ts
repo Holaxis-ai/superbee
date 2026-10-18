@@ -43,7 +43,28 @@ import { promises as fs, type Stats } from "node:fs";
 import path from "node:path";
 
 import { assertBlobKey } from "./blob-contract.js";
-import { BLOB_JOURNAL_BOUNDS, assertBlobJournalGuard, captureBlobIntentRecord, captureBlobMutationOptions, decodePreparedBlobIntent, type BlobIntentRecord, type BlobJournaledBackend, type BlobJournalGuard, type BlobJournalMutationOptions, type BlobJournalRead, type BlobIntentPatch } from "./blob-journal.js";
+import {
+  BLOB_JOURNAL_BOUNDS,
+  captureBlobAdmission,
+  captureBlobIntentRecord,
+  captureBlobMetaWrite,
+  captureBlobRetirement,
+  captureBlobUpdate,
+  decideBlobAdmission,
+  decideBlobMetaWrite,
+  decideBlobRetirement,
+  decideBlobUpdate,
+  readBlobJournal,
+  type BlobAdmitOptions,
+  type BlobIntentPatch,
+  type BlobIntentRecord,
+  type BlobJournalDecision,
+  type BlobJournaledBackend,
+  type BlobJournalGuard,
+  type BlobJournalMutationOptions,
+  type BlobJournalRead,
+  type BlobJournalView,
+} from "./blob-journal.js";
 import { resolveContentType } from "./content-type.js";
 import { OPEN_LOG, STORE_RAW, STORE_BYTE_LIMIT, type FileJournalHandle } from "./file-journaled-backend-internal.js";
 import { captureFilesystemHostPolicy, type FilesystemHostPolicy } from "./filesystem-host.js";
@@ -57,7 +78,6 @@ import {
   assertJournalResolutionOptions,
   assertJournalSnapshot,
   assertMetaWrite,
-  equalJournalValue,
   captureIntentUpdate,
   captureJournalDeleteOptions,
   captureJournalGuardOption,
@@ -526,7 +546,7 @@ function settlementReserve(state: State, txn: number): number {
     // All stored blob rows passed captureBlobIntentRecord and assertReceiptBound, including
     // replay. Unknown/nonterminal evidence can never release this allocation.
     if (row.receipt !== undefined && ["acknowledged", "refused", "conflict"].includes(row.state)) continue;
-    const mutableBytes = encodePayload({ state: row.state, attempts: row.attempts, updatedAt: row.updatedAt, transaction: txn, ...(row.notAppliedThrough === undefined ? {} : { notAppliedThrough: row.notAppliedThrough }), ...(row.deletionHold === undefined ? {} : { deletionHold: row.deletionHold }) }).byteLength;
+    const mutableBytes = encodePayload({ state: row.state, attempts: row.attempts, updatedAt: row.updatedAt, transaction: txn, ...(row.notAppliedThrough === undefined ? {} : { notAppliedThrough: row.notAppliedThrough }), ...(row.deletionHold === undefined ? {} : { deletionHold: row.deletionHold }), ...(row.notDispatched === undefined ? {} : { notDispatched: row.notDispatched }) }).byteLength;
     const remaining = BLOB_JOURNAL_BOUNDS.terminalReceiptBytes + BLOB_JOURNAL_BOUNDS.settlementStructureBytes + BLOB_JOURNAL_BOUNDS.baselineBytes - mutableBytes;
     if (!Number.isSafeInteger(remaining) || remaining < 0 || !Number.isSafeInteger(reserved + remaining)) throw new RangeError("blob settlement reserve is not representable");
     reserved += remaining;
@@ -1277,55 +1297,43 @@ export class FileJournaledBackend implements JournaledBackend, BlobJournaledBack
 
   // ── optional ordinary-file journal (no filesystem/body mirror) ─────────────────────────
 
-  #blobGuard(state: State, guard: BlobJournalGuard): void {
-    assertBlobJournalGuard(guard, {
-      key: guard.key,
-      intents: [...state.intents.values()].filter((row): row is BlobIntentRecord => !isDocumentIntent(row) && row.target === guard.key),
-      meta: guard.meta.map(row => ({ key: row.key, expected: state.meta.has(row.key) ? { present: true, value: state.meta.get(row.key) } : { present: false } })),
-    });
+  /** The committed index as the pure blob transition owner reads it. */
+  static #blobView(state: State): BlobJournalView {
+    return {
+      blobIntentsFor: key => [...state.intents.values()].filter((row): row is BlobIntentRecord => !isDocumentIntent(row) && row.target === key),
+      blobIntent: id => { const row = state.intents.get(id); return row && !isDocumentIntent(row) ? row : undefined; },
+      intentState: id => state.intents.get(id)?.state ?? null,
+      meta: key => state.meta.has(key) ? { present: true, value: state.meta.get(key) } : { present: false },
+      sequence: state.sequence,
+    };
+  }
+
+  /** A decided blob verb as one log record's changes. */
+  static #blobChanges<T>(decision: BlobJournalDecision<T>): Change[] {
+    return [
+      ...(decision.sequence === undefined ? [] : [{ family: "sequence", value: decision.sequence } as Change]),
+      ...decision.intents.map(({ requestId, value }): Change => ({ family: "intent", key: requestId, value: value === null ? null : structuredClone(value) })),
+      ...FileJournaledBackend.#metaChanges(decision.meta, decision.removeMeta),
+    ];
   }
 
   async readBlobWithJournal(key: string, options: { meta?: readonly string[] } = {}): Promise<BlobJournalRead> {
     assertBlobKey(key);
     this.#assertOpen();
-    const state = this.#state;
-    const intents = [...state.intents.values()].filter((row): row is BlobIntentRecord => !isDocumentIntent(row) && row.target === key).sort(bySequence).map(row => structuredClone(row));
-    const meta = new Map<string, unknown>();
-    const premises: BlobJournalGuard["meta"] = [];
-    for (const name of new Set(options.meta ?? [])) {
-      if (typeof name !== "string") throw new JournalGuardConflict(key);
-      if (state.meta.has(name)) {
-        const value = structuredClone(state.meta.get(name));
-        meta.set(name, value);
-        premises.push({ key: name, expected: { present: true, value: structuredClone(value) } });
-      } else premises.push({ key: name, expected: { present: false } });
-    }
-    return { key, intents, meta, guard: { key, intents: structuredClone(intents), meta: premises } };
+    return readBlobJournal(FileJournaledBackend.#blobView(this.#state), key, options);
   }
 
   async writeBlobMeta(key: string, changes: Pick<BlobJournalMutationOptions, "meta" | "removeMeta">, options: { guard: BlobJournalGuard }): Promise<void> {
-    assertBlobKey(key);
-    const captured = captureBlobMutationOptions({ ...captureJournalValue(changes), guard: options.guard });
-    if (captured.guard.key !== key) throw new JournalGuardConflict(key);
-    await this.#mutate(state => {
-      this.#blobGuard(state, captured.guard);
-      return { changes: FileJournaledBackend.#metaChanges(captured.meta ?? [], captured.removeMeta ?? []), result: undefined };
-    });
+    const captured = captureBlobMetaWrite(key, changes, options);
+    await this.#mutate(state => ({ changes: FileJournaledBackend.#blobChanges(decideBlobMetaWrite(FileJournaledBackend.#blobView(state), captured)), result: undefined }));
   }
 
-  async admitPreparedBlob(prepared: string, options: BlobJournalMutationOptions): Promise<BlobIntentRecord> {
-    const captured = decodePreparedBlobIntent(prepared);
-    options = captureBlobMutationOptions(options);
-    const { guard, meta = [], removeMeta = [] } = options;
-    if (guard.key !== captured.intent.key) throw new JournalGuardConflict(captured.intent.key);
+  async admitPreparedBlob(prepared: string, options: BlobAdmitOptions): Promise<BlobIntentRecord> {
+    const captured = captureBlobAdmission(prepared, options);
     const now = new Date().toISOString();
     return this.#mutate(state => {
-      this.#blobGuard(state, guard);
-      if (state.intents.has(captured.identity.requestId)) throw new JournalSnapshotConflict(guard.key);
-      const sequence = state.sequence + 1;
-      if (!Number.isSafeInteger(sequence)) throw new RangeError("journal sequence exhausted");
-      const record = captureBlobIntentRecord({ recordFamily: "blob", requestId: captured.identity.requestId, target: captured.intent.key, prepared, sequence, attempts: 0, state: "pending", updatedAt: now });
-      return { format: 2, changes: [{ family: "sequence", value: sequence }, { family: "intent", key: record.requestId, value: structuredClone(record) }, ...FileJournaledBackend.#metaChanges(meta, removeMeta)], result: record };
+      const decision = decideBlobAdmission(FileJournaledBackend.#blobView(state), captured, now);
+      return { format: 2, changes: FileJournaledBackend.#blobChanges(decision), result: decision.result };
     });
   }
 
@@ -1342,46 +1350,17 @@ export class FileJournaledBackend implements JournaledBackend, BlobJournaledBack
   }
 
   async updateBlobIntent(requestId: string, expectedState: OperationState, patch: BlobIntentPatch, options: BlobJournalMutationOptions): Promise<BlobIntentRecord> {
-    patch = captureJournalValue(patch);
-    options = captureBlobMutationOptions(options);
-    if (!patch || typeof patch !== "object" || Array.isArray(patch) || Object.keys(patch).some(key => !["state", "attempts", "receipt", "notAppliedThrough", "deletionHold"].includes(key))) throw new JournalGuardConflict(options.guard.key);
-    const { guard, meta = [], removeMeta = [] } = options;
+    const captured = captureBlobUpdate(requestId, expectedState, patch, options);
     const now = new Date().toISOString();
     return this.#mutate(state => {
-      this.#blobGuard(state, guard);
-      const current = state.intents.get(requestId);
-      if (!current || isDocumentIntent(current) || current.state !== expectedState) throw new IntentStateConflict(requestId, expectedState, current?.state ?? null);
-      if (current.target !== guard.key) throw new JournalGuardConflict(guard.key);
-      const next = captureBlobIntentRecord({ ...current, ...patch, updatedAt: now });
-      assertReceiptBound(next);
-      const beforePrefix = current.notAppliedThrough ?? 0, afterPrefix = next.notAppliedThrough ?? 0;
-      const sameHold = equalJournalValue(current.deletionHold, next.deletionHold);
-      if (current.receipt && (next.attempts !== current.attempts || next.state !== current.state || !equalJournalValue(current.receipt, next.receipt) || afterPrefix !== beforePrefix || !sameHold)) throw new JournalGuardConflict(guard.key);
-      if (next.attempts !== current.attempts) {
-        // The durable claim consumes exactly one eligibility before any wire operation.
-        if (current.receipt || !["pending", "unknown"].includes(current.state) || next.state !== "in_flight" || next.attempts !== current.attempts + 1 || beforePrefix !== current.attempts || afterPrefix !== beforePrefix || !sameHold) throw new JournalGuardConflict(guard.key);
-      } else if (afterPrefix !== beforePrefix) {
-        // Typed evidence belongs to this exact claimed count and must extend the complete prefix.
-        if (current.receipt || !["in_flight", "unknown"].includes(current.state) || next.state !== "pending" || patch.attempts !== current.attempts || beforePrefix !== current.attempts - 1 || afterPrefix !== current.attempts || patch.deletionHold === undefined || next.receipt !== undefined) throw new JournalGuardConflict(guard.key);
-      } else if (!sameHold || patch.state === "in_flight") throw new JournalGuardConflict(guard.key);
-      return { changes: [{ family: "intent", key: requestId, value: structuredClone(next) }, ...FileJournaledBackend.#metaChanges(meta, removeMeta)], result: next };
+      const decision = decideBlobUpdate(FileJournaledBackend.#blobView(state), captured, now, assertReceiptBound);
+      return { changes: FileJournaledBackend.#blobChanges(decision), result: decision.result };
     });
   }
 
   async retireBlobIntents(key: string, requestIds: readonly string[], options: BlobJournalMutationOptions): Promise<void> {
-    assertBlobKey(key);
-    const ids = captureJournalValue([...requestIds]);
-    options = captureBlobMutationOptions(options);
-    const { guard, meta = [], removeMeta = [] } = options;
-    if (guard.key !== key || ids.length === 0 || ids.some(id => typeof id !== "string") || new Set(ids).size !== ids.length) throw new JournalGuardConflict(key);
-    await this.#mutate(state => {
-      this.#blobGuard(state, guard);
-      for (const id of ids) {
-        const row = state.intents.get(id);
-        if (!row || isDocumentIntent(row) || row.target !== key || !row.receipt || !["acknowledged", "refused", "conflict"].includes(row.state)) throw new JournalGuardConflict(key);
-      }
-      return { changes: [...ids.map((id): Change => ({ family: "intent", key: id, value: null })), ...FileJournaledBackend.#metaChanges(meta, removeMeta)], result: undefined };
-    });
+    const captured = captureBlobRetirement(key, requestIds, options);
+    await this.#mutate(state => ({ changes: FileJournaledBackend.#blobChanges(decideBlobRetirement(FileJournaledBackend.#blobView(state), captured)), result: undefined }));
   }
 
   async readMeta<T = unknown>(key: string): Promise<T | undefined> {

@@ -1,10 +1,10 @@
 /** File-journal optional ordinary-file admission. Frozen payloads are data, never authority:
  * a dispatcher must compare their scope with its current trusted context before delivery. */
-import { captureBlobWriteExpected, decodeBlobWriteResult, assertBlobKey, type BlobWriteExpected, type BlobWriteResult, type BlobHead } from "./blob-contract.js";
+import { captureBlobWriteExpected, decodeBlobWriteResult, assertBlobKey, isBlobContentType, isSafeBlobKey, type BlobWriteExpected, type BlobWriteResult, type BlobHead } from "./blob-contract.js";
 import { isHostedBundleId } from "./dependencies.js";
 import { isAgentLabelVia, isWriteBinding, isWriteRequestId } from "./write-identity.js";
 import { sha256HexOfBytes } from "./sha256.js";
-import { captureJournalValue, equalJournalValue, assertMetaExpectation, JournalGuardConflict, type MetaExpectation, type MetaRecord } from "./journaled-backend.js";
+import { captureJournalValue, equalJournalValue, assertMetaExpectation, IntentStateConflict, JournalGuardConflict, JournalSnapshotConflict, type MetaExpectation, type MetaRecord } from "./journaled-backend.js";
 import type { OperationState } from "./uncertain-write.js";
 
 export { isWriteRequestId } from "./write-identity.js";
@@ -34,6 +34,18 @@ export function captureBlobDeletionHold(value: BlobDeletionHold): BlobDeletionHo
   if (!object(hold) || !only(hold, ["deletions", "baseline"]) || ![hold.deletions, hold.baseline].every(n => Number.isSafeInteger(n) && n >= 1)) throw new TypeError("invalid blob deletion hold");
   return hold;
 }
+/** Why a claimed attempt is proven never to have left the process. */
+export const BLOB_NOT_DISPATCHED_CODES = Object.freeze(["credentials_unavailable", "credentials_denied", "aborted", "invalid_identity", "precondition_failed"] as const);
+export type BlobNotDispatchedCode = (typeof BLOB_NOT_DISPATCHED_CODES)[number];
+export interface BlobNotDispatched { code: BlobNotDispatchedCode }
+export function captureBlobNotDispatched(value: BlobNotDispatched): BlobNotDispatched {
+  const evidence = captureJournalValue(value);
+  if (!object(evidence) || !only(evidence, ["code"]) || !(BLOB_NOT_DISPATCHED_CODES as readonly unknown[]).includes(evidence.code)) throw new TypeError("invalid blob not-dispatched evidence");
+  return evidence;
+}
+/** Typed proof that the latest claimed attempt was not applied. A deletion hold is the host's
+ * `428 deletions_held`; not-dispatched is a local failure before any request left. */
+export type BlobNonExecution = ({ kind: "deletion_hold" } & BlobDeletionHold) | ({ kind: "not_dispatched" } & BlobNotDispatched);
 export interface BlobIntentRecord {
   recordFamily: "blob";
   requestId: string;
@@ -48,6 +60,8 @@ export interface BlobIntentRecord {
   /** Proven non-execution for every attempt through this count; omitted means zero. */
   notAppliedThrough?: number;
   deletionHold?: BlobDeletionHold;
+  /** The latest not-dispatched evidence inside the prefix; absent in records written before it existed. */
+  notDispatched?: BlobNotDispatched;
 }
 export interface BlobJournalGuard {
   key: string;
@@ -56,12 +70,15 @@ export interface BlobJournalGuard {
 }
 export interface BlobJournalRead { key: string; intents: BlobIntentRecord[]; meta: Map<string, unknown>; guard: BlobJournalGuard }
 export interface BlobJournalMutationOptions { guard: BlobJournalGuard; meta?: MetaRecord[]; removeMeta?: string[] }
-export interface BlobIntentPatch { state?: OperationState; attempts?: number; receipt?: BlobReceipt; notAppliedThrough?: number; deletionHold?: BlobDeletionHold }
+export interface BlobIntentPatch { state?: OperationState; attempts?: number; receipt?: BlobReceipt; notAppliedThrough?: number; deletionHold?: BlobDeletionHold; notDispatched?: BlobNotDispatched }
+/** Admission options. `unsettled` names, exactly, the receipt-less intents on the same bundle and
+ * key that this admission knowingly stands beside; without it such an intent refuses admission. */
+export interface BlobAdmitOptions extends BlobJournalMutationOptions { unsettled?: readonly BlobIntentRecord[] }
 export interface BlobJournaledBackend {
   /** Optional file-only atomic metadata mutation under the complete same-key/named-meta guard. */
   writeBlobMeta?(key: string, changes: Pick<BlobJournalMutationOptions, "meta" | "removeMeta">, options: { guard: BlobJournalGuard }): Promise<void>;
   readBlobWithJournal(key: string, options?: { meta?: readonly string[] }): Promise<BlobJournalRead>;
-  admitPreparedBlob(prepared: string, options: BlobJournalMutationOptions): Promise<BlobIntentRecord>;
+  admitPreparedBlob(prepared: string, options: BlobAdmitOptions): Promise<BlobIntentRecord>;
   listBlobIntents(state?: OperationState | readonly OperationState[]): Promise<BlobIntentRecord[]>;
   readBlobIntent(requestId: string): Promise<BlobIntentRecord | undefined>;
   updateBlobIntent(requestId: string, expectedState: OperationState, patch: BlobIntentPatch, options: BlobJournalMutationOptions): Promise<BlobIntentRecord>;
@@ -128,7 +145,7 @@ export function blobReceipt(prepared: string, raw: unknown): BlobReceipt {
 }
 export function captureBlobIntentRecord(value: BlobIntentRecord): BlobIntentRecord {
   const row = captureJournalValue(value);
-  if (!object(row) || !only(row, ["recordFamily", "requestId", "target", "prepared", "sequence", "attempts", "state", "updatedAt", "receipt", "notAppliedThrough", "deletionHold"]) || row.recordFamily !== "blob" || !Number.isSafeInteger(row.sequence) || row.sequence < 1 || !Number.isSafeInteger(row.attempts) || row.attempts < 0 || !timestamp(row.updatedAt) || !["pending", "in_flight", "acknowledged", "conflict", "refused", "unknown"].includes(row.state)) throw new TypeError("invalid blob intent record");
+  if (!object(row) || !only(row, ["recordFamily", "requestId", "target", "prepared", "sequence", "attempts", "state", "updatedAt", "receipt", "notAppliedThrough", "deletionHold", "notDispatched"]) || row.recordFamily !== "blob" || !Number.isSafeInteger(row.sequence) || row.sequence < 1 || !Number.isSafeInteger(row.attempts) || row.attempts < 0 || !timestamp(row.updatedAt) || !["pending", "in_flight", "acknowledged", "conflict", "refused", "unknown"].includes(row.state)) throw new TypeError("invalid blob intent record");
   const prepared = decodePreparedBlobIntent(row.prepared);
   if (row.requestId !== prepared.identity.requestId || row.target !== prepared.intent.key) throw new TypeError("blob record index does not match payload");
   const prefix = row.notAppliedThrough === undefined ? 0 : row.notAppliedThrough;
@@ -137,7 +154,11 @@ export function captureBlobIntentRecord(value: BlobIntentRecord): BlobIntentReco
     captureBlobDeletionHold(row.deletionHold);
     if (prefix === 0 || prepared.intent.operationId !== "blobs.delete.v1") throw new TypeError("blob hold requires its proven deletion prefix");
   }
-  if (prefix > 0 && row.deletionHold === undefined) throw new TypeError("blob non-execution prefix requires hold diagnostics");
+  if (row.notDispatched !== undefined) {
+    captureBlobNotDispatched(row.notDispatched);
+    if (prefix === 0) throw new TypeError("blob not-dispatched evidence requires its proven prefix");
+  }
+  if (prefix > 0 && row.deletionHold === undefined && row.notDispatched === undefined) throw new TypeError("blob non-execution prefix requires typed evidence");
   const terminal = row.state === "acknowledged" || row.state === "conflict" || row.state === "refused";
   if (terminal !== (row.receipt !== undefined)) throw new TypeError("blob terminal state requires its receipt");
   if (row.receipt !== undefined) {
@@ -174,4 +195,258 @@ export function captureBlobMutationOptions(options: BlobJournalMutationOptions):
   const puts = captured.meta ?? [], removals = captured.removeMeta ?? [];
   if (!Array.isArray(puts) || !Array.isArray(removals) || puts.some(row => !object(row) || !only(row, ["key", "value"]) || typeof row.key !== "string") || new Set(puts.map(row => row.key)).size !== puts.length || new Set(removals).size !== removals.length || [...puts.map(row => row.key), ...removals].some(key => typeof key !== "string" || !captured.guard.meta.some(row => row.key === key)) || removals.some(key => puts.some(row => row.key === key))) throw new JournalGuardConflict(captured.guard.key);
   return captured;
+}
+
+// ── the one transition owner ─────────────────────────────────────────────────────────────
+// Every blob journal decides admission, claims, settlement, non-execution proof, retirement and
+// guarded metadata through these pure functions; a backend only persists what they return.
+
+/** Admission refused: an unsettled intent on the same bundle and key was not named as a premise. */
+export class BlobAdmissionConflict extends JournalGuardConflict {
+  readonly unsettled: readonly string[];
+  constructor(key: string, unsettled: readonly string[]) {
+    super(key);
+    this.message = `'${key}' already has an unsettled blob intent (${unsettled.join(", ") || "premise mismatch"}) in this bundle; name it as a premise to admit beside it`;
+    this.unsettled = Object.freeze([...unsettled]);
+  }
+}
+
+/** The committed state a decision reads. A backend answers from one consistent snapshot. */
+export interface BlobJournalView {
+  /** Every blob intent whose target is `key`, any bundle. */
+  blobIntentsFor(key: string): readonly BlobIntentRecord[];
+  /** The blob intent with this id, or undefined (also when another record family holds the id). */
+  blobIntent(requestId: string): BlobIntentRecord | undefined;
+  /** The state of whatever intent, of any family, holds this id; null when none does. */
+  intentState(requestId: string): OperationState | null;
+  meta(key: string): MetaExpectation;
+  readonly sequence: number;
+}
+/** What a backend persists atomically for one decided verb. */
+export interface BlobJournalDecision<T> {
+  result: T;
+  /** Intent puts (value) and removals (null), keyed by request id. */
+  intents: { requestId: string; value: BlobIntentRecord | null }[];
+  sequence?: number;
+  meta: MetaRecord[];
+  removeMeta: string[];
+}
+
+export interface CapturedBlobAdmission { prepared: string; decoded: PreparedBlobIntent; options: BlobJournalMutationOptions; unsettled?: BlobIntentRecord[] }
+export interface CapturedBlobUpdate { requestId: string; expectedState: OperationState; patch: BlobIntentPatch; options: BlobJournalMutationOptions }
+export interface CapturedBlobRetirement { key: string; requestIds: string[]; options: BlobJournalMutationOptions }
+export interface CapturedBlobMetaWrite { key: string; options: BlobJournalMutationOptions }
+
+/** The guard must equal the complete same-key intent set and every named meta premise. */
+export function assertBlobGuardMatches(view: BlobJournalView, guard: BlobJournalGuard): void {
+  assertBlobJournalGuard(guard, { key: guard.key, intents: [...view.blobIntentsFor(guard.key)], meta: guard.meta.map(row => ({ key: row.key, expected: view.meta(row.key) })) });
+}
+
+/** Pre-admit checks a caller runs before durably admitting, against the bound the host advertised.
+ * Failing any of these after a claim would strand an attempt that never left. */
+export type BlobAdmissionCheck =
+  | { ok: true }
+  | { ok: false; code: "invalid_input"; reason: "unsafe_key" | "invalid_content_type" | "invalid_expected_content_type" | "bytes_with_delete" | "missing_bytes" | "too_large" | "invalid_bound"; message: string };
+export function checkBlobAdmission(input: { operation: "create" | "replace" | "delete"; key: unknown; contentType?: unknown; expectedContentType?: unknown; byteLength?: number; maximumBytes?: number | null }): BlobAdmissionCheck {
+  const refuse = (reason: Extract<BlobAdmissionCheck, { ok: false }>["reason"], message: string): BlobAdmissionCheck => ({ ok: false, code: "invalid_input", reason, message });
+  if (!isSafeBlobKey(input.key)) return refuse("unsafe_key", "the blob key is not a safe ordinary-file key");
+  const deletion = input.operation === "delete";
+  if (!deletion && !isBlobContentType(input.contentType)) return refuse("invalid_content_type", "the blob content type is not a valid MIME value");
+  if (input.operation !== "create" && !isBlobContentType(input.expectedContentType)) return refuse("invalid_expected_content_type", "replace and delete pin the expected content type");
+  if (deletion) return input.byteLength === undefined ? { ok: true } : refuse("bytes_with_delete", "a blob delete carries no bytes");
+  if (!Number.isSafeInteger(input.byteLength) || input.byteLength! < 0) return refuse("missing_bytes", "a blob create or replace carries bytes");
+  const advertised = input.maximumBytes;
+  if (advertised !== undefined && advertised !== null && (!Number.isSafeInteger(advertised) || advertised < 1)) return refuse("invalid_bound", "the advertised blob write bound is not a positive integer");
+  const bound = Math.min(BLOB_JOURNAL_BOUNDS.rawBytes, advertised ?? BLOB_JOURNAL_BOUNDS.rawBytes);
+  if (input.byteLength! > bound) return refuse("too_large", `the blob is ${input.byteLength} bytes; the write bound is ${bound}`);
+  return { ok: true };
+}
+
+/** One unsettled intent per (bundle, key): every receipt-less same-bundle intent on the key must be
+ * named, exactly, in `unsettled`. Other bundles on the same key never block. */
+export function assertBlobSameKeyAdmission(existing: readonly BlobIntentRecord[], prepared: PreparedBlobIntent, unsettled: readonly BlobIntentRecord[] = []): void {
+  const key = prepared.intent.key;
+  const blocking = existing.filter(row => row.target === key && row.receipt === undefined && decodePreparedBlobIntent(row.prepared).scope.bundleId === prepared.scope.bundleId);
+  const named = new Set(unsettled.map(row => row.requestId));
+  if (named.size !== unsettled.length || unsettled.length !== blocking.length || !blocking.every(row => unsettled.some(premise => equalJournalValue(premise, row)))) throw new BlobAdmissionConflict(key, blocking.map(row => row.requestId));
+}
+
+export function captureBlobAdmission(prepared: string, options: BlobAdmitOptions): CapturedBlobAdmission {
+  const decoded = decodePreparedBlobIntent(prepared);
+  const { unsettled, ...rest } = object(options) ? options as BlobAdmitOptions : ({} as Partial<BlobAdmitOptions>);
+  const captured = captureBlobMutationOptions((object(options) ? rest : options) as BlobJournalMutationOptions);
+  if (captured.guard.key !== decoded.intent.key) throw new JournalGuardConflict(decoded.intent.key);
+  let premise: BlobIntentRecord[] | undefined;
+  if (unsettled !== undefined) {
+    const rows = captureJournalValue(unsettled);
+    if (!Array.isArray(rows)) throw new JournalGuardConflict(decoded.intent.key);
+    premise = rows.map(row => captureBlobIntentRecord(row));
+  }
+  return { prepared, decoded, options: captured, ...(premise === undefined ? {} : { unsettled: premise }) };
+}
+export function decideBlobAdmission(view: BlobJournalView, admission: CapturedBlobAdmission, now: string): BlobJournalDecision<BlobIntentRecord> {
+  const { decoded, prepared, options: { guard, meta = [], removeMeta = [] } } = admission;
+  assertBlobGuardMatches(view, guard);
+  if (view.intentState(decoded.identity.requestId) !== null) throw new JournalSnapshotConflict(guard.key);
+  assertBlobSameKeyAdmission(view.blobIntentsFor(guard.key), decoded, admission.unsettled);
+  const sequence = view.sequence + 1;
+  if (!Number.isSafeInteger(sequence)) throw new RangeError("journal sequence exhausted");
+  const record = captureBlobIntentRecord({ recordFamily: "blob", requestId: decoded.identity.requestId, target: decoded.intent.key, prepared, sequence, attempts: 0, state: "pending", updatedAt: now });
+  return { result: record, sequence, intents: [{ requestId: record.requestId, value: record }], meta, removeMeta };
+}
+
+const PATCH_KEYS = ["state", "attempts", "receipt", "notAppliedThrough", "deletionHold", "notDispatched"];
+export function captureBlobUpdate(requestId: string, expectedState: OperationState, patch: BlobIntentPatch, options: BlobJournalMutationOptions): CapturedBlobUpdate {
+  const captured = captureJournalValue(patch);
+  const mutation = captureBlobMutationOptions(options);
+  if (!captured || typeof captured !== "object" || Array.isArray(captured) || Object.keys(captured).some(key => !PATCH_KEYS.includes(key))) throw new JournalGuardConflict(mutation.guard.key);
+  return { requestId, expectedState, patch: captured, options: mutation };
+}
+
+/**
+ * The single claim/settle/non-execution rule. A claim consumes exactly one eligibility (`pending` or
+ * `unknown`, every earlier attempt proven not applied) before any wire operation. Proof of
+ * non-execution extends the prefix by exactly the claimed attempt and returns the record to
+ * `pending`: a deletion hold from `in_flight` or `unknown`, not-dispatched only from `in_flight`.
+ * A receipt freezes the record. Anything else may not touch the counters or the evidence.
+ */
+export function nextBlobIntentRecord(current: BlobIntentRecord | undefined, update: Pick<CapturedBlobUpdate, "requestId" | "expectedState" | "patch">, guardKey: string, now: string, checkRecord?: (next: BlobIntentRecord) => void): BlobIntentRecord {
+  const { requestId, expectedState, patch } = update;
+  if (!current || current.state !== expectedState) throw new IntentStateConflict(requestId, expectedState, current?.state ?? null);
+  if (current.target !== guardKey) throw new JournalGuardConflict(guardKey);
+  const next = captureBlobIntentRecord({ ...current, ...patch, updatedAt: now });
+  checkRecord?.(next);
+  const beforePrefix = current.notAppliedThrough ?? 0, afterPrefix = next.notAppliedThrough ?? 0;
+  const sameHold = equalJournalValue(current.deletionHold, next.deletionHold);
+  const sameNotDispatched = equalJournalValue(current.notDispatched, next.notDispatched);
+  const refuse = () => new JournalGuardConflict(guardKey);
+  if (current.receipt && (next.attempts !== current.attempts || next.state !== current.state || !equalJournalValue(current.receipt, next.receipt) || afterPrefix !== beforePrefix || !sameHold || !sameNotDispatched)) throw refuse();
+  if (next.attempts !== current.attempts) {
+    if (current.receipt || !["pending", "unknown"].includes(current.state) || next.state !== "in_flight" || next.attempts !== current.attempts + 1 || beforePrefix !== current.attempts || afterPrefix !== beforePrefix || !sameHold || !sameNotDispatched) throw refuse();
+  } else if (afterPrefix !== beforePrefix) {
+    // Typed evidence belongs to this exact claimed count and must extend the complete prefix.
+    const held = patch.deletionHold !== undefined, notDispatched = patch.notDispatched !== undefined;
+    if (current.receipt || next.state !== "pending" || patch.attempts !== current.attempts || beforePrefix !== current.attempts - 1 || afterPrefix !== current.attempts || next.receipt !== undefined || held === notDispatched) throw refuse();
+    if (held ? !["in_flight", "unknown"].includes(current.state) : current.state !== "in_flight" || !sameHold) throw refuse();
+  } else if (!sameHold || !sameNotDispatched || patch.state === "in_flight") throw refuse();
+  return next;
+}
+export function decideBlobUpdate(view: BlobJournalView, update: CapturedBlobUpdate, now: string, checkRecord?: (next: BlobIntentRecord) => void): BlobJournalDecision<BlobIntentRecord> {
+  const { guard, meta = [], removeMeta = [] } = update.options;
+  assertBlobGuardMatches(view, guard);
+  const current = view.blobIntent(update.requestId);
+  if (!current && view.intentState(update.requestId) !== null) throw new IntentStateConflict(update.requestId, update.expectedState, view.intentState(update.requestId));
+  const next = nextBlobIntentRecord(current, update, guard.key, now, checkRecord);
+  return { result: next, intents: [{ requestId: update.requestId, value: next }], meta, removeMeta };
+}
+
+/** The patch that records typed non-execution of the latest claimed attempt. */
+export function blobNonExecutionPatch(current: BlobIntentRecord, reason: BlobNonExecution): BlobIntentPatch {
+  const { kind, ...evidence } = reason;
+  const base = { state: "pending" as const, attempts: current.attempts, notAppliedThrough: current.attempts };
+  if (kind === "deletion_hold") return { ...base, deletionHold: captureBlobDeletionHold(evidence as BlobDeletionHold) };
+  if (kind === "not_dispatched") return { ...base, notDispatched: captureBlobNotDispatched(evidence as BlobNotDispatched) };
+  throw new TypeError("unknown blob non-execution kind");
+}
+/** Fresh submission is allowed only while every earlier attempt is proven not applied. */
+export function blobIntentResendable(row: BlobIntentRecord): boolean {
+  return row.receipt === undefined && (row.state === "pending" || row.state === "unknown") && (row.notAppliedThrough ?? 0) === row.attempts;
+}
+
+export function captureBlobRetirement(key: string, requestIds: readonly string[], options: BlobJournalMutationOptions): CapturedBlobRetirement {
+  assertBlobKey(key);
+  const ids = captureJournalValue([...requestIds]);
+  const captured = captureBlobMutationOptions(options);
+  if (captured.guard.key !== key || ids.length === 0 || ids.some(id => typeof id !== "string") || new Set(ids).size !== ids.length) throw new JournalGuardConflict(key);
+  return { key, requestIds: ids, options: captured };
+}
+/** Only terminal records with their receipt retire, and only together with their key's guard. */
+export function decideBlobRetirement(view: BlobJournalView, retirement: CapturedBlobRetirement): BlobJournalDecision<void> {
+  const { key, requestIds, options: { guard, meta = [], removeMeta = [] } } = retirement;
+  assertBlobGuardMatches(view, guard);
+  for (const id of requestIds) {
+    const row = view.blobIntent(id);
+    if (!row || row.target !== key || !row.receipt || !["acknowledged", "refused", "conflict"].includes(row.state)) throw new JournalGuardConflict(key);
+  }
+  return { result: undefined, intents: requestIds.map(requestId => ({ requestId, value: null })), meta, removeMeta };
+}
+
+export function captureBlobMetaWrite(key: string, changes: Pick<BlobJournalMutationOptions, "meta" | "removeMeta">, options: { guard: BlobJournalGuard }): CapturedBlobMetaWrite {
+  assertBlobKey(key);
+  const captured = captureBlobMutationOptions({ ...captureJournalValue(changes), guard: options.guard });
+  if (captured.guard.key !== key) throw new JournalGuardConflict(key);
+  return { key, options: captured };
+}
+export function decideBlobMetaWrite(view: BlobJournalView, write: CapturedBlobMetaWrite): BlobJournalDecision<void> {
+  assertBlobGuardMatches(view, write.options.guard);
+  return { result: undefined, intents: [], meta: write.options.meta ?? [], removeMeta: write.options.removeMeta ?? [] };
+}
+
+/** A same-key read and the complete guard a later mutation must present. Values are copies. */
+export function readBlobJournal(view: BlobJournalView, key: string, options: { meta?: readonly string[] } = {}): BlobJournalRead {
+  assertBlobKey(key);
+  const intents = [...view.blobIntentsFor(key)].sort((a, b) => a.sequence - b.sequence).map(row => structuredClone(row));
+  const meta = new Map<string, unknown>();
+  const premises: BlobJournalGuard["meta"] = [];
+  for (const name of new Set(options.meta ?? [])) {
+    if (typeof name !== "string") throw new JournalGuardConflict(key);
+    const actual = view.meta(name);
+    if (actual.present) {
+      const value = structuredClone(actual.value);
+      meta.set(name, value);
+      premises.push({ key: name, expected: { present: true, value: structuredClone(value) } });
+    } else premises.push({ key: name, expected: { present: false } });
+  }
+  return { key, intents, meta, guard: { key, intents: structuredClone(intents), meta: premises } };
+}
+
+// ── browser-safe in-memory journal ─────────────────────────────────────────────────────────
+
+export interface MemoryBlobJournal extends BlobJournaledBackend {
+  writeBlobMeta(key: string, changes: Pick<BlobJournalMutationOptions, "meta" | "removeMeta">, options: { guard: BlobJournalGuard }): Promise<void>;
+  readMeta<T = unknown>(key: string): Promise<T | undefined>;
+}
+
+/**
+ * A {@link BlobJournaledBackend} held in memory, for a browser or a test: the same pure transition
+ * functions as the file journal, nothing durable. Each verb decides and applies with no await in
+ * between, so verbs never interleave. A terminal receipt is bounded by its JSON size here, where
+ * the file journal measures its own tagged encoding.
+ */
+export function createMemoryBlobJournal(): MemoryBlobJournal {
+  const intents = new Map<string, BlobIntentRecord>();
+  const meta = new Map<string, unknown>();
+  let sequence = 0;
+  const view: BlobJournalView = {
+    blobIntentsFor: key => [...intents.values()].filter(row => row.target === key),
+    blobIntent: id => intents.get(id),
+    intentState: id => intents.get(id)?.state ?? null,
+    meta: key => meta.has(key) ? { present: true, value: meta.get(key) } : { present: false },
+    get sequence() { return sequence; },
+  };
+  const apply = <T>(decision: BlobJournalDecision<T>): T => {
+    for (const { requestId, value } of decision.intents) {
+      if (value) intents.set(requestId, structuredClone(value)); else intents.delete(requestId);
+    }
+    if (decision.sequence !== undefined) sequence = decision.sequence;
+    for (const row of decision.meta) meta.set(row.key, structuredClone(row.value));
+    for (const key of decision.removeMeta) meta.delete(key);
+    return decision.result;
+  };
+  const checkReceipt = (row: BlobIntentRecord) => {
+    if (row.receipt !== undefined && new TextEncoder().encode(JSON.stringify(row.receipt)).byteLength > BLOB_JOURNAL_BOUNDS.terminalReceiptBytes) throw new RangeError("a blob terminal receipt exceeds its byte bound");
+  };
+  return {
+    async readBlobWithJournal(key, options = {}) { return readBlobJournal(view, key, options); },
+    async writeBlobMeta(key, changes, options) { apply(decideBlobMetaWrite(view, captureBlobMetaWrite(key, changes, options))); },
+    async admitPreparedBlob(prepared, options) { return structuredClone(apply(decideBlobAdmission(view, captureBlobAdmission(prepared, options), new Date().toISOString()))); },
+    async listBlobIntents(state) {
+      const wanted = state === undefined ? null : new Set(typeof state === "string" ? [state] : state);
+      return [...intents.values()].filter(row => !wanted || wanted.has(row.state)).sort((a, b) => a.sequence - b.sequence).map(row => structuredClone(row));
+    },
+    async readBlobIntent(requestId) { const row = intents.get(requestId); return row && structuredClone(row); },
+    async updateBlobIntent(requestId, expectedState, patch, options) { return structuredClone(apply(decideBlobUpdate(view, captureBlobUpdate(requestId, expectedState, patch, options), new Date().toISOString(), checkReceipt))); },
+    async retireBlobIntents(key, requestIds, options) { apply(decideBlobRetirement(view, captureBlobRetirement(key, requestIds, options))); },
+    async readMeta<T>(key: string) { return meta.has(key) ? structuredClone(meta.get(key)) as T : undefined; },
+  };
 }
