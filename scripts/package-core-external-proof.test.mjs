@@ -91,6 +91,8 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
     assert.ok(paths.includes("dist/artifact-contract.d.ts"));
     assert.ok(paths.includes("dist/site-capabilities.js"));
     assert.ok(paths.includes("dist/site-capabilities.d.ts"));
+    assert.ok(paths.includes("dist/search/index.js"));
+    assert.ok(paths.includes("dist/search/index.d.ts"));
     assert.ok(paths.every((file) => file === "package.json" || file === "README.md" || file.startsWith("dist/")));
 
     await writeFile(
@@ -288,6 +290,29 @@ try {
     );
     await run(process.execPath, ["no-buffer-consumer.mjs"], scratch);
 
+    await writeFile(
+      path.join(scratch, "search-consumer.mjs"),
+      `delete globalThis.Buffer;
+const { memorySearchSource, searchDocuments, SearchInputError, SEARCH_ALGORITHM } = await import("@superbee/core/search");
+if (typeof Buffer !== "undefined") throw new Error("proof must execute without Buffer");
+const source = memorySearchSource([
+  { id: "notes/lock", version: "v1", frontmatter: { title: "Lock keeper", type: "Note", tags: ["canal"] }, body: "The lock keeper opens the gate." },
+  { id: "notes/mill", version: "v1", frontmatter: { title: "Mill" }, body: "The mill sits past the lock." },
+], { key: "packed" });
+const answer = await searchDocuments(source, { query: "lock keeper", facets: ["type"] }, { scope: "packed" });
+if (answer.total !== 1 || answer.hits[0].id !== "notes/lock" || answer.hits[0].score !== 11120) throw new Error("search ranked differently");
+if (answer.facets.type[0].value !== "Note" || SEARCH_ALGORITHM !== "portal-webmcp-search/v1") throw new Error("search contract changed");
+if (JSON.stringify(answer.corpus) !== JSON.stringify({ documents: 2, indexed: 2, skipped: 0, reindexPending: 0 })) throw new Error("search corpus changed");
+try {
+  await searchDocuments(source, { query: "lock", cursor: "forged" });
+  throw new Error("a forged cursor was accepted");
+} catch (error) {
+  if (!(error instanceof SearchInputError)) throw error;
+}
+`,
+    );
+    await run(process.execPath, ["search-consumer.mjs"], scratch);
+
     await writeFile(path.join(scratch, "view-consumer.mjs"), `
 import { admitActiveView, MAX_ACTIVE_VIEW_BYTES, ACTIVE_VIEW_CONTENT_TYPE } from "@superbee/core/view-admission";
 export function exerciseViewAdmission() {
@@ -478,6 +503,7 @@ import {
   type StorageBackend,
 } from "@superbee/core/storage";
 import { RemoteBackend, RemoteError } from "@superbee/core/remote";
+import { memorySearchSource, searchDocuments, searchRowText, SearchInputError, textVersion, type SearchDocumentV1, type SearchResultV1, type SearchRowTextV1, type SearchSource } from "@superbee/core/search";
 import { parseRecipeFiles, type RecipeFile, type LoadResult } from "@superbee/core/recipes";
 import { buildKindRegistry, validateAgainstKind } from "@superbee/core/kinds";
 import { installRecipe, installedRecipes, planRecipeEvolution, RecipeLifecycleError, type RecipeInstallState } from "@superbee/core/recipe-lifecycle";
@@ -541,6 +567,13 @@ export async function exerciseBundleHealth(): Promise<number> {
   const findings = bundleKindFindings([document], "0.2", { actor: "process:worker" });
   return report.malformed.length + report.kindLint.length + (report.crossBundle?.unchecked ?? 0) + findings.documents.length;
 }
+declare const searchCorpus: readonly SearchDocumentV1[];
+export async function exerciseSearch(): Promise<[SearchResultV1, SearchRowTextV1, string]> {
+  const source: SearchSource = memorySearchSource(searchCorpus, { key: "worker", maxSourceBytes: 1_048_576 });
+  const result = await searchDocuments(source, { query: "worker", match: "any", limit: 5, prefix: "notes/" }, { scope: "worker" }, { signal: new AbortController().signal }, { maxEvidenceInstances: 10_000 });
+  return [result, searchRowText(searchCorpus[0]!), textVersion()];
+}
+export const searchRuntime = { searchDocuments, SearchInputError };
 `,
     );
     await writeFile(
@@ -601,6 +634,7 @@ export async function exerciseBundleHealth(): Promise<number> {
     assert.ok(installedManifest.exports["./filesystem"]);
     assert.ok(installedManifest.exports["./view-admission"]);
     assert.deepEqual(installedManifest.exports["./artifact-contract"], { types: "./dist/artifact-contract.d.ts", default: "./dist/artifact-contract.js" });
+    assert.deepEqual(installedManifest.exports["./search"], { types: "./dist/search/index.d.ts", default: "./dist/search/index.js" });
     assert.deepEqual(installedManifest.exports["./hosted-client"], { types: "./dist/hosted-client/index.d.ts", default: "./dist/hosted-client/index.js" });
     assert.deepEqual(installedManifest.exports["./hosted-client/node"], { types: "./dist/hosted-client/node.d.ts", default: "./dist/hosted-client/node.js" });
     assert.deepEqual(installedManifest.exports["./recipe-lifecycle"], { types: "./dist/recipe-lifecycle/index.d.ts", default: "./dist/recipe-lifecycle/index.js" });
@@ -619,6 +653,9 @@ export async function exerciseBundleHealth(): Promise<number> {
     assert.ok(installedFiles.includes("dist/bundle-health/index.js"), "the bundle health subpath is packed");
     assert.ok(installedFiles.includes("dist/bundle-health/report.js"), "the bundle health report is packed");
     assert.ok(installedFiles.includes("dist/bundle-health/kind-findings.js"), "the Kind findings rule is packed");
+    assert.ok(installedFiles.includes("dist/search/index.js"), "the search subpath is packed");
+    assert.ok(installedFiles.includes("dist/search/memory-source.js"), "the in-memory search source is packed");
+    assert.ok(workerBundle.outputFiles[0].text.includes("searchDocuments"), "the search subpath bundles for a Worker");
 
     const importPattern = /(?:from\s+|import\s*\()\s*["']([^"']+)["']/g;
     for (const file of installedFiles.filter((name) => /\.(?:js|d\.ts)$/.test(name))) {

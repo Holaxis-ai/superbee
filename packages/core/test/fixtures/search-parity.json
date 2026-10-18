@@ -1,0 +1,1694 @@
+{
+  "source": "@superbee/portal-webmcp@0.3.1 superbee_search_documents (createPortalWebMcpToolsV1) over @superbee/portal@0.2.10 client-v2",
+  "algorithm": "portal-webmcp-search/v1",
+  "indexDigest": "sha256:82b84913ed515ec9b8f0b529bea6c406a2d0baffeac6f5f6fd8ea2c9670f2b90",
+  "documents": [
+    {
+      "id": "notes/exact",
+      "version": "sha256:f07bab49262dea2ee92c3e2e0d8b12ad0464bd7e4e62387fddb6a68a01edeef6",
+      "frontmatter": {
+        "title": "Alpha Beta"
+      },
+      "body": "nothing here\n"
+    },
+    {
+      "id": "notes/prefix",
+      "version": "sha256:e5a20933a6fbd6dfb1035b1af7ddd135612fbfbf0f2222006e0093f5f6f2bd24",
+      "frontmatter": {
+        "title": "Alpha Beta Gamma"
+      },
+      "body": "nothing here\n"
+    },
+    {
+      "id": "alpha/beta",
+      "version": "sha256:912c6bc1921493cd53963bf9404ddce8756ff09aa2b7f2d13ab32e05e024cd33",
+      "frontmatter": {
+        "title": "Unrelated Words"
+      },
+      "body": "alpha beta\n"
+    },
+    {
+      "id": "notes/body",
+      "version": "sha256:6c018b847e7ed6a69dc383e5c5ac37bc1bce4b20f5846a120539eff64f297e4b",
+      "frontmatter": {
+        "title": "Words"
+      },
+      "body": "alpha beta alpha beta\n"
+    },
+    {
+      "id": "ties/zzz",
+      "version": "sha256:ebd0e2994cc40504d7dca03fce2ded8a392b0b286bfc60d8715fd11c20bdea89",
+      "frontmatter": {
+        "title": "Same"
+      },
+      "body": "same\n"
+    },
+    {
+      "id": "ties/aaa",
+      "version": "sha256:4e6a361faef41ba7fe6e07fa8b41032a0ce5627f2dab8efd14055583513a7c38",
+      "frontmatter": {
+        "title": "Same"
+      },
+      "body": "same\n"
+    },
+    {
+      "id": "ties/Mmm",
+      "version": "sha256:a913beb3f533d0ac3cd3e42d6785c2cbcf0ba361e4fc1c9b9f7eaf35707315b3",
+      "frontmatter": {
+        "title": "Same"
+      },
+      "body": "same\n"
+    },
+    {
+      "id": "unicode/cafe",
+      "version": "sha256:b3b5c46f94708dc7147bcaacb24f6dd92bbbbf5885589495bc4296a2578d7e28",
+      "frontmatter": {
+        "title": "Café"
+      },
+      "body": "ﬁnal\n"
+    },
+    {
+      "id": "unicode/decomposed",
+      "version": "sha256:a8f4ced43e49f7213deefdae648d9c3d1973c438593de9844f5f38e66d9a83a0",
+      "frontmatter": {},
+      "body": "café tail\n"
+    },
+    {
+      "id": "unicode/samples",
+      "version": "sha256:ea06847dde5cb43ab782c2627aa2417220e21f93e43dd51a2923178b338fbe78",
+      "frontmatter": {
+        "title": "Untitled"
+      },
+      "body": "½ ℀ ㎃ ＡＢ ① Å Å Ⅸ µ İ ⁵ Ǆ 中文 text naïve\n"
+    },
+    {
+      "id": "architecture/bundle-engine",
+      "version": "sha256:92bcf4443e37e0e84814205fd0b21fc7a7d75d56a4f5f454c3e65da2d9547904",
+      "frontmatter": {
+        "title": "Bundle Engine",
+        "description": "How documents are stored."
+      },
+      "body": "Documents become immutable records in the publication.\n"
+    },
+    {
+      "id": "guides/documents",
+      "version": "sha256:a27e6f61d359f959c8a25dbdf9a258c9c9ffc9ea27d57b8f1845850296f65ea9",
+      "frontmatter": {
+        "title": "Documents"
+      },
+      "body": "A short guide.\n"
+    },
+    {
+      "id": "notes/other",
+      "version": "sha256:93d92a057bbccf413292a7e305683db8bdac1fa0a0e73927834d283d9e7d8333",
+      "frontmatter": {
+        "title": "Other"
+      },
+      "body": "No shared vocabulary.\n"
+    },
+    {
+      "id": "notes/alpha",
+      "version": "sha256:9f79afcaa648d163325a7f734b7f0772a62ced92e4a7998823fcf87dd43af3a1",
+      "frontmatter": {
+        "title": "Alpha",
+        "type": "Note",
+        "tags": ["blue"],
+        "description": "Alpha summary"
+      },
+      "body": "Alpha appears in the body.\n"
+    },
+    {
+      "id": "any/a",
+      "version": "sha256:2bd7629d7d3db94da2a9e947afc989eb2856c9162561b8f0f64d3df6bdaf20c8",
+      "frontmatter": {
+        "title": "Alpha"
+      },
+      "body": "nothing\n"
+    },
+    {
+      "id": "any/b",
+      "version": "sha256:38c23b2a991de0f823402c903dc8ccf6156c5a2d55e06b0604fcf4644f53d157",
+      "frontmatter": {
+        "title": "Other"
+      },
+      "body": "alpha beta\n"
+    },
+    {
+      "id": "filters/a",
+      "version": "sha256:ac7ea7ea9ee5d8610702f8dd9c25bb815e836a67d154a3189536df3431d9959e",
+      "frontmatter": {
+        "type": "Note",
+        "title": "One",
+        "tags": ["red"]
+      },
+      "body": "shared\n"
+    },
+    {
+      "id": "filters/b",
+      "version": "sha256:bdf30180e76905bde94752af2a14b3ffccf886b0a953d8279a91fbfcc34ba5e3",
+      "frontmatter": {
+        "type": "Design",
+        "title": "Two",
+        "tags": ["blue"]
+      },
+      "body": "shared\n"
+    },
+    {
+      "id": "excerpts/lead",
+      "version": "sha256:37ae52ccacccc9a6795b22ba7420188a40139cbb57163ae719ebe186d347d1bf",
+      "frontmatter": {},
+      "body": "lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem \n\n   needle   tail tail tail\n"
+    },
+    {
+      "id": "excerpts/order",
+      "version": "sha256:7f28ed582bfeb737d4baa5815199bfdae8c67ca82f189676eb3d3cd05d017125",
+      "frontmatter": {},
+      "body": "beta rules here. gamma follows later.\n"
+    },
+    {
+      "id": "excerpts/described",
+      "version": "sha256:e614f9cac17299a1a912434d5d54abcecc5052b4c65dd1511881ba1e6eb287b6",
+      "frontmatter": {
+        "description": "  A described note.  "
+      },
+      "body": ""
+    },
+    {
+      "id": "alpha/one",
+      "version": "sha256:05f44e12983fac79967ce972b8b971565bee56dbd113ab79f20f179d23782bf9",
+      "frontmatter": {
+        "title": "Unrelated",
+        "description": "Nothing."
+      },
+      "body": "nothing here\n"
+    },
+    {
+      "id": "notes/two",
+      "version": "sha256:a527c15f6b89592447d8d679ad22f3431d3e54ff59f1fd026ca204ab13e91c00",
+      "frontmatter": {
+        "title": "Unrelated",
+        "description": "Nothing."
+      },
+      "body": "alpha here\n"
+    },
+    {
+      "id": "notes/c",
+      "version": "sha256:975cf5018d030383708ad88e51c89a5555889b17214ec47c2212017f4bf01d40",
+      "frontmatter": {
+        "type": "Note",
+        "title": "Unrelated",
+        "tags": ["blue"]
+      },
+      "body": "nothing here\n"
+    },
+    {
+      "id": "notes/d",
+      "version": "sha256:48fc9bd5285a2dc067bdb24a054cd1789c269f6d89e1097023e43fedfc881b25",
+      "frontmatter": {
+        "type": "Note",
+        "title": "Unrelated"
+      },
+      "body": "blue here\n"
+    },
+    {
+      "id": "fields/odd",
+      "version": "sha256:afc375210e56de944237da3aa64f7efdba76c3d971753d9547dc041d6fc9e485",
+      "frontmatter": {
+        "title": 42,
+        "type": ["Note"],
+        "tags": ["green", 7, null]
+      },
+      "body": "odd fields\n"
+    },
+    {
+      "id": "counts/many",
+      "version": "sha256:6aadbb01d7b67fd02f9cdf88541d47bf1489312fad07e63f0c132785c05a7963",
+      "frontmatter": {
+        "title": "Repeat"
+      },
+      "body": "echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo \n"
+    },
+    {
+      "id": "counts/few",
+      "version": "sha256:a717b3571345af313ba553c527bda336c2526c732835e598dce1749fe171d59e",
+      "frontmatter": {
+        "title": "Few"
+      },
+      "body": "echo echo echo  the and of\n"
+    }
+  ],
+  "cases": [
+    {
+      "request": {
+        "query": "alpha beta"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "notes/exact",
+            "score": 11000,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title"]
+              },
+              {
+                "term": "beta",
+                "fields": ["title"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "notes/prefix",
+            "score": 6000,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title"]
+              },
+              {
+                "term": "beta",
+                "fields": ["title"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "alpha/beta",
+            "score": 4220,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["id", "body"]
+              },
+              {
+                "term": "beta",
+                "fields": ["id", "body"]
+              }
+            ],
+            "excerpt": "alpha beta"
+          },
+          {
+            "id": "notes/body",
+            "score": 40,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["body"]
+              },
+              {
+                "term": "beta",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "alpha beta alpha beta"
+          },
+          {
+            "id": "any/b",
+            "score": 20,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["body"]
+              },
+              {
+                "term": "beta",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "alpha beta"
+          }
+        ],
+        "total": 5,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["alpha", "beta"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "alpha beta",
+        "match": "all"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "notes/exact",
+            "score": 11000,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title"]
+              },
+              {
+                "term": "beta",
+                "fields": ["title"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "notes/prefix",
+            "score": 6000,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title"]
+              },
+              {
+                "term": "beta",
+                "fields": ["title"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "alpha/beta",
+            "score": 4220,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["id", "body"]
+              },
+              {
+                "term": "beta",
+                "fields": ["id", "body"]
+              }
+            ],
+            "excerpt": "alpha beta"
+          },
+          {
+            "id": "notes/body",
+            "score": 40,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["body"]
+              },
+              {
+                "term": "beta",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "alpha beta alpha beta"
+          },
+          {
+            "id": "any/b",
+            "score": 20,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["body"]
+              },
+              {
+                "term": "beta",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "alpha beta"
+          }
+        ],
+        "total": 5,
+        "query": {
+          "requestedMatch": "all",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["alpha", "beta"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "alpha beta",
+        "match": "any"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "notes/exact",
+            "score": 11000,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title"]
+              },
+              {
+                "term": "beta",
+                "fields": ["title"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "notes/prefix",
+            "score": 6000,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title"]
+              },
+              {
+                "term": "beta",
+                "fields": ["title"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "alpha/beta",
+            "score": 4220,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["id", "body"]
+              },
+              {
+                "term": "beta",
+                "fields": ["id", "body"]
+              }
+            ],
+            "excerpt": "alpha beta"
+          },
+          {
+            "id": "notes/body",
+            "score": 40,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["body"]
+              },
+              {
+                "term": "beta",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "alpha beta alpha beta"
+          },
+          {
+            "id": "any/b",
+            "score": 20,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["body"]
+              },
+              {
+                "term": "beta",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "alpha beta"
+          },
+          {
+            "id": "notes/alpha",
+            "score": 710,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title", "description", "id", "body"]
+              }
+            ],
+            "excerpt": "Alpha appears in the body."
+          },
+          {
+            "id": "any/a",
+            "score": 500,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "alpha/one",
+            "score": 100,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["id"]
+              }
+            ],
+            "excerpt": "Nothing."
+          },
+          {
+            "id": "excerpts/order",
+            "score": 10,
+            "matchedTerms": [
+              {
+                "term": "beta",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "beta rules here. gamma follows later."
+          },
+          {
+            "id": "notes/two",
+            "score": 10,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "alpha here"
+          }
+        ],
+        "total": 10,
+        "query": {
+          "requestedMatch": "any",
+          "effectiveMatch": "any",
+          "fallbackUsed": false,
+          "terms": ["alpha", "beta"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "alpha alpha beta beta alpha"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "notes/exact",
+            "score": 11000,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title"]
+              },
+              {
+                "term": "beta",
+                "fields": ["title"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "notes/prefix",
+            "score": 6000,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title"]
+              },
+              {
+                "term": "beta",
+                "fields": ["title"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "alpha/beta",
+            "score": 4220,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["id", "body"]
+              },
+              {
+                "term": "beta",
+                "fields": ["id", "body"]
+              }
+            ],
+            "excerpt": "alpha beta"
+          },
+          {
+            "id": "notes/body",
+            "score": 40,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["body"]
+              },
+              {
+                "term": "beta",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "alpha beta alpha beta"
+          },
+          {
+            "id": "any/b",
+            "score": 20,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["body"]
+              },
+              {
+                "term": "beta",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "alpha beta"
+          }
+        ],
+        "total": 5,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["alpha", "beta"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "same"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "ties/Mmm",
+            "score": 10510,
+            "matchedTerms": [
+              {
+                "term": "same",
+                "fields": ["title", "body"]
+              }
+            ],
+            "excerpt": "same"
+          },
+          {
+            "id": "ties/aaa",
+            "score": 10510,
+            "matchedTerms": [
+              {
+                "term": "same",
+                "fields": ["title", "body"]
+              }
+            ],
+            "excerpt": "same"
+          },
+          {
+            "id": "ties/zzz",
+            "score": 10510,
+            "matchedTerms": [
+              {
+                "term": "same",
+                "fields": ["title", "body"]
+              }
+            ],
+            "excerpt": "same"
+          }
+        ],
+        "total": 3,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["same"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "CAFé"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "unicode/cafe",
+            "score": 10500,
+            "matchedTerms": [
+              {
+                "term": "café",
+                "fields": ["title"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "unicode/decomposed",
+            "score": 10,
+            "matchedTerms": [
+              {
+                "term": "café",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "café tail"
+          }
+        ],
+        "total": 2,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["café"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "café"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "unicode/cafe",
+            "score": 10500,
+            "matchedTerms": [
+              {
+                "term": "café",
+                "fields": ["title"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "unicode/decomposed",
+            "score": 10,
+            "matchedTerms": [
+              {
+                "term": "café",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "café tail"
+          }
+        ],
+        "total": 2,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["café"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "final"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "unicode/cafe",
+            "score": 10,
+            "matchedTerms": [
+              {
+                "term": "final",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "ﬁnal"
+          }
+        ],
+        "total": 1,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["final"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "How does the bundle engine persist documents?"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "architecture/bundle-engine",
+            "score": 1310,
+            "matchedTerms": [
+              {
+                "term": "bundle",
+                "fields": ["title", "id"]
+              },
+              {
+                "term": "engine",
+                "fields": ["title", "id"]
+              },
+              {
+                "term": "documents",
+                "fields": ["description", "body"]
+              }
+            ],
+            "excerpt": "Documents become immutable records in the publication."
+          },
+          {
+            "id": "guides/documents",
+            "score": 600,
+            "matchedTerms": [
+              {
+                "term": "documents",
+                "fields": ["title", "id"]
+              }
+            ],
+            "excerpt": ""
+          }
+        ],
+        "total": 2,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "any",
+          "fallbackUsed": true,
+          "terms": ["bundle", "engine", "persist", "documents"],
+          "ignoredTerms": ["how", "does", "the"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "How does quux frobnicate?"
+      },
+      "expected": {
+        "hits": [],
+        "total": 0,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "any",
+          "fallbackUsed": true,
+          "terms": ["quux", "frobnicate"],
+          "ignoredTerms": ["how", "does"]
+        },
+        "guidance": "No document contains any searchable query term. Try domain-specific keywords or remove exact type and tag filters."
+      }
+    },
+    {
+      "request": {
+        "query": "alpha nowhere",
+        "match": "all"
+      },
+      "expected": {
+        "hits": [],
+        "total": 0,
+        "query": {
+          "requestedMatch": "all",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["alpha", "nowhere"]
+        },
+        "guidance": "No document contains every query term. Retry with match \"any\", fewer terms, or different exact filters."
+      }
+    },
+    {
+      "request": {
+        "query": "alpha nowhere"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "notes/alpha",
+            "score": 710,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title", "description", "id", "body"]
+              }
+            ],
+            "excerpt": "Alpha appears in the body."
+          },
+          {
+            "id": "any/a",
+            "score": 500,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "notes/exact",
+            "score": 500,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "notes/prefix",
+            "score": 500,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "alpha/beta",
+            "score": 110,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["id", "body"]
+              }
+            ],
+            "excerpt": "alpha beta"
+          },
+          {
+            "id": "alpha/one",
+            "score": 100,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["id"]
+              }
+            ],
+            "excerpt": "Nothing."
+          },
+          {
+            "id": "notes/body",
+            "score": 20,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "alpha beta alpha beta"
+          },
+          {
+            "id": "any/b",
+            "score": 10,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "alpha beta"
+          },
+          {
+            "id": "notes/two",
+            "score": 10,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "alpha here"
+          }
+        ],
+        "total": 9,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "any",
+          "fallbackUsed": true,
+          "terms": ["alpha", "nowhere"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "alpha blue",
+        "match": "all"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "notes/alpha",
+            "score": 960,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title", "description", "id", "body"]
+              },
+              {
+                "term": "blue",
+                "fields": ["tag"]
+              }
+            ],
+            "excerpt": "Alpha appears in the body."
+          }
+        ],
+        "total": 1,
+        "query": {
+          "requestedMatch": "all",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["alpha", "blue"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "shared",
+        "type": "Note"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "filters/a",
+            "score": 10,
+            "matchedTerms": [
+              {
+                "term": "shared",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "shared"
+          }
+        ],
+        "total": 1,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["shared"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "shared",
+        "tag": "blue"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "filters/b",
+            "score": 10,
+            "matchedTerms": [
+              {
+                "term": "shared",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "shared"
+          }
+        ],
+        "total": 1,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["shared"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "shared",
+        "type": "note"
+      },
+      "expected": {
+        "hits": [],
+        "total": 0,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["shared"]
+        },
+        "guidance": "No document contains any searchable query term. Try domain-specific keywords or remove exact type and tag filters."
+      }
+    },
+    {
+      "request": {
+        "query": "How does shared work",
+        "type": "Note"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "filters/a",
+            "score": 10,
+            "matchedTerms": [
+              {
+                "term": "shared",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "shared"
+          }
+        ],
+        "total": 1,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "any",
+          "fallbackUsed": true,
+          "terms": ["shared", "work"],
+          "ignoredTerms": ["how", "does"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "needle"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "excerpts/lead",
+            "score": 10,
+            "matchedTerms": [
+              {
+                "term": "needle",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "orem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem needle tail tail tail"
+          }
+        ],
+        "total": 1,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["needle"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "gamma beta"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "notes/prefix",
+            "score": 1000,
+            "matchedTerms": [
+              {
+                "term": "gamma",
+                "fields": ["title"]
+              },
+              {
+                "term": "beta",
+                "fields": ["title"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "excerpts/order",
+            "score": 20,
+            "matchedTerms": [
+              {
+                "term": "gamma",
+                "fields": ["body"]
+              },
+              {
+                "term": "beta",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "beta rules here. gamma follows later."
+          }
+        ],
+        "total": 2,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["gamma", "beta"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "described"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "excerpts/described",
+            "score": 200,
+            "matchedTerms": [
+              {
+                "term": "described",
+                "fields": ["description", "id"]
+              }
+            ],
+            "excerpt": "A described note."
+          }
+        ],
+        "total": 1,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["described"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "alpha"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "notes/alpha",
+            "score": 10710,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title", "description", "id", "body"]
+              }
+            ],
+            "excerpt": "Alpha appears in the body."
+          },
+          {
+            "id": "any/a",
+            "score": 10500,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "notes/exact",
+            "score": 5500,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "notes/prefix",
+            "score": 5500,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["title"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "alpha/beta",
+            "score": 110,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["id", "body"]
+              }
+            ],
+            "excerpt": "alpha beta"
+          },
+          {
+            "id": "alpha/one",
+            "score": 100,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["id"]
+              }
+            ],
+            "excerpt": "Nothing."
+          },
+          {
+            "id": "notes/body",
+            "score": 20,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "alpha beta alpha beta"
+          },
+          {
+            "id": "any/b",
+            "score": 10,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "alpha beta"
+          },
+          {
+            "id": "notes/two",
+            "score": 10,
+            "matchedTerms": [
+              {
+                "term": "alpha",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "alpha here"
+          }
+        ],
+        "total": 9,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["alpha"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "blue"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "filters/b",
+            "score": 250,
+            "matchedTerms": [
+              {
+                "term": "blue",
+                "fields": ["tag"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "notes/alpha",
+            "score": 250,
+            "matchedTerms": [
+              {
+                "term": "blue",
+                "fields": ["tag"]
+              }
+            ],
+            "excerpt": "Alpha summary"
+          },
+          {
+            "id": "notes/c",
+            "score": 250,
+            "matchedTerms": [
+              {
+                "term": "blue",
+                "fields": ["tag"]
+              }
+            ],
+            "excerpt": ""
+          },
+          {
+            "id": "notes/d",
+            "score": 10,
+            "matchedTerms": [
+              {
+                "term": "blue",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "blue here"
+          }
+        ],
+        "total": 4,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["blue"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "odd green"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "fields/odd",
+            "score": 360,
+            "matchedTerms": [
+              {
+                "term": "odd",
+                "fields": ["id", "body"]
+              },
+              {
+                "term": "green",
+                "fields": ["tag"]
+              }
+            ],
+            "excerpt": "odd fields"
+          }
+        ],
+        "total": 1,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["odd", "green"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "echo"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "counts/many",
+            "score": 200,
+            "matchedTerms": [
+              {
+                "term": "echo",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo"
+          },
+          {
+            "id": "counts/few",
+            "score": 30,
+            "matchedTerms": [
+              {
+                "term": "echo",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "echo echo echo the and of"
+          }
+        ],
+        "total": 2,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["echo"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "the and of"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "counts/few",
+            "score": 30,
+            "matchedTerms": [
+              {
+                "term": "the",
+                "fields": ["body"]
+              },
+              {
+                "term": "and",
+                "fields": ["body"]
+              },
+              {
+                "term": "of",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "echo echo echo the and of"
+          }
+        ],
+        "total": 1,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["the", "and", "of"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "the"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "architecture/bundle-engine",
+            "score": 10,
+            "matchedTerms": [
+              {
+                "term": "the",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "Documents become immutable records in the publication."
+          },
+          {
+            "id": "counts/few",
+            "score": 10,
+            "matchedTerms": [
+              {
+                "term": "the",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "echo echo echo the and of"
+          },
+          {
+            "id": "notes/alpha",
+            "score": 10,
+            "matchedTerms": [
+              {
+                "term": "the",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "Alpha appears in the body."
+          }
+        ],
+        "total": 3,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["the"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "½"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "unicode/samples",
+            "score": 30,
+            "matchedTerms": [
+              {
+                "term": "1",
+                "fields": ["body"]
+              },
+              {
+                "term": "2",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "½ ℀ ㎃ ＡＢ ① Å Å Ⅸ µ İ ⁵ Ǆ 中文 text naïve"
+          }
+        ],
+        "total": 1,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["1", "2"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "中文"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "unicode/samples",
+            "score": 10,
+            "matchedTerms": [
+              {
+                "term": "中文",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "½ ℀ ㎃ ＡＢ ① Å Å Ⅸ µ İ ⁵ Ǆ 中文 text naïve"
+          }
+        ],
+        "total": 1,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["中文"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "AB Ⅸ"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "unicode/samples",
+            "score": 20,
+            "matchedTerms": [
+              {
+                "term": "ab",
+                "fields": ["body"]
+              },
+              {
+                "term": "ix",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "½ ℀ ㎃ ＡＢ ① Å Å Ⅸ µ İ ⁵ Ǆ 中文 text naïve"
+          }
+        ],
+        "total": 1,
+        "query": {
+          "requestedMatch": "auto",
+          "effectiveMatch": "all",
+          "fallbackUsed": false,
+          "terms": ["ab", "ix"]
+        }
+      }
+    },
+    {
+      "request": {
+        "query": "text naïve",
+        "match": "any"
+      },
+      "expected": {
+        "hits": [
+          {
+            "id": "unicode/samples",
+            "score": 20,
+            "matchedTerms": [
+              {
+                "term": "text",
+                "fields": ["body"]
+              },
+              {
+                "term": "naïve",
+                "fields": ["body"]
+              }
+            ],
+            "excerpt": "½ ℀ ㎃ ＡＢ ① Å Å Ⅸ µ İ ⁵ Ǆ 中文 text naïve"
+          }
+        ],
+        "total": 1,
+        "query": {
+          "requestedMatch": "any",
+          "effectiveMatch": "any",
+          "fallbackUsed": false,
+          "terms": ["text", "naïve"]
+        }
+      }
+    }
+  ]
+}

@@ -328,6 +328,32 @@ which Kind problems a strict host write would refuse, preparing each document as
 so a timestamp or actor the write supplies is no finding. The CLI's publish preview runs it; the
 report's `kindLint` stays advisory. Both use core's one validator, `validateAgainstKind`.
 
+## Search
+
+`@superbee/core/search` is the one `documents.search.v1` engine: the request and result contract,
+query normalization, ranking (`portal-webmcp-search/v1`), the any-term fallback, facets, cursors
+and page budgets. A backend supplies what it searches through `SearchSource`: one `evidence()`
+call per request and `text()` for the page's excerpts. `memorySearchSource` indexes a complete
+corpus in memory. The subpath uses no Node globals or builtins.
+
+```ts
+import { memorySearchSource, searchDocuments } from "@superbee/core/search";
+
+const source = memorySearchSource(documents, { key: headsDigest });
+const result = await searchDocuments(source, { query: "lock keeper", limit: 10 }, { scope: bundleId });
+```
+
+`key` identifies the corpus; a cursor is refused for another key, scope, query, match or filters
+(`type`, `tag`, `prefix`). A request outside the contract throws `SearchInputError`; a corpus over a
+bound throws `SearchLimitError`; a request whose terms hold more than `maxEvidenceInstances` capped
+instances (a `searchDocuments` option, at most `SEARCH_LIMITS.maxEvidenceInstances`) throws
+`SearchBroadQueryError`, a `SearchLimitError` whose message asks for fewer or more specific terms.
+A source must hold one document per id.
+A document over 65,536 body terms is left out and counted: the result's `corpus` reports
+`documents`, `indexed`, `skipped` and `reindexPending`. `searchRowText` is what one document
+contributes to any index, and `textVersion()` names the algorithm, `SEARCH_TEXT_REVISION` and the
+runtime's normalizer fingerprint, so a stored index can tell when its rows need re-deriving.
+
 ## Hosted client
 
 `@superbee/core/hosted-client` is the headless client of a hosted Superbee's sync routes
