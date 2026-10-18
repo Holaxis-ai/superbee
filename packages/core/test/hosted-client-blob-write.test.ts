@@ -30,7 +30,7 @@ import {
 } from "../src/hosted-client/index.js";
 import { openHostedClientJournalWith } from "../src/hosted-client/journal.js";
 import { HostedClientJournalError } from "../src/hosted-client/node.js";
-import { prepareBlobIntent, type BlobIntentRecord, type BlobTargetScope } from "../src/blob-journal.js";
+import { checkBlobAdmission, isOrdinaryBlobKey, prepareBlobIntent, type BlobIntentRecord, type BlobTargetScope } from "../src/blob-journal.js";
 import { FILE_JOURNAL_LOG, FILE_JOURNAL_SNAPSHOT, FileJournaledBackend } from "../src/file-journaled-backend.js";
 import { OPEN_LOG, type FileJournalHandle } from "../src/file-journaled-backend-internal.js";
 import { JournalGuardConflict } from "../src/journaled-backend.js";
@@ -1044,4 +1044,72 @@ test("journal shape: a client's default blob journal is its own, and within clie
   assert.deepEqual(await client.within("team").heldBlobWrites(), []);
   const typed: BlobJournaledBackend = createMemoryBlobJournal();
   assert.equal(typeof typed.forgetBlobIntent, "function");
+});
+
+// ── review fixes: key policy, aborts before admission, credential headers ───────────────────
+
+test("key policy: writeBlob and deleteBlob refuse reserved files and Superbee's own folders with zero requests", async () => {
+  const blobJournal = createMemoryBlobJournal();
+  const { fetch, sent } = recorder(() => assert.fail("nothing is sent"));
+  const client = clientOf(fetch, { blobJournal });
+  for (const key of ["views/page.html", "Views/page.html", "pages/a.html", "views-registry/x.svg", "pages-registry/x.svg", "conventions/a.png", "recipes/r.bin", "REFERENCES/a.pdf", "index.md", "log.md"]) {
+    const written = await client.writeBlob(BUNDLE, { key, bytes: text("1"), contentType: SVG, expectAbsent: true });
+    assert.equal(written.status === "refused" && written.code, "invalid_input", key);
+    if (!key.endsWith(".md")) assert.match(written.status === "refused" ? written.message : "", /Superbee's own records/, key);
+    const deleted = await client.deleteBlob(BUNDLE, { key, expected: { version: FIXTURE_VERSION, contentType: SVG } });
+    assert.equal(deleted.status === "refused" && deleted.code, "invalid_input", key);
+  }
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await blobJournal.listBlobIntents(), []);
+  assert.equal(isOrdinaryBlobKey("media/views/a.png"), true);
+  assert.equal(isOrdinaryBlobKey("viewsx/a.png"), true);
+  const check = checkBlobAdmission({ operation: "create", key: "recipes/a.bin", contentType: SVG, byteLength: 1 });
+  assert.equal(!check.ok && check.reason, "protected_key");
+});
+
+test("abort: a signal aborted before admission admits nothing and sends no blob request", async () => {
+  const host = fakeHost();
+  const controller = new AbortController();
+  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const answer = await host.fetch(input, init);
+    // The capabilities answer arrives, and the caller aborts before the write is admitted.
+    if (String(input).endsWith("/capabilities")) controller.abort(new Error("caller gave up"));
+    return answer;
+  }) as typeof globalThis.fetch;
+  const blobJournal = createMemoryBlobJournal();
+  await assert.rejects(clientOf(fetch, { blobJournal }).writeBlob(BUNDLE, { key: "a.svg", bytes: text("1"), contentType: SVG, expectAbsent: true }, { signal: controller.signal }), /caller gave up/);
+  assert.deepEqual(blobRoutes(host.sent), []);
+  assert.deepEqual(await blobJournal.listBlobIntents(), []);
+});
+
+test("abort: a hung capabilities read ends at the caller's abort and releases the key for the next call", async () => {
+  let hang = true;
+  const host = fakeHost();
+  const client = clientOf(host.fetch, {
+    credentials: async (signal) => {
+      if (hang) await new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("client closed")), { once: true }));
+      return { Authorization: "Bearer ok" };
+    },
+    capabilitiesTtlMs: 0,
+  });
+  for (const write of [() => client.writeBlob(BUNDLE, { key: "a.svg", bytes: text("1"), contentType: SVG, expectAbsent: true }, { signal: AbortSignal.timeout(20) }), () => client.deleteBlob(BUNDLE, { key: "a.svg", expected: { version: FIXTURE_VERSION, contentType: SVG } }, { signal: AbortSignal.timeout(20) })]) {
+    await assert.rejects(write(), (error: unknown) => (error as Error).name === "TimeoutError");
+  }
+  // The same identity and key are free again: a call that does not hang goes through.
+  hang = false;
+  assert.equal((await client.writeBlob(BUNDLE, { key: "a.svg", bytes: text("1"), contentType: SVG, expectAbsent: true })).status, "committed");
+});
+
+test("credentials: a credential header fetch cannot carry is denied before sending, so the claim rolls back", async () => {
+  const host = fakeHost();
+  let bad = false;
+  const blobJournal = createMemoryBlobJournal();
+  const client = clientOf(host.fetch, { blobJournal, credentials: async () => (bad ? { "bad header": "x" } : { Authorization: "Bearer ok" }) });
+  await client.blobHeads(BUNDLE);
+  bad = true;
+  await assert.rejects(client.writeBlob(BUNDLE, { key: "a.svg", bytes: text("1"), contentType: SVG, expectAbsent: true }), (error: unknown) => error instanceof HostedBlobWriteNotSent && error.reason === "credentials_unavailable" && error.held);
+  assert.deepEqual(blobRoutes(host.sent), ["blob-heads"]);
+  assert.equal((await blobJournal.listBlobIntents())[0]?.state, "pending");
+  const carrier = createFetchCarrier({ baseUrl: ORIGIN, credentials: async () => ({ "bad header": "x" }), fetch: async () => assert.fail("never fetched") });
+  await assert.rejects(carrier.json(`${PREFIX}/whoami`, {}, new AbortController().signal, { maximum: 1024 }), (error: unknown) => (error as { code?: string }).code === "denied");
 });

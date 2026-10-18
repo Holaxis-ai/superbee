@@ -640,7 +640,7 @@ Each call returns one of:
   earlier attempt was unclear is never sent again, only looked up, and stays `unknown`.
   `insufficient_scope`, `bundle_not_found` and `invalid_input` also drop the held capabilities
   answer, so the next write reads them again. The client's own codes are `invalid_input` (an
-  unsafe key, an invalid content type, a body over the host's `blobWriteBytes` or 16 MiB, or a held
+  unsafe key, a key under one of Superbee's own record folders or a reserved file, an invalid content type, a body over the host's `blobWriteBytes` or 16 MiB, or a held
   identity reused for another write), `scope_mismatch` (a held write, or a reused `requestId`, recorded
   for another origin or sync prefix) or `unsettled_write` (an earlier write of the same key in the bundle is still
   unsettled: settle or forget it first). Nothing was sent for a client-named refusal.
@@ -715,7 +715,21 @@ content type, verifies length, digest and type, and answers null when the key is
 `blobHeads(bundleId)` the whole listing; both read the full verified listing (up to 10,000 heads in
 4 MiB pages), since the host has no single-key head route yet.
 
+**Keys.** `isOrdinaryBlobKey` is the one key policy every blob writer uses, this client and the
+CLI's checkout sync alike: a safe key that is not a reserved file (`index.md`, `log.md`) and does not
+sit under Superbee's own record folders (`views/`, `pages/`, their registries, `conventions/`,
+`recipes/`, `references/`, compared case-insensitively). Any other key is refused `invalid_input`
+before any request.
+
+**Aborts.** A `signal` aborted before the write is admitted throws its reason and journals nothing;
+that includes an abort while the capabilities are still being read, so a hung credential provider
+never holds the call (or its key) past the caller's abort. Once admitted, a write is held until it
+settles, and an abort before its send leaves it resendable (`HostedBlobWriteNotSent`).
+
 **Journal.** The default blob journal is in memory (`createMemoryBlobJournal`), owned by the client.
+Give a blob journal to one client (its `within` clients share it). Two clients over one journal
+coordinate only through its per-key guard: concurrent writes of different identities still settle,
+but two calls on the same request identity from both clients can fail with a raw journal conflict.
 Pass `blobJournal` to keep blob writes across restarts: in Node, `openHostedClientJournal(...).blobs`
 (below). `driveJournaledBlob(journal, context, requestId, mode)` is the owner of the journaled
 sequence (admit, claim, deliver, persist, retire) for a caller with its own journal and premises; its

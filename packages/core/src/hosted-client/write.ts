@@ -357,6 +357,20 @@ function resultOf(intent: HostedWriteIntent, outcome: Outcome): HostedWriteResul
   }
 }
 
+/**
+ * `work`, or the abort's reason as soon as `signal` aborts, whichever comes first. For a read made
+ * before anything is sent (the capabilities answer), so a hung credential provider never holds a
+ * caller past its own abort; the read itself goes on for any other caller sharing it.
+ */
+export function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
 /** The signal a write's requests run under: the client's, and the caller's when given. */
 export function writeSignal(context: HostedWriteContext, signal: AbortSignal | undefined): AbortSignal {
   return signal ? AbortSignal.any([context.signal, signal]) : context.signal;

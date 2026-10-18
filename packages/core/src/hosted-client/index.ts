@@ -143,6 +143,7 @@ export {
 export { MALFORMED_ANSWER, MalformedAnswer, RemoteError, isMalformedAnswer } from "../remote-error.js";
 export { HostedAnswerTooLarge, HostedCarrierError, isAnswerTooLarge } from "../hosted-transport/carrier.js";
 export {
+  BLOB_UNRECORDED_REFUSAL_CODES,
   performHostedBlobDelivery,
   type HostedBlobDeliveryContext,
   type HostedBlobDeliveryOptions,

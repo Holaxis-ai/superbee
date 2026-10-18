@@ -33,8 +33,13 @@ export interface HostedBlobDeliveryResult {
   patch: BlobIntentPatch;
 }
 const UNKNOWN = Object.freeze({ kind: "unknown" as const });
-/** Refusals the host answers before dispatch and records under no identity (`recorded: "no"`). */
-const UNRECORDED_REFUSALS: ReadonlySet<string> = new Set(["insufficient_scope", "bundle_not_found", "request_capacity"]);
+/**
+ * Refusals the host answers before dispatch and records under no identity (`recorded: "no"`): a
+ * grant without blob writes, a bundle the person cannot reach, and the sync quota. One of them on
+ * an attempt whose earlier attempts are all proven not applied settles the write as refused.
+ */
+export const BLOB_UNRECORDED_REFUSAL_CODES = Object.freeze(["insufficient_scope", "bundle_not_found", "request_capacity"] as const);
+const UNRECORDED_REFUSALS: ReadonlySet<string> = new Set(BLOB_UNRECORDED_REFUSAL_CODES);
 function freeze<T>(value: T): T {
   if (value && typeof value === "object") { for (const nested of Object.values(value)) freeze(nested); Object.freeze(value); }
   return value;

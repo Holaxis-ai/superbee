@@ -15,7 +15,7 @@ import path from "node:path";
 
 import { decode } from "@toon-format/toon";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
-import { decodePreparedBlobIntent } from "@superbee/core/storage";
+import { decodePreparedBlobIntent, isOrdinaryBlobKey } from "@superbee/core/storage";
 import { BLOB_SYNC_META_KEY, encodeBlobSyncMap, admitOfflineBlob } from "../src/hosted/blob-sync.js";
 import { digestOf } from "../src/hosted/projection.js";
 import { parseMarkdown } from "@superbee/core";
@@ -2181,4 +2181,72 @@ test("a blob conflict with a host deletion: keep admits a new create of the file
     }
     assert.equal((await outstandingBlobRows(h)).length, 0);
   }
+});
+
+test("a blob refusal the host never records is reported once, retired, and the next sync sends the file again", async () => {
+  const cases = [
+    { status: 429, code: "request_capacity", extra: { scope: "principal", resetAt: "2026-10-19T00:00:00Z" }, exit: "TRANSIENT" },
+    { status: 200, code: "request_capacity", extra: { scope: "bundle" }, exit: "TRANSIENT" },
+    { status: 200, code: "insufficient_scope", extra: {}, exit: "FORBIDDEN" },
+  ] as const;
+  for (const { status, code, extra, exit } of cases) {
+    const h = await harness(), key = "quota.bin", file = path.join(h.folder, key);
+    await writeFile(file, "old"); await seedCaptureMap(h, key, Buffer.from("old")); await writeFile(file, "new");
+    const wire = blobAuthority(h); wire.objects.set(key, { bytes: Buffer.from("old"), contentType: 'application/octet-stream; profile="old"' });
+    let refuse = 1; const uploads: string[] = [], lookups: string[] = [];
+    h.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const request = new Request(input, init), route = new URL(request.url).pathname;
+      if (/\/blob-(?:create|replace)$/.test(route)) {
+        uploads.push(request.headers.get("x-superbee-write-request")!);
+        if (refuse-- > 0) {
+          const error = { code, message: "refused before dispatch", retryable: false, writeState: "not_applied", ...extra };
+          return status === 429 ? Response.json({ error }, { status: 429 }) : Response.json({ ok: false, operationId: route.endsWith("create") ? "blobs.create.v1" : "blobs.replace.v1", error });
+        }
+      }
+      if (route.endsWith("/outcome")) { const body = await request.clone().json() as { operationId?: string }; if (String(body.operationId).startsWith("blobs.")) lookups.push(request.headers.get("x-superbee-write-request")!); }
+      return wire.fetch(input, init);
+    }) as typeof fetch;
+    const label = `${status} ${code}`;
+    // Sync 1: the refusal is reported as refused, classed as document writes class it, and retired.
+    const error = await runSync(h).then(() => assert.fail(`${label}: sync 1 must not succeed`), (thrown: unknown) => thrown as CliError);
+    assert.equal(error.code, exit, label);
+    const first = decode(h.out.at(-1)!.trim()) as { blobs: { rows: { key: string; state: string; message?: string }[] } };
+    assert.deepEqual(first.blobs.rows.map(row => [row.key, row.state]), [[key, "refused"]], label);
+    assert.match(first.blobs.rows[0]!.message ?? "", /Nothing was lost/, label);
+    assert.deepEqual(await retainedBlobRows(h), [], `${label}: the refused receipt is retired`);
+    assert.deepEqual(lookups, [], `${label}: a refusal the host never recorded is never looked up`);
+    // Sync 2: the file is captured anew and sent under a fresh identity; it commits.
+    await runSync(h);
+    assert.equal(uploads.length, 2, label);
+    assert.notEqual(uploads[1], uploads[0], `${label}: a new identity`);
+    assert.equal(wire.objects.get(key)?.bytes.toString(), "new", label);
+    assert.deepEqual((await retainedBlobRows(h)).map(row => row.state), ["acknowledged"], label);
+  }
+});
+
+test("a recorded blob refusal is reported once and retired too, so an edit is sent on the next sync", async () => {
+  const h = await harness(), key = "busy.bin", file = path.join(h.folder, key);
+  await writeFile(file, "old"); await seedCaptureMap(h, key, Buffer.from("old")); await writeFile(file, "new");
+  const wire = blobAuthority(h); wire.objects.set(key, { bytes: Buffer.from("old"), contentType: 'application/octet-stream; profile="old"' });
+  let refuse = 1;
+  h.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const request = new Request(input, init), route = new URL(request.url).pathname;
+    if (/\/blob-replace$/.test(route) && refuse-- > 0) {
+      const id = request.headers.get("x-superbee-write-request")!;
+      return Response.json({ ok: false, operationId: "blobs.replace.v1", error: { code: "backend_unavailable", message: "down", retryable: false, writeState: "not_applied" } }, { headers: { "x-superbee-write-settled": id } });
+    }
+    return wire.fetch(input, init);
+  }) as typeof fetch;
+  const error = await runSync(h).then(() => assert.fail("sync 1 must not succeed"), (thrown: unknown) => thrown as CliError);
+  assert.equal(error.code, "CONFLICT");
+  assert.deepEqual((decode(h.out.at(-1)!.trim()) as { blobs: { rows: { state: string }[] } }).blobs.rows.map(row => row.state), ["refused"]);
+  assert.deepEqual(await retainedBlobRows(h), []);
+  await writeFile(file, "newer");
+  await runSync(h);
+  assert.equal(wire.objects.get(key)?.bytes.toString(), "newer");
+});
+
+test("the CLI's ordinary-file key policy is core's: protected folders and reserved files are never blob keys", async () => {
+  for (const key of ["views/a.html", "Views/a.html", "pages/a.html", "views-registry/x", "pages-registry/x", "conventions/a.png", "recipes/x.bin", "REFERENCES/x.pdf", "index.md", "log.md"]) assert.equal(isOrdinaryBlobKey(key), false, key);
+  for (const key of ["media/a.png", "diagrams/café.svg", "viewsx/a.html", "a/views/b.png"]) assert.equal(isOrdinaryBlobKey(key), true, key);
 });

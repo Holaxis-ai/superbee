@@ -6,6 +6,8 @@ import { isAgentLabelVia, isWriteBinding, isWriteRequestId } from "./write-ident
 import { sha256HexOfBytes } from "./sha256.js";
 import { captureJournalValue, equalJournalValue, assertMetaExpectation, IntentStateConflict, JournalGuardConflict, JournalSnapshotConflict, type MetaExpectation, type MetaRecord } from "./journaled-backend.js";
 import type { OperationState } from "./uncertain-write.js";
+import { isReservedFile } from "./paths.js";
+import { PAGE_ENTRY_PREFIX, PAGE_REGISTRY_PREFIX, VIEW_ENTRY_PREFIX, VIEW_REGISTRY_PREFIX } from "./page.js";
 
 export { isWriteRequestId } from "./write-identity.js";
 
@@ -288,14 +290,31 @@ export function assertBlobGuardMatches(view: BlobJournalView, guard: BlobJournal
   assertBlobJournalGuard(guard, { key: guard.key, intents: [...view.blobIntentsFor(guard.key)], meta: guard.meta.map(row => ({ key: row.key, expected: view.meta(row.key) })) });
 }
 
+/** The top-level folders that hold Superbee's own records, never ordinary files: View and page entries and registries, conventions, recipes and references. */
+const NON_ORDINARY_ROOTS = Object.freeze([PAGE_ENTRY_PREFIX, PAGE_REGISTRY_PREFIX, VIEW_ENTRY_PREFIX, VIEW_REGISTRY_PREFIX, "conventions/", "recipes/", "references/"].map(prefix => prefix.slice(0, -1)));
+/**
+ * Whether `key` names an ordinary file a blob write may change: a safe blob key that is not a
+ * reserved file and does not sit under one of Superbee's own record folders (compared
+ * case-insensitively, under compatibility folding, as a case-insensitive file system would).
+ * The one key policy for every blob writer: the hosted client and the CLI's checkout sync.
+ */
+export function isOrdinaryBlobKey(key: unknown): key is string {
+  if (typeof key !== "string") return false;
+  try { assertBlobKey(key); } catch { return false; }
+  if (isReservedFile(key)) return false;
+  const root = key.split("/")[0]!.normalize("NFKD").toLowerCase().toUpperCase().toLowerCase();
+  return !NON_ORDINARY_ROOTS.includes(root);
+}
+
 /** Pre-admit checks a caller runs before durably admitting, against the bound the host advertised.
  * Failing any of these after a claim would strand an attempt that never left. */
 export type BlobAdmissionCheck =
   | { ok: true }
-  | { ok: false; code: "invalid_input"; reason: "unsafe_key" | "invalid_content_type" | "invalid_expected_content_type" | "bytes_with_delete" | "missing_bytes" | "too_large" | "invalid_bound"; message: string };
+  | { ok: false; code: "invalid_input"; reason: "unsafe_key" | "protected_key" | "invalid_content_type" | "invalid_expected_content_type" | "bytes_with_delete" | "missing_bytes" | "too_large" | "invalid_bound"; message: string };
 export function checkBlobAdmission(input: { operation: "create" | "replace" | "delete"; key: unknown; contentType?: unknown; expectedContentType?: unknown; byteLength?: number; maximumBytes?: number | null }): BlobAdmissionCheck {
   const refuse = (reason: Extract<BlobAdmissionCheck, { ok: false }>["reason"], message: string): BlobAdmissionCheck => ({ ok: false, code: "invalid_input", reason, message });
   if (!isSafeBlobKey(input.key)) return refuse("unsafe_key", "the blob key is not a safe ordinary-file key");
+  if (!isOrdinaryBlobKey(input.key)) return refuse("protected_key", "the blob key names a reserved file or a folder of Superbee's own records (views, pages, conventions, recipes, references), which blob writes never change");
   const deletion = input.operation === "delete";
   if (!deletion && !isBlobContentType(input.contentType)) return refuse("invalid_content_type", "the blob content type is not a valid MIME value");
   if (input.operation !== "create" && !isBlobContentType(input.expectedContentType)) return refuse("invalid_expected_content_type", "replace and delete pin the expected content type");

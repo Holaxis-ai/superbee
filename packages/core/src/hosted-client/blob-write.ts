@@ -47,7 +47,7 @@ import {
 } from "../hosted-transport/index.js";
 import { performHostedBlobDelivery, type HostedBlobDeliveryOutcome, type HostedBlobDeliveryResult } from "./blob-delivery.js";
 import { HostedBlobWritesNotServed, HostedRouteNotServed } from "./errors.js";
-import { dropWriteSide, writeSide, writeSignal, type HostedWriteContext, type WriteSide } from "./write.js";
+import { dropWriteSide, untilAborted, writeSide, writeSignal, type HostedWriteContext, type WriteSide } from "./write.js";
 
 // ── the owner ───────────────────────────────────────────────────────────────────────────────
 
@@ -413,6 +413,8 @@ async function drive(journal: BlobJournaledBackend, context: JournaledBlobContex
     if (answer.blobWrites !== "allowed") return { kind: "not-served" };
     const check = admissionCheck(decoded, preparedByteLength(decoded), answer);
     if (!check.ok) return { kind: "not-admitted", reason: "precondition", check };
+    // An abort before admission admits nothing; one after it is a claim rolled back, still held.
+    signal?.throwIfAborted();
     let admitted: BlobIntentRecord;
     try {
       admitted = await guarded(decoded.intent.key, { kind: "admit", prepared: copied.prepared }, (options, snapshot) =>
@@ -680,10 +682,10 @@ function resultOf(base: BlobResultBase, outcome: HostedBlobDeliveryOutcome): Hos
 }
 
 /** The bundle's write side, read only when the owner first needs it. */
-function lazySide(context: HostedBlobContext, workspace: string | null, bundleId: string) {
+function lazySide(context: HostedBlobContext, workspace: string | null, bundleId: string, signal: AbortSignal) {
   let side: WriteSide | undefined;
   return {
-    capabilities: async () => (await (side ??= writeSide(context, workspace, bundleId)).answer).capabilities,
+    capabilities: async () => (await untilAborted((side ??= writeSide(context, workspace, bundleId)).answer, signal)).capabilities,
     drop: () => {
       if (side) dropWriteSide(context, workspace, bundleId, side);
     },
@@ -750,6 +752,15 @@ async function submit(context: HostedBlobContext, bundleId: string, intent: Blob
   const requestId = options.requestId ?? mintRequestId();
   const base: BlobResultBase = { requestId, key: intent.key, operation: OPERATIONS[intent.operationId] };
   const route = `${context.prefix}/${ROUTES[intent.operationId]}`;
+  // The input alone (key policy, content types, the 16 MiB bound) is checked before any request.
+  const input = checkBlobAdmission({
+    operation: base.operation,
+    key: intent.key,
+    ...(intent.operationId === "blobs.delete.v1" ? {} : { contentType: intent.contentType }),
+    ...(intent.operationId === "blobs.create.v1" ? {} : { expectedContentType: intent.expectedContentType }),
+    ...(bytes === undefined ? {} : { byteLength: bytes.byteLength }),
+  });
+  if (!input.ok) return { ...base, status: "refused", code: "invalid_input", message: `${input.message}. Nothing was sent.` };
   const signal = writeSignal(context, options.signal);
   signal.throwIfAborted();
   return byRequest(context, requestId, () =>
@@ -774,7 +785,7 @@ async function submit(context: HostedBlobContext, bundleId: string, intent: Blob
       // Nothing has left yet: a failure to read the capabilities is the caller's typed error, and
       // the gate, the checks before admission and the adapter all use this one answer.
       const side = writeSide(context, context.workspace, bundleId);
-      const { capabilities } = await side.answer;
+      const { capabilities } = await untilAborted(side.answer, signal);
       const drop = { drop: () => dropWriteSide(context, context.workspace, bundleId, side) };
       if (capabilities.blobWrites !== "allowed") throw new HostedBlobWritesNotServed(route);
       const check = checkBlobAdmission({
@@ -786,6 +797,8 @@ async function submit(context: HostedBlobContext, bundleId: string, intent: Blob
         maximumBytes: capabilities.blobWriteBytes ?? null,
       });
       if (!check.ok) return { ...base, status: "refused", code: "invalid_input", message: `${check.message}. Nothing was sent.` };
+      // An abort before admission admits nothing: once admitted, a write is held until it settles.
+      signal.throwIfAborted();
       const prepared = prepareBlobIntent(
         { scope: { origin: context.origin, prefix: context.prefix, bundleId, workspaceSlug: context.workspace }, intent, identity: { requestId, binding: context.binding }, createdAt: new Date().toISOString() },
         bytes,
@@ -804,7 +817,7 @@ async function submit(context: HostedBlobContext, bundleId: string, intent: Blob
 async function settleKnown(context: HostedBlobContext, record: BlobIntentRecord, signal: AbortSignal, acceptDeletes: number | undefined, start: "settle" | "lookup"): Promise<HostedBlobLookupResult> {
   const { scope, intent } = decodePreparedBlobIntent(record.prepared);
   const base = baseOf(record);
-  const side = lazySide(context, scope.workspaceSlug, scope.bundleId);
+  const side = lazySide(context, scope.workspaceSlug, scope.bundleId, signal);
   const deletion = intent.operationId === "blobs.delete.v1";
   const drive = await driveJournaledBlob(context.blobJournal, ownerContext(context, scope.bundleId, scope.workspaceSlug, side.capabilities, signal), record.requestId, {
     start,
@@ -892,7 +905,7 @@ export function hostedForgetBlobWrite(context: HostedBlobContext, requestId: str
     async (record) => {
       const { scope, intent } = decodePreparedBlobIntent(record.prepared);
       const base = baseOf(record);
-      const side = lazySide(context, scope.workspaceSlug, scope.bundleId);
+      const side = lazySide(context, scope.workspaceSlug, scope.bundleId, signal);
       const forgot = await forgetJournaledBlob(context.blobJournal, ownerContext(context, scope.bundleId, scope.workspaceSlug, side.capabilities, signal), requestId);
       switch (forgot.kind) {
         case "forgotten":
