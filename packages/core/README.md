@@ -285,9 +285,14 @@ const source = memorySearchSource(documents, { key: headsDigest });
 const result = await searchDocuments(source, { query: "lock keeper", limit: 10 }, { scope: bundleId });
 ```
 
-`key` identifies the corpus; a cursor is refused for another key, scope, query, match or filters.
-A request outside the contract throws `SearchInputError` and a corpus over a bound throws
-`SearchLimitError`, both with fixed text.
+`key` identifies the corpus; a cursor is refused for another key, scope, query, match or filters
+(`type`, `tag`, `prefix`). A request outside the contract throws `SearchInputError`; a corpus over a
+bound, or a request whose terms hold more than `maxEvidenceInstances` capped instances (a
+`searchDocuments` option, at most `SEARCH_LIMITS.maxEvidenceInstances`), throws `SearchLimitError`.
+A document over 65,536 body terms is left out and counted: the result's `corpus` reports
+`documents`, `indexed`, `skipped` and `reindexPending`. `searchRowText` is what one document
+contributes to any index, and `textVersion()` names the algorithm, `SEARCH_TEXT_REVISION` and the
+runtime's normalizer fingerprint, so a stored index can tell when its rows need re-deriving.
 
 ## Hosted client
 

@@ -1,14 +1,18 @@
 // The ways a search refuses: a corpus over an index limit (or a host's configured bound), a request
-// outside the contract, and a cancellation. Messages are fixed text; none repeats the caller's input.
+// whose terms occur too often to rank, a request outside the contract, and a cancellation. Messages
+// are fixed text; none repeats the caller's input.
+import { SEARCH_GUIDANCE } from "./contract.js";
 
-/** The corpus exceeds an index limit or a host's configured bound. A kernel answers `result_too_large`. */
+/** The corpus exceeds an index limit or a host's configured bound, or the request's terms exceed
+ * `maxEvidenceInstances` (the message is then SEARCH_GUIDANCE.broad). A kernel answers
+ * `result_too_large`. */
 export class SearchLimitError extends Error {
   readonly limit: string;
   readonly max: number;
   readonly actual: number;
 
   constructor(limit: string, max: number, actual: number) {
-    super(`The search corpus exceeds its ${limit} limit.`);
+    super(limit === "maxEvidenceInstances" ? SEARCH_GUIDANCE.broad : `The search corpus exceeds its ${limit} limit.`);
     this.name = "SearchLimitError";
     this.limit = limit;
     this.max = max;

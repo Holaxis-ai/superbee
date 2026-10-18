@@ -300,6 +300,7 @@ const source = memorySearchSource([
 const answer = await searchDocuments(source, { query: "lock keeper", facets: ["type"] }, { scope: "packed" });
 if (answer.total !== 1 || answer.hits[0].id !== "notes/lock" || answer.hits[0].score !== 11120) throw new Error("search ranked differently");
 if (answer.facets.type[0].value !== "Note" || SEARCH_ALGORITHM !== "portal-webmcp-search/v1") throw new Error("search contract changed");
+if (JSON.stringify(answer.corpus) !== JSON.stringify({ documents: 2, indexed: 2, skipped: 0, reindexPending: 0 })) throw new Error("search corpus changed");
 try {
   await searchDocuments(source, { query: "lock", cursor: "forged" });
   throw new Error("a forged cursor was accepted");
@@ -500,7 +501,7 @@ import {
   type StorageBackend,
 } from "@superbee/core/storage";
 import { RemoteBackend, RemoteError } from "@superbee/core/remote";
-import { memorySearchSource, searchDocuments, SearchInputError, type SearchDocumentV1, type SearchResultV1, type SearchSource } from "@superbee/core/search";
+import { memorySearchSource, searchDocuments, searchRowText, SearchInputError, textVersion, type SearchDocumentV1, type SearchResultV1, type SearchRowTextV1, type SearchSource } from "@superbee/core/search";
 import { parseRecipeFiles, type RecipeFile, type LoadResult } from "@superbee/core/recipes";
 import { buildKindRegistry, validateAgainstKind } from "@superbee/core/kinds";
 import { installRecipe, installedRecipes, planRecipeEvolution, RecipeLifecycleError, type RecipeInstallState } from "@superbee/core/recipe-lifecycle";
@@ -550,9 +551,10 @@ export async function exerciseBundleHealth(): Promise<number> {
   return report.malformed.length + report.kindLint.length + (report.crossBundle?.unchecked ?? 0) + findings.documents.length;
 }
 declare const searchCorpus: readonly SearchDocumentV1[];
-export async function exerciseSearch(): Promise<SearchResultV1> {
+export async function exerciseSearch(): Promise<[SearchResultV1, SearchRowTextV1, string]> {
   const source: SearchSource = memorySearchSource(searchCorpus, { key: "worker", maxSourceBytes: 1_048_576 });
-  return searchDocuments(source, { query: "worker", match: "any", limit: 5 }, { scope: "worker" }, { signal: new AbortController().signal });
+  const result = await searchDocuments(source, { query: "worker", match: "any", limit: 5, prefix: "notes/" }, { scope: "worker" }, { signal: new AbortController().signal }, { maxEvidenceInstances: 10_000 });
+  return [result, searchRowText(searchCorpus[0]!), textVersion()];
 }
 export const searchRuntime = { searchDocuments, SearchInputError };
 `,

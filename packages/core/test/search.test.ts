@@ -1,13 +1,17 @@
 // @superbee/core/search: the engine's contract over the memory source (paging, cursors, the page budget,
-// facets, request bounds, refusals, corpus bounds and cancellation) and the SearchSource seam (the engine
-// reads only evidence, applies the filters itself and asks text only for the page it returns).
+// facets, the prefix filter, request bounds, refusals, corpus bounds, skipped documents, the evidence
+// volume bound and cancellation) and the SearchSource seam (the engine reads only evidence, applies the
+// filters and the volume bound itself and asks text only for the page it returns).
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  BODY_OCCURRENCE_CAP,
   memorySearchSource,
   searchDocuments,
+  searchRowText,
+  SEARCH_GUIDANCE,
   SearchAbortError,
   SearchInputError,
   SearchLimitError,
@@ -321,7 +325,7 @@ test("the memory source never re-reads a document after its build", async () => 
 function replay(inner: SearchSource, reshape: (batch: SearchEvidenceBatchV1) => SearchEvidenceBatchV1) {
   const asked: string[][] = [];
   const source: SearchSource = {
-    evidence: async (terms, filters, stop) => reshape(await inner.evidence(terms, filters, stop)),
+    evidence: async (terms, filters, bounds, stop) => reshape(await inner.evidence(terms, filters, bounds, stop)),
     text: async (hits) => {
       asked.push(hits.map((hit) => hit.id));
       return inner.text(hits);
@@ -352,11 +356,12 @@ test("the engine applies the exact filters itself and asks text only for the pag
   const memory = memorySearchSource(parity.documents, { key: "parity" });
   const unfiltered = replay(memory, (batch) => batch);
   // A source that ignores the filters cannot widen them.
-  unfiltered.source.evidence = async (terms, _filters, stop) => memory.evidence(terms, {}, stop);
+  unfiltered.source.evidence = async (terms, _filters, bounds, stop) => memory.evidence(terms, {}, bounds, stop);
   for (const request of [
     { query: "shared", type: "Note" },
     { query: "shared", tag: "blue" },
     { query: "alpha blue", type: "Note", tag: "blue" },
+    { query: "alpha", prefix: "notes/" },
   ]) {
     assert.equal(
       JSON.stringify(await searchDocuments(unfiltered.source, request)),
@@ -372,21 +377,159 @@ test("the engine applies the exact filters itself and asks text only for the pag
   assert.equal(paged.asked.length, 1, "no text read when nothing matched");
 });
 
+test("the engine caps body occurrences itself, so a source that reports them uncapped ranks the same", async () => {
+  const memory = memorySearchSource(parity.documents, { key: "parity" });
+  const { source: uncapped } = replay(memory, (batch) => ({
+    ...batch,
+    documents: batch.documents.map((evidence) => ({
+      ...evidence,
+      terms: new Map(
+        [...evidence.terms].map(([term, held]) => [
+          term,
+          { ...held, bodyOccurrences: held.bodyOccurrences === BODY_OCCURRENCE_CAP ? 30 : held.bodyOccurrences },
+        ]),
+      ),
+    })),
+  }));
+  const expected = await searchDocuments(memory, { query: "echo" });
+  assert.deepEqual(
+    expected.hits.map((hit) => [hit.id, hit.score]),
+    [
+      ["counts/many", 200],
+      ["counts/few", 30],
+    ],
+  );
+  assert.equal(JSON.stringify(await searchDocuments(uncapped, { query: "echo" })), JSON.stringify(expected));
+});
+
 test("a source must answer a corpus key; the engine refuses a malformed batch", async () => {
   const memory = memorySearchSource(parity.documents, { key: "parity" });
   for (const reshape of [
     (batch: SearchEvidenceBatchV1) => ({ ...batch, key: "" }),
     (batch: SearchEvidenceBatchV1) => ({ ...batch, documents: undefined as never }),
+    (batch: SearchEvidenceBatchV1) => ({ ...batch, volume: undefined as never }),
+    (batch: SearchEvidenceBatchV1) => ({ ...batch, volume: -1 }),
+    (batch: SearchEvidenceBatchV1) => ({ ...batch, size: { documents: 28 } as never }),
   ])
     await assert.rejects(searchDocuments(replay(memory, reshape).source, { query: "alpha" }), TypeError);
   await assert.rejects(searchDocuments({} as SearchSource, { query: "alpha" }), TypeError);
 });
 
-test("one document over the per-document term cap refuses the whole corpus", () => {
-  const long = doc("notes/long", {}, "w ".repeat(SEARCH_LIMITS.maxTermsPerDocument + 1));
-  assert.throws(() => memorySearchSource([...parity.documents, long], { key: "k" }), {
-    name: "SearchLimitError",
-    limit: "maxTermsPerDocument",
+test("one document over the per-document term cap is left out and counted; the rest still answers", async () => {
+  const long = doc("notes/long", { title: "Alpha long" }, "alpha ".repeat(SEARCH_LIMITS.maxTermsPerDocument + 1));
+  const atCap = doc("notes/at-cap", { title: "At cap" }, "alpha ".repeat(SEARCH_LIMITS.maxTermsPerDocument));
+  const plain = memorySearchSource(parity.documents, { key: "k" });
+  const source = memorySearchSource([...parity.documents, long, atCap], { key: "k" });
+  const answer = await searchDocuments(source, { query: "alpha", limit: 50 });
+  assert.deepEqual(answer.corpus, { documents: 30, indexed: 29, skipped: 1, reindexPending: 0 });
+  assert.ok(!answer.hits.some((hit) => hit.id === "notes/long"));
+  assert.ok(answer.hits.some((hit) => hit.id === "notes/at-cap"));
+  // Every recorded answer is unchanged by a skipped document beside it.
+  const narrow = memorySearchSource([...parity.documents, long], { key: "k" });
+  for (const { request } of parity.cases) {
+    const expected = await searchDocuments(plain, { ...request, limit: 50 });
+    const { corpus, ...rest } = await searchDocuments(narrow, { ...request, limit: 50 });
+    assert.deepEqual(corpus, { documents: 29, indexed: 28, skipped: 1, reindexPending: 0 });
+    const { corpus: _corpus, ...recorded } = expected;
+    assert.deepEqual(rest, recorded);
+  }
+  // The skipped document's bytes still count toward the corpus bounds.
+  assert.throws(() => memorySearchSource([long], { key: "k", maxSourceBytes: 100 }), { limit: "maxSourceBytes" });
+});
+
+test("prefix keeps documents whose id starts with it, binds the cursor, and is held to 512 bytes", async () => {
+  const source = memorySearchSource(parity.documents, { key: "parity" });
+  const all = await searchDocuments(source, { query: "alpha", match: "any", limit: 50 });
+  const notes = await searchDocuments(source, { query: "alpha", match: "any", limit: 50, prefix: "notes/" });
+  assert.deepEqual(
+    notes.hits.map((hit) => hit.id),
+    all.hits.map((hit) => hit.id).filter((id) => id.startsWith("notes/")),
+  );
+  assert.ok(notes.total > 0 && notes.total < all.total);
+  assert.equal((await searchDocuments(source, { query: "alpha", prefix: "nowhere/" })).total, 0);
+  // Prefix composes with the exact filters.
+  assert.deepEqual(
+    (await searchDocuments(source, { query: "alpha", type: "Note", prefix: "notes/a" })).hits.map((hit) => hit.id),
+    ["notes/alpha"],
+  );
+  const next = (await searchDocuments(source, { query: "alpha", match: "any", limit: 2, prefix: "notes/" })).nextCursor!;
+  assert.ok(next);
+  assert.equal((await searchDocuments(source, { query: "alpha", match: "any", prefix: "notes/", cursor: next })).hits.length > 0, true);
+  for (const request of [
+    { query: "alpha", match: "any" as const, cursor: next },
+    { query: "alpha", match: "any" as const, prefix: "notes/a", cursor: next },
+  ])
+    assert.equal((await refusal(searchDocuments(source, request))).reason, "cursor", JSON.stringify(request));
+  // A request without a prefix binds exactly as before the filter existed (the cursor the engine
+  // minted in agent-operations for this corpus key and request).
+  const plain = (await searchDocuments(source, { query: "alpha", match: "any", limit: 2 })).nextCursor!;
+  assert.equal(
+    plain,
+    "eyJiIjoiMWY4YzI1YTM5MzY0ODYzOWNiOGU1Yzg2ZTk4MTNhMDZhZDhmOTJkMDQxOTcyNGI3OTk4ZjcxNmUyNzJlODg0ZSIsInAiOjIsInYiOjF9",
+  );
+  for (const prefix of ["", "x".repeat(SEARCH_LIMITS.maxPrefixBytes + 1), 7])
+    assert.equal(
+      (await refusal(searchDocuments(source, { query: "alpha", prefix: prefix as string }))).reason,
+      "filter",
+      String(prefix).slice(0, 10),
+    );
+  await searchDocuments(source, { query: "alpha", prefix: "x".repeat(SEARCH_LIMITS.maxPrefixBytes) });
+  assert.deepEqual(validateSearchRequest({ query: "alpha", prefix: "notes/" }), { query: "alpha", prefix: "notes/" });
+});
+
+test("a request whose terms hold more instances than maxEvidenceInstances is refused before any walk", async () => {
+  const source = memorySearchSource(parity.documents, { key: "parity" });
+  // The volume is searchRowText's capped instances of the terms across every indexed document.
+  for (const terms of [["echo"], ["alpha", "beta"], ["the", "and", "of"], ["nowhere"]]) {
+    const expected = parity.documents.reduce(
+      (total, document) => total + terms.reduce((sum, term) => sum + (searchRowText(document).instances.get(term) ?? 0), 0),
+      0,
+    );
+    const batch = await source.evidence(terms, {}, { maxInstances: SEARCH_LIMITS.maxEvidenceInstances });
+    assert.equal(batch.volume, expected, terms.join(" "));
+    // Filters do not change the volume; the bound empties the walk.
+    assert.equal((await source.evidence(terms, { type: "Note" }, { maxInstances: 1 })).volume, expected);
+    if (expected > 0) assert.deepEqual((await source.evidence(terms, {}, { maxInstances: expected - 1 })).documents, []);
+  }
+  const echo = (await source.evidence(["echo"], {}, { maxInstances: 1_000 })).documents;
+  // 30 body occurrences capped at 20, and 3; the evidence carries the capped body count.
+  assert.equal((await source.evidence(["echo"], {}, { maxInstances: 1_000 })).volume, 20 + 3);
+  assert.deepEqual(
+    echo.map((evidence) => [evidence.id, evidence.terms.get("echo")!.bodyOccurrences]),
+    [
+      ["counts/many", 20],
+      ["counts/few", 3],
+    ],
+  );
+  await searchDocuments(source, { query: "echo" }, {}, undefined, { maxEvidenceInstances: 23 });
+  await assert.rejects(
+    searchDocuments(source, { query: "echo" }, {}, undefined, { maxEvidenceInstances: 22 }),
+    (error: unknown) => {
+      assert.ok(error instanceof SearchLimitError);
+      assert.deepEqual([error.limit, error.max, error.actual], ["maxEvidenceInstances", 22, 23]);
+      assert.equal(error.message, SEARCH_GUIDANCE.broad);
+      return true;
+    },
+  );
+  // A source that walks anyway is still held to the bound.
+  const { source: ignoring } = replay(source, (batch) => batch);
+  ignoring.evidence = async (terms, filters, _bounds, stop) =>
+    source.evidence(terms, filters, { maxInstances: SEARCH_LIMITS.maxEvidenceInstances }, stop);
+  await assert.rejects(searchDocuments(ignoring, { query: "echo" }, {}, undefined, { maxEvidenceInstances: 22 }), {
+    limit: "maxEvidenceInstances",
   });
-  memorySearchSource([doc("notes/at-cap", {}, "w ".repeat(SEARCH_LIMITS.maxTermsPerDocument))], { key: "k" });
+  // The default is the ceiling, and a host bound above it is the ceiling.
+  const asked: number[] = [];
+  const { source: recording } = replay(source, (batch) => batch);
+  const inner = recording.evidence;
+  recording.evidence = async (terms, filters, bounds, stop) => {
+    asked.push(bounds.maxInstances);
+    return inner(terms, filters, bounds, stop);
+  };
+  await searchDocuments(recording, { query: "echo" });
+  await searchDocuments(recording, { query: "echo" }, {}, undefined, { maxEvidenceInstances: 10 ** 9 });
+  await searchDocuments(recording, { query: "echo" }, {}, undefined, { maxEvidenceInstances: 1_000 });
+  assert.deepEqual(asked, [SEARCH_LIMITS.maxEvidenceInstances, SEARCH_LIMITS.maxEvidenceInstances, 1_000]);
+  for (const maxEvidenceInstances of [0, -1, 1.5])
+    await assert.rejects(searchDocuments(source, { query: "echo" }, {}, undefined, { maxEvidenceInstances }), TypeError);
 });

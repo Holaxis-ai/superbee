@@ -1,0 +1,666 @@
+{
+  "algorithm": "portal-webmcp-search/v1",
+  "revision": 1,
+  "rows": [
+    {
+      "document": {
+        "id": "notes/Lock-Keeper_2",
+        "version": "v:notes/Lock-Keeper_2",
+        "frontmatter": {
+          "title": "Lock Keeper's Log",
+          "type": "Field Note",
+          "tags": [
+            "canal",
+            "Canal",
+            "history",
+            7,
+            null,
+            "canal"
+          ],
+          "description": "Daily entries, 1890 to 1901."
+        },
+        "body": "The lock keeper opened the lock.\n\nLock, lock; LOCK!\n"
+      },
+      "rowText": {
+        "idTerms": "notes lock keeper 2",
+        "titleTerms": "lock keeper s log",
+        "typeTerms": "field note",
+        "tagTerms": "canal canal history canal",
+        "descriptionTerms": "daily entries 1890 to 1901",
+        "bodyTerms": "the lock keeper opened the lock lock lock lock",
+        "titlePhrase": "lock keeper s log",
+        "idPhrase": "notes lock keeper 2",
+        "instances": [
+          [
+            "notes",
+            1
+          ],
+          [
+            "lock",
+            7
+          ],
+          [
+            "keeper",
+            3
+          ],
+          [
+            "2",
+            1
+          ],
+          [
+            "s",
+            1
+          ],
+          [
+            "log",
+            1
+          ],
+          [
+            "field",
+            1
+          ],
+          [
+            "note",
+            1
+          ],
+          [
+            "canal",
+            3
+          ],
+          [
+            "history",
+            1
+          ],
+          [
+            "daily",
+            1
+          ],
+          [
+            "entries",
+            1
+          ],
+          [
+            "1890",
+            1
+          ],
+          [
+            "to",
+            1
+          ],
+          [
+            "1901",
+            1
+          ],
+          [
+            "the",
+            2
+          ],
+          [
+            "opened",
+            1
+          ]
+        ],
+        "bodyTermCount": 9
+      }
+    },
+    {
+      "document": {
+        "id": "unicode/compat",
+        "version": "v:unicode/compat",
+        "frontmatter": {
+          "title": "ﬁnal ﬂow"
+        },
+        "body": "ＡＢＣ ½ ℀ ㎃ ① Ⅸ ⁵ µ ㍿ ｶﾞ\n"
+      },
+      "rowText": {
+        "idTerms": "unicode compat",
+        "titleTerms": "final flow",
+        "typeTerms": "",
+        "tagTerms": "",
+        "descriptionTerms": "",
+        "bodyTerms": "abc 1 2 a c ma 1 ix 5 μ 株式会社 ガ",
+        "titlePhrase": "final flow",
+        "idPhrase": "unicode compat",
+        "instances": [
+          [
+            "unicode",
+            1
+          ],
+          [
+            "compat",
+            1
+          ],
+          [
+            "final",
+            1
+          ],
+          [
+            "flow",
+            1
+          ],
+          [
+            "abc",
+            1
+          ],
+          [
+            "1",
+            2
+          ],
+          [
+            "2",
+            1
+          ],
+          [
+            "a",
+            1
+          ],
+          [
+            "c",
+            1
+          ],
+          [
+            "ma",
+            1
+          ],
+          [
+            "ix",
+            1
+          ],
+          [
+            "5",
+            1
+          ],
+          [
+            "μ",
+            1
+          ],
+          [
+            "株式会社",
+            1
+          ],
+          [
+            "ガ",
+            1
+          ]
+        ],
+        "bodyTermCount": 12
+      }
+    },
+    {
+      "document": {
+        "id": "unicode/combining",
+        "version": "v:unicode/combining",
+        "frontmatter": {
+          "title": "Café"
+        },
+        "body": "café café Å Å Å ño 가 क़\n"
+      },
+      "rowText": {
+        "idTerms": "unicode combining",
+        "titleTerms": "café",
+        "typeTerms": "",
+        "tagTerms": "",
+        "descriptionTerms": "",
+        "bodyTerms": "café café å å å ño 가 क",
+        "titlePhrase": "café",
+        "idPhrase": "unicode combining",
+        "instances": [
+          [
+            "unicode",
+            1
+          ],
+          [
+            "combining",
+            1
+          ],
+          [
+            "café",
+            3
+          ],
+          [
+            "å",
+            3
+          ],
+          [
+            "ño",
+            1
+          ],
+          [
+            "가",
+            1
+          ],
+          [
+            "क",
+            1
+          ]
+        ],
+        "bodyTermCount": 8
+      }
+    },
+    {
+      "document": {
+        "id": "unicode/case",
+        "version": "v:unicode/case",
+        "frontmatter": {
+          "title": "ΟΔΟΣ",
+          "description": "Σίσυφος ǅ Ǆ ǆ"
+        },
+        "body": "İstanbul ISTANBUL ẞ ß Ꭰ ꭰ Ა ა Москва МОСКВА Երևան\n"
+      },
+      "rowText": {
+        "idTerms": "unicode case",
+        "titleTerms": "οδος",
+        "typeTerms": "",
+        "tagTerms": "",
+        "descriptionTerms": "σίσυφος dž dž dž",
+        "bodyTerms": "i stanbul istanbul ß ß ꭰ ꭰ ა ა москва москва երեւան",
+        "titlePhrase": "οδος",
+        "idPhrase": "unicode case",
+        "instances": [
+          [
+            "unicode",
+            1
+          ],
+          [
+            "case",
+            1
+          ],
+          [
+            "οδος",
+            1
+          ],
+          [
+            "σίσυφος",
+            1
+          ],
+          [
+            "dž",
+            3
+          ],
+          [
+            "i",
+            1
+          ],
+          [
+            "stanbul",
+            1
+          ],
+          [
+            "istanbul",
+            1
+          ],
+          [
+            "ß",
+            2
+          ],
+          [
+            "ꭰ",
+            2
+          ],
+          [
+            "ა",
+            2
+          ],
+          [
+            "москва",
+            2
+          ],
+          [
+            "երեւան",
+            1
+          ]
+        ],
+        "bodyTermCount": 12
+      }
+    },
+    {
+      "document": {
+        "id": "unicode/scripts",
+        "version": "v:unicode/scripts",
+        "frontmatter": {
+          "title": "中文検索",
+          "tags": [
+            "البحث",
+            "खोज"
+          ]
+        },
+        "body": "中文 検索 ค้นหา 검색 البحث खोज\n"
+      },
+      "rowText": {
+        "idTerms": "unicode scripts",
+        "titleTerms": "中文検索",
+        "typeTerms": "",
+        "tagTerms": "البحث ख ज",
+        "descriptionTerms": "",
+        "bodyTerms": "中文 検索 ค นหา 검색 البحث ख ज",
+        "titlePhrase": "中文検索",
+        "idPhrase": "unicode scripts",
+        "instances": [
+          [
+            "unicode",
+            1
+          ],
+          [
+            "scripts",
+            1
+          ],
+          [
+            "中文検索",
+            1
+          ],
+          [
+            "البحث",
+            2
+          ],
+          [
+            "ख",
+            2
+          ],
+          [
+            "ज",
+            2
+          ],
+          [
+            "中文",
+            1
+          ],
+          [
+            "検索",
+            1
+          ],
+          [
+            "ค",
+            1
+          ],
+          [
+            "นหา",
+            1
+          ],
+          [
+            "검색",
+            1
+          ]
+        ],
+        "bodyTermCount": 8
+      }
+    },
+    {
+      "document": {
+        "id": "notes/digits",
+        "version": "v:notes/digits",
+        "frontmatter": {
+          "type": "Note"
+        },
+        "body": "Route 66, v2.0, 3rd; ٣ ໓ ½\n"
+      },
+      "rowText": {
+        "idTerms": "notes digits",
+        "titleTerms": "",
+        "typeTerms": "note",
+        "tagTerms": "",
+        "descriptionTerms": "",
+        "bodyTerms": "route 66 v2 0 3rd ٣ ໓ 1 2",
+        "titlePhrase": "",
+        "idPhrase": "notes digits",
+        "instances": [
+          [
+            "notes",
+            1
+          ],
+          [
+            "digits",
+            1
+          ],
+          [
+            "note",
+            1
+          ],
+          [
+            "route",
+            1
+          ],
+          [
+            "66",
+            1
+          ],
+          [
+            "v2",
+            1
+          ],
+          [
+            "0",
+            1
+          ],
+          [
+            "3rd",
+            1
+          ],
+          [
+            "٣",
+            1
+          ],
+          [
+            "໓",
+            1
+          ],
+          [
+            "1",
+            1
+          ],
+          [
+            "2",
+            1
+          ]
+        ],
+        "bodyTermCount": 9
+      }
+    },
+    {
+      "document": {
+        "id": "notes/emoji",
+        "version": "v:notes/emoji",
+        "frontmatter": {
+          "title": "🐝 Bee"
+        },
+        "body": "🐝 ❤️ ★ ✓ bee\n"
+      },
+      "rowText": {
+        "idTerms": "notes emoji",
+        "titleTerms": "bee",
+        "typeTerms": "",
+        "tagTerms": "",
+        "descriptionTerms": "",
+        "bodyTerms": "bee",
+        "titlePhrase": "bee",
+        "idPhrase": "notes emoji",
+        "instances": [
+          [
+            "notes",
+            1
+          ],
+          [
+            "emoji",
+            1
+          ],
+          [
+            "bee",
+            2
+          ]
+        ],
+        "bodyTermCount": 1
+      }
+    },
+    {
+      "document": {
+        "id": "counts/capped",
+        "version": "v:counts/capped",
+        "frontmatter": {
+          "title": "Echo"
+        },
+        "body": "echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo delta delta delta \n"
+      },
+      "rowText": {
+        "idTerms": "counts capped",
+        "titleTerms": "echo",
+        "typeTerms": "",
+        "tagTerms": "",
+        "descriptionTerms": "",
+        "bodyTerms": "echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo echo delta delta delta",
+        "titlePhrase": "echo",
+        "idPhrase": "counts capped",
+        "instances": [
+          [
+            "counts",
+            1
+          ],
+          [
+            "capped",
+            1
+          ],
+          [
+            "echo",
+            21
+          ],
+          [
+            "delta",
+            3
+          ]
+        ],
+        "bodyTermCount": 33
+      }
+    },
+    {
+      "document": {
+        "id": "counts/interleaved",
+        "version": "v:counts/interleaved",
+        "frontmatter": {},
+        "body": "a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b "
+      },
+      "rowText": {
+        "idTerms": "counts interleaved",
+        "titleTerms": "",
+        "typeTerms": "",
+        "tagTerms": "",
+        "descriptionTerms": "",
+        "bodyTerms": "a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b a b",
+        "titlePhrase": "",
+        "idPhrase": "counts interleaved",
+        "instances": [
+          [
+            "counts",
+            1
+          ],
+          [
+            "interleaved",
+            1
+          ],
+          [
+            "a",
+            20
+          ],
+          [
+            "b",
+            20
+          ]
+        ],
+        "bodyTermCount": 50
+      }
+    },
+    {
+      "document": {
+        "id": "fields/odd",
+        "version": "v:fields/odd",
+        "frontmatter": {
+          "title": 42,
+          "type": [
+            "Note"
+          ],
+          "tags": "single",
+          "description": null
+        },
+        "body": "odd fields\n"
+      },
+      "rowText": {
+        "idTerms": "fields odd",
+        "titleTerms": "",
+        "typeTerms": "",
+        "tagTerms": "",
+        "descriptionTerms": "",
+        "bodyTerms": "odd fields",
+        "titlePhrase": "",
+        "idPhrase": "fields odd",
+        "instances": [
+          [
+            "fields",
+            2
+          ],
+          [
+            "odd",
+            2
+          ]
+        ],
+        "bodyTermCount": 2
+      }
+    },
+    {
+      "document": {
+        "id": "empty",
+        "version": "v:empty",
+        "frontmatter": {},
+        "body": ""
+      },
+      "rowText": {
+        "idTerms": "empty",
+        "titleTerms": "",
+        "typeTerms": "",
+        "tagTerms": "",
+        "descriptionTerms": "",
+        "bodyTerms": "",
+        "titlePhrase": "",
+        "idPhrase": "empty",
+        "instances": [
+          [
+            "empty",
+            1
+          ]
+        ],
+        "bodyTermCount": 0
+      }
+    },
+    {
+      "document": {
+        "id": "Alpha/Beta.Gamma",
+        "version": "v:Alpha/Beta.Gamma",
+        "frontmatter": {
+          "title": "alpha beta gamma"
+        },
+        "body": ""
+      },
+      "rowText": {
+        "idTerms": "alpha beta gamma",
+        "titleTerms": "alpha beta gamma",
+        "typeTerms": "",
+        "tagTerms": "",
+        "descriptionTerms": "",
+        "bodyTerms": "",
+        "titlePhrase": "alpha beta gamma",
+        "idPhrase": "alpha beta gamma",
+        "instances": [
+          [
+            "alpha",
+            2
+          ],
+          [
+            "beta",
+            2
+          ],
+          [
+            "gamma",
+            2
+          ]
+        ],
+        "bodyTermCount": 0
+      }
+    }
+  ]
+}

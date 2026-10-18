@@ -20,7 +20,7 @@ import {
   type SearchResultV1,
   type SearchStopV1,
 } from "./contract.js";
-import { SearchInputError, stopIfAsked } from "./errors.js";
+import { SearchInputError, SearchLimitError, stopIfAsked } from "./errors.js";
 import { base64UrlDecode, base64UrlEncode, canonicalJson } from "./identity.js";
 import { excerptOf, facetsOf, rankEvidence } from "./rank.js";
 import type { SearchSource, SearchTextV1 } from "./source.js";
@@ -35,23 +35,34 @@ export interface SearchOptionsV1 {
   /** The largest answer, as UTF-8 JSON: a page that would exceed it ends early, with `nextCursor` at
    * the cut, keeping at least one hit. Absent: every requested hit is returned. */
   readonly maxResultBytes?: number;
+  /** The most capped term instances a request's terms may hold across the corpus before the request
+   * is refused as too broad. Default and ceiling: SEARCH_LIMITS.maxEvidenceInstances. */
+  readonly maxEvidenceInstances?: number;
 }
 
 const CURSOR_VERSION = 1;
-const REQUEST_MEMBERS = new Set(["query", "match", "type", "tag", "limit", "cursor", "facets"]);
+const REQUEST_MEMBERS = new Set(["query", "match", "type", "tag", "prefix", "limit", "cursor", "facets"]);
 
-function optionalFilter(value: unknown): string | undefined {
+function optionalFilter(value: unknown, maxBytes: number = SEARCH_LIMITS.maxFilterBytes): string | undefined {
   if (value === undefined) return undefined;
-  if (typeof value !== "string" || value === "" || utf8ByteLength(value) > SEARCH_LIMITS.maxFilterBytes)
-    throw new SearchInputError("filter");
+  if (typeof value !== "string" || value === "" || utf8ByteLength(value) > maxBytes) throw new SearchInputError("filter");
   return value;
 }
+
+function evidenceInstanceBound(value: number | undefined): number {
+  if (value === undefined) return SEARCH_LIMITS.maxEvidenceInstances;
+  if (!Number.isSafeInteger(value) || value < 1) throw new TypeError("maxEvidenceInstances must be a positive integer");
+  return Math.min(value, SEARCH_LIMITS.maxEvidenceInstances);
+}
+
+const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 
 interface CheckedRequest {
   readonly query: NormalizedQueryV1;
   readonly requestedMatch: SearchMatchV1;
   readonly type: string | undefined;
   readonly tag: string | undefined;
+  readonly prefix: string | undefined;
   readonly filters: SearchFiltersV1;
   readonly limit: number;
   readonly wanted: ReadonlySet<SearchFacetV1>;
@@ -68,7 +79,12 @@ function checkRequest(request: SearchRequestV1): CheckedRequest {
   if (!(SEARCH_MATCHES as readonly unknown[]).includes(requestedMatch)) throw new SearchInputError("match");
   const type = optionalFilter(request.type);
   const tag = optionalFilter(request.tag);
-  const filters = { ...(type === undefined ? {} : { type }), ...(tag === undefined ? {} : { tag }) };
+  const prefix = optionalFilter(request.prefix, SEARCH_LIMITS.maxPrefixBytes);
+  const filters = {
+    ...(type === undefined ? {} : { type }),
+    ...(tag === undefined ? {} : { tag }),
+    ...(prefix === undefined ? {} : { prefix }),
+  };
   const limit = request.limit ?? SEARCH_LIMITS.defaultRows;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > SEARCH_LIMITS.maxRows) throw new SearchInputError("limit");
   const wanted = new Set<SearchFacetV1>();
@@ -81,7 +97,7 @@ function checkRequest(request: SearchRequestV1): CheckedRequest {
       wanted.add(facet);
     }
   }
-  return { query, requestedMatch, type, tag, filters, limit, wanted };
+  return { query, requestedMatch, type, tag, prefix, filters, limit, wanted };
 }
 
 function cursorText(cursor: unknown): string {
@@ -106,13 +122,18 @@ export function validateSearchRequest(input: unknown): SearchRequestV1 {
     ...(request.match === undefined ? {} : { match: request.match }),
     ...(request.type === undefined ? {} : { type: request.type }),
     ...(request.tag === undefined ? {} : { tag: request.tag }),
+    ...(request.prefix === undefined ? {} : { prefix: request.prefix }),
     ...(request.limit === undefined ? {} : { limit: request.limit }),
     ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
     ...(request.facets === undefined ? {} : { facets: [...request.facets] }),
   };
 }
 
-function bindingOf(corpusKey: string, scope: string | undefined, state: Record<string, string | null>): string {
+function bindingOf(
+  corpusKey: string,
+  scope: string | undefined,
+  state: Record<string, string | null | undefined>,
+): string {
   return sha256HexOfUtf8(
     canonicalJson({
       algorithm: SEARCH_ALGORITHM,
@@ -151,7 +172,8 @@ function decodeCursor(cursor: unknown, binding: string, total: number): number {
 /**
  * Runs one request over a source. Throws `SearchInputError` for a request outside the contract
  * (including a cursor minted for another corpus, scope, query, match or filters), `SearchLimitError`
- * as the source does, and stops as `stop` asks.
+ * when the request's terms exceed `maxEvidenceInstances` or as the source does, and stops as `stop`
+ * asks.
  */
 export async function searchDocuments(
   source: SearchSource,
@@ -162,12 +184,22 @@ export async function searchDocuments(
 ): Promise<SearchResultV1> {
   if (typeof source?.evidence !== "function" || typeof source.text !== "function")
     throw new TypeError("searchDocuments needs a SearchSource");
-  const { query, requestedMatch, type, tag, filters, limit, wanted } = checkRequest(request);
+  const { query, requestedMatch, type, tag, prefix, filters, limit, wanted } = checkRequest(request);
+  const maxInstances = evidenceInstanceBound(options.maxEvidenceInstances);
   stopIfAsked(stop);
-  const batch = await source.evidence(query.terms, filters, stop);
+  const batch = await source.evidence(query.terms, filters, { maxInstances }, stop);
   stopIfAsked(stop);
-  if (typeof batch?.key !== "string" || batch.key === "" || !Array.isArray(batch.documents))
+  const size = batch?.size;
+  if (
+    typeof batch?.key !== "string" ||
+    batch.key === "" ||
+    !Array.isArray(batch.documents) ||
+    !isCount(batch.volume) ||
+    ![size?.documents, size?.indexed, size?.skipped, size?.reindexPending].every(isCount)
+  )
     throw new TypeError("the search source answered a malformed evidence batch");
+  // The same bound on every source, whether or not the source stopped before its walk.
+  if (batch.volume > maxInstances) throw new SearchLimitError("maxEvidenceInstances", maxInstances, batch.volume);
 
   let effectiveMatch: SearchMatchModeV1 = requestedMatch === "any" ? "any" : "all";
   let effectiveQuery = query;
@@ -189,6 +221,8 @@ export async function searchDocuments(
     match: requestedMatch,
     type: type ?? null,
     tag: tag ?? null,
+    // Absent when unused, so a request without a prefix binds as it did before the filter existed.
+    prefix,
   });
   const start = request.cursor === undefined ? 0 : decodeCursor(request.cursor, binding, hits.length);
   const page = hits.slice(start, start + limit);
@@ -222,7 +256,12 @@ export async function searchDocuments(
     total: hits.length,
     ...(wanted.size === 0 ? {} : { facets: facetsOf(hits, wanted) }),
     ...(start + count < hits.length ? { nextCursor: encodeCursor(binding, start + count) } : {}),
-    corpus: { documents: batch.size.documents },
+    corpus: {
+      documents: size.documents,
+      indexed: size.indexed,
+      skipped: size.skipped,
+      reindexPending: size.reindexPending,
+    },
     ...(hits.length === 0
       ? {
           guidance:

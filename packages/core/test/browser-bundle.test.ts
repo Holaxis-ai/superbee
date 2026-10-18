@@ -506,8 +506,12 @@ test("core/search answers the parity golden in a sandbox with only TextEncoder a
     const answers = [];
     for (const { request } of parity.cases)
       answers.push(await api.searchDocuments(source, { ...request, limit: 50, facets: ["type", "tags"] }, { scope: "sandbox" }));
-    const paged = await api.searchDocuments(source, { query: "alpha", limit: 2 }, { scope: "sandbox" });
-    return JSON.stringify({ indexDigest: source.indexDigest, answers, paged });
+    const paged = await api.searchDocuments(source, { query: "alpha", limit: 2, prefix: "notes/" }, { scope: "sandbox" });
+    const rows = parity.documents.map((document) => {
+      const row = api.searchRowText(document);
+      return { ...row, instances: [...row.instances] };
+    });
+    return JSON.stringify({ indexDigest: source.indexDigest, answers, paged, rows, textVersion: api.textVersion() });
   }`;
   sandbox.fixture = fixture;
   const inSandbox = (await runInNewContext(`(${scenario})(SuperbeeSearch, fixture)`, sandbox)) as string;

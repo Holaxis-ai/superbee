@@ -10,6 +10,10 @@ export const SEARCH_OPERATION_ID = "documents.search.v1";
 /** The ranking algorithm, shared with portal-webmcp 0.3.1's `superbee_search_documents`. */
 export const SEARCH_ALGORITHM = "portal-webmcp-search/v1";
 
+/** Bumped whenever normalize, tokenize or searchRowText change what a document contributes to an
+ * index; the row-text golden (`test/fixtures/search-row-text-v<revision>.json`) pins it. */
+export const SEARCH_TEXT_REVISION = 1;
+
 /** Largest answer, as JSON. A page of long hits can exceed it before 50 hits: the page then ends
  * early with a cursor at the cut. */
 export const SEARCH_MAX_OUTPUT_BYTES = 64 * 1024;
@@ -25,6 +29,8 @@ export const SEARCH_LIMITS = Object.freeze({
   excerptBytes: 512,
   /** Largest exact `type` or `tag` filter, UTF-8 bytes (the kernel query's filter bound). */
   maxFilterBytes: 256,
+  /** Largest id `prefix` filter, UTF-8 bytes (a document id's bound). */
+  maxPrefixBytes: 512,
   /** Largest cursor, UTF-8 bytes. */
   maxCursorBytes: 2_048,
   /** Values per facet, most frequent first. */
@@ -32,8 +38,12 @@ export const SEARCH_LIMITS = Object.freeze({
   // Index limits, enforced while an in-memory index is built.
   maxIndexDocuments: 20_000,
   maxIndexSourceBytes: 67_108_864,
-  /** portal-webmcp's V1 value: a long document is indexed whole, never truncated. */
+  /** portal-webmcp's V1 value: a long document is indexed whole, never truncated; one over it is
+   * left out of the index and counted as skipped. */
   maxTermsPerDocument: 65_536,
+  /** The default and ceiling of `searchDocuments`' `maxEvidenceInstances`: the most capped term
+   * instances a request's terms may hold across a corpus before it is refused as too broad. */
+  maxEvidenceInstances: 400_000,
 } as const);
 
 /** Body occurrences of one distinct query term that can still add score. */
@@ -56,6 +66,8 @@ export type SearchMatchFieldV1 = (typeof SEARCH_MATCH_FIELDS)[number];
 export const SEARCH_GUIDANCE = Object.freeze({
   all: 'No document contains every query term. Retry with match "any", fewer terms, or different exact filters.',
   any: "No document contains any searchable query term. Try domain-specific keywords or remove exact type and tag filters.",
+  /** The refusal of a request whose terms occur too often to rank (`maxEvidenceInstances`). */
+  broad: "The query's terms occur too often in this corpus to rank. Retry with fewer or more specific terms.",
 });
 
 /** One document of a search corpus: a read model row, or a working copy's head and body. */
@@ -77,6 +89,8 @@ export interface SearchStopV1 {
 export interface SearchFiltersV1 {
   readonly type?: string;
   readonly tag?: string;
+  /** Leading characters of the document id. */
+  readonly prefix?: string;
 }
 
 export interface SearchRequestV1 {
@@ -88,6 +102,8 @@ export interface SearchRequestV1 {
   readonly type?: string;
   /** Exact declared tag. */
   readonly tag?: string;
+  /** Leading characters of the document id, at most 512 bytes. */
+  readonly prefix?: string;
   /** Hits per page, 1 to 50; default 10. */
   readonly limit?: number;
   /** A previous answer's `nextCursor`, for the same corpus, query, match and filters. */
@@ -128,7 +144,14 @@ export interface SearchResultV1 {
   readonly total: number;
   readonly facets?: { readonly type?: readonly SearchFacetValueV1[]; readonly tags?: readonly SearchFacetValueV1[] };
   readonly nextCursor?: string;
-  readonly corpus: { readonly documents: number };
+  /** What was searched: every document, those indexed (reindexPending included), those the index
+   * cannot hold, and indexed rows awaiting re-derivation. */
+  readonly corpus: {
+    readonly documents: number;
+    readonly indexed: number;
+    readonly skipped: number;
+    readonly reindexPending: number;
+  };
   /** Fixed advice when nothing matched. */
   readonly guidance?: string;
 }

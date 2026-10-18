@@ -94,6 +94,7 @@ export function rankEvidence(
     if (position % SIGNAL_INTERVAL === 0) stopIfAsked(stop);
     if (filters.type !== undefined && evidence.type !== filters.type) continue;
     if (filters.tag !== undefined && !evidence.tags.includes(filters.tag)) continue;
+    if (filters.prefix !== undefined && !evidence.id.startsWith(filters.prefix)) continue;
     const value = score(evidence, query, match);
     if (value === undefined) continue;
     hits.push(Object.freeze({ evidence, score: value.score, matchedTerms: value.matchedTerms }));

@@ -3,8 +3,9 @@
  *
  * The build is portal-webmcp 0.3.1's (`buildSearchIndex`): field term sets and a positional body
  * index holding every occurrence's original byte range, so the lazy `indexDigest` is Portal's
- * index identity byte for byte. A host builds one source per corpus key and keeps it; nothing here
- * re-reads a document after the build.
+ * index identity byte for byte. A document over SEARCH_LIMITS.maxTermsPerDocument body terms is
+ * left out and counted as skipped; the corpus bounds still refuse the whole corpus. A host builds
+ * one source per corpus key and keeps it; nothing here re-reads a document after the build.
  */
 import { sha256HexOfUtf8 } from "../sha256.js";
 import {
@@ -23,9 +24,15 @@ import {
 } from "./contract.js";
 import { SearchLimitError, stopIfAsked } from "./errors.js";
 import { canonicalJson, codeUnitCompare } from "./identity.js";
-import { documentSourceBytes } from "./row-text.js";
-import type { SearchEvidenceBatchV1, SearchEvidenceV1, SearchSource, SearchTextV1 } from "./source.js";
-import { phrase, scanBody, tokenize } from "./text.js";
+import { documentSourceBytes, fieldTokens } from "./row-text.js";
+import type {
+  SearchEvidenceBatchV1,
+  SearchEvidenceBoundsV1,
+  SearchEvidenceV1,
+  SearchSource,
+  SearchTextV1,
+} from "./source.js";
+import { scanBody } from "./text.js";
 
 interface BodyToken {
   /** Original UTF-8 byte offset of the run that produced this token. */
@@ -46,6 +53,9 @@ interface IndexedDocument {
   readonly tagTerms: ReadonlySet<string>;
   readonly descriptionTerms: ReadonlySet<string>;
   readonly bodyTerms: ReadonlyMap<string, readonly BodyToken[]>;
+  /** Occurrences of each term in every field but the body; with the capped body counts these are
+   * searchRowText's instances. */
+  readonly fieldInstances: ReadonlyMap<string, number>;
   readonly title: string | undefined;
   readonly exactType: string | undefined;
   readonly exactTags: readonly string[];
@@ -82,30 +92,29 @@ function bound(name: string, value: number | undefined, ceilingName: string, cei
   return value < ceiling ? { name, max: value } : { name: ceilingName, max: ceiling };
 }
 
-function indexBody(body: string, maxTermsPerDocument: number): Map<string, BodyToken[]> {
+/** Every body occurrence's byte range by term, or nothing when the body is over the term cap. */
+function indexBody(body: string, maxTermsPerDocument: number): Map<string, BodyToken[]> | undefined {
   const terms = new Map<string, BodyToken[]>();
-  let termCount = 0;
+  const state = { count: 0, over: false };
   scanBody(body, (term, start, end) => {
-    termCount += 1;
-    // Reject before retaining an over-budget occurrence.
-    if (termCount > maxTermsPerDocument) limitExceeded("maxTermsPerDocument", maxTermsPerDocument, termCount);
+    state.count += 1;
+    // Stop before retaining an over-budget occurrence.
+    if (state.count > maxTermsPerDocument) {
+      state.over = true;
+      return true;
+    }
     const existing = terms.get(term);
     if (existing) existing.push({ start, end });
     else terms.set(term, [{ start, end }]);
+    return false;
   });
-  return terms;
-}
-
-function termSet(values: readonly string[]): Set<string> {
-  const terms = new Set<string>();
-  for (const value of values) for (const term of tokenize(value)) terms.add(term);
-  return terms;
+  return state.over ? undefined : terms;
 }
 
 /**
- * Builds the in-memory source over a complete corpus. Index limits (SEARCH_LIMITS: documents,
- * source bytes, terms per document) and the host's bounds throw `SearchLimitError`; a stop throws
- * as its check does.
+ * Builds the in-memory source over a complete corpus. The corpus limits (SEARCH_LIMITS: documents,
+ * source bytes) and the host's bounds throw `SearchLimitError`; a document over the per-document
+ * term cap is skipped and counted; a stop throws as its check does.
  */
 export function memorySearchSource(
   documents: readonly SearchDocumentV1[],
@@ -127,35 +136,40 @@ export function memorySearchSource(
   let sourceBytes = 0;
   for (const [position, document] of documents.entries()) {
     if (position % SIGNAL_INTERVAL === 0) stopIfAsked(stop);
-    const title = documentTitle(document);
-    const type = documentType(document);
-    const description = documentDescription(document) ?? "";
-    const tags = documentTags(document);
     // Check the total source budget before allocating postings for this document.
     const documentBytes = documentSourceBytes(document);
     if (sourceBytes + documentBytes > maxSourceBytes.max) {
       limitExceeded(maxSourceBytes.name, maxSourceBytes.max, sourceBytes + documentBytes);
     }
+    sourceBytes += documentBytes;
     const body = document.body;
     const indexed = indexBody(body, SEARCH_LIMITS.maxTermsPerDocument);
-    sourceBytes += documentBytes;
+    if (indexed === undefined) continue;
     const bodyTerms = new Map<string, readonly BodyToken[]>();
     for (const [term, tokens] of indexed) bodyTerms.set(term, Object.freeze(tokens));
+    const title = documentTitle(document);
+    const type = documentType(document);
+    const tags = documentTags(document);
+    const fields = fieldTokens(document);
+    const fieldInstances = new Map<string, number>();
+    for (const tokens of [fields.id, fields.title, fields.type, fields.tag, fields.description])
+      for (const term of tokens) fieldInstances.set(term, (fieldInstances.get(term) ?? 0) + 1);
     rows.push({
       indexedId: document.id,
       indexedVersion: document.version,
-      idPhrase: phrase(document.id),
-      idSegments: new Set(tokenize(document.id)),
-      titlePhrase: phrase(title ?? ""),
-      titleTerms: termSet([title ?? ""]),
-      typeTerms: termSet(type === undefined ? [] : [type]),
-      tagTerms: termSet(tags),
-      descriptionTerms: termSet([description]),
+      idPhrase: fields.id.join(" "),
+      idSegments: new Set(fields.id),
+      titlePhrase: fields.title.join(" "),
+      titleTerms: new Set(fields.title),
+      typeTerms: new Set(fields.type),
+      tagTerms: new Set(fields.tag),
+      descriptionTerms: new Set(fields.description),
       bodyTerms,
+      fieldInstances,
       title,
       exactType: type,
       exactTags: Object.freeze([...tags]),
-      description,
+      description: documentDescription(document) ?? "",
       body,
     });
   }
@@ -163,6 +177,12 @@ export function memorySearchSource(
   const byId = new Map<string, IndexedDocument>();
   for (const row of rows) if (!byId.has(row.indexedId)) byId.set(row.indexedId, row);
   let digest: `sha256:${string}` | undefined;
+  const size = Object.freeze({
+    documents: documents.length,
+    indexed: rows.length,
+    skipped: documents.length - rows.length,
+    reindexPending: 0,
+  });
 
   return Object.freeze({
     key,
@@ -174,18 +194,27 @@ export function memorySearchSource(
     async evidence(
       terms: readonly string[],
       filters: SearchFiltersV1,
+      bounds: SearchEvidenceBoundsV1,
       evidenceStop?: SearchStopV1,
     ): Promise<SearchEvidenceBatchV1> {
       stopIfAsked(evidenceStop);
+      let volume = 0;
+      for (const [position, row] of rows.entries()) {
+        if (position % SIGNAL_INTERVAL === 0) stopIfAsked(evidenceStop);
+        for (const term of terms) volume += instancesOf(row, term);
+      }
       const held: SearchEvidenceV1[] = [];
+      // Over the bound nothing is walked, as a native index refuses before it reads a posting.
+      if (volume > bounds.maxInstances) return { key, size, volume, documents: held };
       for (const [position, row] of rows.entries()) {
         if (position % SIGNAL_INTERVAL === 0) stopIfAsked(evidenceStop);
         if (filters.type !== undefined && row.exactType !== filters.type) continue;
         if (filters.tag !== undefined && !row.exactTags.includes(filters.tag)) continue;
+        if (filters.prefix !== undefined && !row.indexedId.startsWith(filters.prefix)) continue;
         const evidence = evidenceOf(row, terms);
         if (evidence !== undefined) held.push(evidence);
       }
-      return { key, size: { documents: rows.length }, documents: held };
+      return { key, size, volume, documents: held };
     },
     async text(hits: readonly { readonly id: string; readonly version: string }[]) {
       const texts = new Map<string, SearchTextV1>();
@@ -197,6 +226,11 @@ export function memorySearchSource(
       return texts;
     },
   });
+}
+
+/** The term's capped instances in the row: searchRowText's `instances` for the same document. */
+function instancesOf(row: IndexedDocument, term: string): number {
+  return (row.fieldInstances.get(term) ?? 0) + Math.min(row.bodyTerms.get(term)?.length ?? 0, BODY_OCCURRENCE_CAP);
 }
 
 function fieldsForTerm(row: IndexedDocument, term: string): SearchMatchFieldV1[] {

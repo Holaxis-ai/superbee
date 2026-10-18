@@ -15,6 +15,7 @@ export {
   SEARCH_MATCH_FIELDS,
   SEARCH_MAX_OUTPUT_BYTES,
   SEARCH_OPERATION_ID,
+  SEARCH_TEXT_REVISION,
   type SearchDocumentV1,
   type SearchFacetV1,
   type SearchFacetValueV1,
@@ -37,10 +38,17 @@ export {
   type NormalizedQueryV1,
   type RelaxedQueryV1,
 } from "./text.js";
-export { documentSourceBytes } from "./row-text.js";
+export {
+  documentSourceBytes,
+  normalizerFingerprint,
+  searchRowText,
+  textVersion,
+  type SearchRowTextV1,
+} from "./row-text.js";
 export type {
   SearchCorpusSizeV1,
   SearchEvidenceBatchV1,
+  SearchEvidenceBoundsV1,
   SearchEvidenceV1,
   SearchSource,
   SearchTextV1,
