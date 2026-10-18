@@ -1,5 +1,8 @@
 /**
- * Experimental (`0.2.0-pre`): the API and the on-disk format may change before a stable release.
+ * The API is experimental (`0.2.0-pre`) and may change before a stable release. The on-disk
+ * format is a supported compatibility promise, because the hosted client's durable journal
+ * (`openHostedClientJournal`) keeps app state in it: a format bump ships a reader for the older
+ * layout, or a migration.
  *
  * A Node {@link JournaledBackend}: the private store behind a CLI working copy, proven by the
  * same contract kit as the IndexedDB adapter. It is an append-only, checksummed transaction log
@@ -1403,6 +1406,36 @@ export class FileJournaledBackend implements JournaledBackend, BlobJournaledBack
     await this.#mutate((state) => {
       assertMetaWrite(key, options, state.meta.has(key) ? { present: true, value: state.meta.get(key) } : { present: false }, [...state.intents.values()]);
       return { changes: [{ family: "meta", key, present: true, value: captured }], result: undefined };
+    });
+  }
+
+  /**
+   * Every meta row whose key starts with `prefix` (all rows when it is empty), in code-unit key
+   * order, read in one synchronous pass over the last committed transaction. Values are copies.
+   */
+  async listMeta<T = unknown>(prefix = ""): Promise<{ key: string; value: T }[]> {
+    if (typeof prefix !== "string") throw new TypeError("a meta prefix is a string");
+    this.#assertOpen();
+    const meta = this.#state.meta;
+    const keys = [...meta.keys()].filter((key) => key.startsWith(prefix)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    return keys.map((key) => ({ key, value: structuredClone(meta.get(key)) as T }));
+  }
+
+  /**
+   * Remove one meta row, compare-and-swap: `expected` is the row's presence and value as the
+   * caller last read it, compared in the same transaction as the removal. A mismatch is
+   * `JournalGuardConflict` and writes nothing. It resolves true when it removed the row and false
+   * when the row was absent as expected, which writes nothing either.
+   */
+  async removeMeta(key: string, options: { expected: MetaWriteOptions["expected"] }): Promise<boolean> {
+    if (typeof key !== "string") throw new TypeError("a meta key is a string");
+    if (!options || typeof options !== "object" || options.expected === undefined) throw new JournalGuardConflict(key);
+    const { expected } = captureMetaWrite({ expected: options.expected });
+    return this.#mutate((state) => {
+      const actual = state.meta.has(key) ? { present: true as const, value: state.meta.get(key) } : { present: false as const };
+      assertMetaWrite(key, { expected }, actual, []);
+      if (!actual.present) return { changes: [], result: false };
+      return { changes: [{ family: "meta", key, present: false }], result: true };
     });
   }
 }

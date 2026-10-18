@@ -1,6 +1,7 @@
 /**
  * `@superbee/core/hosted-client/node`: the hosted client's Node-only half, a supported public API
- * under core's normal versioning. It downloads a hosted bundle's portable export
+ * under core's normal versioning. It holds the durable intent store (`openHostedClientJournal`,
+ * in `journal.ts`), and it downloads a hosted bundle's portable export
  * (`<prefix>/export`) and verifies it with `@superbee/core/portable-export`, whose digests and
  * file placement need Node, so it is kept off the browser-safe `@superbee/core/hosted-client`.
  *
@@ -20,6 +21,19 @@ import type { HostedClient } from "./client.js";
 import { HostedRouteNotServed } from "./errors.js";
 
 export { ExportArchiveError, MAX_EXPORT_BYTES, type VerifiedExport } from "../portable-export.js";
+export {
+  HOSTED_CLIENT_JOURNAL_COMPACT_FLOOR_BYTES,
+  HOSTED_CLIENT_JOURNAL_SCHEMA_VERSION,
+  HostedClientJournalError,
+  isHostedClientJournalError,
+  openHostedClientJournal,
+  type HostedClientJournal,
+  type HostedClientJournalOptions,
+  type HostedClientJournalProblem,
+} from "./journal.js";
+// The journal's other typed failures, re-exported (same identities) so a caller can tell them apart.
+export { FileJournalCorruptError, FileJournalFormatError, FileJournalUnavailableError } from "../file-journaled-backend.js";
+export { FilesystemMutationLockError } from "../filesystem-lock.js";
 
 /**
  * The host's export window: an export (or one page of a paged one) is answered within 60 s. A
