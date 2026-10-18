@@ -1092,8 +1092,14 @@ test("abort: a hung capabilities read ends at the caller's abort and releases th
     },
     capabilitiesTtlMs: 0,
   });
-  for (const write of [() => client.writeBlob(BUNDLE, { key: "a.svg", bytes: text("1"), contentType: SVG, expectAbsent: true }, { signal: AbortSignal.timeout(20) }), () => client.deleteBlob(BUNDLE, { key: "a.svg", expected: { version: FIXTURE_VERSION, contentType: SVG } }, { signal: AbortSignal.timeout(20) })]) {
-    await assert.rejects(write(), (error: unknown) => (error as Error).name === "TimeoutError");
+  // AbortSignal.timeout's timer is unref'd; on Node 22 a test awaiting only it ends early, so hold the loop.
+  const hold = setInterval(() => {}, 1_000);
+  try {
+    for (const write of [() => client.writeBlob(BUNDLE, { key: "a.svg", bytes: text("1"), contentType: SVG, expectAbsent: true }, { signal: AbortSignal.timeout(20) }), () => client.deleteBlob(BUNDLE, { key: "a.svg", expected: { version: FIXTURE_VERSION, contentType: SVG } }, { signal: AbortSignal.timeout(20) })]) {
+      await assert.rejects(write(), (error: unknown) => (error as Error).name === "TimeoutError");
+    }
+  } finally {
+    clearInterval(hold);
   }
   // The same identity and key are free again: a call that does not hang goes through.
   hang = false;
