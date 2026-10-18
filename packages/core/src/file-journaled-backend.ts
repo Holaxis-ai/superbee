@@ -46,11 +46,13 @@ import { assertBlobKey } from "./blob-contract.js";
 import {
   BLOB_JOURNAL_BOUNDS,
   captureBlobAdmission,
+  captureBlobForget,
   captureBlobIntentRecord,
   captureBlobMetaWrite,
   captureBlobRetirement,
   captureBlobUpdate,
   decideBlobAdmission,
+  decideBlobForget,
   decideBlobMetaWrite,
   decideBlobRetirement,
   decideBlobUpdate,
@@ -1392,6 +1394,11 @@ export class FileJournaledBackend implements JournaledBackend, BlobJournaledBack
   async retireBlobIntents(key: string, requestIds: readonly string[], options: BlobJournalMutationOptions): Promise<void> {
     const captured = captureBlobRetirement(key, requestIds, options);
     await this.#mutate(state => this.#blobDecision(decideBlobRetirement(this.#blobView(state), captured)));
+  }
+
+  async forgetBlobIntent(requestId: string, options: BlobJournalMutationOptions): Promise<void> {
+    const captured = captureBlobForget(requestId, options);
+    await this.#mutate(state => this.#blobDecision(decideBlobForget(this.#blobView(state), captured)));
   }
 
   async readMeta<T = unknown>(key: string): Promise<T | undefined> {

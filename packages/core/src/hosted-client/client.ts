@@ -45,13 +45,35 @@ import {
   hostedWrite,
   type HostedCapabilitiesCache,
   type HostedIntentStore,
-  type HostedWriteContext,
   type HostedWriteInput,
   type HostedWriteIntent,
   type HostedWriteLookupResult,
   type HostedWriteOptions,
   type HostedWriteResult,
 } from "./write.js";
+import { createMemoryBlobJournal, type BlobJournaledBackend } from "../blob-journal.js";
+import type { BlobHead } from "../blob-contract.js";
+import type { HostedBlobHeads, HostedBlobRead } from "../hosted-transport/index.js";
+import {
+  hostedBlobHead,
+  hostedBlobHeads,
+  hostedDeleteBlob,
+  hostedForgetBlobWrite,
+  hostedHeldBlobWrites,
+  hostedLookupBlobWrite,
+  hostedReadBlob,
+  hostedSettleBlobWrite,
+  hostedWriteBlob,
+  type BlobPin,
+  type HostedBlobContext,
+  type HostedBlobDeleteInput,
+  type HostedBlobForgetResult,
+  type HostedBlobHeldWrite,
+  type HostedBlobLookupResult,
+  type HostedBlobWriteInput,
+  type HostedBlobWriteOptions,
+  type HostedBlobWriteResult,
+} from "./blob-write.js";
 
 const IDENTITY_BYTES = 64 * 1024;
 const BUNDLES_BYTES = 256 * 1024;
@@ -102,6 +124,12 @@ export interface HostedClientOptions {
    * in-memory store ({@link createMemoryIntentStore}) owned by this client.
    */
   readonly intentStore?: HostedIntentStore;
+  /**
+   * Where `writeBlob` and `deleteBlob` journal each blob write until it settles. Default: an
+   * in-memory journal (`createMemoryBlobJournal`) owned by this client. In Node,
+   * `openHostedClientJournal(...).blobs` keeps them across restarts.
+   */
+  readonly blobJournal?: BlobJournaledBackend;
   /** How a write recovers an unclear answer: the wait between its outcome lookups (default 250 ms). */
   readonly writeRecovery?: { readonly lookupDelayMs?: number };
   /**
@@ -207,6 +235,35 @@ export interface HostedClient {
   settleWrite(requestId: string, options?: { signal?: AbortSignal }): Promise<HostedWriteLookupResult>;
   /** Every write the intent store holds (unsettled, or never sent); needs a store with `list`. */
   heldWrites(): Promise<HostedWriteIntent[]>;
+  /**
+   * Write one ordinary file (a blob): a create when `expectAbsent` is true, else a replace at
+   * exactly `expected` (version and content type). It is journaled, durably claimed and sent once
+   * under one request identity; an unclear answer is looked up, never resent. Throws
+   * `HostedBlobWritesNotServed` before journaling when the host serves the bundle no blob writes.
+   */
+  writeBlob(bundleId: string, input: HostedBlobWriteInput, options?: HostedBlobWriteOptions): Promise<HostedBlobWriteResult>;
+  /** Delete one blob at exactly `expected`. A mass delete the host holds answers `held`. */
+  deleteBlob(bundleId: string, input: HostedBlobDeleteInput, options?: HostedBlobWriteOptions): Promise<HostedBlobWriteResult>;
+  /** One outcome lookup of a held blob write; it never sends the write. */
+  lookupBlobWrite(requestId: string, options?: { signal?: AbortSignal }): Promise<HostedBlobLookupResult>;
+  /**
+   * Settle a held blob write: submit it when every attempt is proven not applied (a held delete
+   * needs `acceptDeletes` of at least its count), otherwise look it up; absence stays `unknown`.
+   */
+  settleBlobWrite(requestId: string, options?: { signal?: AbortSignal; acceptDeletes?: number }): Promise<HostedBlobLookupResult>;
+  /**
+   * Drop an `unknown` blob write once one fresh lookup answers `absent`. The earlier delivery may
+   * still commit; the host's compare-and-swap prevents a lost update.
+   */
+  forgetBlobWrite(requestId: string, options?: { signal?: AbortSignal }): Promise<HostedBlobForgetResult>;
+  /** Every blob write the journal holds unsettled. */
+  heldBlobWrites(): Promise<HostedBlobHeldWrite[]>;
+  /** The bundle's whole blob listing (`blob-heads`), verified against its digest. */
+  blobHeads(bundleId: string, options?: { signal?: AbortSignal }): Promise<HostedBlobHeads>;
+  /** One key's head from the listing, or null when absent. The listing is the only head lookup. */
+  blobHead(bundleId: string, key: string, options?: { signal?: AbortSignal }): Promise<BlobHead | null>;
+  /** The bytes at exactly `pin` (required), verified; null when the key is no longer at that pin. */
+  readBlob(bundleId: string, key: string, options: { pin: BlobPin; signal?: AbortSignal }): Promise<HostedBlobRead | null>;
 }
 
 /**
@@ -305,6 +362,8 @@ export function createHostedClient(options: HostedClientOptions): HostedClient {
     store: options.intentStore ?? createMemoryIntentStore(),
     inFlight: new Map<string, Promise<unknown>>(),
     capabilities: createCapabilitiesCache(options.capabilitiesTtlMs, options.now),
+    blobJournal: options.blobJournal ?? createMemoryBlobJournal(),
+    blobLocks: new Map<string, Promise<unknown>>(),
   };
   return clientIn(options, options.signal ?? new AbortController().signal, undefined, writes);
 }
@@ -315,6 +374,8 @@ interface ClientWrites {
   readonly store: HostedIntentStore;
   readonly inFlight: Map<string, Promise<unknown>>;
   readonly capabilities: HostedCapabilitiesCache;
+  readonly blobJournal: BlobJournaledBackend;
+  readonly blobLocks: Map<string, Promise<unknown>>;
 }
 
 /** The client, naming its bundles in the workspace with `slug` when there is one. */
@@ -328,7 +389,7 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
     ...(options.deadlineMs ? { deadlineMs: options.deadlineMs } : {}),
   });
   const carrier = slug === undefined ? fetchCarrier : qualifyingCarrier(fetchCarrier, prefix, slug);
-  const writeContext: HostedWriteContext = {
+  const writeContext: HostedBlobContext = {
     ...writes,
     prefix,
     workspace: slug ?? null,
@@ -337,6 +398,7 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
     readRoutes: syncReadRoutes(prefix),
     // A recorded write is looked up in the workspace it was sent in, whichever client asks.
     carrierFor: (workspace) => (workspace === null ? fetchCarrier : qualifyingCarrier(fetchCarrier, prefix, workspace)),
+    origin: new URL(target.origin).origin,
   };
 
   /** An unscoped read: the body on a `200`, otherwise the host's refusal as a `RemoteError`. */
@@ -430,6 +492,15 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
     lookupWrite: (requestId, lookupOptions) => hostedLookupWrite(writeContext, requestId, lookupOptions),
     settleWrite: (requestId, settleOptions) => hostedSettleWrite(writeContext, requestId, settleOptions),
     heldWrites: () => hostedHeldWrites(writeContext),
+    writeBlob: (bundleId, input, blobOptions) => hostedWriteBlob(writeContext, bundleId, input, blobOptions),
+    deleteBlob: (bundleId, input, blobOptions) => hostedDeleteBlob(writeContext, bundleId, input, blobOptions),
+    lookupBlobWrite: (requestId, lookupOptions) => hostedLookupBlobWrite(writeContext, requestId, lookupOptions),
+    settleBlobWrite: (requestId, settleOptions) => hostedSettleBlobWrite(writeContext, requestId, settleOptions),
+    forgetBlobWrite: (requestId, forgetOptions) => hostedForgetBlobWrite(writeContext, requestId, forgetOptions),
+    heldBlobWrites: () => hostedHeldBlobWrites(writeContext),
+    blobHeads: (bundleId, readOptions) => hostedBlobHeads(writeContext, bundleId, readOptions),
+    blobHead: (bundleId, key, readOptions) => hostedBlobHead(writeContext, bundleId, key, readOptions),
+    readBlob: (bundleId, key, readOptions) => hostedReadBlob(writeContext, bundleId, key, readOptions),
     async history(bundleId, request) {
       const route = `${prefix}/history`;
       const answer = await send(route, historyInput(bundleId, request), HOSTED_READ_BOUNDS.historyBytes);

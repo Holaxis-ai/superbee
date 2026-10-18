@@ -22,3 +22,17 @@ export class HostedRouteNotServed extends RemoteError {
 export function isRouteNotServed(error: unknown): error is HostedRouteNotServed {
   return error instanceof HostedRouteNotServed;
 }
+
+/**
+ * The host serves this bundle no blob writes (`blobWrites` is not `allowed` in its capabilities,
+ * as an older host's answer decodes). A {@link HostedRouteNotServed}, so `isRouteNotServed` is
+ * true; thrown before anything is journaled or sent. Unlike `write()`, whose bundle without
+ * writes is the result `refused: read_only`, a blob write throws: the blob routes are a newer
+ * capability a caller is expected to probe for, as it probes for any route a host may lack.
+ */
+export class HostedBlobWritesNotServed extends HostedRouteNotServed {
+  constructor(route: string) {
+    super(route);
+    this.name = "HostedBlobWritesNotServed";
+  }
+}

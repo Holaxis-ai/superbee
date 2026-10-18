@@ -279,6 +279,26 @@ const ROWS: Row[] = [
       await step(j.retireBlobIntents(K, [rid(14)], { guard: await guard(j, K, ["map"]), removeMeta: ["map"] }));
     },
   },
+  {
+    name: "forget removes only a receipt-less unknown record under a current guard, and frees its (bundle, key)",
+    expect: ["ok", "IntentStateConflict", "ok", "IntentStateConflict", "ok", "ok", "JournalGuardConflict", "ok", "ok", "IntentStateConflict"],
+    async run(j, step, reopen) {
+      const forget = async (n: number, key: string, stale?: Awaited<ReturnType<typeof guard>>) => j.forgetBlobIntent!(rid(n), { guard: stale ?? (await guard(j, key)) });
+      await step(admit(j, input(60, "create", K)));
+      await step(forget(60, K));
+      await step(claim(j, 60, K));
+      await step(forget(60, K));
+      await step(update(j, 60, K, "in_flight", { state: "unknown" }));
+      const stale = await guard(j, K);
+      await step(admit(j, input(61, "create", K, "notes.b")));
+      // The key's guard moved (another bundle's admission): a stale guard refuses, a current one forgets.
+      await step(forget(60, K, stale));
+      await step(forget(60, K));
+      j = await reopen();
+      await step(admit(j, input(62, "create", K)));
+      await step(forget(62, K));
+    },
+  },
 ];
 
 for (const row of ROWS) {
@@ -386,7 +406,7 @@ test("BlobAdmissionConflict is a JournalGuardConflict, so existing guard-conflic
 
 test("one owner: file-journaled-backend.ts calls the pure blob transition functions and keeps no copy of their conditionals", async () => {
   const source = await fs.readFile(path.join(here, "..", "src", "file-journaled-backend.ts"), "utf8");
-  for (const call of ["captureBlobAdmission(", "decideBlobAdmission(", "captureBlobUpdate(", "decideBlobUpdate(", "captureBlobRetirement(", "decideBlobRetirement(", "captureBlobMetaWrite(", "decideBlobMetaWrite(", "readBlobJournal("]) assert.ok(source.includes(call), `calls ${call}`);
+  for (const call of ["captureBlobForget(", "decideBlobForget(", "captureBlobAdmission(", "decideBlobAdmission(", "captureBlobUpdate(", "decideBlobUpdate(", "captureBlobRetirement(", "decideBlobRetirement(", "captureBlobMetaWrite(", "decideBlobMetaWrite(", "readBlobJournal("]) assert.ok(source.includes(call), `calls ${call}`);
   for (const copy of [/attempts \+ 1/, /beforePrefix|afterPrefix|sameHold/, /"in_flight"/, /\["pending", "unknown"\]/, /\["in_flight", "unknown"\]/, /patch\.(?:state|attempts|deletionHold|notDispatched)/, /current\.(?:attempts|receipt|notAppliedThrough|deletionHold)/, /\.receipt \|\|/, /assertBlobJournalGuard/, /#blobGuard/, /"state", "attempts", "receipt"/]) {
     assert.doesNotMatch(source, copy, `file-journaled-backend.ts must not restate ${copy}`);
   }

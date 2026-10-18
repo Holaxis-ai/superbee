@@ -37,8 +37,9 @@ export function captureBlobDeletionHold(value: BlobDeletionHold): BlobDeletionHo
 /**
  * Why a claimed attempt is proven never to have left the process. Only for this invocation's own
  * claim, made through the same open journal, and only for a failure before the carrier is invoked
- * (credentials, an already-aborted signal, a malformed identity, a local precondition). Any carrier
- * or transport failure, and any claim found at open, may have been sent: that is `unknown`.
+ * (credentials, an already-aborted signal, a malformed identity, a local precondition) or the
+ * carrier's own `denied`, which by its contract means nothing left. Any other carrier or transport
+ * failure, and any claim found at open, may have been sent: that is `unknown`.
  */
 export const BLOB_NOT_DISPATCHED_CODES = Object.freeze(["credentials_unavailable", "credentials_denied", "aborted", "invalid_identity", "precondition_failed"] as const);
 export type BlobNotDispatchedCode = (typeof BLOB_NOT_DISPATCHED_CODES)[number];
@@ -88,6 +89,13 @@ export interface BlobJournaledBackend {
   readBlobIntent(requestId: string): Promise<BlobIntentRecord | undefined>;
   updateBlobIntent(requestId: string, expectedState: OperationState, patch: BlobIntentPatch, options: BlobJournalMutationOptions): Promise<BlobIntentRecord>;
   retireBlobIntents(key: string, requestIds: readonly string[], options: BlobJournalMutationOptions): Promise<void>;
+  /**
+   * Remove one receipt-less `unknown` intent on the guard's key, on the caller's own evidence that
+   * its identity is absent on the host. Not a receipt: an earlier delivery may still commit, and
+   * the host's compare-and-swap is what keeps that from losing an update. Optional, so a journal
+   * written before it existed still satisfies the interface.
+   */
+  forgetBlobIntent?(requestId: string, options: BlobJournalMutationOptions): Promise<void>;
 }
 const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const only = (v: object, keys: readonly string[]) => Object.keys(v).every(key => keys.includes(key));
@@ -356,8 +364,9 @@ export function decideBlobUpdate(view: BlobJournalView, update: CapturedBlobUpda
 }
 
 /** The patch that records typed non-execution of the latest claimed attempt. `not_dispatched` is
- * only for this invocation's own claim, before the carrier is invoked; the journal refuses it for a
- * claim it did not make in this session. A carrier or transport failure is `unknown`, never this. */
+ * only for this invocation's own claim, before the carrier is invoked or refused by it as `denied`;
+ * the journal refuses it for a claim it did not make in this session. Any other carrier or
+ * transport failure is `unknown`, never this. */
 export function blobNonExecutionPatch(current: BlobIntentRecord, reason: BlobNonExecution): BlobIntentPatch {
   const { kind, ...evidence } = reason;
   const base = { state: "pending" as const, attempts: current.attempts, notAppliedThrough: current.attempts };
@@ -386,6 +395,22 @@ export function decideBlobRetirement(view: BlobJournalView, retirement: Captured
     if (!row || row.target !== key || !row.receipt || !["acknowledged", "refused", "conflict"].includes(row.state)) throw new JournalGuardConflict(key);
   }
   return { result: undefined, intents: requestIds.map(requestId => ({ requestId, value: null })), meta, removeMeta };
+}
+
+export interface CapturedBlobForget { requestId: string; options: BlobJournalMutationOptions }
+export function captureBlobForget(requestId: string, options: BlobJournalMutationOptions): CapturedBlobForget {
+  const captured = captureBlobMutationOptions(options);
+  if (typeof requestId !== "string" || !isWriteRequestId(requestId)) throw new JournalGuardConflict(captured.guard.key);
+  return { requestId, options: captured };
+}
+/** Only an `unknown`, receipt-less intent whose latest attempt is not proven unapplied may be forgotten. */
+export function decideBlobForget(view: BlobJournalView, forget: CapturedBlobForget): BlobJournalDecision<void> {
+  const { requestId, options: { guard, meta = [], removeMeta = [] } } = forget;
+  assertBlobGuardMatches(view, guard);
+  const row = view.blobIntent(requestId);
+  if (!row || row.state !== "unknown") throw new IntentStateConflict(requestId, "unknown", row?.state ?? view.intentState(requestId));
+  if (row.target !== guard.key || row.receipt !== undefined || (row.notAppliedThrough ?? 0) >= row.attempts) throw new JournalGuardConflict(guard.key);
+  return { result: undefined, intents: [{ requestId, value: null }], meta, removeMeta };
 }
 
 export function captureBlobMetaWrite(key: string, changes: Pick<BlobJournalMutationOptions, "meta" | "removeMeta">, options: { guard: BlobJournalGuard }): CapturedBlobMetaWrite {
@@ -420,6 +445,7 @@ export function readBlobJournal(view: BlobJournalView, key: string, options: { m
 // ── browser-safe in-memory journal ─────────────────────────────────────────────────────────
 
 export interface MemoryBlobJournal extends BlobJournaledBackend {
+  forgetBlobIntent(requestId: string, options: BlobJournalMutationOptions): Promise<void>;
   writeBlobMeta(key: string, changes: Pick<BlobJournalMutationOptions, "meta" | "removeMeta">, options: { guard: BlobJournalGuard }): Promise<void>;
   readMeta<T = unknown>(key: string): Promise<T | undefined>;
   /** A copy of the committed rows, for a caller that persists them; session claims are not state. */
@@ -488,6 +514,7 @@ export function createMemoryBlobJournal(state?: MemoryBlobJournalState): MemoryB
     async readBlobIntent(requestId) { const row = intents.get(requestId); return row && structuredClone(row); },
     async updateBlobIntent(requestId, expectedState, patch, options) { return structuredClone(apply(decideBlobUpdate(view, captureBlobUpdate(requestId, expectedState, patch, options), new Date().toISOString(), checkReceipt))); },
     async retireBlobIntents(key, requestIds, options) { apply(decideBlobRetirement(view, captureBlobRetirement(key, requestIds, options))); },
+    async forgetBlobIntent(requestId, options) { apply(decideBlobForget(view, captureBlobForget(requestId, options))); },
     async readMeta<T>(key: string) { return meta.has(key) ? structuredClone(meta.get(key)) as T : undefined; },
     exportState: () => ({ intents: [...intents.values()].sort((a, b) => a.sequence - b.sequence).map(row => structuredClone(row)), meta: [...meta].map(([key, value]) => [key, structuredClone(value)]), sequence }),
   };

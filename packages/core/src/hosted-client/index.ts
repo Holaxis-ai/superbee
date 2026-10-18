@@ -5,8 +5,9 @@
  *
  * The caller supplies the target (origin and sync prefix) and an async credential provider; the
  * client supplies identity, the bundle list, reads, history, workspace qualification, operations
- * by id and the one-call document write over `@superbee/core/hosted-transport`, and throws typed
- * errors only. `createHostedInbox` adds a person's inbox in one workspace over the same client, and
+ * by id, the one-call document write and the one-call blob write (`writeBlob`, journaled by
+ * `driveJournaledBlob`) over `@superbee/core/hosted-transport`, and throws typed errors only.
+ * `createHostedInbox` adds a person's inbox in one workspace over the same client, and
  * `readDirectory` with `matchDirectoryMember` finds a teammate where the host offers the directory.
  *
  * Export download is Node-only (its verification needs Node), so it is the separate
@@ -51,7 +52,33 @@ export {
   type HostedWriteRefusalCode,
   type HostedWriteResult,
 } from "./write.js";
-export { HostedRouteNotServed, isRouteNotServed, ROUTE_NOT_SERVED } from "./errors.js";
+export { HostedBlobWritesNotServed, HostedRouteNotServed, isRouteNotServed, ROUTE_NOT_SERVED } from "./errors.js";
+export {
+  driveJournaledBlob,
+  forgetJournaledBlob,
+  HostedBlobDeletionsNotAccepted,
+  HostedBlobWriteNotSent,
+  type BlobDrivePremises,
+  type BlobDriveSnapshot,
+  type BlobDriveStep,
+  type BlobPin,
+  type HostedBlobDeleteInput,
+  type HostedBlobForgetResult,
+  type HostedBlobHeldWrite,
+  type HostedBlobLookupResult,
+  type HostedBlobOperation,
+  type HostedBlobRefusalCode,
+  type HostedBlobWriteInput,
+  type HostedBlobWriteOptions,
+  type HostedBlobWriteResult,
+  type JournaledBlobContext,
+  type JournaledBlobForgetResult,
+  type JournaledBlobMode,
+  type JournaledBlobResult,
+} from "./blob-write.js";
+// The browser-safe default blob journal and the head and read shapes, re-exported (same identities).
+export { createMemoryBlobJournal, type BlobJournaledBackend, type MemoryBlobJournal } from "../blob-journal.js";
+export type { HostedBlobHead, HostedBlobHeads, HostedBlobRead } from "../hosted-transport/index.js";
 export {
   ATTENTION_OPERATION_IDS,
   ATTENTION_REFUSAL_CODES,
