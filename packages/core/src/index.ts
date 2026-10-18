@@ -435,4 +435,10 @@ export { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 
 export { kindCoverage } from "./kind-coverage.js";
 
-export * from "./body-replace-guards.js";
+export {
+  BODY_PREVIEW_LIMIT, BODY_PREVIEW_TRUNCATION_MARKER, BODY_PREVIEW_TRUNCATION_SIGNATURE,
+  BODY_PREVIEW_KEY, BODY_PREVIEW_RESERVED_KEYS, attachBodyPreview, bodyPreviewFinding,
+  BodyReplaceError, computeDroppedLinks, droppedLinks, guardTruncatedBodyPreview,
+  guardDroppedLinks, guardBodyReplace, TypedListPatchError, assertTypedListPatch,
+} from "./body-replace-guards.js";
+export type { BodyPreviewFinding, BodyReplaceFinding, BodyReplacePosture } from "./body-replace-guards.js";
