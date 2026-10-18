@@ -6,7 +6,8 @@
  * The caller supplies the target (origin and sync prefix) and an async credential provider; the
  * client supplies identity, the bundle list, reads, history, workspace qualification, operations
  * by id and the one-call document write over `@superbee/core/hosted-transport`, and throws typed
- * errors only. `createHostedInbox` adds a person's inbox in one workspace over the same client.
+ * errors only. `createHostedInbox` adds a person's inbox in one workspace over the same client, and
+ * `readDirectory` with `matchDirectoryMember` finds a teammate where the host offers the directory.
  *
  * Export download is Node-only (its verification needs Node), so it is the separate
  * `@superbee/core/hosted-client/node`; nothing here imports it.
@@ -55,6 +56,8 @@ export {
   ATTENTION_OPERATION_IDS,
   ATTENTION_REFUSAL_CODES,
   createHostedInbox,
+  DIRECTORY_PAGE_MAX,
+  HOSTED_PRINCIPAL_ID,
   HostedAttentionOutcomeUnknown,
   HostedAttentionRefusal,
   INBOX_ANSWER_BYTES,
@@ -73,6 +76,9 @@ export {
   type AttentionReceipt,
   type AttentionRefusalCode,
   type AttentionRequestInput,
+  type DirectoryInput,
+  type DirectoryMember,
+  type DirectoryPage,
   type HostedInbox,
   type HostedInboxOptions,
   type InboxAckInput,
@@ -96,6 +102,15 @@ export {
   type PersonItemKind,
   type ProvenanceSurface,
 } from "./inbox.js";
+export {
+  DIRECTORY_PAGES_MAX,
+  directoryNameKey,
+  matchDirectoryMember,
+  readDirectory,
+  type DirectoryListing,
+  type DirectoryMatch,
+  type DirectoryMatchBy,
+} from "./directory.js";
 // The other typed failures, re-exported (same identities) so a caller can tell them apart from
 // this one subpath.
 export { MALFORMED_ANSWER, MalformedAnswer, RemoteError, isMalformedAnswer } from "../remote-error.js";

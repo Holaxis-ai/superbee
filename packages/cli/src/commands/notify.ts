@@ -5,7 +5,9 @@
 // and the error carries it so the same command with --ticket settles it without a second item.
 import { parseArgs } from "node:util";
 
-import type { AttentionRequestInput, InboxAppMeta, InboxRecipient, PersonItemKind } from "@superbee/core/hosted-client";
+import { stripHostText } from "@superbee/core";
+import { HOSTED_PRINCIPAL_ID } from "@superbee/core/hosted-client";
+import type { AttentionRequestInput, DirectoryListing, DirectoryMatchBy, DirectoryMember, InboxAppMeta, InboxRecipient, PersonItemKind } from "@superbee/core/hosted-client";
 
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -13,7 +15,7 @@ import { commandFragment, commandToken, type CommandText } from "../command-text
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { renderUsage, resolveMode } from "../output.js";
-import { inboxFailure, openInboxSession, renderInboxRecord, type InboxSessionDeps } from "../hosted/inbox-session.js";
+import { inboxFailure, openInboxSession, renderInboxRecord, type InboxSession, type InboxSessionDeps } from "../hosted/inbox-session.js";
 
 export const NOTIFY_USAGE = `superbee notify — ask a person, or yourself, to look at something (hosted Superbee)
 
@@ -27,7 +29,11 @@ hosted checkout it uses the checkout's account and workspace. Anywhere else (a l
 or no bundle) it uses your signed-in hosted login, in the workspace --workspace names, else the
 default setup hosted recorded, else your only one.
 <recipient> is self (you: the usual case for an agent telling its person something) or a
-workspace member's principal id. Naming someone by email is not supported yet.
+workspace member's principal id. Where hosted Superbee offers your workspace its notification
+directory, it may also be a teammate's exact display name (any case) or, if the workspace shares
+them, exact email. Anything else, including the start of a name or a name two teammates share, is
+refused, listing the teammates it could mean as commands that name each by principal id: nothing
+is sent on a guess. self in any case always means you.
 
 Kinds: needs_input (default: this needs you), ready (this is ready for you), review_requested
 (please review this), reply (on a thread: needs --thread). ready and review_requested need --doc.
@@ -70,6 +76,17 @@ const META_NAMESPACE = /^[a-z0-9][a-z0-9-]{0,62}(?:\.[a-z0-9][a-z0-9-]{0,62}){1,
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** A principal id as the host stores it: no spaces or controls, at most 256 characters. */
 const PRINCIPAL_ID = /^[^\s\p{Cc}\p{Cf}@]{1,256}$/u;
+/**
+ * A principal id in the host's one identifier shape (`<namespace>:<local part>`, hosted's
+ * `namespacedIdPattern`), `@` included (`person:alice@acme.com`): sent as is, never looked up.
+ */
+const QUALIFIED_PRINCIPAL_ID = HOSTED_PRINCIPAL_ID;
+/** What a recipient may be before the host is asked: printable text a name or address could be. */
+const RECIPIENT_TEXT = /^[^\p{Cc}\p{Cf}]{1,320}$/u;
+/** The most candidates an unresolved name lists. */
+const CANDIDATES_SHOWN = 10;
+/** The most characters of a teammate's name or email shown. */
+const NAME_SHOWN = 200;
 
 export type NotifyDeps = InboxSessionDeps;
 
@@ -112,13 +129,9 @@ export async function notify(argv: string[], deps: Partial<NotifyDeps> = {}): Pr
   // Everything checkable without the host is checked before any request.
   const kind = (values.kind ?? "needs_input") as PersonItemKind;
   if (!(KINDS as readonly string[]).includes(kind)) throw usage(`--kind must be one of ${KINDS.join(", ")}`);
-  if (recipientArgument !== "self" && !PRINCIPAL_ID.test(recipientArgument)) {
-    throw usage(
-      recipientArgument.includes("@")
-        ? "notify names a recipient by principal id or self; naming someone by email is not supported yet"
-        : `'${recipientArgument}' is not a principal id or self`,
-      { reason: "recipient", recipient: recipientArgument.includes("@") ? "email" : "malformed" },
-    );
+  // A name or address can be judged only once the host says whether it offers the directory.
+  if (!isSelf(recipientArgument) && (!RECIPIENT_TEXT.test(recipientArgument) || recipientArgument.trim() === "")) {
+    throw usage(`'${stripHostText(recipientArgument, NAME_SHOWN)}' is not a principal id or self`, { reason: "recipient", recipient: "malformed" });
   }
   if (note !== undefined && note.length > NOTE_MAX) throw usage(`the note is longer than ${NOTE_MAX} characters`);
   if ((kind === "ready" || kind === "review_requested") && values.doc === undefined) throw usage(`--kind ${kind} needs --doc <document-id>`);
@@ -133,8 +146,8 @@ export async function notify(argv: string[], deps: Partial<NotifyDeps> = {}): Pr
   if (values.bundle !== undefined && values.doc === undefined) throw usage("--bundle names the bundle a --doc document is in: pass --doc too");
   const meta: InboxAppMeta | undefined = values.label === undefined ? undefined : { [namespace]: { run: values.label } };
 
-  const resumeFor = (where: CommandText, ticket?: string) =>
-    commandFragment`${cliInvocation()} notify ${commandToken(recipientArgument)}${note === undefined ? commandFragment`` : commandFragment` ${commandToken(note)}`}${
+  const resumeFor = (where: CommandText, ticket?: string, recipientWord: string = recipientArgument) =>
+    commandFragment`${cliInvocation()} notify ${commandToken(recipientWord)}${note === undefined ? commandFragment`` : commandFragment` ${commandToken(note)}`}${
       values.kind === undefined ? commandFragment`` : commandFragment` --kind ${commandToken(kind)}`
     }${values.doc === undefined ? commandFragment`` : commandFragment` --doc ${commandToken(values.doc)}`}${values.thread === undefined ? commandFragment`` : commandFragment` --thread ${commandToken(values.thread)}`}${
       values.label === undefined ? commandFragment`` : commandFragment` --label ${commandToken(values.label)}`
@@ -150,7 +163,10 @@ export async function notify(argv: string[], deps: Partial<NotifyDeps> = {}): Pr
     { documents: values.doc !== undefined },
   );
   const { identity, target: host } = session;
-  const recipient: InboxRecipient = { kind: "principal", principalId: recipientArgument === "self" ? identity.principalId : recipientArgument };
+  const named = await recipientOf(recipientArgument, session, (principalId) => resumeFor(session.notifyArgs, undefined, principalId));
+  const recipient: InboxRecipient = { kind: "principal", principalId: named.principalId };
+  // A resend names the principal the name resolved to, so the same ticket carries the same input.
+  const resendAs = named.by === null ? recipientArgument : named.principalId;
 
   let target: AttentionRequestInput["target"];
   const documents = session.documents;
@@ -198,7 +214,7 @@ export async function notify(argv: string[], deps: Partial<NotifyDeps> = {}): Pr
   try {
     receipt = await session.inbox.request(input);
   } catch (error) {
-    throw await inboxFailure(error, session, { ticketHelp: (ticket) => "re-run with the same ticket within 24 hours, which never makes a second item: " + resumeFor(session.notifyArgs, ticket) });
+    throw await inboxFailure(error, session, { ticketHelp: (ticket) => "re-run with the same ticket within 24 hours, which never makes a second item: " + resumeFor(session.notifyArgs, ticket, resendAs) });
   }
   const toSelf = recipient.principalId === identity.principalId;
   stdout(
@@ -212,7 +228,8 @@ export async function notify(argv: string[], deps: Partial<NotifyDeps> = {}): Pr
         thread: receipt.threadId,
         revision: receipt.itemRevision,
         kind,
-        recipient: toSelf ? `self (${recipient.principalId})` : recipient.principalId,
+        recipient: toSelf ? `self (${recipient.principalId})` : named.name === null ? recipient.principalId : `${named.name} (${recipient.principalId})`,
+        ...(named.by === null ? {} : { matched_by: named.by }),
         document: values.doc ?? null,
         email: receipt.delivery.email,
         ticket: receipt.ticket,
@@ -224,4 +241,103 @@ export async function notify(argv: string[], deps: Partial<NotifyDeps> = {}): Pr
       mode,
     ),
   );
+}
+
+interface NamedRecipient {
+  readonly principalId: string;
+  /** The teammate's directory name, when the recipient was found there (host data, shown as such). */
+  readonly name: string | null;
+  /** How the directory matched, or null when the recipient was self or a principal id. */
+  readonly by: DirectoryMatchBy | null;
+}
+
+/**
+ * The principal `argument` names: self, a principal id, or, only where the host offers this
+ * workspace its directory, a teammate found there. Without the directory nothing hints at one.
+ */
+async function recipientOf(argument: string, session: InboxSession, commandFor: (principalId: string) => CommandText): Promise<NamedRecipient> {
+  const { identity } = session;
+  if (isSelf(argument)) return { principalId: identity.principalId, name: null, by: null };
+  if (QUALIFIED_PRINCIPAL_ID.test(argument)) return { principalId: argument, name: null, by: null };
+  const offered = identity.notificationDirectoryWorkspaces?.includes(session.tenantId) === true;
+  if (!offered) {
+    if (PRINCIPAL_ID.test(argument)) return { principalId: argument, name: null, by: null };
+    throw usage(
+      argument.includes("@")
+        ? "notify names a recipient by principal id or self; naming someone by email is not supported yet"
+        : `'${argument}' is not a principal id or self`,
+      { reason: "recipient", recipient: argument.includes("@") ? "email" : "malformed" },
+    );
+  }
+  const core = await import("@superbee/core/hosted-client");
+  let listing: DirectoryListing;
+  try {
+    listing = await core.readDirectory(session.inbox);
+  } catch (error) {
+    if (core.isAttentionRefusal(error) && error.code === "not_found") {
+      throw new CliError("FORBIDDEN", "this sign-in cannot list the workspace's teammates", {
+        details: { host: session.target.origin, code: error.code, operation: error.operationId, reason: "directory_unavailable" },
+        help: "name the recipient by principal id, or self",
+      });
+    }
+    throw await inboxFailure(error, session);
+  }
+  // Every listed member takes part, so none is hidden from an ambiguity.
+  const { members } = listing;
+  if (!listing.complete) {
+    throw usage(`${session.target.origin} lists more teammates than notify reads, so '${argument}' could match more than one: name them by principal id`, {
+      reason: "directory_too_large",
+      read: members.length,
+    });
+  }
+  const match = core.matchDirectoryMember(members, argument);
+  if (match.outcome === "matched") return { principalId: match.member.principalId, name: shownName(match.member), by: match.by };
+
+  const sorted = [...(match.outcome === "none" ? members : match.candidates)].sort((a, b) =>
+    core.directoryNameKey(a.displayName ?? a.principalId).localeCompare(core.directoryNameKey(b.displayName ?? b.principalId)),
+  );
+  const shown = sorted.slice(0, CANDIDATES_SHOWN);
+  const candidates = shown.map((member) => ({
+    principal: member.principalId,
+    name: shownName(member),
+    ...(typeof member.email === "string" ? { email: stripHostText(member.email, NAME_SHOWN) } : {}),
+    ...(member.self ? { self: true } : {}),
+  }));
+  const commands = shown.map((member) => String(commandFor(member.principalId)));
+  const more = sorted.length > shown.length ? ` (${shown.length} of ${sorted.length} shown)` : "";
+  if (match.outcome === "ambiguous") {
+    throw usage(`'${argument}' matches ${match.candidates.length} teammates; name one by principal id${more}`, {
+      reason: "recipient_ambiguous",
+      matched_by: match.by,
+      candidates,
+      commands,
+    });
+  }
+  // The start of a name never sends: the teammate meant may have left the directory.
+  if (match.outcome === "prefix") {
+    throw usage(
+      match.candidates.length === 1
+        ? `no teammate is named exactly '${argument}'; ${candidates[0]!.name ?? candidates[0]!.principal}'s name starts with it: run the command to notify them`
+        : `'${argument}' starts ${match.candidates.length} teammates' names and names none exactly; name one by principal id${more}`,
+      { reason: match.candidates.length === 1 ? "recipient_not_exact" : "recipient_ambiguous", matched_by: "name_prefix", candidates, commands },
+    );
+  }
+  throw usage(
+    match.emails
+      ? `no teammate you can notify is named '${argument}'${candidates.length === 0 ? "" : `; teammates you can notify${more}:`}`
+      : `this workspace's directory does not share emails, so '${argument}' cannot be matched; name the teammate by display name or principal id`,
+    { reason: match.emails ? "recipient_not_found" : "directory_has_no_emails", candidates, commands },
+  );
+}
+
+/** A directory member's name as shown: control and format characters removed, bounded; null for none. */
+function shownName(member: DirectoryMember): string | null {
+  if (member.displayName === null) return null;
+  const name = stripHostText(member.displayName, NAME_SHOWN);
+  return name === "" ? null : name;
+}
+
+/** Whether a recipient means the caller: `self` in any case, with any surrounding space. */
+function isSelf(argument: string): boolean {
+  return argument.trim().toLowerCase() === "self";
 }
