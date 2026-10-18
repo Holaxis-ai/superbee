@@ -237,6 +237,13 @@ export interface AttentionReceipt {
 
 /** The most members one directory page lists. */
 export const DIRECTORY_PAGE_MAX = 100;
+/** Hosted's principal id shape (a lowercase namespace, a colon, a local part), as superbee-hosted's
+ * `namespacedIdPattern` states it. A directory answer naming anything else is malformed, so no id
+ * that could read as a flag or carry shell syntax reaches a printed command. */
+export const HOSTED_PRINCIPAL_ID = /^[a-z][a-z0-9._-]{0,31}:[A-Za-z0-9][A-Za-z0-9._@/-]{0,126}$/;
+/** What a directory answer may name: it starts with a letter or digit and holds only id characters,
+ * so no id the CLI prints in a ready command can read as a flag or carry shell syntax. */
+const DIRECTORY_PRINCIPAL_ID = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/;
 
 export interface DirectoryInput {
   /** The previous page's `nextAfter`: members whose principal id sorts after it. */
@@ -637,7 +644,7 @@ function decodeDirectoryPage(data: Record<string, unknown>, route: string): Dire
     if (
       !isRecord(member) ||
       typeof member.principalId !== "string" ||
-      !/^[^\s\p{Cc}\p{Cf}]{1,256}$/u.test(member.principalId) ||
+      !DIRECTORY_PRINCIPAL_ID.test(member.principalId) ||
       !(member.displayName === null || typeof member.displayName === "string") ||
       !(member.email === undefined || member.email === null || typeof member.email === "string") ||
       typeof member.self !== "boolean"

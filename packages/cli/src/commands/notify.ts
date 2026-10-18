@@ -6,6 +6,7 @@
 import { parseArgs } from "node:util";
 
 import { stripHostText } from "@superbee/core";
+import { HOSTED_PRINCIPAL_ID } from "@superbee/core/hosted-client";
 import type { AttentionRequestInput, DirectoryListing, DirectoryMatchBy, DirectoryMember, InboxAppMeta, InboxRecipient, PersonItemKind } from "@superbee/core/hosted-client";
 
 import { parseLeafOrUsage } from "../args.js";
@@ -79,7 +80,7 @@ const PRINCIPAL_ID = /^[^\s\p{Cc}\p{Cf}@]{1,256}$/u;
  * A principal id in the host's one identifier shape (`<namespace>:<local part>`, hosted's
  * `namespacedIdPattern`), `@` included (`person:alice@acme.com`): sent as is, never looked up.
  */
-const QUALIFIED_PRINCIPAL_ID = /^[a-z][a-z0-9._-]{0,31}:[A-Za-z0-9][A-Za-z0-9._@/-]{0,126}$/;
+const QUALIFIED_PRINCIPAL_ID = HOSTED_PRINCIPAL_ID;
 /** What a recipient may be before the host is asked: printable text a name or address could be. */
 const RECIPIENT_TEXT = /^[^\p{Cc}\p{Cf}]{1,320}$/u;
 /** The most candidates an unresolved name lists. */

@@ -377,6 +377,8 @@ test("directory posts members.directory.v1 in the workspace and decodes a page; 
   for (const bad of [
     { members: [{ principalId: "", displayName: "x", self: false }], nextAfter: null },
     { members: [{ principalId: "p:x\u001b", displayName: "x", self: false }], nextAfter: null },
+    { members: [{ principalId: "--dir=/etc", displayName: "x", self: false }], nextAfter: null },
+    { members: [{ principalId: "person:a;rm", displayName: "x", self: false }], nextAfter: null },
     { members: [{ principalId: "p:x", displayName: 7, self: false }], nextAfter: null },
     { members: [{ principalId: "p:x", displayName: "x", email: 3, self: false }], nextAfter: null },
     { members: [{ principalId: "p:x", displayName: "x" }], nextAfter: null },

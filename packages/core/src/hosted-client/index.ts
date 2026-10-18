@@ -57,6 +57,7 @@ export {
   ATTENTION_REFUSAL_CODES,
   createHostedInbox,
   DIRECTORY_PAGE_MAX,
+  HOSTED_PRINCIPAL_ID,
   HostedAttentionOutcomeUnknown,
   HostedAttentionRefusal,
   INBOX_ANSWER_BYTES,
