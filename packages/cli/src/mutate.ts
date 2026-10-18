@@ -3,14 +3,14 @@
  *
  * Core owns the read/decide/CAS/retry policy and typed domain failures. This
  * module owns CLI presentation — verb-specific error wording, remote error hints,
- * help text, the best-effort board attribution hook — and ONE piece of CLI
- * mutation policy: the body-replace guards (body-replace-guards.ts) run here, on
- * every attempt's candidate, so no `mutateDoc` caller can forget them. The
+ * help text, and the best-effort board attribution hook. Core enforces body-replace
+ * guards on every fresh candidate. The
  * mutation-seam boundary test pins that every other CLI writer reaches core's
  * `mutateDocument` only through this module or as a recorded, body-preserving
  * exemption.
  */
 import {
+  BodyReplaceError,
   DocumentNotFoundError,
   KindConformanceError,
   KindFieldMutationConflict,
@@ -33,7 +33,7 @@ import {
 } from "@superbee/core";
 import { CliError, classifyBundleError } from "./errors.js";
 import { kindConformanceCliError } from "./kind-write.js";
-import { guardBodyReplace, type BodyReplacePosture } from "./body-replace-guards.js";
+import { bodyReplaceCliError, type BodyReplacePosture } from "./body-replace-guards.js";
 
 export type MutateMode = DocumentMutationMode;
 
@@ -128,6 +128,7 @@ async function docExistsForMode(bundle: Bundle, id: ConceptId, mode: MutateMode)
 }
 
 async function translateMutationError(error: unknown, opts: MutateDocOptions): Promise<never> {
+  if (error instanceof BodyReplaceError) throw bodyReplaceCliError(error);
   if (error instanceof KindFieldMutationConflict) throw new CliError("STALE_HEAD", error.message, { help: opts.helpOnKindReject });
   if (error instanceof KindConformanceError) {
     const docExists = await docExistsForMode(opts.bundle, opts.id, opts.mode);
@@ -159,8 +160,9 @@ export async function mutateDoc(opts: MutateDocOptions): Promise<MutateResult> {
       input: opts.input,
       assertCandidate: (existing, candidate, context) => {
         okfVersion = context.okfVersion;
-        if (existing) guardBodyReplace(opts.bundle, existing, candidate.body, opts.bodyReplace);
+
       },
+      bodyReplace: opts.bodyReplace,
       onAbsent: opts.onAbsent,
       maxAttempts: opts.maxAttempts,
       compareTimestamp: opts.compareTimestamp,

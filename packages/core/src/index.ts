@@ -434,3 +434,5 @@ export type {
 export { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 
 export { kindCoverage } from "./kind-coverage.js";
+
+export * from "./body-replace-guards.js";

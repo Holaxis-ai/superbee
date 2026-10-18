@@ -1082,6 +1082,8 @@ export async function commitBodyLocal(local: LocalTarget, id: ConceptId, mutatio
   const persistence = new Proxy(backend, { get(inner, key) { if (key === "write") return write; const value = Reflect.get(inner, key, inner); return typeof value === "function" ? value.bind(inner) : value; } });
   const result = await mutateDocument({ bundle: { ...bundleOf(local), backend: persistence }, id, mode: "patch", registry: EMPTY_REGISTRY, strict: false,
     ...(input.expectedVersion === undefined ? {} : { expectedVersion: input.expectedVersion }), actor: input.actor, now: input.now,
+    // Body commits are explicit editor saves, including deliberate relationship edits.
+    bodyReplace: { replaceLinks: true },
     buildCandidate: existing => ({ frontmatter: existing!.frontmatter, body: input.body }) });
   return { ...result, intent: recorded };
 }
@@ -1323,6 +1325,8 @@ export async function resolveConflict(
     ...options, bundle: { ...bundleOf(local), backend: persistence }, id: review.id,
     mode: "patch", expectedVersion: review.local.version,
     registry: options.registry ?? EMPTY_REGISTRY, strict: options.strict ?? false,
+    // A reviewed resolution explicitly selects the replacement body and its relationships.
+    bodyReplace: { replaceLinks: true },
     buildCandidate: existing => selected.kind === "keep-local"
       ? { frontmatter: existing!.frontmatter, body: existing!.body }
       : { frontmatter: selected.frontmatter ?? existing!.frontmatter, body: selected.body },
@@ -1471,6 +1475,8 @@ async function resolveBodyConflict(
     ...options, bundle: { ...bundleOf(local), backend: persistence }, id,
     mode: "patch", expectedVersion: review.local.version,
     registry: options.registry ?? EMPTY_REGISTRY, strict: options.strict ?? false,
+    // A reviewed resolution explicitly selects the replacement body and its relationships.
+    bodyReplace: { replaceLinks: true },
     buildCandidate: existing => ({ frontmatter: existing!.frontmatter, body: selected.kind === "keep-local" ? existing!.body : (selected as { body: string }).body }),
   });
   // A validated semantic no-op still retires the chain and records a fresh identity.

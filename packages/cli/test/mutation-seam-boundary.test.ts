@@ -1,8 +1,7 @@
 /**
- * Mutation-seam boundary: the body-replace guards (body-replace-guards.ts) are enforced by
- * `mutateDoc` (mutate.ts), so a CLI writer that reaches core's document store directly — through
- * `mutateDocument`, or through the unconditional `writeDoc` family that the versioned-edit
- * migration retired — bypasses them. Every such bypass must be listed here with the reason it cannot
+ * Mutation-seam boundary: core owns the body-replace guards. CLI writes use `mutateDoc`
+ * (mutate.ts) for their presentation contract. The unconditional `writeDoc` family bypasses
+ * mutation policy, while direct `mutateDocument` calls bypass CLI error translation. Every such bypass must be listed here with the reason it cannot
  * lose a body byte; a new one fails this test until it is either routed through `mutateDoc` or
  * recorded with its own reason. Same shape as the quoting checker's UNSCANNABLE map: explicit, one
  * reason per entry, growth fails. A text tripwire cannot see an aliased import or an indirect

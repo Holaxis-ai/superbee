@@ -1,6 +1,8 @@
 // CLI translation for kind-conformance failures. Core owns timestamp defaulting,
 // registry lookup, and validation; this module owns strict-mode CLI presentation.
 import {
+  assertTypedListPatch,
+  TypedListPatchError,
   defaultTimestampAndValidateAgainstRegistry,
   KindConformanceError,
   isKindFieldValidationWarning,
@@ -136,10 +138,9 @@ export function defaultTimestampAndValidateKind(
  * `new` (repeat the flag) or by replacing the complete document.
  */
 export function refuseTypedListPatch(kind: KindConvention, storageField: string, authoringField: string, command: string): void {
-  const type = kind.fields.types && Object.prototype.hasOwnProperty.call(kind.fields.types, storageField)
-    ? kind.fields.types[storageField]
-    : undefined;
-  if (type !== "string-list" && type !== "https-url-list") return;
+  let type: string;
+  try { assertTypedListPatch(kind, storageField); return; }
+  catch (error) { if (!(error instanceof TypedListPatchError)) throw error; type = error.fieldType; }
   throw new CliError(
     "USAGE",
     `'${authoringField}' is a ${type} field, and '${command}' does not replace lists. Replace the whole list ` +
