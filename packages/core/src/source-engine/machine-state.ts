@@ -1,8 +1,10 @@
 /**
- * The machine-state port: one JSON document per Source Feed holding the stored cursor and the last
- * accepted values of every record, written with a compare-and-swap on its version. The managed
- * runner keeps it in its own store; `MemoryMachineState` serves tests and local runs.
+ * The machine-state port: one JSON document per Source Feed holding the stored cursor, the last
+ * accepted values of every record and the changes still pending a write, written with a
+ * compare-and-swap on its version. The managed runner keeps it in its own store;
+ * `MemoryMachineState` serves tests and local runs.
  */
+import type { RecordChange } from "../record-overlay/types.js";
 
 /** One record's last accepted state. */
 export interface RecordEntry {
@@ -17,6 +19,14 @@ export interface RecordEntry {
   seen_at: string;
 }
 
+/** A change a commit asked to retry: planned again at the start of every run until written. */
+export interface PendingChange {
+  change: RecordChange;
+  /** The record's entry once the change is written. */
+  entry: RecordEntry;
+  held_at: string;
+}
+
 export interface SourceState {
   v: 1;
   /** The profile that wrote `cursor`; a cursor from another id or version is never handed back. */
@@ -26,6 +36,7 @@ export interface SourceState {
   open: boolean;
   validators?: Record<string, string>;
   records: Record<string, RecordEntry>;
+  pending?: Record<string, PendingChange>;
   complete_observations: number;
   last_complete_at?: string;
 }
@@ -76,11 +87,16 @@ const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
 /** Whether a stored value has the shape the engine writes. */
+const isEntry = (entry: unknown): boolean => record(entry) && record(entry.after) && typeof entry.digest === "string"
+  && Number.isInteger(entry.missing) && typeof entry.seen_at === "string";
+
 export function isSourceState(value: unknown): value is SourceState {
   if (!record(value) || value.v !== 1 || typeof value.open !== "boolean" || !record(value.records)) return false;
   if (!record(value.profile) || typeof value.profile.id !== "string" || !Number.isInteger(value.profile.version)) return false;
   if (!Number.isInteger(value.complete_observations)) return false;
   if (value.validators !== undefined && !record(value.validators)) return false;
-  return Object.values(value.records).every((entry) => record(entry) && record(entry.after) && typeof entry.digest === "string"
-    && Number.isInteger(entry.missing) && typeof entry.seen_at === "string");
+  if (value.pending !== undefined && !(record(value.pending) && Object.entries(value.pending).every(([id, pending]) => record(pending)
+    && isEntry(pending.entry) && typeof pending.held_at === "string" && record(pending.change) && pending.change.external_id === id
+    && typeof pending.change.change_kind === "string"))) return false;
+  return Object.values(value.records).every(isEntry);
 }

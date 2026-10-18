@@ -64,7 +64,8 @@ export function parseRobots(text: string): RobotsGroup[] {
   const groups: RobotsGroup[] = [];
   let current: RobotsGroup | undefined;
   let lastWasAgent = false;
-  for (const raw of text.split(/\r?\n/)) {
+  // RFC 9309 2.2: a line ends in CR LF, LF or a CR alone.
+  for (const raw of text.split(/\r\n|\r|\n/)) {
     // Split on the first colon by index: a regular expression here backtracks on long runs of
     // whitespace, and the body is provider text.
     const line = raw.replace(/#.*/, "").trim();

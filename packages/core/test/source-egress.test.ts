@@ -39,7 +39,12 @@ test("the engine and harness reach no network global and import only core module
     const target = path.resolve(path.dirname(file), specifier);
     return target.startsWith(`${SRC}${path.sep}`);
   };
-  assert.deepEqual(egressViolations(files, { globals: ["AbortController", "structuredClone"], allowImport: insideSrc }), []);
+  // Engine code owns its timers and checks plain objects across realms; profile code may do neither.
+  assert.deepEqual(egressViolations(files, {
+    globals: ["AbortController", "structuredClone", "setTimeout", "clearTimeout", "queueMicrotask"],
+    allowImport: insideSrc,
+    allowKeys: ["getPrototypeOf"],
+  }), []);
 });
 
 const check = (text: string, name = "planted.ts"): string[] => egressViolations([{ path: name, text }]);
@@ -61,6 +66,19 @@ for (const [name, text, expected] of [
   ["an unused static import", `import "undici";\nexport const go = 1;`, /imports "undici"/],
   ["a re-export from a package", `export { fetch } from "undici";`, /imports "undici"/],
   ["a timer", `export const go = () => setTimeout(() => {}, 1);`, /names the global setTimeout/],
+  ["replacing a built-in method", `URL.prototype.toString = () => "https://collector.example.net";`, /assigns to the global URL/],
+  ["a member write on an allowed global", `JSON.parse = (text: string) => text;`, /assigns to the global JSON/],
+  ["a compound assignment to a global", `export const go = () => { Math.PI += 1; };`, /assigns to the global Math/],
+  ["an update of a global", `export const go = () => { (Number as any).x++; };`, /updates the global Number/],
+  ["a delete from a global", `export const go = () => delete (Array as any).from;`, /deletes from the global Array/],
+  ["a destructuring write into a global", `export const go = (o: any) => { ({ a: (Set as any).x } = o); };`, /assigns to the global Set/],
+  ["a for-of write into a global", `export const go = (xs: string[]) => { for ((Map as any).k of xs) void 0; };`, /assigns to the global Map/],
+  ["setPrototypeOf", `export const go = (o: object) => Object.setPrototypeOf(o, null);`, /reads setPrototypeOf/],
+  ["defineProperty", `export const go = (o: object) => Object.defineProperty(o, "x", {});`, /reads defineProperty/],
+  ["__defineGetter__ by name", `export const go = (o: any) => o["__defineGetter__"]("x", () => 1);`, /names __defineGetter__/],
+  ["this in a function", `export function go(this: any) { return this; }`, /uses this outside a class body/],
+  ["this at the top of a module", `export const self = this;`, /uses this outside a class body/],
+  ["this in an object literal method", `export const p = { go() { return this; } };`, /uses this outside a class body/],
 ] as const) {
   test(`the egress check refuses ${name}`, () => {
     const violations = check(text);
@@ -82,6 +100,25 @@ test("the egress check resolves bindings: a local named fetch, a property, a typ
     `  return fetch(url.href) + String(arg) + Math.max(1, Number("2")) + String(holder.self);`,
     `}`,
   ].join("\n")), []);
+});
+
+test("the egress check allows this in a class body and writes to local bindings", () => {
+  assert.deepEqual(check([
+    `class Pager { n = 0; next() { this.n += 1; return this.n; } }`,
+    `export const go = () => { const state = { n: 1 }; state.n++; delete (state as any).n; let x = 1; x += 1; return new Pager().next() + x; };`,
+  ].join("\n")), []);
+});
+
+test("the egress check refuses a CommonJS module", () => {
+  assert.ok(check(`module.exports = 1;`, "planted.cjs").some((v) => /CommonJS module is refused/.test(v)));
+});
+
+test("by default a relative import must stay inside the scanned roots", () => {
+  const root = path.join(here, "fixtures/source-engine");
+  const files = [{ path: path.join(root, "planted.ts"), text: `import { a } from "./helper.js";\nimport { b } from "../../src/hosted-client/index.js";\nexport const go = () => [a, b];` }];
+  const violations = egressViolations(files, { roots: [root] });
+  assert.deepEqual(violations.map((v) => v.replace(/^.*?: /, "")), ['imports "../../src/hosted-client/index.js"']);
+  assert.equal(egressViolations(files).length, 2, "with no roots, only scanned modules may be imported");
 });
 
 test("the egress check reads JavaScript modules too and names the allowlist it holds", () => {

@@ -1,9 +1,10 @@
 /**
  * The transport conformance suite. The engine's guard cannot see headers a transport adds after
- * it, so every transport proves against a scripted peer that it sends the credential only to its
- * host, returns redirects unfollowed and refuses a body over the bound, and, behind the engine,
- * that a cross-host or private-address redirect reaches nothing. It returns rows rather than
- * asserting, so it runs under any test runner.
+ * it, so every transport proves against a scripted peer that it sends the credential only when the
+ * engine's `credentialHost` and its own exact host match agree (lookalike hosts included), returns
+ * redirects unfollowed and refuses a body over the bound, and, behind the engine, that a
+ * cross-host or private-address redirect reaches nothing. It returns rows rather than asserting,
+ * so it runs under any test runner.
  */
 import { bindSourceFeed, credentialHosts, parseConnectorDoc, type BoundFeed, type Connector } from "../connectors.js";
 import { buildKindRegistry } from "../kinds.js";
@@ -49,6 +50,22 @@ const PRIVATE_TARGETS = Object.freeze([
   "https://localhost/x",
   "https://api.github.com:8443/x",
   "http://api.github.com/x",
+]);
+
+/**
+ * Requests that must never carry the credential: hosts that only look like the credential host,
+ * whatever the engine says, and the credential host itself when the engine says it is not one.
+ */
+const CREDENTIAL_PROBES: ReadonlyArray<{ name: string; url: string; credentialHost: boolean }> = Object.freeze([
+  { name: "a declared keyless host", url: `https://${KEYLESS_HOST}/feed.json`, credentialHost: true },
+  { name: "an undeclared host", url: `https://${OUTSIDE_HOST}/collect`, credentialHost: true },
+  { name: "the credential host over http", url: `http://${CREDENTIAL_HOST}/repos/octo/probe/issues`, credentialHost: true },
+  { name: "a host starting with the credential host", url: `https://${CREDENTIAL_HOST}.${OUTSIDE_HOST}/x`, credentialHost: true },
+  { name: "a host ending with the credential host without a dot", url: `https://evil${CREDENTIAL_HOST}/x`, credentialHost: true },
+  { name: "the credential host with a trailing dot", url: `https://${CREDENTIAL_HOST}./x`, credentialHost: true },
+  { name: "the credential host as userinfo", url: `https://${CREDENTIAL_HOST}@${OUTSIDE_HOST}/x`, credentialHost: true },
+  { name: "the credential host on another port", url: `https://${CREDENTIAL_HOST}:8443/x`, credentialHost: true },
+  { name: "the credential host when the engine says otherwise", url: `https://${CREDENTIAL_HOST}/repos/octo/probe/issues`, credentialHost: false },
 ]);
 
 const record = (value: unknown): value is Record<string, unknown> =>
@@ -118,9 +135,9 @@ async function throughEngine(target: TransportConformanceTarget, credential: Tra
   return { receipt, peer };
 }
 
-async function direct(transport: Transport, url: string, maxBytes = 4096): Promise<TransportResult | Error> {
+async function direct(transport: Transport, url: string, options: { maxBytes?: number; credentialHost?: boolean } = {}): Promise<TransportResult | Error> {
   try {
-    return await transport.request({ url, method: "GET", headers: { accept: "application/json" }, maxBytes });
+    return await transport.request({ url, method: "GET", headers: { accept: "application/json" }, maxBytes: options.maxBytes ?? 4096, credentialHost: options.credentialHost ?? false });
   } catch (error) {
     return error instanceof Error ? error : new Error(String(error));
   }
@@ -133,9 +150,11 @@ const CHECKS: Record<(typeof CONFORMANCE_SCENARIOS)[number], Check> = {
     const problems: string[] = [];
     for (const credential of CREDENTIALS()) {
       const peer = new ScriptedPeer(() => ({ status: 200, body: "[]" }));
-      await direct(target.create(peer, credential), `https://${CREDENTIAL_HOST}/repos/octo/probe/issues`);
+      await direct(target.create(peer, credential), `https://${CREDENTIAL_HOST}/repos/octo/probe/issues`, { credentialHost: true });
       const sent = peer.received[0]?.headers[credential.header.toLowerCase()];
       if (sent !== credential.value) problems.push(`the ${credential.header} credential did not reach ${CREDENTIAL_HOST}`);
+      const { peer: engine } = await throughEngine(target, credential, { [`https://${CREDENTIAL_HOST}/x`]: { status: 200, body: "{}" } }, { url: `https://${CREDENTIAL_HOST}/x` });
+      if (engine.received[0]?.headers[credential.header.toLowerCase()] !== credential.value) problems.push(`behind the engine the ${credential.header} credential did not reach ${CREDENTIAL_HOST}`);
     }
     return problems;
   },
@@ -145,10 +164,12 @@ const CHECKS: Record<(typeof CONFORMANCE_SCENARIOS)[number], Check> = {
     for (const credential of CREDENTIALS()) {
       const peer = new ScriptedPeer(() => ({ status: 200, body: "[]" }));
       const transport = target.create(peer, credential);
-      await direct(transport, `https://${KEYLESS_HOST}/feed.json`);
-      await direct(transport, `https://${OUTSIDE_HOST}/collect`);
-      await direct(transport, `http://${CREDENTIAL_HOST}/repos/octo/probe/issues`);
-      for (const leak of leaks(peer, credential)) problems.push(`${credential.header} sent with ${leak}`);
+      for (const probe of CREDENTIAL_PROBES) {
+        const before = peer.received.length;
+        await direct(transport, probe.url, { credentialHost: probe.credentialHost });
+        const carried = peer.received.slice(before).filter((request) => Object.values(request.headers).some((value) => value.includes(credential.value)));
+        if (carried.length) problems.push(`${credential.header} sent toward ${probe.name}`);
+      }
     }
     return problems;
   },
@@ -159,7 +180,7 @@ const CHECKS: Record<(typeof CONFORMANCE_SCENARIOS)[number], Check> = {
       [`https://${CREDENTIAL_HOST}/a`]: { status: 302, headers: { Location: `https://${CREDENTIAL_HOST}/b` }, body: "" },
       [`https://${CREDENTIAL_HOST}/b`]: { status: 200, body: "{}" },
     }));
-    const result = await direct(target.create(peer, credential!), `https://${CREDENTIAL_HOST}/a`);
+    const result = await direct(target.create(peer, credential!), `https://${CREDENTIAL_HOST}/a`, { credentialHost: true });
     const problems: string[] = [];
     if (result instanceof Error || !result.ok || result.status !== 302) problems.push("the 302 was not returned as the answer");
     else if (result.headers.location !== `https://${CREDENTIAL_HOST}/b`) problems.push("the 302's location header was not returned under a lowercase name");
@@ -202,9 +223,9 @@ const CHECKS: Record<(typeof CONFORMANCE_SCENARIOS)[number], Check> = {
       [`https://${CREDENTIAL_HOST}/exact`]: { status: 200, body: exact },
     }));
     const transport = target.create(peer, credential!);
-    const refused = await direct(transport, `https://${CREDENTIAL_HOST}/over`, 1000);
+    const refused = await direct(transport, `https://${CREDENTIAL_HOST}/over`, { maxBytes: 1000, credentialHost: true });
     if (refused instanceof Error || refused.ok || refused.refused !== "too_large") problems.push("a 1200-byte body under a 1000-byte bound was not refused as too_large");
-    const admitted = await direct(transport, `https://${CREDENTIAL_HOST}/exact`, 1000);
+    const admitted = await direct(transport, `https://${CREDENTIAL_HOST}/exact`, { maxBytes: 1000, credentialHost: true });
     if (admitted instanceof Error || !admitted.ok || admitted.body !== exact || admitted.bytes !== 1000) problems.push("a body exactly at the bound was not returned whole");
     const { receipt } = await throughEngine(target, credential!, { [`https://${CREDENTIAL_HOST}/over`]: { status: 200, body: over } }, { url: `https://${CREDENTIAL_HOST}/over` }, 1000);
     if (receipt.outcome !== "too_large") problems.push(`behind the engine the run ended ${receipt.outcome}, not too_large`);

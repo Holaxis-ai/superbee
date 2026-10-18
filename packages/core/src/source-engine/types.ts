@@ -20,7 +20,12 @@ export interface TransportRequest {
   body?: string;
   /** The most response body bytes to read; a longer body is refused, never truncated. */
   maxBytes: number;
-  /** The run's deadline. */
+  /**
+   * The engine's own decision that `url` names one of the auth kind's credential hosts. A
+   * transport sends its credential only when this is true and its own exact host match agrees.
+   */
+  credentialHost: boolean;
+  /** Aborts the request: the run's deadline, or the per-request timeout. */
   signal?: AbortSignal;
 }
 
@@ -150,6 +155,10 @@ export interface SourceBudget {
   redirects: number;
   /** Pages committed per run. */
   pages: number;
+  /** The run's deadline when the caller passes no `signal`; with one, the caller owns time. */
+  deadlineMs: number;
+  /** Each request's timeout when the caller passes no `signal`. */
+  requestTimeoutMs: number;
 }
 
 export type SourceOutcome =
@@ -184,8 +193,10 @@ export interface PageCommit {
   feed: ConceptId;
   provider: string;
   observed_at: string;
-  /** 1-based within the run. */
+  /** 1-based within the run; 0 for the replay of pending changes before the first request. */
   page: number;
+  /** The changes were held by an earlier commit and are planned again. */
+  replay: boolean;
   changes: readonly RecordChange[];
   /** The record values the changes name, for titles. */
   records: Readonly<Record<string, { fields: Record<string, unknown> }>>;
@@ -195,9 +206,16 @@ export interface PageCommit {
   complete: boolean;
 }
 
-/** External ids whose stored entry stays where it was, so the next observation plans them again. */
+/**
+ * External ids of changes the commit did not write. Either way the record's stored entry stays
+ * where it was. A `retry` change (a lost compare-and-swap, a claimed Signal) is kept pending in the
+ * machine state and planned again at the start of every run until it is written, refused for
+ * good, or superseded by a newer observation of the record. A `hold` change is not pending: the
+ * record is planned again when it is next observed.
+ */
 export interface CommitResult {
   hold?: readonly string[];
+  retry?: readonly string[];
 }
 
 export interface SourceRunReceipt {
@@ -216,6 +234,10 @@ export interface SourceRunReceipt {
   retry_after?: string;
   /** Pages committed in this run. */
   pages: number;
+  /** Changes this run's commits did not write (`hold` and `retry`), replays included. */
+  held: number;
+  /** Changes pending when the run ended. */
+  pending: number;
   requests: SourceRequestRow[];
   pass: { resumed: boolean; ended: boolean; complete: boolean };
   changes: { new: number; changed: number; disappeared: number };
@@ -238,7 +260,11 @@ export interface ObserveSourceOptions<Spec = unknown, Cursor = unknown> {
   identity: FetchIdentity;
   mode?: "incremental" | "complete";
   budget?: Partial<SourceBudget>;
-  /** The run's deadline: once aborted, no request starts and the one in flight is abandoned. */
+  /**
+   * The run's deadline: once aborted, no request starts, the one in flight and the profile's page
+   * are abandoned, and the run ends `deferred`. Without one the budget's `deadlineMs` and
+   * `requestTimeoutMs` apply.
+   */
   signal?: AbortSignal;
   now?: () => Date;
   rules?: RequestRules;

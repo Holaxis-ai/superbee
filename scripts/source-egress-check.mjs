@@ -2,9 +2,12 @@
  * The static egress check for source profile modules. Node and Workers give every module `fetch`,
  * `WebSocket` and dynamic `import()`, and the browser bundle gate catches Node builtins only, so a
  * profile could reach the network around the engine's guarded transport. This pass refuses every
- * global outside a short allowlist, every module import outside an allowlist, dynamic `import()`,
- * `eval`, `Function` and `constructor` access. Review stays the main control: a key computed at
- * run time can still reach `constructor`, which no static pass can see.
+ * global outside a short allowlist, every package import outside an allowlist and every relative
+ * import outside the scanned roots, dynamic `import()`, `eval`, `Function`, the prototype and
+ * property-definition names, writes to a global or to anything reached from one, `this` outside a
+ * class body, and CommonJS modules. A profile runs in the engine's realm, so tampering with a
+ * built-in would reach the guard itself; review stays the main control, because a key computed at
+ * run time can still reach those names and no static pass can see it.
  *
  * Globals are resolved by the TypeScript checker over the type-erased module, so a local binding
  * shadowing a global is allowed, a type position is ignored, and a `declare const fetch` cannot
@@ -34,10 +37,31 @@ export const EGRESS_ALLOWED_IMPORTS = Object.freeze(["@superbee/core/source-engi
 const NEVER_ALLOWED = new Set(["eval", "Function", "globalThis", "self", "window", "global"]);
 /** Bound in every function, never a route to the global object in a module. */
 const IMPLICIT = new Set(["arguments"]);
-const REFUSED_KEYS = new Set(["constructor", "__proto__"]);
+/** Property names that reach or redefine prototypes and built-ins. */
+const REFUSED_KEYS = Object.freeze([
+  "constructor", "__proto__", "prototype", "getPrototypeOf", "setPrototypeOf", "defineProperty", "defineProperties",
+  "__defineGetter__", "__defineSetter__", "__lookupGetter__", "__lookupSetter__",
+]);
 const SOURCE_EXTENSIONS = /\.(?:[cm]?ts|[cm]?js)$/;
 
-const defaultAllowImport = (specifier) => specifier.startsWith("./") || specifier.startsWith("../") || EGRESS_ALLOWED_IMPORTS.includes(specifier);
+const isRelative = (specifier) => specifier.startsWith("./") || specifier.startsWith("../");
+
+/**
+ * The default import rule: an allowed package, or a relative module that is itself scanned or lies
+ * inside one of `roots`, so nothing a scanned module imports escapes the check.
+ */
+function defaultAllowImport(files, roots) {
+  const scanned = new Set(files.map((file) => path.resolve(file.path)));
+  const inside = roots.map((root) => path.resolve(root));
+  return (specifier, file) => {
+    if (!isRelative(specifier)) return EGRESS_ALLOWED_IMPORTS.includes(specifier);
+    const target = path.resolve(path.dirname(file), specifier);
+    const candidates = [target, target.replace(/\.js$/, ".ts"), target.replace(/\.mjs$/, ".mts")];
+    return candidates.some((candidate) => scanned.has(candidate) || inside.some((root) => candidate === root || candidate.startsWith(`${root}${path.sep}`)));
+  };
+}
+
+const COMMONJS = /\.c[jt]s$/;
 
 const scriptKind = (file) => (/\.[cm]?js$/.test(file) ? ts.ScriptKind.JS : ts.ScriptKind.TS);
 
@@ -82,21 +106,45 @@ function isReference(node) {
   return true;
 }
 
+/** Whether a `this` lies in a class body rather than a function, an object literal or the module. */
+function inClassBody(node) {
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    if (ts.isArrowFunction(parent)) continue;
+    if (ts.isFunctionDeclaration(parent) || ts.isFunctionExpression(parent) || ts.isSourceFile(parent)) return false;
+    const member = ts.isMethodDeclaration(parent) || ts.isConstructorDeclaration(parent) || ts.isGetAccessorDeclaration(parent)
+      || ts.isSetAccessorDeclaration(parent) || ts.isPropertyDeclaration(parent) || ts.isClassStaticBlockDeclaration(parent);
+    if (member) return Boolean(parent.parent && (ts.isClassDeclaration(parent.parent) || ts.isClassExpression(parent.parent)));
+  }
+  return false;
+}
+
+/** The identifier a member chain starts from (`a` in `a.b[c].d`), or the expression itself. */
+function chainRoot(expression) {
+  let current = expression;
+  while (ts.isParenthesizedExpression(current) || ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current) || ts.isNonNullExpression(current)) {
+    current = current.expression;
+  }
+  return current;
+}
+
 /**
  * Violations in a set of modules, as `file:line: message`. Global lines refer to the type-erased
  * module, which keeps most lines of a TypeScript source.
  *
  * @param {ReadonlyArray<{ path: string, text: string }>} files
- * @param {{ globals?: readonly string[], allowImport?: (specifier: string, file: string) => boolean }} [options]
+ * @param {{ globals?: readonly string[], roots?: readonly string[], allowImport?: (specifier: string, file: string) => boolean, allowKeys?: readonly string[] }} [options]
+ *   `allowKeys` admits refused property names, for trusted engine code only.
  * @returns {string[]}
  */
 export function egressViolations(files, options = {}) {
   const allowed = new Set([...EGRESS_ALLOWED_GLOBALS, ...(options.globals ?? []), ...IMPLICIT]);
   for (const name of NEVER_ALLOWED) allowed.delete(name);
-  const allowImport = options.allowImport ?? defaultAllowImport;
+  const refusedKeys = new Set(REFUSED_KEYS.filter((key) => !(options.allowKeys ?? []).includes(key)));
+  const allowImport = options.allowImport ?? defaultAllowImport(files, options.roots ?? []);
   const violations = [];
   const erased = new Map();
   for (const file of files) {
+    if (COMMONJS.test(file.path)) violations.push(`${file.path}: a CommonJS module is refused; sloppy-mode code reaches the global object`);
     violations.push(...importViolations(file.path, file.text, allowImport));
     const output = ts.transpileModule(file.text, {
       fileName: file.path,
@@ -106,7 +154,9 @@ export function egressViolations(files, options = {}) {
     for (const diagnostic of output.diagnostics ?? []) {
       violations.push(`${file.path}: does not compile: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, " ")}`);
     }
-    erased.set(`${file.path}.egress.js`, { file: file.path, text: output.outputText });
+    // Read back as TypeScript: a JavaScript binder turns a top-level `JSON.parse = ...` into a
+    // declaration in the module, which would make the global look local.
+    erased.set(`${file.path}.egress.ts`, { file: file.path, text: output.outputText });
   }
 
   const { options: compilerOptions } = ts.convertCompilerOptionsFromJson(
@@ -118,18 +168,20 @@ export function egressViolations(files, options = {}) {
   const fileExists = host.fileExists.bind(host);
   const readFile = host.readFile.bind(host);
   host.getSourceFile = (name, version, onError, shouldCreate) => (erased.has(name)
-    ? ts.createSourceFile(name, erased.get(name).text, version, true, ts.ScriptKind.JS)
+    ? ts.createSourceFile(name, erased.get(name).text, version, true, ts.ScriptKind.TS)
     : getSourceFile(name, version, onError, shouldCreate));
   host.fileExists = (name) => erased.has(name) || fileExists(name);
   host.readFile = (name) => (erased.has(name) ? erased.get(name).text : readFile(name));
   const program = ts.createProgram([...erased.keys()], compilerOptions, host);
   const checker = program.getTypeChecker();
 
+  // A symbol with any declaration outside the scanned modules is a global, even when a module adds
+  // to it.
   const isGlobal = (symbol) => {
     if (!symbol) return true;
     if (symbol.flags & ts.SymbolFlags.Alias) return false;
     const declarations = symbol.declarations ?? [];
-    return declarations.length === 0 || declarations.every((declaration) => !erased.has(declaration.getSourceFile().fileName));
+    return declarations.length === 0 || declarations.some((declaration) => !erased.has(declaration.getSourceFile().fileName));
   };
 
   for (const [name, { file }] of erased) {
@@ -138,15 +190,40 @@ export function egressViolations(files, options = {}) {
       const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
       violations.push(`${file}:${line + 1}: ${message}`);
     };
+    const symbolOf = (node) => (ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node
+      ? checker.getShorthandAssignmentValueSymbol(node.parent)
+      : ts.isExportSpecifier(node.parent) ? checker.getExportSpecifierLocalTargetSymbol(node.parent) : checker.getSymbolAtLocation(node));
+    /** Flag a write whose target is a global or reached from one, destructuring targets included. */
+    const checkTarget = (target, what) => {
+      if (ts.isArrayLiteralExpression(target)) {
+        for (const element of target.elements) checkTarget(ts.isSpreadElement(element) ? element.expression : element, what);
+      } else if (ts.isObjectLiteralExpression(target)) {
+        for (const property of target.properties) {
+          if (ts.isPropertyAssignment(property)) checkTarget(property.initializer, what);
+          else if (ts.isShorthandPropertyAssignment(property)) checkTarget(property.name, what);
+          else if (ts.isSpreadAssignment(property)) checkTarget(property.expression, what);
+        }
+      } else if (ts.isBinaryExpression(target) && target.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+        checkTarget(target.left, what);
+      } else if (!ts.isOmittedExpression(target)) {
+        const root = chainRoot(target);
+        if (ts.isIdentifier(root) && isGlobal(symbolOf(root))) flag(target, `${what} the global ${root.text} or something reached from it`);
+      }
+    };
     const visit = (node) => {
       if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) flag(node, "dynamic import()");
-      if (ts.isPropertyAccessExpression(node) && REFUSED_KEYS.has(node.name.text)) flag(node, `reads ${node.name.text}`);
-      if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && REFUSED_KEYS.has(node.text)) flag(node, `names ${node.text}`);
+      if (ts.isPropertyAccessExpression(node) && refusedKeys.has(node.name.text)) flag(node, `reads ${node.name.text}`);
+      if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && refusedKeys.has(node.text)) flag(node, `names ${node.text}`);
+      if (node.kind === ts.SyntaxKind.ThisKeyword && !inClassBody(node)) flag(node, "uses this outside a class body");
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
+        checkTarget(node.left, "assigns to");
+      }
+      if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node))
+        && (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken)) checkTarget(node.operand, "updates");
+      if (ts.isDeleteExpression(node)) checkTarget(node.expression, "deletes from");
+      if ((ts.isForInStatement(node) || ts.isForOfStatement(node)) && !ts.isVariableDeclarationList(node.initializer)) checkTarget(node.initializer, "assigns to");
       if (ts.isIdentifier(node) && isReference(node)) {
-        const symbol = ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node
-          ? checker.getShorthandAssignmentValueSymbol(node.parent)
-          : ts.isExportSpecifier(node.parent) ? checker.getExportSpecifierLocalTargetSymbol(node.parent) : checker.getSymbolAtLocation(node);
-        if (isGlobal(symbol) && !allowed.has(node.text)) flag(node, `names the global ${node.text}`);
+        if (isGlobal(symbolOf(node)) && !allowed.has(node.text)) flag(node, `names the global ${node.text}`);
       }
       ts.forEachChild(node, visit);
     };
@@ -186,8 +263,9 @@ export function collectSourceFiles(roots) {
 }
 
 if (isMainModule(import.meta.url)) {
-  const files = collectSourceFiles(process.argv.slice(2));
-  const violations = egressViolations(files);
+  const roots = process.argv.slice(2);
+  const files = collectSourceFiles(roots);
+  const violations = egressViolations(files, { roots });
   for (const violation of violations) console.error(violation);
   console.log(`${files.length} module(s) checked, ${violations.length} violation(s)`);
   process.exit(violations.length ? 1 : 0);

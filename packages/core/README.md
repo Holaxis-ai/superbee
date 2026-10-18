@@ -312,38 +312,54 @@ const receipt = await observeSource({
 
 A `SourceProfile` (`id`, `version`, `kind`, `validateSpec`, `hostsFor`, `observe`) turns a bound
 feed, a cursor and a transport into pages of normalized records: `{ records, nextCursor, more,
-complete }`. It never opens a socket, never sees a credential and never writes. A `Transport`
-answers `{ url, method, headers, body, maxBytes, signal }`; it never follows a redirect and returns
-`{ ok: false, refused: "too_large" }` rather than a truncated body. A credential-injecting
-transport adds its credential only toward the auth kind's credential hosts over https, per URL.
+complete }`, all JSON data. It never opens a socket, never sees a credential and never writes. A
+`Transport` answers `{ url, method, headers, body, maxBytes, credentialHost, signal }`; it never
+follows a redirect and returns `{ ok: false, refused: "too_large" }` rather than a truncated body.
+A credential-injecting transport adds its credential only when the engine's `credentialHost` is
+true and its own exact match agrees: https, the default port, a host exactly one of the auth
+kind's credential hosts.
 
 The profile sees the engine's guarded transport, which checks every URL and every redirect hop:
 https only, the lexical address rule (`refusedAddress`: no IP literal, local name, port or
 userinfo), and a host within the profile's `hostsFor` and the connector's credential hosts plus
 keyless `domains`. A `hostsFor` naming any other host refuses the run before a request. A redirect
 never changes host when either side is a credential host. Keyless hosts are read through robots.txt
-(RFC 9309, the declared identity's product token) first. Only `GET` is sent unless `rules.post`
-admits a POST; a GET with a body, a POST redirect, and the headers `authorization`, `cookie`,
-`proxy-authorization`, `host`, `user-agent` and the method overrides are always refused; beyond
-`accept` a header needs `rules.header`, and the validators `if-none-match` and `if-modified-since`
-go out in incremental mode only. The budget counts every request,
-robots.txt and hops included, and the deadline is the caller's `signal`. Statuses map to outcomes:
-401 and 403 `credential_refused` (no retry), 404 and 410 `not_found`, 429 `deferred` with
-`retry_after`, others `provider_unavailable`; `statuses` moves a status between the sets. Any
-refusal or error status stops the run, even when the profile catches the error.
+(RFC 9309, the declared identity's product token, the first 512 KiB) first, and a bot-mitigation
+page from one is refused and never retried. Only `GET` is sent unless `rules.post` admits a POST
+toward a credential host; a keyless host is GET only. A GET with a body, a POST redirect, and the
+headers `authorization`, `cookie`, `proxy-authorization`, `host`, `user-agent` and the method
+overrides are always refused; beyond `accept` a header needs `rules.header`, and the validators
+`if-none-match` and `if-modified-since` go out in incremental mode only. The budget counts every
+request, robots.txt and hops included. The deadline is the caller's `signal`; without one the run
+ends after `deadlineMs` (default 5 minutes) and each request after `requestTimeoutMs` (default 20
+seconds). The deadline bounds the profile's page too: a page still pending is discarded and the
+run ends `deferred`. Statuses map to outcomes: 401 and 403 `credential_refused` (no retry), 404 and
+410 `not_found`, 429 `deferred` with `retry_after`, others `provider_unavailable` (503 included,
+with a retry); `statuses` moves a status between the sets. Any refusal or error status stops the
+run, even when the profile catches the error, and the guarded transport is closed when the run
+ends.
+
+A profile runs in the engine's realm. The guard bounds what a declaration and a provider's data can
+reach; profile code itself is bounded by the repository's static egress check
+(`scripts/source-egress-check.mjs`) and by review, until profiles run in an isolate.
 
 Each page is mapped with `mapRecord`, diffed against the stored records into `RecordChange` rows
-and handed to `commit`; the cursor and the records are stored only after `commit` resolves, and
-`hold` keeps named records where they were so the next observation plans them again. An
-incremental run continues the stored cursor (`resumed` when the last run left its pass open); a
-complete run lists from the start, sends no validator, and stops on a not-modified answer. A pass is a complete observation only when
-it ran in complete mode to its last page within the run, the profile claimed it complete and the
-source is declared `complete`; only then is a listed record's absence counted, and a record is
-`disappeared` after the feed's `missing_threshold` (default 2) of them. A cursor from another
-profile id or version is never handed back. The receipt names the outcome, every request, the
-pass, the stored cursor, the mapping diagnostics and the findings for `planFindings`.
-`MachineState` is the port for the stored state, written with a compare-and-swap;
-`MemoryMachineState` keeps it in memory.
+and handed to `commit`; the cursor and the records are stored only after `commit` resolves. A page
+that promises more with no cursor, or with the cursor it was asked for, fails the run as
+`cursor_stuck`. `commit` may decline to write changes: a `retry` change (a lost compare-and-swap, a
+claimed Signal) stays pending in the machine state and is planned again at the start of every run,
+before anything is fetched, until it is written, refused for good, or superseded by a newer
+observation of the record; a `hold` change is not pending, and its record is planned again when it
+is next observed. Either way the cursor moves on, so one record never stops a feed. An incremental
+run continues the stored cursor (`resumed` when the last run left its pass open); a complete run
+lists from the start, sends no validator, and stops on a not-modified answer. A pass is a complete
+observation only when it ran in complete mode to its last page within the run, the profile claimed
+it complete and the source is declared `complete`; only then is a listed record's absence counted,
+and a record is `disappeared` after the feed's `missing_threshold` (default 2) of them. A cursor
+from another profile id or version is never handed back. The receipt names the outcome, every
+request, the pass, the stored cursor, the held and pending counts, the mapping diagnostics and the
+findings for `planFindings`. `MachineState` is the port for the stored state, written with a
+compare-and-swap; `MemoryMachineState` keeps it in memory.
 
 ## Source harness
 
@@ -363,14 +379,16 @@ matched on method and URL; a `hang` answer aborts the run's deadline) through `o
 writing each committed page through record-overlay over a MemoryBackend bundle built from the
 fixture's documents, with editor edits between runs. `checkScenario` holds the result to the rule
 of its required scenario (`REQUIRED_SCENARIOS`: provider errors, an incomplete page, cursor resume,
-a hostile cursor, disappearance only from complete observations, owned-field conflicts, unmapped
+a hostile cursor refused by the guard, disappearance only from complete observations, owned-field conflicts, unmapped
 and empty values, a missing identity, a cross-host redirect and an undeclared host), and fails any
 request to an undeclared host or one the fixture did not script; a name may add a variant
 (`cursor.resume.page-number`). `missingScenarios` lists what a fixture lacks.
 
 `runTransportConformance` is the suite every transport passes against a `ScriptedPeer`, the
 network that records exactly what arrived: the credential reaches its host under its own header
-name (a custom `accessToken` included) and no other host, a redirect is returned unfollowed, a body
+name (a custom `accessToken` included) and no other host, lookalikes included (a longer or
+shorter name, a trailing dot, userinfo, another port), nor its own host when the engine's
+`credentialHost` is false; a redirect is returned unfollowed, a body
 over the bound is refused while one at the bound is returned whole, and behind the engine a
 redirect to another host or a private address reaches nothing. `peerTransport` is a memory
 transport that passes it.

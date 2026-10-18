@@ -24,7 +24,11 @@ export const REFUSAL_CODES = Object.freeze({
 
 export type RefusalCode = (typeof REFUSAL_CODES)[keyof typeof REFUSAL_CODES];
 
-/** Codes after which the caller does not advance the record's store entry, so the next run re-plans it. */
+/**
+ * Codes after which the caller does not advance the record's store entry and plans the same change
+ * again: the source engine keeps it pending and replans it at the start of every run, whether or
+ * not the provider lists the record again.
+ */
 export const RETRYABLE: ReadonlySet<RefusalCode> = new Set<RefusalCode>([
   REFUSAL_CODES.STALE_VERSION,
   REFUSAL_CODES.SIGNAL_CLAIMED,
@@ -32,8 +36,8 @@ export const RETRYABLE: ReadonlySet<RefusalCode> = new Set<RefusalCode>([
 
 /**
  * Refusals that also leave the store entry where it was but are not expected to succeed on a plain
- * retry: the feed's value is not admissible, so every run re-plans and re-refuses it visibly until
- * the provider or the recipe changes.
+ * retry: the feed's value is not admissible, so it is planned and refused again, visibly, whenever
+ * the record is observed, until the provider or the recipe changes.
  */
 export const HOLD_STORE: ReadonlySet<RefusalCode> = new Set<RefusalCode>([
   ...RETRYABLE,

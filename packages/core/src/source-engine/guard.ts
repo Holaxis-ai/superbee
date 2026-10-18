@@ -28,8 +28,14 @@ export const DEFAULT_SOURCE_BUDGET: Readonly<SourceBudget> = Object.freeze({
   maxBytes: 2 * 1024 * 1024,
   redirects: 5,
   pages: 50,
+  deadlineMs: 300_000,
+  requestTimeoutMs: 20_000,
 });
 
+/**
+ * The engine's status sets. 503 is not deferred: it ends `provider_unavailable` with a retry and
+ * any `retry_after`; a declaration's `errors` rows pass their own sets.
+ */
 export const DEFAULT_STATUS_RULES: Readonly<StatusRules> = Object.freeze({
   deferred: Object.freeze([429]),
   credential_refused: Object.freeze([401, 403]),
@@ -37,7 +43,7 @@ export const DEFAULT_STATUS_RULES: Readonly<StatusRules> = Object.freeze({
 });
 
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
-/** RFC 9309 2.5: parse at least 500 KiB; a longer robots.txt is unreadable here, so a full disallow. */
+/** RFC 9309 2.5: parse at least 500 KiB. A longer file is read whole and parsed up to here. */
 const MAX_ROBOTS_BYTES = 512 * 1024;
 /** RFC 9309 2.3.1.2: follow at least five redirects for robots.txt. */
 const MAX_ROBOTS_REDIRECTS = 5;
@@ -116,6 +122,8 @@ export interface GuardContext {
    */
   conditional: boolean;
   signal?: AbortSignal;
+  /** Each request's own timeout, when the caller passed no deadline. */
+  requestTimeoutMs?: number;
 }
 
 export interface GuardedTransport {
@@ -126,6 +134,8 @@ export interface GuardedTransport {
   stopped(): Stop | undefined;
   /** Requests left in the run. */
   remaining(): number;
+  /** End the run: every later request throws, from a reference the profile kept or not. */
+  close(): void;
 }
 
 type RobotsEntry = { status: number; text: string; challenged?: boolean };
@@ -133,7 +143,16 @@ type RobotsEntry = { status: number; text: string; challenged?: boolean };
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+/** The first 512 KiB of a robots.txt, cut back to the last whole line so no rule is shortened. */
+function robotsPrefix(text: string): string {
+  if (text.length <= MAX_ROBOTS_BYTES) return text;
+  const cut = text.slice(0, MAX_ROBOTS_BYTES);
+  const end = Math.max(cut.lastIndexOf("\n"), cut.lastIndexOf("\r"));
+  return end === -1 ? "" : cut.slice(0, end);
+}
+
+/** `promise`, or a rejection once `signal` aborts; the abandoned promise's later failure is ignored. */
+export function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (!signal) return promise;
   // A request abandoned at the deadline may still fail later; that is not this run's error.
   promise.catch(() => {});
@@ -172,6 +191,7 @@ export function guardTransport(ctx: GuardContext): GuardedTransport {
   const robots = new Map<string, Promise<RobotsEntry>>();
   let left = budget.requests;
   let stop: Stop | undefined;
+  let closed = false;
 
   function halt(next: Stop): never {
     stop ??= next;
@@ -212,26 +232,43 @@ export function guardTransport(ctx: GuardContext): GuardedTransport {
     requests.push({ method, url: redactUrl(typeof url === "string" ? url : url.href), purpose, refused });
   };
 
-  /** One transport call. Budget and deadline stop the run; a failed call returns "failed". */
-  const send = async (url: URL, method: HttpMethod, headers: Record<string, string>, body: string | undefined, maxBytes: number, purpose: SourceRequestRow["purpose"]): Promise<TransportResult | "failed"> => {
+  /**
+   * One transport call. Budget and deadline stop the run; a failed call returns "timeout" or
+   * "failed".
+   */
+  const send = async (url: URL, method: HttpMethod, headers: Record<string, string>, body: string | undefined, maxBytes: number, purpose: SourceRequestRow["purpose"]): Promise<TransportResult | "failed" | "timeout"> => {
     if (signal?.aborted) halt({ outcome: "deferred", reason: "deadline", retry: true });
     if (left <= 0) halt({ outcome: "deferred", reason: "budget", retry: true });
     left -= 1;
     const row: SourceRequestRow = { method, url: redactUrl(url.href), purpose };
     requests.push(row);
+    let requestSignal = signal;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    let onRunAbort: (() => void) | undefined;
+    if (ctx.requestTimeoutMs !== undefined) {
+      const controller = new AbortController();
+      timer = setTimeout(() => { timedOut = true; controller.abort(); }, ctx.requestTimeoutMs);
+      if (signal) signal.addEventListener("abort", onRunAbort = () => controller.abort(), { once: true });
+      requestSignal = controller.signal;
+    }
     let raw: unknown;
     try {
       raw = await raceAbort(ctx.transport.request({
         url: url.href, method, headers: { ...headers, "user-agent": identity.userAgent }, maxBytes,
-        ...(body !== undefined ? { body } : {}), ...(signal ? { signal } : {}),
-      }), signal);
+        credentialHost: hosts.credential.has(url.hostname),
+        ...(body !== undefined ? { body } : {}), ...(requestSignal ? { signal: requestSignal } : {}),
+      }), requestSignal);
     } catch {
       if (signal?.aborted) {
         row.refused = "deadline";
         halt({ outcome: "deferred", reason: "deadline", retry: true });
       }
-      row.refused = "transport";
-      return "failed";
+      row.refused = timedOut ? "timeout" : "transport";
+      return timedOut ? "timeout" : "failed";
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (onRunAbort) signal!.removeEventListener("abort", onRunAbort);
     }
     const result = readResult(raw, maxBytes);
     if (!result) { row.refused = "transport_invalid"; return "failed"; }
@@ -246,8 +283,8 @@ export function guardTransport(ctx: GuardContext): GuardedTransport {
     for (let hop = 0; hop <= MAX_ROBOTS_REDIRECTS; hop++) {
       const refusal = hopRefusal(url, from);
       if (refusal) { refuseRow("GET", url, "robots", refusal.reason); break; }
-      const result = await send(url, "GET", { accept: "text/plain, */*;q=0.1" }, undefined, MAX_ROBOTS_BYTES, "robots");
-      if (result === "failed" || !result.ok) break;
+      const result = await send(url, "GET", { accept: "text/plain, */*;q=0.1" }, undefined, Math.max(budget.maxBytes, MAX_ROBOTS_BYTES), "robots");
+      if (typeof result === "string" || !result.ok) break;
       if (REDIRECTS.has(result.status)) {
         const location = result.headers.location;
         if (!location) break;
@@ -259,7 +296,7 @@ export function guardTransport(ctx: GuardContext): GuardedTransport {
         continue;
       }
       if (challenged(result.status, result.headers, result.body)) return { status: result.status, text: "", challenged: true };
-      return { status: result.status, text: result.status >= 200 && result.status < 300 ? result.body : "" };
+      return { status: result.status, text: result.status >= 200 && result.status < 300 ? robotsPrefix(result.body) : "" };
     }
     return { status: 0, text: "" };
   };
@@ -281,9 +318,8 @@ export function guardTransport(ctx: GuardContext): GuardedTransport {
     if (!decision.allow) refuse({ outcome: "refused", reason: "robots_disallowed", retry: false, ...(decision.rule ? { detail: decision.rule } : {}) });
   };
 
-  const headersFor = (given: Readonly<Record<string, string>> | undefined, url: URL, method: HttpMethod): Record<string, string> => {
+  const headersFor = (entries: ReadonlyArray<[string, unknown]> | null, url: URL, method: HttpMethod): Record<string, string> => {
     const out: Record<string, string> = {};
-    const entries = given === undefined ? [] : record(given) ? Object.entries(given) : null;
     if (entries === null || entries.length > MAX_HEADERS) halt({ outcome: "refused", reason: "header_refused", retry: false });
     for (const [rawName, value] of entries) {
       const name = rawName.toLowerCase();
@@ -300,22 +336,28 @@ export function guardTransport(ctx: GuardContext): GuardedTransport {
 
   const request = async (input: ProfileRequest): Promise<ProfileResponse> => {
     if (stop) throw new SourceStop(stop);
-    if (!record(input) || typeof input.url !== "string" || input.url.length > MAX_URL) {
-      halt({ outcome: "refused", reason: "url_invalid", retry: false });
-    }
-    const method: HttpMethod = input.method ?? "GET";
+    if (closed) throw new SourceStop({ outcome: "refused", reason: "run_ended", retry: false });
+    if (!record(input)) halt({ outcome: "refused", reason: "url_invalid", retry: false });
+    // Each field is read once: a getter answering differently on a second read changes nothing.
+    const { url: rawUrl, method: rawMethod, headers: rawHeaders, body, maxBytes: rawMaxBytes } = input;
+    const headerEntries = rawHeaders === undefined ? [] : record(rawHeaders) ? Object.entries(rawHeaders) : null;
+    if (typeof rawUrl !== "string" || rawUrl.length > MAX_URL) halt({ outcome: "refused", reason: "url_invalid", retry: false });
+    const method: HttpMethod = rawMethod ?? "GET";
     if (method !== "GET" && method !== "POST") halt({ outcome: "refused", reason: "method_refused", retry: false });
-    const body = input.body;
     if (body !== undefined && typeof body !== "string") halt({ outcome: "refused", reason: "body_refused", retry: false });
-    if (input.maxBytes !== undefined && !(Number.isInteger(input.maxBytes) && input.maxBytes > 0)) {
+    if (rawMaxBytes !== undefined && !(typeof rawMaxBytes === "number" && Number.isInteger(rawMaxBytes) && rawMaxBytes > 0)) {
       halt({ outcome: "refused", reason: "request_invalid", detail: "maxBytes", retry: false });
     }
-    const maxBytes = Math.min(input.maxBytes ?? budget.maxBytes, budget.maxBytes);
+    const maxBytes = Math.min(rawMaxBytes ?? budget.maxBytes, budget.maxBytes);
     let url: URL;
-    try { url = new URL(input.url); } catch { refuseRow(method, input.url.slice(0, 256), "page", "url_invalid"); halt({ outcome: "refused", reason: "url_invalid", retry: false }); }
+    try { url = new URL(rawUrl); } catch { refuseRow(method, rawUrl.slice(0, 256), "page", "url_invalid"); halt({ outcome: "refused", reason: "url_invalid", retry: false }); }
     url.hash = "";
     if (method === "GET" && body !== undefined) { refuseRow(method, url, "page", "body_refused"); halt({ outcome: "refused", reason: "body_refused", retry: false }); }
-    if (method === "POST" && rules.post?.(url, body) !== true) { refuseRow(method, url, "page", "method_refused"); halt({ outcome: "refused", reason: "method_refused", retry: false }); }
+    // A keyless host is read with GET only, whatever a rule says.
+    if (method === "POST" && (!hosts.credential.has(url.hostname) || rules.post?.(url, body) !== true)) {
+      refuseRow(method, url, "page", "method_refused");
+      halt({ outcome: "refused", reason: "method_refused", retry: false });
+    }
     let from: URL | undefined;
     for (let hop = 0; ; hop++) {
       const refusal = hopRefusal(url, from);
@@ -327,12 +369,16 @@ export function guardTransport(ctx: GuardContext): GuardedTransport {
         refuseRow(method, url, "page", "url_refused");
         halt({ outcome: "refused", reason: "url_refused", retry: false });
       }
-      const headers = headersFor(input.headers, url, method);
+      const headers = headersFor(headerEntries, url, method);
       if (hosts.keyless.has(url.hostname)) await robotsGate(url, method);
       const result = await send(url, method, headers, body, maxBytes, "page");
-      if (result === "failed") halt({ outcome: "provider_unavailable", reason: "transport", retry: true });
+      if (result === "failed" || result === "timeout") halt({ outcome: "provider_unavailable", reason: result === "timeout" ? "timeout" : "transport", retry: true });
       if (!result.ok) halt({ outcome: "too_large", retry: false });
       const { status, headers: responseHeaders, body: responseBody } = result;
+      // A bot-mitigation page is never content and never retried around.
+      if (hosts.keyless.has(url.hostname) && challenged(status, responseHeaders, responseBody)) {
+        halt({ outcome: "refused", reason: "bot_challenge", status, retry: false });
+      }
       if (REDIRECTS.has(status)) {
         if (method !== "GET") halt({ outcome: "refused", reason: "redirect_refused", detail: method, status, retry: false });
         const location = responseHeaders.location;
@@ -356,5 +402,6 @@ export function guardTransport(ctx: GuardContext): GuardedTransport {
     requests,
     stopped: () => stop,
     remaining: () => left,
+    close: () => { closed = true; },
   };
 }

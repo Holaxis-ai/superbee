@@ -43,6 +43,7 @@ test("percent-encoding, product tokens and wildcards leave no way around a rule"
   assert.equal(robotsDecision("User-agent: FairportBot/0.1\nDisallow: /\n", "/x", "FairportBot").allow, false);
   assert.equal(canonicalRobotsPath("/%7euser/café?q=%2f"), "/~user/caf%C3%A9?q=%2F");
   assert.deepEqual(parseRobots("User-agent: A\nUser-agent: b-bot/2\nDisallow: /x # note\nAllow:\n"), [{ agents: ["a", "b-bot"], rules: [{ allow: false, path: "/x" }] }]);
+  assert.equal(robotsDecision("User-agent: *\rDisallow: /private\r", "/private/x", "FairportBot").allow, false, "a bare CR ends a line");
   assert.equal(robotsRuleMatches("/a*b$", "/aXXb"), true);
   assert.equal(robotsRuleMatches("/a*b$", "/aXXbc"), false);
   const started = Date.now();

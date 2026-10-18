@@ -8,7 +8,7 @@ import { bindSourceFeed, credentialHosts, type BoundFeed, type Connector } from 
 import { mutateDocument } from "../document-mutation.js";
 import { loadKinds } from "../kinds-load.js";
 import { MemoryBackend } from "../memory-backend.js";
-import { HOLD_STORE } from "../record-overlay/errors.js";
+import { HOLD_STORE, RETRYABLE } from "../record-overlay/errors.js";
 import { planFindings } from "../record-overlay/findings.js";
 import { applyRecordOverlay } from "../record-overlay/apply.js";
 import { planRecordOverlay } from "../record-overlay/plan.js";
@@ -87,7 +87,7 @@ export interface SourceScenario {
 
 export interface ScenarioRun {
   receipt: SourceRunReceipt;
-  /** Every change a committed page carried. */
+  /** Every change a commit carried, replays of pending changes included. */
   changes: RecordChange[];
   /** One record-overlay receipt per committed page. */
   overlay: OverlayReceipt[];
@@ -172,7 +172,11 @@ export async function runSourceScenario(fixture: SourceFixture, scenario: Source
         });
         const applied = await applyRecordOverlay(plan, { content: overlay, ops: overlay, policy: bound.policy, actor: SOURCE_ACTOR });
         overlayReceipts.push(applied);
-        return { hold: applied.results.filter((r) => r.outcome === "refused" && r.code !== undefined && HOLD_STORE.has(r.code)).map((r) => r.external_id) };
+        const refused = applied.results.filter((r) => r.outcome === "refused" && r.code !== undefined);
+        return {
+          retry: refused.filter((r) => RETRYABLE.has(r.code!)).map((r) => r.external_id),
+          hold: refused.filter((r) => HOLD_STORE.has(r.code!) && !RETRYABLE.has(r.code!)).map((r) => r.external_id),
+        };
       },
     });
     const steps = await planFindings({ ops: overlay, provider: bound.policy.provider, feed: fixture.feed, slug, findings: receipt.findings, observedAt: at });
@@ -242,8 +246,9 @@ const CHECKS: Record<RequiredScenario, (result: ScenarioResult) => string[]> = {
     return problems;
   },
 
-  "cursor.hostile": (r) => some(r, "no run refuses a provider-steered request or completes with every request on a declared host",
-    (run) => run.receipt.requests.some((row) => row.refused !== undefined && /^(host|redirect|address|scheme|url)_/.test(row.refused)) || run.receipt.outcome === "observed"),
+  "cursor.hostile": (r) => some(r, "no run refuses a provider-steered request (a host, redirect, address, scheme or url refusal) after a committed page",
+    (run) => run.receipt.pages >= 1 && run.receipt.outcome === "refused"
+      && run.receipt.requests.some((row) => row.purpose === "page" && row.refused !== undefined && /^(host|redirect|address|scheme|url)_/.test(row.refused))),
 
   "complete.disappear": (r) => {
     const problems: string[] = [];

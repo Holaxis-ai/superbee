@@ -102,9 +102,10 @@ const utf8Bytes = (text: string): number => new TextEncoder().encode(text).lengt
 const abortedError = (): Error => Object.assign(new Error("request aborted"), { name: "AbortError" });
 
 /**
- * A transport over a scripted peer. It adds `credential` only to https requests whose host is one
- * of its hosts, returns redirects unfollowed, refuses a body over `maxBytes` and rejects when the
- * request's signal aborts.
+ * A transport over a scripted peer. It adds `credential` only when the engine marks the request
+ * as toward a credential host and the URL itself is https on the default port with a host exactly
+ * one of the credential's hosts. It returns redirects unfollowed, refuses a body over `maxBytes`
+ * and rejects when the request's signal aborts.
  */
 export function peerTransport(peer: ScriptedPeer, options: { credential?: TransportCredential } = {}): Transport {
   const credential = options.credential;
@@ -114,7 +115,8 @@ export function peerTransport(peer: ScriptedPeer, options: { credential?: Transp
       const url = new URL(input.url);
       const headers: Record<string, string> = {};
       for (const [name, value] of Object.entries(input.headers)) headers[name.toLowerCase()] = value;
-      if (credential && url.protocol === "https:" && credential.hosts.includes(url.hostname)) headers[credential.header.toLowerCase()] = credential.value;
+      const toCredentialHost = url.protocol === "https:" && url.port === "" && url.username === "" && credential?.hosts.includes(url.hostname) === true;
+      if (credential && input.credentialHost === true && toCredentialHost) headers[credential.header.toLowerCase()] = credential.value;
       const response = peer.answer({ url: url.href, method: input.method, headers, ...(input.body !== undefined ? { body: input.body } : {}) });
       if ("fail" in response) throw new Error("connection failed");
       if ("hang" in response) {

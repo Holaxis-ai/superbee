@@ -197,11 +197,29 @@ const following: TransportConformanceTarget = {
   },
 };
 
-/** A transport that sends the credential to every host. */
-const forwarding: TransportConformanceTarget = {
-  name: "forwards the credential",
-  create: (peer, credential) => peerTransport(peer, { credential: { ...credential, hosts: [...credential.hosts, "feeds.example.org", "collector.example.net"] } }),
-};
+/** A transport whose credential decision is `send` over the URL and the engine's flag. */
+function deciding(name: string, send: (url: URL, credentialHost: boolean, credential: TransportCredential) => boolean): TransportConformanceTarget {
+  return {
+    name,
+    create(peer, credential): Transport {
+      const inner = peerTransport(peer);
+      return {
+        request(input) {
+          const url = new URL(input.url);
+          const headers = send(url, input.credentialHost, credential) ? { ...input.headers, [credential.header.toLowerCase()]: credential.value } : input.headers;
+          return inner.request({ ...input, headers, credentialHost: false });
+        },
+      };
+    },
+  };
+}
+
+/** A transport that sends the credential with every request. */
+const forwarding = deciding("forwards the credential", () => true);
+/** A transport that matches credential hosts by prefix. */
+const prefixing = deciding("matches the credential host by prefix", (url, flag, credential) => flag && credential.hosts.some((host) => url.hostname.startsWith(host)));
+/** A transport that ignores the engine's decision and trusts its own exact match alone. */
+const unflagged = deciding("ignores the engine's credential decision", (url, _flag, credential) => url.protocol === "https:" && credential.hosts.includes(url.hostname));
 
 /** A transport that truncates a long body instead of refusing it. */
 const truncating: TransportConformanceTarget = {
@@ -231,6 +249,8 @@ const renaming: TransportConformanceTarget = {
 for (const [target, failing] of [
   [following, ["redirect-returned-unfollowed", "cross-host-redirect-refused", "private-redirect-refused"]],
   [forwarding, ["credential-stays-on-its-host", "cross-host-redirect-refused"]],
+  [prefixing, ["credential-stays-on-its-host"]],
+  [unflagged, ["credential-stays-on-its-host"]],
   [truncating, ["body-over-bound-refused"]],
   [silent, ["credential-reaches-its-host"]],
   [renaming, ["credential-reaches-its-host"]],
@@ -241,9 +261,20 @@ for (const [target, failing] of [
   });
 }
 
-test("the scripted peer records exactly what a transport sent, headers included", async () => {
+test("the scripted peer records exactly what a transport sent; the memory transport needs the engine's flag and its own match", async () => {
   const peer = new ScriptedPeer(() => ({ status: 200, body: "{}" }));
   const transport = peerTransport(peer, { credential: { hosts: ["api.github.com"], header: "Authorization", value: "Bearer t" } });
-  await transport.request({ url: "https://api.github.com/x", method: "GET", headers: { Accept: "application/json" }, maxBytes: 10 });
-  assert.deepEqual(peer.received, [{ url: "https://api.github.com/x", method: "GET", headers: { accept: "application/json", authorization: "Bearer t" } }]);
+  await transport.request({ url: "https://api.github.com/x", method: "GET", headers: { Accept: "application/json" }, maxBytes: 10, credentialHost: true });
+  await transport.request({ url: "https://api.github.com/y", method: "GET", headers: {}, maxBytes: 10, credentialHost: false });
+  await transport.request({ url: "https://api.github.com.collector.example.net/z", method: "GET", headers: {}, maxBytes: 10, credentialHost: true });
+  assert.deepEqual(peer.received, [
+    { url: "https://api.github.com/x", method: "GET", headers: { accept: "application/json", authorization: "Bearer t" } },
+    { url: "https://api.github.com/y", method: "GET", headers: {} },
+    { url: "https://api.github.com.collector.example.net/z", method: "GET", headers: {} },
+  ]);
+});
+
+test("cursor.hostile needs a refused provider-steered request, not a plain listing", async () => {
+  const plain = await runSourceScenario(ticketFixture(), { name: "cursor.hostile", runs: [{ exchanges: [{ request: { url: ITEMS }, response: { status: 200, body: JSON.stringify({ items: [] }) } }] }] });
+  assert.ok(checkScenario(plain).some((p) => /provider-steered/.test(p)));
 });

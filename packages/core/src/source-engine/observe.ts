@@ -1,16 +1,18 @@
 /**
  * The observation loop: run a profile page by page behind the guarded transport, diff each page
  * against the stored records into record-overlay changes, hand them to the caller's commit, and
- * only then store the cursor and the records. A pass counts as a complete observation only when it
- * ran in complete mode from no cursor to its last page within this run, the profile claimed it
- * complete and the source is declared complete; only a complete observation counts a stored
- * record as missing, and a record is `disappeared` after `missing_threshold` of them.
+ * only then store the cursor and the records. A change the commit asks to retry stays pending in
+ * the machine state and is planned again before the next run fetches anything, so the cursor
+ * never waits on one record. A pass counts as a complete observation only when it ran in complete
+ * mode from no cursor to its last page within this run, the profile claimed it complete and the
+ * source is declared complete; only a complete observation counts a stored record as missing, and
+ * a record is `disappeared` after `missing_threshold` of them.
  */
 import { changeBetween, findingsFor, mapRecord, type BoundFeed, type MappingDiagnostic } from "../connectors.js";
 import { overlayCanonicalJson } from "../record-overlay/canonical.js";
 import type { Finding, RecordChange } from "../record-overlay/types.js";
-import { DEFAULT_SOURCE_BUDGET, DEFAULT_STATUS_RULES, guardTransport, sourceHostSet, SourceStop, type Stop } from "./guard.js";
-import { isSourceState, type RecordEntry, type SourceState } from "./machine-state.js";
+import { DEFAULT_SOURCE_BUDGET, DEFAULT_STATUS_RULES, guardTransport, raceAbort, sourceHostSet, SourceStop, type Stop } from "./guard.js";
+import { isSourceState, type PendingChange, type RecordEntry, type SourceState } from "./machine-state.js";
 import type {
   ObservePage,
   ObserveSourceOptions,
@@ -54,7 +56,9 @@ function isJsonData(value: unknown, depth = 0): boolean {
 
 function budgetOf(given: Partial<SourceBudget> | undefined): SourceBudget | undefined {
   const budget = { ...DEFAULT_SOURCE_BUDGET, ...given };
-  const ok = (["requests", "maxBytes", "redirects", "pages"] as const).every((key) => Number.isInteger(budget[key]) && budget[key] >= (key === "redirects" ? 0 : 1));
+  // Timer delays above 2^31 - 1 milliseconds overflow to an immediate timeout.
+  const ok = (["requests", "maxBytes", "redirects", "pages", "deadlineMs", "requestTimeoutMs"] as const).every((key) => Number.isInteger(budget[key])
+    && budget[key] >= (key === "redirects" ? 0 : 1) && budget[key] <= 2 ** 31 - 1);
   return ok ? budget : undefined;
 }
 
@@ -199,6 +203,14 @@ function findingUrl(url: string | undefined): string | undefined {
   }
 }
 
+/** The ids a commit did not write, read defensively. */
+function commitResult(result: unknown): { hold: Set<string>; retry: Set<string> } {
+  const ids = (value: unknown): string[] => (Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : []);
+  const retry = new Set(record(result) ? ids(result.retry) : []);
+  const hold = new Set((record(result) ? ids(result.hold) : []).filter((id) => !retry.has(id)));
+  return { hold, retry };
+}
+
 /**
  * Run one observation of a bound Source Feed. Returns a receipt; never throws for a provider,
  * profile, guard or commit problem, which all end the run with an outcome and a finding.
@@ -219,6 +231,8 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
     outcome: "observed",
     retry: true,
     pages: 0,
+    held: 0,
+    pending: 0,
     requests: [],
     pass: { resumed: false, ended: false, complete: false },
     changes: { new: 0, changed: 0, disappeared: 0 },
@@ -247,6 +261,7 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
     stop = { outcome: "refused", reason, retry: false, ...(detail !== undefined ? { detail } : {}) };
     return finish();
   };
+  const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
   const problem = profileProblem(profile);
   if (problem) return refuse("profile_invalid", problem);
@@ -268,7 +283,7 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
     spec = checked.spec;
     hosts = profile.hostsFor(spec, bound);
   } catch (error) {
-    stop = { outcome: "failed", reason: "profile_error", retry: false, detail: error instanceof Error ? error.message : String(error) };
+    stop = { outcome: "failed", reason: "profile_error", retry: false, detail: errorText(error) };
     return finish();
   }
   if (!Array.isArray(hosts) || !hosts.every((host) => typeof host === "string")) return refuse("hosts_invalid");
@@ -287,11 +302,12 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
     version = stored?.version ?? null;
     state = stored?.state ?? emptyState(profile);
   } catch (error) {
-    stop = { outcome: "failed", reason: "state_unreadable", retry: true, detail: error instanceof Error ? error.message : String(error) };
+    stop = { outcome: "failed", reason: "state_unreadable", retry: true, detail: errorText(error) };
     return finish();
   }
   const baseline = version === null;
   receipt.cursor = state.cursor;
+  receipt.pending = Object.keys(state.pending ?? {}).length;
   let mode = requestedMode;
   if (state.profile.id !== profile.id || state.profile.version !== profile.version) {
     // A cursor is the profile's own format, so another profile's is never handed back.
@@ -308,100 +324,170 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
   const threshold = bound.policy.missing_threshold ?? DEFAULT_MISSING_THRESHOLD;
   const sourceComplete = bound.source.completeness === "complete";
 
+  // Without the caller's deadline the run has its own, and every request its own timeout.
+  const ownDeadline = options.signal ? undefined : new AbortController();
+  const timer = ownDeadline ? setTimeout(() => ownDeadline.abort(), budget.deadlineMs) : undefined;
+  const signal = options.signal ?? ownDeadline!.signal;
   const guard = guardTransport({
     hosts: hostSet.hosts, transport: options.transport, identity, budget, rules: options.rules ?? {}, statuses, now, conditional: mode === "incremental",
-    ...(options.signal ? { signal: options.signal } : {}),
+    signal, ...(options.signal ? {} : { requestTimeoutMs: budget.requestTimeoutMs }),
   });
   receipt.requests = guard.requests;
-  const seen = new Set<string>();
-  const lastRequestUrl = (): string | undefined => guard.requests.at(-1)?.url;
 
-  for (let first = true; ; first = false) {
-    if (options.signal?.aborted) { stop = { outcome: "deferred", reason: "deadline", retry: true }; break; }
-    let page: ObservePage<unknown>;
-    try {
-      page = await profile.observe({
-        spec, bound, cursor, resumed: first && resumed, mode, transport: guard.transport,
-        budget: { requests: guard.remaining(), maxBytes: budget.maxBytes }, now: now(),
-        validators: mode === "complete" ? null : state.validators ?? null,
-      });
-    } catch (error) {
-      stop = guard.stopped() ?? (error instanceof SourceStop ? error.stop : undefined);
-      if (!stop) {
-        const code = record(error) ? error.code : undefined;
-        stop = code === UNSUPPORTED_CONTENT
-          ? { outcome: "unsupported_content", retry: false, detail: String((error as { detail?: unknown }).detail ?? "") }
-          : { outcome: "failed", reason: "profile_error", retry: false, detail: error instanceof Error ? error.message : String(error) };
-      }
-      stopUrl = lastRequestUrl();
-      break;
-    }
-    // A stop the profile caught and swallowed still ends the run, and its page is discarded.
-    const guardStop = guard.stopped();
-    if (guardStop) { stop = guardStop; stopUrl = lastRequestUrl(); break; }
-    const invalid = pageProblem(page);
-    if (invalid) { stop = { outcome: "failed", reason: invalid, retry: false }; break; }
-    const nextCursor = page.nextCursor ?? null;
-
-    const diff = diffPage(state, page, bound, observedAt);
-    for (const id of diff.seen) seen.add(id);
-    const ended = !page.more;
-    const complete = ended && mode === "complete" && page.complete && sourceComplete;
-    const merged: Record<string, RecordEntry> = { ...state.records };
-    for (const [id, entry] of diff.entries) merged[id] = entry;
-    const missing = complete ? missingAfterComplete(merged, seen, threshold, observedAt) : { changes: [], entries: new Map<string, RecordEntry>() };
-    const changes = [...diff.changes, ...missing.changes];
-    const records: Record<string, { fields: Record<string, unknown> }> = {};
-    for (const change of changes) records[change.external_id] = { fields: { ...(change.after ?? change.before ?? {}) } };
-
-    let hold: ReadonlySet<string>;
-    try {
-      const result = await options.commit({
-        feed: key, provider: bound.policy.provider, observed_at: observedAt, page: receipt.pages + 1,
-        changes, records, baseline, complete,
-      });
-      const held = record(result) && Array.isArray(result.hold) ? result.hold.filter((id): id is string => typeof id === "string") : [];
-      hold = new Set(held);
-    } catch (error) {
-      stop = { outcome: "failed", reason: "commit_failed", retry: true, detail: error instanceof Error ? error.message : String(error) };
-      break;
-    }
-
-    // The page committed: now, and only now, its records and cursor are stored.
-    const nextRecords: Record<string, RecordEntry> = { ...state.records };
-    for (const [id, entry] of [...diff.entries, ...missing.entries]) if (!hold.has(id)) nextRecords[id] = entryJson(entry);
-    const next: SourceState = {
-      ...state,
-      cursor: nextCursor,
-      open: page.more,
-      records: nextRecords,
-      complete_observations: state.complete_observations + (complete ? 1 : 0),
-      ...(complete ? { last_complete_at: observedAt } : {}),
-      ...(page.validators ? { validators: { ...page.validators } } : {}),
-    };
+  /** Store `next` after a commit; false when the store refused it and the run has stopped. */
+  const store = async (next: SourceState): Promise<boolean> => {
     try {
       version = await options.state.write(key, next, version);
+      state = next;
+      receipt.pending = Object.keys(next.pending ?? {}).length;
+      return true;
     } catch (error) {
       const conflict = record(error) && error.code === "MACHINE_STATE_CONFLICT";
       stop = { outcome: "failed", reason: conflict ? "state_conflict" : "state_unwritable", retry: true };
-      break;
+      return false;
     }
-    state = next;
-    receipt.pages += 1;
-    receipt.cursor = nextCursor;
-    receipt.diagnostics.push(...diff.diagnostics);
-    receipt.profile_diagnostics.push(...diff.profileDiagnostics);
-    for (const change of changes) {
-      const kind = change.change_kind as keyof SourceRunReceipt["changes"];
-      if (Object.hasOwn(receipt.changes, kind) && !hold.has(change.external_id)) receipt.changes[kind] += 1;
+  };
+
+  try {
+    // Changes an earlier commit asked to retry are planned again before anything is fetched.
+    const pendingIds = Object.keys(state.pending ?? {}).sort();
+    if (pendingIds.length) {
+      const pending = state.pending!;
+      const changes = pendingIds.map((id) => pending[id]!.change);
+      const records: Record<string, { fields: Record<string, unknown> }> = {};
+      for (const change of changes) records[change.external_id] = { fields: { ...(change.after ?? change.before ?? {}) } };
+      let result: { hold: Set<string>; retry: Set<string> };
+      try {
+        result = commitResult(await options.commit({
+          feed: key, provider: bound.policy.provider, observed_at: observedAt, page: 0, replay: true, changes, records, baseline: false, complete: false,
+        }));
+      } catch (error) {
+        stop = { outcome: "failed", reason: "commit_failed", retry: true, detail: errorText(error) };
+        return finish();
+      }
+      const nextRecords = { ...state.records };
+      const nextPending: Record<string, PendingChange> = {};
+      for (const id of pendingIds) {
+        if (result.retry.has(id)) nextPending[id] = pending[id]!;
+        else if (!result.hold.has(id)) nextRecords[id] = pending[id]!.entry;
+      }
+      receipt.held += pendingIds.filter((id) => result.retry.has(id) || result.hold.has(id)).length;
+      const next: SourceState = { ...state, records: nextRecords };
+      if (Object.keys(nextPending).length) next.pending = nextPending;
+      else delete next.pending;
+      if (!(await store(next))) return finish();
     }
-    if (ended) {
-      receipt.pass.ended = true;
-      receipt.pass.complete = complete;
-      break;
+
+    const seen = new Set<string>();
+    const lastRequestUrl = (): string | undefined => guard.requests.at(-1)?.url;
+    for (let first = true; ; first = false) {
+      if (signal.aborted) { stop = { outcome: "deferred", reason: "deadline", retry: true }; break; }
+      let raw: unknown;
+      try {
+        // The deadline bounds profile code too: a page still pending when it passes is discarded.
+        raw = await raceAbort(profile.observe({
+          spec, bound, cursor, resumed: first && resumed, mode, transport: guard.transport,
+          budget: { requests: guard.remaining(), maxBytes: budget.maxBytes }, now: now(),
+          validators: mode === "complete" ? null : state.validators ?? null,
+        }), signal);
+      } catch (error) {
+        stop = guard.stopped() ?? (error instanceof SourceStop ? error.stop : undefined);
+        if (!stop && signal.aborted) stop = { outcome: "deferred", reason: "deadline", retry: true };
+        if (!stop) {
+          const code = record(error) ? error.code : undefined;
+          stop = code === UNSUPPORTED_CONTENT
+            ? { outcome: "unsupported_content", retry: false, detail: String((error as { detail?: unknown }).detail ?? "") }
+            : { outcome: "failed", reason: "profile_error", retry: false, detail: errorText(error) };
+        }
+        stopUrl = lastRequestUrl();
+        break;
+      }
+      // A stop the profile caught and swallowed still ends the run, and its page is discarded.
+      const guardStop = guard.stopped();
+      if (guardStop) { stop = guardStop; stopUrl = lastRequestUrl(); break; }
+      let page: ObservePage<unknown>;
+      try {
+        const invalid = pageProblem(raw);
+        if (invalid) { stop = { outcome: "failed", reason: invalid, retry: false }; break; }
+        // One read of the profile's page, as JSON data, so no getter or later mutation reaches the diff.
+        page = JSON.parse(JSON.stringify(raw)) as ObservePage<unknown>;
+      } catch (error) {
+        stop = { outcome: "failed", reason: "page_invalid", retry: false, detail: errorText(error) };
+        break;
+      }
+      const nextCursor = page.nextCursor ?? null;
+      // A page that promises more but hands back no cursor, or the one it was asked for, would read
+      // the same page until the budget runs out. A resumed pass may restart, so its first page may.
+      if (page.more && (nextCursor === null || (!(first && resumed) && overlayCanonicalJson(nextCursor) === overlayCanonicalJson(cursor)))) {
+        stop = { outcome: "failed", reason: "cursor_stuck", retry: false };
+        break;
+      }
+
+      const diff = diffPage(state, page, bound, observedAt);
+      for (const id of diff.seen) seen.add(id);
+      const ended = !page.more;
+      const complete = ended && mode === "complete" && page.complete && sourceComplete;
+      const merged: Record<string, RecordEntry> = { ...state.records };
+      for (const [id, entry] of diff.entries) merged[id] = entry;
+      const missing = complete ? missingAfterComplete(merged, seen, threshold, observedAt) : { changes: [], entries: new Map<string, RecordEntry>() };
+      const changes = [...diff.changes, ...missing.changes];
+      const byId = new Map(changes.map((change) => [change.external_id, change]));
+      const records: Record<string, { fields: Record<string, unknown> }> = {};
+      for (const change of changes) records[change.external_id] = { fields: { ...(change.after ?? change.before ?? {}) } };
+
+      let result: { hold: Set<string>; retry: Set<string> };
+      try {
+        result = commitResult(await options.commit({
+          feed: key, provider: bound.policy.provider, observed_at: observedAt, page: receipt.pages + 1, replay: false,
+          changes, records, baseline, complete,
+        }));
+      } catch (error) {
+        stop = { outcome: "failed", reason: "commit_failed", retry: true, detail: errorText(error) };
+        break;
+      }
+      const notWritten = (id: string): boolean => byId.has(id) && (result.hold.has(id) || result.retry.has(id));
+
+      // The page committed: now, and only now, its records and cursor are stored.
+      const nextRecords: Record<string, RecordEntry> = { ...state.records };
+      const nextPending: Record<string, PendingChange> = { ...state.pending };
+      // A newer observation of a record supersedes its pending change.
+      for (const id of diff.seen) delete nextPending[id];
+      for (const [id, entry] of [...diff.entries, ...missing.entries]) {
+        if (byId.has(id) && result.retry.has(id)) nextPending[id] = { change: byId.get(id)!, entry: entryJson(entry), held_at: observedAt };
+        else if (!notWritten(id)) nextRecords[id] = entryJson(entry);
+      }
+      const next: SourceState = {
+        ...state,
+        cursor: nextCursor,
+        open: page.more,
+        records: nextRecords,
+        complete_observations: state.complete_observations + (complete ? 1 : 0),
+        ...(complete ? { last_complete_at: observedAt } : {}),
+        ...(page.validators ? { validators: { ...page.validators } } : {}),
+      };
+      if (Object.keys(nextPending).length) next.pending = nextPending;
+      else delete next.pending;
+      if (!(await store(next))) break;
+      receipt.pages += 1;
+      receipt.cursor = nextCursor;
+      receipt.diagnostics.push(...diff.diagnostics);
+      receipt.profile_diagnostics.push(...diff.profileDiagnostics);
+      for (const change of changes) {
+        if (notWritten(change.external_id)) { receipt.held += 1; continue; }
+        const kind = change.change_kind as keyof SourceRunReceipt["changes"];
+        if (Object.hasOwn(receipt.changes, kind)) receipt.changes[kind] += 1;
+      }
+      if (ended) {
+        receipt.pass.ended = true;
+        receipt.pass.complete = complete;
+        break;
+      }
+      if (receipt.pages >= budget.pages) { stop = { outcome: "deferred", reason: "budget", retry: true }; break; }
+      cursor = nextCursor;
     }
-    if (receipt.pages >= budget.pages) { stop = { outcome: "deferred", reason: "budget", retry: true }; break; }
-    cursor = nextCursor;
+    return finish();
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    guard.close();
   }
-  return finish();
 }

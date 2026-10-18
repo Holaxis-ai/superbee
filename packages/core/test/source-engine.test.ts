@@ -150,21 +150,30 @@ test("a credentialed request never follows a redirect to another host, even a de
 
 // ------------------------------------------------------------------------------- method and headers
 
-test("a POST is refused unless a rule admits it; a GET with a body is refused; a POST is never redirected", async () => {
+const GITHUB_MD = CONNECTOR_MD.replace("auth:\n  kind: none", "auth:\n  kind: token\n  provider: github");
+const API_SPEC: JsonPagesSpec = { ...SPEC, host: "api.github.com" };
+
+test("a POST is refused unless a rule admits it toward a credential host; a keyless host is GET only whatever a rule says", async () => {
   const post = harness(() => json([]));
   assert.equal((await post.run({ spec: { ...SPEC, method: "POST" } })).reason, "method_refused");
   assert.deepEqual(post.peer.received, []);
 
-  const admitted = harness((request) => (new URL(request.url).pathname === "/robots.txt" ? { status: 404, body: "" } : json([T1])));
-  const receipt = await admitted.run({ spec: { ...SPEC, method: "POST" }, rules: { post: (url) => url.pathname === "/boards/main/items" } });
+  const keyless = harness(() => json([T1]));
+  assert.equal((await keyless.run({ spec: { ...SPEC, method: "POST" }, rules: { post: () => true } })).reason, "method_refused");
+  assert.deepEqual(keyless.peer.received, []);
+
+  const admitted = harness(() => json([T1]), { connector: ticketConnector(GITHUB_MD) });
+  const receipt = await admitted.run({ spec: { ...API_SPEC, method: "POST" }, rules: { post: (url) => url.pathname === "/boards/main/items" } });
   assert.equal(receipt.outcome, "observed");
   assert.equal(admitted.peer.received.at(-1)!.method, "POST");
+});
 
+test("a GET with a body is refused; a POST is never redirected", async () => {
   const bodied: SourceProfile<JsonPagesSpec, unknown> = { ...jsonPagesProfile, async observe({ transport }) { await transport.request({ url: ITEMS, body: "{}" }); return { records: [], nextCursor: null, more: false, complete: false }; } };
   assert.equal((await harness(() => json([])).run({ profile: bodied })).reason, "body_refused");
 
-  const moved = harness((request) => (new URL(request.url).pathname === "/robots.txt" ? { status: 404, body: "" } : { status: 307, headers: { location: `${ITEMS}-2` }, body: "" }));
-  assert.equal((await moved.run({ spec: { ...SPEC, method: "POST" }, rules: { post: () => true } })).reason, "redirect_refused");
+  const moved = harness((request) => ({ status: 307, headers: { location: `${request.url}-2` }, body: "" }), { connector: ticketConnector(GITHUB_MD) });
+  assert.equal((await moved.run({ spec: { ...API_SPEC, method: "POST" }, rules: { post: () => true } })).reason, "redirect_refused");
 });
 
 for (const [name, headers, rules] of [
@@ -380,7 +389,7 @@ test("a commit receives the page's changes before anything is stored", async () 
   assert.equal(storedAtCommit, null);
 });
 
-test("a held record keeps its stored entry while the cursor advances, so the next observation plans it again", async () => {
+test("a held record keeps its stored entry while the cursor advances, and is planned again when next observed", async () => {
   const state = new MemoryMachineState();
   await harness([page(ITEMS, [T1])], { state }).run({ mode: "complete" });
   const h = harness([page(ITEMS, [ticket("t1", "Renamed")])], { state });
@@ -559,4 +568,234 @@ test("the stored state is plain JSON the engine recognizes", async () => {
   await corrupt.write(FEED_ID, { ...stored, records: { t1: { after: "x" } } } as never, null);
   const receipt = await harness(() => json([]), { state: corrupt }).run();
   assert.equal(receipt.reason, "state_invalid");
+});
+
+// ------------------------------------------------------------------- review follow-up: new guards
+
+test("the engine marks each request toward a credential host, and only those", async () => {
+  const flags: Array<[string, boolean]> = [];
+  const spy = { async request(input: { url: string; credentialHost: boolean }) { flags.push([input.url, input.credentialHost]); return { ok: true as const, status: 200, headers: {}, body: JSON.stringify({ items: [] }), bytes: 12 }; } };
+  const github = ticketConnector(GITHUB_MD);
+  const profile: SourceProfile<JsonPagesSpec, unknown> = {
+    ...jsonPagesProfile,
+    hostsFor: () => ["api.github.com", HOST],
+    async observe({ transport }) {
+      await transport.request({ url: "https://api.github.com/repos/o/r/issues" });
+      await transport.request({ url: ITEMS });
+      return { records: [], nextCursor: null, more: false, complete: false };
+    },
+  };
+  await harness(() => json([]), { connector: github }).run({ profile, transport: spy as never, spec: API_SPEC });
+  assert.deepEqual(flags, [["https://api.github.com/repos/o/r/issues", true], [`https://${HOST}/robots.txt`, false], [ITEMS, false]]);
+});
+
+test("rules.url refuses a redirect hop before it is sent", async () => {
+  const h = harness([
+    { request: { url: ITEMS }, response: { status: 302, headers: { location: `${ITEMS}-moved` }, body: "" } },
+    page(`${ITEMS}-moved`, [T1]),
+  ]);
+  const receipt = await h.run({ rules: { url: (_url, hop) => !hop.redirect } });
+  assert.equal(receipt.reason, "url_refused");
+  assert.deepEqual(pages(h.peer), [ITEMS]);
+});
+
+test("a complete run after an interrupted incremental pass lists from page 1 and counts nothing missing", async () => {
+  const state = new MemoryMachineState();
+  await observeAll(state, [T1, T2, T3]);
+  await harness([page(ITEMS, [T1], { next: "c1" }), { request: { url: after("c1") }, response: { status: 503, body: "" } }], { state }).run({ mode: "incremental" });
+  assert.equal((await state.read(FEED_ID))!.state.open, true);
+  const h = harness([page(ITEMS, [T1], { next: "c1" }), page(after("c1"), [T2, T3])], { state });
+  const receipt = await h.run({ mode: "complete" });
+  assert.deepEqual(pages(h.peer), [ITEMS, after("c1")]);
+  assert.equal(receipt.pass.complete, true);
+  assert.ok(Object.values((await state.read(FEED_ID))!.state.records).every((entry) => entry.missing === 0));
+});
+
+test("a bot-mitigation page from a keyless host is refused, never read as content or retried", async () => {
+  for (const [name, response] of [
+    ["a 200 marked as a challenge", { status: 200, headers: { "cf-mitigated": "challenge" }, body: JSON.stringify({ items: [T1] }) }],
+    ["a 429 challenge page", { status: 429, headers: { "retry-after": "5" }, body: "<html><title>Just a moment...</title></html>" }],
+  ] as const) {
+    const h = harness([{ request: { url: ITEMS }, response }]);
+    const receipt = await h.run();
+    assert.equal(receipt.outcome, "refused", name);
+    assert.equal(receipt.reason, "bot_challenge", name);
+    assert.equal(receipt.retry, false, name);
+    assert.deepEqual(h.commits, [], name);
+  }
+});
+
+test("a page that promises more with no cursor, or with the cursor it was asked for, fails as a stuck cursor", async () => {
+  for (const next of [null, "same"]) {
+    let calls = 0;
+    const stuck: SourceProfile<JsonPagesSpec, unknown> = {
+      ...jsonPagesProfile,
+      async observe({ transport, cursor }) {
+        calls += 1;
+        await transport.request({ url: ITEMS });
+        return { records: [T1], nextCursor: next === null ? null : cursor ?? { after: "x" }, more: true, complete: false };
+      },
+    };
+    const h = harness(() => json([]));
+    const receipt = await h.run({ profile: stuck });
+    assert.equal(receipt.reason, "cursor_stuck", String(next));
+    assert.ok(calls <= 2, `stopped after ${calls} pages`);
+    assert.ok(receipt.findings.some((f) => f.key === "source:tickets:failed:cursor_stuck"));
+  }
+});
+
+test("the deadline bounds profile code: a page still pending when the signal aborts is discarded", { timeout: 5000 }, async () => {
+  const controller = new AbortController();
+  const hung: SourceProfile<JsonPagesSpec, unknown> = {
+    ...jsonPagesProfile,
+    async observe() {
+      queueMicrotask(() => controller.abort());
+      return new Promise(() => {});
+    },
+  };
+  const h = harness(() => json([]));
+  const receipt = await h.run({ profile: hung, signal: controller.signal });
+  assert.equal(receipt.outcome, "deferred");
+  assert.equal(receipt.reason, "deadline");
+  assert.deepEqual(h.commits, []);
+});
+
+test("without a signal the budget's run deadline and per-request timeout apply", { timeout: 5000 }, async () => {
+  const hung: SourceProfile<JsonPagesSpec, unknown> = { ...jsonPagesProfile, async observe() { return new Promise(() => {}); } };
+  const run = await harness(() => json([])).run({ profile: hung, budget: { deadlineMs: 20 } });
+  assert.equal(run.reason, "deadline");
+
+  const silent = { async request(input: { url: string }) { return input.url.endsWith("/robots.txt") ? { ok: true as const, status: 404, headers: {}, body: "", bytes: 0 } : new Promise<never>(() => {}); } };
+  const request = await harness(() => json([])).run({ transport: silent as never, budget: { requestTimeoutMs: 20 } });
+  assert.equal(request.outcome, "provider_unavailable");
+  assert.equal(request.reason, "timeout");
+  assert.equal(request.requests.at(-1)!.refused, "timeout");
+});
+
+test("after the deadline no request starts, even through a transport that ignores the signal", { timeout: 5000 }, async () => {
+  const controller = new AbortController();
+  const sent: string[] = [];
+  const blind = { async request(input: { url: string }) { sent.push(input.url); return { ok: true as const, status: 200, headers: {}, body: "{}", bytes: 2 }; } };
+  const twice: SourceProfile<JsonPagesSpec, unknown> = {
+    ...jsonPagesProfile,
+    async observe({ transport }) {
+      await transport.request({ url: "https://api.github.com/a" });
+      controller.abort();
+      try { await transport.request({ url: "https://api.github.com/b" }); } catch { /* the deadline */ }
+      return { records: [], nextCursor: null, more: false, complete: false };
+    },
+  };
+  const receipt = await harness(() => json([]), { connector: ticketConnector(GITHUB_MD) }).run({ profile: twice, transport: blind as never, signal: controller.signal, spec: API_SPEC });
+  assert.deepEqual(sent, ["https://api.github.com/a"]);
+  assert.equal(receipt.reason, "deadline");
+});
+
+test("a profile request is read once: a getter cannot widen the byte bound on a second read", async () => {
+  let reads = 0;
+  const shifty: SourceProfile<JsonPagesSpec, unknown> = {
+    ...jsonPagesProfile,
+    async observe({ transport }) {
+      await transport.request({ url: ITEMS, get maxBytes() { reads += 1; return reads === 1 ? 100 : Number.NaN; } } as never);
+      return { records: [], nextCursor: null, more: false, complete: false };
+    },
+  };
+  const h = harness((request) => (new URL(request.url).pathname === "/robots.txt" ? { status: 404, body: "" } : { status: 200, body: "x".repeat(5000) }));
+  const receipt = await h.run({ profile: shifty });
+  assert.equal(reads, 1);
+  assert.equal(receipt.outcome, "too_large");
+});
+
+test("a page whose record throws on read ends the run failed instead of rejecting", async () => {
+  const throwing: SourceProfile<JsonPagesSpec, unknown> = {
+    ...jsonPagesProfile,
+    async observe() {
+      return { records: [{ get id() { throw new Error("boom"); } }], nextCursor: null, more: false, complete: true };
+    },
+  };
+  const h = harness(() => json([]));
+  const receipt = await h.run({ profile: throwing });
+  assert.equal(receipt.outcome, "failed");
+  assert.equal(receipt.reason, "page_invalid");
+  assert.deepEqual(h.commits, []);
+});
+
+test("a transport a profile kept is closed when the run ends", async () => {
+  let kept: { request(input: { url: string }): Promise<unknown> } | undefined;
+  const keeper: SourceProfile<JsonPagesSpec, unknown> = {
+    ...jsonPagesProfile,
+    async observe({ transport }) { kept = transport; return { records: [], nextCursor: null, more: false, complete: false }; },
+  };
+  const h = harness(() => json([]));
+  assert.equal((await h.run({ profile: keeper })).outcome, "observed");
+  await assert.rejects(kept!.request({ url: ITEMS }), /run_ended/);
+  assert.deepEqual(h.peer.received, []);
+});
+
+test("a robots.txt over 512 KiB is parsed up to that point rather than refusing the host", async () => {
+  const long = `User-agent: *\nDisallow: /boards/\n${"# padding\n".repeat(60_000)}Allow: /boards/\n`;
+  const h = harness((request) => (new URL(request.url).pathname === "/robots.txt" ? { status: 200, body: long } : json([T1])));
+  const receipt = await h.run();
+  assert.equal(receipt.reason, "robots_disallowed", "the rule past 512 KiB is not read");
+});
+
+// --------------------------------------------------------------- held changes and pending replays
+
+/** A commit that refuses to write the named ids with `retry` (or `hold`) while `blocked` holds them. */
+function blockingCommit(blocked: Set<string>, kind: "retry" | "hold", seen: PageCommit[]) {
+  return async (p: PageCommit) => {
+    seen.push(p);
+    const ids = p.changes.map((c) => c.external_id).filter((id) => blocked.has(id));
+    return { [kind]: ids };
+  };
+}
+
+test("an incremental-only feed applies a retried change once the hold clears, though the provider never lists it again", async () => {
+  const state = new MemoryMachineState();
+  const seen: PageCommit[] = [];
+  const blocked = new Set(["t1"]);
+  // One page per run, as a feed reading a long listing a little at a time: no run lists t1 again.
+  const onePage = { pages: 1 };
+  await harness([page(ITEMS, [T1], { next: "c1" })], { state }).run({ budget: onePage, commit: blockingCommit(new Set(), "retry", seen) });
+  const second = await harness([page(after("c1"), [ticket("t1", "Renamed"), T2], { next: "c2" })], { state }).run({ budget: onePage, commit: blockingCommit(blocked, "retry", seen) });
+  assert.equal(second.held, 1);
+  assert.equal(second.pending, 1);
+  let stored = (await state.read(FEED_ID))!.state;
+  assert.equal(stored.records.t1!.after.title, "First");
+  assert.deepEqual(stored.cursor, { after: "c2" }, "the cursor moved on past the held record");
+
+  const third = await harness([page(after("c2"), [T3], { next: "c3" })], { state }).run({ budget: onePage, commit: blockingCommit(blocked, "retry", seen) });
+  assert.equal(third.pending, 1, "still held: still pending");
+  assert.equal(seen.at(-2)!.replay, true);
+  assert.deepEqual(seen.at(-2)!.changes.map((c) => [c.external_id, c.after!.title]), [["t1", "Renamed"]]);
+
+  blocked.clear();
+  const fourth = await harness([page(after("c3"), [], { next: "c4" })], { state }).run({ budget: onePage, commit: blockingCommit(blocked, "retry", seen) });
+  assert.equal(fourth.pending, 0);
+  assert.equal(fourth.held, 0);
+  stored = (await state.read(FEED_ID))!.state;
+  assert.equal(stored.records.t1!.after.title, "Renamed");
+  assert.equal(stored.pending, undefined);
+});
+
+test("a newer observation supersedes a pending change; a held change is not pending", async () => {
+  const state = new MemoryMachineState();
+  const seen: PageCommit[] = [];
+  await harness([page(ITEMS, [T1])], { state }).run({ mode: "complete" });
+  await harness([page(ITEMS, [ticket("t1", "Second name")])], { state }).run({ mode: "complete", commit: blockingCommit(new Set(["t1"]), "retry", seen) });
+  assert.equal((await state.read(FEED_ID))!.state.pending?.t1?.change.after?.title, "Second name");
+  // The replay is still refused, then the page lists a newer value, which replaces the pending one.
+  seen.length = 0;
+  const receipt = await harness([page(ITEMS, [ticket("t1", "Third name")])], { state }).run({ mode: "complete", commit: async (p) => {
+    seen.push(p);
+    return p.replay ? { retry: ["t1"] } : {};
+  } });
+  assert.deepEqual(seen.map((p) => [p.replay, p.changes.map((c) => c.after?.title)]), [[true, ["Second name"]], [false, ["Third name"]]]);
+  assert.deepEqual(seen[1]!.changes[0]!.before, { ...seen[0]!.changes[0]!.before }, "the newer change is diffed against the stored entry");
+  assert.equal(receipt.pending, 0);
+  assert.equal((await state.read(FEED_ID))!.state.records.t1!.after.title, "Third name");
+
+  const held = await harness([page(ITEMS, [ticket("t1", "Fourth name")])], { state }).run({ mode: "complete", commit: blockingCommit(new Set(["t1"]), "hold", [])});
+  assert.equal(held.held, 1);
+  assert.equal(held.pending, 0);
+  assert.equal((await state.read(FEED_ID))!.state.records.t1!.after.title, "Third name");
 });
