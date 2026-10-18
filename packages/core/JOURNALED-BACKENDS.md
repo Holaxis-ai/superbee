@@ -64,3 +64,44 @@ These guarantees describe database transactions, not a backup or power-loss guar
 
 The shared journal agreement tests run the same guard rows against IndexedDB and an independent
 memory adapter. IndexedDB-specific tests additionally exercise transaction abort and reopen.
+
+## Blob intents
+
+The optional `BlobJournaledBackend` holds frozen ordinary-file intents. One owner decides every
+blob transition: the pure functions in `blob-journal.ts` (`decideBlobAdmission`, `decideBlobUpdate`
+with `nextBlobIntentRecord`, `decideBlobRetirement`, `decideBlobMetaWrite`). A backend only reads
+its committed state through `BlobJournalView` and persists the decision. `FileJournaledBackend` and
+the browser-safe `createMemoryBlobJournal()` (from `@superbee/core/storage`) both do this, and one
+parity table runs every transition row, refusals included, against both.
+
+- **Admission.** One unsettled (receipt-less) intent per bundle and key. A second one is refused
+  as `BlobAdmissionConflict`, a `JournalGuardConflict`, unless the caller names every unsettled
+  same-bundle intent on the key, exactly as stored, in `unsettled`. Intents of other bundles never
+  block, but they share the key's guard, so they can cause a false guard conflict.
+- **Claim.** `pending` or `unknown` to `in_flight` adds exactly one attempt, and only while every
+  earlier attempt is proven not applied (`notAppliedThrough === attempts`).
+- **Non-execution proof.** It extends the prefix by exactly the claimed attempt and returns the
+  record to `pending`, with one kind of typed evidence. A `deletionHold` (the host's
+  `428 deletions_held`) is accepted from `in_flight` or `unknown`. `notDispatched { code }` is
+  accepted only from an `in_flight` claim this open journal handle made at that attempt, for a
+  failure before the carrier was invoked. A claim found at open belongs to a process that may have
+  sent it, so it stays lookup-only, as does any carrier or transport failure.
+- **Settlement.** A receipt freezes the record; only terminal records retire.
+
+Patch keys with an `undefined` value are refused.
+
+## File journal format
+
+The file journal frames each record and snapshot with a format number and keeps the highest
+format it has written:
+
+| Format | First needed for |
+|---|---|
+| 1 | documents, reserved files, blobs, document intents, meta |
+| 2 | blob intents |
+| 3 | a blob intent carrying `notDispatched` evidence |
+
+The reader accepts formats 1 to 3. A blob intent in a format-1 frame, or `notDispatched` evidence
+in a format-2 frame, is `FileJournalCorruptError`. A newer format is `FileJournalFormatError`, so a
+reader from before format 3 refuses a format-3 store with that typed error and changes no file. A
+format bump ships a reader for every earlier layout.
