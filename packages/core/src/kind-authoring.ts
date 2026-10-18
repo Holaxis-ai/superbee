@@ -1,3 +1,4 @@
+import { InvalidInputError } from "./errors.js";
 import { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 import type { OkfDocument } from "./types.js";
 // Storage-neutral Kind inference and guarded authoring. Pure derivations consume already-read
@@ -387,8 +388,16 @@ function candidateDocFor(kind: KindConvention, body: string): KindDraftPlan["can
   return { id: kind.id, frontmatter, body };
 }
 
+/** Match convention parsing: type names are trimmed strings with nonempty content. */
+function normalizeKindAuthoringType(type: unknown): string {
+  const normalized = typeof type === "string" ? type.trim() : "";
+  if (!isPresent(normalized)) throw new InvalidInputError("Kind authoring requires a nonempty type name.");
+  return normalized;
+}
+
 /** Build the whole read-only plan: registry + instances -> candidate + forecast + token. */
 export async function prepareKindDraft(bundle: Bundle, type: string, text: KindAuthoringText = {}): Promise<KindDraftPlan> {
+  type = normalizeKindAuthoringType(type);
   const [registry, okfVersionRead] = await Promise.all([loadKinds(bundle), readBundleOkfVersion(bundle)]);
   const okfVersion = okfVersionRead ?? "0.1";
   const existing = registry.kinds.get(type);
@@ -495,6 +504,7 @@ export interface KindDismissalOptions extends KindAuthoringWriteOptions {
   description?: string;
 }
 export async function prepareKindDismissal(bundle: Bundle, type: string, options: KindDismissalOptions = {}): Promise<PreparedKindDismissal> {
+  type = normalizeKindAuthoringType(type);
   const [registry, edition] = await Promise.all([loadKinds(bundle), readBundleOkfVersion(bundle)]);
   const existing = registry.kinds.get(type);
   if (existing && kindDeclaresAnything(existing)) throw new KindAuthoringError("dismiss-governed", type, { id: existing.id });

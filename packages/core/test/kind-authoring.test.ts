@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { InvalidInputError } from "../src/errors.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { mutateDocument } from "../src/document-mutation.js";
 import { builtinNames, builtinRecipeFiles, loadBuiltinRecipe } from "../src/builtin-recipes.js";
@@ -130,4 +131,63 @@ test("generic parser and bundle initialization do not import the optional catalo
   const { build } = await import("esbuild");
   const result = await build({ stdin: { contents: 'export { initBundle } from "./bundle.js"; export { parseRecipeFiles } from "./recipes.js";', resolveDir: new URL("../src/", import.meta.url).pathname }, bundle: true, platform: "node", write: false, metafile: true, logLevel: "silent" });
   assert.ok(Object.keys(result.metafile!.inputs).every(file => !/builtin-recipes|kind-authoring/.test(file)), "generic entrypoints must not pull in opt-in content");
+});
+
+
+const typeInputRows: readonly { label: string; value: unknown }[] = [
+  { label: "empty", value: "" },
+  { label: "whitespace", value: " \t\n " },
+  { label: "null", value: null },
+  { label: "undefined", value: undefined },
+  { label: "number", value: 0 },
+  { label: "boolean", value: false },
+  { label: "object", value: {} },
+  { label: "array", value: ["Research"] },
+];
+const typeAuthoringRoutes = [
+  { name: "prepare draft", run: (bundle: Bundle, type: string) => prepareKindDraft(bundle, type) },
+  { name: "apply draft", run: (bundle: Bundle, type: string) => applyKindDraft(bundle, type, "sha256:unused") },
+  { name: "prepare dismissal", run: (bundle: Bundle, type: string) => prepareKindDismissal(bundle, type) },
+  { name: "dismiss", run: (bundle: Bundle, type: string) => dismissKind(bundle, type) },
+];
+for (const row of typeInputRows) test(`public type input agreement: ${row.label} refuses before storage access`, async () => {
+  for (const route of typeAuthoringRoutes) {
+    const storageCalls: PropertyKey[] = [];
+    const backend = new Proxy(new MemoryBackend(), {
+      get(target, key) {
+        const value = Reflect.get(target, key, target);
+        return typeof value !== "function" ? value : () => {
+          storageCalls.push(key);
+          throw new Error("Invalid type reached storage");
+        };
+      },
+    });
+    await assert.rejects(() => route.run({ root: "/unused", backend }, row.value as string), InvalidInputError, route.name);
+    assert.deepEqual(storageCalls, [], `${route.name} must not read or write for invalid type input`);
+  }
+});
+
+for (const type of ["Research", "研究 – Résumé / α?"]) test(`canonical public authoring type: ${type}`, async () => {
+  const { bundle, backend } = await fixture();
+  if (type !== "Research") await backend.write("observations/unicode", { id: "observations/unicode", frontmatter: { type, title: "Observed" }, body: "# Summary\n" });
+  const padded = ` \t${type}\n `;
+  const body = (normalized: string) => { assert.equal(normalized, type); return `Accepted ${normalized}.\n`; };
+  const canonicalPlan = await prepareKindDraft(bundle, type, { inferredBody: body });
+  const paddedPlan = await prepareKindDraft(bundle, padded, { inferredBody: body });
+  assert.equal(paddedPlan.type, type);
+  assert.equal(paddedPlan.candidateDoc.frontmatter.governs, type);
+  assert.deepEqual(paddedPlan.candidateDoc, canonicalPlan.candidateDoc);
+  assert.equal(paddedPlan.token, canonicalPlan.token);
+  const prepared = await prepareKindDismissal(bundle, padded, { body });
+  assert.equal(prepared.id, canonicalPlan.candidateDoc.id);
+  const first = await dismissKind(bundle, padded, { body });
+  assert.equal(first.changed, true);
+  assert.equal((await backend.read(first.id)).doc.frontmatter.governs, type);
+  assert.equal((await dismissKind(bundle, padded)).changed, false);
+  assert.equal((await dismissKind(bundle, type)).changed, false);
+  const redraft = await prepareKindDraft(bundle, padded, { inferredBody: body });
+  await applyKindDraft(bundle, padded, redraft.token, { inferredBody: body });
+  await assert.rejects(() => prepareKindDraft(bundle, padded), refusal("already-governed"));
+  await assert.rejects(() => prepareKindDismissal(bundle, padded), refusal("dismiss-governed"));
+  await assert.rejects(() => dismissKind(bundle, padded), refusal("dismiss-governed"));
 });

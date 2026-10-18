@@ -803,7 +803,9 @@ there is no CLI flag coercion or path-alias resolution. Supply a canonical id an
 create-only mutation. The template keeps `type` equal to `governs`, preserves own prototype-shaped
 fields, scaffolds sections only when body is omitted, and retains an explicit empty body.
 
-`prepareKindDraft` selects a catalog definition or infers from instances. Its token binds candidate
+Public draft/apply/dismiss operations trim type names and refuse blank or non-string names before
+any backend access, matching convention parsing. `prepareKindDraft` selects a catalog definition
+or infers from instances. Its token binds candidate
 bytes (including supplied `inferredBody`/`inferredDescription`), edition, presence statistics and
 warning forecast. Pass the same prose options to `applyKindDraft`, which recomputes the plan and
 checks edition and declaration-free redraft eligibility against every fresh CAS head. New
