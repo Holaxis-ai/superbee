@@ -82,6 +82,11 @@ export interface HostedClientJournalOptions {
 /**
  * A durable {@link HostedIntentStore}: pass it as `createHostedClient({ intentStore })`. It holds
  * the directory's exclusive lock until {@link close}; every call after close rejects.
+ *
+ * Unlike `createMemoryIntentStore`, whose calls take effect as they are made, each call here
+ * takes effect later, in the order its asynchronous steps complete: `delete` reads the row before
+ * removing it, so a `put` made after an unawaited `delete` can land first and then be removed.
+ * Await each call before the next on the same request identity, as the client does.
  */
 export interface HostedClientJournal extends HostedIntentStore {
   /** The journal's directory, resolved. */
@@ -106,23 +111,37 @@ export interface HostedClientJournal extends HostedIntentStore {
  * - `FileJournalCorruptError` / `FileJournalFormatError` — the log or snapshot is damaged or in a
  *   newer format. Nothing is repaired: moving the directory aside loses the writes it holds.
  *
- * The decision is made on a read-only open, which changes nothing, and made again under the
- * writable open's lock before the marker is written. Only when the directory changes between the
- * two (another process replacing it) can the writable open, before refusing, have truncated a
- * torn log tail or created an empty log.
+ * The directory may hold only the backend's store files. The decision is made on a read-only
+ * open, which changes nothing, and the directory, its listing and its contents are checked again
+ * under the writable open's lock before the marker is written. Only when another process changes
+ * the directory between the two can the writable open, before refusing, have truncated a torn log
+ * tail, removed a leftover snapshot temp, or created an empty log.
  */
 export function openHostedClientJournal(options: HostedClientJournalOptions): Promise<HostedClientJournal> {
   return openHostedClientJournalWith(options);
 }
 
-/** @internal What the store's own tests vary: the lock namespace and the backend's opener (its fault seam). */
+/** @internal What the store's own tests vary: the lock namespace, the backend's opener (its fault seam), and the open's windows. */
 export interface JournalTestSeam {
   readonly lockRoot?: string;
   readonly openBackend?: (options: FileJournaledBackendOptions) => Promise<FileJournaledBackend>;
+  /** Runs where another process could act: before an absent directory is created, and before the writable open. */
+  readonly window?: (phase: "before-create" | "before-writable-open") => Promise<void>;
 }
 
-/** The files a `FileJournaledBackend` keeps in its directory. */
+/**
+ * The only entries a journal's directory may hold: the files a `FileJournaledBackend` keeps.
+ * Nothing else is tolerated, not even an operating system's own files such as `.DS_Store`: the
+ * directory is the journal's alone, and a refusal is safer than adopting a directory in use.
+ */
 const STORE_FILES = new Set([FILE_JOURNAL_LOG, FILE_JOURNAL_SNAPSHOT, "store.snapshot.tmp"]);
+/** The backend's record frame magic, the first bytes of every record in its (supported) on-disk format. */
+const RECORD_MAGIC = Buffer.from("SBJR", "latin1");
+/**
+ * The longest torn first record a journal's own log can begin with: the marker record, the first
+ * a new journal writes, is a few hundred bytes, so its torn remains fit in one page.
+ */
+const TORN_FIRST_RECORD_BYTES = 4096;
 
 /** @internal {@link openHostedClientJournal} with its test seam. Not in the package's exports. */
 export async function openHostedClientJournalWith(options: HostedClientJournalOptions, seam: JournalTestSeam = {}): Promise<HostedClientJournal> {
@@ -139,28 +158,43 @@ export async function openHostedClientJournalWith(options: HostedClientJournalOp
     ...(readOnly ? { readOnly } : {}),
   });
 
-  const existing = await privateDirectory(directory, { mayBeAbsent: true });
-  if (existing) {
-    const names = await fs.readdir(directory);
-    if (names.length > 0 && !names.some((name) => STORE_FILES.has(name))) {
-      throw new HostedClientJournalError("JOURNAL_NOT_HOSTED_CLIENT", directory, `'${directory}' holds files but no store; a hosted client journal is an empty or journal-only directory`);
+  let identity = await privateDirectory(directory, { mayBeAbsent: true });
+  let created = false;
+  if (!identity) {
+    await seam.window?.("before-create");
+    // Create it here rather than in the backend, so a directory that appears in the meantime is
+    // found (EEXIST) and checked as an existing one instead of having a log created inside it.
+    await fs.mkdir(path.dirname(directory), { recursive: true, mode: 0o700 });
+    try {
+      await fs.mkdir(directory, { mode: 0o700 });
+      await syncDirectory(path.dirname(directory));
+      created = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
+    identity = await privateDirectory(directory, { mayBeAbsent: false });
+  }
+  if (!created) {
+    await assertStoreFilesOnly(directory);
     // Decide on a read-only open first, which changes no file.
     const inspected = await open(backendOptions(true));
     try {
+      await assertLogIsJournals(directory, inspected);
       await inspect(inspected, directory);
     } finally {
       await inspected.close();
     }
   }
 
+  await seam.window?.("before-writable-open");
   const backend = await open(backendOptions(false));
   try {
-    // The lock is held from here: the directory must still be the private one checked above.
+    // The lock is held from here: the directory must still be the private, journal-only one checked above.
     const held = await privateDirectory(directory, { mayBeAbsent: false });
-    if (existing && (held!.ino !== existing.ino || held!.dev !== existing.dev)) {
+    if (held!.ino !== identity!.ino || held!.dev !== identity!.dev) {
       throw new HostedClientJournalError("JOURNAL_DIRECTORY_NOT_PRIVATE", directory, `'${directory}' was replaced while the journal opened`);
     }
+    await assertStoreFilesOnly(directory);
     if ((await inspect(backend, directory)) === "empty") {
       await backend.writeMeta(HOSTED_CLIENT_JOURNAL_MARKER, { schemaVersion: HOSTED_CLIENT_JOURNAL_SCHEMA_VERSION }, { expected: { present: false }, requireEmptyJournal: true });
     }
@@ -171,6 +205,54 @@ export async function openHostedClientJournalWith(options: HostedClientJournalOp
     await backend.close().catch(() => {});
     throw error;
   }
+}
+
+/** Make a directory entry durable; Windows cannot flush a directory handle, and journals its own metadata. */
+async function syncDirectory(directory: string): Promise<void> {
+  if (process.platform === "win32") return;
+  const handle = await fs.open(directory, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+/** The directory holds only store files, and a leftover snapshot temp only beside a log. */
+async function assertStoreFilesOnly(directory: string): Promise<void> {
+  const names = await fs.readdir(directory);
+  const stray = names.filter((name) => !STORE_FILES.has(name));
+  if (stray.length > 0 || (names.includes("store.snapshot.tmp") && !names.includes(FILE_JOURNAL_LOG))) {
+    throw new HostedClientJournalError("JOURNAL_NOT_HOSTED_CLIENT", directory, `'${directory}' holds files that are not a journal's (${stray.length > 0 ? stray.join(", ") : "a snapshot temp with no log"}); a hosted client journal is an empty or journal-only directory`);
+  }
+}
+
+/**
+ * A log that holds no whole record and has no snapshot beside it must be what a journal's own
+ * crash leaves: nothing, zeros (an extension whose data never landed), or the torn start of its
+ * first record, which begins with the record magic and fits in a page. Any other bytes are a
+ * foreign file named `store.log`, which the writable open would truncate.
+ */
+async function assertLogIsJournals(directory: string, backend: FileJournaledBackend): Promise<void> {
+  if (backend.transaction > 0 || (await fileSize(path.join(directory, FILE_JOURNAL_SNAPSHOT))) > 0) return;
+  let head: Buffer;
+  try {
+    const handle = await fs.open(path.join(directory, FILE_JOURNAL_LOG), "r");
+    try {
+      const buffer = Buffer.alloc(TORN_FIRST_RECORD_BYTES + 1);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
+      head = buffer.subarray(0, bytesRead);
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (head.byteLength === 0) return;
+  const prefix = Math.min(head.byteLength, RECORD_MAGIC.byteLength);
+  const journals = head.byteLength <= TORN_FIRST_RECORD_BYTES && (head.every((byte) => byte === 0) || head.subarray(0, prefix).equals(RECORD_MAGIC.subarray(0, prefix)));
+  if (!journals) throw new HostedClientJournalError("JOURNAL_NOT_HOSTED_CLIENT", directory, `'${directory}' holds a store.log that is not a journal's log`);
 }
 
 /**

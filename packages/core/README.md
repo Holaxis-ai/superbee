@@ -470,8 +470,10 @@ looks it up exactly as the first would have. A settled write is removed.
   files 0600. On POSIX, an existing directory that is a symbolic link, is owned by another user,
   or grants its group or others any permission, is refused as `HostedClientJournalError`
   `JOURNAL_DIRECTORY_NOT_PRIVATE`. The check runs again once the lock is held, and a directory
-  replaced in between is refused too. An existing directory that holds files but no store is
-  refused as `JOURNAL_NOT_HOSTED_CLIENT`, so a journal is never made inside a directory in use.
+  replaced in between is refused too. The directory is the journal's alone: an existing one may
+  hold only `store.log`, `store.snapshot` and `store.snapshot.tmp`, and any other entry (an
+  operating system's `.DS_Store` included) is refused as `JOURNAL_NOT_HOSTED_CLIENT`, as is a
+  `store.log` that is not a journal's log. The listing is checked again under the lock.
 - **Marker.** A new journal records `hosted-client.journal = { schemaVersion: 1 }` in its first
   transaction. Open refuses, as `JOURNAL_NOT_HOSTED_CLIENT`, a store with rows but no marker or one
   holding documents, blobs or a checkout's blob-sync state, so it is never pointed at a CLI checkout
@@ -483,6 +485,9 @@ looks it up exactly as the first would have. A settled write is removed.
   it near 1 MiB. The snapshot, which holds every write still unsettled, and any one transaction are
   bounded at 256 MiB. A write that would pass that bound is refused before anything is recorded,
   and its `write` throws. Unsettled writes count toward the bound until `settleWrite` resolves them.
+- **Ordering.** Unlike the in-memory store, each call takes effect when its asynchronous steps
+  complete, so unawaited overlapping calls on one request identity can land out of call order.
+  Await each call before the next, as the client does.
 - **Damage.** `FileJournalCorruptError` (a damaged record before the log's end or a damaged
   snapshot) and `FileJournalFormatError` (a newer format) refuse the open and change no file. A torn
   final record, which was never acknowledged, is truncated. Nothing is repaired automatically:

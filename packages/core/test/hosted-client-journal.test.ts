@@ -395,6 +395,75 @@ test("refusal: a foreign store with a torn tail is refused without truncating it
   });
 });
 
+for (const row of [
+  { name: "a text store.log beside another file", files: { "store.log": "unrelated application log\n".repeat(100), "notes.txt": "keep me\n" } },
+  { name: "a text store.log alone", files: { "store.log": "unrelated application log\n".repeat(100) } },
+  { name: "a store.log that begins with the record magic but is longer than a torn first record", files: { "store.log": `SBJR${"z".repeat(5000)}` } },
+  { name: "a store.snapshot.tmp beside another file", files: { "store.snapshot.tmp": "temp", "notes.txt": "keep me\n" } },
+  { name: "a store.snapshot.tmp alone", files: { "store.snapshot.tmp": "temp" } },
+  { name: "an operating system's .DS_Store", files: { ".DS_Store": "finder" } },
+]) {
+  test(`refusal: a directory holding ${row.name} is not a journal, and is left byte-identical`, async () => {
+    await withRoot(async (root) => {
+      await fs.mkdir(root.directory, { mode: 0o700 });
+      for (const [name, text] of Object.entries(row.files)) await fs.writeFile(path.join(root.directory, name), text, { mode: 0o600 });
+      const before = await contents(root.directory);
+      await assert.rejects(root.open(), refusedAs("JOURNAL_NOT_HOSTED_CLIENT"));
+      assert.deepEqual(await contents(root.directory), before);
+    });
+  });
+}
+
+test("crash: a zero-filled first record (its data never landed) opens as an empty journal and is marked", async () => {
+  await withRoot(async (root) => {
+    await fs.mkdir(root.directory, { mode: 0o700 });
+    await fs.writeFile(logFile(root), Buffer.alloc(200), { mode: 0o600 });
+    await (await root.open()).close();
+    const backend = await root.backend();
+    try {
+      assert.deepEqual(await backend.listMeta(), [{ key: MARKER, value: { schemaVersion: 1 } }]);
+    } finally {
+      await backend.close();
+    }
+  });
+});
+
+test("window: a file added to a journal's directory before the writable open is refused under the lock, byte-identical", async () => {
+  await withRoot(async (root) => {
+    const journal = await root.open();
+    await journal.put(intent());
+    await journal.close();
+    let before: [string, string][] = [];
+    await assert.rejects(
+      root.open({
+        window: async (phase) => {
+          if (phase !== "before-writable-open") return;
+          await fs.writeFile(path.join(root.directory, "notes.txt"), "keep me\n", { mode: 0o600 });
+          before = await contents(root.directory);
+        },
+      }),
+      refusedAs("JOURNAL_NOT_HOSTED_CLIENT"),
+    );
+    assert.deepEqual(await contents(root.directory), before);
+  });
+});
+
+test("window: an absent directory that appears holding files before it is created is refused, byte-identical", async () => {
+  await withRoot(async (root) => {
+    await assert.rejects(
+      root.open({
+        window: async (phase) => {
+          if (phase !== "before-create") return;
+          await fs.mkdir(root.directory, { mode: 0o700 });
+          await fs.writeFile(path.join(root.directory, "id_ed25519"), "secret", { mode: 0o600 });
+        },
+      }),
+      refusedAs("JOURNAL_NOT_HOSTED_CLIENT"),
+    );
+    assert.deepEqual(await contents(root.directory), [["id_ed25519", Buffer.from("secret").toString("base64")]]);
+  });
+});
+
 // ── put and delete ─────────────────────────────────────────────────────────────────────────
 
 test("put: a value that is not plain data is refused before anything is stored", async () => {
