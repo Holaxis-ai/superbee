@@ -280,8 +280,8 @@ test("with a Kind: undeclared keys, claim fields, enum tables and list types", (
   const withItem = (fields: Record<string, unknown>) => (fm: Record<string, any>) => { source(fm).target_kind = "Item"; source(fm).fields = fields; };
   refuses(withItem({ venue: "venue" }), "CONNECTOR_FIELD_UNDECLARED", "/sources/0/fields/venue", { kinds });
   refuses(withItem({ assignee: "owner" }), "CONNECTOR_FIELD_NEVER_OWNED", "/sources/0/fields/assignee", { kinds });
-  refuses(withItem({ labels: "labels" }), "CONNECTOR_LIST_FIELD_UNSUPPORTED", "/sources/0/fields/labels", { kinds });
-  refuses(withItem({ links: "links" }), "CONNECTOR_LIST_FIELD_UNSUPPORTED", "/sources/0/fields/links", { kinds });
+  refuses(withItem({ labels: { from: "labels", values: { BUG: "bug" } } }), "CONNECTOR_LIST_FIELD_UNSUPPORTED", "/sources/0/fields/labels", { kinds });
+  refuses(withItem({ links: { from: "links", values: { A: "https://a.example" } } }), "CONNECTOR_LIST_FIELD_UNSUPPORTED", "/sources/0/fields/links", { kinds });
   refuses(withItem({ state: "state" }), "CONNECTOR_VALUES_INVALID", "/sources/0/fields/state", { kinds });
   refuses(withItem({ state: { from: "state", values: { OPEN: "open", GONE: "deleted" } } }), "CONNECTOR_VALUES_INVALID", "/sources/0/fields/state/values/GONE", { kinds });
   const { frontmatter } = base();

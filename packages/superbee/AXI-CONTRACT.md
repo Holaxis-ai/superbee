@@ -63,10 +63,15 @@ content would otherwise be a no-op.
 `remove` change one tag or source, `edit` patches one selected source, and `replace-all`
 replaces the complete supported list. `edit` and `replace-all` require an observed version.
 `set` and ordinary `doc update` refuse implicit list replacement, including nested lists;
-`doc update` accepts one value per dynamic field flag. Collection actions currently support
-only `tags` and `sources`; source selectors refuse ambiguous matches. Receipts report the
-field/action scope, and errors identify the corrective action. See `test/doc-field.test.ts`
-and `test/kind-arity.test.ts` for membership, stale-version, selector, and arity evidence.
+`doc update` accepts one value per dynamic field flag. `add`, `remove` and `edit` support only
+`tags` and `sources`; `replace-all` also replaces a field the document's Kind declares as
+`string-list` or `https-url-list`, stored in the order given and checked strictly against the
+Kind (a repeated member is `KIND_FIELD_TYPE`). Core's `unset` field action, which removes an
+optional field and refuses `type` and a field the Kind requires (`KIND_FIELD_MISSING`), is not
+offered by `doc field`: `doc field unset` is a usage error naming complete-document replacement.
+Source selectors refuse ambiguous matches. Receipts report the field/action scope, and errors
+identify the corrective action. See `test/doc-field.test.ts` and `test/kind-arity.test.ts` for
+membership, stale-version, selector, and arity evidence.
 
 ## Cross-bundle links are additive
 

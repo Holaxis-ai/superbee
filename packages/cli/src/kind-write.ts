@@ -142,8 +142,9 @@ export function refuseTypedListPatch(kind: KindConvention, storageField: string,
   if (type !== "string-list" && type !== "https-url-list") return;
   throw new CliError(
     "USAGE",
-    `'${authoringField}' is a ${type} field, and '${command}' does not replace lists. Set it when creating the ` +
-      `document with 'new' (repeat the flag once per item), or replace the complete document: pull ` +
+    `'${authoringField}' is a ${type} field, and '${command}' does not replace lists. Replace the whole list ` +
+      `with 'doc field replace-all <id> ${authoringField} --from-file <list> --expected-version <v>', set it when ` +
+      `creating the document with 'new' (repeat the flag once per item), or replace the complete document: pull ` +
       `--doc-key <id>.md --out <file>, edit that file, then promote it ('doc write' cannot carry Kind fields).`,
     { help: `${cliInvocation()} new ${commandToken(kind.governs)} --help` },
   );

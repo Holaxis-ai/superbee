@@ -285,7 +285,7 @@ test("bindSourceFeed checks the source against the bundle's Kind as it is now: l
     return buildKindRegistry([{ id: "conventions/event", frontmatter: fm as Frontmatter, body }]);
   };
   const cases: Array<[string, KindRegistry, string[]]> = [
-    ["event_url became a list", eventWith((fm) => { fm.fields.types.event_url = "https-url-list"; }), ["CONNECTOR_LIST_FIELD_UNSUPPORTED"]],
+    ["event_status became a list, mapped through a values table", eventWith((fm) => { fm.fields.types.event_status = "string-list"; }), ["CONNECTOR_LIST_FIELD_UNSUPPORTED"]],
     ["canceled left the enum", eventWith((fm) => { fm.fields.values.event_status = ["scheduled", "postponed"]; }), ["CONNECTOR_VALUES_INVALID"]],
     ["end became the claim owner", eventWith((fm) => { fm.claim = { owner_field: "end", state_field: "event_status" }; }), ["CONNECTOR_FIELD_NEVER_OWNED", "CONNECTOR_FIELD_NEVER_OWNED"]],
   ];
@@ -297,6 +297,28 @@ test("bindSourceFeed checks the source against the bundle's Kind as it is now: l
     );
   }
   assert.equal(bindSourceFeed(connector, { id: FEED_ID, frontmatter: FEED as unknown as Frontmatter }, eventWith(() => {})).resource, FEED_URL);
+  const urlList = eventWith((fm) => { fm.fields.types.event_url = "https-url-list"; });
+  const listed = bindSourceFeed(connector, { id: FEED_ID, frontmatter: FEED as unknown as Frontmatter }, urlList, { okfVersion: "0.2" });
+  assert.deepEqual(listed.policy.list_fields, ["event_url"], "a list field without a values table maps whole and reaches the policy as a set field");
+});
+
+test("bindSourceFeed refuses an owned list field on an OKF v0.1 bundle, naming the edition and the fields", () => {
+  const connector = parseExampleConnector();
+  const { frontmatter, body } = parseMarkdown(EVENT_CONVENTION_MD);
+  const fm = structuredClone(frontmatter) as Record<string, any>;
+  fm.fields.types.event_url = "https-url-list";
+  const kinds = buildKindRegistry([{ id: "conventions/event", frontmatter: fm as Frontmatter, body }]);
+  const owning = { id: FEED_ID, frontmatter: FEED as unknown as Frontmatter };
+  for (const options of [{ okfVersion: "0.1" as const }, {}]) {
+    assert.throws(
+      () => bindSourceFeed(connector, owning, kinds, options),
+      (e: unknown) => e instanceof OverlayRefusal && e.code === "POLICY_INVALID" && e.details.key === "owned_fields"
+        && JSON.stringify(e.details.fields) === JSON.stringify(["event_url"]) && e.details.okf_version === "0.1" && /v0\.1/.test(e.message),
+      `refused with ${JSON.stringify(options)}`,
+    );
+  }
+  const scalarsOnly = { id: FEED_ID, frontmatter: { ...FEED, owned_fields: (FEED.owned_fields as string[]).filter((f) => f !== "event_url") } as unknown as Frontmatter };
+  assert.deepEqual(bindSourceFeed(connector, scalarsOnly, kinds).policy.list_fields, ["event_url"], "a v0.1 feed that owns no list field still binds");
 });
 
 // --------------------------------------------------------------------------------- two observations

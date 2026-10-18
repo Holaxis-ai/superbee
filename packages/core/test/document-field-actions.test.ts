@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { FieldActionError, isStandardDocumentSetField, prepareDocumentFieldAction } from "../src/document-field-actions.js";
-import { mutateDocument } from "../src/document-mutation.js";
+import { KindConformanceError, mutateDocument } from "../src/document-mutation.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { readDocVersioned, writeDocVersioned } from "../src/bundle.js";
 import { VersionConflict } from "../src/versioning.js";
@@ -198,4 +198,118 @@ test("source addition retains the standard string-ID contract, including an expl
   assert.throws(() => apply({ sources: [row] }, { action: "add", field: "sources", value: { ...row, resource: "other" } }), /conflict/i);
   assert.equal(apply({ sources: [row] }, { action: "remove", field: "sources", selector: { id: "" } }).scope.outcome, "removed");
   assert.throws(() => apply({ sources: [{ resource: "url" }] }, { action: "edit", field: "sources", selector: { resource: "url" }, patch: { id: "" } }), /nonempty/);
+});
+
+// ------------------------------------------------------------------ declared list fields and unset
+
+const ITEM_KIND = {
+  id: "conventions/item", title: "Item", governs: "Item",
+  fields: {
+    required: ["title", "state"], optional: ["labels", "links", "due_on", "note", "description"],
+    values: {}, terminal: {}, descriptions: {}, types: { labels: "string-list", links: "https-url-list", due_on: "date" },
+  },
+};
+const itemRegistry = { kinds: new Map([["Item", ITEM_KIND]]), warnings: [] } as never;
+const item = (fm: Record<string, unknown> = {}): OkfDocument => ({ id: "items/a", frontmatter: { type: "Item", title: "A", state: "open", ...fm }, body: "Item body.\n" });
+const onItem = (fm: Record<string, unknown>, action: any, okfVersion: "0.1" | "0.2" = "0.2") => prepareDocumentFieldAction(item(fm), action, { registry: itemRegistry, okfVersion, now: () => "2026-10-17T00:00:00Z" });
+
+test("replace-all on a Kind-declared list field keeps the given order and is order-sensitive", () => {
+  const replaced = onItem({ labels: ["a"] }, { action: "replace-all", field: "labels", value: ["zeta", "alpha", "mid"] });
+  assert.deepEqual(replaced.candidate.frontmatter.labels, ["zeta", "alpha", "mid"], "core never sorts");
+  assert.deepEqual([replaced.scope.outcome, replaced.storageField], ["replaced", "labels"]);
+  assert.equal(onItem({ labels: ["b", "a"] }, { action: "replace-all", field: "labels", value: ["b", "a"] }).scope.outcome, "unchanged");
+  assert.equal(onItem({ labels: ["b", "a"] }, { action: "replace-all", field: "labels", value: ["a", "b"] }).scope.outcome, "replaced", "a reorder is a change to core");
+  assert.deepEqual(onItem({ labels: ["a"] }, { action: "replace-all", field: "labels", value: [] }).candidate.frontmatter.labels, [], "[] empties");
+  assert.deepEqual(onItem({}, { action: "replace-all", field: "links", value: ["https://b.example/2", "https://a.example/1"] }).candidate.frontmatter.links, ["https://b.example/2", "https://a.example/1"]);
+  const legacy = onItem({ labels: ["a"] }, { action: "replace-all", field: "labels", value: ["b"] }, "0.1");
+  assert.equal(legacy.candidate.frontmatter.timestamp, "2026-10-17T00:00:00Z", "v0.1 refreshes its timestamp on a change");
+  assert.equal(item().body, onItem({}, { action: "replace-all", field: "labels", value: ["x"] }).candidate.body);
+});
+
+test("replace-all refuses fields that are not Kind-declared lists, and lists that are not text", () => {
+  for (const field of ["due_on", "note", "undeclared", "title", "description", "generated", "__proto__"]) {
+    assert.throws(() => onItem({}, { action: "replace-all", field, value: ["x"] }), (error: unknown) => error instanceof Error && !(error instanceof FieldActionError) && /replace-all supports tags, sources|__proto__/.test(error.message), field);
+  }
+  assert.throws(() => apply({}, { action: "replace-all", field: "labels", value: ["x"] }), /replace-all supports/, "no Kind, no declared list");
+  assert.throws(() => onItem({}, { action: "replace-all", field: "labels", value: "x" }), /complete list/);
+  assert.throws(() => onItem({}, { action: "replace-all", field: "labels", value: ["x", 7] }), /list of strings/);
+  assert.throws(() => onItem({}, { action: "add", field: "labels", value: "x" }), /tags.*sources.*replace-all/);
+  assert.throws(() => onItem({}, { action: "remove", field: "labels", value: "x" }), /tags.*sources/);
+});
+
+test("replace-all on a declared list: repeats survive preparation and the strict write refuses them as KIND_FIELD_TYPE", async () => {
+  const backend = new MemoryBackend();
+  await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Bundle\n");
+  const bundle: Bundle = { root: "/unused", backend };
+  const written = await writeDocVersioned(bundle, item({ labels: ["a"] }));
+  assert.deepEqual(onItem({}, { action: "replace-all", field: "labels", value: ["b", "a", "b"] }).candidate.frontmatter.labels, ["b", "a", "b"]);
+  const base = { bundle, id: "items/a", mode: "patch" as const, registry: itemRegistry, strict: true };
+  await assert.rejects(() => mutateDocument({ ...base, input: { kind: "field-action", action: { action: "replace-all", field: "labels", value: ["b"] } } }), /expectedVersion/);
+  await assert.rejects(() => mutateDocument({ ...base, expectedVersion: written.version, input: { kind: "field-action", action: { action: "replace-all", field: "labels", value: ["b", "a", "b"] } } }), (error: unknown) => {
+    assert.ok(error instanceof KindConformanceError);
+    assert.deepEqual(error.violations.map((v) => [v.code, v.field]), [["KIND_FIELD_TYPE", "labels"]]);
+    return true;
+  });
+  const result = await mutateDocument({ ...base, expectedVersion: written.version, input: { kind: "field-action", action: { action: "replace-all", field: "labels", value: ["b", "a"] } } });
+  assert.deepEqual([result.doc.frontmatter.labels, result.doc.body], [["b", "a"], "Item body.\n"]);
+});
+
+test("unset removes an optional scalar, a standard field or a list field; absent is a no-op", () => {
+  const scalar = onItem({ due_on: "2026-11-01" }, { action: "unset", field: "due_on" });
+  assert.equal(Object.hasOwn(scalar.candidate.frontmatter, "due_on"), false);
+  assert.deepEqual([scalar.scope.outcome, scalar.scope.action, scalar.storageField], ["removed", "unset", "due_on"]);
+  assert.equal(Object.hasOwn(onItem({ description: "d" }, { action: "unset", field: "description" }).candidate.frontmatter, "description"), false, "a standard optional field");
+  assert.equal(Object.hasOwn(onItem({ labels: ["a", "b"] }, { action: "unset", field: "labels" }).candidate.frontmatter, "labels"), false, "a list field");
+  const absent = onItem({}, { action: "unset", field: "note" });
+  assert.deepEqual([absent.scope.outcome, absent.candidate.frontmatter], ["unchanged", item().frontmatter]);
+  assert.equal(onItem({ note: "n" }, { action: "unset", field: "note" }, "0.1").candidate.frontmatter.timestamp, "2026-10-17T00:00:00Z");
+  assert.equal(Object.hasOwn(apply({ description: "d" }, { action: "unset", field: "description" }).candidate.frontmatter, "description"), false, "no Kind: the standard set fields");
+});
+
+test("unset refuses required fields with the Kind's KIND_FIELD_MISSING, and everything set refuses plus type", () => {
+  for (const [fm, field] of [[{}, "state"], [{ state: undefined }, "state"], [{}, "title"]] as const) {
+    assert.throws(() => onItem(fm, { action: "unset", field }), (error: unknown) => {
+      assert.ok(error instanceof KindConformanceError, String(error));
+      assert.equal(error.governs, "Item");
+      assert.deepEqual(error.violations.map((v) => [v.code, v.field]), [["KIND_FIELD_MISSING", field]]);
+      return true;
+    }, field);
+  }
+  assert.throws(() => onItem({}, { action: "unset", field: "type" }), /type/);
+  for (const field of ["generated", "verified", "actor", "timestamp", "superbee_updated_by"]) assert.throws(() => onItem({}, { action: "unset", field }), /managed/, field);
+  for (const field of ["tags", "sources"]) assert.throws(() => onItem({ [field]: [] }, { action: "unset", field }), /collection/, field);
+  assert.throws(() => onItem({}, { action: "unset", field: "__proto__" }), /__proto__/);
+  assert.throws(() => onItem({}, { action: "unset", field: "stale_after" }, "0.1"), /v0.2/);
+  assert.throws(() => onItem({}, { action: "unset", field: "labels", value: [] }), /incompatible/);
+  assert.throws(() => onItem({}, { action: "unset", field: "undeclared" }), (error: unknown) => {
+    assert.ok(error instanceof FieldActionError);
+    assert.equal(error.details.reason, "unsupported-set-field");
+    const names = error.details.supportedFields!;
+    assert.ok(names.includes("labels") && names.includes("due_on") && names.includes("description"));
+    for (const forbidden of ["type", "title", "state", "tags", "sources"]) assert.ok(!names.includes(forbidden), forbidden);
+    return true;
+  });
+  assert.throws(() => onItem({}, { action: "set", field: "labels", value: undefined }), /unset/, "a missing value names unset");
+});
+
+test("unset of a required field reports only its KIND_FIELD_MISSING, beside an unrelated type violation", () => {
+  assert.throws(() => onItem({ due_on: "not a date", labels: "not a list" }, { action: "unset", field: "state" }), (error: unknown) => {
+    assert.ok(error instanceof KindConformanceError, String(error));
+    assert.deepEqual(error.violations.map((v) => [v.code, v.field]), [["KIND_FIELD_MISSING", "state"]]);
+    return true;
+  });
+});
+
+test("v0.1 unset of an absent field is a no-op that leaves timestamp as it was", () => {
+  const absent = onItem({ timestamp: "2020-01-01T00:00:00Z" }, { action: "unset", field: "note" }, "0.1");
+  assert.deepEqual([absent.scope.outcome, absent.candidate.frontmatter.timestamp], ["unchanged", "2020-01-01T00:00:00Z"]);
+});
+
+test("replace-all refuses a standard or managed field even when the Kind types it as a list", () => {
+  const listy = { ...ITEM_KIND, fields: { ...ITEM_KIND.fields, optional: [...ITEM_KIND.fields.optional, "status", "resource", "generated"], types: { ...ITEM_KIND.fields.types, description: "string-list", status: "string-list", resource: "string-list", generated: "string-list" } } };
+  const context = { registry: { kinds: new Map([["Item", listy]]), warnings: [] } as never, okfVersion: "0.2" as const };
+  for (const field of ["description", "status", "resource", "generated"]) {
+    assert.throws(() => prepareDocumentFieldAction(item(), { action: "replace-all", field, value: ["x"] }, context), /replace-all supports tags, sources/, field);
+  }
+  assert.deepEqual(prepareDocumentFieldAction(item(), { action: "replace-all", field: "labels", value: ["x"] }, context).candidate.frontmatter.labels, ["x"], "a declared non-standard list still replaces");
 });

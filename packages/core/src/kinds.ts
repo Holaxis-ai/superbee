@@ -1278,6 +1278,13 @@ export function kindFieldTypeProblem(type: KindFieldType, value: unknown): strin
   }
 }
 
+/** Whether a Kind declares `field` (a storage name) as one of the two list types, `string-list` or `https-url-list`. */
+export function isKindListField(kind: Pick<KindConvention, "fields"> | undefined, field: string): boolean {
+  const types = kind?.fields.types;
+  if (!types || !hasOwn(types, field)) return false;
+  return types[field] === "string-list" || types[field] === "https-url-list";
+}
+
 const NUMBER_INPUT_RE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
 const INTEGER_INPUT_RE = /^[+-]?\d+$/;
 

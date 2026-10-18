@@ -235,3 +235,36 @@ test("doc field read hints share the explicit remote option shape", async t => {
   await doc(argv.slice(argv.indexOf("doc") + 1), { stdout: text => { read += text; } });
   assert.match(read, /remote-tag/);
 });
+
+test("doc field replace-all replaces a Kind-declared list in the given order, strictly; add, remove and unset are refused for it", async t => {
+  const f = await fixture(t);
+  await writeDoc(f.bundle, { id: "conventions/item", frontmatter: { type: "Convention", title: "Item", governs: "Item", fields: { required: ["title"], optional: ["labels", "note"], types: { labels: "string-list" } } }, body: "" });
+  await writeDoc(f.bundle, { id: "items/a", frontmatter: { type: "Item", title: "A", labels: ["old"] }, body: "Keep this body.\n" });
+  const { version } = await readDocVersioned(f.bundle, "items/a");
+  const replaced = await f.run("replace-all", "items/a", "labels", "--from-file", await f.file("[zeta, alpha]"), "--expected-version", version);
+  assert.deepEqual([replaced.changed, replaced.scope.outcome], [true, "replaced"]);
+  const after = await readDocVersioned(f.bundle, "items/a");
+  assert.deepEqual([after.doc.frontmatter.labels, after.doc.body], [["zeta", "alpha"], "Keep this body.\n"]);
+  await assert.rejects(f.run("replace-all", "items/a", "labels", "--from-file", await f.file("[a, a]", "repeat.yaml"), "--expected-version", replaced.version), (err: unknown) => {
+    assert.ok(usage(err), String(err));
+    assert.deepEqual(((err as CliError).details as { violations: Array<{ code: string; field: string }> }).violations.map((v) => [v.code, v.field]), [["KIND_FIELD_TYPE", "labels"]], "a repeated member fails the strict Kind check");
+    return true;
+  });
+  await assert.rejects(f.run("replace-all", "items/a", "note", "--from-file", await f.file("[x]", "note.yaml"), "--expected-version", replaced.version), (err: unknown) => usage(err) && /string-list or https-url-list/.test((err as Error).message));
+  await assert.rejects(f.run("add", "items/a", "labels", "x"), (err: unknown) => usage(err) && /replace-all/.test((err as Error).message));
+  await assert.rejects(f.run("remove", "items/a", "labels", "x"), usage);
+  await assert.rejects(doc(["field", "unset", "items/a", "note", "--dir", f.dir]), (err: unknown) => usage(err) && /does not offer unset/.test((err as Error).message) && /pull --doc-key/.test((err as Error).message));
+  await assert.rejects(f.run("set", "items/a", "labels", "x"), (err: unknown) => usage(err) && /doc field replace-all <id> labels/.test((err as Error).message));
+  assert.deepEqual((await readDocVersioned(f.bundle, "items/a")).doc.frontmatter.labels, ["zeta", "alpha"]);
+});
+
+test("doc field help names replace-all for Kind-declared lists and says unset is not offered", async () => {
+  let family = "";
+  await doc(["field", "--help"], { stdout: text => { family += text; } });
+  assert.match(family, /string-list or\s+https-url-list/);
+  assert.match(family, /unset/);
+  let leaf = "";
+  await doc(["field", "replace-all", "--help"], { stdout: text => { leaf += text; } });
+  assert.match(leaf, /string-list or https-url-list/);
+  assert.match(leaf, /order given/);
+});

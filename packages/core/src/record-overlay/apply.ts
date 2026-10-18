@@ -5,6 +5,9 @@
  *
  * - `apply-owned-fields`: the ownership guard admits only owned and derived fields (and, in the
  *   grouped shape, the record's own `sources` entry), never the body, and requires the identity;
+ *   a step that carries entry properties or writes a declared list field is written as core field
+ *   actions (OKF v0.2 only), every other step as a patch, so its bytes and refusals stay those of
+ *   record-bridge;
  * - `create-signal`: the Signal create guard admits only a new document of the attention Kind,
  *   under its path, with a fixed key set and the claim state `todo`;
  * - `collapse-signal`: the Signal update guard admits only an existing attention Kind document,
@@ -13,6 +16,7 @@
  * Nothing else is ever created, and nothing is ever deleted.
  */
 import { readBundleOkfVersion } from "../bundle-ops.js";
+import { compareCodePoints } from "../code-point-order.js";
 import {
   containsCollection,
   FieldActionError,
@@ -29,7 +33,7 @@ import {
 } from "../document-mutation.js";
 import { PreconditionFailed } from "../document-precondition.js";
 import { InvalidInputError } from "../errors.js";
-import type { KindRegistry } from "../kinds.js";
+import { isPresent, type KindRegistry } from "../kinds.js";
 import { isManagedDocumentMetadataField } from "../managed-document-metadata.js";
 import { okfValuesEqual } from "../okf-authored-values.js";
 import { assertSafeConceptId } from "../paths.js";
@@ -39,7 +43,7 @@ import type { OkfDocument } from "../types.js";
 import { VersionConflict } from "../versioning.js";
 import { same } from "./canonical.js";
 import { CORE_VALUE_CODES, OverlayRefusal, REFUSAL_CODES, type RefusalCode } from "./errors.js";
-import { NEVER_OWNED, workStateFields } from "./policy.js";
+import { declaredListFields, NEVER_OWNED, workStateFields } from "./policy.js";
 import { redactUrl } from "./redact.js";
 import { resolveAttentionKind, type AttentionResolution } from "./signal-kind.js";
 import { isPlannedObservation, isPlannedSignalBody, signalLinkTexts } from "./signal-text.js";
@@ -329,6 +333,7 @@ export async function applyRecordOverlay(plan: OverlayPlan, ctx: ApplyContext): 
   const contentEdition = await editionOf(content.bundle);
   const opsEdition = ops.bundle === content.bundle ? contentEdition : await editionOf(ops.bundle);
   const derive = hooks.deriveFields;
+  let listFields: ReadonlySet<string> = new Set();
   // Owned and derived fields matter only to owned-field steps; a plan of Signal steps alone (a
   // presentation feed, a findings run) is not refused for a policy that owns record fields.
   if (plan.steps.some((step) => step.op === "apply-owned-fields")) {
@@ -341,6 +346,7 @@ export async function applyRecordOverlay(plan: OverlayPlan, ctx: ApplyContext): 
     if (typeof policy.provider !== "string" || policy.provider === "") throw new OverlayRefusal(REFUSAL_CODES.POLICY_INVALID, "owned-field steps need the policy's provider identity");
     if (targetKind === undefined) throw new OverlayRefusal(REFUSAL_CODES.POLICY_INVALID, "owned-field steps need a target Kind declared in the content bundle");
     if (policy.target_kind === (ctx.signals?.kind ?? "Signal")) throw new OverlayRefusal(REFUSAL_CODES.POLICY_INVALID, "the target Kind cannot be the attention Kind");
+    listFields = new Set(declaredListFields(targetKind));
   }
   const signalSteps = plan.steps.some((step) => step.op === "create-signal" || step.op === "collapse-signal");
   // Signal writes are bound to the provider the caller runs for, never to a field of the plan.
@@ -381,33 +387,61 @@ export async function applyRecordOverlay(plan: OverlayPlan, ctx: ApplyContext): 
       }
     };
     const entries = (): Array<[string, unknown]> => Object.entries(step.fields).map(([f, v]) => [f, v.to]);
+    // A declared list field is always replaced whole, and only in its normalized form: nonblank strings
+    // in code point order without repeats, which is what a connector's mapping emits. Core keeps a list
+    // in the order given, so a list in any other order or with repeats is held here, value-free.
+    const assertNormalizedList = (f: string, to: unknown): void => {
+      if (Array.isArray(to) && to.every((member, i) => typeof member === "string" && isPresent(member) && (i === 0 || compareCodePoints(to[i - 1] as string, member) < 0))) return;
+      throw new OverlayRefusal(REFUSAL_CODES.INVALID_INPUT, "an owned list field must be a list of strings in code point order without repeats", { reason: "list-not-normalized", field: f });
+    };
+    const writesList = Object.keys(step.fields).some((f) => listFields.has(f));
 
-    if (step.sources !== undefined) {
-      if (contentEdition !== "0.2") {
+    if (step.sources !== undefined || writesList) {
+      if (step.sources !== undefined && contentEdition !== "0.2") {
         throw new OverlayRefusal(REFUSAL_CODES.INVALID_INPUT, "the grouped sources write needs an OKF v0.2 bundle", { reason: "grouped-shape-needs-v0.2", field: "sources" });
       }
-      const removed = Object.entries(step.fields).find(([, v]) => v.to === undefined);
+      // On v0.1 a field action restamps `timestamp` inside the candidate, which no feed owns.
+      if (contentEdition !== "0.2") {
+        throw new OverlayRefusal(REFUSAL_CODES.INVALID_INPUT, "an owned list field is written by field actions, which need an OKF v0.2 bundle", { reason: "grouped-shape-needs-v0.2", field: Object.keys(step.fields).find((f) => listFields.has(f))! });
+      }
+      // The planner never puts the upsert on a step that removes a field, so a step carrying both was not planned here.
+      const removed = step.sources !== undefined ? Object.entries(step.fields).find(([, v]) => v.to === undefined) : undefined;
       if (removed) throw new OverlayRefusal(REFUSAL_CODES.INVALID_INPUT, "the grouped sources write cannot remove a field", { reason: "grouped-shape-removes-field", field: removed[0] });
       const properties = step.sources;
       return mutateDocument({
         ...base,
         input: (existing): DocumentMutationInput => {
-          // Core's field actions throw on metadata before any guard runs; refuse what the guard would.
+          // Core's field actions refuse on their own terms before any guard runs, so the guard's own
+          // screens run first, in its order: the target Kind, unowned fields, then the identity.
+          if (existing.frontmatter.type !== policy.target_kind) {
+            throw new OverlayRefusal(REFUSAL_CODES.FIELD_NOT_OWNED, `owned-field writes reach ${policy.target_kind} documents only`, { field: "type", external_id: step.external_id });
+          }
           const outside = Object.keys(step.fields).filter((f) => !admitted.has(f));
           if (outside.length) throw new OverlayRefusal(REFUSAL_CODES.FIELD_NOT_OWNED, `write would change non-owned fields: ${outside.join(", ")}`, { fields: outside, external_id: step.external_id });
-          assertNoListAssignment(existing, entries());
-          const entry = Array.isArray(existing.frontmatter.sources)
-            ? (existing.frontmatter.sources as unknown[]).filter((row) => matchesSourceIdentity(row, { resource: policy.provider, id: step.external_id }))
-            : [];
-          if (entry.length === 1) {
-            for (const key of Object.keys(properties)) {
-              if (containsCollection((entry[0] as Record<string, unknown>)[key])) {
-                throw new OverlayRefusal(REFUSAL_CODES.INVALID_INPUT, "a source property holding a list cannot be written as a field value", { reason: "list-valued-source-property", field: "sources" });
+          // With the upsert, a missing identity is an added entry, which the guard refuses as `sources`.
+          if (properties === undefined && !hasSourceIdentity(existing.frontmatter.sources, { resource: policy.provider, id: step.external_id })) {
+            throw new OverlayRefusal(REFUSAL_CODES.OVERLAY_IDENTITY_LOST, "document no longer carries the provider identity", { external_id: step.external_id });
+          }
+          assertNoListAssignment(existing, entries().filter(([f]) => !listFields.has(f)));
+          for (const [f, to] of entries()) if (listFields.has(f) && to !== undefined) assertNormalizedList(f, to);
+          if (properties !== undefined) {
+            const entry = Array.isArray(existing.frontmatter.sources)
+              ? (existing.frontmatter.sources as unknown[]).filter((row) => matchesSourceIdentity(row, { resource: policy.provider, id: step.external_id }))
+              : [];
+            if (entry.length === 1) {
+              for (const key of Object.keys(properties)) {
+                if (containsCollection((entry[0] as Record<string, unknown>)[key])) {
+                  throw new OverlayRefusal(REFUSAL_CODES.INVALID_INPUT, "a source property holding a list cannot be written as a field value", { reason: "list-valued-source-property", field: "sources" });
+                }
               }
             }
           }
-          const actions: FieldAction[] = entries().map(([field, value]) => ({ action: "set", field, value }));
-          actions.push({ action: "upsert", field: "sources", value: { ...properties, resource: policy.provider, id: step.external_id } });
+          const actions: FieldAction[] = entries().map(([field, value]): FieldAction => (
+            value === undefined ? { action: "unset", field }
+              : listFields.has(field) ? { action: "replace-all", field, value: value as string[] }
+                : { action: "set", field, value }
+          ));
+          if (properties !== undefined) actions.push({ action: "upsert", field: "sources", value: { ...properties, resource: policy.provider, id: step.external_id } });
           if (derive) {
             let preview: OkfDocument = existing;
             for (const action of actions) {

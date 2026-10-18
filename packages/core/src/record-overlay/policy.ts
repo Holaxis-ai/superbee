@@ -2,9 +2,9 @@
  * Source Feed policy: which fields a feed owns and what each change kind may do. Reads the feed's
  * frontmatter and decides per change, purely.
  */
-import { claimCoordinates, progressStatusStorageField, type KindConvention } from "../kinds.js";
+import { claimCoordinates, isKindListField, progressStatusStorageField, type KindConvention } from "../kinds.js";
 import type { ConceptId, Frontmatter } from "../types.js";
-import { same } from "./canonical.js";
+import { same, sameSet } from "./canonical.js";
 import { OverlayRefusal, REFUSAL_CODES } from "./errors.js";
 import type { ChangeDecision, OverlayPolicy, PolicyContext, RecordChange, Tell, TextGate } from "./types.js";
 
@@ -23,6 +23,16 @@ export function workStateFields(kind: KindConvention | undefined, editions: read
   const fields = new Set<string>([progressStatusStorageField("0.1")!, progressStatusStorageField("0.2")!]);
   if (kind) for (const edition of editions) for (const field of claimCoordinates(edition, kind)?.fields ?? []) fields.add(field);
   return fields;
+}
+
+/**
+ * The fields a target Kind declares as `string-list` or `https-url-list`. An owning feed treats each
+ * as a set: change detection compares members, and the apply writes the whole list.
+ */
+export function declaredListFields(kind: Pick<KindConvention, "fields"> | undefined): string[] {
+  if (!kind) return [];
+  const declared = new Set([...kind.fields.required, ...kind.fields.optional]);
+  return [...declared].filter((field) => isKindListField(kind, field)).sort();
 }
 
 const list = (v: unknown): string[] | undefined => (
@@ -71,6 +81,7 @@ export function readOverlayPolicy(doc: { id: ConceptId; frontmatter: Frontmatter
   if (typeof fm.url !== "string" || !fm.url) refuse("url (provider identity) is required", { key: "url" });
   const zone = fm.wall_time_zone === undefined || fm.wall_time_zone === null ? undefined : String(fm.wall_time_zone).trim();
   const targetKind = !presentation && typeof fm.target_kind === "string" && fm.target_kind ? fm.target_kind : undefined;
+  const listFields = declaredListFields(ctx.targetKind);
   return {
     feed: doc.id,
     provider: fm.url as string,
@@ -82,6 +93,7 @@ export function readOverlayPolicy(doc: { id: ConceptId; frontmatter: Frontmatter
     ...(threshold !== undefined ? { missing_threshold: threshold } : {}),
     ...(fm.completeness === "complete" || fm.completeness === "partial" ? { completeness: fm.completeness } : {}),
     ...(zone ? { time_zone: zone } : {}),
+    ...(listFields.length ? { list_fields: listFields } : {}),
   };
 }
 
@@ -120,6 +132,9 @@ export const maxPriority = <T>(a: T, b: T): T => ((PRIORITY_RANK[a as string] ??
  * A value is written as the text gate words it, and C is compared with B and N as gated too, so a
  * document that already says the normalized value converges. A value the gate still refuses is
  * not written: it is listed in `wording` and raises a low-priority Signal.
+ *
+ * A field in `policy.list_fields` compares as a set ({@link sameSet}), so a document holding the
+ * same members in another order converges; every other field compares whole values.
  */
 export function decideChange(
   policy: OverlayPolicy,
@@ -134,14 +149,17 @@ export function decideChange(
   const reasons: string[] = [];
   const autoApply = policy.auto_apply.includes(change.change_kind);
   const kind = policy.target_kind;
+  const lists = new Set(policy.list_fields ?? []);
+  const equal = (f: string): ((a: unknown, b: unknown) => boolean) => (lists.has(f) ? sameSet : same);
 
   if (overlay && change.after && change.before && autoApply) {
     for (const f of change.changed_fields) {
       if (!owned.has(f)) continue;
       const C = overlay.frontmatter[f], B = change.before[f], N = change.after[f];
       const n = gateSafeValue(N, f, kind, textGate), b = gateSafeValue(B, f, kind, textGate);
-      if (same(C, N) || same(C, n.value)) continue;
-      if (same(C, B) || same(C, b.value)) {
+      const eq = equal(f);
+      if (eq(C, N) || eq(C, n.value)) continue;
+      if (eq(C, B) || eq(C, b.value)) {
         if (n.ok) apply[f] = { from: C, to: n.value };
         else wording.push({ field: f, text: typeof N === "string" ? N : JSON.stringify(N), tells: n.tells });
       } else conflicts.push({ field: f, doc_value: C, feed_before: B, feed_after: N });
@@ -150,7 +168,7 @@ export function decideChange(
   // An editor-owned change needs judgment only when the document does not already say the new value.
   if (overlay && change.before && change.after) {
     const after = change.after;
-    editorFields = change.changed_fields.filter((f) => !owned.has(f) && !same(overlay.frontmatter[f], after[f]));
+    editorFields = change.changed_fields.filter((f) => !owned.has(f) && !equal(f)(overlay.frontmatter[f], after[f]));
   }
 
   if (policy.needs_review.includes(change.change_kind)) reasons.push(`needs_review:${change.change_kind}`);

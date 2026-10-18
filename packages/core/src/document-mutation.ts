@@ -13,6 +13,7 @@ import { prepareKindFieldMutation, type KindFieldMutation } from "./kind-field-m
 import { appendVerificationEvent, type AppendVerificationOptions } from "./verification.js";
 import { okfValuesEqual } from "./okf-authored-values.js";
 import { InvalidInputError } from "./errors.js";
+import { KindConformanceError } from "./kind-conformance-error.js";
 import { assertAuthoredOkfStandardFields } from "./okf-standard-fields.js";
 import { applyV02MutationMetadata } from "./document-write-policy.js";
 import { assertFieldPreconditions } from "./document-precondition.js";
@@ -59,27 +60,7 @@ export interface DocumentMutationContext {
   okfVersion: "0.1" | "0.2";
 }
 
-/** Typed strict-kind rejection for trusted consumers to translate at their own boundary. */
-export class KindConformanceError extends InvalidInputError {
-  readonly id: ConceptId;
-  readonly governs: string;
-  readonly violations: ValidationWarning[];
-  readonly okfVersion?: "0.1" | "0.2";
-
-  constructor(
-    id: ConceptId,
-    governs: string,
-    violations: ValidationWarning[],
-    okfVersion?: "0.1" | "0.2",
-  ) {
-    super(`'${id}' does not satisfy the '${governs}' kind: ${violations.map((warning) => warning.message).join("; ")}`);
-    this.name = "KindConformanceError";
-    this.id = id;
-    this.governs = governs;
-    this.violations = violations;
-    this.okfVersion = okfVersion;
-  }
-}
+export { KindConformanceError };
 
 /** Typed missing-document result for patch callers that require an existing target. */
 export class DocumentNotFoundError extends Error {
