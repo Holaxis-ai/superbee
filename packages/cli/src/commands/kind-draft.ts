@@ -11,38 +11,17 @@
 // zero validation obligations — core accepts an absent `fields:` without warning). The governs
 // registration is what durably silences every proactive channel, on every synced machine; the
 // record's body names `kind draft` as the priced reopen route.
+import type { MutateDocumentOptions } from "@superbee/core";
 import {
-  CONVENTION_TYPE,
-  loadKinds,
-  parseConventionDoc,
-  query,
-  readBundleOkfVersion,
-  validateAgainstKind,
-  type Bundle,
-  type Frontmatter,
-  type KindConvention,
-  type KindRegistry,
-  type OkfDocument,
-} from "@superbee/core";
+  KindAuthoringError, prepareKindDraft, prepareKindDraftMutation, prepareKindDismissal,
+  appliedKindDraftWarnings, draftPromotions,
+} from "@superbee/core/kind-authoring";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
-import { droppedLinks } from "../body-replace-guards.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { commandFragment, commandQuoted, commandToken, type CommandText } from "../command-text.js";
-import {
-  collectInstanceStats,
-  draftPlanToken,
-  draftPromotions,
-  inferKindCandidate,
-  kindDeclaresAnything,
-  conventionSlugForType,
-  warningsAfterApply,
-  type DraftInstanceStats,
-} from "../kind-draft.js";
 import { mutateDoc } from "../mutate.js";
 import { render, resolveMode, type OutputFlags } from "../output.js";
-import { builtinNames, resolveBuiltinSync } from "../recipe-source-builtin.js";
-import { materializeRecipeForEdition } from "@superbee/core/recipe-lifecycle";
 
 export interface KindDraftFlags extends OutputFlags {
   dir?: string;
@@ -60,69 +39,6 @@ function targetSuffix(values: Pick<KindDraftFlags, "dir" | "remote">): CommandTe
   return suffix;
 }
 
-interface CatalogConvention {
-  recipeId: string;
-  doc: OkfDocument;
-  kind: KindConvention;
-  siblings: string[];
-}
-
-/** The builtin convention governing `type`, materialized for this bundle's edition, if any. */
-function catalogConventionForType(type: string, okfVersion: string): CatalogConvention | undefined {
-  for (const name of builtinNames()) {
-    const recipe = resolveBuiltinSync(name);
-    if (!recipe.governs.includes(type)) continue;
-    const materialized = materializeRecipeForEdition(recipe, okfVersion);
-    const doc = materialized.docs.find((d) => {
-      const governs = d.frontmatter.governs;
-      return typeof governs === "string" && governs.trim() === type;
-    });
-    if (!doc) continue;
-    const parsed = parseConventionDoc(doc);
-    if (!parsed.ok) continue;
-    return {
-      recipeId: recipe.id,
-      doc,
-      kind: parsed.kind,
-      siblings: recipe.governs.filter((governs) => governs !== type),
-    };
-  }
-  return undefined;
-}
-
-interface DraftPlan {
-  type: string;
-  okfVersion: string;
-  registry: KindRegistry;
-  /** The declaration-free convention this draft would upgrade in place (redraft), if any. */
-  redraftOver: KindConvention | undefined;
-  candidateDoc: { id: string; frontmatter: Frontmatter; body: string };
-  candidateKind: KindConvention;
-  catalog: CatalogConvention | undefined;
-  stats: DraftInstanceStats;
-  instances: OkfDocument[];
-  warnings: number;
-  token: string;
-}
-
-/** Candidate frontmatter WITHOUT a timestamp — the engine stamps one at write time. */
-function candidateDocFor(kind: KindConvention, body: string): DraftPlan["candidateDoc"] {
-  const fields: Record<string, unknown> = {};
-  if (kind.fields.required.length > 0) fields.required = kind.fields.required;
-  if (kind.fields.optional.length > 0) fields.optional = kind.fields.optional;
-  if (Object.keys(kind.fields.values).length > 0) fields.values = kind.fields.values;
-  const frontmatter: Frontmatter = {
-    type: CONVENTION_TYPE,
-    title: kind.title,
-    governs: kind.governs,
-  };
-  if (kind.description !== undefined) frontmatter.description = kind.description;
-  if (kind.path !== undefined) frontmatter.path = kind.path;
-  if (Object.keys(fields).length > 0) frontmatter.fields = fields;
-  if (kind.sections !== undefined && kind.sections.length > 0) frontmatter.sections = kind.sections;
-  return { id: kind.id, frontmatter, body };
-}
-
 function inferredBody(type: string, count: number): string {
   return (
     `Drafted from ${count} existing '${type}' instance${count === 1 ? "" : "s"} by ` +
@@ -131,62 +47,28 @@ function inferredBody(type: string, count: number): string {
   );
 }
 
-/** Build the whole read-only plan: registry + instances -> candidate + forecast + token. */
-async function prepareDraftPlan(bundle: Bundle, type: string): Promise<DraftPlan> {
-  const inv = cliInvocation();
-  const [registry, okfVersionRead] = await Promise.all([loadKinds(bundle), readBundleOkfVersion(bundle)]);
-  const okfVersion = okfVersionRead ?? "0.1";
-  const existing = registry.kinds.get(type);
-  if (existing && kindDeclaresAnything(existing)) {
-    throw new CliError(
-      "USAGE",
-      `'${type}' is already governed by '${existing.id}' — the Kind exists; evolve it instead of drafting a second one`,
-      { help: `${inv} kind field ${commandQuoted(type)} add <name>` },
-    );
+/** Presentation-only mapping of core facts to the established CLI contract. */
+function authoringCliError(error: unknown, type: string, values: KindDraftFlags): never {
+  if (!(error instanceof KindAuthoringError)) throw error;
+  const inv = cliInvocation(), suffix = targetSuffix(values), id = error.details.id;
+  switch (error.reason) {
+    case "already-governed": throw new CliError("USAGE", `'${type}' is already governed by '${id}' — the Kind exists; evolve it instead of drafting a second one`, { help: `${inv} kind field ${commandQuoted(type)} add <name>` });
+    case "no-instances": throw new CliError("USAGE", `no documents of type '${type}' exist in this bundle — there is nothing to infer a Kind from`, { help: `${inv} list` });
+    case "plan-changed": throw new CliError("STALE_HEAD", `kind draft plan changed (expected ${error.details.expected}, current ${error.details.current}); inspect a fresh plan before applying`, { details: { expected_plan: error.details.expected, current_plan: error.details.current }, help: `${inv} kind draft ${commandQuoted(type)}${suffix}` });
+    case "edition-changed": throw new CliError("STALE_HEAD", `the bundle format changed while applying the '${type}' draft — rerun '${inv} kind draft ${commandQuoted(type)}'`, { help: `${inv} kind draft ${commandQuoted(type)}${suffix}` });
+    case "redraft-changed": throw new CliError("STALE_HEAD", `'${id}' is no longer a declaration-free convention governing '${type}' — re-run '${inv} kind draft ${commandQuoted(type)}' against the current bundle`, { help: `${inv} kinds` });
+    case "dismiss-governed": throw new CliError("USAGE", `'${type}' is governed by '${id}' — dismiss records a decline for an UNGOVERNED type; a declared Kind is a decision already made`, { help: `${inv} kinds` });
   }
-  const instances = (await query(bundle, { type })).sort((a, b) => a.id.localeCompare(b.id));
-  if (instances.length === 0) {
-    throw new CliError(
-      "USAGE",
-      `no documents of type '${type}' exist in this bundle — there is nothing to infer a Kind from`,
-      { help: `${inv} list` },
-    );
-  }
-  const stats = collectInstanceStats(instances);
-  const catalog = catalogConventionForType(type, okfVersion);
-  let candidateKind: KindConvention;
-  let candidateDoc: DraftPlan["candidateDoc"];
-  if (catalog) {
-    // Adopt the builtin definition VERBATIM — the recipe's schema is better than an inference,
-    // and landing it at its canonical id keeps the recipes surface consistent. The forecast
-    // below then reports the REAL (possibly large) warning count against existing instances —
-    // the priced route `recipe add` cannot offer when instances already exist.
-    candidateKind = catalog.kind;
-    const { timestamp: _timestamp, ...frontmatter } = catalog.doc.frontmatter;
-    candidateDoc = { id: catalog.doc.id, frontmatter, body: catalog.doc.body };
-  } else {
-    candidateKind = inferKindCandidate(type, instances, stats);
-    candidateDoc = candidateDocFor(candidateKind, inferredBody(type, stats.count));
-  }
-  // A redraft upgrades the EXISTING governing record in place, wherever it lives — a
-  // hand-authored governs-only convention at a non-canonical id keeps its id (never two
-  // conventions for one kind; the slug id is only for true creates).
-  if (existing) candidateDoc = { ...candidateDoc, id: existing.id };
-  const warnings = warningsAfterApply(candidateKind, instances);
-  const token = draftPlanToken({ target: candidateDoc.id, candidate: candidateDoc, okfVersion, stats, warnings });
-  return {
-    type,
-    okfVersion,
-    registry,
-    redraftOver: existing,
-    candidateDoc,
-    candidateKind,
-    catalog,
-    stats,
-    instances,
-    warnings,
-    token,
-  };
+}
+async function authoringRead<T>(read: () => Promise<T> | T, type: string, values: KindDraftFlags): Promise<T> {
+  try { return await read(); } catch (error) { return authoringCliError(error, type, values); }
+}
+/** Preserve mutateDoc error adaptation without forking the core candidate/CAS checks. */
+function authoringMutation(options: MutateDocumentOptions, type: string, values: KindDraftFlags): MutateDocumentOptions {
+  return { ...options, buildCandidate: async (existing, context) => {
+    try { return await options.buildCandidate!(existing, context); }
+    catch (error) { return authoringCliError(error, type, values); }
+  } };
 }
 
 export async function kindDraftCommand(
@@ -197,7 +79,7 @@ export async function kindDraftCommand(
   const inv = cliInvocation();
   const suffix = targetSuffix(values);
   const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
-  const plan = await prepareDraftPlan(bundle, type);
+  const plan = await authoringRead(() => prepareKindDraft(bundle, type, { inferredBody, inferredDescription: (_type, count) => `Drafted by 'kind draft' from ${count} existing instance${count === 1 ? "" : "s"}.` }), type, values);
 
   if (values.apply === undefined) {
     const candidate: Record<string, unknown> = {
@@ -238,72 +120,10 @@ export async function kindDraftCommand(
     return;
   }
 
-  const expected = values.apply.trim();
-  if (plan.token !== expected) {
-    throw new CliError(
-      "STALE_HEAD",
-      `kind draft plan changed (expected ${expected}, current ${plan.token}); inspect a fresh plan before applying`,
-      {
-        details: { expected_plan: expected, current_plan: plan.token },
-        help: `${inv} kind draft ${commandQuoted(plan.type)}${suffix}`,
-      },
-    );
-  }
-
-  const redraftTarget = plan.redraftOver;
-  let droppedOnRedraft: ReturnType<typeof droppedLinks> = [];
+  const prepared = await authoringRead(() => prepareKindDraftMutation(bundle, plan, values.apply!, { actor: values.actor?.trim() }), type, values);
   const result = await mutateDoc({
-    // A convention adopted from a recipe source must stay byte-comparable to it, and
-    // `sameInstalledDoc` strips `generated.at` but not an engine-seeded `generated.by` - so a
-    // seeded clock makes an untouched install report as drifted. Recipe installation opts out for
-    // the same reason. Both writers here target `conventions/<slug>` and the draft path patches
-    // OVER a dismissal, so this must be uniform: otherwise a convention's provenance would depend
-    // on whether it was dismissed first or drafted first. NOT bundle-wide - a generic
-    // `doc write --type Convention` still seeds a clock, which is a recorded decision (provenance
-    // is arguably wanted on a hand-authored convention) rather than an oversight.
-    seedGenerationClock: false,
-    bundle,
-    id: plan.candidateDoc.id,
-    // A redraft UPGRADES the dismissal record in place (patch); a fresh draft must not clobber a
-    // concurrently created convention (create-only).
-    mode: redraftTarget ? "replace-document" : "create-only",
-    registry: plan.registry,
-    strict: false, // this command WRITES a schema — it never validates one against another
+    ...authoringMutation(prepared.options, type, values),
     helpOnKindReject: `${inv} kinds`,
-    actor: values.actor?.trim(),
-    // A redraft replaces the dismissal record wholesale by design (appendix O4), so any link its
-    // prose carried goes with it: declared here rather than left to a guard this verb has no flag
-    // for, and DISCLOSED on the receipt below so a permitted drop is never a silent one. The
-    // generated body is never a `doc read` preview, so the preview guard stays enforced.
-    bodyReplace: { replaceLinks: true },
-    buildCandidate: (existingDoc, context) => {
-      if (context.okfVersion !== plan.okfVersion) {
-        throw new CliError(
-          "STALE_HEAD",
-          `the bundle format changed while applying the '${plan.type}' draft — rerun '${inv} kind draft ${commandQuoted(plan.type)}'`,
-          { help: `${inv} kind draft ${commandQuoted(plan.type)}${suffix}` },
-        );
-      }
-      if (redraftTarget) {
-        // Re-verify against EVERY attempt's fresh read (the `kind field` discipline): the doc
-        // must still be the declaration-free dismissal record for THIS type. A real Kind that
-        // appeared concurrently must never be silently overwritten.
-        const parsed = parseConventionDoc(existingDoc!);
-        if (!parsed.ok || parsed.kind.governs !== plan.type || kindDeclaresAnything(parsed.kind)) {
-          throw new CliError(
-            "STALE_HEAD",
-            `'${redraftTarget.id}' is no longer a declaration-free convention governing '${plan.type}' — ` +
-              `re-run '${inv} kind draft ${commandQuoted(plan.type)}' against the current bundle`,
-            { help: `${inv} kinds` },
-          );
-        }
-      }
-      // Frontmatter AND body wholesale: an accepted redraft replaces the dismissal prose — a
-      // "declined" record must not survive under a now-real schema (design appendix O4). Computed
-      // per attempt from the version-matched read, like every other read-dependent decision here.
-      droppedOnRedraft = existingDoc ? droppedLinks(bundle, existingDoc, plan.candidateDoc.body) : [];
-      return { frontmatter: { ...plan.candidateDoc.frontmatter }, body: plan.candidateDoc.body };
-    },
     errors: {
       // No governance claim without evidence (review F2): create-only sees only the conflict,
       // and the occupying doc may be a convention governing a DIFFERENT type (slug collision)
@@ -319,8 +139,8 @@ export async function kindDraftCommand(
     },
   });
 
-  const applied = (await loadKinds(bundle)).kinds.get(plan.type);
-  const measured = applied ? plan.instances.reduce((total, doc) => total + validateAgainstKind(doc, applied).length, 0) : plan.warnings;
+  const measured = await appliedKindDraftWarnings(bundle, plan);
+  const droppedOnRedraft = prepared.droppedLinks;
   const receipt: Record<string, unknown> = {
     draft: plan.type,
     applied: true,
@@ -346,78 +166,38 @@ export async function kindDismissCommand(
   const inv = cliInvocation();
   const suffix = targetSuffix(values);
   const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
-  const [registry, okfVersionRead] = await Promise.all([loadKinds(bundle), readBundleOkfVersion(bundle)]);
-  const okfVersion = okfVersionRead ?? "0.1";
-  const existing = registry.kinds.get(type);
-  if (existing && kindDeclaresAnything(existing)) {
-    throw new CliError(
-      "USAGE",
-      `'${type}' is governed by '${existing.id}' — dismiss records a decline for an UNGOVERNED type; ` +
-        "a declared Kind is a decision already made",
-      { help: `${inv} kinds` },
-    );
-  }
-  if (existing) {
-    // Idempotent, matching `kind field`'s no-op posture: re-dismissing an already-dismissed type
-    // succeeds without a write.
-    stdout(
-      render(
-        { dismissed: type, convention: existing.id, changed: false, help: [`${inv} kinds`] },
-        resolveMode(values),
-      ),
-    );
+  const prepared = await authoringRead(() => prepareKindDismissal(bundle, type, {
+    actor: values.actor?.trim(),
+    description: `Declined: '${type}' is deliberately unconstrained (recorded by 'kind dismiss').`,
+    body: (_type, catalog) => {
+      const reason = values.reason?.trim();
+      const bodyLines = [
+        `The human declined a Kind for '${type}'${reason ? `: ${reason}` : ""}. This declaration-free`,
+        "convention records that decision so no future session re-proposes it.",
+        "",
+        // O3: the priced reopen route is `kind draft` — it forecasts instance conformance before any
+        // write, which `recipe evolve`'s additive plan does not.
+        `Reopen by running \`${inv} kind draft ${commandQuoted(type)}\` — read-only; it prices adding a real schema`,
+        "against the existing instances before anything is written.",
+      ];
+      if (catalog) {
+        bodyLines.push(
+          "",
+          `The builtin recipe '${catalog.recipeId}' defines a full '${type}' schema; \`kind draft\``,
+          "adopts it with an instance-conformance forecast.",
+        );
+      }
+      return `${bodyLines.join("\n")}\n`;
+    },
+  }), type, values);
+  const { id, catalog } = prepared;
+  if (!prepared.options) {
+    stdout(render({ dismissed: type, convention: id, changed: false, help: [`${inv} kinds`] }, resolveMode(values)));
     return;
   }
-
-  const id = `conventions/${conventionSlugForType(type)}`;
-  const catalog = catalogConventionForType(type, okfVersion);
-  const reason = values.reason?.trim();
-  const bodyLines = [
-    `The human declined a Kind for '${type}'${reason ? `: ${reason}` : ""}. This declaration-free`,
-    "convention records that decision so no future session re-proposes it.",
-    "",
-    // O3: the priced reopen route is `kind draft` — it forecasts instance conformance before any
-    // write, which `recipe evolve`'s additive plan does not.
-    `Reopen by running \`${inv} kind draft ${commandQuoted(type)}\` — read-only; it prices adding a real schema`,
-    "against the existing instances before anything is written.",
-  ];
-  if (catalog) {
-    bodyLines.push(
-      "",
-      `The builtin recipe '${catalog.recipeId}' defines a full '${type}' schema; \`kind draft\``,
-      "adopts it with an instance-conformance forecast.",
-    );
-  }
-
   const result = await mutateDoc({
-    // A convention adopted from a recipe source must stay byte-comparable to it, and
-    // `sameInstalledDoc` strips `generated.at` but not an engine-seeded `generated.by` - so a
-    // seeded clock makes an untouched install report as drifted. Recipe installation opts out for
-    // the same reason. Both writers here target `conventions/<slug>` and the draft path patches
-    // OVER a dismissal, so this must be uniform: otherwise a convention's provenance would depend
-    // on whether it was dismissed first or drafted first. NOT bundle-wide - a generic
-    // `doc write --type Convention` still seeds a clock, which is a recorded decision (provenance
-    // is arguably wanted on a hand-authored convention) rather than an oversight.
-    seedGenerationClock: false,
-    bundle,
-    id,
-    mode: "create-only",
-    registry,
-    strict: false,
+    ...authoringMutation(prepared.options, type, values),
     helpOnKindReject: `${inv} kinds`,
-    actor: values.actor?.trim(),
-    buildCandidate: () => ({
-      // Deliberately NO `fields:` key at all — core's parseConventionDoc accepts its absence
-      // with zero warnings ("nothing to declare, nothing to warn about"), which is what makes
-      // the record validation-inert.
-      frontmatter: {
-        type: CONVENTION_TYPE,
-        title: type,
-        governs: type,
-        description: `Declined: '${type}' is deliberately unconstrained (recorded by 'kind dismiss').`,
-      },
-      body: `${bodyLines.join("\n")}\n`,
-    }),
     errors: {
       alreadyExists: () =>
         new CliError(

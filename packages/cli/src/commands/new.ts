@@ -72,7 +72,7 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { mutateDoc } from "../mutate.js";
-import { kindDeclaresAnything } from "../kind-draft.js";
+import { kindDeclaresAnything, kindInstanceCandidate } from "@superbee/core/kind-authoring";
 import { isKnownShippedLegacyPageConvention, isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../legacy-page.js";
 import { boardPostPersistHook } from "../board-attribution.js";
 import { resolveActor } from "../actor.js";
@@ -616,7 +616,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   // Context Note kind) validates against a value that is actually present, not "missing because the
   // user didn't pass --timestamp".
 
-  const body = suppliedBody ?? (kind.sections ?? []).map((heading) => `# ${heading}\n`).join("\n");
+  const instance = kindInstanceCandidate(kind, frontmatter, suppliedBody);
   // `--no-prefix` uses the id VERBATIM instead of auto-prepending the kind's declared `path` — the
   // escape hatch for when a caller needs a specific id/namespace that differs from the kind's
   // convention (cold-start study r3: an agent needing a literal prefix had to drop off `new` onto
@@ -661,7 +661,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
           { help: `${cliInvocation()} new ${commandToken(kindName)} ${commandToken(rawId)}` },
         );
       }
-      return { frontmatter, body };
+      return instance;
     },
     errors: {
       alreadyExists: () =>
