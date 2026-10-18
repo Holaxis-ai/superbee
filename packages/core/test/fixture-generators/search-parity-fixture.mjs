@@ -2,7 +2,7 @@
 // queries, as the parity fixture `test/fixtures/search-parity.json`. The test `search-parity.test.ts`
 // runs the same table through `@superbee/core/search` over its memory source and compares.
 //
-//   node packages/core/scripts/search-parity-fixture.mjs <dir>
+//   node packages/core/test/fixture-generators/search-parity-fixture.mjs <dir>
 //
 // <dir> holds node_modules with @superbee/portal-webmcp (the version to match, 0.3.1) and its peer
 // @superbee/portal, for example a scratch directory after
@@ -259,6 +259,6 @@ const fixture = {
   documents: documents.map(({ id, version, frontmatter, body }) => ({ id, version, frontmatter, body })),
   cases,
 };
-const out = fileURLToPath(new URL("../test/fixtures/search-parity.json", import.meta.url));
+const out = fileURLToPath(new URL("../fixtures/search-parity.json", import.meta.url));
 writeFileSync(out, `${JSON.stringify(fixture, null, 2)}\n`);
 console.log(`wrote ${cases.length} cases over ${documents.length} documents to ${out}`);

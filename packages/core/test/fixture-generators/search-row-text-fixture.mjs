@@ -3,14 +3,14 @@
 // recomputes every row and compares bytes, so a change to normalize, tokenize or searchRowText fails
 // until SEARCH_TEXT_REVISION is bumped and a golden for the new revision is recorded here.
 //
-//   cd packages/core && node --import ./test/ts-loader.mjs scripts/search-row-text-fixture.mjs
+//   cd packages/core && node --import ./test/ts-loader.mjs test/fixture-generators/search-row-text-fixture.mjs
 //
 // The sample keeps to characters whose Unicode properties every supported Node release agrees on;
 // runtime drift is the normalizer fingerprint's job, not this golden's.
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { searchRowText, SEARCH_ALGORITHM, SEARCH_TEXT_REVISION } from "../src/search/index.js";
+import { searchRowText, SEARCH_ALGORITHM, SEARCH_TEXT_REVISION } from "../../src/search/index.js";
 
 const DOCUMENTS = [
   // Every field, duplicate and non-string tags, an id with separators, repeated body terms.
@@ -69,6 +69,6 @@ const fixture = {
   revision: SEARCH_TEXT_REVISION,
   rows: DOCUMENTS.map((document) => ({ document, rowText: serializeRowText(searchRowText(document)) })),
 };
-const out = fileURLToPath(new URL(`../test/fixtures/search-row-text-v${SEARCH_TEXT_REVISION}.json`, import.meta.url));
+const out = fileURLToPath(new URL(`../fixtures/search-row-text-v${SEARCH_TEXT_REVISION}.json`, import.meta.url));
 writeFileSync(out, `${JSON.stringify(fixture, null, 2)}\n`);
 console.log(`wrote ${fixture.rows.length} rows at text revision ${SEARCH_TEXT_REVISION} to ${out}`);

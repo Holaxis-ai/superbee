@@ -1,5 +1,5 @@
 // searchRowText, SEARCH_TEXT_REVISION and the text version. The row-text golden for the running
-// revision (fixtures/search-row-text-v<revision>.json, recorded by scripts/search-row-text-fixture.mjs)
+// revision (fixtures/search-row-text-v<revision>.json, recorded by fixture-generators/search-row-text-fixture.mjs)
 // must hold byte for byte: changing normalize, tokenize or searchRowText without bumping the revision
 // fails here, and bumping it without recording a golden finds no fixture.
 import assert from "node:assert/strict";

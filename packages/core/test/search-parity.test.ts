@@ -1,5 +1,5 @@
 // documents.search.v1 parity: the engine over its memory source against portal-webmcp 0.3.1's recorded
-// answers for one corpus (fixtures/search-parity.json, recorded by scripts/search-parity-fixture.mjs and
+// answers for one corpus (fixtures/search-parity.json, recorded by fixture-generators/search-parity-fixture.mjs and
 // moved byte for byte from superbee-hosted's agent-operations, where the engine lived before core).
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
