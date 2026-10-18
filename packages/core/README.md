@@ -388,7 +388,8 @@ Until it settles, a write is held in an intent store: its operation, bundle (and
 document id, document and digest, expected version, request identity and binding, which is
 everything needed to rebuild the lookup exactly. The default store is in memory and lives as long
 as the client. Pass `intentStore` (`put`, `get`, `delete`, and optionally `list`) to keep intents
-durable across restarts; lookups use the binding recorded with each intent. A service that
+durable across restarts (`openHostedClientJournal`, below, is one for Node); lookups use the
+binding recorded with each intent. A service that
 restarts with a durable store calls `heldWrites()` to find the writes that never settled
 (including any recorded but never sent), then settles each with `settleWrite`. `heldWrites()`
 throws `HostedIntentsNotListable` when the store has no `list`. A settled write leaves the store.
@@ -436,6 +437,53 @@ item. A send still unclear after that throws `HostedAttentionOutcomeUnknown` wit
 `not_found`, `target_unavailable`, `target_unsupported`, `quota_exceeded`, `request_conflict`,
 `version_conflict`, `ticket_expired` with `serverTime`, `workspace_not_available` and the rest),
 `retryable`, and a message in this client's words: the host's message and hint are never repeated.
+
+### Durable intent store (Node only)
+
+`openHostedClientJournal` from `@superbee/core/hosted-client/node` is a durable `intentStore`, so a
+short-lived process that exits with a write `unknown` can recover it after a restart.
+
+```ts
+import { createHostedClient } from "@superbee/core/hosted-client";
+import { openHostedClientJournal } from "@superbee/core/hosted-client/node";
+
+const journal = await openHostedClientJournal({ directory: path.join(stateDir, "superbee-writes") });
+const client = createHostedClient({ target, credentials, intentStore: journal });
+for (const held of await client.heldWrites()) await client.settleWrite(held.requestId);
+// ... writes ...
+await journal.close();
+```
+
+The journal is a `FileJournaledBackend` directory: an fsynced, checksummed log with snapshot
+compaction. Its on-disk format is a supported compatibility promise; a format change ships a reader
+for the older layout. Each unsettled write is one metadata row, `hosted-client.write.<requestId>`,
+holding the whole document and the binding it was sent under, so a new process with a new token
+looks it up exactly as the first would have. A settled write is removed.
+
+- **Ownership.** Open takes an exclusive same-user lock on the directory until `close()`. Another
+  process waits `lock.waitMs` (default 5,000 ms) and then gets `FilesystemMutationLockError`. A
+  lock left by a process that died on this host is reclaimed.
+- **Local file system only.** The lock lives in a per-user runtime directory on this host, so it
+  cannot exclude a process on another host. Keep the journal on a local disk, never on NFS, SMB
+  or another shared mount. Open does not detect a network mount; this is the operator's rule.
+- **Privacy.** The journal holds whole documents. A directory open creates is mode 0700, and its
+  files 0600. An existing directory that is a symbolic link, or that grants its group or others any
+  permission, is refused as `HostedClientJournalError` `JOURNAL_DIRECTORY_NOT_PRIVATE`.
+- **Marker.** A new journal records `hosted-client.journal = { schemaVersion: 1 }` in its first
+  transaction. Open refuses, as `JOURNAL_NOT_HOSTED_CLIENT`, a store with rows but no marker or one
+  holding documents, blobs or a checkout's blob-sync state, so it is never pointed at a CLI checkout
+  store. A marker of another schema is `JOURNAL_SCHEMA_UNSUPPORTED`. A crash before the marker
+  lands leaves an empty store, which the next open marks.
+- **Size.** The log is compacted into the snapshot whenever it grows past the greater of 1 MiB
+  (`HOSTED_CLIENT_JOURNAL_COMPACT_FLOOR_BYTES`) and twice the last snapshot, so steady writing keeps
+  it near 1 MiB. The snapshot, which holds every write still unsettled, and any one transaction are
+  bounded at 256 MiB. A write that would pass that bound is refused before anything is recorded,
+  and its `write` throws. Unsettled writes count toward the bound until `settleWrite` resolves them.
+- **Damage.** `FileJournalCorruptError` (a damaged record before the log's end or a damaged
+  snapshot) and `FileJournalFormatError` (a newer format) refuse the open and change no file. A torn
+  final record, which was never acknowledged, is truncated. Nothing is repaired automatically:
+  moving the directory aside starts an empty journal and loses the writes it held, which can then
+  be settled only by reading the documents on the host.
 
 ### Export download (Node only)
 

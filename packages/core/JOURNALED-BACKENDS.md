@@ -41,6 +41,14 @@ presence-aware expectation and optional whole-journal emptiness check run with t
 transaction. Acknowledged history also makes the journal nonempty. This is not a reservation for
 subsequent operations: later guarded mutations must continue checking the admitted metadata row.
 
+`FileJournaledBackend` adds two metadata verbs outside the shared interface. `listMeta(prefix)`
+returns every row whose key starts with `prefix`, in code-unit key order, as copies from the last
+committed transaction. `removeMeta(key, {expected})` removes one row compare-and-swap: the
+expectation is required, is compared in the removal's transaction, and a mismatch raises
+`JournalGuardConflict` and writes nothing. It resolves `true` when it removed the row and `false`
+when the row was absent as expected. A removal is an ordinary fsynced log record and uses the
+existing record format.
+
 All guarded inputs are captured before asynchronous storage work. Their data domain is primitive
 values (including `undefined`), arrays, and acyclic plain records. Accessors, symbols, functions,
 cycles, and other object prototypes such as `Date`, `Map`, or `Set` are refused. This includes

@@ -213,8 +213,9 @@ test("N4: filesystem imports stay in named Node adapters, and the backend reache
   }
   // The Node log store persists to its own private directory, never to a bundle path, so it is
   // a storage module beside the identity and lock modules that owns file I/O. Portable export
-  // materializes only fresh isolated input directories, never engine persistence.
-  assert.deepEqual(fsImporters, ["file-journaled-backend.ts", "filesystem-identity.ts", "filesystem-lock.ts", "portable-export.ts"]);
+  // materializes only fresh isolated input directories, never engine persistence. The hosted
+  // client's journal only inspects the log store's own directory (its privacy, its file sizes).
+  assert.deepEqual(fsImporters, ["file-journaled-backend.ts", "filesystem-identity.ts", "filesystem-lock.ts", "hosted-client/journal.ts", "portable-export.ts"]);
 
   const backend = importSpecifiers(await parse("backend.ts"));
   for (const banned of [...FS_SPECIFIERS, "node:crypto", "crypto", "./filesystem-lock.js"]) {

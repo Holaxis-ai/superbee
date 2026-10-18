@@ -28,7 +28,7 @@ import {
 import { OPEN_LOG, STORE_RAW, type FileJournalHandle } from "../src/file-journaled-backend-internal.js";
 import type { FilesystemHostPolicy } from "../src/filesystem-host.js";
 import { FilesystemMutationLockError } from "../src/filesystem-lock.js";
-import { IntentHoldConflict, IntentStateConflict, type JournaledBackend, type NewIntentRecord } from "../src/journaled-backend.js";
+import { IntentHoldConflict, IntentStateConflict, JournalGuardConflict, type JournaledBackend, type NewIntentRecord } from "../src/journaled-backend.js";
 import type { OkfDocument } from "../src/types.js";
 import { VersionConflict } from "../src/versioning.js";
 import { registerJournaledBackendContract } from "./journaled-backend-contract.js";
@@ -651,6 +651,100 @@ test("a writer killed with SIGKILL reopens with every write it acknowledged, who
       for (const [id, version] of lastByDoc) assert.equal((await backend.read(id)).version, version);
     } finally {
       await backend.close();
+    }
+  } finally {
+    await root.cleanup();
+  }
+});
+
+// ── listMeta and removeMeta ────────────────────────────────────────────────────────────────
+
+test("listMeta: the rows under a prefix in key order, as copies, from the last committed transaction", async () => {
+  const root = await newRoot();
+  try {
+    const backend = await reopened(root);
+    await backend.writeMeta("app.b", { n: 2 });
+    await backend.writeMeta("app.a", { n: 1 });
+    await backend.writeMeta("app.c", undefined);
+    await backend.writeMeta("other", 9);
+    const rows = await backend.listMeta<{ n: number } | undefined>("app.");
+    assert.deepEqual(rows, [{ key: "app.a", value: { n: 1 } }, { key: "app.b", value: { n: 2 } }, { key: "app.c", value: undefined }]);
+    rows[0]!.value!.n = 99;
+    assert.deepEqual(await backend.readMeta("app.a"), { n: 1 }, "a listed value is a copy");
+    assert.deepEqual((await backend.listMeta()).map((row) => row.key), ["app.a", "app.b", "app.c", "other"]);
+    assert.deepEqual(await backend.listMeta("none."), []);
+    await assert.rejects(backend.listMeta(7 as unknown as string), TypeError);
+    await backend.close();
+    await assert.rejects(backend.listMeta(), FileJournalUnavailableError);
+  } finally {
+    await root.cleanup();
+  }
+});
+
+test("removeMeta: compare-and-swap removal that is durable, and a mismatch writes nothing", async () => {
+  const root = await newRoot();
+  try {
+    const backend = await reopened(root);
+    await backend.writeMeta("keep", { v: 1 });
+    await backend.writeMeta("gone", { v: 1 });
+    const size = (await logBytes(root)).byteLength;
+    const txn = backend.transaction;
+
+    // A stale value, a wrong presence and a missing expectation are refused before anything is written.
+    await assert.rejects(backend.removeMeta("gone", { expected: { present: true, value: { v: 2 } } }), JournalGuardConflict);
+    await assert.rejects(backend.removeMeta("gone", { expected: { present: false } }), JournalGuardConflict);
+    await assert.rejects(backend.removeMeta("gone", {} as { expected: { present: false } }), JournalGuardConflict);
+    await assert.rejects(backend.removeMeta("gone", { expected: { present: true } as never }), JournalGuardConflict);
+    assert.equal((await logBytes(root)).byteLength, size);
+    assert.equal(backend.transaction, txn);
+    assert.deepEqual(await backend.readMeta("gone"), { v: 1 });
+
+    // Absent as expected: false, and no record.
+    assert.equal(await backend.removeMeta("never", { expected: { present: false } }), false);
+    assert.equal(backend.transaction, txn);
+
+    assert.equal(await backend.removeMeta("gone", { expected: { present: true, value: { v: 1 } } }), true);
+    assert.equal(backend.transaction, txn + 1);
+    assert.equal(await backend.readMeta("gone"), undefined);
+    // Removing it again under the old premise is a conflict: the row is no longer present.
+    await assert.rejects(backend.removeMeta("gone", { expected: { present: true, value: { v: 1 } } }), JournalGuardConflict);
+    await backend.close();
+
+    const again = await reopened(root);
+    try {
+      assert.deepEqual(await again.listMeta(), [{ key: "keep", value: { v: 1 } }]);
+      await again.compact();
+    } finally {
+      await again.close();
+    }
+    // The removal survives compaction into the snapshot, too.
+    const compacted = await reopened(root);
+    try {
+      assert.deepEqual(await compacted.listMeta(), [{ key: "keep", value: { v: 1 } }]);
+    } finally {
+      await compacted.close();
+    }
+  } finally {
+    await root.cleanup();
+  }
+});
+
+test("removeMeta: an interrupted append leaves the row, and a read-only store refuses it", async () => {
+  const root = await newRoot();
+  try {
+    const plan = { failSync: true, armed: false };
+    const backend = await reopened(root, { openLog: faultyLog(plan) });
+    await backend.writeMeta("row", 1);
+    plan.armed = true;
+    await assert.rejects(backend.removeMeta("row", { expected: { present: true, value: 1 } }), /injected fsync failure/);
+    assert.equal(await backend.readMeta("row"), 1);
+    await backend.close();
+    const readOnly = await FileJournaledBackend.open({ ...root.options(), readOnly: true });
+    try {
+      assert.equal(await readOnly.readMeta("row"), 1);
+      await assert.rejects(readOnly.removeMeta("row", { expected: { present: true, value: 1 } }), FileJournalUnavailableError);
+    } finally {
+      await readOnly.close();
     }
   } finally {
     await root.cleanup();
