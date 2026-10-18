@@ -61,7 +61,8 @@ function defaultAllowImport(files, roots) {
   const inside = roots.map(real);
   return (specifier, file) => {
     if (!isRelative(specifier)) return EGRESS_ALLOWED_IMPORTS.includes(specifier);
-    const target = path.resolve(path.dirname(file), specifier);
+    // Resolved from the importing module's real directory, where the runtime resolves it.
+    const target = path.resolve(path.dirname(real(file)), specifier);
     const candidates = [target, target.replace(/\.js$/, ".ts"), target.replace(/\.mjs$/, ".mts")].map(real);
     return candidates.some((candidate) => scanned.has(candidate) || inside.some((root) => candidate === root || candidate.startsWith(`${root}${path.sep}`)));
   };

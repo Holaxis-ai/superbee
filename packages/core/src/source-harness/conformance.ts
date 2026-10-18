@@ -110,7 +110,6 @@ const CREDENTIALS = (): TransportCredential[] => [
   { hosts: credentialHosts({ kind: "token", provider: "github" }), header: "accessToken", value: "conformance-secret-2" },
 ];
 
-/** Every request that carried the credential's value toward a host it does not belong to. */
 /**
  * Whether a request carries the credential anywhere: a header, the URL (decoded, so an encoded
  * copy counts) or the body. The secret is the value's last word, so `Bearer x` is found as `x`.
@@ -122,6 +121,7 @@ function carries(request: PeerRequest, credential: TransportCredential): boolean
   return [...Object.values(request.headers), url, request.url, request.body ?? ""].some((text) => text.includes(secret));
 }
 
+/** Every request that carried the credential's value toward a host it does not belong to. */
 function leaks(peer: ScriptedPeer, credential: TransportCredential): string[] {
   return peer.received.filter((request) => {
     const url = new URL(request.url);

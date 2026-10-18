@@ -356,11 +356,12 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
 
   try {
     // Changes an earlier commit asked to retry are planned again before anything is fetched. A
-    // record that has since disappeared has nothing left to write.
+    // record that has since disappeared has nothing left to write, unless the held change is the
+    // record coming back.
     const pendingIds = signal.aborted ? [] : Object.keys(state.pending ?? {}).sort();
     if (pendingIds.length) {
       const pending = state.pending!;
-      const live = pendingIds.filter((id) => !state.records[id]?.gone);
+      const live = pendingIds.filter((id) => !state.records[id]?.gone || pending[id]!.change.change_kind === "new");
       const changes = live.map((id) => pending[id]!.change);
       const records: Record<string, { fields: Record<string, unknown> }> = {};
       for (const change of changes) records[change.external_id] = { fields: { ...(change.after ?? change.before ?? {}) } };
@@ -389,9 +390,10 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
         } else if (result!.retry.has(id)) {
           nextPending[id] = entry;
         } else if (!result!.hold.has(id)) {
-          // The record's absence since the hold is newer than the change, so its count stays.
+          // The record's absence since the hold is newer than the change, so its count stays; a
+          // record that comes back starts afresh.
           const current = state.records[id];
-          nextRecords[id] = entryJson({ ...entry.entry, missing: current?.missing ?? 0, first_missing_at: current?.first_missing_at });
+          nextRecords[id] = entryJson(current?.gone ? entry.entry : { ...entry.entry, missing: current?.missing ?? 0, first_missing_at: current?.first_missing_at });
         }
       }
       receipt.held += live.filter((id) => failure !== undefined || result!.retry.has(id) || result!.hold.has(id)).length;
@@ -478,9 +480,11 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
       const changes = [...diff.changes, ...missing.changes];
       const byId = new Map(changes.map((change) => [change.external_id, change]));
       // A newer observation of a record, its listing or its absence from a complete pass, supersedes
-      // its pending change. Those entries are dropped and stored before the commit, so a crash after
-      // the commit never replays a change older than what the commit wrote.
-      const superseded = [...diff.seen, ...missing.entries.keys()].filter((id) => state.pending !== undefined && Object.hasOwn(state.pending, id));
+      // its pending change, whether or not the record was ever stored. Those entries are dropped and
+      // stored before the commit, so a crash after the commit never replays a change older than what
+      // the commit wrote.
+      const unlisted = complete ? Object.keys(state.pending ?? {}).filter((id) => !seen.has(id)) : [];
+      const superseded = [...new Set([...diff.seen, ...missing.entries.keys(), ...unlisted])].filter((id) => state.pending !== undefined && Object.hasOwn(state.pending, id));
       if (superseded.length) {
         const remaining: Record<string, PendingChange> = { ...state.pending };
         for (const id of superseded) delete remaining[id];
