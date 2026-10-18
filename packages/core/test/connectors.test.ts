@@ -442,6 +442,13 @@ test("data names (mapping keys, values natives, input and permission names) are 
   refuses((fm) => { fm.x_settings = { api_key: "x" }; }, "CONNECTOR_SECRET_PRESENT", "/x_settings");
   refuses((fm) => { source(fm).identity.token = "x"; }, "CONNECTOR_SECRET_PRESENT", "/sources/0/identity");
   refuses((fm) => { fm.actions = [{ name: "a", method: "GET", host: "calendar.example.org", input: { n: { type: "string", secret: true } } }]; }, "CONNECTOR_SECRET_PRESENT", "/actions/0/input/n");
+  const { frontmatter: words } = base();
+  source(words).fields.highs_temperature = "summary";
+  source(words).fields.weighs_kilograms = "summary";
+  source(words).fields.event_status.values = { laughs_and_cheers: "scheduled", ...source(words).fields.event_status.values };
+  words.x_thighs_measurement = "inseam";
+  const wordsParsed = parse(words);
+  assert.ok(wordsParsed.ok, `data names that contain a token prefix must parse: ${JSON.stringify(errorsOf(wordsParsed))}`);
 });
 
 test("the body is scanned for token shapes, not for words", () => {
@@ -653,6 +660,21 @@ test("identity values that could collide, blank ones and over-long ones never re
   assert.equal(code({ cal: "a", uid: "   " }), "IDENTITY_MISSING");
   assert.equal(code({ cal: "a", uid: "x".repeat(3000) }), "IDENTITY_INVALID");
   assert.equal(code({ cal: 7, uid: 8 }), "7#8", "a finite number renders as its decimal string");
+  for (const [template, a, b] of [
+    ["{cal}::{uid}", { cal: "x:", uid: "y" }, { cal: "x", uid: ":y" }],
+    ["{cal}--{uid}", { cal: "x-", uid: "y" }, { cal: "x", uid: "-y" }],
+    ["{cal}/x/{uid}", { cal: "p/x", uid: "q" }, { cal: "p", uid: "x/q" }],
+    ["{cal}aba{uid}", { cal: "1ab", uid: "a2" }, { cal: "1", uid: "baa2" }],
+  ] as const) {
+    const fm = base().frontmatter;
+    source(fm).identity.id = template;
+    const p = parse(fm);
+    assert.ok(p.ok, template);
+    const s = p.connector.sources[0]!;
+    const render = (record: Record<string, unknown>) => { const m = mapRecord(s, { summary: "x", ...record }, KIND); return m.kind === "refused" ? m.diagnostics[0]!.code : m.external_id; };
+    assert.equal(render(a), "IDENTITY_INVALID", `${template} ${JSON.stringify(a)}`);
+    assert.equal(render(b), "IDENTITY_INVALID", `${template} ${JSON.stringify(b)}`);
+  }
   const single = parseExampleConnector().sources[0]!;
   const one = mapRecord(single, { uid: "a#b", summary: "x" }, KIND);
   assert.ok(one.kind === "mapped" && one.external_id === "a#b", "one placeholder cannot collide, so its value may hold any text");

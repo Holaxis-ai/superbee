@@ -235,8 +235,12 @@ function bodyHoldsSecret(body: string): boolean {
 }
 
 const holdsSecret = (text: string): boolean => secretShaped(text) || bodyHoldsSecret(text);
-/** Keys hold no prose, so a token shape glued to a word still counts. */
-const keyHoldsSecret = (key: string): boolean => holdsSecret(key) || /(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{8}|xox[abprs]-[A-Za-z0-9-]{8}/.test(key);
+/**
+ * Keys hold no prose, so a token glued to a word still counts. The shapes use the providers' real
+ * token lengths, so data names that merely contain a prefix ("highs_", "weighs_") stay legal.
+ */
+const keyHoldsSecret = (key: string): boolean =>
+  holdsSecret(key) || /gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,}|xox[abprs]-[A-Za-z0-9-]{10,}/.test(key);
 
 /**
  * Maps whose keys are data names (target fields, provider natives, input and permission names), not
@@ -886,8 +890,8 @@ const MAX_ID = 2048;
 
 /**
  * Render the id template. A missing, blank or non-scalar value is `IDENTITY_MISSING`; a value holding
- * the literal that separates two placeholders (so two records could share one id), or an id past
- * {@link MAX_ID} characters, is `IDENTITY_INVALID`. A finite number renders as `String(n)`, so a
+ * any character of a literal that separates two placeholders (so two records could share one id, for
+ * multi-character separators too), or an id past {@link MAX_ID} characters, is `IDENTITY_INVALID`. A finite number renders as `String(n)`, so a
  * profile emits one type per id.
  */
 function renderId(template: string, value: unknown): { ok: true; id: string } | { ok: false; code: "IDENTITY_MISSING" | "IDENTITY_INVALID"; path: string } {
@@ -903,7 +907,9 @@ function renderId(template: string, value: unknown): { ok: true; id: string } | 
     const v = read.found ? read.value : undefined;
     const text = typeof v === "string" ? v : typeof v === "number" && Number.isFinite(v) ? String(v) : undefined;
     if (text === undefined || !isPresent(text)) return { ok: false, code: "IDENTITY_MISSING", path: part.path };
-    if (text.length > MAX_ID || separators.some((separator) => text.includes(separator))) return { ok: false, code: "IDENTITY_INVALID", path: part.path };
+    if (text.length > MAX_ID || separators.some((separator) => [...separator].some((ch) => text.includes(ch)))) {
+      return { ok: false, code: "IDENTITY_INVALID", path: part.path };
+    }
     id += text;
   }
   if (id.length > MAX_ID) return { ok: false, code: "IDENTITY_INVALID", path: template };
