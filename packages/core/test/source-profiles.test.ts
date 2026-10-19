@@ -22,7 +22,7 @@ function world(c: Connector, answer: (r: PeerRequest) => PeerResponse, state = n
   const bound = bindSourceFeed(c, {id: "source-feeds/issues", frontmatter: {type: "Source Feed", connector: c.id, source: "issues", url: `https://${c.sources[0]!.request?.host ?? "api.github.com"}/repos/octo/project`, owned_fields: ["title", "count", "date", "url", "tag"], auto_apply: ["new", "changed"], missing_threshold: 2}}, registry, {okfVersion: "0.2"});
   const peer = new ScriptedPeer(r => new URL(r.url).pathname === "/robots.txt" ? {status: 404, body: ""} : answer(r));
   const commits: unknown[] = [];
-  return {bound, peer, state, commits, run: (overrides: Record<string, unknown> = {}) => observeSource({connector: c, bound, profile: restJsonProfile, spec: c.sources[0], transport: peerTransport(peer), state, identity, mode: "complete", commit: async page => {commits.push(page);}, ...overrides})};
+  return {bound, peer, state, commits, run: (overrides: Record<string, unknown> = {}) => observeSource({connector: c, bound, profile: restJsonProfile, spec: c.sources[0], transport: peerTransport(peer), state, identity, now: () => new Date("2026-10-19T00:00:00Z"), mode: "complete", commit: async page => {commits.push(page);}, ...overrides})};
 }
 const json = (body: unknown, headers: Record<string, string> = {}): PeerResponse => ({status: 200, body: JSON.stringify(body), headers});
 
@@ -159,4 +159,50 @@ test("Link relations preserve commas inside URLs and malformed links cannot clai
   assert.equal(new URL(h.peer.received.at(-1)!.url).searchParams.get("after"), "a,b");
   const malformed = world(connector(request, false), () => json([], {link: '<https://tickets.example.org/x; rel="next"'}));
   const receipt = await malformed.run(); assert.equal(receipt.outcome, "unsupported_content"); assert.equal(receipt.pass.complete, false); assert.equal(receipt.pages, 0);
+});
+
+for (const relation of ["next", "Next", "NEXT", "nExT", "prev NEXT"]) test(`Link ${relation} traverses pages before accounting for absence`, async () => {
+  const c = connector({...baseRequest(), paging: {kind: "link-header"}});
+  let phase = "seed";
+  const h = world(c, input => {
+    const second = new URL(input.url).searchParams.has("page");
+    return phase === "seed" ? json([{id: 1, title: "one"}, {id: 2, title: "two"}]) : second ? json([{id: 2, title: "two"}]) : json([{id: 1, title: "one"}], {link: `<https://api.github.com/repos/octo/project/issues?page=2>; rel="${relation}"`});
+  });
+  h.bound.policy.missing_threshold = 1;
+  await h.run(); phase = "paged";
+  const result = await h.run();
+  assert.equal(result.pages, 2); assert.equal(result.pass.complete, true); assert.equal(result.changes.disappeared, 0);
+});
+
+test("normalization path reordering preserves pins and records; ancestor collisions are refused in either order", async () => {
+  for (const paths of [["normalized", "normalized.title"], ["normalized.title", "normalized"], ["x.y", "x.y.z"], ["a", "a-b", "a.b"]]) {
+    const c = connector(); c.sources[0]!.request!.fields = Object.fromEntries(paths.map(path => [path, {const: "value"}]));
+    assert.equal(restJsonProfile.validateSpec(c.sources[0]).ok, false, paths.join(","));
+    assert.ok(validateConnectorRequest(c.sources[0]!, c).some(e => e.path.includes("/fields/")));
+    const parsed = parseConnectorDoc({id: c.id, body: "", frontmatter: {type: "Connector", title: c.title, auth: c.auth, domains: c.domains, record_sources: c.sources}});
+    assert.equal(parsed.ok, false);
+  }
+  const a = connector({...baseRequest(), fields: {"normalized.title": {const: "one"}, "normalized.count": {const: 2}}});
+  const b = structuredClone(a); b.sources[0]!.request!.fields = Object.fromEntries(Object.entries(b.sources[0]!.request!.fields!).reverse());
+  assert.equal(connectorPinDigest(a), connectorPinDigest(b));
+  const normalize = async (c: Connector) => {
+    const h = world(c, () => json([]));
+    return restJsonProfile.observe({spec: c.sources[0]!, bound: h.bound, cursor: null, resumed: false, mode: "complete", budget: {requests: 1, maxBytes: 1000}, now: new Date(), validators: null, transport: {request: async () => ({status: 200, body: '[{"id":1,"title":"one"}]', headers: {}, url: "https://api.github.com/repos/octo/project/issues"})}});
+  };
+  assert.deepEqual((await normalize(a)).records, (await normalize(b)).records);
+  const first = world(a, () => json([{id: 1, title: "one"}]));
+  const second = world(b, () => json([{id: 1, title: "one"}]));
+  await first.run(); await second.run();
+  assert.deepEqual((await first.state.read("source-feeds/issues"))!.state.records, (await second.state.read("source-feeds/issues"))!.state.records);
+});
+
+for (const phase of ["url", "header"] as const) test(`narrowing ${phase} callback cannot change execution or authority through its view or captured declaration`, async () => {
+  const c = connector({...baseRequest(), query: {state: "open"}, headers: {"x-github-api-version": "2026-03-10"}, fields: {title: {const: "pinned"}}});
+  const h = world(c, () => json([{id: 1, title: "raw"}]));
+  const mutate = (url: URL): boolean => {url.searchParams.set("state", "all"); c.sources[0]!.request!.query!.state = "all"; h.bound.parameters.repo = "other"; c.sources[0]!.request!.fields!.title = {const: "changed"}; c.sources[0]!.fields.title!.from = "wrong"; return true;};
+  const result = await h.run({rules: phase === "url" ? {url: mutate} : {header: (_name: string, url: URL) => mutate(url)}});
+  assert.equal(result.outcome, "observed"); assert.equal(h.peer.received.length, 1);
+  assert.equal(new URL(h.peer.received[0]!.url).searchParams.get("state"), "open");
+  assert.equal(new URL(h.peer.received[0]!.url).pathname, "/repos/octo/project/issues");
+  assert.equal((await h.state.read("source-feeds/issues"))!.state.records["1"]!.after.title, "pinned");
 });

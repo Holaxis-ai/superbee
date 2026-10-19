@@ -60,7 +60,7 @@ export const restJsonProfile: SourceProfile<ConnectorSource, RestJsonCursor> = O
     const source = value as unknown as ConnectorSource;
     const errors = validateConnectorRequest(source);
     if (source.request?.graphql) errors.push({path: "/request/graphql", message: "use graphql-cursor for GraphQL"});
-    return errors.length ? {ok: false as const, errors} : {ok: true as const, spec: source};
+    return errors.length ? {ok: false as const, errors} : {ok: true as const, spec: JSON.parse(JSON.stringify(source)) as ConnectorSource};
   },
   hostsFor: (source: ConnectorSource) => [source.request!.host],
   async observe(ctx: ObserveContext<ConnectorSource, RestJsonCursor>) {
@@ -147,7 +147,7 @@ export const restJsonProfile: SourceProfile<ConnectorSource, RestJsonCursor> = O
         const match = /^\s*<([^>]+)>\s*((?:;.*)?)$/.exec(link);
         if (!match) unsupportedContent("malformed Link header");
         const rel = /;\s*rel\s*=\s*(?:"([^"]*)"|([^;\s,]+))/i.exec(match[2]!);
-        if ((rel?.[1] ?? rel?.[2] ?? "").split(/\s+/).includes("next")) {
+        if ((rel?.[1] ?? rel?.[2] ?? "").toLowerCase().split(/\s+/).includes("next")) {
           if (url) unsupportedContent("multiple next links");
           try {url = new URL(match[1]!, response.url).href;} catch {unsupportedContent("invalid next link");}
         }

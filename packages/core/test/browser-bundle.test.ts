@@ -514,7 +514,7 @@ test("core/connectors parses, binds, maps and drives record-overlay over MemoryB
   assert.deepEqual(JSON.parse(userinfo).errors.map((e: { code: string; path: string }) => [e.code, e.path]), [["CONNECTOR_SECRET_PRESENT", "/description"]]);
 });
 
-test("core/source-engine runs a paged observation and core/source-harness passes conformance in a sandbox with only TextEncoder, URL and the timer globals, matching Node's", async () => {
+test("core/source-engine runs a paged observation and core/source-harness passes conformance in a browser sandbox with cloning and timer globals, matching Node's", async () => {
   const result = await build({
     stdin: {
       contents: [
@@ -536,7 +536,7 @@ test("core/source-engine runs a paged observation and core/source-harness passes
   });
   assert.equal(result.errors.length, 0, JSON.stringify(result.errors, null, 2));
   // The engine's own deadline needs the timer and abort globals every browser and Worker has.
-  const sandbox: Record<string, unknown> = { TextEncoder, URL, setTimeout, clearTimeout, AbortController };
+  const sandbox: Record<string, unknown> = { TextEncoder, URL, setTimeout, clearTimeout, AbortController, structuredClone };
   for (const name of ["process", "Buffer", "require", "fetch", "WebSocket", "XMLHttpRequest"]) {
     assert.equal(runInNewContext(`typeof ${name}`, sandbox), "undefined", name);
   }

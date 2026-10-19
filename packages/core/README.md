@@ -1028,7 +1028,9 @@ Existing declaration pins without a request block remain unchanged. Credentialed
 must now supply a request declaration: `declaration_required` refuses a missing one before any
 transport call. Parsing and installation remain inert. Provider read paths, read-shaped POST paths,
 headers and paging forms are core-owned, deeply frozen, and revalidated at every run; caller rules
-can only narrow them. Keyless legacy profiles retain the declared-domain and robots rules.
+can only narrow them. Callback URL/response views are isolated from execution; changing a view
+cannot rewrite the request. Core rechecks its private run authority after narrowing callbacks.
+Keyless legacy profiles retain the declared-domain and robots rules.
 
 GitHub's repository issues GET, version header and alternate numeric pagination form follow
 [issues documentation](https://docs.github.com/en/rest/issues/issues) and

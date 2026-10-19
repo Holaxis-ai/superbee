@@ -117,7 +117,14 @@ export function validateConnectorRequest(source: Pick<ConnectorSource, "request"
   }
   if (r.fields !== undefined) {
     if (!object(r.fields)) fail("/fields", "must be a mapping");
-    else for (const [name, field] of Object.entries(r.fields)) {
+    else {
+      const paths = new Set(Object.keys(r.fields));
+      for (const path of paths) {
+        const segments = path.split(".");
+        if (segments.some((_segment, index) => index > 0 && paths.has(segments.slice(0, index).join(".")))) fail(`/fields/${path}`, "normalized output paths must not overlap an ancestor path");
+      }
+    }
+    if (object(r.fields)) for (const [name, field] of Object.entries(r.fields)) {
       if (!dotted(name) || !name) {fail(`/fields/${name}`, "invalid normalized record path"); continue;}
       if (!closed("transform", field, `/fields/${name}`)) continue;
       if (field.from !== undefined && (!dotted(field.from) || !field.from)) fail(`/fields/${name}/from`, "requires dotted record path");
