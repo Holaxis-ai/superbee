@@ -147,3 +147,8 @@ Private observation/accepted state persists with one lock and atomic envelope. A
 bundle write can replay through the same conflict rules; no exactly-once cross-store transaction
 is claimed. Corrupt private state refuses without reset. Summaries omit records, cursor, raw
 provider errors and credential values. Neither bind nor run synchronizes or publishes a bundle.
+
+Run receipts include fixed machine reason codes where available, never provider error text.
+A terminal unsuccessful run exits nonzero after its receipt: credential refusal 4, not found 6,
+guard/content/size refusal 2, and provider/runtime failure 1. Observed and deferred exit 0;
+deferred retains retry metadata for continuation and does not claim a complete observation.

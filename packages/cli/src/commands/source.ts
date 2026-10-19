@@ -22,6 +22,8 @@ bind previews consent without network or credential reads; --accept persists pri
 run permits built-in profiles only, refuses changed consent and uses DNS-pinned HTTPS.
 --anonymous never discovers credentials; --credential-env stores only the variable name.
 Local/Git bundles only. Run updates existing linked documents/Signals, never mirrors new records.
+Run emits its safe receipt before a terminal failure exits nonzero. Deferred continuation exits 0
+with retry metadata; it does not claim a complete observation.
 
 --profile explicitly imports TRUSTED local JavaScript exporting a matching SourceProfile. It is
 ordinary code execution in this process, not a sandbox; recorded transport cannot constrain
@@ -35,7 +37,7 @@ Options:
   -h, --help            Show this help
 `;
 
-export async function source(argv: string[], deps: { stdout?: (text: string) => void } = {}): Promise<void> {
+export async function source(argv: string[], deps: { stdout?: (text: string) => void; run?: typeof runLocalSource } = {}): Promise<void> {
   const stdout = deps.stdout ?? ((text: string) => void process.stdout.write(text));
   if (argv[0] === undefined || argv[0] === "--help" || argv[0] === "-h") { stdout(renderUsage(SOURCE_USAGE)); return; }
   if (argv[0] === "bind" || argv[0] === "run") {
@@ -45,8 +47,15 @@ export async function source(argv: string[], deps: { stdout?: (text: string) => 
     const values = p.values as Record<string,string|boolean|undefined>;
     const options={dir:values.dir as string|undefined,anonymous:values.anonymous as boolean|undefined,credentialEnv:values["credential-env"] as string|undefined,accept:values.accept as string|undefined,complete:values.complete as boolean|undefined,actor:values.actor as string|undefined};
     try {
-      const report=bind?await bindLocalSource(p.positionals[0]!,options):await runLocalSource(p.positionals[0]!,options);
-      stdout(render(report,resolveMode(p.values)));return;
+      const report=bind?await bindLocalSource(p.positionals[0]!,options):await (deps.run ?? runLocalSource)(p.positionals[0]!,options);
+      stdout(render(report,resolveMode(p.values)));
+      if(!bind && report.outcome!=="observed" && report.outcome!=="deferred") {
+        const code = report.outcome==="credential_refused" ? "AUTH_REQUIRED"
+          : report.outcome==="not_found" ? "NOT_FOUND"
+          : ["refused","unsupported_content","too_large"].includes(String(report.outcome)) ? "USAGE" : "RUNTIME";
+        throw new CliError(code,"Local source run did not complete successfully; inspect its receipt.",{handled:true});
+      }
+      return;
     } catch(error) { if(error instanceof CliError) throw error; throw sourceRefusal("operation_failed","RUNTIME"); }
   }
   if (argv[0] !== "test") throw new CliError("USAGE", "Expected source test, bind or run.");

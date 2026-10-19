@@ -12,6 +12,21 @@ import { assertActorAcceptedByBundle, resolveActor } from "../actor.js";
 import type { UserStateInput } from "../user-state.js";
 import { nodeSourceTransport } from "./transport.js";
 import { emptyAccepted, readSourceEnvelope, sourceCanonical, sourceDigest, sourceMachineState, sourceRefusal, withSourceState, writeSourceEnvelope, type SourceBinding, type SourceEnvelope } from "./state.js";
+// Only fixed engine-owned codes may cross the public receipt boundary.
+const PUBLIC_SOURCE_REASONS = new Set([
+  "profile_invalid", "profile_mismatch", "mode_invalid", "declaration_invalid", "binding_invalid",
+  "budget_invalid", "statuses_invalid", "identity_invalid", "spec_invalid", "profile_error",
+  "hosts_invalid", "hosts_undeclared", "declaration_required", "state_invalid", "state_unreadable",
+  "state_conflict", "state_unwritable", "deadline", "budget", "page_invalid", "cursor_stuck",
+  "commit_failed", "not_modified", "rate_limited", "server_error", "status", "scheme_refused",
+  "address_refused", "host_refused", "redirect_refused", "bot_challenge", "robots_unavailable",
+  "robots_disallowed", "header_refused", "run_ended", "url_invalid", "method_refused",
+  "body_refused", "request_invalid", "url_refused", "timeout", "transport", "redirect_invalid",
+  "redirect_limit", "graphql_scope_unsupported",
+]);
+export function publicSourceReason(reason: unknown): string | undefined {
+  return reason === undefined ? undefined : typeof reason === "string" && PUBLIC_SOURCE_REASONS.has(reason) ? reason : "unclassified";
+}
 export interface LocalSourceOptions { dir?:string; anonymous?:boolean; credentialEnv?:string; accept?:string; complete?:boolean; actor?:string }
 export interface LocalSourceDeps { stateInput?:UserStateInput; lockRoot?:string; env?:NodeJS.ProcessEnv; transport?:Transport }
 async function context(feedId:string,dir?:string) {
@@ -84,7 +99,7 @@ export async function runLocalSource(feed:string,options:LocalSourceOptions,deps
     adapter.discard();
     const findingResult = await adapter.applyFindings(receipt.findings,receipt.observed_at);
     // Deliberately allowlist values: raw cursor, diagnostics, provider text and thrown details are private.
-    const summary = {operation:"source run",feed,digest:currentBinding.digest,profile:receipt.profile,outcome:receipt.outcome,retry:receipt.retry,pages:receipt.pages,held:receipt.held,pending:receipt.pending,changes:receipt.changes,pass:receipt.pass,
+    const summary = {operation:"source run",feed,digest:currentBinding.digest,profile:receipt.profile,outcome:receipt.outcome,...(receipt.reason===undefined?{}:{reason:publicSourceReason(receipt.reason)}),retry:receipt.retry,pages:receipt.pages,held:receipt.held,pending:receipt.pending,changes:receipt.changes,pass:receipt.pass,
       requests:receipt.requests.map(r=>({method:r.method,purpose:r.purpose,...(r.status?{status:r.status}:{})})),diagnostic_count:receipt.diagnostics.length,finding_count:receipt.findings.length,finding_refusals:findingResult.refusals.length+findingResult.results.filter(r=>r.outcome==="refused").length};
     await writeSourceEnvelope(file,{...envelope,summary} satisfies SourceEnvelope,deps.stateInput);
     return summary;

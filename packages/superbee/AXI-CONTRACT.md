@@ -309,4 +309,9 @@ State is outside the bundle, private and atomically co-publishes observations an
 Stable reason codes include binding_missing, binding_changed, credential_missing, state_invalid,
 state_persist_failed and source_busy within the existing exit taxonomy. Summary outcomes retain
 engine retry semantics; no raw provider values, cursor or errors reach output. Normal provider
-outcomes are reported as summaries; malformed input, consent and persistence errors are CLI errors.
+outcomes are reported as summaries with fixed allowlisted reason codes (unknown codes become
+unclassified). After its one receipt, source run exits 0 for observed or deferred (retryable
+continuation); credential_refused exits 4, not_found exits 6, refused/unsupported_content/too_large
+exit 2, and provider_unavailable/failed exit 1. The handled CliError preserves the exit without a
+second output envelope. Deferred is not a completeness claim. Malformed input, consent and
+persistence errors remain CLI errors.
