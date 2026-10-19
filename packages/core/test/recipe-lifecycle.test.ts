@@ -15,6 +15,7 @@ import { InvalidInputError } from "../src/errors.js";
 import { parseConventionDoc } from "../src/kinds.js";
 import { kindInstanceCandidate } from "../src/kind-authoring.js";
 import { MemoryBackend } from "../src/memory-backend.js";
+import { RECIPE_FILES } from "./fixtures/connectors/example-calendar.js";
 import { parseRecipeFiles, type LoadedRecipe } from "../src/recipes.js";
 import type { Bundle, ConceptId, OkfDocument, ReservedFilename, ReservedReadResult, Version, WriteOptions } from "../src/types.js";
 import {
@@ -22,6 +23,8 @@ import {
   DEFINITION_DIGEST_RULES,
   definitionDigest,
   installRecipe,
+  prepareRecipeInstall,
+  inspectRecipeInstallTarget,
   installedConventionDocs,
   installedRecipes,
   readRecipeStamp,
@@ -1745,4 +1748,96 @@ test("list order: occurrences deliberately declared by the recipe retain their m
   assert.deepEqual(installed.frontmatter.fields, desired.docs[0]!.frontmatter.fields);
   assert.equal(readRecipeStamp(installed)?.definition, definitionDigest(desired.docs[0]!));
   assert.equal((await planRecipeEvolution(bundle, desired)).writes, 0);
+});
+
+
+test("read-only preparation and direct install agree on every carried artifact in both editions without mutating the source", async () => {
+  const calendar = parseRecipeFiles(RECIPE_FILES, "test:prepared-calendar", { okfVersion: "0.2" });
+  assert.ok(calendar.ok);
+  const recipe = galleryRecipe("1", ["progress_status"]);
+  recipe.docs.push(...calendar.recipe.docs);
+  recipe.connectors = calendar.recipe.connectors;
+  recipe.references = [{ doc: { id: "references/guide", frontmatter: { type: "Reference", title: "Guide" }, body: "# Guide\n" } }];
+  recipe.docs[0]!.frontmatter.generated = { by: "process:upstream", at: "2026-10-01T00:00:00.000Z" };
+  recipe.docs[0]!.frontmatter.x_unknown = { nested: ["preserved"] };
+  recipe.docs[0]!.body = "# Exhibit\n\nWorkflow field: {{superbee:progress_status}}.\n";
+  const original = structuredClone(recipe);
+  const identities: unknown[] = [];
+  for (const okfVersion of ["0.1", "0.2"] as const) {
+    const backend = new MemoryBackend();
+    await backend.writeReserved("", "index.md", `---\nokf_version: '${okfVersion}'\n---\n`);
+    const bundle = { root: `memory://prepare-${okfVersion}`, backend };
+    const prepared = prepareRecipeInstall(recipe, { okfVersion, now: NOW });
+    assert.deepEqual(prepared, prepareRecipeInstall(recipe, { okfVersion, now: NOW }));
+    assert.deepEqual(recipe, original);
+    assert.deepEqual(await backend.list(), [], "preparation has no persistent effects");
+    assert.equal(prepared.identity.source_digest, recipeSourceDigest(recipe));
+    identities.push(prepared.identity);
+    const field = okfVersion === "0.1" ? "status" : "superbee_progress_status";
+    assert.match(prepared.docs[0]!.body, new RegExp(`Workflow field: ${field}`));
+    assert.deepEqual((prepared.docs[0]!.frontmatter.fields as { optional: string[] }).optional, [field]);
+    const installed = await installRecipe(bundle, recipe, { now: NOW, actor: "process:prepared-test" });
+    assert.equal(installed.counts.created, 5);
+    for (const candidate of [...prepared.docs, ...prepared.connectors.map(({ doc }) => doc), ...prepared.references.map(({ doc }) => doc), ...prepared.pages.map(({ registry }) => registry)]) {
+      const saved = await readDoc(bundle, candidate.id);
+      const authored = { ...saved.frontmatter };
+      delete authored[okfVersion === "0.1" ? "actor" : "superbee_updated_by"];
+      assert.deepEqual(authored, candidate.frontmatter, `${okfVersion}: ${candidate.id}`);
+      assert.equal(saved.body, candidate.body);
+      assert.equal(candidate.frontmatter.timestamp, okfVersion === "0.1" ? NOW : undefined);
+      if (candidate.frontmatter.type === "View") assert.equal(candidate.frontmatter.x_recipe, undefined);
+      else assert.deepEqual(inspectRecipeInstallTarget(saved, candidate, prepared), { exists: true, sameContent: true, stamp: "current", stampIntegrity: "current" });
+    }
+    assert.deepEqual((await readBlob(bundle, prepared.pages[0]!.entry))!.bytes, new TextEncoder().encode(prepared.pages[0]!.html));
+    assert.equal((await installRecipe(bundle, recipe, { now: "2026-10-20T00:00:00.000Z" })).changed, false);
+    prepared.docs[0]!.frontmatter.x_unknown = { nested: ["changed candidate"] };
+    prepared.connectors[0]!.connector.domains.push("changed.example.org");
+    assert.deepEqual(recipe, original, "candidate changes do not mutate parsed source or its nested Connector");
+  }
+  assert.deepEqual(identities[0], identities[1], "source identity precedes edition materialization");
+  assert.throws(() => prepareRecipeInstall(recipe, { okfVersion: "0.2", now: undefined as unknown as string }), RecipeInputError);
+});
+
+test("install target inspection separates content, recipe identity and readable stamp integrity without adopting existing data", async () => {
+  for (const okfVersion of ["0.1", "0.2"] as const) {
+    const recipe = loadRecipe("1", INSTALLED);
+    const prepared = prepareRecipeInstall(recipe, { okfVersion, now: NOW });
+    const desired = prepared.docs[0]!;
+    assert.deepEqual(inspectRecipeInstallTarget(null, desired, prepared), { exists: false, sameContent: false, stamp: "missing", stampIntegrity: "unknown" });
+    const stamped = (change: Record<string, unknown>) => ({ ...structuredClone(desired), frontmatter: { ...structuredClone(desired.frontmatter), x_recipe: { ...readRecipeStamp(desired)!, ...change } } });
+    const unstamped = structuredClone(desired);
+    delete unstamped.frontmatter.x_recipe;
+    const managed = structuredClone(desired);
+    managed.frontmatter.timestamp = "2026-10-20T00:00:00.000Z";
+    managed.frontmatter[okfVersion === "0.1" ? "actor" : "superbee_updated_by"] = "process:another-installer";
+    managed.frontmatter.order = 12;
+    const rows = [
+      ["matching", structuredClone(desired), true, "current", "current"],
+      ["managed metadata", managed, true, "current", "current"],
+      ["missing", unstamped, true, "missing", "unknown"],
+      ["stale", stamped({ version: "0" }), true, "stale", "current"],
+      ["foreign", stamped({ id: "another-recipe" }), true, "foreign", "current"],
+      ["local content", { ...structuredClone(desired), body: "# Locally authored\n" }, false, "current", "diverged"],
+      ["damaged definition stamp", stamped({ definition: "sha256:" + "0".repeat(64) }), true, "current", "diverged"],
+      ["unreadable stamp rules", stamped({ digest_rules: 999 }), true, "current", "unknown"],
+      ["unknown authored field", { ...structuredClone(desired), frontmatter: { ...desired.frontmatter, x_local: { value: "preserve" } } }, false, "current", "diverged"],
+    ] as const;
+    const backend = new MemoryBackend();
+    await backend.writeReserved("", "index.md", `---\nokf_version: '${okfVersion}'\n---\n`);
+    const bundle = { root: `memory://inspect-${okfVersion}`, backend };
+    for (const [name, existing, sameContent, stamp, stampIntegrity] of rows) {
+      const original = structuredClone(existing);
+      const before = await backend.write(existing.id, existing);
+      const inspection = inspectRecipeInstallTarget(existing, desired, prepared);
+      assert.deepEqual(inspection, { exists: true, sameContent, stamp, stampIntegrity }, `${okfVersion}: ${name}`);
+      const receipt = await installRecipe(bundle, recipe, { now: NOW });
+      assert.equal(receipt.changed, false);
+      assert.equal(receipt.stamp, stamp, "existing installer identity receipt semantics remain unchanged");
+      assert.equal(receipt.docs[0]!.source_differs, sameContent ? undefined : true);
+      const preserved = await backend.read(existing.id);
+      assert.equal(preserved.version, before, `${name}: install never rewrites or adopts the collision`);
+      assert.deepEqual(existing, original, `${name}: inspection never changes the caller's document`);
+    }
+    assert.throws(() => inspectRecipeInstallTarget({ ...desired, id: "conventions/wrong" }, desired, prepared), RecipeInputError);
+  }
 });

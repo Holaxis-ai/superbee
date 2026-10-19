@@ -149,6 +149,20 @@ if (plan.ready && plan.writes > 0) {
 }
 ```
 
+`prepareRecipeInstall(recipe, { okfVersion, now })` prepares those same edition-specific candidates
+without a backend or target reads. Retain the explicit `now` across preview and replay; v0.1 uses
+it for the existing install timestamp, while v0.2 adds no legacy clock. The returned `identity`
+contains the source digest taken before materialization; Convention, Connector and Reference
+candidates already carry their recipe stamps. Preparation does not mutate the parsed source.
+
+`inspectRecipeInstallTarget(existingOrNull, candidate, prepared)` separately reports existence,
+source-content equality, recipe stamp identity and stamp integrity. For a matching installed
+artifact, require `sameContent`, `stamp: "current"` and `stampIntegrity: "current"`; an identity match
+alone does not establish readable digest rules or an intact definition stamp. Neither function
+installs, adopts stamps, validates the target registry or grants write authority. An admitted host
+can use the candidates with its existing canonical writer after its own coherent target and
+compatibility checks; preparation is not an approved-preview transaction or a new apply API.
+
 `installRecipe` is create-only: each convention, Connector, View pair and Reference is written with
 an expect-absent compare-and-swap, an existing convention or Connector is left untouched (its row
 reports `source_differs` when it differs from the recipe), and a differing View or Reference target
