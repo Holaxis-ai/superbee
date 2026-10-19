@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { promises as fs } from "node:fs";
 import { assertSafeConceptId, type OkfDocument } from "@superbee/core";
 import { getSourceProfile } from "@superbee/core/source-profiles";
+import { containsCredentialText } from "@superbee/core/connectors";
 import type { SourceProfile } from "@superbee/core/source-engine";
 import { checkScenario, missingScenarios, REQUIRED_SCENARIOS, runSourceScenario, type SourceFixture, type SourceScenario } from "@superbee/core/source-harness";
 import { authorLocation, readAuthorFolder, type AuthorDiagnostic } from "./files.js";
@@ -45,7 +46,9 @@ function parseFixture(value: unknown): SourceAuthorFixture | undefined {
   }
   const names = new Set<string>();
   for (const scenario of value.scenarios) {
-    if (!record(scenario) || !keysExactly(scenario, ["name", "runs", "expect"], ["spec"]) || typeof scenario.name !== "string" || !/^[a-z][a-z0-9.-]{0,127}$/.test(scenario.name) || names.has(scenario.name)) return undefined;
+    // Recorded attack payloads remain data, but this presentation field is echoed in reports.
+    // Reject it without printing its value even when whole-fixture secret scanning is disabled.
+    if (!record(scenario) || !keysExactly(scenario, ["name", "runs", "expect"], ["spec"]) || typeof scenario.name !== "string" || !/^[a-z][a-z0-9.-]{0,127}$/.test(scenario.name) || containsCredentialText(scenario.name) || names.has(scenario.name)) return undefined;
     names.add(scenario.name);
     if (!Array.isArray(scenario.runs) || !scenario.runs.length || scenario.runs.length > SOURCE_TEST_LIMITS.runs || !Array.isArray(scenario.expect) || scenario.expect.length !== scenario.runs.length) return undefined;
     for (const run of scenario.runs) {
@@ -76,7 +79,7 @@ async function explicitProfile(file: string): Promise<SourceProfile | undefined>
     if (!(await fs.stat(resolved)).isFile()) return undefined;
     const module: unknown = await import(pathToFileURL(resolved).href);
     const selected = record(module) ? module.default ?? module.profile : undefined;
-    if (!record(selected) || typeof selected.id !== "string" || !Number.isSafeInteger(selected.version) || (selected.version as number) < 1 || !["generic", "extension"].includes(String(selected.kind))
+    if (!record(selected) || typeof selected.id !== "string" || containsCredentialText(selected.id) || !Number.isSafeInteger(selected.version) || (selected.version as number) < 1 || typeof selected.kind !== "string" || !["generic", "extension"].includes(selected.kind)
       || typeof selected.validateSpec !== "function" || typeof selected.hostsFor !== "function" || typeof selected.observe !== "function") return undefined;
     return selected as unknown as SourceProfile;
   } catch { return undefined; }

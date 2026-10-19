@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, cp } from "node:fs/promises";
+import { promises as fs } from "node:fs";
+import { containsCredentialText } from "@superbee/core/connectors";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -201,4 +203,96 @@ test("distributed declarative example meets independent core invariants and comm
     assert.equal(report.execution, "recorded");
     assert.deepEqual(report.missing, []);
   } finally { globalThis.fetch = fetch; }
+});
+
+test("fixture presentation metadata refuses credential-shaped scenario names without disclosure", async () => {
+  const w = await recordedWorkspace();
+  const marker = "xoxb-synthetic-scenario-12345678";
+  assert.equal(containsCredentialText(marker), true);
+  try {
+    assert.equal((await testSourceForAuthor(w.recipe, w.fixture, { profile: w.profile })).ok, true);
+    w.data.scenarios.push({ ...w.data.scenarios[0]!, name: marker });
+    await writeFile(path.join(w.fixture, "fixture.json"), JSON.stringify(w.data));
+    const report = await testSourceForAuthor(w.recipe, w.fixture, { profile: w.profile });
+    assert.equal(report.ok, false);
+    assert.equal(report.diagnostics[0]?.code, "SOURCE_FIXTURE_INVALID");
+    assert.equal(JSON.stringify(report).includes(marker), false);
+    for (const format of [[], ["--json"]]) {
+      let output = "";
+      await assert.rejects(sourceCommand(["test", w.recipe, "--fixture", w.fixture, "--profile", w.profile, ...format], { stdout: (text) => { output += text; } }),
+        (error: unknown) => error instanceof CliError && error.exitCode === 2 && error.handled && !error.message.includes(marker));
+      assert.equal(output.includes(marker), false, "JSON and TOON must not disclose the metadata");
+    }
+  } finally { await rm(w.root, { recursive: true, force: true }); }
+});
+
+test("valid recipe ancestors refuse hidden operational state before traversal, including aliases", async (t) => {
+  const root = await fs.realpath(await mkdtemp(path.join(tmpdir(), "superbee-author-private-boundary-")));
+  const example = path.resolve(here, "../../../examples/integrations/rest-json-authoring");
+  const recipe = path.join(root, "recipe");
+  const fixture = path.join(root, "fixture");
+  await cp(path.join(example, "recipe"), recipe, { recursive: true });
+  await cp(path.join(example, "fixture"), fixture, { recursive: true });
+  const privateRoot = path.join(recipe, ".superbee-state");
+  const sentinel = "invented-private-operational-payload-do-not-acquire";
+  const entered: string[] = [], opened: string[] = [];
+  const originalOpendir = fs.opendir, originalOpen = fs.open;
+  t.mock.method(fs, "opendir", (...args: Parameters<typeof fs.opendir>) => { entered.push(String(args[0])); return originalOpendir(...args); });
+  t.mock.method(fs, "open", (...args: Parameters<typeof fs.open>) => { opened.push(String(args[0])); return originalOpen(...args); });
+  try {
+    assert.equal((await validateRecipeForAuthor(recipe)).ok, true);
+    assert.equal((await testSourceForAuthor(recipe, fixture)).ok, true);
+    // Manifest at the ancestor only: private state contains no recipe.
+    await mkdir(privateRoot);
+    await writeFile(path.join(privateRoot, "records.json"), sentinel);
+    const aliases = [recipe];
+    if (process.platform !== "win32") {
+      const alias = path.join(root, "recipe-alias");
+      await symlink(recipe, alias); aliases.push(alias);
+    }
+    for (const selected of aliases) {
+      entered.length = 0; opened.length = 0;
+      for (const invoke of [
+        (stdout: (text: string) => void) => recipeValidate([selected, "--json"], { stdout }),
+        (stdout: (text: string) => void) => sourceCommand(["test", selected, "--fixture", fixture, "--json"], { stdout }),
+      ]) {
+        let output = "";
+        await assert.rejects(invoke((text) => { output += text; }), (error: unknown) => error instanceof CliError && error.exitCode === 2 && error.handled);
+        assert.equal(entered.some((file) => file === privateRoot || file.startsWith(privateRoot + path.sep)), false, "never enumerate hidden operational state");
+        assert.equal(opened.some((file) => file.startsWith(privateRoot + path.sep)), false, "never read hidden operational leaves");
+        const report = JSON.parse(output);
+        assert.equal(report.diagnostics[0]?.code, "AUTHOR_UNSAFE_PATH");
+        assert.equal(report.diagnostics[0]?.file, ".superbee-state");
+        assert.equal(output.includes(sentinel), false);
+      }
+      assert.equal(entered.some((file) => file === privateRoot || file.startsWith(privateRoot + path.sep)), false);
+      assert.equal(opened.some((file) => file.startsWith(privateRoot + path.sep)), false);
+    }
+    await rm(privateRoot, { recursive: true });
+    await mkdir(path.join(fixture, ".private"));
+    await writeFile(path.join(fixture, ".private", "records.json"), sentinel);
+    const report = await testSourceForAuthor(recipe, fixture);
+    assert.equal(report.diagnostics[0]?.code, "AUTHOR_UNSAFE_PATH");
+    assert.equal(report.diagnostics[0]?.file, ".private");
+    assert.equal(JSON.stringify(report).includes(sentinel), false);
+    assert.equal(entered.includes(path.join(fixture, ".private")), false);
+    assert.equal(opened.includes(path.join(fixture, ".private", "records.json")), false);
+  } finally { t.mock.restoreAll(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("early hidden-entry refusals redact credential-shaped filenames before opening", async (t) => {
+  const w = await workspace();
+  const marker = "xoxb-synthetic-hidden-12345678";
+  const filename = `.${marker}`;
+  const opened: string[] = [];
+  const originalOpen = fs.open;
+  t.mock.method(fs, "open", (...args: Parameters<typeof fs.open>) => { opened.push(String(args[0])); return originalOpen(...args); });
+  try {
+    await writeFile(path.join(w.recipe, filename), "invented private data");
+    const report = await validateRecipeForAuthor(w.recipe);
+    assert.equal(report.diagnostics[0]?.code, "AUTHOR_UNSAFE_PATH");
+    assert.equal(report.diagnostics[0]?.file, "[redacted location]");
+    assert.equal(JSON.stringify(report).includes(marker), false);
+    assert.equal(opened.some((file) => path.basename(file) === filename), false);
+  } finally { t.mock.restoreAll(); await rm(w.root, { recursive: true, force: true }); }
 });

@@ -63,11 +63,13 @@ export async function readAuthorFolder(folder: string, options: { scanSecrets?: 
         const absolute = path.join(resolved, entry.name);
         // Author packages are immutable input, not links to additional ambient authority.
         if (entry.isSymbolicLink()) { diagnostics.push(diagnostic("AUTHOR_UNSAFE_PATH", relative, "Symbolic links are not accepted in author packages.")); return; }
-        if (entry.name === ".git") { diagnostics.push(diagnostic("AUTHOR_UNSAFE_PATH", relative, "Select the recipe directory, not a repository root containing .git.")); return; }
+        // Match recipe-source-filesystem's acquisition boundary: dot entries cannot be
+        // recipe content. Refuse before traversal/open, including private state below an
+        // otherwise valid recipe ancestor. Keep the credential-container diagnostic.
+        if (entry.name === ".env" || entry.name.startsWith(".env.")) { diagnostics.push(diagnostic("CONNECTOR_SECRET_PRESENT", relative, "Credential environment files must not be distributed with a recipe.")); return; }
+        if (entry.name.startsWith(".")) { diagnostics.push(diagnostic("AUTHOR_UNSAFE_PATH", relative, "Dot-prefixed entries are not accepted in author packages.")); return; }
         if (entry.isDirectory()) { await walk(absolute, relative, depth + 1); if (diagnostics.length) return; continue; }
         if (!entry.isFile()) { diagnostics.push(diagnostic("AUTHOR_UNSAFE_PATH", relative, "Only regular files and directories are accepted.")); return; }
-        // Refuse credential containers without opening them; never ask the author to share these.
-        if (entry.name === ".env" || entry.name.startsWith(".env.")) { diagnostics.push(diagnostic("CONNECTOR_SECRET_PRESENT", relative, "Credential environment files must not be distributed with a recipe.")); return; }
         const real = await fs.realpath(absolute);
         if (!real.startsWith(root + path.sep)) { diagnostics.push(diagnostic("AUTHOR_UNSAFE_PATH", relative, "A file leaves the author-package root.")); return; }
         const text = await readLeaf(real, Math.min(AUTHOR_FILE_LIMITS.fileBytes, AUTHOR_FILE_LIMITS.totalBytes - total));

@@ -30,7 +30,8 @@ release. An explicitly selected test double does not change that fact.
 The complete package is checked for core's secret-shaped text, including README files; `.env` and
 `.env.*` containers are refused without opening them. Output names the offending location, never the
 secret value. This is a packaging tripwire, not a guarantee that arbitrary secrets can be recognized.
-Keep real credentials outside the recipe. Symlinks, special files, `.git`, malformed UTF-8 and inputs
+Keep real credentials outside the recipe. Dot-prefixed entries are refused before traversal or
+opening, matching recipe acquisition. Symlinks, special files, malformed UTF-8 and inputs
 beyond the documented bounds are refused. Bounds are 512 directory entries, nesting depth 12,
 2 MiB per file and 8 MiB total. Select the recipe subdirectory rather than an entire repository.
 
@@ -85,7 +86,8 @@ Each exchange records the method and URL expected by the public harness and a re
 optional headers and body), `{ "fail": true }`, or `{ "hang": true }`. Runs may specify `mode`, `at`,
 `edits` and a bounded engine `budget`. Fixture records can include hostile URLs and other attack
 strings to test refusal. The report never echoes provider payloads, profile exception text or actual
-and expected field values.
+and expected field values. Echoed scenario names must not contain secret-shaped text; invalid
+presentation metadata is refused without printing its value even when attack payloads are allowed.
 
 The report lists required and missing scenarios. Cover authentication/rate/server/malformed errors,
 incomplete pages, cursor resume and hostile cursors, complete-observation disappearance, owned-field
