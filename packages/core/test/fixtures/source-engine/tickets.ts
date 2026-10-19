@@ -4,18 +4,13 @@
  * documents, and one scripted scenario per required scenario (plus page-number and POST variants).
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { SOURCE_FEED_CONVENTION, signalConvention } from "../../record-overlay-helpers.js";
 
 import { parseConnectorDoc, type Connector } from "../../../src/connectors.js";
 import { parseMarkdown } from "../../../src/frontmatter.js";
 import type { ScriptedExchange, SourceFixture, SourceScenario } from "../../../src/source-harness/index.js";
 import type { OkfDocument } from "../../../src/types.js";
 import { jsonPagesProfile, type JsonPagesSpec } from "./json-pages-profile.js";
-
-const here = path.dirname(fileURLToPath(import.meta.url));
-const SOURCE_FEEDS = path.resolve(here, "../../../../../examples/recipes/source-feeds/conventions");
 
 export const HOST = "tickets.example.org";
 export const FEED_ID = "source-feeds/board";
@@ -62,11 +57,6 @@ export function ticketConnector(markdown = CONNECTOR_MD): Connector {
   return parsed.connector;
 }
 
-const conventionDoc = (file: string, id: string): OkfDocument => {
-  const { frontmatter, body } = parseMarkdown(readFileSync(path.join(SOURCE_FEEDS, file), "utf8"));
-  return { id, frontmatter, body };
-};
-
 export const TICKET_CONVENTION: OkfDocument = {
   id: "conventions/ticket",
   body: "# Ticket\n",
@@ -77,7 +67,7 @@ export const TICKET_CONVENTION: OkfDocument = {
 };
 
 export const FEED_FRONTMATTER = {
-  type: "Source Feed", title: "Main board (synthetic)", connector: CONNECTOR_ID, source: "tickets", url: FEED_URL,
+  type: "Source Feed", title: "Main board (synthetic)", feed_kind:"connector", connector: CONNECTOR_ID, source: "tickets", url: FEED_URL,
   owned_fields: ["title", "state", "priority"], auto_apply: ["new", "changed"], needs_review: ["disappeared"], missing_threshold: 2,
 };
 
@@ -90,8 +80,8 @@ const overlay = (id: string, title: string, extra: Record<string, unknown> = {})
 export function ticketDocuments(): OkfDocument[] {
   return [
     TICKET_CONVENTION,
-    conventionDoc("signal.md", "conventions/signal"),
-    conventionDoc("source-feed.md", "conventions/source-feed"),
+    { id:"conventions/signal",body:"",frontmatter:{...signalConvention("superbee_progress_status"),type:"Convention"} },
+    { id:"conventions/source-feed",body:"",frontmatter:structuredClone(SOURCE_FEED_CONVENTION) },
     { id: FEED_ID, body: "Synthetic feed.\n", frontmatter: { ...FEED_FRONTMATTER } },
     overlay("t1", "First"),
     overlay("t2", "Second"),

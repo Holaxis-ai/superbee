@@ -1,4 +1,5 @@
 /** CLI recipe acquisition and resolver agreement; pure parser cases live in core. */
+import { writeSyntheticRecipe } from "./source-plugin-fixture.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile, readFile, symlink, chmod } from "node:fs/promises";
@@ -132,16 +133,15 @@ test("resolveRecipe: loads the content-free Review Workflow package with its dec
   assert.equal(result.recipe.references[0]!.doc.id, "references/view-authoring-v0");
 });
 
-test("resolveRecipe: loads the Source Feeds example recipe by path, outside the built-in registry", async () => {
-  const fixture = path.resolve(import.meta.dirname, "../../../examples/recipes/source-feeds");
-  const result = await resolveRecipe(fixture);
-  assert.equal(result.ok, true, result.ok ? "" : result.error.message);
-  if (!result.ok) return;
-  assert.equal(result.recipe.id, "source-feeds");
-  assert.equal(result.recipe.contentPolicy, "definitions-only");
-  assert.deepEqual([...result.recipe.governs].sort(), ["Signal", "Source Feed"]);
-  assert.deepEqual(result.recipe.warnings, []);
-  assert.ok(!builtinNames().includes("source-feeds"), "an example recipe is never offered as a built-in");
+test("resolveRecipe: loads synthetic source definitions by path outside the built-in registry", async () => {
+  const fixture=await tempDir();
+  try {
+    await writeSyntheticRecipe(fixture,"source-feeds");
+    const result=await resolveRecipe(fixture);assert.ok(result.ok,result.ok?"":result.error.message);
+    assert.equal(result.recipe.id,"synthetic-feeds");assert.equal(result.recipe.contentPolicy,"definitions-only");
+    assert.deepEqual([...result.recipe.governs].sort(),["Signal","Source Feed"]);assert.deepEqual(result.recipe.warnings,[]);
+    assert.ok(!builtinNames().includes("synthetic-feeds"));
+  } finally {await rm(fixture,{recursive:true,force:true});}
 });
 
 test("resolveRecipe: definitions-only scans the full folder and rejects hidden instance data", async () => {

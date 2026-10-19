@@ -2,14 +2,11 @@
  * The generic example connector end to end, with no network: the real parser, `bindSourceFeed`,
  * `mapRecord`, `changeBetween` and `findingsFor`, then record-overlay's `planRecordOverlay`,
  * `planFindings` and `applyRecordOverlay` over MemoryBackend. The Source Feed and Signal Kinds come
- * from `examples/recipes/source-feeds`, installed through the recipe lifecycle. The diff between
+ * from the shared synthetic test conventions. The diff between
  * observations below (which record changed and how) is test code standing in for I3's runner.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readdir, readFile } from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import {
   bindSourceFeed,
@@ -26,7 +23,7 @@ import { mutateDocument } from "../src/document-mutation.js";
 import { parseMarkdown } from "../src/frontmatter.js";
 import { loadKinds } from "../src/kinds-load.js";
 import { installRecipe } from "../src/recipe-lifecycle/index.js";
-import { parseRecipeFiles, type LoadedRecipe } from "../src/recipes.js";
+import { parseRecipeFiles } from "../src/recipes.js";
 import {
   applyRecordOverlay,
   OverlayRefusal,
@@ -49,9 +46,8 @@ import {
   STRICT_CONNECTOR_MD,
   toNormalized,
 } from "./fixtures/connectors/example-calendar.js";
-import { RecordingBackend } from "./record-overlay-helpers.js";
+import { SOURCE_FEED_CONVENTION,signalConvention,RecordingBackend } from "./record-overlay-helpers.js";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
 const NOW = "2026-10-01T00:00:00.000Z";
 const ACTOR = "process:connector-test";
 const EDITOR = "human:editor";
@@ -65,22 +61,6 @@ const FEED = {
 const STORY = "evt-story@calendar.example.org";
 const MARKET = "evt-market@calendar.example.org";
 const EDITOR_BODY = "Editor-written description. Not feed-owned.\n";
-
-async function exampleRecipe(name: string): Promise<LoadedRecipe> {
-  const root = path.resolve(here, "../../../examples/recipes", name);
-  const files: Array<{ path: string; bytes: string }> = [];
-  const walk = async (dir: string): Promise<void> => {
-    for (const entry of await readdir(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) await walk(full);
-      else files.push({ path: path.relative(root, full).split(path.sep).join("/"), bytes: await readFile(full, "utf8") });
-    }
-  };
-  await walk(root);
-  const loaded = parseRecipeFiles(files, `example:${name}`, { okfVersion: "0.2" });
-  assert.ok(loaded.ok, loaded.ok ? "" : loaded.error.message);
-  return loaded.recipe;
-}
 
 interface World {
   overlay: OverlayBundle;
@@ -98,7 +78,8 @@ async function world(options: { connector?: string; overlays?: Array<{ uid: stri
   const backend = new RecordingBackend();
   await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Connectors\n");
   const bundle = { root: "mem://connectors", backend };
-  await installRecipe(bundle, await exampleRecipe("source-feeds"), { now: NOW });
+  await backend.write("conventions/source-feed",{id:"conventions/source-feed",body:"",frontmatter:structuredClone(SOURCE_FEED_CONVENTION)});
+  await backend.write("conventions/signal",{id:"conventions/signal",body:"",frontmatter:{...signalConvention("superbee_progress_status"),type:"Convention"}});
   const calendar = parseRecipeFiles(RECIPE_FILES, "fixture:example-calendar", { okfVersion: "0.2" });
   assert.ok(calendar.ok);
   await installRecipe(bundle, calendar.recipe, { now: NOW });

@@ -41,15 +41,79 @@ function printed(node, source, names = new Map()) {
   finally { transformed.dispose(); }
 }
 
+const registeredProfileLoader = String.raw`async function loadRegisteredSourceProfile(selected, a, input) {
+  try {
+    await verified(a, input);
+    const m = await import(fileURL(paths.join(selected.root, "dist/profile.mjs")).href);
+    if (typeof m.createSourceProfile !== "function") throw pluginRefusal("plugin_export_invalid");
+    const p = m.createSourceProfile(Object.freeze({ restJsonProfile, nextLinkTarget, unsupportedContent }));
+    if (!record(p) || p.id !== a.profile.id || p.version !== a.profile.version || p.kind !== "extension" || typeof p.validateSpec !== "function" || typeof p.hostsFor !== "function" || typeof p.observe !== "function") throw pluginRefusal("plugin_export_invalid");
+    return p;
+  } catch (e) {
+    if (e instanceof CliError) throw e;
+    throw pluginRefusal("plugin_execution_failed");
+  }
+}`;
+// Freeze only the two deliberately reviewed executable boundaries; no arbitrary module allowance.
+function registeredProfileImports(source, external) {
+  const loaders = source.statements.filter(node => ts.isFunctionDeclaration(node) && node.name?.text === 'loadRegisteredSourceProfile');
+  if (!loaders.length) return [];
+  assert.equal(loaders.length,1,'missing unique registered-profile loader');
+  const loader = loaders[0];
+  const names = new Map();
+  for (const node of source.statements.filter(ts.isImportDeclaration)) {
+    if (node.moduleSpecifier.text === 'node:path' && node.importClause?.name) names.set(node.importClause.name.text,'paths');
+    const bindings = node.importClause?.namedBindings;
+    if (node.moduleSpecifier.text === 'node:url' && bindings && ts.isNamedImports(bindings)) for (const entry of bindings.elements) if ((entry.propertyName?.text ?? entry.name.text) === 'pathToFileURL') names.set(entry.name.text,'fileURL');
+  }
+  assert.equal(loader.parameters.length,3);
+  for (const [index,name] of ['selected','a','input'].entries()) {
+    assert.ok(ts.isIdentifier(loader.parameters[index].name));
+    names.set(loader.parameters[index].name.text,name);
+  }
+  const locals = [];
+  function findLocals(node) {if (ts.isVariableDeclaration(node)) locals.push(node);ts.forEachChild(node,findLocals);}
+  findLocals(loader); assert.equal(locals.length,3);
+  for (const [index,name] of ['m','p','e'].entries()) {assert.ok(ts.isIdentifier(locals[index].name));names.set(locals[index].name.text,name);}
+  const stableNames = ['verified','pluginRefusal','record','restJsonProfile','nextLinkTarget','unsupportedContent','CliError'];
+  function canonical(node) {
+    if (ts.isIdentifier(node)) for (const name of stableNames) if (new RegExp('^'+name+'\\d*$').test(node.text)) names.set(node.text,name);
+    ts.forEachChild(node,canonical);
+  }
+  canonical(loader);
+  const expected = ts.createSourceFile('registered.mjs',registeredProfileLoader,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
+  assert.equal(printed(loader,source,names),printed(expected.statements[0],expected),'changed registered-profile loader shape');
+  const admitted = external.filter(item => item.ss >= loader.getStart(source) && item.se <= loader.end);
+  assert.equal(admitted.length,1,'registered loader must own exactly one import');
+  assert.equal(admitted[0].n,undefined,'registered import must use verified generation');
+  const references = [];
+  function visit(node) {
+    if (ts.isIdentifier(node) && node.text === 'loadRegisteredSourceProfile' && node !== loader.name) references.push(node);
+    ts.forEachChild(node,visit);
+  }
+  visit(source);
+  assert.equal(references.length,1,'unexpected registered-profile loader reference');
+  const call = references[0].parent;
+  assert.ok(ts.isCallExpression(call) && ts.isArrowFunction(call.parent) && call.parent.body === call && call.parent.parameters.length === 0);
+  assert.equal(printed(call,source,names),'loadRegisteredSourceProfile(selected, a, input)');
+  assert.ok(ts.isPropertyAssignment(call.parent.parent) && call.parent.parent.name.getText(source) === 'load','registered import must be deferred until load');
+  let owner = call;
+  while (owner.parent && !ts.isFunctionDeclaration(owner)) owner = owner.parent;
+  assert.ok(ts.isFunctionDeclaration(owner) && owner.name?.text === 'selectSourceProfile','unexpected registered loader owner');
+  return admitted;
+}
+
 export async function assertClosedCliImports(text) {
   await init;
   const [imports] = parse(text);
-  const external = imports.filter(item => item.d !== -2 && !item.n?.startsWith("node:"));
+  let external = imports.filter(item => item.d !== -2 && !item.n?.startsWith("node:"));
+  const source = ts.createSourceFile("retained-cli.mjs", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  assert.equal(source.parseDiagnostics.length, 0, "invalid retained CLI syntax");
+  const registered = registeredProfileImports(source, external);
+  external = external.filter(item => !registered.includes(item));
   if (!external.length) return;
   assert.equal(external.length, 1, "unclosed imports outside the explicit author-profile boundary");
   assert.equal(external[0].n, undefined, `unclosed import ${external[0].n}`);
-  const source = ts.createSourceFile("retained-cli.mjs", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-  assert.equal(source.parseDiagnostics.length, 0, "invalid retained CLI syntax");
   const loaders = source.statements.filter(node => ts.isFunctionDeclaration(node) && node.name?.text === "explicitProfile");
   assert.equal(loaders.length, 1, "missing unique explicit author-profile loader");
   const loader = loaders[0];
@@ -110,11 +174,20 @@ export async function assertClosedCliImports(text) {
   assert.equal(references.length, 1, "unexpected explicit-profile loader reference");
   const call = references[0].parent, awaited = call.parent, conditional = awaited.parent;
   assert.ok(ts.isCallExpression(call) && ts.isAwaitExpression(awaited) && ts.isConditionalExpression(conditional));
-  const fallback = conditional.whenFalse;
-  assert.ok(ts.isCallExpression(fallback) && fallback.arguments.length === 1 && ts.isPropertyAccessExpression(fallback.arguments[0]) && ts.isIdentifier(fallback.arguments[0].expression));
-  const sourceName = fallback.arguments[0].expression.text;
-  assert.match(sourceName, /^source\d*$/);
-  assert.equal(printed(conditional, source, new Map([[sourceName, "source"]])), "options.profile ? await explicitProfile(options.profile) : getSourceProfile(source.profile)", "profile loading must be explicitly selected");
+  const sources = [];
+  function findSource(node) {
+    if (ts.isPropertyAccessExpression(node) && node.name.text === 'profile' && ts.isIdentifier(node.expression) && /^source\d*$/.test(node.expression.text)) sources.push(node.expression.text);
+    ts.forEachChild(node,findSource);
+  }
+  findSource(conditional.whenFalse);
+  assert.equal(sources.length,1);
+  const sourceName = sources[0];
+  const expression = printed(conditional,source,new Map([[sourceName,'source']]));
+  const allowed = [
+    'options.profile ? await explicitProfile(options.profile) : getSourceProfile(source.profile)',
+    'options.profile ? await explicitProfile(options.profile) : await (await selectSourceProfile(source.profile, options.stateInput))?.load()',
+  ];
+  assert.ok(allowed.includes(expression),'profile loading must use explicit author opt-in or registered selection');
   let owner = conditional;
   while (owner.parent && !ts.isFunctionDeclaration(owner)) owner = owner.parent;
   assert.ok(ts.isFunctionDeclaration(owner) && owner.name?.text === "testSourceForAuthor", "unexpected profile-loader owner");

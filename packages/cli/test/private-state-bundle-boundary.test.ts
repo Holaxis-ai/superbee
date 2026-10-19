@@ -2,6 +2,7 @@
 // `canonicalUserStateDir` / `legacyUserStateDir` — the state root's NAME is a single constant in
 // `user-state.ts`, and a test that only passes for one spelling of it would mean the name had
 // leaked into the design.
+import { pluginFixture } from "./source-plugin-fixture.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
@@ -790,6 +791,11 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
     controlExit: 1,
   },
 
+  {
+    leaf:"sourcePluginRegister",surface:"<0>",
+    argv:(target)=>["source","plugin","register",target,"--json"],
+    control:(fixture)=>path.join(fixture.outside,"plugin-1.0.0"),
+  },
   // ── Recipe roots: deliberately NOT routed through the ingress guard. ────────
   {
     leaf: "init",
@@ -870,6 +876,7 @@ async function runCrossingRow(fixture: BoundaryFixture, row: CrossingRow): Promi
 
 test("every byte-channel crossing point refuses a private-state path", async (t) => {
   const fixture = await boundaryFixture();
+  await pluginFixture(fixture.outside);
   try {
     for (const row of CROSSING_ROWS) {
       const key = `${row.leaf} ${row.surface}`;

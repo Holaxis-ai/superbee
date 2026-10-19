@@ -76,5 +76,9 @@ export function checkPackageVersions(directory = root) {
   try {
     if (!peerAdmits(core, peer)) errors.push(`packages/markdown-renderer/package.json peerDependencies.@superbee/core: ${JSON.stringify(peer) ?? 'missing'} must admit ${JSON.stringify(core)} from packages/core/package.json version; prereleases need exact opt-in`);
   } catch (error) { errors.push(`packages/markdown-renderer/package.json peerDependencies.@superbee/core: ${error.message}; source packages/markdown-renderer/package.json peer policy`); }
+  try {
+    const profileSource = readFileSync(path.join(directory, 'packages/core/src/source-profiles/index.ts'), 'utf8');
+    equal('packages/core/src/source-profiles/index.ts', 'SOURCE_PLUGIN_CORE_VERSION', /export const SOURCE_PLUGIN_CORE_VERSION = "([^"]+)";/.exec(profileSource)?.[1], core, 'packages/core/package.json version');
+  } catch (error) { errors.push(`SOURCE_PLUGIN_CORE_VERSION: expected readable source (${error.code ?? error.name})`); }
   return errors;
 }

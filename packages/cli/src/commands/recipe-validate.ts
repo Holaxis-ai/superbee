@@ -10,8 +10,9 @@ export const RECIPE_VALIDATE_USAGE = `superbee recipe validate — validate a lo
 Usage:
   superbee recipe validate <path> [--readme] [--json]
 
-Checks the complete local recipe folder, its Kinds, Connector mappings, pins and shipped source
-profiles. Prints file/JSON-pointer diagnostics and source method/path/host summaries. No bundle,
+Checks the complete local recipe folder, its Kinds, Connector mappings, pins and available source
+metadata. Built-in profile specs are checked; registered plugin spec checks are deferred to source
+test/bind/run. Prints file/JSON-pointer diagnostics and source method/path/host summaries. No bundle,
 account, credential, module import, installation or provider request is used. Unknown profiles
 are refused; --profile is available only on the explicitly executable source test command.
 

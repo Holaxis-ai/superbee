@@ -49,7 +49,7 @@ export function taskConvention(progress: string): Record<string, unknown> {
 }
 export const SOURCE_FEED_CONVENTION = {
   type: "Convention", title: "Source Feed", governs: "Source Feed", path: "source-feeds/",
-  fields: { required: ["title", "feed_kind", "url", "owned_fields"], optional: ["target_kind", "auto_apply", "needs_review", "missing_threshold", "completeness", "exclude_pattern", "wall_time_zone"] },
+  fields: { required: ["title", "feed_kind", "url", "owned_fields"], optional: ["connector", "source", "target_kind", "auto_apply", "needs_review", "missing_threshold", "completeness", "exclude_pattern", "wall_time_zone"] },
 };
 
 export const FEED_FRONTMATTER = {

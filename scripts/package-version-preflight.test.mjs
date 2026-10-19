@@ -18,6 +18,9 @@ function fixture(t, mutate = () => {}) {
     mkdirSync(path.dirname(path.join(directory, file)), { recursive: true });
     writeFileSync(path.join(directory, file), JSON.stringify(value));
   }
+  const sourceFile = "packages/core/src/source-profiles/index.ts";
+  mkdirSync(path.dirname(path.join(directory, sourceFile)), {recursive:true});
+  writeFileSync(path.join(directory, sourceFile), `export const SOURCE_PLUGIN_CORE_VERSION = "${docs["packages/core/package.json"].version}";`);
   return directory;
 }
 
@@ -109,4 +112,11 @@ test('peer policy bounds stable caret versions and requires exact prerelease opt
   ]) assert.equal(peerAdmits(version, range), expected, `${version} / ${range}`);
   for (const range of ['*', '>=0.1.0', '^0.2.0-pre.1', '^01.2.3', '1.2.3-pre.01', '1.2.3 || ', '1.2.3+build'])
     assert.throws(() => peerAdmits('1.2.3', range), /supported peer policy/);
+});
+
+test('embedded source helper compatibility follows the current Core version', t => {
+  const directory = fixture(t);
+  const file = path.join(directory, 'packages/core/src/source-profiles/index.ts');
+  writeFileSync(file, 'export const SOURCE_PLUGIN_CORE_VERSION = "0.0.0";');
+  assert.ok(checkPackageVersions(directory).some(error => error.includes('SOURCE_PLUGIN_CORE_VERSION')));
 });

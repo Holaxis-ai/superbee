@@ -516,6 +516,19 @@ export const CLI_COMMAND_GROUPS = [
         summary: "Validate a local recipe and integration declarations without installing or executing code",
       },
       {
+        id:"sourcePluginRegister",leaves:[publicLeaf("sourcePluginRegister","source plugin register",one,undefined,{positionals:Object.freeze([Object.freeze({index:0,role:"ingress" as const})])})],
+        usage:"source plugin register <installed-package-directory> [--accept <digest>] [--json]",
+        summary:"Preview and explicitly trust installed GitHub plugin bytes without executing them",
+      },
+      {
+        id:"sourcePluginList",leaves:[publicLeaf("sourcePluginList","source plugin list",zero)],
+        usage:"source plugin list [--json]",summary:"List accepted local plugin registrations without executing code",
+      },
+      {
+        id:"sourcePluginRemove",leaves:[publicLeaf("sourcePluginRemove","source plugin remove",one)],
+        usage:"source plugin remove github [--json]",summary:"Deactivate the GitHub plugin for future selections",
+      },
+      {
         id: "sourceBind", leaves: [publicLeaf("sourceBind", "source bind", one, undefined, DIR_SURFACE)],
         usage: "source bind <feed-id> (--anonymous | --credential-env <NAME>) [--accept <digest>] [--dir <bundle>]",
         summary: "Preview and accept private consent for one local source",
@@ -523,7 +536,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "sourceRun", leaves: [publicLeaf("sourceRun", "source run", one, undefined, DIR_SURFACE)],
         usage: "source run <feed-id> [--complete] [--actor <actor>] [--dir <bundle>]",
-        summary: "Run one consented built-in source over DNS-pinned HTTPS",
+        summary: "Run one consented built-in or registered source over DNS-pinned HTTPS",
       },
       {
         id: "sourceTest",

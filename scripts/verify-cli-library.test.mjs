@@ -27,10 +27,12 @@ function fixture() {
   return { root, git, commit, record, verify, manifestOf: name => manifests.get(name), close: () => rmSync(root, { recursive: true, force: true }) };
 }
 
-test('closed artifact permits only the guarded explicit local-profile extension', async () => {
+test('closed artifact permits guarded author and registered profile loading', async () => {
   const bundle = readFileSync(new URL('../packages/cli/dist/index.mjs', import.meta.url), 'utf8');
   await assertClosedCliImports(bundle);
   const ast = ts.createSourceFile('cli.mjs', bundle, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const registeredLoader = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'loadRegisteredSourceProfile');
+  const registeredSelector = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'selectSourceProfile');
   const loader = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'explicitProfile');
   assert.ok(loader);
   const imports = ast.statements.filter(ts.isImportDeclaration).map(node => node.getText(ast)).join('\n');
@@ -47,6 +49,19 @@ test('closed artifact permits only the guarded explicit local-profile extension'
   assert.ok(predicate && selection);
   const subject = `${imports}\n${predicate}\n${loader.getText(ast)}\nasync function testSourceForAuthor(recipe, fixture, options = {}) { return ${selection}; }`;
   await assertClosedCliImports(subject);
+  if (registeredLoader) {
+    assert.ok(registeredSelector);
+    const registered = `${imports}\n${registeredLoader.getText(ast)}\n${registeredSelector.getText(ast)}`;
+    await assertClosedCliImports(registered);
+    for (const [label,candidate] of [
+      ['no generation verification',registered.replace(/await verified\d*\(a, input\);/,'')],
+      ['different registered entry',registered.replace('dist/profile.mjs','other.mjs')],
+      ['unfrozen helpers',registered.replace('Object.freeze({','Object.assign({')],
+      ['factory metadata unchecked',registered.replace(/\bp\d*\.kind !== "extension"/,'p.kind !== "generic"')],
+      ['external registered loader reference',registered+'\nconst escape = loadRegisteredSourceProfile;'],
+      ['registered loader outside selector',registered.replace('function selectSourceProfile(', 'function otherSelector(')],
+    ]) await assert.rejects(assertClosedCliImports(candidate),undefined,label);
+  }
   await assertClosedCliImports('import fs from "node:fs"; export { fs };');
   const rows = [
     ['same expression outside boundary', subject + '\nawait import(pathToFileURL(resolved).href);'],
@@ -56,7 +71,7 @@ test('closed artifact permits only the guarded explicit local-profile extension'
     ['missing boundary', 'await import(pathToFileURL(resolved).href);'],
     ['renamed boundary alone', subject.replaceAll('explicitProfile', 'otherLoader')],
     ['missing private-state guard', subject.replace(/assertPathOutsidePrivateState\([^;]+;/, '')],
-    ['different local-file loader', subject.replace(/pathToFileURL\(resolved\)\.href/, 'resolved')],
+    ['different local-file loader', subject.replace(/pathToFileURL\d*\(resolved\)\.href/, 'resolved')],
     ['changed fs member', subject.replace(/\.realpath\(/, '.readFile(')],
     ['extra loader call', subject.replace('try {', 'try { extraCall();')],
     ['implicit profile selection', subject.replace('options.profile ? await explicitProfile(options.profile)', 'recipe.profile ? await explicitProfile(recipe.profile)')],
@@ -168,4 +183,33 @@ test('every retained-artifact consumer sees a private exact-byte snapshot', asyn
     symlinkSync(path.join(dir, 'absent'), original);
     await assert.rejects(withRetainedTarball(original, () => assert.fail('consumed symlink')), /regular file/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test('registered profile import is limited to its verified deferred generation loader', async () => {
+  const registered = `import path from "node:path"; import {pathToFileURL} from "node:url";
+async function loadRegisteredSourceProfile(selected, a, input) {
+  try {
+    await verified(a, input);
+    const m = await import(pathToFileURL(path.join(selected.root, "dist/profile.mjs")).href);
+    if (typeof m.createSourceProfile !== "function") throw pluginRefusal("plugin_export_invalid");
+    const p = m.createSourceProfile(Object.freeze({ restJsonProfile, nextLinkTarget, unsupportedContent }));
+    if (!record(p) || p.id !== a.profile.id || p.version !== a.profile.version || p.kind !== "extension" || typeof p.validateSpec !== "function" || typeof p.hostsFor !== "function" || typeof p.observe !== "function") throw pluginRefusal("plugin_export_invalid");
+    return p;
+  } catch (e) {
+    if (e instanceof CliError) throw e;
+    throw pluginRefusal("plugin_execution_failed");
+  }
+}
+async function selectSourceProfile(selected,a,input) {return {load:()=>loadRegisteredSourceProfile(selected,a,input)};}`;
+  await assertClosedCliImports(registered);
+  for (const candidate of [
+    registered.replace('await verified(a, input);',''),
+    registered.replace('dist/profile.mjs','different.mjs'),
+    registered.replace('Object.freeze({','Object.assign({'),
+    registered.replace(/\bp\d*\.kind !== "extension"/,'p.kind !== "generic"'),
+    registered.replace('load:()=>','load:await '),
+    registered+'\nconst escaped = loadRegisteredSourceProfile;',
+    registered+'\nawait import(other);',
+  ]) await assert.rejects(assertClosedCliImports(candidate));
 });

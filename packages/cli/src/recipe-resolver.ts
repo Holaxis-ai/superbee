@@ -1,10 +1,11 @@
+import { registeredRecipe } from "./source-plugins.js";
 import { builtinNames, builtinRecipeSource } from "./recipe-source-builtin.js";
 import { filesRecipeSource } from "./recipe-source-filesystem.js";
 import type { LoadResult } from "@superbee/core/recipes";
 import type { RecipeSource } from "./recipe-source-contract.js";
 
 /** The default resolution order: built-in names first, then a filesystem path. */
-export const DEFAULT_SOURCES: RecipeSource[] = [builtinRecipeSource(), filesRecipeSource()];
+export const DEFAULT_SOURCES: RecipeSource[] = [{kind:"files",resolve:registeredRecipe}, builtinRecipeSource(), filesRecipeSource()];
 
 /** The recipe `init` applies when `--recipe` is omitted. */
 export const DEFAULT_RECIPE_REF = "context-notes";
@@ -18,7 +19,7 @@ export async function resolveRecipe(ref: string, sources: RecipeSource[] = DEFAU
     ok: false,
     error: {
       code: "RECIPE_NOT_FOUND",
-      message: `unknown recipe '${ref}' (built-ins: ${builtinNames().join(", ")}; or a path to a recipe folder)`,
+      message: `unknown recipe '${ref}' (built-ins: ${builtinNames().join(", ")}; registered GitHub: github:source-feeds, github:work-items; or a path to a recipe folder)`,
     },
   };
 }

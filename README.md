@@ -268,6 +268,9 @@ bundles remain supported without rewriting their declared edition.
   small first-party definitions-only packages, including a Kind-plus-View reference, but package
   dependencies, upgrades, migrations, and marketplace discovery remain future work. "Cookbooks"
   (composed recipes with typed-link glue) are design intent only.
+- **Provider integrations** live in [superbee-plugins](https://github.com/Holaxis-ai/superbee-plugins),
+  which owns the GitHub package, shared recipes and GitHub/Linear examples. Generic Core helpers
+  and the CLI's explicit `source plugin` registration remain in this repository.
 - **Bundle Views and the local web UI** are functional but still early. `ui` launches registered
   Views in sandboxed iframes; data Views receive a narrow read-only bridge with live change events,
   while `bundle-propose` Views may ask trusted shell chrome to confirm one local, CAS-guarded
