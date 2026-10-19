@@ -14,7 +14,7 @@ From this repository, install the definitions into a disposable OKF 0.2 bundle:
 
 Use a new disposable directory rather than an existing project. Installation creates one
 Work Item convention and a Connector definition, not customer records. It preserves the simple
-built-in Task model. The example recipe is not a built-in or a maintained live provider profile.
+built-in Task model. The example recipe is not a built-in. It selects the first-party `github-issues` profile.
 
 ## What the proof does
 
@@ -26,12 +26,10 @@ node --test --import ./packages/core/test/ts-loader.mjs packages/core/test/work-
 ```
 
 `issues.json` contains six invented issues and one pull request, with schema provenance in the
-file. No API response or private account data was captured. `profile.mjs` is an explicitly selected,
-one-page **test double**, exporting a `SourceProfile` and scalar/list normalization function. It can
-run through the existing public source harness; it is not the later first-party `github-issues`
-extension and does not satisfy the complete provider-admission scenario matrix.
+file. No API response or private account data was captured. `profile.mjs` re-exports the shipped
+first-party `github-issues` profile and normalization; it contains no separate implementation.
 The Connector declares a repository GET request with Link-header paging and a complete all-state
-listing. The harness test substitutes a bounded one-page declaration for its synthetic run.
+listing. The public offline source harness runs that actual declaration against the recorded page.
 A declaration supplies no credentials and does not authorize execution.
 
 The acceptance test installs the real recipe, binds one repository, maps source-native and
@@ -66,9 +64,9 @@ findings omit source titles and descriptions. Source text remains untrusted data
 - The fixture accounts for every top-level field it presents, including explicit ignored fields;
   an unexplained field fails its coverage test. Navigation URLs are never followed. This coverage
   does not certify every current or future GitHub API field.
-- Linear, synced relationships, real paging/cursors, disappearance scheduling, credentialed local
+- Linear, synced relationships, disappearance scheduling, credentialed local
   runs and managed Connections remain separate work. A transfer is not an identity merge: the
   old and new repositories are different resources.
-- Public author validation can correctly report `PROFILE_NOT_AVAILABLE` for `github-issues`
-  until the first-party extension ships. Selecting this local fixture module explicitly for an
-  offline test does not admit it to managed execution or turn it into a production integration.
+- Public author validation resolves `github-issues` through the shipped profile lookup. Fixture
+  tests establish recorded-provider behavior; live transport, installed CLI qualification and
+  managed admission remain separate evidence.

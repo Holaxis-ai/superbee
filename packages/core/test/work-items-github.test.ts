@@ -280,20 +280,15 @@ test("coverage accounts for fixture fields, rejects an unexplained field, and ke
   assert.equal(normalized.body, undefined);
   assert.deepEqual(normalized.labels, ["bug"]);
   assert.deepEqual(normalized.assignees, ["github:octocat"]);
-  assert.throws(() => normalizeGithubIssue(issue(), { owner: "other-org", repo: "widgets" }), /outside the bound repository/);
+  assert.throws(() => normalizeGithubIssue(issue(), { owner: "other-org", repo: "widgets" }), /outside bound repository/);
 });
 
-test("the explicit profile double also runs in the one public offline source harness", async () => {
+test("the shipped first-party profile runs the installed example in the public offline source harness", async () => {
   const w = await world();
-  const connector = structuredClone(w.connector);
-  connector.sources[0]!.request = {
-    host: "api.github.com", method: "GET", path: "/repos/{owner}/{repo}/issues", items: "",
-    query: { state: "all", sort: "updated", direction: "asc", per_page: 100 },
-    paging: { kind: "none" }, complete: "always",
-  };
+  const connector = w.connector;
   const documents = [];
   for (const id of await w.backend.list()) documents.push((await w.backend.read(id)).doc);
-  const result = await runSourceScenario({ connector, profile: githubFixtureProfile, spec: {}, feed: FEED, documents }, {
+  const result = await runSourceScenario({ connector, profile: githubFixtureProfile, spec: connector.sources[0]!, feed: FEED, documents }, {
     name: "github.synthetic-first-observation", runs: [{ mode: "complete", exchanges: [{
       request: { url: "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100" },
       response: { status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify(ISSUES) },
