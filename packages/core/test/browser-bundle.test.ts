@@ -76,6 +76,7 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "connectors.js", symbol: "parseConnectorDoc" },
   { module: "source-engine/index.js", symbol: "observeSource" },
   { module: "source-harness/index.js", symbol: "runTransportConformance" },
+  { module: "source-profiles/index.js", symbol: "rest-json" },
   { module: "kinds-load.js", symbol: "loadKinds" },
   { module: "bundle-health/index.js", symbol: "bundleHealth" },
   // The one search engine: the working copy's page tool and a site Worker run it in process.
@@ -513,10 +514,11 @@ test("core/connectors parses, binds, maps and drives record-overlay over MemoryB
   assert.deepEqual(JSON.parse(userinfo).errors.map((e: { code: string; path: string }) => [e.code, e.path]), [["CONNECTOR_SECRET_PRESENT", "/description"]]);
 });
 
-test("core/source-engine runs a paged observation and core/source-harness passes conformance in a sandbox with only TextEncoder, URL and the timer globals, matching Node's", async () => {
+test("core/source-engine runs a paged observation and core/source-harness passes conformance in a browser sandbox with cloning and timer globals, matching Node's", async () => {
   const result = await build({
     stdin: {
       contents: [
+        'export { restJsonProfile } from "./source-profiles/index.js";',
         'export { fetchIdentity, MemoryMachineState, observeSource } from "./source-engine/index.js";',
         'export { peerTransport, runTransportConformance, ScriptedPeer } from "./source-harness/index.js";',
         'export { bindSourceFeed, parseConnectorDoc } from "./connectors.js";',
@@ -534,27 +536,21 @@ test("core/source-engine runs a paged observation and core/source-harness passes
   });
   assert.equal(result.errors.length, 0, JSON.stringify(result.errors, null, 2));
   // The engine's own deadline needs the timer and abort globals every browser and Worker has.
-  const sandbox: Record<string, unknown> = { TextEncoder, URL, setTimeout, clearTimeout, AbortController };
+  const sandbox: Record<string, unknown> = { TextEncoder, URL, setTimeout, clearTimeout, AbortController, structuredClone };
   for (const name of ["process", "Buffer", "require", "fetch", "WebSocket", "XMLHttpRequest"]) {
     assert.equal(runInNewContext(`typeof ${name}`, sandbox), "undefined", name);
   }
   runInNewContext(result.outputFiles[0]!.text, sandbox);
 
   const scenario = `async (api) => {
-    const { fetchIdentity, MemoryMachineState, observeSource, peerTransport, runTransportConformance, ScriptedPeer, bindSourceFeed, parseConnectorDoc, buildKindRegistry } = api;
+    const { restJsonProfile, fetchIdentity, MemoryMachineState, observeSource, peerTransport, runTransportConformance, ScriptedPeer, bindSourceFeed, parseConnectorDoc, buildKindRegistry } = api;
     const conformance = await runTransportConformance({ name: "memory", create: (peer, credential) => peerTransport(peer, { credential }) });
     const registry = buildKindRegistry([{ id: "conventions/item", body: "", frontmatter: { type: "Convention", title: "Item", governs: "Item", fields: { required: ["title"] } } }], [], { okfVersion: "0.2" });
     const parsed = parseConnectorDoc({ id: "connectors/items", body: "", frontmatter: { type: "Connector", title: "Items", auth: { kind: "none" }, domains: ["items.example.org"],
-      record_sources: [{ name: "items", profile: "pages", target_kind: "Item", identity: { resource: "https://items.example.org/{list}", id: "{id}" }, fields: { title: "name" }, completeness: "complete" }] } }, { kinds: registry });
+      record_sources: [{ name: "items", profile: "rest-json", request: {host: "items.example.org", method: "GET", path: "/api/{list}", query: {after: "{cursor}"}, items: "items", paging: {kind: "cursor", cursor_path: "next"}, complete: "always"}, target_kind: "Item", identity: { resource: "https://items.example.org/{list}", id: "{id}" }, fields: { title: "name" }, completeness: "complete" }] } }, { kinds: registry });
     if (!parsed.ok) throw new Error(JSON.stringify(parsed.errors));
-    const bound = bindSourceFeed(parsed.connector, { id: "source-feeds/items", frontmatter: { type: "Source Feed", connector: "connectors/items", source: "items", url: "https://items.example.org/all", owned_fields: ["title"] } }, registry);
-    const profile = { id: "pages", version: 1, kind: "generic", validateSpec: (spec) => ({ ok: true, spec }), hostsFor: () => ["items.example.org"],
-      async observe({ cursor, transport }) {
-        const url = new URL("https://items.example.org/api/items");
-        if (cursor) url.searchParams.set("after", cursor.after);
-        const body = JSON.parse((await transport.request({ url: url.href, headers: { accept: "application/json" } })).body);
-        return { records: body.items, nextCursor: body.next ? { after: body.next } : null, more: Boolean(body.next), complete: !body.next };
-      } };
+    const bound = bindSourceFeed(parsed.connector, { id: "source-feeds/items", frontmatter: { type: "Source Feed", connector: "connectors/items", source: "items", url: "https://items.example.org/items", owned_fields: ["title"] } }, registry);
+    const profile = restJsonProfile;
     const listings = [
       { "/api/items": { items: [{ id: "a", name: "Ünïcödé 🐝" }, { id: "b", name: "Bee" }], next: "c&1" }, "/api/items?after=c%261": { items: [{ id: "c", name: "Sea" }] } },
       { "/api/items": { items: [{ id: "a", name: "Ünïcödé 🐝" }, { id: "c", name: "Sea" }] } },
@@ -571,7 +567,7 @@ test("core/source-engine runs a paged observation and core/source-harness passes
         return routed ? { status: 200, body: JSON.stringify(routed) } : { status: 404, body: "" };
       });
       const changes = [];
-      const receipt = await observeSource({ connector: parsed.connector, bound, profile, spec: {}, transport: peerTransport(peer), state, identity, mode: "complete",
+      const receipt = await observeSource({ connector: parsed.connector, bound, profile, spec: bound.source, transport: peerTransport(peer), state, identity, mode: "complete",
         now: () => new Date(Date.UTC(2026, 0, 1 + index)), commit: async (page) => { changes.push(...page.changes); } });
       receipts.push({ outcome: receipt.outcome, pages: receipt.pages, cursor: receipt.cursor, complete: receipt.pass.complete, requests: receipt.requests,
         changes: changes.map((c) => [c.external_id, c.change_kind, c.content_digest]) });
@@ -585,9 +581,10 @@ test("core/source-engine runs a paged observation and core/source-harness passes
   };
   const engineApi = await import("../src/source-engine/index.js");
   const harnessApi = await import("../src/source-harness/index.js");
+  const profilesApi = await import("../src/source-profiles/index.js");
   const connectorsApi = await import("../src/connectors.js");
   const { buildKindRegistry } = await import("../src/kinds.js");
-  const inNode = JSON.parse(await (new Function("api", `return (${scenario})(api)`)({ ...engineApi, ...harnessApi, ...connectorsApi, buildKindRegistry }) as Promise<string>)) as typeof inSandbox;
+  const inNode = JSON.parse(await (new Function("api", `return (${scenario})(api)`)({ ...engineApi, ...harnessApi, ...profilesApi, ...connectorsApi, buildKindRegistry }) as Promise<string>)) as typeof inSandbox;
   assert.deepEqual(inSandbox, inNode, "the sandbox runs equal Node's: conformance rows, receipts, digests and stored state");
   assert.ok(inSandbox.conformance.every((row) => row.ok), JSON.stringify(inSandbox.conformance));
   assert.deepEqual(inSandbox.receipts.map((r) => r.complete), [true, true, true]);

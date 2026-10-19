@@ -6,6 +6,7 @@
  * budget, honours the deadline and maps statuses to outcomes. Any refusal or error status stops
  * the run: the call throws and the stop is recorded here, so a profile cannot swallow it.
  */
+import { graphqlReadProblem } from "../connector-request.js";
 import { credentialHosts, type Connector } from "../connectors.js";
 import { redactUrl } from "../record-overlay/redact.js";
 import { challenged, refusedAddress, robotsDecision, type FetchIdentity } from "./robots.js";
@@ -114,6 +115,10 @@ export interface GuardContext {
   identity: FetchIdentity;
   budget: SourceBudget;
   rules: RequestRules;
+  /** Private core constraints rechecked after application callbacks. */
+  authority?: RequestRules;
+  /** Core-owned GraphQL read paths. Execution awaits reviewed resource-scope semantics. */
+  graphqlPaths?: readonly string[];
   statuses: StatusRules;
   now: () => Date;
   /**
@@ -186,7 +191,9 @@ function readResult(result: unknown, maxBytes: number): TransportResult | undefi
 }
 
 export function guardTransport(ctx: GuardContext): GuardedTransport {
-  const { hosts, identity, budget, rules, statuses, signal } = ctx;
+  const { rules, signal } = ctx;
+  const { identity, budget, statuses } = structuredClone({identity: ctx.identity, budget: ctx.budget, statuses: ctx.statuses});
+  const hosts: HostSet = {allowed: new Set(ctx.hosts.allowed), credential: new Set(ctx.hosts.credential), keyless: new Set(ctx.hosts.keyless)};
   const requests: SourceRequestRow[] = [];
   const robots = new Map<string, Promise<RobotsEntry>>();
   let left = budget.requests;
@@ -324,7 +331,7 @@ export function guardTransport(ctx: GuardContext): GuardedTransport {
     for (const [rawName, value] of entries) {
       const name = rawName.toLowerCase();
       const admitted = HEADER_NAME.test(name) && !NEVER_SENT.has(name) && typeof value === "string" && HEADER_VALUE.test(value)
-        && (BASE_HEADERS.has(name) || (VALIDATOR_HEADERS.has(name) ? ctx.conditional : rules.header?.(name, url) === true));
+        && (BASE_HEADERS.has(name) || (VALIDATOR_HEADERS.has(name) ? ctx.conditional : rules.header?.(name, new URL(url.href)) === true));
       if (!admitted) {
         refuseRow(method, url, "page", "header_refused");
         halt({ outcome: "refused", reason: "header_refused", detail: name.slice(0, 64), retry: false });
@@ -353,8 +360,16 @@ export function guardTransport(ctx: GuardContext): GuardedTransport {
     try { url = new URL(rawUrl); } catch { refuseRow(method, rawUrl.slice(0, 256), "page", "url_invalid"); halt({ outcome: "refused", reason: "url_invalid", retry: false }); }
     url.hash = "";
     if (method === "GET" && body !== undefined) { refuseRow(method, url, "page", "body_refused"); halt({ outcome: "refused", reason: "body_refused", retry: false }); }
+    if (method === "POST" && hosts.credential.has(url.hostname) && ctx.graphqlPaths?.includes(url.pathname)) {
+      let parsed: unknown;
+      try {parsed = JSON.parse(body ?? "");} catch {parsed = undefined;}
+      const problem = !record(parsed) ? "invalid GraphQL body" : graphqlReadProblem(parsed.query, parsed.variables, null);
+      const reason = problem ? "method_refused" : "graphql_scope_unsupported";
+      refuseRow(method, url, "page", reason);
+      halt({outcome: "refused", reason, retry: false});
+    }
     // A keyless host is read with GET only, whatever a rule says.
-    if (method === "POST" && (!hosts.credential.has(url.hostname) || rules.post?.(url, body) !== true)) {
+    if (method === "POST" && (!hosts.credential.has(url.hostname) || rules.post?.(new URL(url.href), body) !== true)) {
       refuseRow(method, url, "page", "method_refused");
       halt({ outcome: "refused", reason: "method_refused", retry: false });
     }
@@ -365,11 +380,20 @@ export function guardTransport(ctx: GuardContext): GuardedTransport {
         refuseRow(method, url, "page", refusal.reason);
         halt({ outcome: "refused", ...refusal, retry: false });
       }
-      if (rules.url && rules.url(url, { method, redirect: hop > 0 }) !== true) {
+      if (rules.url && rules.url(new URL(url.href), { method, redirect: hop > 0 }) !== true) {
         refuseRow(method, url, "page", "url_refused");
         halt({ outcome: "refused", reason: "url_refused", retry: false });
       }
       const headers = headersFor(headerEntries, url, method);
+      // Callbacks receive disposable URL views. Check private authority again after every phase.
+      const finalHop = hopRefusal(url, from);
+      if (finalHop || ctx.authority?.url?.(new URL(url.href), {method, redirect: hop > 0}) === false
+        || method === "POST" && ctx.authority?.post?.(new URL(url.href), body) === false
+        || Object.keys(headers).some(name => !BASE_HEADERS.has(name) && !VALIDATOR_HEADERS.has(name) && ctx.authority?.header?.(name, new URL(url.href)) === false)) {
+        const reason = finalHop?.reason ?? "url_refused";
+        refuseRow(method, url, "page", reason);
+        halt({outcome: "refused", reason, retry: false});
+      }
       if (hosts.keyless.has(url.hostname)) await robotsGate(url, method);
       const result = await send(url, method, headers, body, maxBytes, "page");
       if (result === "failed" || result === "timeout") halt({ outcome: "provider_unavailable", reason: result === "timeout" ? "timeout" : "transport", retry: true });
@@ -393,7 +417,9 @@ export function guardTransport(ctx: GuardContext): GuardedTransport {
       }
       const stopped = statusStop(status, responseHeaders);
       if (stopped) halt(stopped);
-      return { status, headers: responseHeaders, body: responseBody, url: url.href };
+      const response = { status, headers: responseHeaders, body: responseBody, url: url.href };
+      rules.response?.({...response, headers: {...response.headers}});
+      return response;
     }
   };
 

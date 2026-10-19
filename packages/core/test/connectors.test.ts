@@ -484,7 +484,7 @@ const FULL: Connector = {
 };
 
 /** One mutation per accepted key of every closed block; the table must cover CONNECTOR_KEYS exactly. */
-const MUTATIONS: Record<ConnectorBlock, Record<string, (c: any) => void>> = {
+const MUTATIONS: Partial<Record<ConnectorBlock, Record<string, (c: any) => void>>> = {
   auth: {
     kind: (c) => { c.auth.kind = "none"; },
     provider: (c) => { c.auth.provider = "github"; },
@@ -499,6 +499,7 @@ const MUTATIONS: Record<ConnectorBlock, Record<string, (c: any) => void>> = {
     identity: (c) => { c.sources[0].identity = { resource: "https://calendar.example.org/x.ics", id: "{uid}" }; },
     fields: (c) => { c.sources[0].fields.end = { from: "dtend" }; },
     completeness: (c) => { c.sources[0].completeness = "partial"; },
+    request: (c) => { c.sources[0].request = {host: "feeds.example.org"}; },
   },
   identity: {
     resource: (c) => { c.sources[0].identity.resource = "https://feeds.example.org/{feed}.ics"; },
@@ -532,15 +533,34 @@ const MUTATIONS: Record<ConnectorBlock, Record<string, (c: any) => void>> = {
   },
 };
 
+const REQUEST_FULL = {
+  host: "api.github.com", method: "GET", path: "/repos/{owner}/{repo}/issues", query: {state: "all"}, body: {x: "a"}, headers: {accept: "application/json"}, items: "items",
+  fields: {field: {from: "title", type: "text", const: "one"}}, skip: [{path: "pull_request", present: true}],
+  paging: {kind: "cursor", cursor_path: "cursor", next_path: "next", size_param: "size", size: 10, page_param: "page", offset_param: "offset"},
+  watermark: {field: "updated", param: "since", overlap_seconds: 10}, complete: {when_path: "end", equals: true},
+  errors: {deferred: [429], credential_refused: [401], not_found: [404]}, rate: {requests: 10},
+  graphql: {query: "query {x}", variables: {owner: "{owner}"}, items: "nodes", page_info: "pageInfo"},
+};
+const REQUEST_BLOCKS = ["request", "paging", "watermark", "errors", "rate", "graphql", "transform", "skip", "complete"] as const;
+for (const block of REQUEST_BLOCKS) {
+  MUTATIONS[block] = Object.fromEntries(CONNECTOR_KEYS[block].map(key => [key, (c: any) => {
+    const r = c.sources[0].request;
+    const target = block === "request" ? r : block === "transform" ? r.fields.field : block === "skip" ? r.skip[0] : r[block];
+    delete target[key];
+  }]));
+}
+
 test("the pin digest changes when any accepted key of any closed block changes", () => {
   assert.deepEqual(Object.keys(MUTATIONS).sort(), Object.keys(CONNECTOR_KEYS).sort(), "a mutation table per closed block");
   const digest = connectorPinDigest(FULL);
   for (const [block, keys] of Object.entries(CONNECTOR_KEYS) as Array<[ConnectorBlock, readonly string[]]>) {
-    assert.deepEqual(Object.keys(MUTATIONS[block]).sort(), [...keys].sort(), `every ${block} key has a mutation`);
+    assert.deepEqual(Object.keys(MUTATIONS[block]!).sort(), [...keys].sort(), `every ${block} key has a mutation`);
     for (const key of keys) {
-      const mutated = structuredClone(FULL);
-      MUTATIONS[block][key]!(mutated);
-      assert.notEqual(connectorPinDigest(mutated), digest, `${block}.${key} reaches the pin`);
+      const baseline = structuredClone(FULL);
+      if ((REQUEST_BLOCKS as readonly string[]).includes(block)) baseline.sources[0]!.request = structuredClone(REQUEST_FULL) as never;
+      const mutated = structuredClone(baseline);
+      MUTATIONS[block]![key]!(mutated);
+      assert.notEqual(connectorPinDigest(mutated), connectorPinDigest(baseline), `${block}.${key} reaches the pin`);
     }
   }
   const domain = structuredClone(FULL);

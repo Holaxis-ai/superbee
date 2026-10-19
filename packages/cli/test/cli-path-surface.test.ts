@@ -186,6 +186,17 @@ test("registry path flags: every declared path flag is documented in its command
   assert.deepEqual(missing, []);
 });
 
+const PATH_POSITIONAL_USAGE = /<(?:file|name-or-path|path|recipe-path)>/;
+
+test("path positional usage recognizes only the supported path placeholder tokens", () => {
+  for (const [usage, expected] of [
+    ["command <file>", true], ["command <name-or-path>", true],
+    ["command <path>", true], ["command <recipe-path>", true],
+    ["command <recipe>", false], ["command <recipe-path-extra>", false],
+    ["command recipe-path", false], ["command <id>", false],
+  ] as const) assert.equal(PATH_POSITIONAL_USAGE.test(usage), expected, usage);
+});
+
 test("registry path positionals: each is inside the leaf's arity and visible in the usage line", () => {
   const rows = CLI_COMMAND_GROUPS.flatMap((group) => group.commands);
   const declared = rows.flatMap((row) => row.leaves.flatMap((leaf) =>
@@ -193,6 +204,6 @@ test("registry path positionals: each is inside the leaf's arity and visible in 
   assert.ok(declared.length > 0, "the fixture would be vacuous with no declared path positionals");
   for (const { row, leaf, entry } of declared) {
     assert.ok(entry.index < leaf.arity.count, `${leaf.path}: positional ${entry.index} exceeds its arity`);
-    assert.match(row.usage, /<file>|<name-or-path>|<path>/, `${row.id}: a path positional must be visible in the usage`);
+    assert.match(row.usage, PATH_POSITIONAL_USAGE, `${row.id}: a path positional must be visible in the usage`);
   }
 });

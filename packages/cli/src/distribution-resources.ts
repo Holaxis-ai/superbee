@@ -35,6 +35,7 @@ function npmResources(role: ResourceRole, entries: readonly SourceDestination[])
 export const DISTRIBUTION_RESOURCES: DistributionResource[] = [
   ...npmResources("operating-reference", [
     ["examples/references/modeling-and-delivery.md", "modeling-and-delivery.md"],
+    ["examples/references/author-an-integration.md", "author-an-integration.md"],
     ["examples/references/hosted-checkout.md", "hosted-checkout.md"],
     ["examples/views/references/view-authoring-v0.md", "views/references/view-authoring-v0.md"],
   ]),
@@ -43,6 +44,11 @@ export const DISTRIBUTION_RESOURCES: DistributionResource[] = [
   // Both columns renamed pages→views with the kind (the dest column is the skill's shipped
   // resource namespace — regenerated atomically with the SKILL.md prose that points at it).
   ...npmResources("worked-example", [
+    ["examples/integrations/rest-json-authoring/README.md", "integrations/rest-json-authoring/README.md"],
+    ["examples/integrations/rest-json-authoring/recipe/recipe.md", "integrations/rest-json-authoring/recipe/recipe.md"],
+    ["examples/integrations/rest-json-authoring/recipe/conventions/ticket.md", "integrations/rest-json-authoring/recipe/conventions/ticket.md"],
+    ["examples/integrations/rest-json-authoring/recipe/connectors/tickets.md", "integrations/rest-json-authoring/recipe/connectors/tickets.md"],
+    ["examples/integrations/rest-json-authoring/fixture/fixture.json", "integrations/rest-json-authoring/fixture/fixture.json"],
     ["examples/views/pulse.html", "views/pulse.html"],
     ["examples/views/roadmap.html", "views/roadmap.html"],
     ["examples/views/about.html", "views/about.html"],

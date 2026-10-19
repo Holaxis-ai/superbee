@@ -74,7 +74,7 @@ function recorder(answer: (url: URL) => TransportResult = () => ok()) {
 function oneRequest(url: string, extra: Record<string, unknown> = {}): SourceProfile<JsonPagesSpec, unknown> {
   return {
     ...jsonPagesProfile,
-    hostsFor: () => [API, HOST],
+    hostsFor: () => [new URL(url).hostname],
     async observe({ transport }) {
       await transport.request({ url, ...extra } as never);
       return { records: [], nextCursor: null, more: false, complete: false };
@@ -83,8 +83,13 @@ function oneRequest(url: string, extra: Record<string, unknown> = {}): SourcePro
 }
 
 function run(options: Partial<ObserveSourceOptions<JsonPagesSpec, unknown>> & Pick<ObserveSourceOptions<JsonPagesSpec, unknown>, "transport">, connector = ticketConnector(GITHUB_MD)) {
+  let bound = boundFor(connector);
+  if (options.profile?.hostsFor(SPEC, bound).includes(API)) {
+    const source = {...bound.source, identity: {...bound.source.identity, resource: `https://${API}/repos/{owner}/{repo}`}, request: {host: API, method: "GET" as const, path: "/repos/{owner}/{repo}/issues", items: "", query: {page: "{page}"}}};
+    bound = {...bound, source, parameters: {owner: "o", repo: "r"}, resource: `https://${API}/repos/o/r`};
+  }
   return observeSource({
-    connector, bound: boundFor(connector), profile: jsonPagesProfile, spec: SPEC, state: new MemoryMachineState(), identity: IDENTITY,
+    connector, bound, profile: jsonPagesProfile, spec: SPEC, state: new MemoryMachineState(), identity: IDENTITY,
     now: () => new Date("2026-03-01T12:00:00.000Z"), commit: async () => {}, ...options,
   });
 }
@@ -108,7 +113,7 @@ test("a lookalike or private host is refused unsent on the first request, whatev
 });
 
 test("a spelling that normalizes to a declared host reaches only that host, flagged by the engine's own decision", async () => {
-  for (const [url, host] of [[`https://API.GITHUB.COM/x`, API], [`https://${API}:443/x`, API], ["https://api%2egithub%2ecom/x", API], ["https://ａｐｉ.github.com/x", API], [`https://TICKETS.example.org/boards/main/items`, HOST]] as const) {
+  for (const [url, host] of [[`https://API.GITHUB.COM/repos/o/r/issues`, API], [`https://${API}:443/repos/o/r/issues`, API], ["https://api%2egithub%2ecom/repos/o/r/issues", API], ["https://ａｐｉ.github.com/repos/o/r/issues", API], [`https://TICKETS.example.org/boards/main/items`, HOST]] as const) {
     const { sent, transport } = recorder((u) => (u.pathname === "/robots.txt" ? ok("", 404) : ok()));
     await run({ profile: oneRequest(url), transport });
     assert.ok(sent.length > 0, url);
@@ -180,9 +185,9 @@ test("robots.txt answering any 5xx, 500 included, refuses the keyless host", asy
 });
 
 test("a same-host redirect on the credential host is followed, and so is one between two declared keyless hosts", async () => {
-  const api = recorder((u) => (u.pathname === "/a" ? ok("", 301, { location: `https://${API}/b` }) : ok()));
-  assert.equal((await run({ profile: oneRequest(`https://${API}/a`), transport: api.transport })).outcome, "observed");
-  assert.deepEqual(api.sent.map((r) => [r.url, r.credentialHost]), [[`https://${API}/a`, true], [`https://${API}/b`, true]]);
+  const api = recorder((u) => (u.searchParams.get("page") === "1" ? ok("", 301, { location: `https://${API}/repos/o/r/issues?page=2` }) : ok()));
+  assert.equal((await run({ profile: oneRequest(`https://${API}/repos/o/r/issues?page=1`), transport: api.transport })).outcome, "observed");
+  assert.deepEqual(api.sent.map((r) => [r.url, r.credentialHost]), [[`https://${API}/repos/o/r/issues?page=1`, true], [`https://${API}/repos/o/r/issues?page=2`, true]]);
 
   const keyless = recorder((u) => (u.pathname === "/robots.txt" ? ok("", 404) : u.hostname === HOST ? ok("", 302, { location: `https://${MIRROR}/items` }) : ok()));
   const profile: SourceProfile<JsonPagesSpec, unknown> = { ...oneRequest(ITEMS), hostsFor: () => [HOST, MIRROR] };

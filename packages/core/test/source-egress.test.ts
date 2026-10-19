@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { collectSourceFiles, EGRESS_ALLOWED_GLOBALS, egressViolations } from "../../../scripts/source-egress-check.mjs";
+import { collectSourceFiles, EGRESS_ALLOWED_GLOBALS, EGRESS_ALLOWED_IMPORTS, egressViolations } from "../../../scripts/source-egress-check.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.resolve(here, "../src");
@@ -21,7 +21,7 @@ const PROFILE_IMPORTS = [path.join(SRC, "source-profiles"), path.join(SRC, "sour
 
 const resolveTs = (file: string, specifier: string): string => path.resolve(path.dirname(file), specifier).replace(/\.js$/, ".ts");
 const allowProfileImport = (specifier: string, file: string): boolean => {
-  if (!specifier.startsWith("./") && !specifier.startsWith("../")) return false;
+  if (!specifier.startsWith("./") && !specifier.startsWith("../")) return EGRESS_ALLOWED_IMPORTS.includes(specifier);
   const target = resolveTs(file, specifier);
   return PROFILE_IMPORTS.some((allowed) => target === allowed || target.startsWith(`${allowed}${path.sep}`))
     || path.dirname(target) === path.dirname(file);

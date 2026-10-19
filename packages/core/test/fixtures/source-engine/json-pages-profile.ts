@@ -40,7 +40,7 @@ export const jsonPagesProfile: SourceProfile<JsonPagesSpec, JsonPagesCursor> = {
     const method = spec.method ?? "GET";
     if (method !== "GET" && method !== "POST") errors.push({ path: "/method", message: "is GET or POST" });
     if (errors.length) return { ok: false, errors };
-    return { ok: true, spec: { host: spec.host as string, path: spec.path as string, paging, complete: spec.complete !== false, method } };
+    return { ok: true, spec: { host: spec.host as string, path: spec.path as string, paging: paging as JsonPagesSpec["paging"], complete: spec.complete !== false, method: method as JsonPagesSpec["method"] } };
   },
 
   hostsFor: (spec) => [spec.host],

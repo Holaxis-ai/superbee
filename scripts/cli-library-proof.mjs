@@ -9,10 +9,116 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { init, parse } from "es-module-lexer";
 import { build } from "esbuild";
+import ts from "typescript";
 import { versionPattern } from "./package-version-policy.mjs";
 const exec = promisify(execFile);
 const root = path.resolve(import.meta.dirname, "..");
 const readJson = async file => JSON.parse(await readFile(file, "utf8"));
+
+// This one opt-in extension is intentionally not a bundled dependency. Freeze its entire
+// compiled guard/loader shape; future loader changes require a reviewed proof-policy change.
+const authorProfileLoader = String.raw`async function explicitProfile(input) {
+  try {
+    assertPathOutsidePrivateState(input);
+    if (!/\.(?:mjs|js)$/.test(input)) return void 0;
+    const resolved = await filesystem.realpath(paths.resolve(input));
+    if (!(await filesystem.stat(resolved)).isFile()) return void 0;
+    const module = await import(fileURL(resolved).href);
+    const selected = isRecord(module) ? module.default ?? module.profile : void 0;
+    if (!isRecord(selected) || typeof selected.id !== "string" || containsCredentialText(selected.id) || !Number.isSafeInteger(selected.version) || selected.version < 1 || typeof selected.kind !== "string" || !["generic", "extension"].includes(selected.kind) || typeof selected.validateSpec !== "function" || typeof selected.hostsFor !== "function" || typeof selected.observe !== "function") return void 0;
+    return selected;
+  } catch { return void 0; }
+}`;
+const printer = ts.createPrinter({ removeComments: true });
+function printed(node, source, names = new Map()) {
+  const transformed = ts.transform(node, [context => {
+    const visit = child => ts.isIdentifier(child) && names.has(child.text)
+      && !(ts.isPropertyAccessExpression(child.parent) && child.parent.name === child)
+      ? ts.factory.createIdentifier(names.get(child.text)) : ts.visitEachChild(child, visit, context);
+    return root => ts.visitNode(root, visit);
+  }]);
+  try { return printer.printNode(ts.EmitHint.Unspecified, transformed.transformed[0], source); }
+  finally { transformed.dispose(); }
+}
+
+export async function assertClosedCliImports(text) {
+  await init;
+  const [imports] = parse(text);
+  const external = imports.filter(item => item.d !== -2 && !item.n?.startsWith("node:"));
+  if (!external.length) return;
+  assert.equal(external.length, 1, "unclosed imports outside the explicit author-profile boundary");
+  assert.equal(external[0].n, undefined, `unclosed import ${external[0].n}`);
+  const source = ts.createSourceFile("retained-cli.mjs", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  assert.equal(source.parseDiagnostics.length, 0, "invalid retained CLI syntax");
+  const loaders = source.statements.filter(node => ts.isFunctionDeclaration(node) && node.name?.text === "explicitProfile");
+  assert.equal(loaders.length, 1, "missing unique explicit author-profile loader");
+  const loader = loaders[0];
+  assert.equal(loader.parameters.length, 1);
+  assert.ok(ts.isIdentifier(loader.parameters[0].name));
+  const names = new Map([[loader.parameters[0].name.text, "input"]]);
+  const importBindings = new Map();
+  for (const node of source.statements.filter(ts.isImportDeclaration)) {
+    const specifier = node.moduleSpecifier.text;
+    const clause = node.importClause;
+    if (specifier === "node:path" && clause?.name) importBindings.set(clause.name.text, "paths");
+    if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) for (const entry of clause.namedBindings.elements) {
+      const imported = entry.propertyName?.text ?? entry.name.text;
+      if (specifier === "node:fs" && imported === "promises") importBindings.set(entry.name.text, "filesystem");
+      if (specifier === "node:url" && imported === "pathToFileURL") importBindings.set(entry.name.text, "fileURL");
+    }
+  }
+  const importsInLoader = [], locals = [];
+  let recordName;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node)) locals.push(node);
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) importsInLoader.push(node);
+    if (ts.isConditionalExpression(node) && ts.isCallExpression(node.condition) && ts.isIdentifier(node.condition.expression)) recordName = node.condition.expression.text;
+    if (ts.isIdentifier(node) && importBindings.has(node.text)) names.set(node.text, importBindings.get(node.text));
+    ts.forEachChild(node, visit);
+  }
+  visit(loader);
+  assert.equal(locals.length, 3, "changed author-profile loader locals");
+  for (const [index, name] of ["resolved", "module", "selected"].entries()) {
+    assert.ok(ts.isIdentifier(locals[index].name)); names.set(locals[index].name.text, name);
+  }
+  assert.ok(recordName, "missing profile shape predicate"); names.set(recordName, "isRecord");
+  // Do not let an unrelated predicate gain authority just because it has the expected call shape.
+  const predicates = [];
+  function findPredicate(node) {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === recordName && node.initializer) predicates.push(node.initializer);
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left) && node.left.text === recordName) predicates.push(node.right);
+    ts.forEachChild(node, findPredicate);
+  }
+  findPredicate(source);
+  assert.equal(predicates.length, 1);
+  const predicate = predicates[0];
+  assert.ok(ts.isArrowFunction(predicate) && predicate.parameters.length === 1 && ts.isIdentifier(predicate.parameters[0].name));
+  const predicateNames = new Map([[predicate.parameters[0].name.text, "value"]]);
+  const expectedPredicate = ts.createSourceFile("predicate.mjs", '(value) => value !== null && typeof value === "object" && !Array.isArray(value)', ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  assert.equal(printed(predicate, source, predicateNames), printed(expectedPredicate.statements[0].expression, expectedPredicate), "changed profile shape predicate");
+  const expected = ts.createSourceFile("loader.mjs", authorProfileLoader, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  assert.equal(printed(loader, source, names), printed(expected.statements[0], expected), "changed explicit author-profile loader shape");
+  assert.equal(importsInLoader.length, 1);
+  assert.equal(importsInLoader[0].getStart(source), external[0].ss, "unclosed import outside guarded loader");
+  assert.equal(importsInLoader[0].end, external[0].se);
+  const references = [];
+  function findReferences(node) {
+    if (ts.isIdentifier(node) && node.text === "explicitProfile" && node !== loader.name) references.push(node);
+    ts.forEachChild(node, findReferences);
+  }
+  findReferences(source);
+  assert.equal(references.length, 1, "unexpected explicit-profile loader reference");
+  const call = references[0].parent, awaited = call.parent, conditional = awaited.parent;
+  assert.ok(ts.isCallExpression(call) && ts.isAwaitExpression(awaited) && ts.isConditionalExpression(conditional));
+  const fallback = conditional.whenFalse;
+  assert.ok(ts.isCallExpression(fallback) && fallback.arguments.length === 1 && ts.isPropertyAccessExpression(fallback.arguments[0]) && ts.isIdentifier(fallback.arguments[0].expression));
+  const sourceName = fallback.arguments[0].expression.text;
+  assert.match(sourceName, /^source\d*$/);
+  assert.equal(printed(conditional, source, new Map([[sourceName, "source"]])), "options.profile ? await explicitProfile(options.profile) : getSourceProfile(source.profile)", "profile loading must be explicitly selected");
+  let owner = conditional;
+  while (owner.parent && !ts.isFunctionDeclaration(owner)) owner = owner.parent;
+  assert.ok(ts.isFunctionDeclaration(owner) && owner.name?.text === "testSourceForAuthor", "unexpected profile-loader owner");
+}
 
 // Independent derivation of what the artifact embeds and which tree built it. `runtime` is the
 // runtime bundle's metafile (inputs relative to packages/cli); `assets` are repo-relative paths
@@ -174,9 +280,7 @@ export async function proveCliTarball(tarball, { checkSource, execute = exec } =
       // Compare actual installed bytes; the workspace cannot stand in for the retained artifact.
       assert.equal(createHash("sha256").update(await readFile(path.join(library, "dist/index.mjs"))).digest("hex"), createHash("sha256").update(await readFile(path.join(root, "packages/cli/dist/index.mjs"))).digest("hex"), "packed runtime differs from the proved build");
       if (checkSource) checkSource(record, await workspaceManifests());
-      await init;
-      const [imports] = parse(await readFile(path.join(library, "dist/index.mjs"), "utf8"));
-      for (const imported of imports.filter(item => item.d !== -2)) assert.ok(imported.n?.startsWith("node:"), `unclosed import ${imported.n}`);
+      await assertClosedCliImports(await readFile(path.join(library, "dist/index.mjs"), "utf8"));
       await writeFile(path.join(scratch, "consumer.ts"), `import { main, configureSourceIdentity, registerExecutableEntry, buildIdentityEnvelope, type BuildIdentityEnvelope } from '@superbee/cli';\nconfigureSourceIdentity({ name: 'superbee', version: '1.2.3' });\nregisterExecutableEntry('fixture.mjs');\nconst identity: BuildIdentityEnvelope = buildIdentityEnvelope();\nvoid main(['help']); void identity;\n`);
       await appendFile(path.join(scratch, "consumer.ts"), `
   import { createCliRuntime, createPosixCliRuntime, type CliRuntimeOptions, type CliDistribution } from '@superbee/cli';

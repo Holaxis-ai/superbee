@@ -15,6 +15,9 @@
  * change; {@link findingsFor} turns diagnostics into findings for `planFindings`.
  * Storage-neutral: no Node globals or builtins.
  */
+import { validateConnectorRequest, type ConnectorRequest } from "./connector-request.js";
+export { AUTH_PROVIDER_REQUEST_RULES, validateConnectorRequest, readPath as readSourcePath, renderRequestValue } from "./connector-request.js";
+export type { ConnectorRequest } from "./connector-request.js";
 import { compareCodePoints } from "./code-point-order.js";
 import { isStandardDocumentSetField } from "./document-field-actions.js";
 import { PROGRESS_STATUS_FIELD, isKindListField, isPresent, type KindConvention, type KindRegistry } from "./kinds.js";
@@ -48,7 +51,16 @@ const GITHUB_APP_HOSTS: readonly string[] = Object.freeze(["api.github.com"]);
 /** The accepted keys of every closed block. The shape check and the pin digest read only this table. */
 export const CONNECTOR_KEYS = Object.freeze({
   auth: Object.freeze(["kind", "provider", "permissions", "scheme"]),
-  source: Object.freeze(["name", "profile", "target_kind", "mode", "identity", "fields", "completeness"]),
+  source: Object.freeze(["name", "profile", "target_kind", "mode", "identity", "fields", "completeness", "request"]),
+  request: Object.freeze(["host", "method", "path", "query", "body", "headers", "items", "skip", "fields", "paging", "watermark", "complete", "errors", "rate", "graphql"]),
+  paging: Object.freeze(["kind", "cursor_path", "next_path", "size_param", "size", "page_param", "offset_param"]),
+  watermark: Object.freeze(["field", "param", "overlap_seconds"]),
+  errors: Object.freeze(["deferred", "credential_refused", "not_found"]),
+  rate: Object.freeze(["requests"]),
+  graphql: Object.freeze(["query", "variables", "items", "page_info"]),
+  transform: Object.freeze(["from", "type", "const"]),
+  skip: Object.freeze(["path", "present"]),
+  complete: Object.freeze(["when_path", "equals"]),
   identity: Object.freeze(["resource", "id"]),
   mapping: Object.freeze(["from", "values", "unmapped"]),
   action: Object.freeze(["name", "method", "host", "input", "confirm"]),
@@ -120,6 +132,7 @@ export interface ConnectorSource {
   /** Target field to mapping; the keys are the fields a Source Feed may own. */
   fields: Record<string, ConnectorMapping>;
   completeness: "complete" | "partial";
+  request?: ConnectorRequest;
 }
 export interface ConnectorInput {
   type: "string" | "text" | "integer" | "boolean";
@@ -570,6 +583,7 @@ function parseSource(raw: unknown, index: number, errors: Errors): ConnectorSour
   return {
     name: raw.name as string, profile: raw.profile as string, target_kind: raw.target_kind as string, mode: "overlay",
     identity, fields, completeness: raw.completeness as "complete" | "partial",
+    ...(raw.request !== undefined ? {request: raw.request as ConnectorRequest} : {}),
   };
 }
 
@@ -703,6 +717,12 @@ export function parseConnectorDoc(doc: OkfDocument, ctx: { kinds?: KindRegistry 
   duplicates(rawActions ?? [], "actions", "action", errors);
   duplicates(rawEvents ?? [], "events", "event", errors);
   const sources = (rawSources ?? []).map((raw, index) => parseSource(raw, index, errors));
+  if (auth) sources.forEach((source, index) => {
+    if (!source || source.request === undefined) return;
+    for (const error of validateConnectorRequest(source, {auth, domains})) {
+      errors.list.push({code: "CONNECTOR_MALFORMED", path: `/record_sources/${index}${error.path}`, message: error.message});
+    }
+  });
   const reach = new Set([...(auth ? credentialHosts(auth) : []), ...domains]);
   const actions = (rawActions ?? []).map((raw, index) => parseAction(raw, index, reach, errors));
   const names = new Set((rawSources ?? []).flatMap((raw) => (record(raw) && typeof raw.name === "string" ? [raw.name] : [])));
@@ -740,6 +760,9 @@ export function checkConnectorAgainstKinds(connector: Connector, kinds: KindRegi
     return sourceKindErrors(source, index, kind);
   });
 }
+
+/** Detect credential-shaped text without returning or echoing its value. */
+export function containsCredentialText(text: string): boolean { return bodyHoldsSecret(text); }
 
 // --------------------------------------------------------------------------------------------- pin
 
@@ -785,6 +808,13 @@ export function connectorPinDigest(connector: Connector): string {
     domains: [...connector.domains].sort(),
     // The parsed sources, under the same label whichever document key they were read from.
     sources: byName(connector.sources).map((source) => pinBlock("source", PIN_DEFAULTS.source(source), {
+      request: (v) => pinBlock("request", v as object, {
+        paging: (x) => pinBlock("paging", x as object), watermark: (x) => pinBlock("watermark", x as object),
+        errors: (x) => pinBlock("errors", x as object), rate: (x) => pinBlock("rate", x as object),
+        graphql: (x) => pinBlock("graphql", x as object), fields: mapOf("transform"),
+        skip: (x) => (x as object[]).map((y) => pinBlock("skip", y)),
+        complete: (x) => typeof x === "string" ? x : pinBlock("complete", x as object),
+      }),
       identity: (v) => pinBlock("identity", v as object),
       fields: mapOf("mapping", PIN_DEFAULTS.mapping),
     })),

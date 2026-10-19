@@ -10,10 +10,27 @@ import ts from "typescript";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(here, "..");
 const SOURCE_ROOT = path.resolve(PACKAGE_ROOT, "src");
-const RUNTIME_DEPENDENCIES = ["gray-matter", "js-yaml"] as const;
+const RUNTIME_DEPENDENCIES: ReadonlyArray<{name: string; specifiers: readonly string[]; version?: string}> = [
+  { name: "graphql", specifiers: ["graphql/language/index.js"], version: "17.0.2" },
+  { name: "gray-matter", specifiers: ["gray-matter"] },
+  { name: "js-yaml", specifiers: ["js-yaml"] },
+];
+
+type RuntimeManifest = {
+  dependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+};
+
+function assertRuntimeDependencyContract(manifest: RuntimeManifest): void {
+  assert.deepEqual(Object.keys(manifest.dependencies ?? {}).sort(), RUNTIME_DEPENDENCIES.map(row => row.name).sort());
+  for (const row of RUNTIME_DEPENDENCIES) if (row.version !== undefined) assert.equal(manifest.dependencies?.[row.name], row.version, `${row.name} must use its reviewed exact version`);
+  assert.equal(manifest.optionalDependencies, undefined);
+  assert.equal(manifest.peerDependencies, undefined);
+}
 
 function specifierViolation(file: string, specifier: string): string | null {
-  if (isBuiltin(specifier) || RUNTIME_DEPENDENCIES.some((name) => name === specifier)) return null;
+  if (isBuiltin(specifier) || RUNTIME_DEPENDENCIES.some((row) => row.specifiers.includes(specifier))) return null;
 
   if (specifier.startsWith("./") || specifier.startsWith("../")) {
     const resolved = path.resolve(path.dirname(file), specifier);
@@ -100,15 +117,8 @@ test("core production imports stay inside the bottom layer", async () => {
 });
 
 test("core manifest pins the production dependency contract", async () => {
-  const manifest = JSON.parse(await readFile(path.join(PACKAGE_ROOT, "package.json"), "utf8")) as {
-    dependencies?: Record<string, string>;
-    optionalDependencies?: Record<string, string>;
-    peerDependencies?: Record<string, string>;
-  };
-
-  assert.deepEqual(Object.keys(manifest.dependencies ?? {}).sort(), [...RUNTIME_DEPENDENCIES]);
-  assert.equal(manifest.optionalDependencies, undefined);
-  assert.equal(manifest.peerDependencies, undefined);
+  const manifest = JSON.parse(await readFile(path.join(PACKAGE_ROOT, "package.json"), "utf8")) as RuntimeManifest;
+  assertRuntimeDependencyContract(manifest);
 });
 
 test("core import-direction policy rejects hidden upward import channels", () => {
@@ -133,4 +143,18 @@ test("core import-direction policy rejects hidden upward import channels", () =>
     'src/synthetic.ts:6 — reference to "require"',
     'src/synthetic.ts:7 — reference to "createRequire"',
   ]);
+});
+
+
+test("GraphQL admission is limited to the reviewed AST subpath and exact dependency version", () => {
+  const syntheticFile = path.join(SOURCE_ROOT, "synthetic.ts");
+  assert.deepEqual(violationsIn(syntheticFile, 'import { parse } from "graphql/language/index.js";'), []);
+  for (const specifier of ["graphql", "graphql/index.js", "graphql/language", "graphql/language/parser.js", "graphql/validation/index.js", "graphql/language/index.js?extra", "graphql-tools"]) {
+    assert.deepEqual(violationsIn(syntheticFile, `import parser from "${specifier}";`), [`src/synthetic.ts:1 — disallowed specifier "${specifier}"`]);
+  }
+  const manifest: RuntimeManifest = {dependencies: {graphql: "17.0.2", "gray-matter": "^4.0.3", "js-yaml": "^3.15.2"}};
+  assert.doesNotThrow(() => assertRuntimeDependencyContract(manifest));
+  for (const version of ["^17.0.2", "17.0.3", "17.0.2-beta.1"]) assert.throws(() => assertRuntimeDependencyContract({...manifest, dependencies: {...manifest.dependencies, graphql: version}}));
+  assert.throws(() => assertRuntimeDependencyContract({dependencies: {"gray-matter": "^4.0.3", "js-yaml": "^3.15.2"}}));
+  assert.throws(() => assertRuntimeDependencyContract({...manifest, dependencies: {...manifest.dependencies, "graphql-tools": "1.0.0"}}));
 });

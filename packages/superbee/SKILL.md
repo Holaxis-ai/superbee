@@ -74,7 +74,7 @@ files, and stop. Use `superbee <command> --help` for exact current syntax rather
 copied command manual. Use `--body-file` for multiline Markdown.
 
 Focused shipped material is available under `$REFS/recipes/` for portable examples,
-`$REFS/views/` for View authoring and examples, and `$REFS/sample-bundle/` for OKF interop.
+`$REFS/views/` for View authoring and examples, and `$REFS/sample-bundle/` for OKF interop. Integration authoring uses `$REFS/author-an-integration.md` and recorded `$REFS/integrations/` examples.
 Read only what the accepted work requires.
 
 ## Make the value visible
