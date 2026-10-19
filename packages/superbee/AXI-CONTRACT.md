@@ -218,3 +218,14 @@ rows above.
 - Private vulnerability routing is owned by the repository [security policy](../../SECURITY.md).
 - Command syntax remains owned by live `superbee <verb> --help`; this file defines interaction
   invariants, not a second command manual.
+
+## Search
+
+`search` ranks current local document text through core's search engine. It reports total
+`count`, bounded `docs` rows (id, type, title, score, matched terms, excerpt), and `shown` when
+the page is cut. Display text cells are capped at 80 characters; full content lives in
+`doc read <id>`. `next_cursor` continues the same unchanged corpus, query and filters.
+Query match/fallback/ignored terms, corpus counts, requested facets and empty-result guidance
+remain visible. Empty results succeed with count zero. Invalid input or an unavailable remote
+search is USAGE (exit 2), before local reads for malformed requests. `list` and `query` retain
+their frontmatter-only behavior.

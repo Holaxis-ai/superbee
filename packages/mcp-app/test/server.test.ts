@@ -42,6 +42,7 @@ import {
   RESOLVE_LAUNCH_TOOL_NAME,
   RUN_OPERATION_TOOL_NAME,
   SAVE_TRANSIENT_VIEW_TOOL_NAME,
+  SEARCH_DOCUMENTS_TOOL_NAME,
   SHOW_DOCUMENT_TOOL_NAME,
   SHOW_VIEW_TOOL_NAME,
   createMcpBundleContext,
@@ -517,6 +518,7 @@ test("bundle-unbound MCP exposes only a bounded path-free workspace catalog", as
 
   const tools = await client.listTools();
   assert.deepEqual(tools.tools.map((tool) => tool.name), [
+    SEARCH_DOCUMENTS_TOOL_NAME,
     LIST_WORKSPACES_TOOL_NAME,
     SHOW_DOCUMENT_TOOL_NAME,
     LIST_VIEWS_TOOL_NAME,
@@ -533,7 +535,7 @@ test("bundle-unbound MCP exposes only a bounded path-free workspace catalog", as
     RESOLVE_LAUNCH_TOOL_NAME,
   ]);
   assertToolSchemasUse202012(tools.tools);
-  assert.deepEqual(tools.tools[0]?._meta?.ui?.visibility, ["model"]);
+  assert.deepEqual(tools.tools.find((tool) => tool.name === LIST_WORKSPACES_TOOL_NAME)?._meta?.ui?.visibility, ["model"]);
   assert.equal(tools.tools[0]?.annotations?.readOnlyHint, true);
 
   const result = await client.callTool({
@@ -1204,6 +1206,7 @@ test("MCP contract exposes fixed View and document App resources with invocation
 
   const tools = await client.listTools();
   assert.deepEqual(tools.tools.map((tool) => tool.name), [
+    SEARCH_DOCUMENTS_TOOL_NAME,
     SHOW_DOCUMENT_TOOL_NAME,
     LIST_VIEWS_TOOL_NAME,
     SHOW_VIEW_TOOL_NAME,

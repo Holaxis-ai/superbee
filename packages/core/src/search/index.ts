@@ -61,3 +61,5 @@ export type {
 } from "./source.js";
 export { memorySearchSource, type MemorySearchSourceOptionsV1, type MemorySearchSourceV1 } from "./memory-source.js";
 export { searchDocuments, validateSearchRequest, type SearchOptionsV1, type SearchScopeV1 } from "./search.js";
+
+export { searchSourceFromBackend } from "./backend-source.js";

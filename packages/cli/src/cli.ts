@@ -23,6 +23,7 @@ import { pull } from "./commands/pull.js";
 import { blobs } from "./commands/blobs.js";
 import { deleteCommand } from "./commands/delete.js";
 import { link } from "./commands/link.js";
+import { search } from "./commands/search.js";
 import { list } from "./commands/list.js";
 import { newCommand } from "./commands/new.js";
 import { kinds } from "./commands/kinds.js";
@@ -148,6 +149,7 @@ export const PUBLIC_HANDLERS = Object.freeze({
   deps,
   notify,
   inbox,
+  search,
 } satisfies PublicHandlerMap);
 
 type RuntimeHandler = (args: string[]) => Promise<string>;

@@ -104,6 +104,7 @@ export const BEHAVIOR_ASSIGNMENTS = [
   ordinary("docHistory", 1),
   ordinary("docDelete", 1),
   ordinary("list", 0),
+  ordinary("search", 1),
   ordinary("query", 0, { canonicalIdentity: "alias" }),
   ordinary("linkAdd", 2),
   ordinary("linkShow", 1),

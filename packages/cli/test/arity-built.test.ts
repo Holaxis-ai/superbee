@@ -63,6 +63,7 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
     catalogResolve: simple(CLI_LEAVES.catalogResolve, ["catalog", "resolve"], ["arity-bundle"], ["--field", "path"], "stderr"),
     init: simple(CLI_LEAVES.init, ["init"], [], ["--dir", ctx.initTarget, "--recipe", "none"]),
     indexGenerate: simple(CLI_LEAVES.indexGenerate, ["index", "generate"], [], [...dir, "--check"]),
+    search: simple(CLI_LEAVES.search, ["search"], ["existing"], dir),
     status: simple(CLI_LEAVES.status, ["status"], [], dir),
     docWrite: simple(CLI_LEAVES.docWrite, ["doc", "write"], ["candidate"], ["--type", "Test", "--body", "body", ...dir]),
     docUpdate: simple(CLI_LEAVES.docUpdate, ["doc", "update"], ["existing"], ["--title", "Changed", ...dir]),

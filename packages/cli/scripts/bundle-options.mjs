@@ -49,6 +49,7 @@ export const workspaceAliases = {
       "@superbee/core/uncertain-write": r("../core/src/uncertain-write.ts"),
       "@superbee/core/verification": r("../core/src/verification.ts"),
       "@superbee/core/versioning": r("../core/src/versioning.ts"),
+      "@superbee/core/search": r("../core/src/search/index.ts"),
       "@superbee/core": r("../core/src/index.ts"),
       "@superbee/browser-local": r("../browser-local/src/index.ts"),
       // The git tier lives in its own workspace package (board-git A1); alias to source so the

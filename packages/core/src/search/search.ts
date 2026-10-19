@@ -4,6 +4,8 @@
  * text are portal-webmcp 0.3.1's `superbee_search_documents`; cursors, facets, the page budget and
  * the result shape are this contract's. Every refusal is a `SearchInputError` with a fixed reason.
  */
+import { assertSafeConceptId } from "../paths.js";
+import { InvalidInputError } from "../errors.js";
 import { sha256HexOfUtf8 } from "../sha256.js";
 import {
   SEARCH_ALGORITHM,
@@ -84,6 +86,14 @@ function checkRequest(request: SearchRequestV1): CheckedRequest {
   const type = optionalFilter(request.type);
   const tag = optionalFilter(request.tag);
   const prefix = optionalFilter(request.prefix, SEARCH_LIMITS.maxPrefixBytes);
+  if (prefix !== undefined) {
+    try {
+      assertSafeConceptId(prefix.endsWith("/") ? prefix.slice(0, -1) : prefix);
+    } catch (error) {
+      if (error instanceof InvalidInputError) throw new SearchInputError("filter");
+      throw error;
+    }
+  }
   const filters = {
     ...(type === undefined ? {} : { type }),
     ...(tag === undefined ? {} : { tag }),
@@ -120,7 +130,7 @@ export function validateSearchRequest(input: unknown): SearchRequestV1 {
   for (const member of Object.keys(input)) if (!REQUEST_MEMBERS.has(member)) throw new SearchInputError("request");
   const request = input as SearchRequestV1;
   checkRequest(request);
-  if (request.cursor !== undefined) cursorText(request.cursor);
+  if (request.cursor !== undefined) parseCursor(request.cursor);
   return {
     query: request.query,
     ...(request.match === undefined ? {} : { match: request.match }),
@@ -152,8 +162,8 @@ function encodeCursor(binding: string, position: number): string {
   return base64UrlEncode(utf8(canonicalJson({ b: binding, p: position, v: CURSOR_VERSION })));
 }
 
-/** The position a cursor continues from; it must carry this request's binding and lie inside the hits. */
-function decodeCursor(cursor: unknown, binding: string, total: number): number {
+/** Structural decoding is shared by early request validation and corpus-bound continuation. */
+function parseCursor(cursor: unknown): { b: string; p: number } {
   const bytes = base64UrlDecode(cursorText(cursor));
   let parsed: unknown;
   try {
@@ -164,13 +174,17 @@ function decodeCursor(cursor: unknown, binding: string, total: number): number {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new SearchInputError("cursor");
   const body = parsed as Record<string, unknown>;
   const keys = Object.keys(body).sort();
-  if (keys.join(",") !== "b,p,v" || body.v !== CURSOR_VERSION || body.b !== binding)
+  if (keys.join(",") !== "b,p,v" || body.v !== CURSOR_VERSION || typeof body.b !== "string")
     throw new SearchInputError("cursor");
-  // A cursor is minted only while hits remain, so a position at or past the end was forged or replayed.
-  const position = body.p;
-  if (!Number.isSafeInteger(position) || (position as number) < 1 || (position as number) >= total)
-    throw new SearchInputError("cursor");
-  return position as number;
+  if (!Number.isSafeInteger(body.p) || (body.p as number) < 1) throw new SearchInputError("cursor");
+  return { b: body.b, p: body.p as number };
+}
+
+/** The position must carry this request's binding and lie inside the hits. */
+function decodeCursor(cursor: unknown, binding: string, total: number): number {
+  const body = parseCursor(cursor);
+  if (body.b !== binding || body.p >= total) throw new SearchInputError("cursor");
+  return body.p;
 }
 
 /**

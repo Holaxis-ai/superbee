@@ -315,7 +315,7 @@ test("refusals carry a fixed reason and text, never the input", async () => {
 
 test("validateSearchRequest holds a request to the contract's members and bounds and returns a copy", () => {
   const facets = ["type"] as const;
-  const request = { query: "alpha", match: "any", type: "Note", tag: "blue", limit: 5, cursor: "abc", facets };
+  const request = { query: "alpha", match: "any", type: "Note", tag: "blue", limit: 5, cursor: Buffer.from(JSON.stringify({ b: "binding", p: 1, v: 1 })).toString("base64url"), facets };
   const checked = validateSearchRequest(request);
   assert.deepEqual(checked, { ...request, facets: ["type"] });
   assert.notEqual(checked.facets, facets);
