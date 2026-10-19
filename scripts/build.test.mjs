@@ -90,7 +90,7 @@ test("replaced lifecycle hooks have an explicit parity contract that rejects new
     assert.doesNotThrow(() => assertBuildLifecycle(workspace, scripts));
     assert.throws(() => assertBuildLifecycle(workspace, { ...scripts, prebuild: "node extra-check.mjs" }), /lifecycle changed/);
     assert.throws(() => assertBuildLifecycle(workspace, { ...scripts, postbuild: "node extra-check.mjs" }), /lifecycle changed/);
-    if (["mcp-app", "cli", "superbee", "integration-github"].includes(workspace)) {
+    if (["mcp-app", "cli", "superbee"].includes(workspace)) {
       assert.throws(() => assertBuildLifecycle(workspace, { ...scripts, build: scripts.build + " && node extra-check.mjs" }), /lifecycle changed/);
     }
   }

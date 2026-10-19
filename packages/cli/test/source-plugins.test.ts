@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { SOURCE_FEED_CONVENTION,signalConvention } from "../../core/test/record-overlay-helpers.js";
 import { testSourceForAuthor } from "../src/integration-author/source-test.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerSourcePlugin, listSourcePlugins, removeSourcePlugin, selectSourceProfile, registeredRecipe } from "../src/source-plugins.js";
 import { canonicalUserStateDir } from "../src/user-state.js";
 import { validateRecipeForAuthor } from "../src/integration-author/validate.js";
-import { pluginFixture, registerFixture } from "./source-plugin-fixture.js";
+import { syntheticFeedDoc,pluginFixture, registerFixture } from "./source-plugin-fixture.js";
 async function fixture(body: (base: string, home: string, root: string) => Promise<void>) { const base = await mkdtemp(join(tmpdir(), "plugin-lifecycle-")), home = join(base, "home"); await mkdir(home); try {
     await body(base, home, await pluginFixture(base));
 }
@@ -96,9 +96,10 @@ test("factory must match the admitted profile metadata", () => fixture(async (ba
  await assert.rejects((await selectSourceProfile("github-issues",home))!.load(),reason("plugin_export_invalid"));
 }));
 
-test("source test defaults to the same accepted profile through recorded fixtures",()=>fixture(async(base,home,root)=>{
+test("source test defaults to the same accepted synthetic profile through recorded data",()=>fixture(async(base,home,root)=>{
  await registerFixture(root,home);const folder=join(base,"recorded");await mkdir(folder);
- await writeFile(join(folder,"fixture.json"),await readFile(fileURLToPath(new URL("../../integration-github/fixtures/author/fixture.json",import.meta.url))));
+ const expected={receipt:{outcome:"provider_unavailable",reason:"server_error",pages:0,held:0,pending:0,pass:{resumed:false,ended:false,complete:false},changes:{new:0,changed:0,disappeared:0}},cursor:null,requests:[{url:"https://api.github.com/repos/example-org/widgets/issues",method:"GET",headers:{"x-github-api-version":"synthetic-v1","user-agent":"SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"}}],changes:[],findings:[{key:"source:issues:provider_unavailable:server_error",title:"Source issues: provider unavailable (server error)",summary:"the provider did not answer usefully; nothing past the last committed page was read. Status 503. (https://api.github.com/repos/example-org/widgets/issues)",priority:"low",facts:{outcome:"provider_unavailable",reason:"server_error",status:503}}]};
+ await writeFile(join(folder,"fixture.json"),JSON.stringify({version:1,connector:"connectors/github",source:"issues",feed:syntheticFeedDoc.id,documents:[syntheticFeedDoc,{id:"conventions/source-feed",body:"",frontmatter:SOURCE_FEED_CONVENTION},{id:"conventions/signal",body:"",frontmatter:signalConvention("superbee_progress_status")}],scenarios:[{name:"errors.server",runs:[{exchanges:[{request:{method:"GET",url:"https://api.github.com/repos/example-org/widgets/issues"},response:{status:503,body:""}}]}],expect:[expected]}]}));
  const report=await testSourceForAuthor(join(root,"recipes/work-items"),folder,{stateInput:home});
- assert.deepEqual(report.profile,{id:"github-issues",version:1,kind:"extension"});assert.equal(report.execution,"recorded");assert.deepEqual(report.diagnostics,[]);assert.equal(report.scenarios.length,6);assert.ok(report.scenarios.every(s=>s.ok),JSON.stringify(report));assert.equal(report.missing.length,8);assert.equal(report.ok,false);
+ assert.deepEqual(report.profile,{id:"github-issues",version:1,kind:"extension"});assert.equal(report.execution,"recorded");assert.deepEqual(report.diagnostics,[]);assert.equal(report.scenarios.length,1);assert.ok(report.scenarios.every(s=>s.ok),JSON.stringify(report));assert.equal(report.missing.length,13);assert.equal(report.ok,false);
 }));

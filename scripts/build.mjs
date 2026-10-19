@@ -12,7 +12,7 @@ import { currentSourceFacts } from "../packages/cli/scripts/source-facts.mjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const TSC_WORKSPACES = Object.freeze([
-  "core", "integration-github", "browser-local", "board-git", "server", "view-runtime", "ui-server",
+  "core", "browser-local", "board-git", "server", "view-runtime", "ui-server",
   "markdown-renderer", "mcp-app", "publication", "bundle-descriptor",
 ]);
 
@@ -22,7 +22,6 @@ export function assertBuildLifecycle(workspace, scripts) {
     "mcp-app": "node scripts/build-view.mjs && tsc",
     cli: "node build.mjs",
     superbee: "node build.mjs local-dev",
-    "integration-github": "node build.mjs",
   };
   const prebuild = workspace === "mcp-app"
     ? "npm run build -w @superbee/markdown-renderer -w @superbee/view-runtime"

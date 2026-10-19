@@ -304,8 +304,9 @@ each with `parseConnectorDoc`, checking the sources that target the recipe's own
 a malformed one as `RECIPE_CONNECTOR_INVALID`); `@superbee/core/recipe-lifecycle` installs, stamps
 and evolves them as definitions.
 
-`examples/recipes/source-feeds` is an example recipe with the `Source Feed` and `Signal` Kinds a
-connector-backed feed uses.
+The public [superbee-plugins recipes](https://github.com/Holaxis-ai/superbee-plugins/tree/main/recipes)
+own the `Source Feed`, `Signal` and Work Item definitions used by the GitHub integration. The generic
+engine and synthetic conformance fixtures remain in this package.
 
 ## Source engine
 
@@ -1004,7 +1005,7 @@ tools, and publication of a core version remain separate adoption and release de
 
 `@superbee/core/source-profiles` exports `getSourceProfile(id)`, frozen `SOURCE_PROFILES` metadata,
 and `restJsonProfile` (version 1). The catalog contains only `rest-json`; GitHub
-normalization ships separately in `@superbee/integration-github`. Core also exports the existing
+normalization ships separately in [`@superbee/integration-github`](https://github.com/Holaxis-ai/superbee-plugins/tree/main/integrations/github). Core also exports the existing
 `nextLinkTarget` parser, `SourcePluginHelpers` type and exact `SOURCE_PLUGIN_CORE_VERSION` for
 explicit host composition. The profile accepts a parsed `ConnectorSource` as its spec;
 `source.request` describes provider data, while `source.fields` maps normalized paths to Kind fields.

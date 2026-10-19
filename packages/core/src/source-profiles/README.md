@@ -9,4 +9,4 @@ trusted standalone adapters: `restJsonProfile`, `nextLinkTarget`, and `unsupport
 These helpers are reuse, not an execution sandbox.
 
 GitHub normalization, coverage, paging adaptation and provider tests live in the separately
-installed `@superbee/integration-github` package. Core does not discover or import plugins.
+installed [`@superbee/integration-github`](https://github.com/Holaxis-ai/superbee-plugins/tree/main/integrations/github) package. Core does not discover or import plugins.

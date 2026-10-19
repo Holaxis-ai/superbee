@@ -112,7 +112,10 @@ ambient APIs. The static egress check and independent admission review lower tha
 provide isolation. Neither a fixture nor a recipe can implicitly select a module for the CLI to
 execute. Validation and installation never import one.
 
-The Work Item example composes the public factory from `@superbee/integration-github` with core helpers. Its synthetic fixtures
+The public [superbee-plugins repository](https://github.com/Holaxis-ai/superbee-plugins) owns the
+[GitHub package](https://github.com/Holaxis-ai/superbee-plugins/tree/main/integrations/github),
+[Work Item recipes](https://github.com/Holaxis-ai/superbee-plugins/tree/main/recipes) and
+[GitHub/Linear examples](https://github.com/Holaxis-ai/superbee-plugins/tree/main/examples). Its synthetic fixtures
 qualify mapping and observation behavior; live provider access and managed catalog admission remain
 separate evidence.
 

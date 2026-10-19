@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { checkPackageVersions, peerAdmits } from './package-version-policy.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const files = ['packages/core/package.json', 'packages/server/package.json', 'packages/markdown-renderer/package.json', 'packages/cli/package.json', 'packages/integration-github/package.json', 'package-lock.json'];
+const files = ['packages/core/package.json', 'packages/server/package.json', 'packages/markdown-renderer/package.json', 'packages/cli/package.json', 'package-lock.json'];
 function fixture(t, mutate = () => {}) {
   const directory = mkdtempSync(path.join(tmpdir(), 'superbee-version-preflight-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -34,10 +34,6 @@ test('a coherent future pair and independent renderer and cli versions need no v
       d[`packages/${name}/package.json`].version = { 'markdown-renderer': '3.1.0', cli: '4.0.0-pre.2' }[name] ?? '9.0.0-pre.3';
       d['package-lock.json'].packages[`packages/${name}`].version = d[`packages/${name}/package.json`].version;
     }
-    for (const field of ['peerDependencies', 'devDependencies']) d['packages/integration-github/package.json'][field]['@superbee/core'] = d['packages/core/package.json'].version;
-    d['packages/integration-github/package.json'].superbeeIntegration.core = d['packages/core/package.json'].version;
-    d['package-lock.json'].packages['packages/integration-github'].peerDependencies = d['packages/integration-github/package.json'].peerDependencies;
-    d['package-lock.json'].packages['packages/integration-github'].devDependencies = d['packages/integration-github/package.json'].devDependencies;
     d['packages/server/package.json'].dependencies['@superbee/core'] = d['packages/core/package.json'].version;
     d['package-lock.json'].packages['packages/server'].dependencies = d['packages/server/package.json'].dependencies;
     d['packages/markdown-renderer/package.json'].peerDependencies['@superbee/core'] = d['packages/core/package.json'].version;
@@ -118,22 +114,9 @@ test('peer policy bounds stable caret versions and requires exact prerelease opt
     assert.throws(() => peerAdmits('1.2.3', range), /supported peer policy/);
 });
 
-test('GitHub plugin keeps independent version and exact optional Core helper compatibility', t => {
-  const directory = fixture(t, docs => {
-    docs['packages/integration-github/package.json'].version = '4.7.0-pre.2';
-    docs['package-lock.json'].packages['packages/integration-github'].version = '4.7.0-pre.2';
-  });
-  assert.deepEqual(checkPackageVersions(directory), []);
+test('embedded source helper compatibility follows the current Core version', t => {
+  const directory = fixture(t);
   const file = path.join(directory, 'packages/core/src/source-profiles/index.ts');
   writeFileSync(file, 'export const SOURCE_PLUGIN_CORE_VERSION = "0.0.0";');
   assert.ok(checkPackageVersions(directory).some(error => error.includes('SOURCE_PLUGIN_CORE_VERSION')));
-});
-for (const field of ['superbeeIntegration', 'peerDependencies', 'devDependencies', 'peerDependenciesMeta']) test(`GitHub plugin refuses stale ${field}`, t => {
-  const directory = fixture(t, docs => {
-    const plugin = docs['packages/integration-github/package.json'];
-    if (field === 'superbeeIntegration') plugin[field].core = '0.0.0';
-    else if (field === 'peerDependenciesMeta') plugin[field]['@superbee/core'].optional = false;
-    else plugin[field]['@superbee/core'] = '*';
-  });
-  assert.ok(checkPackageVersions(directory).some(error => error.includes(`integration-github/package.json ${field}`)));
 });

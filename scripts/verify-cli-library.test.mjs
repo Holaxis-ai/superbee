@@ -71,7 +71,7 @@ test('closed artifact permits guarded author and registered profile loading', as
     ['missing boundary', 'await import(pathToFileURL(resolved).href);'],
     ['renamed boundary alone', subject.replaceAll('explicitProfile', 'otherLoader')],
     ['missing private-state guard', subject.replace(/assertPathOutsidePrivateState\([^;]+;/, '')],
-    ['different local-file loader', subject.replace(/pathToFileURL\(resolved\)\.href/, 'resolved')],
+    ['different local-file loader', subject.replace(/pathToFileURL\d*\(resolved\)\.href/, 'resolved')],
     ['changed fs member', subject.replace(/\.realpath\(/, '.readFile(')],
     ['extra loader call', subject.replace('try {', 'try { extraCall();')],
     ['implicit profile selection', subject.replace('options.profile ? await explicitProfile(options.profile)', 'recipe.profile ? await explicitProfile(recipe.profile)')],
