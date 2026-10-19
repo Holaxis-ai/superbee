@@ -4,7 +4,7 @@ import { loadKinds, readBundleOkfVersion, readDoc } from "@superbee/core";
 import { AUTH_PROVIDER_REQUEST_RULES, bindSourceFeed, connectorPinDigest, credentialHosts, parseConnectorDoc, renderRequestValue } from "@superbee/core/connectors";
 import { buildSourceIndex } from "@superbee/core/record-overlay";
 import { createSourceOverlayAdapter, DEFAULT_SOURCE_BUDGET, fetchIdentity, observeSource, type Transport } from "@superbee/core/source-engine";
-import { getSourceProfile } from "@superbee/core/source-profiles";
+import { selectSourceProfile, pluginRefusal } from "../source-plugins.js";
 import { openBundle } from "../bundle.js";
 import { bindingForPath } from "../hosted/binding.js";
 import { assertPathOutsidePrivateState } from "../private-state-bundle-boundary.js";
@@ -29,7 +29,7 @@ export function publicSourceReason(reason: unknown): string | undefined {
 }
 export interface LocalSourceOptions { dir?:string; anonymous?:boolean; credentialEnv?:string; accept?:string; complete?:boolean; actor?:string }
 export interface LocalSourceDeps { stateInput?:UserStateInput; lockRoot?:string; env?:NodeJS.ProcessEnv; transport?:Transport }
-async function context(feedId:string,dir?:string) {
+async function context(feedId:string,dir?:string,stateInput?:UserStateInput) {
   const bundle = await openBundle(dir);
   const root = await realpath(bundle.root);
   assertPathOutsidePrivateState(root);
@@ -39,28 +39,32 @@ async function context(feedId:string,dir?:string) {
   const parsed = parseConnectorDoc(await readDoc(bundle,feed.frontmatter.connector),{kinds:registry});
   if(!parsed.ok) throw sourceRefusal("declaration_invalid");
   const bound = bindSourceFeed(parsed.connector,feed,registry,{okfVersion:edition==="0.2"?"0.2":"0.1"});
-  const profile = getSourceProfile(bound.source.profile);
-  if(!profile) throw sourceRefusal("profile_unsupported");
-  const spec = profile.validateSpec(bound.source);
-  if(!spec.ok) throw sourceRefusal("profile_spec_invalid");
-  return {bundle,root,registry,okfVersion:edition==="0.2"?"0.2" as const:"0.1" as const,connector:parsed.connector,bound,profile,spec:spec.spec};
+  const selection = await selectSourceProfile(bound.source.profile,stateInput);
+  if(!selection) throw pluginRefusal("profile_unavailable");
+  return {bundle,root,registry,okfVersion:edition==="0.2"?"0.2" as const:"0.1" as const,connector:parsed.connector,bound,selection};
+}
+async function qualify(c:Awaited<ReturnType<typeof context>>) {
+  const profile=await c.selection.load();
+  const spec=profile.validateSpec(c.bound.source);
+  if(!spec.ok)throw sourceRefusal("profile_spec_invalid");
+  return {...c,profile,spec:spec.spec};
 }
 function binding(c:Awaited<ReturnType<typeof context>>,credential:SourceBinding["credential"]):SourceBinding {
   const consent = sourceCanonical({v:1,root:c.root,feed:c.bound.policy.feed,connector:c.connector.id,pin:connectorPinDigest(c.connector),resource:c.bound.resource,parameters:c.bound.parameters,
-    policy:c.bound.policy,kind:c.bound.kind,profile:{id:c.profile.id,version:c.profile.version},credential,budget:DEFAULT_SOURCE_BUDGET,
+    policy:c.bound.policy,kind:c.bound.kind,profile:{id:c.selection.id,version:c.selection.version,implementation:c.selection.implementation},credential,budget:DEFAULT_SOURCE_BUDGET,
     providerRules:AUTH_PROVIDER_REQUEST_RULES[c.connector.auth.kind==="github-app"?"github":c.connector.auth.provider??""]??null}) as Record<string,unknown>;
   return {v:1,root:c.root,feed:c.bound.policy.feed,consent,digest:sourceDigest(consent),credential};
 }
 export async function bindLocalSource(feed:string,options:LocalSourceOptions,deps:LocalSourceDeps={}):Promise<Record<string,unknown>> {
   if(options.anonymous===!!options.credentialEnv || !options.anonymous && !options.credentialEnv || options.credentialEnv!==undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(options.credentialEnv)) throw sourceRefusal("credential_reference_invalid");
   const credential:SourceBinding["credential"] = options.credentialEnv?{kind:"env",name:options.credentialEnv}:{kind:"none"};
-  const c = await context(feed,options.dir);
+  const c = await qualify(await context(feed,options.dir,deps.stateInput));
   const b = binding(c,credential);
-  const preview = {operation:"source bind",feed,digest:b.digest,accepted:false,resource:c.bound.resource,profile:{id:c.profile.id,version:c.profile.version},auth:credential,
+  const preview = {operation:"source bind",feed,digest:b.digest,accepted:false,resource:c.bound.resource,profile:{id:c.profile.id,version:c.profile.version,implementation:c.selection.implementation},auth:credential,
     method:c.bound.source.request?.method??"GET",path:c.bound.source.request?renderRequestValue(c.bound.source.request.path,c.bound.parameters,{}):null,hosts:c.profile.hostsFor(c.spec,c.bound),owned_fields:c.bound.policy.owned_fields,budget:DEFAULT_SOURCE_BUDGET};
   if(!options.accept) return preview;
   return withSourceState(c.root,feed,async file=>{
-    const fresh = binding(await context(feed,options.dir),credential);
+    const fresh = binding(await context(feed,options.dir,deps.stateInput),credential);
     if(fresh.digest!==options.accept || fresh.digest!==b.digest) throw sourceRefusal("binding_changed","CONFLICT");
     const current = await readSourceEnvelope(file,deps.stateInput);
     if(current?.binding.digest!==fresh.digest) await writeSourceEnvelope(file,{product:"superbee",schema_version:1,v:1,binding:fresh,version:(current?.version??0)+1,observation:null,accepted:emptyAccepted()},deps.stateInput);
@@ -68,15 +72,16 @@ export async function bindLocalSource(feed:string,options:LocalSourceOptions,dep
   },deps.stateInput,deps.lockRoot);
 }
 export async function runLocalSource(feed:string,options:LocalSourceOptions,deps:LocalSourceDeps={}):Promise<Record<string,unknown>> {
-  const c = await context(feed,options.dir);
+  const c = await context(feed,options.dir,deps.stateInput);
   const actor = resolveActor(options.actor)??"process:superbee";
   await assertActorAcceptedByBundle(c.bundle,actor);
   return withSourceState(c.root,feed,async file=>{
     const envelope = await readSourceEnvelope(file,deps.stateInput);
     if(!envelope) throw sourceRefusal("binding_missing");
-    const fresh = await context(feed,options.dir);
-    const currentBinding = binding(fresh,envelope.binding.credential);
+    const selected = await context(feed,options.dir,deps.stateInput);
+    const currentBinding = binding(selected,envelope.binding.credential);
     if(currentBinding.digest!==envelope.binding.digest) throw sourceRefusal("binding_changed","CONFLICT");
+    const fresh = await qualify(selected);
     let credential: {hosts:readonly string[];header:string;value:string}|undefined;
     if(envelope.binding.credential.kind==="env") {
       if(!(fresh.connector.auth.kind==="github-app" || fresh.connector.auth.kind==="token" && fresh.connector.auth.provider==="github")) throw sourceRefusal("credential_kind_unsupported");

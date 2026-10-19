@@ -4,7 +4,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promises as fs } from "node:fs";
 import { assertSafeConceptId, type OkfDocument } from "@superbee/core";
-import { getSourceProfile } from "@superbee/core/source-profiles";
+import { selectSourceProfile } from "../source-plugins.js";
+import type { UserStateInput } from "../user-state.js";
 import { containsCredentialText } from "@superbee/core/connectors";
 import type { SourceProfile } from "@superbee/core/source-engine";
 import { checkScenario, missingScenarios, REQUIRED_SCENARIOS, runSourceScenario, type SourceFixture, type SourceScenario } from "@superbee/core/source-harness";
@@ -85,7 +86,7 @@ async function explicitProfile(file: string): Promise<SourceProfile | undefined>
   } catch { return undefined; }
 }
 
-export async function testSourceForAuthor(recipeFolder: string, fixtureFolder: string, options: { profile?: string } = {}): Promise<SourceAuthorTestReport> {
+export async function testSourceForAuthor(recipeFolder: string, fixtureFolder: string, options: { profile?: string;stateInput?:UserStateInput } = {}): Promise<SourceAuthorTestReport> {
   const report: SourceAuthorTestReport = { ok: false, execution: options.profile ? "explicit-local-profile" : "recorded", profile: null,
     required: REQUIRED_SCENARIOS, missing: [...REQUIRED_SCENARIOS], scenarios: [], diagnostics: [] };
   const fail = (code: string, file: string, message: string): SourceAuthorTestReport => {
@@ -107,8 +108,10 @@ export async function testSourceForAuthor(recipeFolder: string, fixtureFolder: s
   const selected = (loaded.recipe.connectors ?? []).find((item) => item.connector.id === fixture!.connector);
   const source = selected?.connector.sources.find((item) => item.name === fixture!.source);
   if (!selected || !source) return fail("SOURCE_FIXTURE_TARGET_INVALID", "fixture.json", "The fixture must name a Connector and source carried by this recipe.");
-  const profile = options.profile ? await explicitProfile(options.profile) : getSourceProfile(source.profile);
-  if (!profile || profile.id !== source.profile) return fail("PROFILE_NOT_AVAILABLE", options.profile ? "--profile" : `${selected.connector.id}.md`, "No matching shipped profile or valid explicitly selected local profile is available.");
+  let profile:SourceProfile|undefined;
+  try {profile = options.profile ? await explicitProfile(options.profile) : await (await selectSourceProfile(source.profile,options.stateInput))?.load();}
+  catch {return fail("PROFILE_NOT_AVAILABLE", `${selected.connector.id}.md`, "The registered profile is unavailable or changed; register the reviewed installed package explicitly.");}
+  if (!profile || profile.id !== source.profile) return fail("PROFILE_NOT_AVAILABLE", options.profile ? "--profile" : `${selected.connector.id}.md`, "No matching built-in, accepted registered profile or valid explicitly selected local profile is available.");
   report.profile = { id: profile.id, version: profile.version, kind: profile.kind };
   const documents = [...loaded.recipe.docs, ...fixture.documents];
   if (new Set(documents.map((doc) => doc.id)).size !== documents.length) return fail("SOURCE_FIXTURE_DUPLICATE_DOCUMENT", "fixture.json", "Fixture documents cannot shadow recipe definitions or each other.");

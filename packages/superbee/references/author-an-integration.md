@@ -17,13 +17,13 @@ superbee recipe validate ./my-recipe --readme --json
 
 The validator uses core's recipe parser, Kind and Connector mapping checks, profile validation and
 pin digest. It reports all Connector refusals with file locations and JSON pointers. Source summaries
-name the shipped profile class, hosts, method, path and ownable fields. `--readme` includes a template
+name the available profile class, hosts, method, path and ownable fields. `--readme` includes a template
 for the maintainer, compatibility, permissions, resource scope, support and test evidence; it does not
 invent an official support commitment or managed admission.
 
-Validation reads the selected local directory only. It never imports a module named by the recipe,
+Validation reads the selected recipe directory and inert accepted plugin metadata. It never imports a module named by the recipe,
 discovers a bundle, writes a document or makes a provider request. Unknown profiles are explicit
-`PROFILE_NOT_AVAILABLE` refusals, not successful compatibility claims. The shipped `rest-json` and first-party `github-issues` profiles resolve through core.
+`PROFILE_NOT_AVAILABLE` refusals, not successful compatibility claims. Core supplies `rest-json`; `github-issues` requires explicit registration of the independently installed GitHub plugin. Registered plugin spec checks are deferred to source test/bind/run; validation never imports its module.
 An explicitly selected test double does not establish compatibility for an unavailable profile.
 
 The complete package is checked for core's secret-shaped text, including README files; `.env` and
@@ -112,9 +112,34 @@ ambient APIs. The static egress check and independent admission review lower tha
 provide isolation. Neither a fixture nor a recipe can implicitly select a module for the CLI to
 execute. Validation and installation never import one.
 
-The Work Item example reexports the shipped first-party GitHub profile. Its synthetic fixtures
+The Work Item example composes the public factory from `@superbee/integration-github` with core helpers. Its synthetic fixtures
 qualify mapping and observation behavior; live provider access and managed catalog admission remain
 separate evidence.
+
+## Register the installed GitHub plugin
+
+Install an exact reviewed version of `@superbee/integration-github` externally with npm. Then select
+its installed package directory explicitly:
+
+```sh
+superbee source plugin register ./node_modules/@superbee/integration-github --json
+superbee source plugin register ./node_modules/@superbee/integration-github --accept <digest-from-preview> --json
+superbee source plugin list --json
+superbee recipe add github:source-feeds --dir ./bundle
+superbee recipe add github:work-items --dir ./bundle
+```
+
+Registration copies a bounded manifest, standalone module and inert recipe bytes into private
+immutable generations. Preview, acceptance, listing, removal and recipe installation never import
+plugin code. Acceptance trusts those local bytes as reviewed code executing with ambient process
+authority. A package name and digest do not authenticate publisher origin or provide a sandbox.
+Superbee does not acquire npm packages. Registration grants no feed binding or credentials.
+Use the external installed package's recipe folders for `recipe validate` and `source test`.
+
+Updates require external npm installation, a new accepted registration and explicit feed rebind.
+Rebinding changed consent resets observations and accepted tuples for reacquisition. Remove future
+availability with `superbee source plugin remove github`; already selected runs may finish their
+selected generation. Existing bundle content and retained generations are preserved.
 
 ## Bind and run a local Source Feed
 
@@ -127,8 +152,8 @@ superbee source run source-feeds/github --dir ./bundle --json
 ```
 
 Binding previews make no provider request and read no credential. Acceptance pins the physical
-bundle, feed, declaration/provider rules, resource, Kind/overlay policy, built-in profile/version
-and budgets in private user state. A changed pin refuses before network or credential reads;
+bundle, feed, declaration/provider rules, resource, Kind/overlay policy, profile/version and accepted implementation identity
+and budgets in private user state. A changed pin refuses before module import, factory/spec execution, network or credential reads;
 preview and accept again. Copying or moving a bundle requires a new binding. `--complete` requests
 a complete pass; an interrupted pass never claims completeness.
 
@@ -139,7 +164,7 @@ environment. Never put token values in arguments, recipes, fixtures or documents
 GitHub App installation-token declarations are supported; no login, token exchange or credential
 discovery is performed. A 401/403 is a normal credential-refused result.
 
-Run admits shipped built-ins only and uses bounded DNS-pinned HTTPS. It updates existing documents
+Run admits built-ins and explicitly registered plugins and uses bounded DNS-pinned HTTPS. It updates existing documents
 linked by `sources` and existing overlay Signals; it does not create mirrored Work Items. A document
 linked after a prior observation can adopt cached last-observed values on its next run, including a
 304. A held invalid provider value needs a fresh observation; it is not retained as a retry queue.

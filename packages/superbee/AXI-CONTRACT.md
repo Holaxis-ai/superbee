@@ -303,7 +303,7 @@ diagnostics; provider payloads and actual/expected values are never echoed. Both
 their report and exit 2 on a completed invalid result, 0 only on a valid result (or help).
 
 --profile is explicit execution of trusted local JavaScript, not sandboxed execution. Recipe and
-fixture content never select executable modules implicitly. Live bind/run accepts shipped built-ins only, never the executable --profile path. The author guide is examples/references/author-an-integration.md (distributed as references/author-an-integration.md).
+fixture content never select executable modules implicitly. Live bind/run accepts built-ins and explicitly registered plugins, never the executable --profile path. The author guide is examples/references/author-an-integration.md (distributed as references/author-an-integration.md).
 
 
 `source bind <feed-id> (--anonymous | --credential-env <NAME>) [--accept <digest>] [--dir <bundle>]`
@@ -322,3 +322,19 @@ continuation); credential_refused exits 4, not_found exits 6, refused/unsupporte
 exit 2, and provider_unavailable/failed exit 1. The handled CliError preserves the exit without a
 second output envelope. Deferred is not a completeness claim. Malformed input, consent and
 persistence errors remain CLI errors.
+
+Source plugins are installed externally and registered explicitly with `source plugin register
+<installed-package-directory>`. Preview and `--accept <digest>` operate on a bounded manifest,
+standalone module and declared recipe bytes without importing code. Acceptance trusts local bytes;
+a supported package name and digest do not authenticate publisher origin or sandbox execution.
+`source plugin list` and `source plugin remove github` operate on inert private registration data.
+Removal affects future selections; a run that already selected a generation may finish it.
+
+`source bind` consent includes the accepted implementation digest and package identity. `source run`
+compares that consent before module import, factory execution, spec qualification, credential lookup
+or transport. Compatible plugin updates require explicit re-registration and feed rebind. A changed
+binding resets observations and accepted tuples for reacquisition. Registration grants no feed
+binding or credential reference. Recipe installation accepts `github:source-feeds` and
+`github:work-items` from the accepted inert snapshot; author validation and fixture testing use the
+external installed package's recipe folders. Recipe validation reports plugin-specific spec checks
+as deferred to source test/bind/run and never imports extensions.

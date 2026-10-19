@@ -790,6 +790,11 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
     controlExit: 1,
   },
 
+  {
+    leaf:"sourcePluginRegister",surface:"<0>",
+    argv:(target)=>["source","plugin","register",target,"--json"],
+    control:()=>path.resolve(path.dirname(fileURLToPath(import.meta.url)),"../../integration-github"),
+  },
   // ── Recipe roots: deliberately NOT routed through the ingress guard. ────────
   {
     leaf: "init",

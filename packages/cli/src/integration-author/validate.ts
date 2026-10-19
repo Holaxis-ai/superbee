@@ -3,11 +3,13 @@ import { buildKindRegistry, parseMarkdown, type OkfDocument } from "@superbee/co
 import { checkConnectorAgainstKinds, connectorPinDigest, credentialHosts, parseConnectorDoc, type Connector, type ConnectorSource } from "@superbee/core/connectors";
 import { parseRecipeFiles, type LoadedRecipe } from "@superbee/core/recipes";
 import { getSourceProfile } from "@superbee/core/source-profiles";
+import { selectSourceProfile } from "../source-plugins.js";
+import type { UserStateInput } from "../user-state.js";
 import { authorLocation, readAuthorFolder, type AuthorDiagnostic, type AuthorFile } from "./files.js";
 
 export interface AuthorSourceSummary {
   name: string; profile: string; kind: "generic" | "extension" | "unavailable";
-  hosts: readonly string[]; method: string | null; path: string | null; ownedFields: string[];
+  validation?: "deferred"; hosts: readonly string[]; method: string | null; path: string | null; ownedFields: string[];
 }
 export interface AuthorConnectorSummary {
   id: string; pin: string; auth: string; provider: string | null; sources: AuthorSourceSummary[];
@@ -53,18 +55,19 @@ export async function loadAuthorRecipe(folder: string): Promise<AuthorRecipeLoad
   return { ok: true, recipe: loaded.recipe, files: acquired.files };
 }
 
-function sourceSummary(connector: Connector, source: ConnectorSource): AuthorSourceSummary {
-  const profile = getSourceProfile(source.profile);
+async function sourceSummary(connector: Connector, source: ConnectorSource, stateInput?:UserStateInput): Promise<AuthorSourceSummary> {
+  const profile = await selectSourceProfile(source.profile,stateInput);
   const request = (source as ConnectorSource & { request?: { host?: string; method?: string; path?: string } }).request;
   return {
     name: source.name, profile: source.profile, kind: profile?.kind ?? "unavailable",
+    ...(profile?.kind === "extension" ? {validation:"deferred" as const}:{}),
     hosts: request?.host ? [request.host] : [...credentialHosts(connector.auth), ...connector.domains],
     method: request?.method ?? (request ? "GET" : null), path: request?.path ?? null,
     ownedFields: Object.keys(source.fields).sort(),
   };
 }
 
-export async function validateRecipeForAuthor(folder: string, options: { readme?: boolean } = {}): Promise<RecipeValidationReport> {
+export async function validateRecipeForAuthor(folder: string, options: { readme?: boolean;stateInput?:UserStateInput } = {}): Promise<RecipeValidationReport> {
   const loaded = await loadAuthorRecipe(folder);
   if (!loaded.ok) return { ok: false, recipe: null, diagnostics: loaded.diagnostics, connectors: [] };
   const diagnostics: AuthorDiagnostic[] = [];
@@ -72,17 +75,19 @@ export async function validateRecipeForAuthor(folder: string, options: { readme?
   for (const item of loaded.recipe.connectors ?? []) {
     const { connector } = item;
     const file = `${connector.id}.md`;
-    connector.sources.forEach((source, index) => {
+    for (const [index,source] of connector.sources.entries()) {
+      const metadata = await selectSourceProfile(source.profile,options.stateInput);
       const profile = getSourceProfile(source.profile);
-      if (!profile) {
-        diagnostics.push(safeDiagnostic("PROFILE_NOT_AVAILABLE", file, `/record_sources/${index}/profile`, `Profile '${source.profile}' is not shipped in this release. Validation never loads executable extension modules.`));
-        return;
+      if (!metadata) {
+        diagnostics.push(safeDiagnostic("PROFILE_NOT_AVAILABLE", file, `/record_sources/${index}/profile`, `Profile '${source.profile}' is unavailable. Register the installed GitHub plugin explicitly when needed; validation never executes extension modules.`));
+        continue;
       }
+      if(!profile)continue; // Registered plugin spec qualification is deferred to source test/bind/run.
       const checked = profile.validateSpec(source);
       if (!checked.ok) for (const error of checked.errors) diagnostics.push(safeDiagnostic("PROFILE_SPEC_INVALID", file, `/record_sources/${index}${error.path}`, error.message));
-    });
+    }
     connectors.push({ id: connector.id, pin: connectorPinDigest(connector), auth: connector.auth.kind,
-      provider: connector.auth.provider ?? (connector.auth.kind === "github-app" ? "github" : null), sources: connector.sources.map((source) => sourceSummary(connector, source)) });
+      provider: connector.auth.provider ?? (connector.auth.kind === "github-app" ? "github" : null), sources: await Promise.all(connector.sources.map((source) => sourceSummary(connector, source,options.stateInput))) });
   }
   const report: RecipeValidationReport = { ok: diagnostics.length === 0, recipe: { id: loaded.recipe.id, version: loaded.recipe.version }, diagnostics, connectors };
   if (options.readme) report.readme = integrationReadmeTemplate(report);
