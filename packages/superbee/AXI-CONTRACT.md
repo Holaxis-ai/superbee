@@ -179,9 +179,12 @@ body evolution share the same normalization: CRLF is read as LF and the storage 
 missing final newline (including an empty body). Equivalent installed bodies are retained; real
 body changes still require manual review. Exact plan and write guards still bind raw document
 versions, so changing line endings after planning makes the plan stale. Evolve
-treats declaration lists as sets and appends recipe values a bundle lacks, so a version bump keeps
-the bundle's list order, and two bundles at one version can hold different list orders and
-different `definition` digests; inserting recipe values at the recipe's position is a follow-up.
+places new values in the recipe's declared order for field lists, enum/terminal lists and sections,
+so direct and intermediate upgrades converge. An insertion that preserves every installed value's
+relative order needs no historical proof. Reordering existing values requires a readable stamp
+proving that the same recipe still owns the unchanged definition; an unproven reorder or duplicate
+is preserved and blocks with `RECIPE_EVOLUTION_LIST_ORDER_UNPROVEN`. Existing removal and terminal
+membership restrictions remain; unrelated extension arrays keep their existing merge behavior.
 Evidence:
 `packages/core/test/recipe-lifecycle.test.ts`,
 `packages/cli/test/recipe-evolve-golden.test.ts`, the stamp tests in
