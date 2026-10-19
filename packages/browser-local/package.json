@@ -42,7 +42,7 @@
     "measure:listing": "playwright install chromium && playwright test --config playwright.measure.config.ts measure-listing.browser.spec.ts"
   },
   "dependencies": {
-    "@superbee/core": "0.2.0-pre.21"
+    "@superbee/core": "0.2.0-pre.22"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",
