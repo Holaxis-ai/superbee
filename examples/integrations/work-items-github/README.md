@@ -30,6 +30,9 @@ file. No API response or private account data was captured. `profile.mjs` is an 
 one-page **test double**, exporting a `SourceProfile` and scalar normalization function. It can
 run through the existing public source harness; it is not the later first-party `github-issues`
 extension and does not satisfy the complete provider-admission scenario matrix.
+The harness test supplies a bounded, one-page repository GET declaration for the synthetic
+run. The mapping-only Connector is still installable without it; credentialed engine observation
+requires an explicit request declaration and refuses before transport when that declaration is absent.
 
 The acceptance test installs the real recipe, binds one repository, maps source-native and
 normalized state, and sends changes through the real planner and guarded mutation engine.

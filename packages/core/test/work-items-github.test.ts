@@ -286,9 +286,15 @@ test("coverage accounts for fixture fields, rejects an unexplained field, and ke
 
 test("the explicit profile double also runs in the one public offline source harness", async () => {
   const w = await world();
+  const connector = structuredClone(w.connector);
+  connector.sources[0]!.request = {
+    host: "api.github.com", method: "GET", path: "/repos/{owner}/{repo}/issues", items: "",
+    query: { state: "all", sort: "updated", direction: "asc", per_page: 100 },
+    paging: { kind: "none" }, complete: "always",
+  };
   const documents = [];
   for (const id of await w.backend.list()) documents.push((await w.backend.read(id)).doc);
-  const result = await runSourceScenario({ connector: w.connector, profile: githubFixtureProfile, spec: {}, feed: FEED, documents }, {
+  const result = await runSourceScenario({ connector, profile: githubFixtureProfile, spec: {}, feed: FEED, documents }, {
     name: "github.synthetic-first-observation", runs: [{ mode: "complete", exchanges: [{
       request: { url: "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100" },
       response: { status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify(ISSUES) },
