@@ -74,6 +74,8 @@ export interface RecipeEvolutionDefinition {
   desired_version: Version;
   /** Exact additive semantic paths this automatic plan will introduce. */
   added_paths: string[];
+  /** Proven recipe-owned field guidance replacements, with the exact observed and proposed text. */
+  description_replacements?: Array<{ path: string; old: string; new: string }>;
 }
 
 export interface RecipeEvolutionBlocker {
@@ -160,6 +162,7 @@ const BUNDLE_LOCAL_PLACEMENT = new Set(["order"]);
 interface AdditiveMergeResult {
   candidate: OkfDocument;
   addedPaths: string[];
+  descriptionReplacements: NonNullable<RecipeEvolutionDefinition["description_replacements"]>;
 }
 
 function pointerSegment(value: string): string {
@@ -177,16 +180,18 @@ function setOwn(record: Record<string, unknown>, key: string, value: unknown): v
 
 /**
  * Merge recipe declarations into a user-owned convention without deleting or replacing any
- * existing semantic value. Arrays are declaration sets: additions append, while omissions are
- * blockers. Root mutation/provenance metadata is preserved by the shared write policy instead of
+ * existing semantic value, except field guidance whose whole-definition stamp proves recipe
+ * ownership. Arrays are declaration sets: additions append, while omissions are blockers. Root mutation/provenance metadata is preserved by the shared write policy instead of
  * being treated as recipe-owned schema.
  */
 function additiveConventionCandidate(
   existing: OkfDocument,
   desired: OkfDocument,
   blockers: RecipeEvolutionBlocker[],
+  canReplaceDescriptions: boolean,
 ): AdditiveMergeResult {
   const addedPaths: string[] = [];
+  const descriptionReplacements: AdditiveMergeResult["descriptionReplacements"] = [];
 
   const merge = (current: unknown, next: unknown, pointer: string): unknown => {
     if (current === undefined) {
@@ -204,6 +209,15 @@ function additiveConventionCandidate(
       return current;
     }
     if (okfValuesEqual(current, next)) return current;
+    if (
+      canReplaceDescriptions
+      && /^\/frontmatter\/fields\/descriptions\/[^/]+$/.test(pointer)
+      && typeof current === "string"
+      && typeof next === "string"
+    ) {
+      descriptionReplacements.push({ path: pointer, old: current, new: next });
+      return next;
+    }
     if (Array.isArray(current) && Array.isArray(next)) {
       const merged = [...current];
       for (const value of current) {
@@ -279,6 +293,7 @@ function additiveConventionCandidate(
   return {
     candidate: { id: desired.id, frontmatter: candidateFrontmatter as OkfDocument["frontmatter"], body },
     addedPaths: [...new Set(addedPaths)].sort(),
+    descriptionReplacements: descriptionReplacements.sort((a, b) => a.path.localeCompare(b.path)),
   };
 }
 
@@ -668,7 +683,11 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       );
     }
 
-    const merged = additiveConventionCandidate(existing.doc, target, blockers);
+    const identityState = recipeStampState(existing.doc, identity);
+    // A whole-definition stamp proves an unchanged baseline, not individual field history.
+    const canReplaceDescriptions = (identityState === "current" || identityState === "stale")
+      && conventionStampState(existing.doc) === "current";
+    const merged = additiveConventionCandidate(existing.doc, target, blockers, canReplaceDescriptions);
     let candidate = merged.candidate;
     if (okfVersion === "0.2") {
       try {
@@ -713,7 +732,6 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
     // that content's definition digest equals the digest of the recipe's own convention: a fresh
     // stamp is then the honest record. The merge treats lists as sets, so `unchanged` alone would
     // also re-baseline a local reorder or duplicate.
-    const identityState = recipeStampState(existing.doc, identity);
     const stamp =
       unchanged &&
       identityState === "current" &&
@@ -729,6 +747,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       expected_version: existing.version,
       desired_version: desiredVersion,
       added_paths: unchanged ? [] : merged.addedPaths,
+      ...(merged.descriptionReplacements.length > 0 ? { description_replacements: merged.descriptionReplacements } : {}),
     });
     // The write set: a content update (which takes ownership of a foreign stamp), or a stale or
     // missing stamp on unchanged content. A foreign stamp alone is another recipe's to keep.
