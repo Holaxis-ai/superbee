@@ -3335,3 +3335,45 @@ test("T13: evolve plans and applies a stamp-only backfill, recipe add reports th
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// Field-description evolution projects core's replacements without a CLI policy of its own.
+test("recipe evolve: description evolution shows old/new guidance and applies only the observed plan", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-description-evolution-"));
+  const bundleDir = path.join(root, "bundle");
+  const recipeDir = path.join(root, "recipe");
+  const sourcePath = path.join(recipeDir, "conventions", "widget.md");
+  const installedPath = path.join(bundleDir, "conventions", "widget.md");
+  const source = (text: string) => `---\ntype: Convention\ntitle: Widget\ngoverns: Widget\nfields:\n  required: [title]\n  optional: [topics]\n  descriptions:\n    topics: ${text}\n---\n# Widget\n`;
+  const manifest = (version: string) => `---\ntype: Recipe\nid: descriptions\ntitle: Descriptions\nversion: '${version}'\nsummary: Field guidance.\n---\n`;
+  try {
+    await initBundle(bundleDir);
+    await mkdir(path.dirname(sourcePath), { recursive: true });
+    await writeFile(path.join(recipeDir, "recipe.md"), manifest("1"));
+    await writeFile(sourcePath, source("Original guidance"));
+    await runJson(recipe, ["add", recipeDir, "--dir", bundleDir]);
+    await writeFile(path.join(recipeDir, "recipe.md"), manifest("2"));
+    await writeFile(sourcePath, source("The first topic is primary"));
+    const before = await readFile(installedPath, "utf8");
+    const plan = await runJson(recipe, ["evolve", recipeDir, "--dir", bundleDir]);
+    assert.equal(plan.ready, true);
+    const definition = (plan.definitions as Array<Record<string, unknown>>)[0]!;
+    assert.equal(definition.action, "update");
+    assert.deepEqual(definition.added_paths, []);
+    assert.deepEqual(definition.description_replacements, [{ path: "/frontmatter/fields/descriptions/topics", old: "Original guidance", new: "The first topic is primary" }]);
+    assert.equal(await readFile(installedPath, "utf8"), before, "plan is read-only");
+    assert.match(String((plan.commands as Record<string, unknown>).apply), new RegExp(`--apply ${plan.plan_token}$`));
+    await writeFile(sourcePath, source("Changed after the plan"));
+    await assert.rejects(runJson(recipe, ["evolve", recipeDir, "--dir", bundleDir, "--apply", String(plan.plan_token)]), (error: unknown) => error instanceof CliError && error.code === "STALE_HEAD");
+    assert.equal(await readFile(installedPath, "utf8"), before);
+    const refreshed = await runJson(recipe, ["evolve", recipeDir, "--dir", bundleDir]);
+    const applied = await runJson(recipe, ["evolve", recipeDir, "--dir", bundleDir, "--apply", String(refreshed.plan_token)]);
+    assert.equal(applied.recipe, "evolved");
+    assert.match(await readFile(installedPath, "utf8"), /Changed after the plan/);
+    const settled = await runJson(recipe, ["evolve", recipeDir, "--dir", bundleDir]);
+    assert.equal(settled.writes, 0);
+    assert.equal(settled.commands, undefined);
+    assert.equal((settled.definitions as Array<Record<string, unknown>>)[0]!.description_replacements, undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

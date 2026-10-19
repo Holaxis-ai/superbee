@@ -10,7 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { initBundle } from "../src/bundle.js";
-import { readBlob, readDoc, writeBlob, writeDoc } from "../src/bundle-ops.js";
+import { readBlob, readBundleOkfVersion, readDoc, writeBlob, writeDoc } from "../src/bundle-ops.js";
 import { InvalidInputError } from "../src/errors.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { parseRecipeFiles, type LoadedRecipe } from "../src/recipes.js";
@@ -1015,4 +1015,217 @@ test("installedRecipes: a known recipe gets a row from a stamp or an unstamped d
     { id: "other", state: "installed", conventions: 1, of: 1 },
   ]);
   assert.deepEqual(read.unstamped, ["conventions/alpha"], "a declaration-free record and a non-Convention document are never unstamped");
+});
+
+// Field-description evolution: whole-definition ownership and exact-plan writes.
+
+const DESCRIPTION_FIELD = "topic/~order";
+const DESCRIPTION_POINTER = "/frontmatter/fields/descriptions/topic~1~0order";
+
+function descriptionRecipe(version: string, guidance: string, ids = ["conventions/widget"]): LoadedRecipe {
+  return {
+    id: "description-fixture", title: "Description fixture", version,
+    summary: "Field guidance.", offer: "Field guidance.", source: `test:descriptions:${version}`,
+    docs: ids.map((id, index) => ({
+      id, frontmatter: {
+        type: "Convention", title: `Widget${index}`, governs: `Widget${index}`,
+        fields: { required: ["title"], optional: [DESCRIPTION_FIELD], descriptions: { [DESCRIPTION_FIELD]: guidance } },
+      }, body: "# Guidance\n",
+    })), pages: [], references: [], governs: ids.map((_, index) => `Widget${index}`), warnings: [],
+  };
+}
+
+class DescriptionProbeBackend extends MemoryBackend {
+  writes = 0;
+  beforeCas: (() => Promise<void>) | null = null;
+  failId: string | null = null;
+  flipEdition = false;
+  editionReads = 0;
+
+  override async readReserved(dir: string, name: ReservedFilename): Promise<ReservedReadResult | null> {
+    const result = await super.readReserved(dir, name);
+    if (this.flipEdition && name === "index.md" && ++this.editionReads > 1 && result) {
+      return { ...result, content: "---\nokf_version: '0.1'\n---\n" };
+    }
+    return result;
+  }
+
+  override async write(id: ConceptId, doc: OkfDocument, options: WriteOptions = {}): Promise<Version> {
+    if (typeof options.expectedVersion === "string") {
+      const hook = this.beforeCas;
+      this.beforeCas = null;
+      if (hook) await hook();
+      if (id === this.failId) {
+        this.failId = null;
+        throw new Error("interrupted fixture");
+      }
+    }
+    const version = await super.write(id, doc, options);
+    this.writes++;
+    return version;
+  }
+
+  async edit(id: string, change: (doc: OkfDocument) => OkfDocument): Promise<void> {
+    const current = await super.read(id);
+    await super.write(id, change(current.doc), { expectedVersion: current.version });
+  }
+}
+
+async function descriptionFixture(edition = "0.2", ids?: string[]): Promise<{ bundle: Bundle; backend: DescriptionProbeBackend }> {
+  const backend = new DescriptionProbeBackend();
+  await backend.writeReserved("", "index.md", `---\nokf_version: '${edition}'\n---\n`);
+  const bundle: Bundle = { root: "mem://description-evolution", backend };
+  await installRecipe(bundle, descriptionRecipe("1", "Old guidance", ids), { now: NOW });
+  backend.writes = 0;
+  return { bundle, backend };
+}
+
+function descriptionGuidance(doc: OkfDocument): unknown {
+  return (doc.frontmatter.fields as { descriptions: Record<string, unknown> }).descriptions[DESCRIPTION_FIELD];
+}
+
+function editedDescriptionGuidance(doc: OkfDocument, text: unknown): OkfDocument {
+  const fields = doc.frontmatter.fields as { descriptions: Record<string, unknown> };
+  return { ...doc, frontmatter: { ...doc.frontmatter, fields: { ...fields, descriptions: { ...fields.descriptions, [DESCRIPTION_FIELD]: text } } } };
+}
+
+test("description evolution: both editions plan explicit old/new guidance, preserve placement, apply and settle without writes", async () => {
+  for (const edition of ["0.1", "0.2"]) {
+    const { bundle, backend } = await descriptionFixture(edition);
+    await backend.edit("conventions/widget", (doc) => ({ ...doc, frontmatter: { ...doc.frontmatter, order: 3 } }));
+    const desired = descriptionRecipe("2", "First topic is primary");
+    const fields = desired.docs[0]!.frontmatter.fields as { optional: string[]; descriptions: Record<string, string> };
+    fields.optional.push("colour");
+    fields.descriptions.colour = "An optional colour";
+    const before = await readDoc(bundle, "conventions/widget");
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+    assert.equal(backend.writes, 0, "planning is read-only");
+    assert.deepEqual(await readDoc(bundle, "conventions/widget"), before);
+    assert.deepEqual(plan.definitions[0]!.description_replacements, [{ path: DESCRIPTION_POINTER, old: "Old guidance", new: "First topic is primary" }]);
+    assert.deepEqual(plan.definitions[0]!.added_paths, ["/frontmatter/fields/descriptions/colour", "/frontmatter/fields/optional/colour"]);
+    const applied = await applyRecipeEvolution(bundle, desired, plan.plan_token, { actor: "process:description-test" });
+    assert.deepEqual(applied.counts, { updated: 1, stamped: 0, unchanged: 0 });
+    const written = await readDoc(bundle, "conventions/widget");
+    assert.equal(descriptionGuidance(written), "First topic is primary");
+    assert.equal(written.frontmatter.order, 3);
+    assert.equal(readRecipeStamp(written)?.version, "2");
+    assert.equal(await readBundleOkfVersion(bundle), edition);
+    const settled = await planRecipeEvolution(bundle, desired);
+    assert.equal(settled.ready, true);
+    assert.equal(settled.changed, false);
+    assert.equal(settled.writes, 0);
+    assert.equal(Object.hasOwn(settled.definitions[0]!, "description_replacements"), false);
+    backend.writes = 0;
+    assert.equal((await applyRecipeEvolution(bundle, desired, settled.plan_token)).recipe, "already current");
+    assert.equal(backend.writes, 0);
+  }
+});
+
+test("description evolution: local edits and unproved baselines block replacements and keep exact bytes", async () => {
+  const cases: Array<{ name: string; change: (doc: OkfDocument) => OkfDocument }> = [
+    { name: "local guidance", change: (doc) => editedDescriptionGuidance(doc, "My guidance") },
+    { name: "unrelated local edit", change: (doc) => ({ ...doc, body: "# Local body\n" }) },
+    { name: "missing stamp", change: (doc) => { const { x_recipe: _stamp, ...frontmatter } = doc.frontmatter; return { ...doc, frontmatter }; } },
+    { name: "malformed stamp", change: (doc) => ({ ...doc, frontmatter: { ...doc.frontmatter, x_recipe: { id: "description-fixture" } } }) },
+    { name: "foreign stamp", change: (doc) => ({ ...doc, frontmatter: { ...doc.frontmatter, x_recipe: { ...readRecipeStamp(doc)!, id: "other-recipe" } } }) },
+    { name: "unknown rules", change: (doc) => ({ ...doc, frontmatter: { ...doc.frontmatter, x_recipe: { ...readRecipeStamp(doc)!, digest_rules: 999 } } }) },
+  ];
+  for (const row of cases) {
+    const { bundle, backend } = await descriptionFixture();
+    await backend.edit("conventions/widget", row.change);
+    const before = await backend.read("conventions/widget");
+    const desired = descriptionRecipe("2", "New guidance");
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.ready, false, row.name);
+    assert.ok(plan.blockers.some((blocker) => blocker.code === "RECIPE_EVOLUTION_REPLACEMENT_UNSUPPORTED" && blocker.field === DESCRIPTION_POINTER), row.name);
+    assert.equal(plan.definitions[0]!.description_replacements, undefined, row.name);
+    await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), RecipeEvolutionBlocked);
+    assert.deepEqual(await backend.read("conventions/widget"), before, row.name);
+    assert.equal(backend.writes, 0, row.name);
+  }
+});
+
+test("description evolution: removals and schema replacements retain their blockers", async () => {
+  for (const change of ["remove", "schema"] as const) {
+    const { bundle } = await descriptionFixture();
+    const desired = descriptionRecipe("2", "New guidance");
+    if (change === "remove") delete (desired.docs[0]!.frontmatter.fields as { descriptions?: unknown }).descriptions;
+    else desired.docs[0]!.frontmatter.path = "changed/";
+    if (change === "schema") {
+      const before = await readDoc(bundle, "conventions/widget");
+      // An existing semantic scalar cannot be replaced under the guidance exception.
+      const backend = bundle.backend as DescriptionProbeBackend;
+      await backend.edit("conventions/widget", (doc) => ({ ...doc, frontmatter: { ...doc.frontmatter, path: "original/" } }));
+      assert.equal(descriptionGuidance(before), "Old guidance");
+    }
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.ready, false);
+    assert.ok(plan.blockers.some((blocker) => change === "remove"
+      ? blocker.code === "RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED"
+      : blocker.code === "RECIPE_EVOLUTION_REPLACEMENT_UNSUPPORTED" && blocker.field === "/frontmatter/path"));
+  }
+});
+
+test("description evolution: source or installed edits after planning refuse the stale token without writing", async () => {
+  for (const changed of ["source", "installed"] as const) {
+    const { bundle, backend } = await descriptionFixture();
+    const desired = descriptionRecipe("2", "New guidance");
+    const plan = await planRecipeEvolution(bundle, desired);
+    if (changed === "source") desired.docs[0] = editedDescriptionGuidance(desired.docs[0]!, "Changed source guidance");
+    else await backend.edit("conventions/widget", (doc) => editedDescriptionGuidance(doc, "Concurrent guidance"));
+    const before = await backend.read("conventions/widget");
+    await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), RecipeEvolutionPlanChanged);
+    assert.deepEqual(await backend.read("conventions/widget"), before);
+    assert.equal(backend.writes, 0);
+  }
+});
+
+test("description evolution: a post-preflight edit loses the exact CAS race and preserves the winner", async () => {
+  const { bundle, backend } = await descriptionFixture();
+  const desired = descriptionRecipe("2", "New guidance");
+  const plan = await planRecipeEvolution(bundle, desired);
+  backend.beforeCas = async () => backend.edit("conventions/widget", (doc) => editedDescriptionGuidance(doc, "Concurrent winner"));
+  await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), (error: unknown) => {
+    assert.ok(error instanceof RecipeEvolutionInterrupted);
+    assert.equal(error.reason, "race");
+    assert.deepEqual(error.completed, []);
+    assert.deepEqual(error.pending, ["conventions/widget"]);
+    return true;
+  });
+  assert.equal(descriptionGuidance(await readDoc(bundle, "conventions/widget")), "Concurrent winner");
+  assert.equal(readRecipeStamp(await readDoc(bundle, "conventions/widget"))?.version, "1");
+  assert.equal(backend.writes, 0);
+});
+
+test("description evolution: edition changes interrupt before the description write", async () => {
+  const { bundle, backend } = await descriptionFixture();
+  const desired = descriptionRecipe("2", "New guidance");
+  const plan = await planRecipeEvolution(bundle, desired);
+  backend.flipEdition = true;
+  await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), (error: unknown) => error instanceof RecipeEvolutionInterrupted && error.reason === "edition_changed");
+  assert.equal(backend.writes, 0);
+  assert.equal(descriptionGuidance(await readDoc(bundle, "conventions/widget")), "Old guidance");
+});
+
+test("description evolution: interrupted multi-definition apply reports progress and a fresh retry converges", async () => {
+  const ids = ["conventions/alpha", "conventions/beta"];
+  const { bundle, backend } = await descriptionFixture("0.2", ids);
+  const desired = descriptionRecipe("2", "New guidance", ids);
+  const plan = await planRecipeEvolution(bundle, desired);
+  backend.failId = ids[1]!;
+  await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), (error: unknown) => {
+    assert.ok(error instanceof RecipeEvolutionInterrupted);
+    assert.deepEqual(error.completed.map(({ id, changed }) => ({ id, changed })), [{ id: ids[0], changed: true }]);
+    assert.deepEqual(error.pending, [ids[1]]);
+    return true;
+  });
+  assert.equal(descriptionGuidance(await readDoc(bundle, ids[0]!)), "New guidance");
+  assert.equal(descriptionGuidance(await readDoc(bundle, ids[1]!)), "Old guidance");
+  await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), RecipeEvolutionPlanChanged);
+  const retry = await planRecipeEvolution(bundle, desired);
+  assert.equal(retry.ready, true);
+  assert.equal(retry.writes, 1);
+  assert.deepEqual((await applyRecipeEvolution(bundle, desired, retry.plan_token)).counts, { updated: 1, stamped: 0, unchanged: 1 });
+  assert.equal((await planRecipeEvolution(bundle, desired)).writes, 0);
 });
