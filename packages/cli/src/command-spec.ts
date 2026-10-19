@@ -506,7 +506,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "recipeAdd",
         leaves: [publicLeaf("recipeAdd", "recipe add", one, 17, DIR_RECIPE_ROOT_SURFACE)],
-        usage: "recipe add <name-or-path> [--dir <path>] [--remote <url>]",
+        usage: "recipe add <name-or-path> [--actor <name>] [--dir <path>] [--remote <url>]",
         summary: "Apply a recipe's content-free definitions — Kinds plus optional declared References and Views — idempotently",
       },
       {

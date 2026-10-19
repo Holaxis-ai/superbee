@@ -1016,3 +1016,62 @@ test("installedRecipes: a known recipe gets a row from a stamp or an unstamped d
   ]);
   assert.deepEqual(read.unstamped, ["conventions/alpha"], "a declaration-free record and a non-Convention document are never unstamped");
 });
+
+// Actor-aware installation: mutation attribution is local; recipe provenance remains upstream.
+test("install actor: attributed new definitions preserve upstream provenance and repeat across actors without drift", async () => {
+  for (const edition of ["0.1", "0.2"] as const) {
+    const backend = new MemoryBackend();
+    await backend.writeReserved("", "index.md", `---\nokf_version: '${edition}'\n---\n`);
+    const bundle: Bundle = { root: `mem://install-actor-${edition}`, backend };
+    const recipe = galleryRecipe("1");
+    recipe.docs[0]!.frontmatter.generated = { by: "human:recipe-author", at: NOW };
+    recipe.docs[0]!.frontmatter.x_upstream = { retained: true };
+    recipe.references = [{ doc: { id: "references/gallery", frontmatter: { type: "Reference", title: "Gallery guide" }, body: "Guide.\n" } }];
+    const sourceDigest = recipeSourceDigest(recipe);
+    const actor = edition === "0.2" ? "process:installer-one" : "Legacy installer";
+    const first = await installRecipe(bundle, recipe, { now: NOW, actor });
+    assert.equal(first.changed, true);
+    const before = new Map<string, Awaited<ReturnType<typeof backend.read>>>();
+    for (const id of ["conventions/exhibit", "views-registry/gallery", "references/gallery"]) {
+      const read = await backend.read(id);
+      before.set(id, read);
+      assert.equal(read.doc.frontmatter[edition === "0.2" ? "superbee_updated_by" : "actor"], actor);
+    }
+    const installed = await readDoc(bundle, "conventions/exhibit");
+    assert.deepEqual(installed.frontmatter.generated, recipe.docs[0]!.frontmatter.generated);
+    assert.deepEqual(installed.frontmatter.x_upstream, { retained: true });
+    assert.equal((await readDoc(bundle, "references/gallery")).frontmatter.generated, undefined, "installation does not manufacture a content producer");
+    assert.equal(recipeSourceDigest(recipe), sourceDigest);
+    assert.equal(readRecipeStamp(installed)!.source_digest, sourceDigest);
+    assert.equal(readRecipeStamp(installed)!.definition, definitionDigest(installed));
+    const again = await installRecipe(bundle, recipe, { now: "2026-10-19T12:00:00.000Z", actor: "process:installer-two" });
+    assert.equal(again.changed, false);
+    assert.equal(again.counts.source_differs, undefined);
+    assert.equal(again.stamp, "current");
+    for (const [id, read] of before) assert.deepEqual(await backend.read(id), read, "repeat add never rewrites an existing document or its actor");
+    assert.equal(recipeDrifts(recipe, new Map([[installed.id, installed]]), edition, NOW), false);
+    assert.equal(installedRecipes([installed], [recipe]).rows[0]!.state, "installed");
+    const changedSource = galleryRecipe("1");
+    changedSource.docs[0]!.frontmatter = { ...recipe.docs[0]!.frontmatter, generated: { by: "human:different-producer", at: NOW } };
+    const drift = await installRecipe(bundle, changedSource, { actor: "process:installer-three" });
+    assert.equal(drift.docs[0]!.source_differs, true, "a different upstream producer remains real source drift");
+    assert.deepEqual(await backend.read("conventions/exhibit"), before.get("conventions/exhibit"));
+  }
+});
+
+test("install actor: invalid v0.2 attribution refuses before documents or an asset-only recipe writes", async () => {
+  for (const assetsOnly of [false, true]) {
+    const backend = new MemoryBackend();
+    const bundle = await v02Bundle(`invalid-install-actor-${assetsOnly}`, backend);
+    let writes = 0;
+    const write = backend.write.bind(backend), writeBlob = backend.writeBlob.bind(backend);
+    backend.write = (...args: Parameters<MemoryBackend["write"]>) => { writes++; return write(...args); };
+    backend.writeBlob = (...args: Parameters<MemoryBackend["writeBlob"]>) => { writes++; return writeBlob(...args); };
+    const recipe = galleryRecipe("1");
+    if (assetsOnly) { recipe.docs = []; recipe.governs = []; }
+    await assert.rejects(installRecipe(bundle, recipe, { actor: "unqualified actor" }), { name: "OkfActorError" });
+    assert.equal(writes, 0);
+    assert.deepEqual(await backend.list(), []);
+    assert.deepEqual(await backend.listBlobs(), []);
+  }
+});
