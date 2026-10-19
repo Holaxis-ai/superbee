@@ -6,25 +6,26 @@ is the durable process for every browser-local prerelease.
 
 ## Current candidate
 
-| Package | Version | Access / channel |
-| --- | --- | --- |
-| @superbee/core | 0.2.0-pre.20 | public / next |
-| @superbee/server | 0.2.0-pre.20 | public / next |
-| @superbee/browser-local | 0.1.0-pre.17 | public / next |
-| @superbee/markdown-renderer | 0.1.17 | existing restricted access / latest |
+| Package | Version | Intended access / channel | Preparation status |
+| --- | --- | --- | --- |
+| @superbee/core | 0.2.0-pre.21 | public / next | Native release candidate; unpublished |
+| @superbee/server | 0.2.0-pre.21 | public / next | Native release candidate; unpublished |
+| @superbee/browser-local | 0.1.0-pre.18 | public / next | Source alignment only; publication deferred |
+| @superbee/markdown-renderer | 0.1.18 | existing restricted access / latest | Source alignment only; publication deferred |
 
-This candidate carries the merged Connector declaration format correction and portable
-search exposed through CLI and local MCP. Breaking prerelease correction: Connector
-documents use `record_sources` instead of `sources`, which OKF reserves. TypeScript
-`Connector.sources` remains unchanged. There is no compatibility alias or automatic
-migration.
+This preparation carries recipe field-description upgrades, actor-aware installation
+and ownership-proven Reference evolution in core. The separately versioned public
+`superbee` executable candidate is 0.4.3-pre.11. Source preparation does not authorize
+release tags, staged publication, human npm approval or downstream adoption.
 
-Browser-local 0.1.0-pre.17 changes only its exact core dependency from pre.19 to
-pre.20. The paired release keeps one core instance for shared error identities in
-source consumers as well as installed artifacts. Renderer 0.1.17 adds exact core
-pre.20 peer compatibility while retaining its existing alternatives and restricted
-access. Neither package changes product source in this preparation. Their literal
-artifacts require the separate approval and publication procedure below.
+Browser-local 0.1.0-pre.18 changes only its exact core dependency from pre.20 to
+pre.21. Keeping the workspace pair aligned avoids a fresh install resolving a nested
+older core and splitting shared error identities. Renderer 0.1.18 adds exact core
+pre.21 peer compatibility while retaining its existing alternatives and restricted
+access. Neither package changes product source in this preparation. Both packages
+are unpublished, and their separate artifact approval/publication procedures below
+remain deferred. Their publication is not required for the public Core API or the
+self-contained executable release.
 
 ## Before release
 
