@@ -51,3 +51,5 @@ export type {
   TransportRequest,
   TransportResult,
 } from "./types.js";
+export { createSourceOverlayAdapter, isSourceOverlaySnapshot, MAX_SOURCE_OVERLAY_ENTRIES } from "./overlay.js";
+export type { SourceOverlayAdapter, SourceOverlayEntry, SourceOverlayOptions, SourceOverlayResult, SourceOverlaySnapshot } from "./overlay.js";

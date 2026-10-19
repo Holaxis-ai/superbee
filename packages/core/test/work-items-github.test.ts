@@ -9,7 +9,8 @@ import { mutateDocument } from "../src/document-mutation.js";
 import { loadKinds } from "../src/kinds-load.js";
 import { installRecipe } from "../src/recipe-lifecycle/index.js";
 import { parseRecipeFiles } from "../src/recipes.js";
-import { applyRecordOverlay, buildSourceIndex, planFindings, planRecordOverlay, readOverlayPolicy, type OverlayBundle, type RecordChange } from "../src/record-overlay/index.js";
+import { buildSourceIndex, readOverlayPolicy, type OverlayBundle, type RecordChange } from "../src/record-overlay/index.js";
+import { createSourceOverlayAdapter, type SourceOverlaySnapshot } from "../src/source-engine/index.js";
 import { runSourceScenario } from "../src/source-harness/index.js";
 import type { Frontmatter, Version } from "../src/types.js";
 import { RecordingBackend } from "./record-overlay-helpers.js";
@@ -59,7 +60,8 @@ async function world() {
   })).version;
   await put(FEED, { type: "Source Feed", title: "Synthetic widget issues", feed_kind: "connector", connector: connector.id, source: "issues", url: RESOURCE, owned_fields: owned, target_kind: "Work Item", missing_threshold: 2 });
   const bound = bindSourceFeed(connector, (await backend.read(FEED)).doc, registry, { okfVersion: "0.2" });
-  const accepted = new Map<string, Record<string, unknown>>();
+  let acceptance: SourceOverlaySnapshot = { v: 1, entries: [] };
+  const accepted = { get size() { return acceptance.entries.length; }, clear() { acceptance = { v: 1, entries: [] }; } };
   const observed = new Map<string, Record<string, unknown>>();
   const edit = async (id: string, set: Record<string, unknown>) => mutateDocument({
     bundle, id, mode: "patch", registry, strict: true, actor: "human:fixture-editor",
@@ -68,20 +70,14 @@ async function world() {
   const adopt = (issue: Record<string, any>, extra: Record<string, unknown> = {}) => put(`work-items/widgets-${issue.number}`, {
     type: "Work Item", title: issue.title, sources: [{ resource: RESOURCE, id: issue.node_id }], ...extra,
   }, BODY);
-  return { backend, overlay, connector, bound, accepted, observed, put, edit, adopt };
+  return { backend, overlay, connector, bound, accepted, observed, put, edit, adopt, get acceptance() { return acceptance; }, set acceptance(value: SourceOverlaySnapshot) { acceptance = value; } };
 }
 type World = Awaited<ReturnType<typeof world>>;
 
-/**
- * Fixture orchestration only. The tuple includes the document, so first adoption and re-binding
- * use an empty accepted baseline. changeBetween owns mapping/change semantics; overlay owns writes.
- * Store commits include converged and partial-conflict outcomes, but no refused or uncertain step.
- */
 async function observe(w: World, issues: Array<Record<string, any>>, beforeApply?: () => Promise<unknown>) {
   const index = await buildSourceIndex(w.overlay.bundle, { type: "Work Item" });
   const changes: RecordChange[] = [];
   const diagnostics: MappingDiagnostic[] = [];
-  const commits: Array<{ id: string; tuple: string | null; after: Record<string, unknown> }> = [];
   const numbers = new Map<string, number>();
   let skipped = 0;
   for (const issue of issues) {
@@ -91,33 +87,25 @@ async function observe(w: World, issues: Array<Record<string, any>>, beforeApply
     diagnostics.push(...mapped.diagnostics);
     if (mapped.kind === "refused") continue;
     numbers.set(mapped.external_id, issue.number);
-    const matches = index.lookup(RESOURCE, mapped.external_id, { type: "Work Item" });
-    const tuple = matches.length === 1 ? JSON.stringify([FEED, mapped.external_id, matches[0]!.id]) : null;
-    const previous = tuple !== null ? w.accepted.get(tuple) ?? {} : w.observed.get(mapped.external_id) ?? null;
-    const change = changeBetween(previous, mapped, { external_id: mapped.external_id, change_kind: previous === null ? "new" : "changed" });
-    // Include a converged adoption so G1-1 is exercised through a real record-only/skipped step.
-    if (change.changed_fields.length || previous === null || (tuple !== null && !w.accepted.has(tuple)) || matches.length > 1) changes.push(change);
-    commits.push({ id: mapped.external_id, tuple, after: change.after! });
+    const previous = w.observed.get(mapped.external_id) ?? null;
+    changes.push(changeBetween(previous, mapped, { external_id: mapped.external_id, change_kind: previous === null ? "new" : "changed" }));
   }
-  const plan = await planRecordOverlay({
-    content: w.overlay, ops: w.overlay, policy: w.bound.policy, changes, observedAt: NOW, sameBundle: true, overlays: index,
+  const adapter = createSourceOverlayAdapter({ content: w.overlay, policy: w.bound.policy, actor: ACTOR, overlays: index,
+    accepted: w.acceptance, sameBundle: true, slug: "widgets-mapping",
     hooks: { sourceProperties: (change) => ({ number: numbers.get(change.external_id)! }) },
   });
   if (beforeApply) await beforeApply();
-  const receipt = await applyRecordOverlay(plan, { content: w.overlay, ops: w.overlay, policy: w.bound.policy, actor: ACTOR });
-  for (const commit of commits) {
-    const refusedStep = receipt.results.some((r) => r.external_id === commit.id && r.outcome === "refused");
-    const wholeRefusal = receipt.refusals.some((r) => r.external_id === commit.id && r.code !== "OVERLAY_DOC_CONFLICT");
-    if (refusedStep || wholeRefusal) continue;
-    w.observed.set(commit.id, commit.after);
-    if (commit.tuple !== null) w.accepted.set(commit.tuple, commit.after);
+  const result = await adapter.commit({ feed: FEED, provider: RESOURCE, observed_at: NOW, page: 1, replay: false,
+    changes, records: {}, baseline: w.observed.size === 0, complete: true });
+  const receipt = result.receipt;
+  for (const change of changes) {
+    if (!result.retry?.includes(change.external_id) && !result.hold?.includes(change.external_id)) w.observed.set(change.external_id, change.after!);
   }
+  w.acceptance = adapter.stagedSnapshot()!;
+  adapter.consume();
   const findingRows = findingsFor(diagnostics, { source: "issues" });
-  const steps = await planFindings({ ops: w.overlay, provider: RESOURCE, feed: FEED, slug: "widgets-mapping", findings: findingRows, observedAt: NOW });
-  const findings = await applyRecordOverlay({ feed: FEED, provider: RESOURCE, observed_at: NOW, steps, refusals: [] }, {
-    content: w.overlay, ops: w.overlay, policy: w.bound.policy, actor: ACTOR,
-  });
-  return { changes, diagnostics, plan, receipt, findingRows, findings, skipped };
+  const findings = await adapter.applyFindings(findingRows, NOW);
+  return { changes: result.changes, diagnostics, receipt, findingRows, findings, skipped };
 }
 const issue = (n = 0, patch: Record<string, unknown> = {}) => ({ ...structuredClone(ISSUES[n]!), ...patch });
 const read = (w: World, n = 42) => w.backend.read(`work-items/widgets-${n}`);

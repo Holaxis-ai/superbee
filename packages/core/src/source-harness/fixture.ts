@@ -8,10 +8,8 @@ import { bindSourceFeed, credentialHosts, type BoundFeed, type Connector } from 
 import { mutateDocument } from "../document-mutation.js";
 import { loadKinds } from "../kinds-load.js";
 import { MemoryBackend } from "../memory-backend.js";
-import { HOLD_STORE, RETRYABLE } from "../record-overlay/errors.js";
-import { planFindings } from "../record-overlay/findings.js";
-import { applyRecordOverlay } from "../record-overlay/apply.js";
-import { planRecordOverlay } from "../record-overlay/plan.js";
+import { buildSourceIndex } from "../record-overlay/source-index.js";
+import { createSourceOverlayAdapter, type SourceOverlaySnapshot } from "../source-engine/overlay.js";
 import type { OverlayBundle, OverlayReceipt, RecordChange } from "../record-overlay/types.js";
 import { MemoryMachineState, type SourceState } from "../source-engine/machine-state.js";
 import { observeSource } from "../source-engine/observe.js";
@@ -139,6 +137,7 @@ export async function runSourceScenario(fixture: SourceFixture, scenario: Source
   const overlay: OverlayBundle = { bundle, registry, okfVersion: "0.2" };
   const bound = bindSourceFeed(fixture.connector, (await backend.read(fixture.feed)).doc, registry, { okfVersion: "0.2" });
   const state = new MemoryMachineState();
+  let accepted: SourceOverlaySnapshot = { v: 1, entries: [] };
   const spec = scenario.spec !== undefined ? scenario.spec : fixture.spec;
   const slug = `${fixture.feed.split("/").pop()!.replace(/[^a-z0-9-]+/gi, "-").toLowerCase()}-source`;
   const result: ScenarioResult = {
@@ -159,31 +158,37 @@ export async function runSourceScenario(fixture: SourceFixture, scenario: Source
     const stateBefore = (await state.read(fixture.feed))?.state ?? null;
     const changes: RecordChange[] = [];
     const overlayReceipts: OverlayReceipt[] = [];
+    const adapter = createSourceOverlayAdapter({ content: overlay, policy: bound.policy, actor: SOURCE_ACTOR,
+      overlays: await buildSourceIndex(bundle), accepted, slug });
+    if (stateBefore) {
+      await adapter.reconcile(stateBefore, at);
+      accepted = adapter.stagedSnapshot()!;
+      adapter.consume();
+    }
+    const jointState = {
+      read: state.read.bind(state),
+      async write(key: string, value: SourceState, expected: string | null) {
+        try {
+          const version = await state.write(key, value, expected);
+          accepted = adapter.stagedSnapshot() ?? adapter.snapshot();
+          adapter.consume();
+          return version;
+        } catch (error) { adapter.discard(); throw error; }
+      },
+    };
     const receipt = await observeSource({
-      connector: fixture.connector, bound, profile: fixture.profile, spec, state, identity: fixture.identity ?? FIXTURE_IDENTITY,
+      connector: fixture.connector, bound, profile: fixture.profile, spec, state: jointState, identity: fixture.identity ?? FIXTURE_IDENTITY,
       transport: peerTransport(peer, fixture.credential ? { credential: fixture.credential } : {}),
       mode: script.mode ?? "incremental", signal: controller.signal, now: () => new Date(at),
       ...(script.budget ? { budget: script.budget } : {}),
       commit: async (page) => {
+        const applied = await adapter.commit(page);
         changes.push(...page.changes);
-        const plan = await planRecordOverlay({
-          content: overlay, ops: overlay, policy: bound.policy, changes: page.changes, observedAt: page.observed_at,
-          records: page.records, sameBundle: true, observation: { baseline: page.baseline },
-        });
-        const applied = await applyRecordOverlay(plan, { content: overlay, ops: overlay, policy: bound.policy, actor: SOURCE_ACTOR });
-        overlayReceipts.push(applied);
-        const refused = applied.results.filter((r) => r.outcome === "refused" && r.code !== undefined);
-        return {
-          retry: refused.filter((r) => RETRYABLE.has(r.code!)).map((r) => r.external_id),
-          hold: refused.filter((r) => HOLD_STORE.has(r.code!) && !RETRYABLE.has(r.code!)).map((r) => r.external_id),
-        };
+        overlayReceipts.push(applied.receipt);
+        return applied;
       },
     });
-    const steps = await planFindings({ ops: overlay, provider: bound.policy.provider, feed: fixture.feed, slug, findings: receipt.findings, observedAt: at });
-    const findings = await applyRecordOverlay(
-      { feed: fixture.feed, provider: bound.policy.provider, observed_at: at, steps, refusals: [] },
-      { content: overlay, ops: overlay, policy: bound.policy, actor: SOURCE_ACTOR },
-    );
+    const findings = await adapter.applyFindings(receipt.findings, at);
     const documents: Record<string, Frontmatter> = {};
     for (const id of await backend.list()) documents[id] = (await backend.read(id)).doc.frontmatter;
     result.runs.push({
