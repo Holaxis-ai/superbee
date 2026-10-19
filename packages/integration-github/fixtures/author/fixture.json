@@ -1,0 +1,895 @@
+{
+  "version": 1,
+  "connector": "connectors/github",
+  "source": "issues",
+  "feed": "source-feeds/widgets",
+  "documents": [
+    {
+      "id": "conventions/signal",
+      "body": "# Signal\n\nA durable, claimable flag that a monitored source changed in a way that needs judgment. Created\ndeterministically; acted on by an agent or human.\n",
+      "frontmatter": {
+        "type": "Convention",
+        "title": "Signal",
+        "governs": "Signal",
+        "path": "signals/",
+        "description": "A durable, claimable flag that a monitored source changed in a way that needs judgment. Created deterministically; acted on by an agent or human.",
+        "links": {
+          "from feed": "Source Feed"
+        },
+        "claim": {
+          "owner_field": "assignee",
+          "state_field": "progress_status"
+        },
+        "fields": {
+          "required": [
+            "title",
+            "superbee_progress_status",
+            "change_kind",
+            "observed_at"
+          ],
+          "optional": [
+            "provider",
+            "external_id",
+            "diff_summary",
+            "priority",
+            "assignee",
+            "resolution",
+            "expires_at",
+            "content_digest",
+            "about_doc"
+          ],
+          "types": {
+            "observed_at": "datetime",
+            "expires_at": "datetime"
+          },
+          "values": {
+            "superbee_progress_status": [
+              "todo",
+              "in_progress",
+              "done",
+              "dismissed"
+            ],
+            "priority": [
+              "urgent",
+              "normal",
+              "low"
+            ]
+          },
+          "terminal": {
+            "superbee_progress_status": [
+              "done",
+              "dismissed"
+            ]
+          },
+          "descriptions": {
+            "change_kind": "What changed, in the vocabulary of whoever raised the Signal: new, changed, canceled, disappeared, page-changed, status-check, or a kind a profile or intake defines.",
+            "provider": "The monitored source, as its feed URL or a tool name.",
+            "external_id": "The provider's id for the record the Signal is about.",
+            "diff_summary": "What changed, in one paragraph a claimant can judge without opening the source.",
+            "resolution": "What was done and why, written by whoever closed the signal.",
+            "content_digest": "Digest of the observed external record that raised this signal; used to deduplicate and collapse repeated changes.",
+            "about_doc": "Document id the signal concerns (cross-bundle references are not links)."
+          }
+        },
+        "freshness_horizon": "14d",
+        "x_recipe": {
+          "id": "source-feeds",
+          "version": "1",
+          "of": 2,
+          "source_digest": "sha256:7a6c826a1f74ac918b45418904f13dcc153dad7e4ec3d9793eeb88abea08a3fc",
+          "definition": "sha256:4756358c181fa719032443918c6ac27a8cd2a2b87ecb88c3aa24fce4b6e9249c",
+          "digest_rules": 1
+        }
+      }
+    },
+    {
+      "id": "conventions/source-feed",
+      "body": "# Source Feed\n\nA monitored source and the policy for what its changes may do: which fields it owns and which\nchanges need judgment.\n",
+      "frontmatter": {
+        "type": "Convention",
+        "title": "Source Feed",
+        "governs": "Source Feed",
+        "path": "source-feeds/",
+        "description": "A monitored source (structured feed, official page or declared Connector source) and the policy for what its changes may do: which fields it owns and which changes need judgment.",
+        "fields": {
+          "required": [
+            "title",
+            "url",
+            "owned_fields"
+          ],
+          "optional": [
+            "connector",
+            "source",
+            "feed_kind",
+            "target_kind",
+            "poll_interval",
+            "auto_apply",
+            "needs_review",
+            "completeness",
+            "missing_threshold",
+            "exclude_pattern",
+            "retention",
+            "profile",
+            "extract_rule",
+            "wall_time_zone",
+            "terms_url",
+            "rights_note",
+            "last_observed_at",
+            "description"
+          ],
+          "types": {
+            "url": "https-url",
+            "owned_fields": "string-list",
+            "auto_apply": "string-list",
+            "needs_review": "string-list",
+            "missing_threshold": "integer",
+            "terms_url": "https-url",
+            "last_observed_at": "datetime"
+          },
+          "values": {
+            "feed_kind": [
+              "ics",
+              "rss",
+              "json-api",
+              "html-page",
+              "connector"
+            ],
+            "completeness": [
+              "complete",
+              "partial"
+            ],
+            "retention": [
+              "snapshot-ok",
+              "live-only"
+            ]
+          },
+          "descriptions": {
+            "url": "The provider identity of the feed, as documents name it in `sources[].resource`. For a Connector source, a resource its identity template admits, byte for byte.",
+            "owned_fields": "Fields this feed is authoritative for. The overlay may write only these; editor-owned fields are refused. For a Connector source, a subset of the source's mapping keys.",
+            "connector": "For a Connector-backed feed, the id of the Connector document (connectors/<slug>).",
+            "source": "For a Connector-backed feed, the name of the Connector source this feed binds to.",
+            "feed_kind": "How the source is read. One of: ics, rss, json-api, html-page, connector.",
+            "target_kind": "The Kind of the documents this feed overlays. For a Connector source, the source's target Kind.",
+            "auto_apply": "Change kinds applied without judgment (e.g. changed).",
+            "needs_review": "Change kinds that raise a Signal for an agent or human (e.g. new, canceled, disappeared, page-changed).",
+            "completeness": "Whether one observation lists every current record for its window. Only a complete feed may ever imply that a record disappeared. One of: complete, partial. A Connector source's value wins.",
+            "missing_threshold": "Consecutive complete observations a record must be absent from before a `disappeared` change is raised.",
+            "exclude_pattern": "Editorial exclusion: a case-insensitive pattern on record titles. Matching records are still observed and stored but never presented.",
+            "retention": "Whether observed records may be captured into a published snapshot (snapshot-ok) or may only be shown live (live-only), per the provider's terms. One of: snapshot-ok, live-only.",
+            "profile": "Name of the provider profile that decodes this source. A Connector source's value wins.",
+            "extract_rule": "For configurable profiles: the extraction rule as JSON text. Configuration, not code.",
+            "wall_time_zone": "IANA zone to read this provider's times in when it labels local wall-clock times as UTC. A recorded judgment for one feed, set only with evidence; never guessed and never a default.",
+            "terms_url": "The provider's terms of use for this source.",
+            "rights_note": "What the provider's terms allow, in a sentence.",
+            "last_observed_at": "When the source was last observed."
+          }
+        },
+        "freshness_horizon": "30d",
+        "x_recipe": {
+          "id": "source-feeds",
+          "version": "1",
+          "of": 2,
+          "source_digest": "sha256:7a6c826a1f74ac918b45418904f13dcc153dad7e4ec3d9793eeb88abea08a3fc",
+          "definition": "sha256:50e4307cb5f09fc8f97d51d19c894606bfd10142b1ef1eb68be6daa680eee96c",
+          "digest_rules": 1
+        }
+      }
+    },
+    {
+      "id": "source-feeds/widgets",
+      "body": "\n",
+      "frontmatter": {
+        "type": "Source Feed",
+        "title": "Recorded fictional GitHub issues",
+        "feed_kind": "connector",
+        "connector": "connectors/github",
+        "source": "issues",
+        "url": "https://github.com/example-org/widgets",
+        "owned_fields": [
+          "title",
+          "key",
+          "url",
+          "scope",
+          "item_type",
+          "source_state",
+          "state_category",
+          "close_reason",
+          "labels",
+          "assignees",
+          "opened_at",
+          "source_updated_at",
+          "closed_at"
+        ],
+        "target_kind": "Work Item",
+        "missing_threshold": 2
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "errors.auth",
+      "runs": [
+        {
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100"
+              },
+              "response": {
+                "status": 401,
+                "body": ""
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "credential_refused",
+            "reason": null,
+            "pages": 0,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": false,
+              "complete": false
+            },
+            "changes": {
+              "new": 0,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100",
+              "method": "GET",
+              "headers": {
+                "accept": "application/vnd.github+json",
+                "x-github-api-version": "2026-03-10",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [],
+          "findings": [
+            {
+              "key": "source:issues:credential_refused",
+              "title": "Source issues: credential refused",
+              "summary": "the provider refused the credential; runs stay stopped until the credential changes. Status 401. (https://api.github.com/repos/example-org/widgets/issues)",
+              "priority": "normal",
+              "facts": {
+                "outcome": "credential_refused",
+                "reason": null,
+                "status": 401
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "errors.server",
+      "runs": [
+        {
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100"
+              },
+              "response": {
+                "status": 503,
+                "body": ""
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "provider_unavailable",
+            "reason": "server_error",
+            "pages": 0,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": false,
+              "complete": false
+            },
+            "changes": {
+              "new": 0,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100",
+              "method": "GET",
+              "headers": {
+                "accept": "application/vnd.github+json",
+                "x-github-api-version": "2026-03-10",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [],
+          "findings": [
+            {
+              "key": "source:issues:provider_unavailable:server_error",
+              "title": "Source issues: provider unavailable (server error)",
+              "summary": "the provider did not answer usefully; nothing past the last committed page was read. Status 503. (https://api.github.com/repos/example-org/widgets/issues)",
+              "priority": "low",
+              "facts": {
+                "outcome": "provider_unavailable",
+                "reason": "server_error",
+                "status": 503
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "errors.rate-limit",
+      "runs": [
+        {
+          "mode": "complete",
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "link": "<https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100&page=2>; rel=\"next\""
+                },
+                "body": "[{\"id\":42,\"node_id\":\"I_synthetic_widgets_42\",\"number\":42,\"title\":\"Synthetic issue 42\",\"repository_url\":\"https://api.github.com/repos/example-org/widgets\",\"html_url\":\"https://github.com/example-org/widgets/issues/42\",\"url\":\"https://api.github.com/repos/example-org/widgets/issues/42\",\"state\":\"open\",\"state_reason\":null,\"type\":{\"name\":\"Bug\"},\"created_at\":\"2026-10-01T12:00:00Z\",\"updated_at\":\"2026-10-02T12:00:00Z\",\"closed_at\":null,\"labels\":[{\"name\":\"bug\",\"id\":1},{\"name\":\"help wanted\",\"id\":2},{\"name\":\"bug\",\"id\":1}],\"assignees\":[{\"login\":\"zebra\",\"id\":2},{\"login\":\"octocat\",\"id\":1}],\"body\":\"Untrusted source description. Never copied to the Work Item body.\",\"comments\":0,\"user\":{\"login\":\"reporter\"},\"locked\":false,\"active_lock_reason\":null,\"author_association\":\"NONE\",\"closed_by\":null,\"draft\":false,\"performed_via_github_app\":null,\"milestone\":null,\"reactions\":{\"total_count\":0},\"sub_issues_summary\":{\"total\":0},\"issue_field_values\":[],\"comments_url\":\"https://api.github.com/repos/example-org/widgets/issues/42/comments\"}]"
+              }
+            },
+            {
+              "request": {
+                "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100&page=2"
+              },
+              "response": {
+                "status": 429,
+                "headers": {
+                  "retry-after": "60"
+                },
+                "body": ""
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "deferred",
+            "reason": "rate_limited",
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": false,
+              "complete": false
+            },
+            "changes": {
+              "new": 1,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": {
+            "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100&page=2",
+            "since": ""
+          },
+          "requests": [
+            {
+              "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100",
+              "method": "GET",
+              "headers": {
+                "accept": "application/vnd.github+json",
+                "x-github-api-version": "2026-03-10",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100&page=2",
+              "method": "GET",
+              "headers": {
+                "accept": "application/vnd.github+json",
+                "x-github-api-version": "2026-03-10",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [
+            {
+              "external_id": "I_synthetic_widgets_42",
+              "change_kind": "new",
+              "changed_fields": [
+                "assignees",
+                "item_type",
+                "key",
+                "labels",
+                "opened_at",
+                "scope",
+                "source_state",
+                "source_updated_at",
+                "state_category",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "Synthetic issue 42",
+                "key": "example-org/widgets#42",
+                "url": "https://github.com/example-org/widgets/issues/42",
+                "scope": "example-org/widgets",
+                "item_type": "Bug",
+                "source_state": "open",
+                "state_category": "todo",
+                "labels": [
+                  "bug",
+                  "help wanted"
+                ],
+                "assignees": [
+                  "github:octocat",
+                  "github:zebra"
+                ],
+                "opened_at": "2026-10-01T12:00:00Z",
+                "source_updated_at": "2026-10-02T12:00:00Z"
+              },
+              "content_digest": "sha256:20fecdfec35b5f2b6305745b66a222670ca33d1b3dc2369caae9b5ddee989078"
+            }
+          ],
+          "findings": [
+            {
+              "key": "source:issues:deferred:rate_limited",
+              "title": "Source issues: deferred (rate limited)",
+              "summary": "the provider asked to slow down; the run stopped and resumes from the last committed page. Status 429. (https://api.github.com/repos/example-org/widgets/issues)",
+              "priority": "low",
+              "facts": {
+                "outcome": "deferred",
+                "reason": "rate_limited",
+                "status": 429
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "page.incomplete",
+      "runs": [
+        {
+          "mode": "complete",
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "link": "<https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100&page=2>; rel=\"next\""
+                },
+                "body": "[{\"id\":42,\"node_id\":\"I_synthetic_widgets_42\",\"number\":42,\"title\":\"Synthetic issue 42\",\"repository_url\":\"https://api.github.com/repos/example-org/widgets\",\"html_url\":\"https://github.com/example-org/widgets/issues/42\",\"url\":\"https://api.github.com/repos/example-org/widgets/issues/42\",\"state\":\"open\",\"state_reason\":null,\"type\":{\"name\":\"Bug\"},\"created_at\":\"2026-10-01T12:00:00Z\",\"updated_at\":\"2026-10-02T12:00:00Z\",\"closed_at\":null,\"labels\":[{\"name\":\"bug\",\"id\":1},{\"name\":\"help wanted\",\"id\":2},{\"name\":\"bug\",\"id\":1}],\"assignees\":[{\"login\":\"zebra\",\"id\":2},{\"login\":\"octocat\",\"id\":1}],\"body\":\"Untrusted source description. Never copied to the Work Item body.\",\"comments\":0,\"user\":{\"login\":\"reporter\"},\"locked\":false,\"active_lock_reason\":null,\"author_association\":\"NONE\",\"closed_by\":null,\"draft\":false,\"performed_via_github_app\":null,\"milestone\":null,\"reactions\":{\"total_count\":0},\"sub_issues_summary\":{\"total\":0},\"issue_field_values\":[],\"comments_url\":\"https://api.github.com/repos/example-org/widgets/issues/42/comments\"}]"
+              }
+            },
+            {
+              "request": {
+                "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100&page=2"
+              },
+              "response": {
+                "status": 429,
+                "headers": {
+                  "retry-after": "60"
+                },
+                "body": ""
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "deferred",
+            "reason": "rate_limited",
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": false,
+              "complete": false
+            },
+            "changes": {
+              "new": 1,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": {
+            "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100&page=2",
+            "since": ""
+          },
+          "requests": [
+            {
+              "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100",
+              "method": "GET",
+              "headers": {
+                "accept": "application/vnd.github+json",
+                "x-github-api-version": "2026-03-10",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100&page=2",
+              "method": "GET",
+              "headers": {
+                "accept": "application/vnd.github+json",
+                "x-github-api-version": "2026-03-10",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [
+            {
+              "external_id": "I_synthetic_widgets_42",
+              "change_kind": "new",
+              "changed_fields": [
+                "assignees",
+                "item_type",
+                "key",
+                "labels",
+                "opened_at",
+                "scope",
+                "source_state",
+                "source_updated_at",
+                "state_category",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "Synthetic issue 42",
+                "key": "example-org/widgets#42",
+                "url": "https://github.com/example-org/widgets/issues/42",
+                "scope": "example-org/widgets",
+                "item_type": "Bug",
+                "source_state": "open",
+                "state_category": "todo",
+                "labels": [
+                  "bug",
+                  "help wanted"
+                ],
+                "assignees": [
+                  "github:octocat",
+                  "github:zebra"
+                ],
+                "opened_at": "2026-10-01T12:00:00Z",
+                "source_updated_at": "2026-10-02T12:00:00Z"
+              },
+              "content_digest": "sha256:20fecdfec35b5f2b6305745b66a222670ca33d1b3dc2369caae9b5ddee989078"
+            }
+          ],
+          "findings": [
+            {
+              "key": "source:issues:deferred:rate_limited",
+              "title": "Source issues: deferred (rate limited)",
+              "summary": "the provider asked to slow down; the run stopped and resumes from the last committed page. Status 429. (https://api.github.com/repos/example-org/widgets/issues)",
+              "priority": "low",
+              "facts": {
+                "outcome": "deferred",
+                "reason": "rate_limited",
+                "status": 429
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "cursor.resume",
+      "runs": [
+        {
+          "mode": "complete",
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "link": "<https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100&page=2>; rel=\"next\""
+                },
+                "body": "[{\"id\":42,\"node_id\":\"I_synthetic_widgets_42\",\"number\":42,\"title\":\"Synthetic issue 42\",\"repository_url\":\"https://api.github.com/repos/example-org/widgets\",\"html_url\":\"https://github.com/example-org/widgets/issues/42\",\"url\":\"https://api.github.com/repos/example-org/widgets/issues/42\",\"state\":\"open\",\"state_reason\":null,\"type\":{\"name\":\"Bug\"},\"created_at\":\"2026-10-01T12:00:00Z\",\"updated_at\":\"2026-10-02T12:00:00Z\",\"closed_at\":null,\"labels\":[{\"name\":\"bug\",\"id\":1},{\"name\":\"help wanted\",\"id\":2},{\"name\":\"bug\",\"id\":1}],\"assignees\":[{\"login\":\"zebra\",\"id\":2},{\"login\":\"octocat\",\"id\":1}],\"body\":\"Untrusted source description. Never copied to the Work Item body.\",\"comments\":0,\"user\":{\"login\":\"reporter\"},\"locked\":false,\"active_lock_reason\":null,\"author_association\":\"NONE\",\"closed_by\":null,\"draft\":false,\"performed_via_github_app\":null,\"milestone\":null,\"reactions\":{\"total_count\":0},\"sub_issues_summary\":{\"total\":0},\"issue_field_values\":[],\"comments_url\":\"https://api.github.com/repos/example-org/widgets/issues/42/comments\"}]"
+              }
+            },
+            {
+              "request": {
+                "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100&page=2"
+              },
+              "response": {
+                "status": 429,
+                "headers": {
+                  "retry-after": "60"
+                },
+                "body": ""
+              }
+            }
+          ]
+        },
+        {
+          "mode": "incremental",
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100"
+              },
+              "response": {
+                "status": 200,
+                "headers": {},
+                "body": "[{\"id\":42,\"node_id\":\"I_synthetic_widgets_42\",\"number\":42,\"title\":\"Synthetic issue 42\",\"repository_url\":\"https://api.github.com/repos/example-org/widgets\",\"html_url\":\"https://github.com/example-org/widgets/issues/42\",\"url\":\"https://api.github.com/repos/example-org/widgets/issues/42\",\"state\":\"open\",\"state_reason\":null,\"type\":{\"name\":\"Bug\"},\"created_at\":\"2026-10-01T12:00:00Z\",\"updated_at\":\"2026-10-02T12:00:00Z\",\"closed_at\":null,\"labels\":[{\"name\":\"bug\",\"id\":1},{\"name\":\"help wanted\",\"id\":2},{\"name\":\"bug\",\"id\":1}],\"assignees\":[{\"login\":\"zebra\",\"id\":2},{\"login\":\"octocat\",\"id\":1}],\"body\":\"Untrusted source description. Never copied to the Work Item body.\",\"comments\":0,\"user\":{\"login\":\"reporter\"},\"locked\":false,\"active_lock_reason\":null,\"author_association\":\"NONE\",\"closed_by\":null,\"draft\":false,\"performed_via_github_app\":null,\"milestone\":null,\"reactions\":{\"total_count\":0},\"sub_issues_summary\":{\"total\":0},\"issue_field_values\":[],\"comments_url\":\"https://api.github.com/repos/example-org/widgets/issues/42/comments\"}]"
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "deferred",
+            "reason": "rate_limited",
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": false,
+              "complete": false
+            },
+            "changes": {
+              "new": 1,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": {
+            "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100&page=2",
+            "since": ""
+          },
+          "requests": [
+            {
+              "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100",
+              "method": "GET",
+              "headers": {
+                "accept": "application/vnd.github+json",
+                "x-github-api-version": "2026-03-10",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100&page=2",
+              "method": "GET",
+              "headers": {
+                "accept": "application/vnd.github+json",
+                "x-github-api-version": "2026-03-10",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [
+            {
+              "external_id": "I_synthetic_widgets_42",
+              "change_kind": "new",
+              "changed_fields": [
+                "assignees",
+                "item_type",
+                "key",
+                "labels",
+                "opened_at",
+                "scope",
+                "source_state",
+                "source_updated_at",
+                "state_category",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "Synthetic issue 42",
+                "key": "example-org/widgets#42",
+                "url": "https://github.com/example-org/widgets/issues/42",
+                "scope": "example-org/widgets",
+                "item_type": "Bug",
+                "source_state": "open",
+                "state_category": "todo",
+                "labels": [
+                  "bug",
+                  "help wanted"
+                ],
+                "assignees": [
+                  "github:octocat",
+                  "github:zebra"
+                ],
+                "opened_at": "2026-10-01T12:00:00Z",
+                "source_updated_at": "2026-10-02T12:00:00Z"
+              },
+              "content_digest": "sha256:20fecdfec35b5f2b6305745b66a222670ca33d1b3dc2369caae9b5ddee989078"
+            }
+          ],
+          "findings": [
+            {
+              "key": "source:issues:deferred:rate_limited",
+              "title": "Source issues: deferred (rate limited)",
+              "summary": "the provider asked to slow down; the run stopped and resumes from the last committed page. Status 429. (https://api.github.com/repos/example-org/widgets/issues)",
+              "priority": "low",
+              "facts": {
+                "outcome": "deferred",
+                "reason": "rate_limited",
+                "status": 429
+              }
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "outcome": "observed",
+            "reason": null,
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": true,
+              "ended": true,
+              "complete": false
+            },
+            "changes": {
+              "new": 0,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100",
+              "method": "GET",
+              "headers": {
+                "accept": "application/vnd.github+json",
+                "x-github-api-version": "2026-03-10",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [],
+          "findings": []
+        }
+      ]
+    },
+    {
+      "name": "cursor.hostile",
+      "runs": [
+        {
+          "mode": "complete",
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "link": "<https://other.example/issues?page=2>; rel=\"next\""
+                },
+                "body": "[{\"id\":42,\"node_id\":\"I_synthetic_widgets_42\",\"number\":42,\"title\":\"Synthetic issue 42\",\"repository_url\":\"https://api.github.com/repos/example-org/widgets\",\"html_url\":\"https://github.com/example-org/widgets/issues/42\",\"url\":\"https://api.github.com/repos/example-org/widgets/issues/42\",\"state\":\"open\",\"state_reason\":null,\"type\":{\"name\":\"Bug\"},\"created_at\":\"2026-10-01T12:00:00Z\",\"updated_at\":\"2026-10-02T12:00:00Z\",\"closed_at\":null,\"labels\":[{\"name\":\"bug\",\"id\":1},{\"name\":\"help wanted\",\"id\":2},{\"name\":\"bug\",\"id\":1}],\"assignees\":[{\"login\":\"zebra\",\"id\":2},{\"login\":\"octocat\",\"id\":1}],\"body\":\"Untrusted source description. Never copied to the Work Item body.\",\"comments\":0,\"user\":{\"login\":\"reporter\"},\"locked\":false,\"active_lock_reason\":null,\"author_association\":\"NONE\",\"closed_by\":null,\"draft\":false,\"performed_via_github_app\":null,\"milestone\":null,\"reactions\":{\"total_count\":0},\"sub_issues_summary\":{\"total\":0},\"issue_field_values\":[],\"comments_url\":\"https://api.github.com/repos/example-org/widgets/issues/42/comments\"}]"
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "refused",
+            "reason": "address_refused",
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": false,
+              "complete": false
+            },
+            "changes": {
+              "new": 1,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": {
+            "url": "https://other.example/issues?page=2",
+            "since": ""
+          },
+          "requests": [
+            {
+              "url": "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100",
+              "method": "GET",
+              "headers": {
+                "accept": "application/vnd.github+json",
+                "x-github-api-version": "2026-03-10",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [
+            {
+              "external_id": "I_synthetic_widgets_42",
+              "change_kind": "new",
+              "changed_fields": [
+                "assignees",
+                "item_type",
+                "key",
+                "labels",
+                "opened_at",
+                "scope",
+                "source_state",
+                "source_updated_at",
+                "state_category",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "Synthetic issue 42",
+                "key": "example-org/widgets#42",
+                "url": "https://github.com/example-org/widgets/issues/42",
+                "scope": "example-org/widgets",
+                "item_type": "Bug",
+                "source_state": "open",
+                "state_category": "todo",
+                "labels": [
+                  "bug",
+                  "help wanted"
+                ],
+                "assignees": [
+                  "github:octocat",
+                  "github:zebra"
+                ],
+                "opened_at": "2026-10-01T12:00:00Z",
+                "source_updated_at": "2026-10-02T12:00:00Z"
+              },
+              "content_digest": "sha256:20fecdfec35b5f2b6305745b66a222670ca33d1b3dc2369caae9b5ddee989078"
+            }
+          ],
+          "findings": [
+            {
+              "key": "source:issues:refused:address_refused",
+              "title": "Source issues: refused (address refused)",
+              "summary": "a request was refused before it was sent. (https://other.example/issues)",
+              "priority": "normal",
+              "facts": {
+                "outcome": "refused",
+                "reason": "address_refused",
+                "status": null
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

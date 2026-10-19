@@ -1,15 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFile} from "node:fs/promises";
-import {bindSourceFeed, parseConnectorDoc, type Connector, type ConnectorRequest} from "../src/connectors.js";
-import {buildKindRegistry} from "../src/kinds.js";
-import {fetchIdentity, MemoryMachineState, observeSource, type PageCommit} from "../src/source-engine/index.js";
-import {githubIssuesProfile, getSourceProfile, normalizeGithubIssue, uncoveredGithubFields} from "../src/source-profiles/index.js";
-import {peerTransport, ScriptedPeer, type PeerRequest, type PeerResponse} from "../src/source-harness/index.js";
+import {bindSourceFeed, parseConnectorDoc, type Connector, type ConnectorRequest} from "@superbee/core/connectors";
+import {buildKindRegistry} from "@superbee/core/kinds";
+import {fetchIdentity, MemoryMachineState, observeSource, type PageCommit} from "@superbee/core/source-engine";
+import {githubIssuesProfile, normalizeGithubIssue, uncoveredGithubFields} from "./profile.js";
+import {peerTransport, ScriptedPeer, type PeerRequest, type PeerResponse} from "@superbee/core/source-harness";
 
 // https://docs.github.com/en/rest/issues/issues#list-repository-issues
 // https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api
-const fixture = JSON.parse(await readFile(new URL("./fixtures/github-issues/repository-issues.json", import.meta.url), "utf8"));
+const fixture = JSON.parse(await readFile(new URL("../fixtures/repository-issues.json", import.meta.url), "utf8"));
 const issues = fixture.issues as Array<Record<string, any>>;
 const parameters = {owner: "example-org", repo: "widgets"};
 const request = (): ConnectorRequest => ({host: "api.github.com", method: "GET", path: "/repos/{owner}/{repo}/issues", query: {state: "all", sort: "updated", direction: "asc", per_page: 100}, headers: {accept: "application/vnd.github+json", "x-github-api-version": "2026-03-10"}, items: "", paging: {kind: "link-header"}, complete: "always"});
@@ -29,7 +29,7 @@ const json = (rows: unknown, headers: Record<string, string> = {}): PeerResponse
 const next = (path = "/repos/example-org/widgets/issues", page = 2) => `<https://api.github.com${path}?state=all&sort=updated&direction=asc&per_page=100&page=${page}>; rel="next"`;
 
 test("public GitHub profile projects the official issue shape through one normalizer", () => {
-  assert.equal(getSourceProfile("github-issues"), githubIssuesProfile);
+  assert.equal(githubIssuesProfile.id, "github-issues");
   assert.equal(fixture.provenance.apiVersion, "2026-03-10");
   for (const issue of issues) assert.deepEqual(uncoveredGithubFields(issue), []);
   const row = normalizeGithubIssue(issues[0]!, parameters)!;
@@ -106,7 +106,7 @@ test("failed commit replays the pending normalized change before requesting anot
   assert.equal(second.outcome, "observed"); assert.equal(replayed, true); assert.equal(second.pending, 0);
 });
 
-const pagingFixture = JSON.parse(await readFile(new URL("./fixtures/github-issues/paging.json", import.meta.url), "utf8"));
+const pagingFixture = JSON.parse(await readFile(new URL("../fixtures/paging.json", import.meta.url), "utf8"));
 for (const withPage of [true, false]) test(`observed GitHub opaque after Link stays bound and preserves cursor (page=${withPage})`, async () => {
   const link = new URL(pagingFixture.next);
   if (!withPage) link.searchParams.delete("page");

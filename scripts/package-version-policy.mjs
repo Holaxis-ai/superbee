@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // cli is versioned independently of the core/server pair.
-const names = ['core', 'server', 'markdown-renderer', 'cli'];
+const names = ['core', 'server', 'markdown-renderer', 'cli', 'integration-github'];
 export const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?$(?![\s\S])/;
 
 // This is the renderer's intentionally bounded policy, not a general semver engine:
@@ -76,5 +76,15 @@ export function checkPackageVersions(directory = root) {
   try {
     if (!peerAdmits(core, peer)) errors.push(`packages/markdown-renderer/package.json peerDependencies.@superbee/core: ${JSON.stringify(peer) ?? 'missing'} must admit ${JSON.stringify(core)} from packages/core/package.json version; prereleases need exact opt-in`);
   } catch (error) { errors.push(`packages/markdown-renderer/package.json peerDependencies.@superbee/core: ${error.message}; source packages/markdown-renderer/package.json peer policy`); }
+  const pluginFile = 'packages/integration-github/package.json';
+  const plugin = manifests['integration-github'];
+  equal(pluginFile, 'superbeeIntegration.core', plugin.superbeeIntegration?.core, core, 'packages/core/package.json version (exact helper ABI)');
+  equal(pluginFile, 'peerDependencies.@superbee/core', plugin.peerDependencies?.['@superbee/core'], core, 'packages/core/package.json version (optional exact peer)');
+  equal(pluginFile, 'peerDependenciesMeta.@superbee/core.optional', plugin.peerDependenciesMeta?.['@superbee/core']?.optional, true, 'optional helper type peer policy');
+  equal(pluginFile, 'devDependencies.@superbee/core', plugin.devDependencies?.['@superbee/core'], core, 'packages/core/package.json version (build helper types)');
+  try {
+    const profileSource = readFileSync(path.join(directory, 'packages/core/src/source-profiles/index.ts'), 'utf8');
+    equal('packages/core/src/source-profiles/index.ts', 'SOURCE_PLUGIN_CORE_VERSION', /export const SOURCE_PLUGIN_CORE_VERSION = "([^"]+)";/.exec(profileSource)?.[1], core, 'packages/core/package.json version');
+  } catch (error) { errors.push(`SOURCE_PLUGIN_CORE_VERSION: expected readable source (${error.code ?? error.name})`); }
   return errors;
 }

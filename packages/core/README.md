@@ -1003,7 +1003,10 @@ tools, and publication of a core version remain separate adoption and release de
 ## Declarative JSON sources
 
 `@superbee/core/source-profiles` exports `getSourceProfile(id)`, frozen `SOURCE_PROFILES` metadata,
-and `restJsonProfile` (version 1). The profile accepts a parsed `ConnectorSource` as its spec;
+and `restJsonProfile` (version 1). The catalog contains only `rest-json`; GitHub
+normalization ships separately in `@superbee/integration-github`. Core also exports the existing
+`nextLinkTarget` parser, `SourcePluginHelpers` type and exact `SOURCE_PLUGIN_CORE_VERSION` for
+explicit host composition. The profile accepts a parsed `ConnectorSource` as its spec;
 `source.request` describes provider data, while `source.fields` maps normalized paths to Kind fields.
 It runs only through `observeSource` and the caller's recorded or credential-injecting transport.
 Installing a Connector does not run it.
