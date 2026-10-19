@@ -9,6 +9,7 @@ import {loadKinds} from "../src/kinds-load.js";
 import {installRecipe} from "../src/recipe-lifecycle/index.js";
 import {parseRecipeFiles} from "../src/recipes.js";
 import {mutateDocument} from "../src/document-mutation.js";
+import {parseMarkdown} from "../src/frontmatter.js";
 import {getSourceProfile} from "../src/source-profiles/index.js";
 import {buildSourceIndex} from "../src/record-overlay/index.js";
 import {createSourceOverlayAdapter, type SourceOverlaySnapshot, type SourceState} from "../src/source-engine/index.js";
@@ -46,20 +47,22 @@ async function world(team = TEAM) {
   await installRecipe(bundle, await recipe("work-items"), {now: NOW});
   const registry = await loadKinds(bundle);
   assert.deepEqual(registry.warnings, []);
-  const parsed = parseConnectorDoc((await backend.read("connectors/linear")).doc, {kinds: registry});
+  const fixtureDeclaration = parseMarkdown(await readFile(new URL("../../../examples/integrations/work-items-linear/connectors/linear.md", import.meta.url), "utf8"), undefined, {okfVersion: "0.2"});
+  const parsed = parseConnectorDoc({id: "connectors/linear", ...fixtureDeclaration}, {kinds: registry});
   assert.ok(parsed.ok, JSON.stringify(parsed));
   const connector = parsed.connector;
   const put = async (id: string, frontmatter: Record<string, unknown>, body = "") => mutateDocument({bundle, id, mode: "create-only", registry, strict: true, actor: "human:fixture", buildCandidate: () => ({frontmatter: frontmatter as Frontmatter, body})});
+  await put("connectors/linear", fixtureDeclaration.frontmatter, fixtureDeclaration.body);
   await put(FEED, {type: "Source Feed", title: "Offline Linear", feed_kind: "connector", connector: connector.id, source: "issues", url: `https://linear.app/team/${team}`, target_kind: "Work Item", owned_fields: Object.keys(connector.sources[0]!.fields), missing_threshold: 2});
   const bound = bindSourceFeed(connector, (await backend.read(FEED)).doc, registry, {okfVersion: "0.2"});
   const map = (row: Record<string, any>) => mapRecord(bound.source, normalizeLinearIssue(row, bound.parameters), bound.kind);
   return {bundle, backend, registry, connector, bound, put, map};
 }
 
-test("recipe installs two inert definitions on one Work Item Kind with complete stamps", async () => {
+test("default recipe stays executable while the fixture explicitly adds Linear on its Work Item Kind", async () => {
   const w = await world();
-  assert.equal((await w.backend.read("conventions/work-item")).doc.frontmatter.x_recipe?.connectors, 2);
-  assert.equal((await w.backend.read("connectors/linear")).doc.frontmatter.x_recipe?.connectors, 2);
+  assert.equal((await w.backend.read("conventions/work-item")).doc.frontmatter.x_recipe?.connectors, 1);
+  assert.equal((await w.backend.read("connectors/linear")).doc.frontmatter.x_recipe, undefined);
   assert.equal((await w.backend.read("connectors/github")).doc.frontmatter.type, "Connector");
   assert.equal(w.registry.kinds.get("Work Item")?.governs, "Work Item");
   assert.equal(getSourceProfile("linear-issues-fixture"), undefined);

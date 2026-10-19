@@ -1,8 +1,12 @@
 # Linear Work Item mapping fixture
 
 This second-tracker example uses the same Work Item Kind as GitHub. Install `source-feeds`,
-then `work-items`. Installation adds GitHub and Linear Connector definitions; no Work Items,
-credentials or executing integrations are created.
+then `work-items`. That executable recipe installs the shared Kind and GitHub Connector.
+The dedicated test explicitly creates the separate `connectors/linear.md` fixture declaration
+through the document mutation primitive after parsing it against the installed Work Item Kind.
+Linear is excluded from the default recipe until its provider profile is admitted, so public
+`recipe validate examples/recipes/work-items` remains usable. No Work Items, credentials or
+executing integrations are created by installation.
 
 Linear is **fixture-only**. Its declaration has `auth: {kind: none}`, no domains, no request,
 and an unavailable-by-default `linear-issues-fixture` profile. `profile.mjs` is a local projection
