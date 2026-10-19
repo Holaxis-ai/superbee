@@ -50,6 +50,7 @@ export const workspaceAliases = {
       "@superbee/core/verification": r("../core/src/verification.ts"),
       "@superbee/core/versioning": r("../core/src/versioning.ts"),
       "@superbee/core/connectors": r("../core/src/connectors.ts"),
+      "@superbee/core/record-overlay": r("../core/src/record-overlay/index.ts"),
       "@superbee/core/source-engine": r("../core/src/source-engine/index.ts"),
       "@superbee/core/source-harness": r("../core/src/source-harness/index.ts"),
       "@superbee/core/source-profiles": r("../core/src/source-profiles/index.ts"),

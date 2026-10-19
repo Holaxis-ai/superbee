@@ -74,7 +74,7 @@ files, and stop. Use `superbee <command> --help` for exact current syntax rather
 copied command manual. Use `--body-file` for multiline Markdown.
 
 Focused shipped material is available under `$REFS/recipes/` for portable examples,
-`$REFS/views/` for View authoring and examples, and `$REFS/sample-bundle/` for OKF interop. Integration authoring uses `$REFS/author-an-integration.md` and recorded `$REFS/integrations/` examples.
+`$REFS/views/` for View authoring and examples, and `$REFS/sample-bundle/` for OKF interop. Integration authoring and explicit local source bind/run use `$REFS/author-an-integration.md`; recorded `$REFS/integrations/` examples need no credentials.
 For internal Holaxis site publishing, use the [Portal publishing guide](https://github.com/Holaxis-ai/superbee-portal/blob/main/docs/publishing-guide.md) to choose local/Git snapshots or hosted authority, public or protected reads, and a separate authenticated-write path. Read only what the accepted work requires.
 
 ## Make the value visible

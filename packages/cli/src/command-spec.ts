@@ -516,6 +516,16 @@ export const CLI_COMMAND_GROUPS = [
         summary: "Validate a local recipe and integration declarations without installing or executing code",
       },
       {
+        id: "sourceBind", leaves: [publicLeaf("sourceBind", "source bind", one, undefined, DIR_SURFACE)],
+        usage: "source bind <feed-id> (--anonymous | --credential-env <NAME>) [--accept <digest>] [--dir <bundle>]",
+        summary: "Preview and accept private consent for one local source",
+      },
+      {
+        id: "sourceRun", leaves: [publicLeaf("sourceRun", "source run", one, undefined, DIR_SURFACE)],
+        usage: "source run <feed-id> [--complete] [--actor <actor>] [--dir <bundle>]",
+        summary: "Run one consented built-in source over DNS-pinned HTTPS",
+      },
+      {
         id: "sourceTest",
         leaves: [publicLeaf("sourceTest", "source test", one, 42, { flags: pathFlags({ flag: "fixture", role: "ingress" }, { flag: "profile", role: "ingress" }), positionals: Object.freeze([Object.freeze({ index: 0, role: "recipe-source" as const })]) })],
         usage: "source test <recipe-path> --fixture <directory> [--profile <local.mjs>] [--json]",

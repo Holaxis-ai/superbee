@@ -117,6 +117,8 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
     recipeAdd: simple(CLI_LEAVES.recipeAdd, ["recipe", "add"], ["work-tracking"], dir),
     recipeEvolve: simple(CLI_LEAVES.recipeEvolve, ["recipe", "evolve"], ["work-tracking"], dir),
     recipeValidate: simple(CLI_LEAVES.recipeValidate, ["recipe", "validate"], [ctx.scratch]),
+    sourceBind: simple(CLI_LEAVES.sourceBind, ["source", "bind"], ["source-feeds/test"], ["--anonymous"]),
+    sourceRun: simple(CLI_LEAVES.sourceRun, ["source", "run"], ["source-feeds/test"]),
     sourceTest: simple(CLI_LEAVES.sourceTest, ["source", "test"], [ctx.scratch], ["--fixture", ctx.scratch]),
     serve: simple(CLI_LEAVES.serve, ["serve"], [], [...dir, "--port", "0"]),
     ui: simple(CLI_LEAVES.ui, ["ui"], [], [...dir, "--port", "0"]),

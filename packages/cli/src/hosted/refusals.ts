@@ -81,6 +81,8 @@ function heldKey(key: string): boolean {
 
 /** Every command a hosted checkout refuses up front. The order is the lookup order. */
 export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
+  { words: ["source", "bind"], reason: "not_syncable", why: "local source binding supports local and Git bundles only" },
+  { words: ["source", "run"], reason: "not_syncable", why: "local source execution supports local and Git bundles only" },
   { words: ["doc", "verify"], reason: "not_syncable", why: "verification is a managed field the host records" },
   { words: ["kind", "*"], reason: "not_syncable", why: "a hosted bundle's Kinds cannot be changed from a checkout", instead: KINDS_INSTEAD, definitions: true },
   { words: ["recipe", "add"], reason: "not_syncable", why: "recipes change a hosted bundle's Kinds, which cannot be changed from a checkout", instead: KINDS_INSTEAD, definitions: true, deferred: true },

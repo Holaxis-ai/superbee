@@ -138,6 +138,8 @@ export const BEHAVIOR_ASSIGNMENTS = [
   ordinary("recipeEvolve", 1),
   ordinary("recipeValidate", 1),
   ordinary("sourceTest", 1),
+  ordinary("sourceBind", 1),
+  ordinary("sourceRun", 1),
   ordinary("serve", 0),
   ordinary("ui", 0),
   ordinary("mcp", 0, { errorChannel: "stderr" }),
