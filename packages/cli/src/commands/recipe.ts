@@ -15,7 +15,7 @@ import { renderUsage } from "../output.js";
 import { parseArgs } from "node:util";
 import { loadKinds } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
-import { assertActorAcceptedByBundle } from "../actor.js";
+import { assertActorAcceptedByBundle, resolveActor } from "../actor.js";
 import { CliError, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -29,7 +29,7 @@ import { commandFragment, commandLiteral, commandQuoted, commandToken, type Comm
 export const RECIPE_USAGE = `superbee recipe — apply a recipe to this bundle
 
 Usage:
-  superbee recipe add <name-or-path> [--dir <path>] [--remote <url>]
+  superbee recipe add <name-or-path> [--actor <name>] [--dir <path>] [--remote <url>]
   superbee recipe evolve <name-or-path> [--apply <plan-token>] [--actor <name>] [options]
 
 Applies a recipe's definitions to the bundle. <name-or-path> is a built-in name (e.g.
@@ -71,7 +71,9 @@ Options:
   --remote <url>        Talk to a wire-protocol server instead of a local bundle
                          (mutually exclusive with --dir; remote access is always explicit)
   --apply <plan-token>  Apply the exact ready token returned by 'recipe evolve' (evolve only)
-  --actor <name>        Attribute evolved convention writes (evolve only). OKF v0.2 bundles accept
+  --actor <name>        Attribute installed or evolved document writes. Add resolves --actor over
+                        SUPERBEE_ACTOR, legacy AGENTSTATE_LITE_ACTOR, then absent; conflicting
+                        environment values refuse. OKF v0.2 bundles accept
                         only an OKF actor: human:<id>, process:<id>, or <producer>/<version>
                         (e.g. openai/codex)
   --json                Emit compact JSON instead of TOON
@@ -197,6 +199,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
         options: {
           dir: { type: "string" },
           remote: { type: "string" },
+          actor: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -216,6 +219,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
     });
   }
 
+  const actor = resolveActor(values.actor);
   const loaded = await resolveRecipe(ref);
   if (!loaded.ok) {
     throw new CliError("USAGE", loaded.error.message, {
@@ -228,11 +232,12 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
   if (values.remote === undefined) await assertRecipeAllowedInHostedCheckout("recipe add", values.dir, loaded.recipe);
   const remote = await resolveRemoteFlag(values.remote, values.dir);
   const bundle = await openBundle(values.dir, remote);
+  await assertActorAcceptedByBundle(bundle, actor);
   // Core's recipe lifecycle throws typed errors; classify them here, through the one CLI mapping,
   // so this command throws a CliError like every other command.
   let result: Awaited<ReturnType<typeof installRecipe>>;
   try {
-    result = await installRecipe(bundle, loaded.recipe);
+    result = await installRecipe(bundle, loaded.recipe, { actor });
   } catch (error) {
     throw classifyBundleError(error);
   }

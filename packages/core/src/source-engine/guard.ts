@@ -6,6 +6,7 @@
  * budget, honours the deadline and maps statuses to outcomes. Any refusal or error status stops
  * the run: the call throws and the stop is recorded here, so a profile cannot swallow it.
  */
+import { graphqlReadProblem } from "../connector-request.js";
 import { credentialHosts, type Connector } from "../connectors.js";
 import { redactUrl } from "../record-overlay/redact.js";
 import { challenged, refusedAddress, robotsDecision, type FetchIdentity } from "./robots.js";
@@ -114,6 +115,8 @@ export interface GuardContext {
   identity: FetchIdentity;
   budget: SourceBudget;
   rules: RequestRules;
+  /** Core-owned GraphQL read paths. Execution awaits reviewed resource-scope semantics. */
+  graphqlPaths?: readonly string[];
   statuses: StatusRules;
   now: () => Date;
   /**
@@ -353,6 +356,14 @@ export function guardTransport(ctx: GuardContext): GuardedTransport {
     try { url = new URL(rawUrl); } catch { refuseRow(method, rawUrl.slice(0, 256), "page", "url_invalid"); halt({ outcome: "refused", reason: "url_invalid", retry: false }); }
     url.hash = "";
     if (method === "GET" && body !== undefined) { refuseRow(method, url, "page", "body_refused"); halt({ outcome: "refused", reason: "body_refused", retry: false }); }
+    if (method === "POST" && hosts.credential.has(url.hostname) && ctx.graphqlPaths?.includes(url.pathname)) {
+      let parsed: unknown;
+      try {parsed = JSON.parse(body ?? "");} catch {parsed = undefined;}
+      const problem = !record(parsed) ? "invalid GraphQL body" : graphqlReadProblem(parsed.query, parsed.variables, null);
+      const reason = problem ? "method_refused" : "graphql_scope_unsupported";
+      refuseRow(method, url, "page", reason);
+      halt({outcome: "refused", reason, retry: false});
+    }
     // A keyless host is read with GET only, whatever a rule says.
     if (method === "POST" && (!hosts.credential.has(url.hostname) || rules.post?.(url, body) !== true)) {
       refuseRow(method, url, "page", "method_refused");
@@ -393,7 +404,9 @@ export function guardTransport(ctx: GuardContext): GuardedTransport {
       }
       const stopped = statusStop(status, responseHeaders);
       if (stopped) halt(stopped);
-      return { status, headers: responseHeaders, body: responseBody, url: url.href };
+      const response = { status, headers: responseHeaders, body: responseBody, url: url.href };
+      rules.response?.(response);
+      return response;
     }
   };
 

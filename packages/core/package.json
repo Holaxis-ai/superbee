@@ -206,6 +206,10 @@
     "./kind-authoring": {
       "types": "./dist/kind-authoring.d.ts",
       "default": "./dist/kind-authoring.js"
+    },
+    "./source-profiles": {
+      "types": "./dist/source-profiles/index.d.ts",
+      "default": "./dist/source-profiles/index.js"
     }
   },
   "files": [
@@ -223,6 +227,7 @@
     "prepublishOnly": "node -e \"console.error('@superbee/core is released by .github/workflows/release-libraries.yml; do not run npm publish here'); process.exit(1)\""
   },
   "dependencies": {
+    "graphql": "17.0.2",
     "gray-matter": "^4.0.3",
     "js-yaml": "^3.15.2"
   },

@@ -998,3 +998,51 @@ transaction or authorization boundary is added.
 The packed proof runs the public workflow over `MemoryBackend` in Node and a browser bundle without
 Node globals. This proves source/package availability. Hosted provisioning routes, MCP modeling
 tools, and publication of a core version remain separate adoption and release decisions.
+
+
+## Declarative JSON sources
+
+`@superbee/core/source-profiles` exports `getSourceProfile(id)`, frozen `SOURCE_PROFILES` metadata,
+and `restJsonProfile` (version 1). The profile accepts a parsed `ConnectorSource` as its spec;
+`source.request` describes provider data, while `source.fields` maps normalized paths to Kind fields.
+It runs only through `observeSource` and the caller's recorded or credential-injecting transport.
+Installing a Connector does not run it.
+
+The optional, pinned request block requires `host`, `method`, `path` and `items` (empty string for
+a root array). `query`, `body` and `headers` contain scalar literals or whole `{binding}`, `{cursor}`,
+`{page}` and `{watermark}` values. Path placeholders occupy whole segments. `request.fields` maps
+normalized dotted paths to `{from, type?}` or `{const}`; types are `text`, `integer`, `date`
+(ISO timestamp), `epoch-date` (seconds to ISO timestamp), and `url` (HTTP(S)). Presence-only `skip`
+rules count skipped records. No executable expressions or synthesis are supported.
+
+Paging kinds are `none`, `cursor`, `link-header`, `offset` and `page-number`. Cursor paging uses
+`cursor_path` (opaque token, placed through `query`) or `next_path` (URL). Numeric paging requires
+`size` and `page_param` or `offset_param`, and restarts from the beginning after interruption.
+`watermark: {field, param, overlap_seconds}` applies overlap between passes and keeps the pass's
+starting watermark fixed across pages. `complete` is `always`, `never`, or `{when_path, equals}`;
+the engine additionally requires an uninterrupted complete-mode pass before counting absences.
+Optional `errors` sets (`deferred`, `credential_refused`, `not_found`) and `rate.requests` narrow
+the run's status interpretation and request budget.
+
+Existing declaration pins without a request block remain unchanged. Credentialed engine consumers
+must now supply a request declaration: `declaration_required` refuses a missing one before any
+transport call. Parsing and installation remain inert. Provider read paths, read-shaped POST paths,
+headers and paging forms are core-owned, deeply frozen, and revalidated at every run; caller rules
+can only narrow them. Keyless legacy profiles retain the declared-domain and robots rules.
+
+GitHub's repository issues GET, version header and alternate numeric pagination form follow
+[issues documentation](https://docs.github.com/en/rest/issues/issues) and
+[pagination documentation](https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api).
+Numeric `/repositories/{id}/issues` paging additionally requires first-page repository metadata
+that proves the id belongs to the bound owner/repository and stays fixed for that pass. The issues
+listing does not guarantee that metadata; a Link alone cannot establish it. Without proof the
+engine refuses that alternate form. Its metadata proof is scoped to the current run, so resuming
+an interrupted alternate numeric URL in a later run also refuses; restart from the bound path.
+The conditional metadata test is not live-provider
+qualification. Same bound `/repos/{owner}/{repo}/issues` pagination remains usable.
+
+GraphQL declarations use the real `graphql` syntax parser: one query operation, no variable defaults,
+and bound String/ID inputs. GraphQL execution is deferred to the later GraphQL profile slice:
+`graphql_scope_unsupported` refuses even a well-formed read body before transport. Syntax alone
+does not establish resource-scoped traversal. Mutations and malformed extension bodies are refused
+by the engine wrapper; caller hooks cannot enable them.

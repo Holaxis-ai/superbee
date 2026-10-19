@@ -35,9 +35,17 @@ const T1 = ticket("t1", "First");
 const T2 = ticket("t2", "Second");
 const T3 = ticket("t3", "Third");
 
+function githubConnector(): Connector {
+  const c = ticketConnector(CONNECTOR_MD.replace("auth:\n  kind: none", "auth:\n  kind: token\n  provider: github"));
+  c.sources[0]!.identity.resource = "https://api.github.com/repos/{owner}/{repo}";
+  c.sources[0]!.request = {host: "api.github.com", method: "GET", path: "/repos/{owner}/{repo}/issues", items: "items"};
+  return c;
+}
+
 function boundFor(connector: Connector, feed: Record<string, unknown> = FEED_FRONTMATTER): BoundFeed {
   const registry = buildKindRegistry([TICKET_CONVENTION], [], { okfVersion: "0.2" });
-  return bindSourceFeed(connector, { id: FEED_ID, frontmatter: feed as never }, registry, { okfVersion: "0.2" });
+  const scopedFeed = connector.sources[0]?.request?.host === "api.github.com" ? {...feed, url: "https://api.github.com/repos/o/r"} : feed;
+  return bindSourceFeed(connector, { id: FEED_ID, frontmatter: scopedFeed as never }, registry, { okfVersion: "0.2" });
 }
 
 const json = (items: unknown[], extra: Record<string, unknown> = {}): PeerResponse => ({ status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify({ items, ...extra }) });
@@ -97,7 +105,7 @@ test("a profile requesting a host outside its hostsFor is refused unsent, even w
 });
 
 test("sourceHostSet: credential hosts get no robots gate; keyless domains do; an undeclared host is named", () => {
-  const github = ticketConnector(CONNECTOR_MD.replace("auth:\n  kind: none", "auth:\n  kind: token\n  provider: github"));
+  const github = githubConnector();
   const set = sourceHostSet(github, ["api.github.com", HOST]);
   assert.ok(set.ok);
   assert.deepEqual([...set.hosts.credential], ["api.github.com"]);
@@ -139,12 +147,12 @@ test("redirects past the budget's limit are refused", async () => {
 });
 
 test("a credentialed request never follows a redirect to another host, even a declared one", async () => {
-  const github = ticketConnector(CONNECTOR_MD.replace("auth:\n  kind: none", "auth:\n  kind: token\n  provider: github"));
+  const github = githubConnector();
   const profile: SourceProfile<JsonPagesSpec, unknown> = { ...jsonPagesProfile, hostsFor: () => ["api.github.com", HOST] };
   const h = harness((request) => (new URL(request.url).hostname === "api.github.com"
     ? { status: 302, headers: { location: ITEMS }, body: "" }
     : json([])), { connector: github });
-  const receipt = await h.run({ profile, spec: { ...SPEC, host: "api.github.com" } });
+  const receipt = await h.run({ profile, spec: API_SPEC });
   assert.equal(receipt.reason, "redirect_refused");
   assert.deepEqual(h.peer.received.map((r) => new URL(r.url).hostname), ["api.github.com"]);
 });
@@ -152,9 +160,9 @@ test("a credentialed request never follows a redirect to another host, even a de
 // ------------------------------------------------------------------------------- method and headers
 
 const GITHUB_MD = CONNECTOR_MD.replace("auth:\n  kind: none", "auth:\n  kind: token\n  provider: github");
-const API_SPEC: JsonPagesSpec = { ...SPEC, host: "api.github.com" };
+const API_SPEC: JsonPagesSpec = { ...SPEC, host: "api.github.com", path: "/repos/{owner}/{repo}/issues" };
 
-test("a POST is refused unless a rule admits it toward a credential host; a keyless host is GET only whatever a rule says", async () => {
+test("a POST is refused outside the provider read_posts even when caller rules admit it; a keyless host is GET only", async () => {
   const post = harness(() => json([]));
   assert.equal((await post.run({ spec: { ...SPEC, method: "POST" } })).reason, "method_refused");
   assert.deepEqual(post.peer.received, []);
@@ -163,18 +171,21 @@ test("a POST is refused unless a rule admits it toward a credential host; a keyl
   assert.equal((await keyless.run({ spec: { ...SPEC, method: "POST" }, rules: { post: () => true } })).reason, "method_refused");
   assert.deepEqual(keyless.peer.received, []);
 
-  const admitted = harness(() => json([T1]), { connector: ticketConnector(GITHUB_MD) });
-  const receipt = await admitted.run({ spec: { ...API_SPEC, method: "POST" }, rules: { post: (url) => url.pathname === "/boards/main/items" } });
-  assert.equal(receipt.outcome, "observed");
-  assert.equal(admitted.peer.received.at(-1)!.method, "POST");
+  const admitted = harness(() => json([T1]), { connector: githubConnector() });
+  const receipt = await admitted.run({ spec: { ...API_SPEC, method: "POST" }, rules: { post: () => true } });
+  assert.equal(receipt.reason, "method_refused");
+  assert.deepEqual(admitted.peer.received, []);
 });
 
-test("a GET with a body is refused; a POST is never redirected", async () => {
+test("a GET with a body is refused; a read-shaped GraphQL POST awaits scoped semantics", async () => {
   const bodied: SourceProfile<JsonPagesSpec, unknown> = { ...jsonPagesProfile, async observe({ transport }) { await transport.request({ url: ITEMS, body: "{}" }); return { records: [], nextCursor: null, more: false, complete: false }; } };
   assert.equal((await harness(() => json([])).run({ profile: bodied })).reason, "body_refused");
 
-  const moved = harness((request) => ({ status: 307, headers: { location: `${request.url}-2` }, body: "" }), { connector: ticketConnector(GITHUB_MD) });
-  assert.equal((await moved.run({ spec: { ...API_SPEC, method: "POST" }, rules: { post: () => true } })).reason, "redirect_refused");
+  const graph = githubConnector();
+  graph.sources[0]!.request = {host: "api.github.com", method: "POST", path: "/graphql", items: "items", graphql: {query: "query Q($owner:String!,$repo:String!){repository(owner:$owner,name:$repo){id}}", variables: {owner: "{owner}", repo: "{repo}"}}};
+  const graphProfile: SourceProfile<JsonPagesSpec, unknown> = {...jsonPagesProfile, async observe({transport}) {await transport.request({url: "https://api.github.com/graphql", method: "POST", body: JSON.stringify({query: graph.sources[0]!.request!.graphql!.query, variables: {owner: "o", repo: "r"}})}); return {records: [], nextCursor: null, more: false, complete: false};}};
+  const moved = harness((request) => ({ status: 307, headers: { location: `${request.url}-2` }, body: "" }), { connector: graph });
+  assert.equal((await moved.run({ profile: graphProfile, spec: { ...API_SPEC, method: "POST" }, rules: { post: () => true } })).reason, "graphql_scope_unsupported");
 });
 
 for (const [name, headers, rules] of [
@@ -237,10 +248,10 @@ test("robots.txt is read once per origin per run and never for a credential host
   await h.run();
   assert.equal(h.peer.received.filter((r) => r.url.endsWith("/robots.txt")).length, 1);
 
-  const github = ticketConnector(CONNECTOR_MD.replace("auth:\n  kind: none", "auth:\n  kind: token\n  provider: github"));
+  const github = githubConnector();
   const api = harness(() => json([]), { connector: github });
-  await api.run({ spec: { ...SPEC, host: "api.github.com" } });
-  assert.deepEqual(api.peer.received.map((r) => new URL(r.url).pathname), ["/boards/main/items"]);
+  await api.run({ spec: API_SPEC });
+  assert.deepEqual(api.peer.received.map((r) => new URL(r.url).pathname), ["/repos/o/r/issues"]);
 });
 
 // ----------------------------------------------------------------------------- statuses and budget
@@ -576,17 +587,17 @@ test("the stored state is plain JSON the engine recognizes", async () => {
 test("the engine marks each request toward a credential host, and only those", async () => {
   const flags: Array<[string, boolean]> = [];
   const spy = { async request(input: { url: string; credentialHost: boolean }) { flags.push([input.url, input.credentialHost]); return { ok: true as const, status: 200, headers: {}, body: JSON.stringify({ items: [] }), bytes: 12 }; } };
-  const github = ticketConnector(GITHUB_MD);
+  const github = githubConnector();
   const profile: SourceProfile<JsonPagesSpec, unknown> = {
     ...jsonPagesProfile,
     hostsFor: () => ["api.github.com", HOST],
     async observe({ transport }) {
       await transport.request({ url: "https://api.github.com/repos/o/r/issues" });
-      await transport.request({ url: ITEMS });
       return { records: [], nextCursor: null, more: false, complete: false };
     },
   };
   await harness(() => json([]), { connector: github }).run({ profile, transport: spy as never, spec: API_SPEC });
+  await harness(() => json([])).run({transport: spy as never});
   assert.deepEqual(flags, [["https://api.github.com/repos/o/r/issues", true], [`https://${HOST}/robots.txt`, false], [ITEMS, false]]);
 });
 
@@ -680,14 +691,14 @@ test("after the deadline no request starts, even through a transport that ignore
   const twice: SourceProfile<JsonPagesSpec, unknown> = {
     ...jsonPagesProfile,
     async observe({ transport }) {
-      await transport.request({ url: "https://api.github.com/a" });
+      await transport.request({ url: "https://api.github.com/repos/o/r/issues" });
       controller.abort();
-      try { await transport.request({ url: "https://api.github.com/b" }); } catch { /* the deadline */ }
+      try { await transport.request({ url: "https://api.github.com/repos/o/r/issues" }); } catch { /* the deadline */ }
       return { records: [], nextCursor: null, more: false, complete: false };
     },
   };
-  const receipt = await harness(() => json([]), { connector: ticketConnector(GITHUB_MD) }).run({ profile: twice, transport: blind as never, signal: controller.signal, spec: API_SPEC });
-  assert.deepEqual(sent, ["https://api.github.com/a"]);
+  const receipt = await harness(() => json([]), { connector: githubConnector() }).run({ profile: twice, transport: blind as never, signal: controller.signal, spec: API_SPEC });
+  assert.deepEqual(sent, ["https://api.github.com/repos/o/r/issues"]);
   assert.equal(receipt.reason, "deadline");
 });
 
