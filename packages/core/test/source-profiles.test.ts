@@ -28,7 +28,7 @@ const json = (body: unknown, headers: Record<string, string> = {}): PeerResponse
 
 test("public catalog is inert/frozen and rest-json normalizes typed scalars through existing mapping", async () => {
   assert.equal(getSourceProfile("rest-json"), restJsonProfile);
-  assert.equal(getSourceProfile("github-issues"), undefined);
+  assert.equal(getSourceProfile("github-issues")?.kind, "extension");
   assert.ok(Object.isFrozen(SOURCE_PROFILES) && Object.isFrozen(SOURCE_PROFILES[0]));
   const request = {...baseRequest(), fields: {count: {from: "native_count", type: "integer" as const}, date: {from: "epoch", type: "epoch-date" as const}, title: {from: "name", type: "text" as const}, url: {from: "html_url", type: "url" as const}, tag: {const: "issue"}}, skip: [{path: "pull_request", present: true as const}]};
   const h = world(connector(request), () => json([{id: 1, name: 42, native_count: "12", epoch: 0, html_url: "https://example.org/i"}, {id: 2, pull_request: {}}]));
