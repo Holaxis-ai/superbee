@@ -206,3 +206,18 @@ for (const phase of ["url", "header"] as const) test(`narrowing ${phase} callbac
   assert.equal(new URL(h.peer.received[0]!.url).pathname, "/repos/octo/project/issues");
   assert.equal((await h.state.read("source-feeds/issues"))!.state.records["1"]!.after.title, "pinned");
 });
+
+for (const attributes of [
+  'title="hint; rel=prev"; rel="next"',
+  'title="hint, <other>; rel=prev"; ReL=Next',
+  'title="hint\\"; rel=prev, more"; rel="prev NEXT"',
+  'title="trailing slash\\\\"; rel=next',
+  'rel=next; title="after; rel=prev"',
+  'title*=UTF-8\'en\'hint; custom-flag; rel="next"',
+]) test(`parsed Link parameters preserve traversal and absence accounting: ${attributes}`, async () => {
+  const c = connector({...baseRequest(), paging: {kind: "link-header"}});
+  let phase = "seed";
+  const h = world(c, input => phase === "seed" ? json([{id: 1, title: "one"}, {id: 2, title: "two"}]) : new URL(input.url).searchParams.has("page") ? json([{id: 2, title: "two"}]) : json([{id: 1, title: "one"}], {link: `<https://api.github.com/repos/octo/project/issues?page=2>; ${attributes}`}));
+  h.bound.policy.missing_threshold = 1; await h.run(); phase = "paged";
+  const result = await h.run(); assert.equal(result.pages, 2); assert.equal(result.pass.complete, true); assert.equal(result.changes.disappeared, 0);
+});

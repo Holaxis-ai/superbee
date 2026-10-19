@@ -1,4 +1,5 @@
 /** Credential-free declarative profiles. All requests go through the source engine's transport. */
+import { nextLinkTarget } from "./link-header.js";
 import { validateConnectorRequest, readSourcePath, renderRequestValue } from "../connectors.js";
 import type { ConnectorSource } from "../connectors.js";
 import type { SourceProfile, ObserveContext } from "../source-engine/types.js";
@@ -129,29 +130,7 @@ export const restJsonProfile: SourceProfile<ConnectorSource, RestJsonCursor> = O
     let url: string | undefined;
     let more = false;
     if (paging?.kind === "link-header") {
-      const header = response.headers.link ?? "";
-      const links: string[] = [];
-      let angle = false;
-      let quoted = false;
-      let begin = 0;
-      for (let i = 0; i < header.length; i++) {
-        const ch = header[i];
-        if (ch === "<" && !quoted) angle = true;
-        else if (ch === ">" && !quoted) angle = false;
-        else if (ch === '"' && !angle && header[i - 1] !== "\\") quoted = !quoted;
-        else if (ch === "," && !angle && !quoted) {links.push(header.slice(begin, i)); begin = i + 1;}
-      }
-      if (angle || quoted) unsupportedContent("malformed Link header");
-      if (header) links.push(header.slice(begin));
-      for (const link of links) {
-        const match = /^\s*<([^>]+)>\s*((?:;.*)?)$/.exec(link);
-        if (!match) unsupportedContent("malformed Link header");
-        const rel = /;\s*rel\s*=\s*(?:"([^"]*)"|([^;\s,]+))/i.exec(match[2]!);
-        if ((rel?.[1] ?? rel?.[2] ?? "").toLowerCase().split(/\s+/).includes("next")) {
-          if (url) unsupportedContent("multiple next links");
-          try {url = new URL(match[1]!, response.url).href;} catch {unsupportedContent("invalid next link");}
-        }
-      }
+      url = nextLinkTarget(response.headers.link ?? "", response.url);
       more = url !== undefined;
     } else if (paging?.kind === "cursor") {
       const next = readSourcePath(parsed, paging.next_path ?? paging.cursor_path!);
