@@ -113,20 +113,27 @@ provide isolation. Neither a fixture nor a recipe can implicitly select a module
 execute. Validation and installation never import one.
 
 The public [superbee-plugins repository](https://github.com/Holaxis-ai/superbee-plugins) owns the
-[GitHub package](https://github.com/Holaxis-ai/superbee-plugins/tree/main/integrations/github),
+[GitHub integration](https://github.com/Holaxis-ai/superbee-plugins/tree/main/integrations/github),
 [Work Item recipes](https://github.com/Holaxis-ai/superbee-plugins/tree/main/recipes) and
 [GitHub/Linear examples](https://github.com/Holaxis-ai/superbee-plugins/tree/main/examples). Its synthetic fixtures
 qualify mapping and observation behavior; live provider access and managed catalog admission remain
 separate evidence.
 
-## Register the installed GitHub plugin
+## Register the GitHub integration from a source checkout
 
-Install an exact reviewed version of `@superbee/integration-github` externally with npm. Then select
-its installed package directory explicitly:
+The GitHub integration is distributed through the public Git repository; no integration npm
+publication is required. Follow the repository README's
+[install from source](https://github.com/Holaxis-ai/superbee-plugins#install-the-github-integration-from-source)
+steps: select and review a full 40-character Git commit, check it out detached, install development
+tools and the exact compatible public Core version, then build. Review code before running its
+installation or build commands. Core and the Superbee CLI retain their normal npm distribution
+channels; this source checkout supplies the integration code.
+
+With that built checkout at `./superbee-plugins`, select its integration directory explicitly:
 
 ```sh
-superbee source plugin register ./node_modules/@superbee/integration-github --json
-superbee source plugin register ./node_modules/@superbee/integration-github --accept <digest-from-preview> --json
+superbee source plugin register ./superbee-plugins/integrations/github --json
+superbee source plugin register ./superbee-plugins/integrations/github --accept <digest-from-preview> --json
 superbee source plugin list --json
 superbee recipe add github:source-feeds --dir ./bundle
 superbee recipe add github:work-items --dir ./bundle
@@ -136,10 +143,13 @@ Registration copies a bounded manifest, standalone module and inert recipe bytes
 immutable generations. Preview, acceptance, listing, removal and recipe installation never import
 plugin code. Acceptance trusts those local bytes as reviewed code executing with ambient process
 authority. A package name and digest do not authenticate publisher origin or provide a sandbox.
-Superbee does not acquire npm packages. Registration grants no feed binding or credentials.
-Use the external installed package's recipe folders for `recipe validate` and `source test`.
+A full Git commit identifies the selected source; it does not authenticate the publisher or make
+that code safe. Superbee does not acquire or build integrations. Registration grants no feed binding
+or credentials. Use the checkout's `recipes/source-feeds` and `recipes/work-items` folders for
+`recipe validate` and its recorded fixtures for `source test`, following the repository examples.
 
-Updates require external npm installation, a new accepted registration and explicit feed rebind.
+Updates require reviewing another full Git commit, checking it out and rebuilding with the README's
+compatible Core setup, then a new accepted registration and explicit feed rebind.
 Rebinding changed consent resets observations and accepted tuples for reacquisition. Remove future
 availability with `superbee source plugin remove github`; already selected runs may finish their
 selected generation. Existing bundle content and retained generations are preserved.

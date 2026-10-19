@@ -323,7 +323,7 @@ exit 2, and provider_unavailable/failed exit 1. The handled CliError preserves t
 second output envelope. Deferred is not a completeness claim. Malformed input, consent and
 persistence errors remain CLI errors.
 
-Source plugins are installed externally and registered explicitly with `source plugin register
+Source plugins are prepared externally and registered explicitly with `source plugin register
 <installed-package-directory>`. Preview and `--accept <digest>` operate on a bounded manifest,
 standalone module and declared recipe bytes without importing code. Acceptance trusts local bytes;
 a supported package name and digest do not authenticate publisher origin or sandbox execution.
@@ -336,5 +336,6 @@ or transport. Compatible plugin updates require explicit re-registration and fee
 binding resets observations and accepted tuples for reacquisition. Registration grants no feed
 binding or credential reference. Recipe installation accepts `github:source-feeds` and
 `github:work-items` from the accepted inert snapshot; author validation and fixture testing use the
-external installed package's recipe folders. Recipe validation reports plugin-specific spec checks
+external source checkout's recipe folders. The author guide links the integration repository's
+pinned Git checkout and build setup. Recipe validation reports plugin-specific spec checks
 as deferred to source test/bind/run and never imports extensions.
