@@ -4,14 +4,16 @@
  * `installRecipe` creates a recipe's conventions, Connectors, View pairs and References
  * create-only, never overwriting what a bundle already holds, after checking every Connector
  * against the Kinds the bundle will hold. `planRecipeEvolution` is a read-only, state-bound
- * preflight of an additive upgrade to installed conventions and of the replacement of Connectors
+ * preflight of an additive upgrade to installed conventions and of the replacement of Connectors and References
  * this recipe wrote and nobody changed since, and `applyRecipeEvolution` applies exactly the plan
- * whose token the caller observed, one exact-version CAS write per changed definition. The caller acquires the recipe (`@superbee/core/recipes` parses files into a
+ * whose token the caller observed, one exact-version CAS write per changed target. The caller acquires the recipe (`@superbee/core/recipes` parses files into a
  * `LoadedRecipe`) and presents results and typed errors. Storage-neutral: it runs in Node,
  * Workers and browsers over any `StorageBackend`.
  *
- * Every convention and Connector either path writes carries an `x_recipe` stamp in the same write;
- * `installedRecipes` derives each recipe's install state from those stamps alone.
+ * Every convention, Connector and Reference either path writes carries an `x_recipe` stamp in the
+ * same write. Exact-source unstamped References may be explicitly adopted without replacing content.
+ * `installedRecipes` retains its convention/Connector projection; Reference ownership is inspected
+ * through evolution's optional `reference_assets` rows.
  */
 export {
   installRecipe,
@@ -34,6 +36,8 @@ export type {
   RecipeEvolutionApplyResult,
   RecipeEvolutionBlocker,
   RecipeEvolutionDefinition,
+  RecipeEvolutionReference,
+  RecipeEvolutionReferenceAssets,
   RecipeEvolutionPlan,
 } from "./evolution.js";
 export {

@@ -3444,3 +3444,116 @@ test("recipe add actor: blank flag or environment and invalid v0.2 identity refu
     assert.equal((await readDoc(bundle, loaded.recipe.docs[0]!.id)).frontmatter.actor, "Legacy installer");
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+// Reference evolution journeys use synthetic local recipes and the public command adapter.
+async function referenceJourneySource(root: string, body: string, mixed: boolean, upgraded = false): Promise<string> {
+  const source = path.join(root, "recipe");
+  await mkdir(path.join(source, "references"), { recursive: true });
+  await writeFile(path.join(source, "recipe.md"), `---\ntype: Recipe\nid: reference-journey\ntitle: Reference journey\nversion: "${upgraded ? "2" : "1"}"\nsummary: Synthetic reference definitions.\ncontent_policy: definitions-only\nreferences: [references/guide.md]\n---\n`);
+  await writeFile(path.join(source, "references/guide.md"), `---\ntype: Reference\ntitle: Synthetic guide\n---\n${body}\n`);
+  {
+    await mkdir(path.join(source, "conventions"), { recursive: true });
+    await writeFile(path.join(source, "conventions/widget.md"), `---\ntype: Convention\ntitle: Widget\ngoverns: Widget\npath: widgets/\nfields:\n  required: [title]\n  optional: [${upgraded && mixed ? "colour" : ""}]\n---\n# Widget\n`);
+  }
+  return source;
+}
+
+test("recipe Reference journey: Reference-only content change with unchanged installed Kind and mixed updates bind source tokens", async () => {
+  for (const mixed of [false, true]) {
+    const root = await tempDir();
+    try {
+      const dir = path.join(root, "bundle");
+      const bundle = await initBundle(dir);
+      const source = await referenceJourneySource(root, "Original synthetic guidance.", mixed);
+      const added = await runJson(recipe, ["add", source, "--dir", dir, "--actor", "process:reference-install"]);
+      assert.equal(added.changed, true);
+      const original = await readDoc(bundle, "references/guide");
+      assert.equal(original.frontmatter.superbee_updated_by, "process:reference-install");
+      assert.equal((original.frontmatter.x_recipe as Record<string, unknown>).id, "reference-journey");
+      await referenceJourneySource(root, "Updated synthetic guidance.", mixed, true);
+      const plan = await runJson(recipe, ["evolve", source, "--dir", dir]);
+      assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+      assert.equal(plan.changed, true);
+      assert.equal(plan.writes, 2, "the Reference update and its recipe definition stamp are both bound");
+      assert.equal((plan.definitions as unknown[]).length, 1, "References never enter the definition rows");
+      assert.equal((plan.counts as Record<string, number>).definitions, 1);
+      assert.equal((plan.counts as Record<string, number>).updates, mixed ? 1 : 0);
+      const assets = plan.reference_assets as { rows: Array<Record<string, unknown>>; counts: Record<string, number> };
+      assert.deepEqual(assets.counts, { updates: 1, stamp_writes: 0, unchanged: 0, missing: 0 });
+      assert.equal(assets.rows.length, 1);
+      assert.equal(assets.rows[0]!.id, "references/guide");
+      assert.equal(assets.rows[0]!.action, "update");
+      assert.equal(assets.rows[0]!.stamp, "stale");
+      assert.match(String(assets.rows[0]!.expected_version), /^sha256:/);
+      assert.match(String(assets.rows[0]!.desired_version), /^sha256:/);
+      assert.match(String((plan.commands as Record<string, unknown>).apply), new RegExp(`--apply ${plan.plan_token}$`));
+      // A changed selected source must invalidate its old command before any target is written.
+      await referenceJourneySource(root, "Final synthetic guidance.", mixed, true);
+      await assert.rejects(runJson(recipe, ["evolve", source, "--dir", dir, "--apply", String(plan.plan_token), "--actor", "process:reference-upgrade"]), (error: unknown) => error instanceof CliError && error.code === "STALE_HEAD");
+      assert.deepEqual(await readDoc(bundle, "references/guide"), original);
+      const fresh = await runJson(recipe, ["evolve", source, "--dir", dir]);
+      assert.notEqual(fresh.plan_token, plan.plan_token);
+      const applied = await runJson(recipe, ["evolve", source, "--dir", dir, "--apply", String(fresh.plan_token), "--actor", "process:reference-upgrade"]);
+      assert.equal(applied.recipe, "evolved");
+      assert.deepEqual(applied.counts, { updated: mixed ? 1 : 0, stamped: mixed ? 0 : 1, unchanged: 0 });
+      const result = applied.reference_assets as { rows: Array<Record<string, unknown>>; counts: Record<string, number> };
+      assert.deepEqual(result.counts, { updated: 1, stamped: 0, unchanged: 0 });
+      assert.equal(result.rows[0]!.id, "references/guide");
+      assert.equal(result.rows[0]!.asset_kind, "reference");
+      assert.equal(result.rows[0]!.changed, true);
+      assert.equal(result.rows[0]!.stamped, true);
+      assert.match(String(result.rows[0]!.version), /^sha256:/);
+      const updated = await readDoc(bundle, "references/guide");
+      assert.equal(updated.body.trim(), "Final synthetic guidance.");
+      assert.equal(updated.frontmatter.superbee_updated_by, "process:reference-upgrade");
+      const settled = await runJson(recipe, ["evolve", source, "--dir", dir]);
+      assert.equal(settled.ready, true);
+      assert.equal(settled.changed, false);
+      assert.equal(settled.writes, 0);
+      assert.deepEqual((settled.reference_assets as { counts: unknown }).counts, { updates: 0, stamp_writes: 0, unchanged: 1, missing: 0 });
+      assert.equal(settled.commands, undefined);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
+});
+
+test("recipe Reference journey: exact matching legacy content is explicitly adopted and differing legacy content stays blocked", async () => {
+  for (const matching of [true, false]) {
+    const root = await tempDir();
+    try {
+      const dir = path.join(root, "bundle");
+      const bundle = await initBundle(dir);
+      const source = await referenceJourneySource(root, "Selected synthetic guidance.", false);
+      // Model a legacy Reference without changing the grammar or the installed Kind.
+      await runJson(recipe, ["add", source, "--dir", dir, "--actor", "process:reference-install"]);
+      const installed = await readDoc(bundle, "references/guide");
+      const { x_recipe: _stamp, ...legacyFrontmatter } = installed.frontmatter;
+      await writeDoc(bundle, { ...installed, frontmatter: legacyFrontmatter, body: matching ? "Selected synthetic guidance.\n" : "Locally authored legacy guidance.\n" });
+      const before = await readDoc(bundle, "references/guide");
+      const plan = await runJson(recipe, ["evolve", source, "--dir", dir]);
+      if (!matching) {
+        assert.equal(plan.ready, false);
+        assert.ok((plan.blockers as Array<Record<string, unknown>>).some(row => row.code === "RECIPE_EVOLUTION_REFERENCE_UNPROVEN" && row.id === "references/guide"));
+        await assert.rejects(runJson(recipe, ["evolve", source, "--dir", dir, "--apply", String(plan.plan_token), "--actor", "process:reference-adopt"]), (error: unknown) => error instanceof CliError && error.code === "CONFLICT");
+        assert.deepEqual(await readDoc(bundle, "references/guide"), before);
+        continue;
+      }
+      assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+      assert.equal(plan.changed, false, "adoption establishes present ownership without changing content");
+      assert.equal(plan.writes, 1);
+      const assets = plan.reference_assets as { rows: Array<Record<string, unknown>>; counts: unknown };
+      assert.deepEqual(assets.counts, { updates: 0, stamp_writes: 1, unchanged: 1, missing: 0 });
+      assert.equal(assets.rows[0]!.action, "unchanged");
+      assert.equal(assets.rows[0]!.stamp, "missing");
+      assert.ok((plan.commands as Record<string, unknown>).apply, "stamp-only Reference plans have an apply continuation");
+      const applied = await runJson(recipe, ["evolve", source, "--dir", dir, "--apply", String(plan.plan_token), "--actor", "process:reference-adopt"]);
+      assert.equal(applied.recipe, "stamped");
+      assert.equal(applied.changed, true, "a stamp-only apply still wrote metadata");
+      assert.deepEqual((applied.reference_assets as { counts: unknown }).counts, { updated: 0, stamped: 1, unchanged: 0 });
+      const adopted = await readDoc(bundle, "references/guide");
+      assert.equal(adopted.body, before.body);
+      assert.equal((adopted.frontmatter.x_recipe as Record<string, unknown>).id, "reference-journey");
+      assert.equal(adopted.frontmatter.superbee_updated_by, "process:reference-adopt");
+      assert.equal((await runJson(recipe, ["evolve", source, "--dir", dir])).writes, 0);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
+});

@@ -1,8 +1,8 @@
-// Recipe install stamps. Every convention and Connector a recipe installs or evolves carries one
+// Recipe install stamps. Every convention, Connector and Reference a recipe installs or evolves carries one
 // `x_recipe` record, written in the same compare-and-swap write as the document, so the stamp
 // exists exactly when the document does. A stamp holds only deterministic facts: two clones that apply
-// the same evolve write identical stamps. The read side derives each recipe's state from the
-// stamps alone, without the recipe source. Storage-neutral: no Node globals or builtins.
+// the same evolve write identical stamps. The install-state read side derives convention/Connector state from their
+// stamps alone, without the recipe source; References have separate evolution rows. Storage-neutral: no Node globals or builtins.
 import { CONNECTOR_TYPE, CONNECTORS_PREFIX } from "../connectors.js";
 import { normalizeDocumentBodyForStorage } from "../frontmatter.js";
 import { CONVENTION_TYPE } from "../kinds.js";

@@ -392,6 +392,17 @@ Across both editions:
   recipes as definitions with the same stamp, never instances. Their sources live under
   `record_sources` because OKF v0.2 reserves `sources`; no top-level Connector key may be an OKF
   field. Evolve replaces a Connector only when its recipe wrote it and nobody changed it since.
+- A recipe-created `Reference` carries the same deterministic `x_recipe` ownership stamp in its
+  create-only write. Evolve can replace its content only when the same recipe's readable stamp
+  proves it has not changed locally. A genuinely unstamped Reference can adopt a stamp only when
+  it equals the selected recipe source now; this establishes present ownership, not a historical
+  version. Differing legacy, foreign-owned, malformed-stamp and locally changed assets remain
+  blocked. Missing assets still require `recipe add`; View pairs are not upgraded by this path.
+  Reference content keeps installed generation provenance and local placement while the shared
+  mutation policy advances clocks and attributes the writer. Evolution exposes separate optional
+  `reference_assets` rows/counts; `definitions` and their counts still mean conventions/Connectors,
+  while top-level `ready`, `changed` and `writes` now cover the whole operation. The existing
+  `installedRecipes` projection remains convention/Connector state, not proof of every asset.
 - Generated internal links use relative bundle-relative Markdown hrefs. External URLs pass through;
   concept IDs remain canonical and bundle-relative.
 - YAML timestamp scalars retain their source strings in v0.2, including the legacy `timestamp`
