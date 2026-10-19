@@ -27,8 +27,10 @@ for normalization, paging and completeness behavior.
 
 For the single Superbee CLI, install an exact released package using npm's ordinary installation
 controls, then run `superbee source plugin register <installed-package-directory>` and accept its
-concrete proposal digest. `superbee source plugin list` reports active metadata and recipe paths.
-Install those recipe directories with `superbee recipe add`, then explicitly bind and run the feed.
+concrete proposal digest. `superbee source plugin list` reports active package and profile metadata.
+Install the accepted recipe bytes with `superbee recipe add github:source-feeds`, followed by
+`superbee recipe add github:work-items`, then explicitly bind and run the feed. For author validation
+and fixture tests, select the recipe directories in the externally installed npm package.
 A plugin upgrade requires registration and feed rebinding; rebinding to a changed implementation
 resets prior observation and accepted overlay state, so the next run reacquires it.
 
