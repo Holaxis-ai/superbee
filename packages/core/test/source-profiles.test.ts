@@ -221,3 +221,13 @@ for (const attributes of [
   h.bound.policy.missing_threshold = 1; await h.run(); phase = "paged";
   const result = await h.run(); assert.equal(result.pages, 2); assert.equal(result.pass.complete, true); assert.equal(result.changes.disappeared, 0);
 });
+
+test("provider-owned after paging is bounded centrally for rest-json too", async () => {
+  for (const token of ["opaque-token", "", "x".repeat(2049)]) {
+    let calls = 0;
+    const h = world(connector({...baseRequest(), query: {state: "all"}, paging: {kind: "link-header"}}), () => ++calls === 1
+      ? json([{id: 1, title: "one"}], {link: `<https://api.github.com/repos/octo/project/issues?state=all&after=${token}>; rel="next"`}) : json([]));
+    const result = await h.run(); assert.equal(result.outcome, token === "opaque-token" ? "observed" : "refused");
+    assert.equal(h.peer.received.length, token === "opaque-token" ? 2 : 1);
+  }
+});

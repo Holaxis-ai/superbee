@@ -236,7 +236,7 @@ export const githubIssuesProfile: SourceProfile<ConnectorSource, RestJsonCursor>
         const boundPath = `/repos/${encodeURIComponent(ctx.bound.parameters.owner!)}/${encodeURIComponent(ctx.bound.parameters.repo!)}/issues`;
         if (target.origin !== "https://api.github.com" || !numeric && target.pathname !== boundPath) return response;
         const pageNumber = target.searchParams.get("page");
-        if (target.searchParams.getAll("page").length !== 1 || !/^[1-9][0-9]*$/.test(pageNumber ?? "") || !Number.isSafeInteger(Number(pageNumber))) unsupportedContent("invalid GitHub next page");
+        if (pageNumber === null ? !target.searchParams.has("after") : target.searchParams.getAll("page").length !== 1 || !/^[1-9][0-9]*$/.test(pageNumber) || !Number.isSafeInteger(Number(pageNumber))) unsupportedContent("invalid GitHub next page");
         const size = ctx.spec.request!.query?.per_page;
         if (target.searchParams.getAll("per_page").length > 1 || target.searchParams.has("per_page") && target.searchParams.get("per_page") !== String(size ?? 30)) unsupportedContent("GitHub next page changed page size");
         if (!numeric) return response;

@@ -19,8 +19,9 @@ source body and navigation URLs are not presented. Unknown provider fields are n
 GitHub commonly returns numeric `/repositories/{id}/issues` Link targets without repository id
 metadata in issue rows. The profile never requests that numeric path or treats its id as identity.
 It reuses only the paging query against the original named bound repository, which must pass the
-engine's existing query guard. Every next page needs one positive safe integer `page`; explicit
-page size must stay fixed. Foreign hosts and unrelated paths are refused by the existing guard.
+engine's existing query guard. Every next page needs a positive safe integer `page` or one opaque `after` cursor (both may
+be present). The provider request guard bounds `after` to one nonempty printable ASCII value
+of at most2048 decoded characters; it is retained as query data. Explicit page size stays fixed. Foreign hosts and unrelated paths are refused by the existing guard.
 The stored cursor contains the bound named path. This does not authorize repository transfers.
 
 A resumed run restarts the listing because Link page numbers are unstable across runs. Only a
@@ -30,5 +31,6 @@ claim completeness. Committed pages retain the engine's replay semantics.
 
 Recorded fixtures follow the official [repository issues response](https://docs.github.com/en/rest/issues/issues#list-repository-issues)
 and [REST pagination](https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api)
-(reference checked 2026-10-19, API version 2026-03-10). Values are invented. These fixtures establish
+(reference checked 2026-10-19, including documented REST Link `before`/`after` pagination; only
+forward `after` is admitted for this profile, API version 2026-03-10). Values are invented. These fixtures establish
 offline profile behavior; they do not establish live-provider, installed-CLI, credential or release proof.

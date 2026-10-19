@@ -28,6 +28,9 @@ const githubRules = Object.freeze({
   read_posts: Object.freeze([Object.freeze({path: "/graphql", graphql: true})]),
   headers: Object.freeze(["x-github-api-version"]),
   paging_query: Object.freeze(["page", "per_page"]),
+  // REST Link URLs may carry opaque before/after cursors. Only observed forward issues paging
+  // is admitted here; cursor text grants no path, filter or template authority.
+  paging_cursors: Object.freeze({after: 2048}),
   next: Object.freeze([Object.freeze({path: "/repositories/{id}/issues", id_path: "repository.id"})]),
 });
 export const AUTH_PROVIDER_REQUEST_RULES: Readonly<Record<string, typeof githubRules>> = Object.freeze({github: githubRules});
@@ -212,8 +215,10 @@ export function declarationRequestRules(connector: Pick<Connector, "auth" | "dom
   const nextPath = (url: URL): boolean => repositoryId !== undefined && row?.next.some(form => url.pathname === form.path.replace("{id}", repositoryId!)) === true;
   const queryAllowed = (url: URL): boolean => {
     const p = request.paging;
-    const dynamic = new Set([p?.size_param, p?.page_param, p?.offset_param, request.watermark?.param, ...(p?.kind === "link-header" ? row?.paging_query ?? [] : [])]);
+    const cursors: Readonly<Record<string, number>> = p?.kind === "link-header" ? row?.paging_cursors ?? {} : {};
+    const dynamic = new Set([p?.size_param, p?.page_param, p?.offset_param, request.watermark?.param, ...(p?.kind === "link-header" ? row?.paging_query ?? [] : []), ...Object.keys(cursors)]);
     for (const [name, value] of url.searchParams) {
+      if (Object.hasOwn(cursors, name) && (url.searchParams.getAll(name).length !== 1 || value.length > cursors[name]! || !/^[\x21-\x7e]+$/.test(value))) return false;
       if (dynamic.has(name)) continue;
       const declared = request.query?.[name];
       if (declared === undefined) return false;
