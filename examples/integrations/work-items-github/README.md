@@ -39,13 +39,14 @@ a Work Item with its title and repository-scoped source identity. In the fixture
 observation fills empty owned fields in one write, preserves manual overrides with a conflict
 Signal, and leaves the body and human-owned fields untouched.
 
-The test's adoption/accepted-observation orchestration is deliberately local to the fixture.
-It uses `changeBetween({}, mapped, ...)` for a newly bound document; there is currently no public
-`adoptionChange` helper or production runner implementing that contract. The fixture remembers
-accepted values for the feed/record/document tuple after applied, unchanged, converged and
-partial-conflict outcomes. A refused, stale or uncertain whole step commits nothing. Resetting
-this store and replaying a converged observation must still commit that baseline so the next
-actual source edit does not falsely conflict. Do not reuse the fixture store as a durable runner.
+The fixture and local `source run` use core's shared source-overlay adapter for adoption and
+accepted observations. It tracks accepted values for each feed/resource/record/document tuple,
+including applied, unchanged, converged and partial-conflict outcomes. A refused, stale or
+uncertain whole step does not accept that candidate. Newly adopted documents are reconciled
+against already observed records even when the provider has no new changes. The adapter stages
+accepted values until the caller persists the matching source observation; the CLI owns the
+private durable envelope, while the fixture uses an in-memory store. The offline fixture itself
+does not establish live transport or credential handling.
 
 Unknown native values keep the prior mapped field. Findings deduplicate per source, field,
 diagnostic code and native value: an unknown closed reason affects both `state_category` and
