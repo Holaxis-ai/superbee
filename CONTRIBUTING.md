@@ -133,7 +133,9 @@ owns the settings rollout after these workflows and current-main status evidence
 The canonical and both legacy engine gates call the same queue-aware wrapper from the candidate
 checkout. It uses the strict `.github/actions/ci-gate` evaluator for ordinary full results; reuse
 requires complete native queue-run/job/check association, unchanged newest-run and attempt identity,
-and successful current engines-floor smoke. A stale aggregate refuses with full-dispatch recovery.
+successful current engines-floor smoke, and no newer pending or unsuccessful manual/main-push
+run on that source. The current push cannot veto itself. A stale aggregate refuses with full-dispatch
+recovery.
 The complete explicit policy must agree with every required lane. Consumer repositories pin the
 shared action to a reviewed full SHA and retain their own lane/scope wiring tests. The scripts lane
 runs the queue-proof fixtures, shared evaluator suite and engine readiness tests. Terraform validation and

@@ -63,7 +63,7 @@ async function collection(api, route, key) {
 
 export function eligible(context) {
   return context.event === 'push' && context.ref === 'refs/heads/main' && context.attempt === 1 &&
-    context.repository === policy.repository && context.repositoryId === policy.repository_id && /^[a-f0-9]{40}$/.test(context.sha);
+    context.repository === policy.repository && context.repositoryId === policy.repository_id && positive(context.runId) && /^[a-f0-9]{40}$/.test(context.sha);
 }
 function validRun(run, sha) {
   requireProof(record(run) && positive(run.id) && positive(run.run_attempt) && positive(run.check_suite_id), 'invalid run identity');
@@ -83,6 +83,27 @@ async function newestRun(api, sha) {
   requireProof(rows.length === 1 || rows[0].created_at !== rows[1].created_at, 'ambiguous newest run');
   return rows[0];
 }
+// Other events can veto older proof, but can never provide positive reuse authority.
+async function rejectContradictoryRuns(api, context, queue) {
+  const base = `/repos/${policy.repository}`;
+  const rows = await collection(api, `${base}/actions/workflows/${policy.workflow_id}/runs?head_sha=${context.sha}`, 'workflow_runs');
+  requireProof(new Set(rows.map(run => run.id)).size === rows.length, 'ambiguous source runs');
+  for (const listed of rows) {
+    requireProof(positive(listed.id), 'invalid source run identity');
+    if (listed.id === context.runId) continue;
+    if (listed.event !== 'workflow_dispatch' && !(listed.event === 'push' && listed.head_branch === 'main')) continue;
+    const run = await api(`${base}/actions/runs/${listed.id}`);
+    requireProof(run.id === listed.id && positive(run.run_attempt) && run.workflow_id === policy.workflow_id && run.path === policy.workflow_path &&
+      run.head_sha === context.sha && run.event === listed.event && run.head_branch === listed.head_branch &&
+      run.repository?.id === policy.repository_id && run.repository?.full_name === policy.repository &&
+      run.head_repository?.id === policy.repository_id && run.head_repository?.full_name === policy.repository &&
+      Array.isArray(run.referenced_workflows) && run.referenced_workflows.length === 0, 'ambiguous full-run provenance');
+    const times = [run.created_at, run.run_started_at, run.updated_at].filter(value => value !== undefined);
+    requireProof(times.length > 0 && times.every(value => typeof value === 'string' && Number.isFinite(Date.parse(value))), 'invalid full-run time');
+    const later = Math.max(...times.map(value => Date.parse(value))) >= Date.parse(queue.created_at);
+    requireProof(!later || (run.status === 'completed' && run.conclusion === 'success'), 'newer full source proof is pending or unsuccessful');
+  }
+}
 const identity = run => ({ run: run.id, attempt: run.run_attempt, suite: run.check_suite_id });
 export async function verifyQueueProof(api, context) {
   requireProof(eligible(context), 'event requires full CI');
@@ -90,6 +111,7 @@ export async function verifyQueueProof(api, context) {
   const base = `/repos/${policy.repository}`;
   const run = await api(`${base}/actions/runs/${listed.id}`);
   validRun(run, context.sha);
+  await rejectContradictoryRuns(api, context, run);
   requireProof(JSON.stringify(identity(run)) === JSON.stringify(identity(listed)), 'run changed after listing');
   const jobs = await collection(api, `${base}/actions/runs/${run.id}/attempts/${run.run_attempt}/jobs`, 'jobs');
   requireProof(JSON.stringify(jobs.map(job => job.name).sort()) === JSON.stringify(expectedQueueJobs()), 'incomplete queue job topology');
@@ -106,6 +128,7 @@ export async function verifyQueueProof(api, context) {
   validRun(final, context.sha);
   const newest = await newestRun(api, context.sha);
   validRun(newest, context.sha);
+  await rejectContradictoryRuns(api, context, run);
   requireProof(JSON.stringify(identity(final)) === JSON.stringify(identity(run)) && JSON.stringify(identity(newest)) === JSON.stringify(identity(run)), 'queue evidence superseded');
   return { ...identity(run), sha: context.sha, policy: policyDigest };
 }
@@ -132,7 +155,7 @@ export async function evaluateQueueResults(results, context, api) {
 }
 export function contextFromEnv(env) {
   return { event: env.GITHUB_EVENT_NAME, ref: env.GITHUB_REF, sha: env.GITHUB_SHA, attempt: Number(env.GITHUB_RUN_ATTEMPT),
-    repository: env.GITHUB_REPOSITORY, repositoryId: Number(env.GITHUB_REPOSITORY_ID) };
+    repository: env.GITHUB_REPOSITORY, repositoryId: Number(env.GITHUB_REPOSITORY_ID), runId: Number(env.GITHUB_RUN_ID) };
 }
 export async function main(env = process.env, api = createQueueApi({ token: env.GITHUB_TOKEN }), mode = process.argv[2]) {
   const context = contextFromEnv(env);

@@ -6,17 +6,20 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { manifest, expectedQueueJobs, decide, verifyQueueProof, evaluateQueueResults, eligible, createQueueApi, policyDigest, main } from './ci-queue-proof.mjs';
 const p = manifest.queue_reuse;
-const context = { repository: p.repository, repositoryId: p.repository_id, event: 'push', ref: 'refs/heads/main', attempt: 1, sha: 'a'.repeat(40) };
+const context = { repository: p.repository, repositoryId: p.repository_id, event: 'push', ref: 'refs/heads/main', attempt: 1, runId: 99, sha: 'a'.repeat(40) };
 function fixture() {
   const run = { id: 10, created_at: '2026-10-19T10:00:00Z', run_attempt: 1, check_suite_id: 20, repository: { id: p.repository_id, full_name: p.repository }, head_repository: { id: p.repository_id, full_name: p.repository },
     head_sha: context.sha, event: 'merge_group', workflow_id: p.workflow_id, path: p.workflow_path, head_branch: 'gh-readonly-queue/main/pr-1-base', referenced_workflows: [], status: 'completed', conclusion: 'success' };
   const jobs = expectedQueueJobs().map((name, i) => ({ id: 100 + i, name, run_id: run.id, run_attempt: 1, head_sha: context.sha, status: 'completed', conclusion: 'success', check_run_url: `https://api.github.com/repos/${p.repository}/check-runs/${100 + i}` }));
   const checks = Object.fromEntries(jobs.map(job => [job.id, { id: job.id, name: job.name, head_sha: context.sha, status: 'completed', conclusion: 'success', check_suite: { id: 20 }, app: { id: p.app_id, slug: 'github-actions' } }]));
-  const data = { run, jobs, checks, runs: [run], calls: [] };
+  const data = { run, jobs, checks, runs: [run], sourceRuns: [], calls: [] };
   data.api = async route => {
     data.calls.push(route);
+    if (route.includes('/runs?') && !route.includes('event=merge_group')) return structuredClone({ total_count: data.sourceRuns.length, workflow_runs: data.sourceRuns });
     if (route.includes('/runs?')) return structuredClone({ total_count: data.runs.length, workflow_runs: data.runs });
     if (route.includes('/jobs?')) return structuredClone({ total_count: data.jobs.length, jobs: data.jobs });
+    const source = data.sourceRuns.find(run => route.endsWith(`/runs/${run.id}`));
+    if (source) return structuredClone(source);
     if (route.endsWith('/runs/10')) return structuredClone(data.run);
     if (route.includes('/check-runs/')) return structuredClone(data.checks[route.split('/').at(-1)]);
     throw new Error(`unexpected route ${route}`);
@@ -88,7 +91,7 @@ test('attempt changes and a newly listed relevant run invalidate admission', asy
   for (const kind of ['attempt', 'status', 'new-run']) {
     const f = fixture(); const api = f.api; let lists = 0, reads = 0;
     f.api = async route => {
-      if (route.includes('/runs?') && ++lists === 2 && kind === 'new-run') f.runs.push({ ...f.run, id: 11, created_at: '2026-10-19T11:00:00Z' });
+      if (route.includes('event=merge_group') && ++lists === 2 && kind === 'new-run') f.runs.push({ ...f.run, id: 11, created_at: '2026-10-19T11:00:00Z' });
       if (route.endsWith('/runs/10') && ++reads === 2) {
         if (kind === 'attempt') f.run.run_attempt++;
         if (kind === 'status') f.run.conclusion = 'failure';
@@ -164,7 +167,7 @@ test('literal helper main produces admitted outputs and aggregate native evidenc
   try {
     const f = fixture(); const output = path.join(dir, 'output'); const summary = path.join(dir, 'summary');
     const env = { GITHUB_EVENT_NAME: context.event, GITHUB_REF: context.ref, GITHUB_SHA: context.sha, GITHUB_RUN_ATTEMPT: '1',
-      GITHUB_REPOSITORY: p.repository, GITHUB_REPOSITORY_ID: String(p.repository_id), GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary };
+      GITHUB_REPOSITORY: p.repository, GITHUB_REPOSITORY_ID: String(p.repository_id), GITHUB_RUN_ID: String(context.runId), GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary };
     await main(env, f.api, 'decision');
     const text = readFileSync(output, 'utf8');
     assert.match(text, /^reuse=true\nproof=/);
@@ -187,15 +190,50 @@ test('pagination must be complete, stable and duplicate-free even across multipl
   f.run.created_at = runs.at(-1).created_at;
   let pageTwo = false;
   const api = async route => {
-    if (!route.includes('/runs?')) return baseApi(route);
+    if (!route.includes('event=merge_group')) return baseApi(route);
     const page = Number(new URL(`https://api.github.com${route}`).searchParams.get('page'));
     if (page === 2) pageTwo = true;
     return { total_count: runs.length, workflow_runs: page === 1 ? runs.slice(0, 100) : runs.slice(100) };
   };
   assert.equal((await decide(api, context)).reuse, true);
   assert.equal(pageTwo, true);
-  const changedCount = route => route.includes('/runs?') && route.endsWith('page=2') ? { total_count: 102, workflow_runs: runs.slice(100) } : api(route);
+  const changedCount = route => route.includes('event=merge_group') && route.endsWith('page=2') ? { total_count: 102, workflow_runs: runs.slice(100) } : api(route);
   assert.deepEqual(await decide(changedCount, context), { reuse: false });
   const tie = fixture(); tie.runs.push({ ...tie.run, id: 11 });
   assert.deepEqual(await decide(tie.api, context), { reuse: false });
+});
+
+test('newer trusted manual or main-push failures and pending runs veto old queue success', async () => {
+  for (const event of ['workflow_dispatch', 'push']) {
+    for (const patch of [{ status: 'in_progress', conclusion: null }, { conclusion: 'failure' }, { conclusion: 'cancelled' }]) {
+      const f = fixture();
+      f.sourceRuns.push({ ...f.run, id: 50, event, head_branch: 'main', created_at: '2026-10-19T11:00:00Z', ...patch });
+      assert.deepEqual(await decide(f.api, context), { reuse: false }, `${event} ${JSON.stringify(patch)}`);
+    }
+  }
+});
+
+test('current push is excluded, other-event success is no positive authority, and older reruns can veto', async () => {
+  const f = fixture();
+  f.sourceRuns.push({ ...f.run, id: context.runId, event: 'push', head_branch: 'main', status: 'in_progress', conclusion: null, created_at: '2026-10-19T12:00:00Z' });
+  assert.equal((await decide(f.api, context)).reuse, true);
+  f.runs = [];
+  f.sourceRuns[0].conclusion = 'success'; f.sourceRuns[0].status = 'completed';
+  assert.deepEqual(await decide(f.api, context), { reuse: false });
+  const rerun = fixture();
+  rerun.sourceRuns.push({ ...rerun.run, id: 50, event: 'workflow_dispatch', head_branch: 'main', created_at: '2026-10-19T09:00:00Z', run_attempt: 2, run_started_at: '2026-10-19T11:00:00Z', conclusion: 'failure' });
+  assert.deepEqual(await decide(rerun.api, context), { reuse: false });
+});
+
+test('aggregate newly appearing contradictory full run fails, and ambiguous candidate provenance refuses', async () => {
+  const f = fixture(); const proof = await verifyQueueProof(f.api, context);
+  f.sourceRuns.push({ ...f.run, id: 50, event: 'workflow_dispatch', head_branch: 'main', created_at: '2026-10-19T11:00:00Z', conclusion: 'failure' });
+  await assert.rejects(evaluateQueueResults(current(true, proof), context, f.api));
+  for (const patch of [{ workflow_id: 1 }, { path: '.github/workflows/unrelated.yml' }, { repository: { id: 1 } }, { head_repository: { id: 1 } }]) {
+    const other = fixture(); other.sourceRuns.push({ ...other.run, id: 50, event: 'workflow_dispatch', head_branch: 'main', ...patch });
+    assert.deepEqual(await decide(other.api, context), { reuse: false });
+  }
+  const irrelevant = fixture();
+  irrelevant.sourceRuns.push({ id: 50, event: 'pull_request', workflow_id: 1, conclusion: 'failure' });
+  assert.equal((await decide(irrelevant.api, context)).reuse, true);
 });
