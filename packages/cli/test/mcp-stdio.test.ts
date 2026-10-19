@@ -81,6 +81,7 @@ test("built npm CLI serves the fixed MCP App contract over clean stdio", async (
   assert.equal(client.getServerVersion()?.version, distributionVersion);
   const tools = await client.listTools();
   assert.deepEqual(tools.tools.map((tool) => tool.name), [
+    "search_documents",
     "show_document",
     "list_views",
     "show_view",
@@ -103,6 +104,11 @@ test("built npm CLI serves the fixed MCP App contract over clean stdio", async (
     Array.from({ length: 9 }, () => ["app"]),
     "lifecycle and bridge tools belong to the trusted App",
   );
+
+  const searched = await client.callTool({ name: "search_documents", arguments: { query: "transport" } });
+  assert.equal(searched.isError, undefined);
+  assert.deepEqual((searched.structuredContent as { hits: { id: string }[] }).hits.map((hit) => hit.id), ["tasks/stdio"]);
+  assert.equal(JSON.stringify(searched).includes(root), false);
 
   const document = await client.callTool({
     name: "show_document",
@@ -192,6 +198,7 @@ test("built bare MCP server resolves documents and Views through the private wor
   await client.connect(transport);
   const tools = await client.listTools();
   assert.deepEqual(tools.tools.map((tool) => tool.name), [
+    "search_documents",
     "list_workspaces",
     "show_document",
     "list_views",
@@ -213,6 +220,13 @@ test("built bare MCP server resolves documents and Views through the private wor
   const listed = await client.callTool({ name: "list_workspaces", arguments: {} });
   assert.match(JSON.stringify(listed.structuredContent), /planning/);
   assert.doesNotMatch(JSON.stringify(listed), new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+
+  const missingSearchWorkspace = await client.callTool({ name: "search_documents", arguments: { query: "explicit" } });
+  assert.equal(missingSearchWorkspace.isError, true);
+  const searched = await client.callTool({ name: "search_documents", arguments: { query: "explicit", workspace: "planning" } });
+  assert.equal(searched.isError, undefined);
+  assert.deepEqual((searched.structuredContent as { hits: { id: string }[] }).hits.map((hit) => hit.id), ["docs/brief"]);
+  assert.equal(JSON.stringify(searched).includes(root), false);
 
   const shown = await client.callTool({
     name: "show_document",

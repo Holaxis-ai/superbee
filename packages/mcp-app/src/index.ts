@@ -51,3 +51,5 @@ export {
   type McpWorkspaceResolver,
   type McpWorkspaceSummary,
 } from "./workspace.js";
+
+export { SEARCH_DOCUMENTS_TOOL_NAME } from "./search.js";

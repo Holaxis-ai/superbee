@@ -403,6 +403,12 @@ export const CLI_COMMAND_GROUPS = [
           "Query concepts newest-first by meaningful change time (alias: query) — a comma in --field's value is set membership (OR); --open excludes terminal instances (declared kinds only)",
       },
       {
+        id: "search",
+        leaves: [publicLeaf("search", "search", one, 41, DIR_SURFACE)],
+        usage: "search <query> [--type <t>] [--tag <t>] [--prefix <p>] [--match auto|all|any] [--limit <n>] [--cursor <token>] [--facets type,tags] [--dir <path>]",
+        summary: "Search current local document text with ranked matches and bounded cursor pages",
+      },
+      {
         id: "link",
         leaves: [
           publicLeaf("linkAdd", "link add", two, 9, DIR_SURFACE),

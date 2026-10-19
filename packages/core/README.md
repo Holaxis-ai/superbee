@@ -468,7 +468,11 @@ report's `kindLint` stays advisory. Both use core's one validator, `validateAgai
 query normalization, ranking (`portal-webmcp-search/v1`), the any-term fallback, facets, cursors
 and page budgets. A backend supplies what it searches through `SearchSource`: one `evidence()`
 call per request and `text()` for the page's excerpts. `memorySearchSource` indexes a complete
-corpus in memory. The subpath uses no Node globals or builtins.
+corpus in memory. `searchSourceFromBackend(backend, options?)` reads a complete local
+backend in bounded batches, applies the same memory-source bounds, and derives the corpus key
+from the versions actually read. Validate the request before calling it and pass an opaque
+bundle identity as the search scope. Failed reads refuse the whole corpus. The subpath uses
+no Node globals or builtins.
 
 ```ts
 import { memorySearchSource, searchDocuments } from "@superbee/core/search";

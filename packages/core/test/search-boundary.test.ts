@@ -1,6 +1,6 @@
 /**
- * The `@superbee/core/search` boundary: the subpath imports only itself, core's pure SHA-256 and
- * core's types, and names no Node global, so a Worker, a browser page and the CLI load the same
+ * The `@superbee/core/search` boundary: the subpath imports only itself, core's pure SHA-256, canonical paths, typed errors, heads digest and
+ * erased types, and names no Node global, so a Worker, a browser page and the CLI load the same
  * bytes. The browser-bundle test runs the built subpath in a sandbox with only TextEncoder and
  * TextDecoder; this one fences the source so a new import is refused before anything is built.
  */
@@ -16,6 +16,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const SEARCH_ROOT = path.resolve(here, "../src/search");
 const ALLOWED_OUTSIDE = new Map([
   ["../sha256.js", "value"],
+  ["../paths.js", "value"],
+  ["../errors.js", "value"],
+  ["../heads-digest.js", "value"],
   ["../types.js", "type-only"],
 ]);
 const NODE_GLOBALS = new Set(["Buffer", "process", "require", "createRequire", "global", "__dirname", "__filename"]);
@@ -34,7 +37,7 @@ function violationsIn(file: string, source: string): string[] {
       if (specifier.startsWith("./") && !specifier.slice(2).includes("/")) {
         // A sibling inside the subpath.
       } else if (ALLOWED_OUTSIDE.get(specifier) === "value" || (ALLOWED_OUTSIDE.get(specifier) === "type-only" && typeOnly)) {
-        // Core's pure SHA-256, or core's types erased at build.
+        // Explicit pure core dependencies, or core's types erased at build.
       } else {
         flag(node, `reaches outside the search subpath: "${specifier}"`);
       }
@@ -48,7 +51,7 @@ function violationsIn(file: string, source: string): string[] {
   return violations;
 }
 
-test("the search subpath imports only itself, core's SHA-256 and core's types, and names no Node global", async () => {
+test("the search subpath imports only its approved pure core dependencies and names no Node global", async () => {
   const files = (await readdir(SEARCH_ROOT)).filter((name) => name.endsWith(".ts")).sort();
   assert.ok(files.includes("index.ts") && files.includes("memory-source.ts"), files.join(","));
   const violations: string[] = [];
@@ -77,4 +80,13 @@ test("the fence refuses an outside import, a value import of types, a node: impo
     'search/planted.ts:6: names the Node global "process"',
   ]);
   assert.deepEqual(violationsIn(path.join(SEARCH_ROOT, "planted.ts"), 'import type { OkfDocument } from "../types.js";'), []);
+});
+
+test("the fence admits only the named pure dependencies, not other pure core modules", () => {
+  const file = path.join(SEARCH_ROOT, "planted.ts");
+  for (const module of ["paths", "errors", "heads-digest"])
+    assert.deepEqual(violationsIn(file, `import { value } from "../${module}.js";`), []);
+  assert.deepEqual(violationsIn(file, 'import { matchesFilter } from "../query-filter.js";'), [
+    'search/planted.ts:1: reaches outside the search subpath: "../query-filter.js"',
+  ]);
 });

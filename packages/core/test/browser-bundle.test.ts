@@ -674,9 +674,9 @@ test("core/search answers the parity golden in a sandbox with only TextEncoder a
   assert.equal(result.errors.length, 0, JSON.stringify(result.errors, null, 2));
   const inputs = Object.keys(result.metafile!.inputs).map((input) => input.split(path.sep).join("/"));
   assert.deepEqual(
-    inputs.filter((input) => !/(?:^|\/)dist\/(?:search\/[a-z-]+|sha256)\.js$/.test(input)),
+    inputs.filter((input) => !/(?:^|\/)dist\/(?:search\/[a-z-]+|sha256|paths|errors|heads-digest)\.js$/.test(input)),
     [],
-    "the bundle holds only the search subpath and core's SHA-256",
+    "the bundle holds only search and the approved pure SHA-256, paths, errors and heads-digest modules",
   );
   const sandbox: Record<string, unknown> = { TextEncoder, TextDecoder };
   assert.equal(runInNewContext("typeof process", sandbox), "undefined");
@@ -689,6 +689,15 @@ test("core/search answers the parity golden in a sandbox with only TextEncoder a
   const scenario = `async (api, fixture) => {
     const parity = JSON.parse(fixture);
     const source = api.memorySearchSource(parity.documents, { key: "parity" });
+    const backend = {
+      list: async () => parity.documents.map((document) => document.id),
+      readMany: async (ids) => ids.map((id) => {
+        const { version, ...doc } = parity.documents.find((document) => document.id === id);
+        return { doc, version };
+      }),
+    };
+    const backendSource = await api.searchSourceFromBackend(backend);
+    const backendAnswer = await api.searchDocuments(backendSource, { query: "alpha" }, { scope: "sandbox" });
     const answers = [];
     for (const { request } of parity.cases)
       answers.push(await api.searchDocuments(source, { ...request, limit: 50, facets: ["type", "tags"] }, { scope: "sandbox" }));
@@ -697,7 +706,7 @@ test("core/search answers the parity golden in a sandbox with only TextEncoder a
       const row = api.searchRowText(document);
       return { ...row, instances: [...row.instances] };
     });
-    return JSON.stringify({ indexDigest: source.indexDigest, answers, paged, rows, textVersion: api.textVersion() });
+    return JSON.stringify({ indexDigest: source.indexDigest, backendKey: backendSource.key, backendAnswer, answers, paged, rows, textVersion: api.textVersion() });
   }`;
   sandbox.fixture = fixture;
   const inSandbox = (await runInNewContext(`(${scenario})(SuperbeeSearch, fixture)`, sandbox)) as string;

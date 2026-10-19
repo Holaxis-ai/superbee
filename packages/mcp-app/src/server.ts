@@ -66,6 +66,7 @@ import {
   type McpWorkspaceSummary,
 } from "./workspace.js";
 import { McpServer202012 } from "./mcp-server-2020-12.js";
+import { registerSearchTool } from "./search.js";
 import { registerOperationTools } from "./operations.js";
 
 // MCP Apps hosts may preload/cache resources by URI. Keep one URI immutable to one exact shell
@@ -820,6 +821,9 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
   const workspaceResolver = "workspaceResolver" in options
     ? options.workspaceResolver
     : undefined;
+  registerSearchTool(server, workspaceResolver
+    ? { resolver: workspaceResolver, selector: workspaceSelectorSchema }
+    : { context: createMcpBundleContext(options as CreateFixedMcpAppServerOptions) });
   const pendingDocuments = new PendingClaimRegistry<DocumentPresentationPayload>();
   const pendingLaunches = new PendingLaunchRegistry();
   const launchRuntimes = new Map<string, McpBundleRuntime>();

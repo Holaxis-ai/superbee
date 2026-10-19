@@ -92,6 +92,18 @@ function bound(name: string, value: number | undefined, ceilingName: string, cei
   return value < ceiling ? { name, max: value } : { name: ceilingName, max: ceiling };
 }
 
+/** Shared bounds for direct and backend-fed memory corpora. */
+export function memorySearchBounds(options: Omit<MemorySearchSourceOptionsV1, "key">) {
+  const maxDocuments = bound("maxDocuments", options.maxDocuments, "maxIndexDocuments", SEARCH_LIMITS.maxIndexDocuments);
+  const maxSourceBytes = bound(
+    "maxSourceBytes",
+    options.maxSourceBytes,
+    "maxIndexSourceBytes",
+    SEARCH_LIMITS.maxIndexSourceBytes,
+  );
+  return { maxDocuments, maxSourceBytes };
+}
+
 /** Every body occurrence's byte range by term, or nothing when the body is over the term cap. */
 function indexBody(body: string, maxTermsPerDocument: number): Map<string, BodyToken[]> | undefined {
   const terms = new Map<string, BodyToken[]>();
@@ -123,13 +135,7 @@ export function memorySearchSource(
 ): MemorySearchSourceV1 {
   const key = options?.key;
   if (typeof key !== "string" || key === "") throw new TypeError("memorySearchSource needs a non-empty key");
-  const maxDocuments = bound("maxDocuments", options.maxDocuments, "maxIndexDocuments", SEARCH_LIMITS.maxIndexDocuments);
-  const maxSourceBytes = bound(
-    "maxSourceBytes",
-    options.maxSourceBytes,
-    "maxIndexSourceBytes",
-    SEARCH_LIMITS.maxIndexSourceBytes,
-  );
+  const { maxDocuments, maxSourceBytes } = memorySearchBounds(options);
   const stop = options.stop;
   stopIfAsked(stop);
   if (documents.length > maxDocuments.max) limitExceeded(maxDocuments.name, maxDocuments.max, documents.length);
