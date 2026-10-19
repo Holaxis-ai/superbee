@@ -685,3 +685,25 @@ test("end to end: install, stamps, a report, an evolve that adds a source, then 
     }
   });
 });
+
+test("evolve: mixed convention, Connector and Reference targets retain definition counts and aggregate total writes", async () => {
+  const { bundle } = await memoryBundle("mixed-reference");
+  const v1 = calendar("1");
+  v1.references = [{ doc: { id: "references/calendar-guide", frontmatter: { type: "Reference", title: "Calendar guide" }, body: "Original guide.\n" } }];
+  await installRecipe(bundle, v1);
+  const v2 = calendar("2");
+  v2.references = [{ doc: { ...v1.references[0]!.doc, body: "Updated guide.\n" } }];
+  const plan = await planRecipeEvolution(bundle, v2);
+  assert.equal(plan.ready, true);
+  assert.equal(plan.changed, true);
+  assert.equal(plan.writes, 3);
+  assert.equal(plan.definitions.length, 2);
+  assert.equal(plan.counts.updates, 0);
+  assert.equal(plan.counts.stamp_writes, 2);
+  assert.equal(plan.reference_assets!.counts.updates, 1);
+  const applied = await applyRecipeEvolution(bundle, v2, plan.plan_token);
+  assert.equal(applied.recipe, "evolved");
+  assert.deepEqual(applied.counts, { updated: 0, stamped: 2, unchanged: 0 });
+  assert.deepEqual(applied.reference_assets!.counts, { updated: 1, stamped: 0, unchanged: 0 });
+  assert.equal((await planRecipeEvolution(bundle, v2)).writes, 0);
+});

@@ -13,6 +13,7 @@ import { resolveContentType } from "../content-type.js";
 import { DocumentNotFoundError, mutateDocument } from "../document-mutation.js";
 import { applyV02MutationMetadata } from "../document-write-policy.js";
 import { InvalidInputError, OkfActorError } from "../errors.js";
+import { normalizeDocumentBodyForStorage } from "../frontmatter.js";
 import {
   CONVENTIONS_PREFIX,
   buildKindRegistry,
@@ -78,6 +79,20 @@ export interface RecipeEvolutionDefinition {
   description_replacements?: Array<{ path: string; old: string; new: string }>;
 }
 
+/** A Reference decision is separate from convention/Connector definition counts. */
+export interface RecipeEvolutionReference {
+  id: ConceptId;
+  action: "missing" | "unchanged" | "update";
+  stamp: RecipeStampState;
+  expected_version: Version | null;
+  desired_version: Version;
+}
+
+export interface RecipeEvolutionReferenceAssets {
+  rows: RecipeEvolutionReference[];
+  counts: { updates: number; stamp_writes: number; unchanged: number; missing: number };
+}
+
 export interface RecipeEvolutionBlocker {
   code: string;
   id: string;
@@ -93,12 +108,14 @@ export interface RecipeEvolutionPlan {
   source: string;
   okf_version: string;
   ready: boolean;
-  /** Content only: whether any convention's declarations change. */
+  /** Content only: whether any definition or Reference changes. */
   changed: boolean;
-  /** How many conventions the apply writes: every content update and every stale or missing stamp. */
+  /** Total definition and Reference writes, including stamp-only adoption. */
   writes: number;
   plan_token: string;
   definitions: RecipeEvolutionDefinition[];
+  /** Present only for recipes declaring References. Top-level writes/changed cover both sets. */
+  reference_assets?: RecipeEvolutionReferenceAssets;
   counts: {
     definitions: number;
     updates: number;
@@ -122,6 +139,7 @@ export interface RecipeEvolutionApplyResult {
   changed: boolean;
   plan_token: string;
   definitions: RecipeEvolutionCompletedDefinition[];
+  reference_assets?: { rows: RecipeEvolutionCompletedDefinition[]; counts: { updated: number; stamped: number; unchanged: number } };
   counts: { updated: number; stamped: number; unchanged: number };
 }
 
@@ -298,11 +316,11 @@ function additiveConventionCandidate(
 }
 
 /**
- * The recipe's Connector as the replacement of the installed one: every content key and the body
+ * A recipe-owned Connector or Reference as the replacement of the installed one: every content key and the body
  * from the recipe, the root metadata and a bundle-local `order` from the installed document, as a
  * convention update keeps them.
  */
-function connectorReplacement(existing: OkfDocument, desired: OkfDocument): OkfDocument {
+function ownedAssetReplacement(existing: OkfDocument, desired: OkfDocument): OkfDocument {
   const frontmatter: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(desired.frontmatter)) {
     if (!PRESERVED_ROOT_METADATA.has(key)) setOwn(frontmatter, key, value);
@@ -577,6 +595,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
     ...(warning.field ? { field: warning.field } : {}),
   }));
   const definitions: RecipeEvolutionDefinition[] = [];
+  const references: RecipeEvolutionReference[] = [];
   const writes = new Map<ConceptId, OkfDocument>();
   const proofs: EvolutionProof[] = [];
   const desiredKinds = new Map<string, KindConvention>();
@@ -825,7 +844,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       );
       continue;
     }
-    let candidate = connectorReplacement(existing.doc, target);
+    let candidate = ownedAssetReplacement(existing.doc, target);
     if (okfVersion === "0.2") {
       try {
         const withMetadata = applyV02MutationMetadata({
@@ -868,7 +887,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
   }
 
   const assetDocProof = async (
-    kind: "reference" | "view-registry",
+    kind: "view-registry",
     authored: OkfDocument,
   ): Promise<void> => {
     const target = recipeDocumentForApply(authored, okfVersion, "1970-01-01T00:00:00.000Z");
@@ -887,12 +906,55 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
         blockers,
         "RECIPE_EVOLUTION_ASSET_CHANGE_UNSUPPORTED",
         target.id,
-        `recipe evolution does not replace an existing ${kind === "reference" ? "Reference" : "View registry"} asset`,
+        "recipe evolution does not replace an existing View registry asset",
       );
     }
   };
 
-  for (const reference of recipe.references) await assetDocProof("reference", reference.doc);
+  for (const reference of recipe.references) {
+    const target = recipeDocumentForApply({ ...reference.doc, body: normalizeDocumentBodyForStorage(reference.doc.body) }, okfVersion, "1970-01-01T00:00:00.000Z");
+    const existing = await readRecipeDocIfPresent(bundle, target.id);
+    let candidate = existing ? ownedAssetReplacement(existing.doc, target) : target;
+    if (existing && okfVersion === "0.2") {
+      const producer = plainRecord(existing.doc.frontmatter.generated)?.by;
+      try {
+        candidate = { id: target.id, ...applyV02MutationMetadata({
+          existing: existing.doc,
+          candidate: { frontmatter: candidate.frontmatter, body: candidate.body },
+          ...(typeof producer === "string" ? { producer } : {}),
+          meaningfulChangeAt: "1970-01-01T00:00:00.000Z",
+          allowGeneratedProvenanceSeed: false,
+        }) };
+      } catch (error) {
+        if (!(error instanceof InvalidInputError)) throw error;
+        evolutionBlocker(blockers, "RECIPE_EVOLUTION_WRITE_POLICY_INVALID", target.id, `prospective Reference cannot satisfy the OKF v0.2 write policy: ${error.message}`);
+      }
+    }
+    const wanted = contentVersion(comparableRecipeDoc(candidate, okfVersion));
+    const stamp = recipeStampState(existing?.doc ?? null, identity);
+    const unchanged = existing !== null && sameInstalledDoc(existing.doc, candidate, okfVersion);
+    references.push({ id: target.id, action: !existing ? "missing" : unchanged ? "unchanged" : "update", stamp, expected_version: existing?.version ?? null, desired_version: wanted });
+    proofs.push({ kind: "reference", id: target.id, current_version: existing?.version ?? null, desired_version: wanted });
+    if (!existing) {
+      evolutionBlocker(blockers, "RECIPE_EVOLUTION_ASSET_MISSING", target.id, `recipe asset '${target.id}' is not installed; install the complete recipe with 'recipe add' first`);
+      continue;
+    }
+    let reason: string | undefined;
+    if (existing.doc.frontmatter.type !== "Reference" || target.frontmatter.type !== "Reference") reason = "is not a Reference";
+    else if (stamp === "foreign") reason = "belongs to another recipe";
+    else if (stamp === "missing") {
+      if (Object.hasOwn(existing.doc.frontmatter, RECIPE_STAMP_KEY)) reason = "has an unreadable recipe stamp";
+      // Adoption proves equality with selected source NOW, not an inferred historical install.
+      else if (!sameInstalledDoc(existing.doc, target, okfVersion)) reason = "has no ownership stamp and differs from the selected source";
+    } else if (conventionStampState(existing.doc) !== "current") reason = "has locally changed content or unreadable digest rules";
+    if (reason) {
+      evolutionBlocker(blockers, "RECIPE_EVOLUTION_REFERENCE_UNPROVEN", target.id, `Reference '${target.id}' ${reason}; evolution cannot prove recipe ownership and leaves it untouched`);
+      continue;
+    }
+    if (!unchanged) writes.set(target.id, withRecipeStamp(candidate, identity));
+    else if (stamp === "missing" || stamp === "stale") writes.set(target.id, withRecipeStamp(existing.doc, identity));
+  }
+  references.sort((a, b) => a.id.localeCompare(b.id));
   for (const page of recipe.pages) {
     await assetDocProof("view-registry", page.registry);
     const existing = await readBlob(bundle, page.entry);
@@ -1011,6 +1073,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
     recipe: { id: recipe.id, version: recipe.version, source: recipe.source, source_digest: identity.source_digest },
     okfVersion,
     definitions,
+    ...(references.length > 0 ? { references } : {}),
     proofs,
     blockers,
   });
@@ -1026,10 +1089,19 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       source: recipe.source,
       okf_version: okfVersion,
       ready: blockers.length === 0,
-      changed: updates > 0,
+      changed: updates > 0 || references.some(row => row.action === "update"),
       writes: writes.size,
       plan_token: token,
       definitions,
+      ...(references.length > 0 ? { reference_assets: {
+        rows: references,
+        counts: {
+          updates: references.filter(row => row.action === "update").length,
+          stamp_writes: references.filter(row => writes.has(row.id) && row.action !== "update").length,
+          unchanged: references.filter(row => row.action === "unchanged").length,
+          missing: references.filter(row => row.action === "missing").length,
+        },
+      } } : {}),
       counts: {
         definitions: definitions.length,
         updates,
@@ -1045,7 +1117,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
   };
 }
 
-/** Build a read-only, state-bound preflight for installed recipe convention evolution. */
+/** Build a read-only, state-bound preflight for recipe definitions and Reference ownership. */
 export async function planRecipeEvolution(
   bundle: Bundle,
   recipe: LoadedRecipe,
@@ -1071,15 +1143,18 @@ export async function applyRecipeEvolution(
   }
 
   const completed: RecipeEvolutionCompletedDefinition[] = [];
-  const pending = plan.definitions.filter((definition) => prepared.writes.has(definition.id)).map((definition) => definition.id);
-  for (const definition of plan.definitions) {
+  const targets = [...plan.definitions, ...(plan.reference_assets?.rows ?? []).map(row => ({ ...row, asset_kind: "reference" as const }))];
+  const pending = targets.filter((definition) => prepared.writes.has(definition.id)).map((definition) => definition.id);
+  for (const definition of targets) {
+    const asset = "asset_kind" in definition ? { asset_kind: definition.asset_kind } : {};
     const planned = prepared.writes.get(definition.id);
     if (planned === undefined) {
-      completed.push({ id: definition.id, changed: false, stamped: false, version: definition.expected_version! });
+      completed.push({ id: definition.id, ...asset, changed: false, stamped: false, version: definition.expected_version! });
       continue;
     }
     const now = new Date().toISOString();
     const desired = recipeDocumentForApply(planned, plan.okf_version, now);
+    const sourceProducer = "asset_kind" in definition ? plainRecord(desired.frontmatter.generated)?.by : undefined;
     try {
       const result = await mutateDocument({
         bundle,
@@ -1094,7 +1169,9 @@ export async function applyRecipeEvolution(
         // explicitly opts out of seeding provenance when the installed definition has none.
         seedGenerationClock: false,
         // Evolution preserves source-comparable attribution; the backend still records its writer.
-        persistActor: false,
+        persistActor: "asset_kind" in definition,
+        // Reference replacement retains its existing content producer; actor is advisory.
+        ...(typeof sourceProducer === "string" ? { producer: sourceProducer } : {}),
         actor,
         now: () => now,
         buildCandidate: (_existing, context) => {
@@ -1106,6 +1183,7 @@ export async function applyRecipeEvolution(
       });
       completed.push({
         id: definition.id,
+        ...asset,
         changed: definition.action === "update" && result.changed,
         stamped: true,
         version: result.version,
@@ -1154,7 +1232,7 @@ export async function applyRecipeEvolution(
   } catch (error) {
     throw new RecipeEvolutionPostcondition(
       "unverifiable",
-      `recipe evolution wrote ${written} definition(s), but its postcondition could not be verified: ${error instanceof Error ? error.message : String(error)}`,
+      `recipe evolution wrote ${written} ${plan.reference_assets ? "target(s)" : "definition(s)"}, but its postcondition could not be verified: ${error instanceof Error ? error.message : String(error)}`,
       completed,
       { cause: error },
     );
@@ -1162,7 +1240,7 @@ export async function applyRecipeEvolution(
   if (!postcondition.plan.ready || postcondition.plan.changed || postcondition.plan.writes > 0) {
     throw new RecipeEvolutionPostcondition(
       "changed",
-      `recipe evolution wrote ${written} definition(s), but the bundle changed (a definition or its stamp) before the postcondition check; a fresh recipe evolve plan shows the current state`,
+      `recipe evolution wrote ${written} ${plan.reference_assets ? "target(s)" : "definition(s)"}, but the bundle changed (${plan.reference_assets ? "a target" : "a definition"} or its stamp) before the postcondition check; a fresh recipe evolve plan shows the current state`,
       completed,
       { blockers: postcondition.plan.blockers, postcondition_plan: postcondition.plan.plan_token },
     );
@@ -1174,7 +1252,19 @@ export async function applyRecipeEvolution(
     source: plan.source,
     changed: written > 0,
     plan_token: plan.plan_token,
-    definitions: completed,
-    counts: { updated, stamped, unchanged: completed.length - written },
+    definitions: completed.filter(row => row.asset_kind !== "reference"),
+    ...(plan.reference_assets ? { reference_assets: {
+      rows: completed.filter(row => row.asset_kind === "reference"),
+      counts: {
+        updated: completed.filter(row => row.asset_kind === "reference" && row.changed).length,
+        stamped: completed.filter(row => row.asset_kind === "reference" && row.stamped && !row.changed).length,
+        unchanged: completed.filter(row => row.asset_kind === "reference" && !row.stamped).length,
+      },
+    } } : {}),
+    counts: {
+      updated: completed.filter(row => row.asset_kind !== "reference" && row.changed).length,
+      stamped: completed.filter(row => row.asset_kind !== "reference" && row.stamped && !row.changed).length,
+      unchanged: completed.filter(row => row.asset_kind !== "reference" && !row.stamped).length,
+    },
   };
 }

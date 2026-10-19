@@ -467,7 +467,7 @@ const withoutStamp = (doc: OkfDocument): OkfDocument => {
   return { ...doc, frontmatter: frontmatter as OkfDocument["frontmatter"] };
 };
 
-test("T1: installRecipe stamps every created convention, and only conventions", async () => {
+test("T1: installRecipe stamps conventions and References, leaving View registries unstamped", async () => {
   const bundle = await v02Bundle("t1");
   const recipe: LoadedRecipe = {
     ...galleryRecipe("1"),
@@ -489,7 +489,7 @@ test("T1: installRecipe stamps every created convention, and only conventions", 
   assert.equal(DEFINITION_DIGEST_RULES, 1);
   assert.deepEqual(readRecipeStamp(convention), stamp);
   assert.equal((await readDoc(bundle, "views-registry/gallery")).frontmatter[RECIPE_STAMP_KEY], undefined);
-  assert.equal((await readDoc(bundle, "references/gallery-guide")).frontmatter[RECIPE_STAMP_KEY], undefined);
+  assert.equal(readRecipeStamp(await readDoc(bundle, "references/gallery-guide"))?.definition, definitionDigest(await readDoc(bundle, "references/gallery-guide")));
   assert.deepEqual((await stateOf(bundle)).rows, [{
     id: "gallery", state: "installed", version: "1", source_digest: recipeSourceDigest(recipe),
     conventions: 1, of: 1, convention_ids: ["conventions/exhibit"],
@@ -1287,4 +1287,292 @@ test("install actor: invalid v0.2 attribution refuses before documents or an ass
     assert.deepEqual(await backend.list(), []);
     assert.deepEqual(await backend.listBlobs(), []);
   }
+});
+
+// Reference evolution: explicit ownership, separate rows, one shared CAS/recovery protocol.
+function referenceRecipe(version = "1", body = "Original guide.\n", ids = ["references/guide"]): LoadedRecipe {
+  return {
+    id: "reference-fixture", title: "Reference fixture", version, summary: "Guides.", offer: "Guides.", source: `test:references:${version}`,
+    docs: [], pages: [], governs: [], warnings: [],
+    references: ids.map(id => ({ doc: { id, frontmatter: { type: "Reference", title: "Guide", generated: { by: "upstream/author", at: NOW } }, body } })),
+  };
+}
+async function referenceFixture(edition = "0.2", ids?: string[]) {
+  const backend = new DescriptionProbeBackend();
+  await backend.writeReserved("", "index.md", `---\nokf_version: '${edition}'\n---\n`);
+  const bundle: Bundle = { root: "mem://reference-evolution", backend };
+  const recipe = referenceRecipe("1", undefined, ids);
+  await installRecipe(bundle, recipe, { now: NOW, actor: "process:reference-installer" });
+  backend.writes = 0;
+  return { bundle, backend, recipe };
+}
+function withoutReferenceStamp(doc: OkfDocument): OkfDocument {
+  const { x_recipe: _stamp, ...frontmatter } = doc.frontmatter;
+  return { ...doc, frontmatter };
+}
+
+test("Reference evolution: reference-only recipes stamp, replace and settle in both editions without changing definition counts", async () => {
+  for (const edition of ["0.1", "0.2"]) {
+    const { bundle, backend, recipe } = await referenceFixture(edition);
+    const installed = await readDoc(bundle, "references/guide");
+    assert.equal(readRecipeStamp(installed)?.definition, definitionDigest(installed));
+    assert.deepEqual(installedRecipes([installed]).rows, [], "existing receipt projection remains convention/Connector-only");
+    const before = await backend.read(installed.id);
+    assert.equal((await installRecipe(bundle, recipe, { actor: "process:other-installer" })).changed, false);
+    assert.deepEqual(await backend.read(installed.id), before);
+    await backend.edit(installed.id, doc => ({ ...doc, frontmatter: { ...doc.frontmatter, order: 8 } }));
+    const desired = referenceRecipe("2", "Updated guide.\n");
+    desired.references[0]!.doc.frontmatter.title = "Updated title";
+    desired.references[0]!.doc.frontmatter.generated = { by: "source/changed", at: "2026-10-19T12:00:00Z" };
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+    assert.equal(plan.changed, true);
+    assert.equal(plan.writes, 1);
+    assert.deepEqual(plan.definitions, []);
+    assert.equal(plan.counts.definitions, 0);
+    assert.equal(plan.counts.updates, 0);
+    assert.deepEqual(plan.reference_assets!.counts, { updates: 1, stamp_writes: 0, unchanged: 0, missing: 0 });
+    assert.equal(backend.writes, 0, "plan has no writes");
+    const applied = await applyRecipeEvolution(bundle, desired, plan.plan_token, { actor: "process:reference-evolver" });
+    assert.equal(applied.recipe, "evolved");
+    assert.equal(applied.changed, true);
+    assert.deepEqual(applied.counts, { updated: 0, stamped: 0, unchanged: 0 });
+    assert.equal(applied.reference_assets!.rows[0]!.asset_kind, "reference");
+    assert.deepEqual(applied.reference_assets!.counts, { updated: 1, stamped: 0, unchanged: 0 });
+    const written = await readDoc(bundle, installed.id);
+    assert.equal(written.body, "Updated guide.\n");
+    assert.equal(written.frontmatter.title, "Updated title");
+    assert.equal(written.frontmatter.order, 8);
+    assert.equal((written.frontmatter.generated as { by: string }).by, "upstream/author");
+    assert.equal(written.frontmatter[edition === "0.2" ? "superbee_updated_by" : "actor"], "process:reference-evolver");
+    assert.equal(readRecipeStamp(written)?.version, "2");
+    assert.equal(readRecipeStamp(written)?.definition, definitionDigest(written));
+    const settled = await planRecipeEvolution(bundle, desired);
+    assert.equal(settled.ready, true);
+    assert.equal(settled.writes, 0);
+    backend.writes = 0;
+    assert.equal((await applyRecipeEvolution(bundle, desired, settled.plan_token)).recipe, "already current");
+    assert.equal(backend.writes, 0);
+  }
+});
+
+test("Reference evolution: exact-source unstamped adoption establishes ownership now, then a later release can update", async () => {
+  for (const edition of ["0.1", "0.2"]) {
+    const { bundle, backend, recipe } = await referenceFixture(edition);
+    await backend.edit("references/guide", withoutReferenceStamp);
+    const before = await readDoc(bundle, "references/guide");
+    const plan = await planRecipeEvolution(bundle, recipe);
+    assert.equal(plan.ready, true);
+    assert.equal(plan.changed, false);
+    assert.equal(plan.writes, 1);
+    assert.deepEqual(plan.reference_assets!.counts, { updates: 0, stamp_writes: 1, unchanged: 1, missing: 0 });
+    const applied = await applyRecipeEvolution(bundle, recipe, plan.plan_token, { actor: "process:adopter" });
+    assert.equal(applied.recipe, "stamped");
+    assert.equal(applied.reference_assets!.counts.stamped, 1);
+    assert.equal((await readDoc(bundle, "references/guide")).body, before.body);
+    const desired = referenceRecipe("2", "Later guide.\n");
+    const next = await planRecipeEvolution(bundle, desired);
+    assert.equal(next.ready, true);
+    await applyRecipeEvolution(bundle, desired, next.plan_token);
+    assert.equal((await readDoc(bundle, "references/guide")).body, "Later guide.\n");
+    assert.ok(backend.writes > 0);
+  }
+});
+
+test("Reference evolution: legacy differences, foreign or malformed stamps, unknown rules and substantive local edits never gain ownership", async () => {
+  const cases: Array<{ name: string; change: (doc: OkfDocument) => OkfDocument }> = [
+    { name: "differing legacy", change: doc => ({ ...withoutReferenceStamp(doc), body: "Legacy guide.\n" }) },
+    { name: "foreign identical content", change: doc => ({ ...doc, frontmatter: { ...doc.frontmatter, x_recipe: { ...readRecipeStamp(doc)!, id: "another-recipe" } } }) },
+    { name: "malformed identical content", change: doc => ({ ...doc, frontmatter: { ...doc.frontmatter, x_recipe: null } }) },
+    { name: "empty stamp", change: doc => ({ ...doc, frontmatter: { ...doc.frontmatter, x_recipe: {} } }) },
+    { name: "array stamp", change: doc => ({ ...doc, frontmatter: { ...doc.frontmatter, x_recipe: [] } }) },
+    { name: "wrong installed type", change: doc => ({ ...doc, frontmatter: { ...doc.frontmatter, type: "Note" } }) },
+    { name: "unknown rules", change: doc => ({ ...doc, frontmatter: { ...doc.frontmatter, x_recipe: { ...readRecipeStamp(doc)!, digest_rules: 999 } } }) },
+    { name: "local body", change: doc => ({ ...doc, body: "Person's guide.\n" }) },
+    { name: "local metadata", change: doc => ({ ...doc, frontmatter: { ...doc.frontmatter, title: "My title" } }) },
+    { name: "adoption with different upstream provenance", change: doc => ({ ...withoutReferenceStamp(doc), frontmatter: { ...withoutReferenceStamp(doc).frontmatter, generated: { by: "person/author", at: NOW } } }) },
+  ];
+  for (const edition of ["0.1", "0.2"]) for (const row of cases) {
+    const { bundle, backend, recipe } = await referenceFixture(edition);
+    await backend.edit("references/guide", row.change);
+    const before = await backend.read("references/guide");
+    // Equal desired content must not turn an invalid/foreign stamp into an absent baseline.
+    const plan = await planRecipeEvolution(bundle, recipe);
+    assert.equal(plan.ready, false, row.name);
+    assert.ok(plan.blockers.some(b => b.code === "RECIPE_EVOLUTION_REFERENCE_UNPROVEN"), row.name);
+    await assert.rejects(applyRecipeEvolution(bundle, recipe, plan.plan_token), RecipeEvolutionBlocked);
+    assert.equal(backend.writes, 0, row.name);
+    assert.deepEqual(await backend.read("references/guide"), before, row.name);
+  }
+});
+
+test("Reference evolution: missing assets remain add-first and View changes are still refused", async () => {
+  const { bundle } = await referenceFixture();
+  const missing = referenceRecipe("2", "New.\n", ["references/new"]);
+  const plan = await planRecipeEvolution(bundle, missing);
+  assert.equal(plan.ready, false);
+  assert.equal(plan.reference_assets!.rows[0]!.action, "missing");
+  assert.ok(plan.blockers.some(b => b.code === "RECIPE_EVOLUTION_ASSET_MISSING"));
+  const viewBundle = await v02Bundle("reference-view");
+  const withViews = { ...galleryRecipe("1"), references: referenceRecipe().references };
+  await installRecipe(viewBundle, withViews);
+  const changedView = structuredClone(withViews);
+  changedView.pages[0]!.html += "changed";
+  assert.equal((await planRecipeEvolution(viewBundle, changedView)).ready, false);
+});
+
+test("Reference evolution: source, stamp, local bytes or edition changes invalidate the exact observed token", async () => {
+  for (const change of ["source", "stamp", "content", "edition"]) {
+    const { bundle, backend } = await referenceFixture();
+    const desired = referenceRecipe("2", "New.\n");
+    const plan = await planRecipeEvolution(bundle, desired);
+    if (change === "source") desired.references[0]!.doc.body = "Different source.\n";
+    else if (change === "edition") await backend.writeReserved("", "index.md", "---\nokf_version: '0.1'\n---\n");
+    else await backend.edit("references/guide", doc => change === "content" ? { ...doc, body: "Winner.\n" } : withoutReferenceStamp(doc));
+    const before = await backend.read("references/guide");
+    await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), RecipeEvolutionPlanChanged, change);
+    assert.equal(backend.writes, 0);
+    assert.deepEqual(await backend.read("references/guide"), before);
+  }
+});
+
+test("Reference evolution: post-preflight CAS and edition races preserve the winner and name every pending target", async () => {
+  for (const race of ["content", "edition"]) {
+    const { bundle, backend } = await referenceFixture();
+    const desired = referenceRecipe("2", "New.\n");
+    const plan = await planRecipeEvolution(bundle, desired);
+    if (race === "content") backend.beforeCas = () => backend.edit("references/guide", doc => ({ ...doc, body: "Concurrent winner.\n" }));
+    else backend.flipEdition = true;
+    await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), (error: unknown) => {
+      assert.ok(error instanceof RecipeEvolutionInterrupted);
+      assert.equal(error.reason, race === "content" ? "race" : "edition_changed");
+      assert.deepEqual(error.completed, []);
+      assert.deepEqual(error.pending, ["references/guide"]);
+      return true;
+    });
+    assert.equal(backend.writes, 0);
+    assert.equal((await readDoc(bundle, "references/guide")).body, race === "content" ? "Concurrent winner.\n" : "Original guide.\n");
+  }
+});
+
+test("Reference evolution: mixed definitions and References retain separate counts and interrupted receipts retry only remaining work", async () => {
+  const backend = new DescriptionProbeBackend();
+  await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n");
+  const bundle: Bundle = { root: "mem://mixed-references", backend };
+  const ids = ["references/alpha", "references/beta"];
+  const old = { ...descriptionRecipe("1", "Old guidance"), references: referenceRecipe("1", undefined, ids).references };
+  const desired = { ...descriptionRecipe("2", "New guidance"), references: referenceRecipe("2", "New.\n", ids).references };
+  await installRecipe(bundle, old);
+  backend.writes = 0;
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, true);
+  assert.equal(plan.writes, 3);
+  assert.equal(plan.counts.updates, 1);
+  assert.equal(plan.reference_assets!.counts.updates, 2);
+  backend.failId = ids[1]!;
+  await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), (error: unknown) => {
+    assert.ok(error instanceof RecipeEvolutionInterrupted);
+    assert.deepEqual(error.completed.map(row => [row.id, row.asset_kind, row.changed]), [["conventions/widget", undefined, true], [ids[0], "reference", true]]);
+    assert.deepEqual(error.pending, [ids[1]]);
+    return true;
+  });
+  await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), RecipeEvolutionPlanChanged);
+  const fresh = await planRecipeEvolution(bundle, desired);
+  assert.equal(fresh.ready, true);
+  assert.equal(fresh.writes, 1);
+  const result = await applyRecipeEvolution(bundle, desired, fresh.plan_token);
+  assert.deepEqual(result.counts, { updated: 0, stamped: 0, unchanged: 1 });
+  assert.deepEqual(result.reference_assets!.counts, { updated: 1, stamped: 0, unchanged: 1 });
+  assert.equal((await planRecipeEvolution(bundle, desired)).writes, 0);
+});
+
+test("Reference evolution: no-generated and legacy-clock documents retain edition and writer without manufacturing provenance", async () => {
+  for (const edition of ["0.1", "0.2"]) for (const legacyClock of [false, true]) {
+    const backend = new DescriptionProbeBackend();
+    await backend.writeReserved("", "index.md", `---\nokf_version: '${edition}'\n---\n`);
+    const bundle: Bundle = { root: "mem://reference-clocks", backend };
+    const old = referenceRecipe();
+    delete old.references[0]!.doc.frontmatter.generated;
+    if (legacyClock) old.references[0]!.doc.frontmatter.timestamp = NOW;
+    await installRecipe(bundle, old, { actor: "process:installer", now: NOW });
+    const desired = structuredClone(old);
+    desired.version = "2";
+    desired.references[0]!.doc.body = "Updated without provenance.\n";
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.ready, true);
+    await applyRecipeEvolution(bundle, desired, plan.plan_token, { actor: "process:evolver" });
+    const written = await readDoc(bundle, "references/guide");
+    assert.equal(written.frontmatter.generated, undefined);
+    assert.equal(written.frontmatter[edition === "0.2" ? "superbee_updated_by" : "actor"], "process:evolver");
+    assert.equal(Object.hasOwn(written.frontmatter, "timestamp"), edition === "0.1" || legacyClock);
+    assert.equal(await readBundleOkfVersion(bundle), edition);
+  }
+});
+
+test("Reference evolution: a stamp changed after writing fails the postcondition honestly", async () => {
+  class PostconditionBackend extends DescriptionProbeBackend {
+    disturb = false;
+    override async write(id: ConceptId, doc: OkfDocument, options: WriteOptions = {}): Promise<Version> {
+      const version = await super.write(id, doc, options);
+      if (this.disturb && typeof options.expectedVersion === "string") {
+        this.disturb = false;
+        await this.edit(id, withoutReferenceStamp);
+      }
+      return version;
+    }
+  }
+  const backend = new PostconditionBackend();
+  await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n");
+  const bundle: Bundle = { root: "mem://reference-postcondition", backend };
+  await installRecipe(bundle, referenceRecipe());
+  const desired = referenceRecipe("2", "Updated.\n");
+  const plan = await planRecipeEvolution(bundle, desired);
+  backend.disturb = true;
+  await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), (error: unknown) => {
+    assert.ok(error instanceof RecipeEvolutionPostcondition);
+    assert.equal(error.reason, "changed");
+    assert.deepEqual(error.completed.map(row => [row.id, row.asset_kind, row.changed]), [["references/guide", "reference", true]]);
+    return true;
+  });
+  assert.equal(readRecipeStamp(await readDoc(bundle, "references/guide")), null);
+  assert.equal((await readDoc(bundle, "references/guide")).body, "Updated.\n");
+});
+
+test("Reference evolution: shared storage newline rules settle LF, CRLF and unterminated sources on memory and file backends", async () => {
+  for (const file of [false, true]) for (const edition of ["0.1", "0.2"]) for (const ending of ["\n", "\r\n", ""]) {
+    const dir = file ? await mkdtemp(path.join(tmpdir(), "reference-line-endings-")) : undefined;
+    try {
+      let bundle: Bundle;
+      if (dir) bundle = await initBundle(dir, { okfVersion: edition });
+      else {
+        const backend = new MemoryBackend();
+        await backend.writeReserved("", "index.md", `---\nokf_version: '${edition}'\n---\n`);
+        bundle = { root: "mem://reference-lines", backend };
+      }
+      const old = referenceRecipe("1", `Original${ending}`);
+      await installRecipe(bundle, old);
+      assert.equal((await planRecipeEvolution(bundle, old)).writes, 0);
+      const desired = referenceRecipe("2", `New${ending}`);
+      const plan = await planRecipeEvolution(bundle, desired);
+      assert.equal(plan.ready, true);
+      await applyRecipeEvolution(bundle, desired, plan.plan_token);
+      const written = await readDoc(bundle, "references/guide");
+      assert.equal(readRecipeStamp(written)?.definition, definitionDigest(written));
+      const settled = await planRecipeEvolution(bundle, desired);
+      assert.equal(settled.ready, true);
+      assert.equal(settled.writes, 0);
+    } finally {
+      if (dir) await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("Reference evolution: public core install refuses non-Reference source identity before any write", async () => {
+  const backend = new DescriptionProbeBackend();
+  await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n");
+  const bundle: Bundle = { root: "mem://reference-source-identity", backend };
+  const recipe = referenceRecipe();
+  recipe.references[0]!.doc.frontmatter.type = "Note";
+  await assert.rejects(installRecipe(bundle, recipe), RecipeInputError);
+  assert.equal(backend.writes, 0);
 });

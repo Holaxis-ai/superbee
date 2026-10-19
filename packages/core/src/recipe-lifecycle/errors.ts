@@ -6,10 +6,12 @@ import type { ConceptId, Version } from "../types.js";
 import type { RecipeEvolutionBlocker } from "./evolution.js";
 
 /**
- * One definition the evolution apply has handled, in plan order: `changed` when its content was
+ * One recipe target the evolution apply has handled, in plan order: `changed` when its content was
  * updated, `stamped` when this apply wrote it (a content update or a stamp alone).
  */
 export interface RecipeEvolutionCompletedDefinition {
+  /** Present only for Reference targets; existing definition receipts retain their shape. */
+  asset_kind?: "reference";
   id: ConceptId;
   changed: boolean;
   stamped: boolean;

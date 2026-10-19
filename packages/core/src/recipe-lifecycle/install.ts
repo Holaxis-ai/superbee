@@ -445,7 +445,7 @@ export async function installRecipe(
 
   const references: RecipeReferenceResult[] = [];
   for (const reference of recipe.references) {
-    let desired = recipeDocumentForApply(reference.doc, okfVersion, now);
+    let desired = withRecipeStamp(recipeDocumentForApply(reference.doc, okfVersion, now), identity);
     let changed = true;
     try {
       desired = await createRecipeDocument(bundle, desired, okfVersion, now, options.actor);
@@ -592,6 +592,9 @@ async function assertPortableTargetsCompatible(
     for (const doc of referenceDocs) installedReferences.set(doc.id, doc);
   }
   for (const reference of recipe.references) {
+    if (reference.doc.frontmatter.type !== "Reference") {
+      throw new RecipeInputError(`recipe '${recipe.id}' asset '${reference.doc.id}' must have type 'Reference'`);
+    }
     const existing = installedReferences.get(reference.doc.id);
     if (!existing) continue;
     const desired = recipeDocumentForApply(reference.doc, okfVersion, now);
