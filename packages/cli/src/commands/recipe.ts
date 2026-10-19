@@ -1,4 +1,5 @@
 import { renderUsage } from "../output.js";
+import { recipeValidate } from "./recipe-validate.js";
 // `superbee recipe add <name-or-path>` installs definitions create-only; `recipe evolve` is the
 // separate explicit, state-bound authority for updating already-installed conventions in place.
 // Both operate on an EXISTING
@@ -29,8 +30,12 @@ import { commandFragment, commandLiteral, commandQuoted, commandToken, type Comm
 export const RECIPE_USAGE = `superbee recipe — apply a recipe to this bundle
 
 Usage:
+  superbee recipe validate <path> [--readme] [--json]
   superbee recipe add <name-or-path> [--actor <name>] [--dir <path>] [--remote <url>]
   superbee recipe evolve <name-or-path> [--apply <plan-token>] [--actor <name>] [options]
+
+'recipe validate' reads a local recipe folder without installation or executable profile loading.
+It reports declaration/mapping/profile errors, secret-shaped package text and source metadata.
 
 Applies a recipe's definitions to the bundle. <name-or-path> is a built-in name (e.g.
 'context-notes') or a path to a recipe folder (a path is anything containing '/' or starting
@@ -89,13 +94,14 @@ export async function recipe(argv: string[], deps: Partial<RecipeCliDeps> = {}):
   const sub = argv[0];
   const rest = argv.slice(1);
 
+  if (sub === "validate") return recipeValidate(rest, { stdout });
   if (sub === "add") return recipeAdd(rest, stdout);
   if (sub === "evolve") return recipeEvolve(rest, stdout);
   if (sub === "-h" || sub === "--help" || sub === undefined) {
     stdout(renderUsage(RECIPE_USAGE));
     return;
   }
-  throw new CliError("USAGE", `unknown recipe subcommand: ${sub} (expected add or evolve)`, {
+  throw new CliError("USAGE", `unknown recipe subcommand: ${sub} (expected add, evolve or validate)`, {
     help: `${cliInvocation()} recipe --help`,
   });
 }

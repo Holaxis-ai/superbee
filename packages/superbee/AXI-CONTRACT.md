@@ -277,3 +277,24 @@ Query match/fallback/ignored terms, corpus counts, requested facets and empty-re
 remain visible. Empty results succeed with count zero. Invalid input or an unavailable remote
 search is USAGE (exit 2), before local reads for malformed requests. `list` and `query` retain
 their frontmatter-only behavior.
+
+## Integration authoring: inert validation and recorded tests
+
+`recipe validate <path> [--readme] [--json]` uses core's recipe/Kind/Connector and shipped-profile
+validators without bundle discovery, writes, credentials, network or executable module loading.
+Reports contain `ok`, recipe identity/version, file/JSON-pointer diagnostics, Connector pin and
+source class/hosts/method/path summaries; --readme adds an author template. Unknown profiles refuse.
+Package acquisition is bounded and refuses secret-shaped text (including README), .env containers,
+symlinks and special files without printing credential values. This is a tripwire, not secret proof.
+
+`source test <recipe-path> --fixture <directory> [--profile <local.mjs>] [--json]` delegates to
+core source-harness over MemoryBackend and a recorded transport. The version-1 fixture requires
+exact per-run receipt/request/cursor/change/finding expectations. Missing required scenarios,
+invalid expectations, unused/unscripted exchanges or failed core invariants are failures. Reports
+contain `ok`, execution mode, profile, required/missing scenarios, per-scenario checks and safe
+diagnostics; provider payloads and actual/expected values are never echoed. Both commands emit
+their report and exit 2 on a completed invalid result, 0 only on a valid result (or help).
+
+--profile is explicit execution of trusted local JavaScript, not sandboxed execution. Recipe and
+fixture content never select executable modules implicitly. No source bind/run or live provider
+transport is included. The author guide is examples/references/author-an-integration.md (distributed as references/author-an-integration.md).

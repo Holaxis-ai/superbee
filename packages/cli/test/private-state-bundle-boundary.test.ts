@@ -507,6 +507,8 @@ interface CrossingRow {
 }
 
 const BOUNDARY_MESSAGE = /private user-state directory/;
+const AUTHOR_EXAMPLE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../examples/integrations/rest-json-authoring");
+const AUTHOR_PROFILE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "fixtures/integration-author-profile.mjs");
 
 function surfaceRole(leaf: CliLeafSpec, surface: string): CliPathRole {
   if (surface.startsWith("--")) {
@@ -791,6 +793,28 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
     leaf: "recipeEvolve",
     surface: "<0>",
     skip: "specification F11 / N7: see the `init --recipe` row.",
+  },
+  {
+    leaf: "recipeValidate",
+    surface: "<0>",
+    skip: "specification F11 / N7: bounded author acquisition requires recipe.md before inventorying the explicit recipe root.",
+  },
+  {
+    leaf: "sourceTest",
+    surface: "<0>",
+    skip: "specification F11 / N7: the recipe positional uses the same manifest-first author acquisition.",
+  },
+  {
+    leaf: "sourceTest",
+    surface: "--fixture",
+    argv: (target) => ["source", "test", path.join(AUTHOR_EXAMPLE, "recipe"), "--fixture", target, "--json"],
+    control: () => path.join(AUTHOR_EXAMPLE, "fixture"),
+  },
+  {
+    leaf: "sourceTest",
+    surface: "--profile",
+    argv: (target) => ["source", "test", path.join(AUTHOR_EXAMPLE, "recipe"), "--fixture", path.join(AUTHOR_EXAMPLE, "fixture"), "--profile", target, "--json"],
+    control: () => AUTHOR_PROFILE,
   },
 ];
 
