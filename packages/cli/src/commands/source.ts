@@ -53,8 +53,12 @@ export async function source(argv: string[], deps: { stdout?: (text: string) => 
   if(argv[0]==="plugin") {
     const action=argv[1];
     if(!["register","list","remove"].includes(action??""))throw new CliError("USAGE","Expected source plugin register, list or remove.");
-    const spec=action==="register"?CLI_LEAVES.sourcePluginRegister:action==="list"?CLI_LEAVES.sourcePluginList:CLI_LEAVES.sourcePluginRemove;
-    const p=parseLeafOrUsage(()=>parseArgs({args:argv.slice(2),allowPositionals:true,strict:true,options:{json:{type:"boolean"},help:{type:"boolean",short:"h"},...(action==="register"?{accept:{type:"string" as const}}:{})}}),spec);
+    const parserOptions={args:argv.slice(2),allowPositionals:true,strict:true,options:{json:{type:"boolean"},help:{type:"boolean",short:"h"},...(action==="register"?{accept:{type:"string" as const}}:{})}} as const;
+    const p=action==="register"
+      ? parseLeafOrUsage(()=>parseArgs(parserOptions),CLI_LEAVES.sourcePluginRegister)
+      : action==="list"
+        ? parseLeafOrUsage(()=>parseArgs(parserOptions),CLI_LEAVES.sourcePluginList)
+        : parseLeafOrUsage(()=>parseArgs(parserOptions),CLI_LEAVES.sourcePluginRemove);
     if(p.values.help){stdout(renderUsage(SOURCE_USAGE));return;}
     const result=action==="register"?await registerSourcePlugin(p.positionals[0]!,p.values.accept as string|undefined):action==="list"?await listSourcePlugins():await removeSourcePlugin(p.positionals[0]!);
     stdout(render(result,resolveMode(p.values)));return;
