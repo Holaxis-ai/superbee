@@ -174,9 +174,11 @@ hand.
 capped `unstamped` list with `unstamped_help` (plus `unstamped_shown` and `conventions_all`, a
 command listing every convention, when the list is capped), and a descriptive
 `stamp_help` when any row is not `installed`; the built-in rows and every existing key are
-unchanged. Exit codes are unchanged. The definition digest reads CRLF as LF, while evolve still
-compares convention bodies byte for byte, so on a CRLF checkout `recipes` can read a state that a
-plan cannot converge (blocked at `/body`); normalizing that comparison is a follow-up. Evolve
+unchanged. Exit codes are unchanged. Definition digests, installation comparisons and convention
+body evolution share the same normalization: CRLF is read as LF and the storage rule supplies a
+missing final newline (including an empty body). Equivalent installed bodies are retained; real
+body changes still require manual review. Exact plan and write guards still bind raw document
+versions, so changing line endings after planning makes the plan stale. Evolve
 treats declaration lists as sets and appends recipe values a bundle lacks, so a version bump keeps
 the bundle's list order, and two bundles at one version can hold different list orders and
 different `definition` digests; inserting recipe values at the recipe's position is a follow-up.
