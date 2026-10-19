@@ -1,16 +1,13 @@
 import assert from 'node:assert/strict';
-import {execFile} from 'node:child_process';
-import {mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
+import {mkdir, readFile, readdir, realpath, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {promisify} from 'node:util';
 import test from 'node:test';
 import {build} from 'esbuild';
 import {init, parse} from 'es-module-lexer';
 import ts from 'typescript';
 const root = fileURLToPath(new URL('../',import.meta.url));
-const exec = promisify(execFile);
+import {createWorkspace, isolatedEnvironment, runProcess} from '../packages/package-verification/src/harness.mjs';
 
 export function assertStandaloneModule(source) {
   const [imports] = parse(source);
@@ -43,8 +40,11 @@ test('GitHub source uses only public Core type imports and injected runtime help
 });
 
 test('packed GitHub factory, recipes, browser and public harness work outside checkout', async () => {
-  const scratch = await mkdtemp(path.join(tmpdir(),'superbee-github-consumer-'));
-  const run = (command,args,cwd=scratch) => exec(command,args,{cwd,maxBuffer:10*1024*1024,env:{...process.env,NODE_PATH:''}});
+  const workspace = await createWorkspace();
+  const scratch = workspace.root;
+  const home = path.join(scratch,'home'); await mkdir(home);
+  const env = isolatedEnvironment({home,values:{PATH:path.dirname(process.execPath)}});
+  const run = (command,args,cwd=scratch) => runProcess(command,args,{cwd,env,timeout:120_000,maxBuffer:10*1024*1024});
   const npm = (args,cwd=scratch) => {
     assert.ok(process.env.npm_execpath,'run with npm exec or npm run test:scripts');
     return run(process.execPath,[process.env.npm_execpath,...args],cwd);
@@ -53,7 +53,7 @@ test('packed GitHub factory, recipes, browser and public harness work outside ch
     const artifacts = path.join(scratch,'artifacts'); await mkdir(artifacts);
     const packed = {};
     for (const name of ['core','integration-github']) {
-      const {stdout} = await npm(['pack','-w',`@superbee/${name}`,'--json','--pack-destination',artifacts],root);
+      const {stdout} = await npm(['pack','-w',`@superbee/${name}`,'--json','--ignore-scripts','--pack-destination',artifacts],root);
       const [receipt] = JSON.parse(stdout); packed[name] = {receipt,tarball:path.join(artifacts,receipt.filename)};
     }
     const receipt = packed['integration-github'].receipt;
@@ -97,7 +97,7 @@ test('packed GitHub factory, recipes, browser and public harness work outside ch
     assert.equal(browser.errors.length,0);
     assert.ok(browser.outputFiles[0].text.includes('createSourceProfile'));
     assert.ok(Object.keys(browser.metafile.inputs).every(file=>file === '<stdin>' || file.startsWith('node_modules/@superbee/integration-github/')),'browser plugin graph has no runtime Core or Node dependency');
-  } finally { await rm(scratch,{recursive:true,force:true}); }
+  } finally { await workspace.close(); }
 });
 
 const consumer = String.raw`
