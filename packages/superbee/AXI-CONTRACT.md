@@ -296,5 +296,22 @@ diagnostics; provider payloads and actual/expected values are never echoed. Both
 their report and exit 2 on a completed invalid result, 0 only on a valid result (or help).
 
 --profile is explicit execution of trusted local JavaScript, not sandboxed execution. Recipe and
-fixture content never select executable modules implicitly. No source bind/run or live provider
-transport is included. The author guide is examples/references/author-an-integration.md (distributed as references/author-an-integration.md).
+fixture content never select executable modules implicitly. Live bind/run accepts shipped built-ins only, never the executable --profile path. The author guide is examples/references/author-an-integration.md (distributed as references/author-an-integration.md).
+
+
+`source bind <feed-id> (--anonymous | --credential-env <NAME>) [--accept <digest>] [--dir <bundle>]`
+previews resource, method/path, hosts, fields, profile/version and budgets without network/secret
+reads. --accept revalidates that digest and atomically persists private consent. `source run
+<feed-id> [--complete] [--actor <actor>] [--dir <bundle>]` refuses drift before credential reads,
+executes the shared engine/overlay adapter with DNS-pinned HTTPS and emits an allowlisted summary.
+Local/Git bundles only; no mirror creation, hosted target, scheduling or implicit credential lookup.
+State is outside the bundle, private and atomically co-publishes observations and accepted tuples.
+Stable reason codes include binding_missing, binding_changed, credential_missing, state_invalid,
+state_persist_failed and source_busy within the existing exit taxonomy. Summary outcomes retain
+engine retry semantics; no raw provider values, cursor or errors reach output. Normal provider
+outcomes are reported as summaries with fixed allowlisted reason codes (unknown codes become
+unclassified). After its one receipt, source run exits 0 for observed or deferred (retryable
+continuation); credential_refused exits 4, not_found exits 6, refused/unsupported_content/too_large
+exit 2, and provider_unavailable/failed exit 1. The handled CliError preserves the exit without a
+second output envelope. Deferred is not a completeness claim. Malformed input, consent and
+persistence errors remain CLI errors.

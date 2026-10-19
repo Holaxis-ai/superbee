@@ -28,7 +28,7 @@ const json = (body: unknown, headers: Record<string, string> = {}): PeerResponse
 
 test("public catalog is inert/frozen and rest-json normalizes typed scalars through existing mapping", async () => {
   assert.equal(getSourceProfile("rest-json"), restJsonProfile);
-  assert.equal(getSourceProfile("github-issues"), undefined);
+  assert.equal(getSourceProfile("github-issues")?.kind, "extension");
   assert.ok(Object.isFrozen(SOURCE_PROFILES) && Object.isFrozen(SOURCE_PROFILES[0]));
   const request = {...baseRequest(), fields: {count: {from: "native_count", type: "integer" as const}, date: {from: "epoch", type: "epoch-date" as const}, title: {from: "name", type: "text" as const}, url: {from: "html_url", type: "url" as const}, tag: {const: "issue"}}, skip: [{path: "pull_request", present: true as const}]};
   const h = world(connector(request), () => json([{id: 1, name: 42, native_count: "12", epoch: 0, html_url: "https://example.org/i"}, {id: 2, pull_request: {}}]));
@@ -220,4 +220,14 @@ for (const attributes of [
   const h = world(c, input => phase === "seed" ? json([{id: 1, title: "one"}, {id: 2, title: "two"}]) : new URL(input.url).searchParams.has("page") ? json([{id: 2, title: "two"}]) : json([{id: 1, title: "one"}], {link: `<https://api.github.com/repos/octo/project/issues?page=2>; ${attributes}`}));
   h.bound.policy.missing_threshold = 1; await h.run(); phase = "paged";
   const result = await h.run(); assert.equal(result.pages, 2); assert.equal(result.pass.complete, true); assert.equal(result.changes.disappeared, 0);
+});
+
+test("provider-owned after paging is bounded centrally for rest-json too", async () => {
+  for (const token of ["opaque-token", "", "x".repeat(2049)]) {
+    let calls = 0;
+    const h = world(connector({...baseRequest(), query: {state: "all"}, paging: {kind: "link-header"}}), () => ++calls === 1
+      ? json([{id: 1, title: "one"}], {link: `<https://api.github.com/repos/octo/project/issues?state=all&after=${token}>; rel="next"`}) : json([]));
+    const result = await h.run(); assert.equal(result.outcome, token === "opaque-token" ? "observed" : "refused");
+    assert.equal(h.peer.received.length, token === "opaque-token" ? 2 : 1);
+  }
 });

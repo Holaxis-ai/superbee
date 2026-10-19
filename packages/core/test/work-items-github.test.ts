@@ -9,7 +9,8 @@ import { mutateDocument } from "../src/document-mutation.js";
 import { loadKinds } from "../src/kinds-load.js";
 import { installRecipe } from "../src/recipe-lifecycle/index.js";
 import { parseRecipeFiles } from "../src/recipes.js";
-import { applyRecordOverlay, buildSourceIndex, planFindings, planRecordOverlay, readOverlayPolicy, type OverlayBundle, type RecordChange } from "../src/record-overlay/index.js";
+import { buildSourceIndex, readOverlayPolicy, type OverlayBundle, type RecordChange } from "../src/record-overlay/index.js";
+import { createSourceOverlayAdapter, type SourceOverlaySnapshot } from "../src/source-engine/index.js";
 import { runSourceScenario } from "../src/source-harness/index.js";
 import type { Frontmatter, Version } from "../src/types.js";
 import { RecordingBackend } from "./record-overlay-helpers.js";
@@ -59,7 +60,8 @@ async function world() {
   })).version;
   await put(FEED, { type: "Source Feed", title: "Synthetic widget issues", feed_kind: "connector", connector: connector.id, source: "issues", url: RESOURCE, owned_fields: owned, target_kind: "Work Item", missing_threshold: 2 });
   const bound = bindSourceFeed(connector, (await backend.read(FEED)).doc, registry, { okfVersion: "0.2" });
-  const accepted = new Map<string, Record<string, unknown>>();
+  let acceptance: SourceOverlaySnapshot = { v: 1, entries: [] };
+  const accepted = { get size() { return acceptance.entries.length; }, clear() { acceptance = { v: 1, entries: [] }; } };
   const observed = new Map<string, Record<string, unknown>>();
   const edit = async (id: string, set: Record<string, unknown>) => mutateDocument({
     bundle, id, mode: "patch", registry, strict: true, actor: "human:fixture-editor",
@@ -68,20 +70,14 @@ async function world() {
   const adopt = (issue: Record<string, any>, extra: Record<string, unknown> = {}) => put(`work-items/widgets-${issue.number}`, {
     type: "Work Item", title: issue.title, sources: [{ resource: RESOURCE, id: issue.node_id }], ...extra,
   }, BODY);
-  return { backend, overlay, connector, bound, accepted, observed, put, edit, adopt };
+  return { backend, overlay, connector, bound, accepted, observed, put, edit, adopt, get acceptance() { return acceptance; }, set acceptance(value: SourceOverlaySnapshot) { acceptance = value; } };
 }
 type World = Awaited<ReturnType<typeof world>>;
 
-/**
- * Fixture orchestration only. The tuple includes the document, so first adoption and re-binding
- * use an empty accepted baseline. changeBetween owns mapping/change semantics; overlay owns writes.
- * Store commits include converged and partial-conflict outcomes, but no refused or uncertain step.
- */
 async function observe(w: World, issues: Array<Record<string, any>>, beforeApply?: () => Promise<unknown>) {
   const index = await buildSourceIndex(w.overlay.bundle, { type: "Work Item" });
   const changes: RecordChange[] = [];
   const diagnostics: MappingDiagnostic[] = [];
-  const commits: Array<{ id: string; tuple: string | null; after: Record<string, unknown> }> = [];
   const numbers = new Map<string, number>();
   let skipped = 0;
   for (const issue of issues) {
@@ -91,40 +87,32 @@ async function observe(w: World, issues: Array<Record<string, any>>, beforeApply
     diagnostics.push(...mapped.diagnostics);
     if (mapped.kind === "refused") continue;
     numbers.set(mapped.external_id, issue.number);
-    const matches = index.lookup(RESOURCE, mapped.external_id, { type: "Work Item" });
-    const tuple = matches.length === 1 ? JSON.stringify([FEED, mapped.external_id, matches[0]!.id]) : null;
-    const previous = tuple !== null ? w.accepted.get(tuple) ?? {} : w.observed.get(mapped.external_id) ?? null;
-    const change = changeBetween(previous, mapped, { external_id: mapped.external_id, change_kind: previous === null ? "new" : "changed" });
-    // Include a converged adoption so G1-1 is exercised through a real record-only/skipped step.
-    if (change.changed_fields.length || previous === null || (tuple !== null && !w.accepted.has(tuple)) || matches.length > 1) changes.push(change);
-    commits.push({ id: mapped.external_id, tuple, after: change.after! });
+    const previous = w.observed.get(mapped.external_id) ?? null;
+    changes.push(changeBetween(previous, mapped, { external_id: mapped.external_id, change_kind: previous === null ? "new" : "changed" }));
   }
-  const plan = await planRecordOverlay({
-    content: w.overlay, ops: w.overlay, policy: w.bound.policy, changes, observedAt: NOW, sameBundle: true, overlays: index,
+  const adapter = createSourceOverlayAdapter({ content: w.overlay, policy: w.bound.policy, actor: ACTOR, overlays: index,
+    accepted: w.acceptance, sameBundle: true, slug: "widgets-mapping",
     hooks: { sourceProperties: (change) => ({ number: numbers.get(change.external_id)! }) },
   });
   if (beforeApply) await beforeApply();
-  const receipt = await applyRecordOverlay(plan, { content: w.overlay, ops: w.overlay, policy: w.bound.policy, actor: ACTOR });
-  for (const commit of commits) {
-    const refusedStep = receipt.results.some((r) => r.external_id === commit.id && r.outcome === "refused");
-    const wholeRefusal = receipt.refusals.some((r) => r.external_id === commit.id && r.code !== "OVERLAY_DOC_CONFLICT");
-    if (refusedStep || wholeRefusal) continue;
-    w.observed.set(commit.id, commit.after);
-    if (commit.tuple !== null) w.accepted.set(commit.tuple, commit.after);
+  const result = await adapter.commit({ feed: FEED, provider: RESOURCE, observed_at: NOW, page: 1, replay: false,
+    changes, records: {}, baseline: w.observed.size === 0, complete: true });
+  const receipt = result.receipt;
+  for (const change of changes) {
+    if (!result.retry?.includes(change.external_id) && !result.hold?.includes(change.external_id)) w.observed.set(change.external_id, change.after!);
   }
+  w.acceptance = adapter.stagedSnapshot()!;
+  adapter.consume();
   const findingRows = findingsFor(diagnostics, { source: "issues" });
-  const steps = await planFindings({ ops: w.overlay, provider: RESOURCE, feed: FEED, slug: "widgets-mapping", findings: findingRows, observedAt: NOW });
-  const findings = await applyRecordOverlay({ feed: FEED, provider: RESOURCE, observed_at: NOW, steps, refusals: [] }, {
-    content: w.overlay, ops: w.overlay, policy: w.bound.policy, actor: ACTOR,
-  });
-  return { changes, diagnostics, plan, receipt, findingRows, findings, skipped };
+  const findings = await adapter.applyFindings(findingRows, NOW);
+  return { changes: result.changes, diagnostics, receipt, findingRows, findings, skipped };
 }
 const issue = (n = 0, patch: Record<string, unknown> = {}) => ({ ...structuredClone(ISSUES[n]!), ...patch });
 const read = (w: World, n = 42) => w.backend.read(`work-items/widgets-${n}`);
 const closed = (patch: Record<string, unknown> = {}) => issue(0, { state: "closed", state_reason: "not_planned", closed_at: "2026-10-03T12:00:00Z", updated_at: "2026-10-03T12:00:00Z", ...patch });
 const appliedFor = (result: Awaited<ReturnType<typeof observe>>, id: string) => result.receipt.results.filter((r) => r.external_id === id && r.op === "apply-owned-fields" && r.outcome === "applied");
 
-test("example installs complete recipe definitions and binds the scalar GitHub mapping without changing built-in Task", async () => {
+test("example installs complete recipe definitions and binds the GitHub mapping without changing built-in Task", async () => {
   const w = await world();
   for (const id of ["conventions/work-item", "connectors/github"]) {
     const stamp = (await w.backend.read(id)).doc.frontmatter.x_recipe as Record<string, unknown>;
@@ -133,8 +121,8 @@ test("example installs complete recipe definitions and binds the scalar GitHub m
   assert.equal(w.overlay.registry.kinds.has("Task"), false);
   assert.equal(w.bound.kind.claim, undefined);
   assert.equal(w.bound.kind.fields.types.labels, "string-list");
-  assert.equal(w.bound.source.fields.labels, undefined);
-  assert.equal(w.bound.source.fields.assignees, undefined);
+  assert.deepEqual(w.bound.source.fields.labels, { from: "labels" });
+  assert.deepEqual(w.bound.source.fields.assignees, { from: "assignees" });
   assert.deepEqual(w.bound.parameters, { owner: "example-org", repo: "widgets" });
   assert.equal(w.bound.resource, RESOURCE);
   assert.deepEqual(w.bound.policy, { ...readOverlayPolicy((await w.backend.read(FEED)).doc, { targetKind: w.bound.kind }), target_kind: "Work Item", completeness: "complete" });
@@ -278,22 +266,17 @@ test("coverage accounts for fixture fields, rejects an unexplained field, and ke
   assert.deepEqual(uncoveredGithubFields({ ...issue(), unexpected_field: "not silently lost" }), ["unexpected_field"]);
   const normalized = normalizeGithubIssue(issue(), { owner: "example-org", repo: "widgets" });
   assert.equal(normalized.body, undefined);
-  assert.equal(normalized.labels, undefined);
-  assert.equal(normalized.assignees, undefined);
-  assert.throws(() => normalizeGithubIssue(issue(), { owner: "other-org", repo: "widgets" }), /outside the bound repository/);
+  assert.deepEqual(normalized.labels, ["bug"]);
+  assert.deepEqual(normalized.assignees, ["github:octocat"]);
+  assert.throws(() => normalizeGithubIssue(issue(), { owner: "other-org", repo: "widgets" }), /outside bound repository/);
 });
 
-test("the explicit profile double also runs in the one public offline source harness", async () => {
+test("the shipped first-party profile runs the installed example in the public offline source harness", async () => {
   const w = await world();
-  const connector = structuredClone(w.connector);
-  connector.sources[0]!.request = {
-    host: "api.github.com", method: "GET", path: "/repos/{owner}/{repo}/issues", items: "",
-    query: { state: "all", sort: "updated", direction: "asc", per_page: 100 },
-    paging: { kind: "none" }, complete: "always",
-  };
+  const connector = w.connector;
   const documents = [];
   for (const id of await w.backend.list()) documents.push((await w.backend.read(id)).doc);
-  const result = await runSourceScenario({ connector, profile: githubFixtureProfile, spec: {}, feed: FEED, documents }, {
+  const result = await runSourceScenario({ connector, profile: githubFixtureProfile, spec: connector.sources[0]!, feed: FEED, documents }, {
     name: "github.synthetic-first-observation", runs: [{ mode: "complete", exchanges: [{
       request: { url: "https://api.github.com/repos/example-org/widgets/issues?state=all&sort=updated&direction=asc&per_page=100" },
       response: { status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify(ISSUES) },
@@ -305,4 +288,64 @@ test("the explicit profile double also runs in the one public offline source har
   assert.equal(run.receipt.changes.new, 6);
   assert.ok(run.receipt.profile_diagnostics.some((d) => d.code === "PULL_REQUEST_SKIPPED" && d.count === 1));
   assert.equal(Object.values(run.documents).filter((fm) => fm.type === "Work Item").length, 0);
+});
+
+test("source lists write sorted sets and every assignee uses the github prefix", async () => {
+  const w = await world(); await w.adopt(issue());
+  const result = await observe(w, [issue(0, {
+    labels: [{ name: "zebra" }, "alpha", { name: "alpha" }],
+    assignees: [{ login: "zoe" }, { login: "amy" }],
+  })]);
+  assert.equal(appliedFor(result, issue().node_id).length, 1);
+  const doc = (await read(w)).doc;
+  assert.deepEqual(doc.frontmatter.labels, ["alpha", "zebra"]);
+  assert.deepEqual(doc.frontmatter.assignees, ["github:amy", "github:zoe"]);
+});
+
+test("reordered source lists converge without a document write", async () => {
+  const w = await world(); await w.adopt(issue());
+  const labels = [{ name: "zebra" }, { name: "alpha" }];
+  const assignees = [{ login: "zoe" }, { login: "amy" }];
+  await observe(w, [issue(0, { labels, assignees })]);
+  const before = (await read(w)).version; w.backend.writes = [];
+  const result = await observe(w, [issue(0, { labels: [...labels].reverse(), assignees: [...assignees].reverse() })]);
+  assert.deepEqual(result.receipt.refusals, []);
+  assert.equal((await read(w)).version, before);
+  assert.equal(w.backend.writes.includes("work-items/widgets-42"), false);
+});
+
+test("a human-added label is preserved with a conflict Signal when source labels change", async () => {
+  const w = await world(); await w.adopt(issue()); await observe(w, [issue()]);
+  await mutateDocument({
+    bundle: w.overlay.bundle, id: "work-items/widgets-42", mode: "patch", registry: w.overlay.registry,
+    strict: true, actor: "human:fixture-editor", expectedVersion: (await read(w)).version,
+    input: { kind: "field-action", action: { action: "replace-all", field: "labels", value: ["bug", "human-label"] } },
+  });
+  const signals = await w.backend.list("signals/");
+  const result = await observe(w, [issue(0, { labels: [{ name: "source-label" }] })]);
+  assert.ok(result.receipt.refusals.some((r) => r.code === "OVERLAY_DOC_CONFLICT" && r.field === "labels"));
+  assert.deepEqual((await read(w)).doc.frontmatter.labels, ["bug", "human-label"]);
+  assert.ok((await w.backend.list("signals/")).length > signals.length);
+});
+
+test("reopening and relabeling share one CAS write including close-field removals", async () => {
+  const w = await world(); await w.adopt(issue()); await observe(w, [closed()]);
+  w.backend.writes = [];
+  const result = await observe(w, [issue(0, { state_reason: "reopened", labels: [{ name: "reopened" }] })]);
+  assert.equal(appliedFor(result, issue().node_id).length, 1);
+  assert.equal(w.backend.writes.filter((id) => id === "work-items/widgets-42").length, 1);
+  const doc = (await read(w)).doc;
+  assert.equal(doc.frontmatter.state_category, "todo");
+  assert.deepEqual(doc.frontmatter.labels, ["reopened"]);
+  assert.equal(Object.hasOwn(doc.frontmatter, "closed_at"), false);
+  assert.equal(Object.hasOwn(doc.frontmatter, "close_reason"), false);
+});
+
+test("empty source labels and assignees remain explicit empty lists", async () => {
+  const w = await world(); await w.adopt(issue()); await observe(w, [issue()]);
+  const result = await observe(w, [issue(0, { labels: [], assignees: [] })]);
+  assert.equal(appliedFor(result, issue().node_id).length, 1);
+  const doc = (await read(w)).doc;
+  assert.deepEqual(doc.frontmatter.labels, []);
+  assert.deepEqual(doc.frontmatter.assignees, []);
 });

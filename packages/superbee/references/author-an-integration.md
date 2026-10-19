@@ -5,8 +5,8 @@ record identities and mappings into the recipe's Kinds. Installing it does not c
 read a credential, fetch a provider or schedule a run.
 
 Authoring and recorded tests need only the public CLI and core packages. No Holaxis account or
-private repository is required. Live `source bind` / `source run` and managed execution are later
-capabilities; the commands here do not enable either.
+private repository is required. Local `source bind` / `source run` use explicit private consent;
+managed execution remains separate. Recorded tests never enable live execution.
 
 ## Validate a recipe without executing it
 
@@ -23,9 +23,8 @@ invent an official support commitment or managed admission.
 
 Validation reads the selected local directory only. It never imports a module named by the recipe,
 discovers a bundle, writes a document or makes a provider request. Unknown profiles are explicit
-`PROFILE_NOT_AVAILABLE` refusals, not successful compatibility claims. For example, a declaration for
-the future `github-issues` profile can be structurally sound while its runtime is unavailable in this
-release. An explicitly selected test double does not change that fact.
+`PROFILE_NOT_AVAILABLE` refusals, not successful compatibility claims. The shipped `rest-json` and first-party `github-issues` profiles resolve through core.
+An explicitly selected test double does not establish compatibility for an unavailable profile.
 
 The complete package is checked for core's secret-shaped text, including README files; `.env` and
 `.env.*` containers are refused without opening them. Output names the offending location, never the
@@ -113,7 +112,43 @@ ambient APIs. The static egress check and independent admission review lower tha
 provide isolation. Neither a fixture nor a recipe can implicitly select a module for the CLI to
 execute. Validation and installation never import one.
 
-The Work Item example's `github-issues` module is a synthetic mapping test double. Passing its
-mapping/adoption tests is not a full provider-profile qualification, live GitHub synchronization or
-managed catalog admission. The production GitHub profile, local credential binding and managed
-Connections retain their separate requirements.
+The Work Item example reexports the shipped first-party GitHub profile. Its synthetic fixtures
+qualify mapping and observation behavior; live provider access and managed catalog admission remain
+separate evidence.
+
+## Bind and run a local Source Feed
+
+After installing a recipe and creating its Source Feed in a local or Git bundle, preview consent:
+
+```sh
+superbee source bind source-feeds/github --anonymous --dir ./bundle --json
+superbee source bind source-feeds/github --anonymous --accept <digest-from-preview> --dir ./bundle --json
+superbee source run source-feeds/github --dir ./bundle --json
+```
+
+Binding previews make no provider request and read no credential. Acceptance pins the physical
+bundle, feed, declaration/provider rules, resource, Kind/overlay policy, built-in profile/version
+and budgets in private user state. A changed pin refuses before network or credential reads;
+preview and accept again. Copying or moving a bundle requires a new binding. `--complete` requests
+a complete pass; an interrupted pass never claims completeness.
+
+Anonymous public GitHub reads use the same read-path/resource guard and never discover credentials.
+For an explicitly authorized credentialed run, replace `--anonymous` with `--credential-env NAME`;
+the binding stores only that variable name. Supply the token separately through the process
+environment. Never put token values in arguments, recipes, fixtures or documents. GitHub token and
+GitHub App installation-token declarations are supported; no login, token exchange or credential
+discovery is performed. A 401/403 is a normal credential-refused result.
+
+Run admits shipped built-ins only and uses bounded DNS-pinned HTTPS. It updates existing documents
+linked by `sources` and existing overlay Signals; it does not create mirrored Work Items. A document
+linked after a prior observation can adopt cached last-observed values on its next run, including a
+304. A held invalid provider value needs a fresh observation; it is not retained as a retry queue.
+Private observation/accepted state persists with one lock and atomic envelope. A crash after a
+bundle write can replay through the same conflict rules; no exactly-once cross-store transaction
+is claimed. Corrupt private state refuses without reset. Summaries omit records, cursor, raw
+provider errors and credential values. Neither bind nor run synchronizes or publishes a bundle.
+
+Run receipts include fixed machine reason codes where available, never provider error text.
+A terminal unsuccessful run exits nonzero after its receipt: credential refusal 4, not found 6,
+guard/content/size refusal 2, and provider/runtime failure 1. Observed and deferred exit 0;
+deferred retains retry metadata for continuation and does not claim a complete observation.

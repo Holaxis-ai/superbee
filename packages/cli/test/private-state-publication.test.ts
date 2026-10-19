@@ -114,6 +114,12 @@ const LAYOUTS: readonly Layout[] = [
     remove: [],
     hosted: true,
   },
+  {
+    label: "a local source envelope copied and renamed outside its private root",
+    files: { "backup/renamed.json": JSON.stringify({product:"superbee",schema_version:1,v:1,binding:{digest:"synthetic"},observation:{records:{}},accepted:{v:1,entries:[]}}) },
+    remove: ["backup/renamed.json"],
+    hosted: true,
+  },
 ];
 
 async function plant(root: string, files: Record<string, string>): Promise<void> {

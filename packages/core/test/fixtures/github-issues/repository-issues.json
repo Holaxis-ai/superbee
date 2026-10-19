@@ -1,0 +1,122 @@
+{
+  "provenance": {
+    "kind": "recorded-schema-fixture",
+    "schema": "https://docs.github.com/en/rest/issues/issues#list-repository-issues",
+    "apiVersion": "2026-03-10",
+    "note": "Official REST List repository issues response shape recorded from GitHub documentation; invented values, no live request or private account data. Reference checked 2026-10-19."
+  },
+  "issues": [
+    {
+      "id": 42,
+      "node_id": "I_synthetic_widgets_42",
+      "number": 42,
+      "title": "Synthetic issue 42",
+      "repository_url": "https://api.github.com/repos/example-org/widgets",
+      "html_url": "https://github.com/example-org/widgets/issues/42",
+      "url": "https://api.github.com/repos/example-org/widgets/issues/42",
+      "state": "open",
+      "state_reason": null,
+      "type": {
+        "name": "Bug"
+      },
+      "created_at": "2026-10-01T12:00:00Z",
+      "updated_at": "2026-10-02T12:00:00Z",
+      "closed_at": null,
+      "labels": [
+        {
+          "name": "bug",
+          "id": 1
+        },
+        {
+          "name": "help wanted",
+          "id": 2
+        },
+        {
+          "name": "bug",
+          "id": 1
+        }
+      ],
+      "assignees": [
+        {
+          "login": "zebra",
+          "id": 2
+        },
+        {
+          "login": "octocat",
+          "id": 1
+        }
+      ],
+      "body": "Untrusted source description. Never copied to the Work Item body.",
+      "comments": 0,
+      "user": {
+        "login": "reporter"
+      },
+      "locked": false,
+      "active_lock_reason": null,
+      "author_association": "NONE",
+      "closed_by": null,
+      "draft": false,
+      "performed_via_github_app": null,
+      "milestone": null,
+      "reactions": {
+        "total_count": 0
+      },
+      "sub_issues_summary": {
+        "total": 0
+      },
+      "issue_field_values": [],
+      "comments_url": "https://api.github.com/repos/example-org/widgets/issues/42/comments"
+    },
+    {
+      "id": 43,
+      "node_id": "I_synthetic_widgets_43",
+      "number": 43,
+      "title": "Synthetic issue 43",
+      "repository_url": "https://api.github.com/repos/example-org/widgets",
+      "html_url": "https://github.com/example-org/widgets/issues/43",
+      "url": "https://api.github.com/repos/example-org/widgets/issues/42",
+      "state": "open",
+      "state_reason": null,
+      "type": {
+        "name": "Bug"
+      },
+      "created_at": "2026-10-01T12:00:00Z",
+      "updated_at": "2026-10-02T12:00:00Z",
+      "closed_at": null,
+      "labels": [
+        {
+          "name": "bug",
+          "id": 1,
+          "color": "ff0000",
+          "description": "A bug"
+        }
+      ],
+      "assignees": [
+        {
+          "login": "octocat",
+          "id": 100
+        }
+      ],
+      "body": "Untrusted source description. Never copied to the Work Item body.",
+      "comments": 0,
+      "user": {
+        "login": "reporter"
+      },
+      "locked": false,
+      "active_lock_reason": null,
+      "author_association": "NONE",
+      "closed_by": null,
+      "draft": false,
+      "performed_via_github_app": null,
+      "milestone": null,
+      "reactions": {
+        "total_count": 0
+      },
+      "sub_issues_summary": {
+        "total": 0
+      },
+      "issue_field_values": [],
+      "comments_url": "https://api.github.com/repos/example-org/widgets/issues/42/comments"
+    }
+  ]
+}

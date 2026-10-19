@@ -327,7 +327,7 @@ try {
       path.join(scratch, "source-consumer.mjs"),
       `delete globalThis.Buffer;
 const { observeSource, MemoryMachineState, refusedAddress } = await import("@superbee/core/source-engine");
-const { getSourceProfile, SOURCE_PROFILES } = await import("@superbee/core/source-profiles");
+const { getSourceProfile, restJsonProfile, githubIssuesProfile, SOURCE_PROFILES } = await import("@superbee/core/source-profiles");
 const { parseConnectorDoc, bindSourceFeed } = await import("@superbee/core/connectors");
 const { buildKindRegistry } = await import("@superbee/core/kinds");
 const { ScriptedPeer } = await import("@superbee/core/source-harness");
@@ -335,7 +335,12 @@ const { fetchIdentity } = await import("@superbee/core/source-engine");
 const { peerTransport, runTransportConformance, REQUIRED_SCENARIOS } = await import("@superbee/core/source-harness");
 if (typeof Buffer !== "undefined") throw new Error("proof must execute without Buffer");
 const profile = getSourceProfile("rest-json");
-if (!profile || SOURCE_PROFILES.length !== 1 || getSourceProfile("absent")) throw new Error("profile catalog changed");
+if (!profile || profile !== restJsonProfile || getSourceProfile("absent")) throw new Error("profile lookup changed");
+if (JSON.stringify(SOURCE_PROFILES.map(row => row.id)) !== JSON.stringify(["rest-json", "github-issues"])) throw new Error("profile catalog changed");
+const github = getSourceProfile("github-issues");
+if (!github || github !== githubIssuesProfile || github.id !== "github-issues" || github.kind !== "extension" || github.version !== 1
+  || ["validateSpec", "hostsFor", "observe"].some(key => typeof github[key] !== "function")) throw new Error("GitHub profile export changed");
+if (github.validateSpec(null).ok || JSON.stringify(SOURCE_PROFILES[1]) !== JSON.stringify({id: github.id, version: github.version, kind: github.kind})) throw new Error("GitHub catalog/interface agreement changed");
 const kinds = buildKindRegistry([{id: "conventions/item", body: "", frontmatter: {type: "Convention", title: "Item", governs: "Item", fields: {required: ["title"]}}}], [], {okfVersion: "0.2"});
 const declaration = parseConnectorDoc({id: "connectors/items", body: "", frontmatter: {type: "Connector", title: "Items", auth: {kind: "none"}, domains: ["items.example.org"], record_sources: [{name: "items", profile: "rest-json", target_kind: "Item", identity: {resource: "https://items.example.org/{list}", id: "{id}"}, fields: {title: "title"}, completeness: "complete", request: {host: "items.example.org", method: "GET", path: "/api/{list}", items: "", complete: "always", fields: {title: {from: "name", type: "text"}}}}]}}, {kinds});
 if (!declaration.ok) throw new Error(JSON.stringify(declaration.errors));

@@ -549,7 +549,17 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
   assert.equal((await rejects(assertAllowedInHostedCheckout("promote", ["x.md", "--doc-key", "conventions/x.md", "--dir", folder], context))).details?.do_this_in, "app");
   assert.equal((await rejects(assertAllowedInHostedCheckout("delete", ["--doc-key", "notes/index.md", "--dir", folder], context))).details?.do_this_in, "app");
   await assertAllowedInHostedCheckout("delete", ["--doc-key", "notes/X.MD", "--dir", folder], context);
-  assert.equal(HOSTED_CHECKOUT_REFUSALS.length, 11);
+  for (const args of [
+    ["bind", "source-feeds/github", "--anonymous", "--dir", folder],
+    ["run", "source-feeds/github", "--dir", folder],
+  ]) {
+    const error = await rejects(assertAllowedInHostedCheckout("source", args, context));
+    assert.equal(error.code, "FORBIDDEN", `source ${args[0]}`);
+    assert.equal(error.details?.reason, "not_syncable");
+    assert.equal(error.details?.bundle_id, BUNDLE);
+    assert.match(error.message, /supports local and Git bundles only/);
+  }
+  assert.equal(HOSTED_CHECKOUT_REFUSALS.length, 13);
 });
 
 test("projection placement never overwrites: new files are exclusive, replacements are pre-image guarded", async () => {

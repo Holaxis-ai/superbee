@@ -9,6 +9,15 @@ auth:
 record_sources:
   - name: issues
     profile: github-issues
+    request:
+      host: api.github.com
+      method: GET
+      path: /repos/{owner}/{repo}/issues
+      items: ""
+      query: { state: all, sort: updated, direction: asc, per_page: 100 }
+      headers: { accept: application/vnd.github+json, x-github-api-version: "2026-03-10" }
+      paging: { kind: link-header }
+      complete: always
     target_kind: Work Item
     mode: overlay
     identity:
@@ -35,6 +44,8 @@ record_sources:
         from: close_reason
         values: { completed: completed, not_planned: not_planned, duplicate: duplicate }
         unmapped: keep
+      labels: labels
+      assignees: assignees
       opened_at: created_at
       source_updated_at: updated_at
       closed_at: closed_at

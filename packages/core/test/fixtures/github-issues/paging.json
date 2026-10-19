@@ -1,0 +1,9 @@
+{
+  "provenance": {
+    "kind": "public-anonymous-link-header",
+    "observed": "2026-10-19",
+    "schema": "https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api",
+    "note": "Public next-Link shape from the separately authorized installed-CLI proof; no credential or private account data. Repository rows remain invented."
+  },
+  "next": "https://api.github.com/repositories/1332421172/issues?state=all&sort=updated&direction=asc&per_page=100&after=Y3Vyc29yOnYyOpLPAAABoEDxB0jPAAAAATm0O2g%3D&page=2"
+}

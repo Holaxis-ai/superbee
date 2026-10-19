@@ -14,7 +14,7 @@ From this repository, install the definitions into a disposable OKF 0.2 bundle:
 
 Use a new disposable directory rather than an existing project. Installation creates one
 Work Item convention and a Connector definition, not customer records. It preserves the simple
-built-in Task model. The example recipe is not a built-in or a maintained live provider profile.
+built-in Task model. The example recipe is not a built-in. It selects the first-party `github-issues` profile.
 
 ## What the proof does
 
@@ -26,13 +26,11 @@ node --test --import ./packages/core/test/ts-loader.mjs packages/core/test/work-
 ```
 
 `issues.json` contains six invented issues and one pull request, with schema provenance in the
-file. No API response or private account data was captured. `profile.mjs` is an explicitly selected,
-one-page **test double**, exporting a `SourceProfile` and scalar normalization function. It can
-run through the existing public source harness; it is not the later first-party `github-issues`
-extension and does not satisfy the complete provider-admission scenario matrix.
-The harness test supplies a bounded, one-page repository GET declaration for the synthetic
-run. The mapping-only Connector is still installable without it; credentialed engine observation
-requires an explicit request declaration and refuses before transport when that declaration is absent.
+file. No API response or private account data was captured. `profile.mjs` re-exports the shipped
+first-party `github-issues` profile and normalization; it contains no separate implementation.
+The Connector declares a repository GET request with Link-header paging and a complete all-state
+listing. The public offline source harness runs that actual declaration against the recorded page.
+A declaration supplies no credentials and does not authorize execution.
 
 The acceptance test installs the real recipe, binds one repository, maps source-native and
 normalized state, and sends changes through the real planner and guarded mutation engine.
@@ -41,13 +39,14 @@ a Work Item with its title and repository-scoped source identity. In the fixture
 observation fills empty owned fields in one write, preserves manual overrides with a conflict
 Signal, and leaves the body and human-owned fields untouched.
 
-The test's adoption/accepted-observation orchestration is deliberately local to the fixture.
-It uses `changeBetween({}, mapped, ...)` for a newly bound document; there is currently no public
-`adoptionChange` helper or production runner implementing that contract. The fixture remembers
-accepted values for the feed/record/document tuple after applied, unchanged, converged and
-partial-conflict outcomes. A refused, stale or uncertain whole step commits nothing. Resetting
-this store and replaying a converged observation must still commit that baseline so the next
-actual source edit does not falsely conflict. Do not reuse the fixture store as a durable runner.
+The fixture and local `source run` use core's shared source-overlay adapter for adoption and
+accepted observations. It tracks accepted values for each feed/resource/record/document tuple,
+including applied, unchanged, converged and partial-conflict outcomes. A refused, stale or
+uncertain whole step does not accept that candidate. Newly adopted documents are reconciled
+against already observed records even when the provider has no new changes. The adapter stages
+accepted values until the caller persists the matching source observation; the CLI owns the
+private durable envelope, while the fixture uses an in-memory store. The offline fixture itself
+does not establish live transport or credential handling.
 
 Unknown native values keep the prior mapped field. Findings deduplicate per source, field,
 diagnostic code and native value: an unknown closed reason affects both `state_category` and
@@ -56,16 +55,19 @@ findings omit source titles and descriptions. Source text remains untrusted data
 
 ## Scope and later increments
 
-- This first Connector maps scalars. The convention declares labels/assignees/list types, but
-  this mapping leaves those fields human-owned. Source-mapped lists are the separate G1b slice.
+- The Connector maps labels and assignees as lists through the existing replace-all ownership
+  engine. Lists write as sorted sets; a source reorder converges without a document write.
+  Assignees carry `github:` before each login. Source-empty lists stay `[]`.
+- A human-added label is retained with a conflict Signal when the source changes that list.
+  Reopening and relabeling share one guarded write, including removal of closed-state fields.
 - Scalar `number` is kept on the source entry. No new tracker-specific Kind or claim mechanism
   is introduced. To assign bundle work, use a linked Task with a deterministic create-only id.
 - The fixture accounts for every top-level field it presents, including explicit ignored fields;
   an unexplained field fails its coverage test. Navigation URLs are never followed. This coverage
   does not certify every current or future GitHub API field.
-- Linear, synced relationships, real paging/cursors, disappearance scheduling, credentialed local
+- Linear, synced relationships, disappearance scheduling, credentialed local
   runs and managed Connections remain separate work. A transfer is not an identity merge: the
   old and new repositories are different resources.
-- Public author validation can correctly report `PROFILE_NOT_AVAILABLE` for `github-issues`
-  until the first-party extension ships. Selecting this local fixture module explicitly for an
-  offline test does not admit it to managed execution or turn it into a production integration.
+- Public author validation resolves `github-issues` through the shipped profile lookup. Fixture
+  tests establish recorded-provider behavior; live transport, installed CLI qualification and
+  managed admission remain separate evidence.
