@@ -35,7 +35,7 @@ test('native exact-source complete queue proof admits reuse and all current aggr
   const f = fixture();
   assert.equal(expectedQueueJobs().length, 19);
   const proof = await verifyQueueProof(f.api, context);
-  assert.deepEqual(proof, { run: 10, attempt: 1, suite: 20, sha: context.sha, policy: policyDigest });
+  assert.deepEqual(proof, { run: 10, attempt: 1, suite: 20, created_at: f.run.created_at, sha: context.sha, policy: policyDigest });
   assert.equal(f.calls.filter(route => route.includes('/check-runs/')).length, 19);
   assert.deepEqual(await decide(f.api, context), { reuse: true, proof });
   await evaluateQueueResults(current(true, proof), context, f.api);
@@ -236,4 +236,33 @@ test('aggregate newly appearing contradictory full run fails, and ambiguous cand
   const irrelevant = fixture();
   irrelevant.sourceRuns.push({ id: 50, event: 'pull_request', workflow_id: 1, conclusion: 'failure' });
   assert.equal((await decide(irrelevant.api, context)).reuse, true);
+});
+
+test('queue detail creation time must be valid and agree with listing despite contradictory full proof', async () => {
+  for (const created_at of [undefined, 'invalid', '2026-02-30T10:00:00Z', '2099-10-19T10:00:00Z']) {
+    for (const conclusion of ['failure', null]) {
+      const f = fixture(); const proof = await verifyQueueProof(f.api, context);
+      f.sourceRuns.push({ ...f.run, id: 50, event: 'workflow_dispatch', head_branch: 'main', created_at: '2026-10-19T11:00:00Z', status: conclusion ? 'completed' : 'in_progress', conclusion });
+      const api = async route => {
+        const response = await f.api(route);
+        // Keep the list valid: only the independently fetched queue detail is malformed.
+        return route.endsWith('/runs/10') ? { ...response, created_at } : response;
+      };
+      assert.deepEqual(await decide(api, context), { reuse: false }, `${created_at} ${conclusion}`);
+      await assert.rejects(evaluateQueueResults(current(true, proof), context, api));
+    }
+  }
+});
+
+test('queue creation time remains bound across final detail and newest-list rereads', async () => {
+  for (const changedResponse of ['final-detail', 'final-list']) {
+    const f = fixture(); let details = 0, lists = 0;
+    const api = async route => {
+      const response = await f.api(route);
+      if (route.endsWith('/runs/10') && ++details === 2 && changedResponse === 'final-detail') response.created_at = '2026-10-19T09:00:00Z';
+      if (route.includes('event=merge_group') && ++lists === 2 && changedResponse === 'final-list') response.workflow_runs[0].created_at = '2026-10-19T09:00:00Z';
+      return response;
+    };
+    assert.deepEqual(await decide(api, context), { reuse: false }, changedResponse);
+  }
 });

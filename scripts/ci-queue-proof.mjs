@@ -10,6 +10,8 @@ export const policyDigest = createHash('sha256').update(manifestBytes).digest('h
 const policy = manifest.queue_reuse;
 const positive = n => Number.isSafeInteger(n) && n > 0;
 const record = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+const creationTime = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) &&
+  Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value.replace('Z', '.000Z');
 const requireProof = (condition, message) => assert.ok(condition, message);
 export function expectedQueueJobs() {
   const names = [policy.decision_name, ...Object.values(policy.aggregates)];
@@ -67,6 +69,7 @@ export function eligible(context) {
 }
 function validRun(run, sha) {
   requireProof(record(run) && positive(run.id) && positive(run.run_attempt) && positive(run.check_suite_id), 'invalid run identity');
+  requireProof(creationTime(run.created_at), 'invalid run creation time');
   requireProof(run.repository?.id === policy.repository_id && run.head_repository?.id === policy.repository_id &&
     run.repository.full_name === policy.repository && run.head_repository.full_name === policy.repository, 'untrusted repository');
   requireProof(run.head_sha === sha && run.event === 'merge_group' && run.workflow_id === policy.workflow_id && run.path === policy.workflow_path &&
@@ -78,7 +81,7 @@ async function newestRun(api, sha) {
   const rows = await collection(api, `/repos/${policy.repository}/actions/workflows/${policy.workflow_id}/runs?head_sha=${sha}&event=merge_group`, 'workflow_runs');
   requireProof(rows.length > 0 && rows.every(run => positive(run.id) && run.event === 'merge_group' && run.head_sha === sha && run.workflow_id === policy.workflow_id), 'missing or ambiguous queue runs');
   requireProof(new Set(rows.map(run => run.id)).size === rows.length, 'duplicate queue runs');
-  requireProof(rows.every(run => typeof run.created_at === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(run.created_at) && Number.isFinite(Date.parse(run.created_at))), 'invalid run creation time');
+  requireProof(rows.every(run => creationTime(run.created_at)), 'invalid run creation time');
   rows.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
   requireProof(rows.length === 1 || rows[0].created_at !== rows[1].created_at, 'ambiguous newest run');
   return rows[0];
@@ -104,15 +107,15 @@ async function rejectContradictoryRuns(api, context, queue) {
     requireProof(!later || (run.status === 'completed' && run.conclusion === 'success'), 'newer full source proof is pending or unsuccessful');
   }
 }
-const identity = run => ({ run: run.id, attempt: run.run_attempt, suite: run.check_suite_id });
+const identity = run => ({ run: run.id, attempt: run.run_attempt, suite: run.check_suite_id, created_at: run.created_at });
 export async function verifyQueueProof(api, context) {
   requireProof(eligible(context), 'event requires full CI');
   const listed = await newestRun(api, context.sha);
   const base = `/repos/${policy.repository}`;
   const run = await api(`${base}/actions/runs/${listed.id}`);
   validRun(run, context.sha);
-  await rejectContradictoryRuns(api, context, run);
   requireProof(JSON.stringify(identity(run)) === JSON.stringify(identity(listed)), 'run changed after listing');
+  await rejectContradictoryRuns(api, context, run);
   const jobs = await collection(api, `${base}/actions/runs/${run.id}/attempts/${run.run_attempt}/jobs`, 'jobs');
   requireProof(JSON.stringify(jobs.map(job => job.name).sort()) === JSON.stringify(expectedQueueJobs()), 'incomplete queue job topology');
   requireProof(new Set(jobs.map(job => job.id)).size === jobs.length, 'duplicate job IDs');
