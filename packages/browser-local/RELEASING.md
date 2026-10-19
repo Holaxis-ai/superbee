@@ -8,48 +8,41 @@ is the durable process for every browser-local prerelease.
 
 | Package | Version | Access / channel |
 | --- | --- | --- |
-| @superbee/core | 0.2.0-pre.18 | public / next |
-| @superbee/server | 0.2.0-pre.18 | public / next |
-| @superbee/browser-local | 0.1.0-pre.15 | public / next |
-| @superbee/markdown-renderer | 0.1.15 | existing restricted access / latest |
+| @superbee/core | 0.2.0-pre.19 | public / next |
+| @superbee/server | 0.2.0-pre.19 | public / next |
+| @superbee/browser-local | 0.1.0-pre.16 | public / next |
+| @superbee/markdown-renderer | 0.1.16 | existing restricted access / latest |
 
-**superbee#498 is breaking for direct `mutateDocument` callers.** Core mutation now owns the
-body replacement guards: a non-identical whole-body replacement that drops outbound links, or
-writes back a truncated body preview, is refused with `BodyReplaceError` unless the caller
-passes `bodyReplace` with the matching opt-in (`{ replaceLinks: true }` or
-`{ acceptTruncatedBody: true }`). Any set, assignment or patch of a field the Kind declares as
-`string-list` or `https-url-list` is refused with `TypedListPatchError`, whatever the value's
-shape; such fields are written only through the `replace-all` and `unset` field actions
-(superbee#496).
+This candidate adds superbee#504 to the pre.18 source. Core exposes two opt-in,
+browser-safe subpaths: `@superbee/core/builtin-recipes` provides the built-in recipe
+catalog and file/loading helpers, and `@superbee/core/kind-authoring` provides shared
+Kind inference, draft preparation, guarded apply and dismissal APIs. Core does not
+install recipes automatically; CLI adapters now use these owning core APIs. See
+`packages/core/README.md` for the entry points and usage contract. Server moves with
+core with no source change.
 
-This candidate carries core changes superbee#490 and #492 to #501. New public core subpaths:
-`@superbee/core/connectors` (superbee#490, target-agnostic connector declarations),
-`@superbee/core/search` (superbee#494, the one search engine behind a `SearchSource` seam),
-and `@superbee/core/source-engine` with `@superbee/core/source-harness` (superbee#501, the
-portable integration source engine and its replay harness). The hosted client gains one-call
-blob writes (`writeBlob`, `deleteBlob`, `lookupBlobWrite`, `settleBlobWrite`,
-`forgetBlobWrite`, `heldBlobWrites`, `blobHeads`, `blobHead`, `readBlob`; superbee#500), a
-person's inbox (`createHostedInbox`, superbee#492) and the teammate directory
-(`readDirectory`, `matchDirectoryMember`, superbee#499). `@superbee/core/hosted-client/node`
-adds the durable intent store `openHostedClientJournal` (superbee#495). The blob intent
-transitions have one owner, exported as pure functions through `@superbee/core/storage` with
-`createMemoryBlobJournal`, `checkBlobAdmission` and `isOrdinaryBlobKey` (superbee#497,
-#500). A file journal that records a not-dispatched blob claim is written as format 3, which
-an older core refuses with `FileJournalFormatError`. Core field actions gain `unset` and
-Kind-list `replace-all` (superbee#496). Server moves with core with no source change.
+The pre.18 compatibility changes remain: direct `mutateDocument` callers must pass
+`bodyReplace` with the matching opt-in when a non-identical whole-body replacement
+drops outbound links (`{ replaceLinks: true }`) or writes back a truncated body preview
+(`{ acceptTruncatedBody: true }`), otherwise `BodyReplaceError` refuses it
+(superbee#498). Any set, assignment or patch of a Kind-declared `string-list` or
+`https-url-list` field is refused with `TypedListPatchError`; use `replace-all` or
+`unset` (superbee#496). File-journal format 3, written when a blob claim is recorded
+as not dispatched, remains unreadable by core pre.17 and older (superbee#497, #500).
+The existing pre.18 staged artifacts retain their own source and approval gates;
+this candidate neither replaces nor modifies those bytes.
 
-Browser-local 0.1.0-pre.14 was never published, so 0.1.0-pre.15 is the first browser-local
-publish since 0.1.0-pre.13. It moves its exact pin to core pre.18 and carries two
-browser-local source changes. From superbee#486: push pauses, and persists the pause, when an
-unknown outcome carries an authorization refusal, as it does for a settled one; the intent
-stays pending. From superbee#498: editor saves and reviewed conflict resolutions pass
-`bodyReplace: { replaceLinks: true }`, so a person's deliberate link removal still commits,
-while a save that would write back a truncated preview is still refused.
-
-Renderer 0.1.15 extends its core peer allowance through pre.18 with no source change since
-0.1.14. Each is a new version because a version is never reused for different bytes, and each
-is included so consumers can align their root core without overriding peer checks. Hand
-publication of either is optional.
+Browser-local 0.1.0-pre.16 changes only its exact core pin from pre.18 to pre.19.
+Renderer 0.1.16 changes only its core peer allowance, adding pre.19 while retaining
+the existing alternatives. Neither package has a source change since the pre.18
+preparation. Browser-local pre.14 and pre.15 were never published, so pre.16 also
+carries the source changes since the published pre.13: push pauses persist when an
+unknown outcome carries an authorization refusal, leaving the intent pending
+(superbee#486); editor saves and reviewed conflict resolutions pass
+`bodyReplace: { replaceLinks: true }` for deliberate link removal while still
+refusing a truncated preview (superbee#498). Each needs a new version because
+changed dependency or peer metadata produces different bytes. Their separate
+publication remains optional.
 
 ## Before release
 

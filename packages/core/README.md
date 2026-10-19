@@ -929,3 +929,68 @@ private directory; callers own its cleanup and isolation while publishing. No ta
 inventory SHA-256. Keep that evidence outside the directory and private when it identifies a
 private source. Handles cannot be reconstructed from JSON or moved between independently bundled
 module instances; modified handles are refused. This surface requires Node, not a browser or Worker.
+
+## Built-in recipes and Kind authoring
+
+`@superbee/core/builtin-recipes` is an opt-in catalog: `builtinNames()` lists names,
+`builtinRecipeFiles(name)` returns detached source files, and `loadBuiltinRecipe(name)` returns
+the existing parser's result or `null` for an unknown name. The generic parser, package root,
+and `initBundle` do not import the catalog or install recipes.
+
+`@superbee/core/kind-authoring` provides inference, forecasts, dismissal classification, templates,
+and guarded draft/apply/dismiss operations on a caller-selected `Bundle` backend. An outside app
+can use the existing backend and mutation seams without a CLI subprocess:
+
+```ts
+import { MemoryBackend } from "@superbee/core/memory-backend";
+import { query } from "@superbee/core/engine";
+import { mutateDocument } from "@superbee/core/document-mutation";
+import { buildKindRegistry } from "@superbee/core/kinds";
+import { loadBuiltinRecipe } from "@superbee/core/builtin-recipes";
+import { installRecipe } from "@superbee/core/recipe-lifecycle";
+import { kindInstanceCandidate, prepareKindDraft, applyKindDraft } from "@superbee/core/kind-authoring";
+
+const backend = new MemoryBackend(), bundle = { root: "memory://project", backend };
+await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Project\n");
+const loaded = loadBuiltinRecipe("work-tracking");
+if (!loaded?.ok) throw new Error("Recipe unavailable");
+await installRecipe(bundle, loaded.recipe);
+const registry = buildKindRegistry(await query(backend, { prefix: "conventions/" }));
+const task = registry.kinds.get("Task")!;
+const candidate = kindInstanceCandidate(task, { title: "First task", superbee_progress_status: "todo" });
+await mutateDocument({ bundle, id: "tasks/first", mode: "create-only", registry, strict: true,
+  buildCandidate: () => candidate });
+
+// Once an ungoverned type has existing instances, inspect its draft before applying.
+const text = { inferredBody: () => "The accepted shape of existing research records.\n" };
+const plan = await prepareKindDraft(bundle, "Research", text); // requires existing Research docs
+// Present candidateDoc, warnings and promotions; after acceptance:
+await applyKindDraft(bundle, "Research", plan.token, text);
+```
+
+`kindInstanceCandidate` accepts already-typed field values. Existing validators own their meaning;
+there is no CLI flag coercion or path-alias resolution. Supply a canonical id and use strict
+create-only mutation. The template keeps `type` equal to `governs`, preserves own prototype-shaped
+fields, scaffolds sections only when body is omitted, and retains an explicit empty body.
+
+Public draft/apply/dismiss operations trim type names and refuse blank or non-string names before
+any backend access, matching convention parsing. `prepareKindDraft` selects a catalog definition
+or infers from instances. Its token binds candidate
+bytes (including supplied `inferredBody`/`inferredDescription`), edition, presence statistics and
+warning forecast. Pass the same prose options to `applyKindDraft`, which recomputes the plan and
+checks edition and declaration-free redraft eligibility against every fresh CAS head. New
+conventions are expect-absent creates; accepted redrafts replace dismissal prose in place and
+report dropped links. `dismissKind` accepts presentation-owned description/body, records no schema
+obligations, refuses a real schema, and is idempotent. Definition writes retain recipe
+installation's generation-clock opt-out. `KindAuthoringError.reason` identifies domain refusals;
+normal mutation/storage errors retain their types.
+
+Presentations with an established mutation adapter may pass the options from
+`prepareKindDraftMutation` or `prepareKindDismissal` through that adapter. These are the same
+specifications used by public apply/dismiss; keep preparation adjacent to mutation. Outside apps
+normally use `applyKindDraft`/`dismissKind`, which own the read-and-apply sequence. No cross-document
+transaction or authorization boundary is added.
+
+The packed proof runs the public workflow over `MemoryBackend` in Node and a browser bundle without
+Node globals. This proves source/package availability. Hosted provisioning routes, MCP modeling
+tools, and publication of a core version remain separate adoption and release decisions.

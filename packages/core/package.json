@@ -1,6 +1,6 @@
 {
   "name": "@superbee/core",
-  "version": "0.2.0-pre.18",
+  "version": "0.2.0-pre.19",
   "type": "module",
   "description": "OKF store engine \u2014 bundle I/O, cross-links, derived backlinks, freshness, and versioned writes.",
   "license": "Apache-2.0",
@@ -198,6 +198,14 @@
     "./search": {
       "types": "./dist/search/index.d.ts",
       "default": "./dist/search/index.js"
+    },
+    "./builtin-recipes": {
+      "types": "./dist/builtin-recipes.d.ts",
+      "default": "./dist/builtin-recipes.js"
+    },
+    "./kind-authoring": {
+      "types": "./dist/kind-authoring.d.ts",
+      "default": "./dist/kind-authoring.js"
     }
   },
   "files": [
