@@ -6,6 +6,7 @@ import yaml from "js-yaml";
 import { actionIdentity, parseActionDocument, validateIdentities } from "./workflow-actions.mjs";
 import { fileURLToPath } from "node:url";
 
+import { expectedQueueJobs } from "./ci-queue-proof.mjs";
 import { extractJobs, requiredUnconditionalStep, stepsOf } from "./workflow-step-test-helper.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -75,7 +76,7 @@ function requiredLaneNames(candidate) {
 }
 
 function assertAggregator(job, label) {
-  assert.deepEqual(needsOf(job).sort(), [...manifest.required_jobs].sort(), `${label} needs every required lane`);
+  assert.deepEqual(needsOf(job).sort(), ["source-decision", ...manifest.required_jobs].sort(), `${label} needs every required lane`);
   assert.match(job, /^ {4}if: \$\{\{ always\(\) \}\}\s*$/m, `${label} must run after every conclusion`);
   const parsed = yaml.safeLoad(job);
   assert.equal(parsed["continue-on-error"], undefined);
@@ -89,12 +90,12 @@ function assertAggregator(job, label) {
     assert.equal(step["continue-on-error"], undefined, `${label} steps cannot mask failures`);
   }
   const gate = parsed.steps[2];
-  assert.deepEqual(Object.keys(gate).sort(), ["name", "uses", "with"]);
-  assert.equal(gate.uses, "./.github/actions/ci-gate");
-  assert.deepEqual(Object.keys(gate.with).sort(), ["needs-json", "policy-json"]);
-  assert.equal(gate.with["needs-json"], "${{ toJSON(needs) }}");
-  assert.deepEqual(JSON.parse(gate.with["policy-json"]), manifest.required_jobs.map((job) => ({ job, required: true })),
-    `${label} policy must require every declared lane`);
+  assert.deepEqual(gate, {
+    name: 'Verify complete current or reused CI proof',
+    run: 'node scripts/ci-queue-proof.mjs aggregate',
+    env: { REQUIRED_RESULTS_JSON: '${{ toJSON(needs) }}', GITHUB_TOKEN: '${{ github.token }}' },
+  }, `${label} must use the checked reuse wrapper`);
+  assert.deepEqual(parsed.permissions, { contents: 'read', actions: 'read', checks: 'read' });
 }
 
 function displayNameOf(job) {
@@ -328,12 +329,14 @@ function validateCiTopology(
     "required_jobs must equal the automatically run lane set",
   );
   assert.deepEqual(Object.keys(jobs).sort(), [...candidate.required_jobs,
-    "required", "compatibility-gate-node-22", "compatibility-gate-node-26"].sort());
+    "source-decision", "required", "compatibility-gate-node-22", "compatibility-gate-node-26"].sort());
   assert.doesNotMatch(text, /^\s+continue-on-error:/m, "required CI jobs cannot mask a failing step");
   for (const required of candidate.required_jobs) {
     assert.ok(jobs[required], `missing required job ${required}`);
     assert.equal(displayNameOf(jobs[required]), candidate.lanes[required].display_name, `${required} display name drifted`);
-    assert.equal(parsed.jobs[required].if, undefined, `${required} must remain unconditional`);
+    const selected = required !== 'smoke-node-22';
+    assert.equal(parsed.jobs[required].if, selected ? "${{ always() && !(needs.source-decision.result == 'success' && needs.source-decision.outputs.reuse == 'true') }}" : undefined, `${required} must preserve full fallback`);
+    assert.equal(parsed.jobs[required].needs, selected ? 'source-decision' : undefined);
     const steps = stepsOf(jobs[required]);
     const preflight = requiredUnconditionalStep(steps, {
       name: 'Check package version sources before installation',
@@ -348,7 +351,7 @@ function validateCiTopology(
   }
   assert.match(jobs.runtime, new RegExp(`node-version: \\[${candidate.runtime_nodes.join(", ")}\\]`));
   assert.match(jobs.runtime, /run: npm run ci:runtime-cli$/m);
-  assert.equal(parsed.jobs["runtime-common"].needs, undefined, "common tests must be independent of CLI shards");
+  assert.equal(parsed.jobs["runtime-common"].needs, "source-decision", "common tests must be independent of CLI shards");
   assert.equal(parsed.jobs["runtime-common"].env.SUPERBEE_TEST_SHARD, undefined);
   assertRuntimeShards(jobs.runtime, candidate.lanes.runtime);
   assert.deepEqual(parsed.jobs.runtime.strategy, {
@@ -372,13 +375,32 @@ function validateCiTopology(
   assert.deepEqual(parsed.permissions, { contents: "read" });
   assert.equal(parsed.env?.GITHUB_TOKEN, undefined);
   for (const [name, job] of Object.entries(parsed.jobs)) {
-    assert.equal(job.permissions, undefined, `${name} must inherit read-only permissions`);
+    assert.deepEqual(job.permissions, name === 'source-decision' || Object.hasOwn(manifest.queue_reuse.aggregates, name) ? { contents: 'read', actions: 'read', checks: 'read' } : undefined, `${name} must retain minimum read-only permissions`);
     assert.equal(job.env?.GITHUB_TOKEN, undefined);
     assert.equal(actionIdentity(job.steps[0].uses), "actions/checkout", `${name} first action must check out`);
     assert.equal(actionIdentity(job.steps[1].uses), "actions/setup-node", `${name} second action must set up Node`);
     for (const step of job.steps) {
-      if (name !== "scripts" || step.name !== "Verify GitHub Action upstream correspondence") assert.equal(step.env?.GITHUB_TOKEN, undefined);
+      if (!["Verify GitHub Action upstream correspondence", "Verify native exact-source queue proof", "Verify complete current or reused CI proof"].includes(step.name)) assert.equal(step.env?.GITHUB_TOKEN, undefined);
     }
+  }
+  assert.deepEqual(parsed.jobs['source-decision'], {
+    name: manifest.queue_reuse.decision_name,
+    permissions: { contents: 'read', actions: 'read', checks: 'read' },
+    'runs-on': 'ubuntu-latest', 'timeout-minutes': 5,
+    outputs: { reuse: '${{ steps.decision.outputs.reuse }}', proof: '${{ steps.decision.outputs.proof }}' },
+    steps: [parsed.jobs['source-decision'].steps[0], parsed.jobs['source-decision'].steps[1], {
+      name: 'Verify native exact-source queue proof', id: 'decision', run: 'node scripts/ci-queue-proof.mjs decision', env: { GITHUB_TOKEN: '${{ github.token }}' },
+    }],
+  });
+  assert.equal(parsed.jobs['source-decision'].steps[1].with['node-version'], candidate.singleton_node);
+  const expandedNames = Object.values(parsed.jobs).flatMap(job => {
+    const matrix = job.strategy?.matrix;
+    return matrix ? matrix['node-version'].flatMap(node => (matrix.shard ?? [1]).map(shard => job.name.replace('${{ matrix.node-version }}', node).replace('${{ matrix.shard }}', shard))) : [job.name];
+  });
+  assert.deepEqual(expandedNames.sort(), expectedQueueJobs(), 'complete queue proof must cover every workflow job');
+  for (const required of candidate.required_jobs) {
+    const job = parsed.jobs[required];
+    assert.doesNotMatch(JSON.stringify({ steps: job.steps, env: job.env }), /github\.(?:event|ref)|GITHUB_(?:EVENT|REF|HEAD_REF|BASE_REF)/, 'reused proof must be event independent');
   }
   const upstream = parsed.jobs.scripts.steps.filter(step => step.name === "Verify GitHub Action upstream correspondence");
   assert.deepEqual(upstream, [{
@@ -405,7 +427,7 @@ test('package source preflight cannot be removed, skipped or moved after install
   ]) assert.throws(() => validateCiTopology(changed), /source preflight/);
 });
 
-test("CI runs every maintained lane unconditionally", () => {
+test("CI runs every maintained lane or verifies identical-source queue proof", () => {
   validateCiTopology(workflow);
   assert.equal(extractJobs(workflow).windows, undefined, "Windows proof belongs to the independent Windows distribution");
 });
@@ -565,7 +587,7 @@ function validateProofCheckouts(text) {
     const checkouts = job.steps.filter(step => step.uses?.startsWith("actions/checkout@"));
     assert.equal(checkouts.length, 1, `${name} must check out the event commit once`);
     assert.equal(checkouts[0].with?.ref, "${{ github.sha }}", "checkout must use the event candidate SHA");
-    assert.deepEqual(checkouts[0].with, { "fetch-depth": 1, ref: "${{ github.sha }}" },
+    assert.deepEqual(checkouts[0].with, { "fetch-depth": 1, ref: "${{ github.sha }}", ...(name === 'source-decision' ? { 'persist-credentials': false } : {}) },
       `${name} must test the event commit in the current repository and root directory`);
   }
 }
@@ -573,13 +595,11 @@ function validateProofCheckouts(text) {
 test("aggregate policy cannot silently weaken", () => {
   const job = extractJobs(workflow).required;
   for (const changed of [
-    job.replace('"required":true', '"required":false'),
-    job.replace('"job":"runtime"', '"job":"unknown"'),
-    job.replace('uses: ./.github/actions/ci-gate', 'uses: unknown/action@main'),
-    job.replace('uses: ./.github/actions/ci-gate', 'if: false\n        uses: ./.github/actions/ci-gate'),
-    job.replace('uses: ./.github/actions/ci-gate', 'continue-on-error: true\n        uses: ./.github/actions/ci-gate'),
+    job.replace('run: node scripts/ci-queue-proof.mjs aggregate', 'run: true'),
+    job.replace('run: node scripts/ci-queue-proof.mjs aggregate', 'if: false\n        run: node scripts/ci-queue-proof.mjs aggregate'),
+    job.replace('run: node scripts/ci-queue-proof.mjs aggregate', 'continue-on-error: true\n        run: node scripts/ci-queue-proof.mjs aggregate'),
   ]) assert.throws(() => assertAggregator(changed, "mutated"));
-  for (const file of [".github/actions/ci-gate/evaluate.test.mjs", "infrastructure/github-ci/preflight.test.mjs"]) {
+  for (const file of ["scripts/ci-queue-proof.test.mjs", ".github/actions/ci-gate/evaluate.test.mjs", "infrastructure/github-ci/preflight.test.mjs"]) {
     assert.ok(rootPackage.scripts["test:scripts"].split(" ").includes(file), `${file} must run in CI`);
   }
 });
@@ -612,7 +632,7 @@ test("common runtime coverage and matrix exclusions cannot disappear", () => {
   for (const name of ["required", "compatibility-gate-node-22", "compatibility-gate-node-26"]) {
     const job = extractJobs(workflow)[name];
     assert.throws(() => assertAggregator(job.replace("runtime-common, ", ""), name));
-    assert.throws(() => assertAggregator(job.replace('{"job":"runtime-common","required":true}', '{"job":"runtime-common","required":false}'), name));
+    assert.throws(() => assertAggregator(job.replace("REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}", "REQUIRED_RESULTS_JSON: {}"), name));
   }
 });
 

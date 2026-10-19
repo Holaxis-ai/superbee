@@ -295,5 +295,20 @@
       "superbee_tarball": "out/node-floor/superbee.tgz",
       "cli_tarball": "out/node-floor/superbee-cli.tgz"
     }
+  },
+  "queue_reuse": {
+    "repository": "Holaxis-ai/superbee",
+    "repository_id": 1332421172,
+    "workflow_id": 333080621,
+    "workflow_path": ".github/workflows/ci-tests.yml",
+    "app_id": 15368,
+    "decision_job": "source-decision",
+    "decision_name": "exact-source queue proof decision",
+    "always_full_job": "smoke-node-22",
+    "aggregates": {
+      "required": "CI required lanes",
+      "compatibility-gate-node-22": "gate (node 22)",
+      "compatibility-gate-node-26": "gate (node 26)"
+    }
   }
 }
