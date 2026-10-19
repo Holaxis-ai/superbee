@@ -25,6 +25,7 @@ import { VersionConflict } from "../versioning.js";
 import { ConnectorTargetUnsatisfied, RecipeAssetConflict, RecipeEditionChanged, RecipeInputError } from "./errors.js";
 import {
   RECIPE_STAMP_KEY,
+  normalizeDefinitionBody,
   recipeStampIdentity,
   recipeStampState,
   withRecipeStamp,
@@ -633,7 +634,7 @@ export function sameInstalledDoc(existing: OkfDocument, desired: OkfDocument, ok
       frontmatter.generated = rest;
     }
   }
-  return okfValuesEqual(existingFrontmatter, desiredFrontmatter) && existing.body === desired.body;
+  return okfValuesEqual(existingFrontmatter, desiredFrontmatter) && normalizeDefinitionBody(existing.body) === normalizeDefinitionBody(desired.body);
 }
 
 /**

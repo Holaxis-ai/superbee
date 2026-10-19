@@ -46,6 +46,7 @@ import {
   RECIPE_STAMP_KEY,
   conventionStampState,
   definitionDigest,
+  normalizeDefinitionBody,
   recipeStampIdentity,
   recipeStampState,
   withRecipeStamp,
@@ -295,10 +296,12 @@ function additiveConventionCandidate(
   }
 
   let body = existing.body;
-  if (existing.body === "" && desired.body !== "") {
+  const existingBody = normalizeDefinitionBody(existing.body);
+  const desiredBody = normalizeDefinitionBody(desired.body);
+  if (existingBody === "\n" && desiredBody !== "\n") {
     body = desired.body;
     addedPaths.push("/body");
-  } else if (existing.body !== desired.body) {
+  } else if (existingBody !== desiredBody) {
     evolutionBlocker(
       blockers,
       "RECIPE_EVOLUTION_BODY_REPLACEMENT_UNSUPPORTED",

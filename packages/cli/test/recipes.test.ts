@@ -3557,3 +3557,29 @@ test("recipe Reference journey: exact matching legacy content is explicitly adop
     } finally { await rm(root, { recursive: true, force: true }); }
   }
 });
+
+test("recipe body normalization: CLI add and evolve settle CRLF bodies in both editions and retain exact stale fences", async () => {
+  for (const edition of ["0.1", "0.2"]) {
+    const root = await tempDir();
+    try {
+      const dir = path.join(root, "bundle");
+      await initBundle(dir, { okfVersion: edition });
+      const source = await referenceJourneySource(root, "Synthetic guidance.", false);
+      await runJson(recipe, ["add", source, "--dir", dir]);
+      const file = path.join(dir, "conventions/widget.md");
+      const crlf = (await readFile(file, "utf8")).replaceAll("\n", "\r\n");
+      await writeFile(file, crlf);
+      const plan = await runJson(recipe, ["evolve", source, "--dir", dir]);
+      assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+      assert.equal(plan.writes, 0);
+      assert.equal((await runJson(recipe, ["add", source, "--dir", dir])).changed, false);
+      await runJson(recipe, ["evolve", source, "--dir", dir, "--apply", String(plan.plan_token)]);
+      assert.equal(await readFile(file, "utf8"), crlf);
+      const lf = crlf.replaceAll("\r\n", "\n");
+      await writeFile(file, lf);
+      await assert.rejects(runJson(recipe, ["evolve", source, "--dir", dir, "--apply", String(plan.plan_token)]),
+        (error: unknown) => error instanceof CliError && error.code === "STALE_HEAD");
+      assert.equal(await readFile(file, "utf8"), lf);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
+});
