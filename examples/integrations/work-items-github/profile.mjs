@@ -2,9 +2,9 @@
 import { unsupportedContent } from "@superbee/core/source-engine";
 
 export const GITHUB_FIELD_COVERAGE = Object.freeze({
-  mapped: ["node_id", "number", "repository_url", "title", "html_url", "state", "state_reason", "type", "created_at", "updated_at", "closed_at"],
+  mapped: ["node_id", "number", "repository_url", "title", "html_url", "state", "state_reason", "type", "created_at", "updated_at", "closed_at", "labels", "assignees"],
   properties: ["number"],
-  ignored: ["id", "url", "body", "user", "comments", "reactions", "locked", "active_lock_reason", "author_association", "closed_by", "draft", "performed_via_github_app", "milestone", "sub_issues_summary", "issue_field_values", "labels", "assignees"],
+  ignored: ["id", "url", "body", "user", "comments", "reactions", "locked", "active_lock_reason", "author_association", "closed_by", "draft", "performed_via_github_app", "milestone", "sub_issues_summary", "issue_field_values"],
   skipped: ["pull_request"],
 });
 
@@ -14,7 +14,7 @@ export function uncoveredGithubFields(issue) {
   return Object.keys(issue).filter((key) => !covered.has(key) && !key.endsWith("_url"));
 }
 
-/** Produce only the reviewed scalar paths; source descriptions and arbitrary fields stay out. */
+/** Produce only the reviewed scalar and list paths; source descriptions and arbitrary fields stay out. */
 export function normalizeGithubIssue(issue, parameters) {
   if (Object.hasOwn(issue, "pull_request")) return null;
   const repository = new URL(issue.repository_url);
@@ -26,6 +26,8 @@ export function normalizeGithubIssue(issue, parameters) {
     owner: parameters.owner, repo: parameters.repo, node_id: issue.node_id,
     repository: `${parameters.owner}/${parameters.repo}`,
     key: `${parameters.owner}/${parameters.repo}#${issue.number}`,
+    labels: issue.labels.map((label) => typeof label === "string" ? label : label.name),
+    assignees: issue.assignees.map((assignee) => `github:${assignee.login}`),
     number: issue.number, title: issue.title, html_url: issue.html_url, state: issue.state,
     state_key: issue.state_reason == null ? issue.state : `${issue.state}:${issue.state_reason}`,
     close_reason: issue.state === "closed" ? issue.state_reason : null,

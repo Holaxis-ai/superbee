@@ -124,7 +124,7 @@ const read = (w: World, n = 42) => w.backend.read(`work-items/widgets-${n}`);
 const closed = (patch: Record<string, unknown> = {}) => issue(0, { state: "closed", state_reason: "not_planned", closed_at: "2026-10-03T12:00:00Z", updated_at: "2026-10-03T12:00:00Z", ...patch });
 const appliedFor = (result: Awaited<ReturnType<typeof observe>>, id: string) => result.receipt.results.filter((r) => r.external_id === id && r.op === "apply-owned-fields" && r.outcome === "applied");
 
-test("example installs complete recipe definitions and binds the scalar GitHub mapping without changing built-in Task", async () => {
+test("example installs complete recipe definitions and binds the GitHub mapping without changing built-in Task", async () => {
   const w = await world();
   for (const id of ["conventions/work-item", "connectors/github"]) {
     const stamp = (await w.backend.read(id)).doc.frontmatter.x_recipe as Record<string, unknown>;
@@ -133,8 +133,8 @@ test("example installs complete recipe definitions and binds the scalar GitHub m
   assert.equal(w.overlay.registry.kinds.has("Task"), false);
   assert.equal(w.bound.kind.claim, undefined);
   assert.equal(w.bound.kind.fields.types.labels, "string-list");
-  assert.equal(w.bound.source.fields.labels, undefined);
-  assert.equal(w.bound.source.fields.assignees, undefined);
+  assert.deepEqual(w.bound.source.fields.labels, { from: "labels" });
+  assert.deepEqual(w.bound.source.fields.assignees, { from: "assignees" });
   assert.deepEqual(w.bound.parameters, { owner: "example-org", repo: "widgets" });
   assert.equal(w.bound.resource, RESOURCE);
   assert.deepEqual(w.bound.policy, { ...readOverlayPolicy((await w.backend.read(FEED)).doc, { targetKind: w.bound.kind }), target_kind: "Work Item", completeness: "complete" });
@@ -278,8 +278,8 @@ test("coverage accounts for fixture fields, rejects an unexplained field, and ke
   assert.deepEqual(uncoveredGithubFields({ ...issue(), unexpected_field: "not silently lost" }), ["unexpected_field"]);
   const normalized = normalizeGithubIssue(issue(), { owner: "example-org", repo: "widgets" });
   assert.equal(normalized.body, undefined);
-  assert.equal(normalized.labels, undefined);
-  assert.equal(normalized.assignees, undefined);
+  assert.deepEqual(normalized.labels, ["bug"]);
+  assert.deepEqual(normalized.assignees, ["github:octocat"]);
   assert.throws(() => normalizeGithubIssue(issue(), { owner: "other-org", repo: "widgets" }), /outside the bound repository/);
 });
 
@@ -305,4 +305,64 @@ test("the explicit profile double also runs in the one public offline source har
   assert.equal(run.receipt.changes.new, 6);
   assert.ok(run.receipt.profile_diagnostics.some((d) => d.code === "PULL_REQUEST_SKIPPED" && d.count === 1));
   assert.equal(Object.values(run.documents).filter((fm) => fm.type === "Work Item").length, 0);
+});
+
+test("source lists write sorted sets and every assignee uses the github prefix", async () => {
+  const w = await world(); await w.adopt(issue());
+  const result = await observe(w, [issue(0, {
+    labels: [{ name: "zebra" }, "alpha", { name: "alpha" }],
+    assignees: [{ login: "zoe" }, { login: "amy" }],
+  })]);
+  assert.equal(appliedFor(result, issue().node_id).length, 1);
+  const doc = (await read(w)).doc;
+  assert.deepEqual(doc.frontmatter.labels, ["alpha", "zebra"]);
+  assert.deepEqual(doc.frontmatter.assignees, ["github:amy", "github:zoe"]);
+});
+
+test("reordered source lists converge without a document write", async () => {
+  const w = await world(); await w.adopt(issue());
+  const labels = [{ name: "zebra" }, { name: "alpha" }];
+  const assignees = [{ login: "zoe" }, { login: "amy" }];
+  await observe(w, [issue(0, { labels, assignees })]);
+  const before = (await read(w)).version; w.backend.writes = [];
+  const result = await observe(w, [issue(0, { labels: [...labels].reverse(), assignees: [...assignees].reverse() })]);
+  assert.deepEqual(result.receipt.refusals, []);
+  assert.equal((await read(w)).version, before);
+  assert.equal(w.backend.writes.includes("work-items/widgets-42"), false);
+});
+
+test("a human-added label is preserved with a conflict Signal when source labels change", async () => {
+  const w = await world(); await w.adopt(issue()); await observe(w, [issue()]);
+  await mutateDocument({
+    bundle: w.overlay.bundle, id: "work-items/widgets-42", mode: "patch", registry: w.overlay.registry,
+    strict: true, actor: "human:fixture-editor", expectedVersion: (await read(w)).version,
+    input: { kind: "field-action", action: { action: "replace-all", field: "labels", value: ["bug", "human-label"] } },
+  });
+  const signals = await w.backend.list("signals/");
+  const result = await observe(w, [issue(0, { labels: [{ name: "source-label" }] })]);
+  assert.ok(result.receipt.refusals.some((r) => r.code === "OVERLAY_DOC_CONFLICT" && r.field === "labels"));
+  assert.deepEqual((await read(w)).doc.frontmatter.labels, ["bug", "human-label"]);
+  assert.ok((await w.backend.list("signals/")).length > signals.length);
+});
+
+test("reopening and relabeling share one CAS write including close-field removals", async () => {
+  const w = await world(); await w.adopt(issue()); await observe(w, [closed()]);
+  w.backend.writes = [];
+  const result = await observe(w, [issue(0, { state_reason: "reopened", labels: [{ name: "reopened" }] })]);
+  assert.equal(appliedFor(result, issue().node_id).length, 1);
+  assert.equal(w.backend.writes.filter((id) => id === "work-items/widgets-42").length, 1);
+  const doc = (await read(w)).doc;
+  assert.equal(doc.frontmatter.state_category, "todo");
+  assert.deepEqual(doc.frontmatter.labels, ["reopened"]);
+  assert.equal(Object.hasOwn(doc.frontmatter, "closed_at"), false);
+  assert.equal(Object.hasOwn(doc.frontmatter, "close_reason"), false);
+});
+
+test("empty source labels and assignees remain explicit empty lists", async () => {
+  const w = await world(); await w.adopt(issue()); await observe(w, [issue()]);
+  const result = await observe(w, [issue(0, { labels: [], assignees: [] })]);
+  assert.equal(appliedFor(result, issue().node_id).length, 1);
+  const doc = (await read(w)).doc;
+  assert.deepEqual(doc.frontmatter.labels, []);
+  assert.deepEqual(doc.frontmatter.assignees, []);
 });

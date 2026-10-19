@@ -27,12 +27,12 @@ node --test --import ./packages/core/test/ts-loader.mjs packages/core/test/work-
 
 `issues.json` contains six invented issues and one pull request, with schema provenance in the
 file. No API response or private account data was captured. `profile.mjs` is an explicitly selected,
-one-page **test double**, exporting a `SourceProfile` and scalar normalization function. It can
+one-page **test double**, exporting a `SourceProfile` and scalar/list normalization function. It can
 run through the existing public source harness; it is not the later first-party `github-issues`
 extension and does not satisfy the complete provider-admission scenario matrix.
-The harness test supplies a bounded, one-page repository GET declaration for the synthetic
-run. The mapping-only Connector is still installable without it; credentialed engine observation
-requires an explicit request declaration and refuses before transport when that declaration is absent.
+The Connector declares a repository GET request with Link-header paging and a complete all-state
+listing. The harness test substitutes a bounded one-page declaration for its synthetic run.
+A declaration supplies no credentials and does not authorize execution.
 
 The acceptance test installs the real recipe, binds one repository, maps source-native and
 normalized state, and sends changes through the real planner and guarded mutation engine.
@@ -56,8 +56,11 @@ findings omit source titles and descriptions. Source text remains untrusted data
 
 ## Scope and later increments
 
-- This first Connector maps scalars. The convention declares labels/assignees/list types, but
-  this mapping leaves those fields human-owned. Source-mapped lists are the separate G1b slice.
+- The Connector maps labels and assignees as lists through the existing replace-all ownership
+  engine. Lists write as sorted sets; a source reorder converges without a document write.
+  Assignees carry `github:` before each login. Source-empty lists stay `[]`.
+- A human-added label is retained with a conflict Signal when the source changes that list.
+  Reopening and relabeling share one guarded write, including removal of closed-state fields.
 - Scalar `number` is kept on the source entry. No new tracker-specific Kind or claim mechanism
   is introduced. To assign bundle work, use a linked Task with a deterministic create-only id.
 - The fixture accounts for every top-level field it presents, including explicit ignored fields;
