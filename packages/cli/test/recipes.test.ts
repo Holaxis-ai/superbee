@@ -3377,3 +3377,70 @@ test("recipe evolve: description evolution shows old/new guidance and applies on
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("recipe add actor: built CLI resolves flag over canonical and legacy environment and keeps repeat adds unchanged", async () => {
+  const loaded = await resolveRecipe(EXAMPLE_RECIPE_FIXTURE);
+  assert.ok(loaded.ok);
+  const cli = path.resolve(import.meta.dirname, "../../superbee/dist/superbee.mjs");
+  const baseEnv = { ...process.env, ASLITE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" };
+  delete baseEnv.SUPERBEE_ACTOR;
+  delete baseEnv.AGENTSTATE_LITE_ACTOR;
+  for (const [env, flags, expected] of [
+    [{ SUPERBEE_ACTOR: "process:environment", AGENTSTATE_LITE_ACTOR: "process:legacy" }, ["--actor", "process:flag"], "process:flag"],
+    [{ SUPERBEE_ACTOR: "process:environment", AGENTSTATE_LITE_ACTOR: "process:environment" }, [], "process:environment"],
+    [{ AGENTSTATE_LITE_ACTOR: "process:legacy" }, [], "process:legacy"],
+  ] as const) {
+    const dir = await tempDir();
+    try {
+      const bundle = await initBundle(dir);
+      const args = [cli, "recipe", "add", EXAMPLE_RECIPE_FIXTURE, "--dir", dir, "--json"];
+      const first = await execFileAsync(process.execPath, [...args, ...flags], { env: { ...baseEnv, ...env } });
+      assert.equal(JSON.parse(first.stdout).changed, true);
+      const id = loaded.recipe.docs[0]!.id;
+      const installed = await readDoc(bundle, id);
+      assert.equal(installed.frontmatter.superbee_updated_by, expected);
+      const before = await readFile(path.join(dir, id + ".md"), "utf8");
+      const second = await execFileAsync(process.execPath, [...args, "--actor", "human:another-installer"], { env: baseEnv });
+      const receipt = JSON.parse(second.stdout);
+      assert.equal(receipt.changed, false);
+      assert.equal(receipt.recipe, "already applied");
+      assert.equal(receipt.counts.source_differs, undefined);
+      assert.equal(await readFile(path.join(dir, id + ".md"), "utf8"), before);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  }
+});
+
+test("recipe add actor: blank flag or environment and invalid v0.2 identity refuse without writes; v0.1 keeps free-form attribution", async () => {
+  const cli = path.resolve(import.meta.dirname, "../../superbee/dist/superbee.mjs");
+  const baseEnv = { ...process.env, ASLITE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" };
+  delete baseEnv.SUPERBEE_ACTOR;
+  delete baseEnv.AGENTSTATE_LITE_ACTOR;
+  for (const [env, flags] of [
+    [{}, ["--actor", " "]],
+    [{ SUPERBEE_ACTOR: " " }, []],
+    [{ AGENTSTATE_LITE_ACTOR: " " }, []],
+    [{ SUPERBEE_ACTOR: "process:canonical", AGENTSTATE_LITE_ACTOR: "process:conflicting-legacy" }, []],
+    [{}, ["--actor", "unqualified actor"]],
+  ] as const) {
+    const dir = await tempDir();
+    try {
+      const bundle = await initBundle(dir);
+      const before = await query(bundle, {});
+      await assert.rejects(execFileAsync(process.execPath, [cli, "recipe", "add", EXAMPLE_RECIPE_FIXTURE, "--dir", dir, "--json", ...flags], { env: { ...baseEnv, ...env } }), (error: unknown) => {
+        const failure = error as { code: number; stdout: string; stderr: string };
+        assert.equal(failure.code, 2);
+        assert.match(failure.stdout + failure.stderr, /USAGE/);
+        return true;
+      });
+      assert.deepEqual(await query(bundle, {}), before);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  }
+  const dir = await tempDir();
+  try {
+    const bundle = await initBundle(dir, { okfVersion: "0.1" });
+    await execFileAsync(process.execPath, [cli, "recipe", "add", EXAMPLE_RECIPE_FIXTURE, "--dir", dir, "--actor", "Legacy installer", "--json"], { env: baseEnv });
+    const loaded = await resolveRecipe(EXAMPLE_RECIPE_FIXTURE);
+    assert.ok(loaded.ok);
+    assert.equal((await readDoc(bundle, loaded.recipe.docs[0]!.id)).frontmatter.actor, "Legacy installer");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

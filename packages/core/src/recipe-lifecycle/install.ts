@@ -5,7 +5,8 @@ import { query, readBlob, readBundleOkfVersion, readDoc, writeBlob } from "../bu
 import { checkConnectorAgainstKinds, CONNECTORS_PREFIX } from "../connectors.js";
 import { resolveContentType } from "../content-type.js";
 import { mutateDocument } from "../document-mutation.js";
-import { InvalidInputError } from "../errors.js";
+import { InvalidInputError, OkfActorError } from "../errors.js";
+import { isOkfActor } from "../okf-actor.js";
 import {
   CONVENTION_TYPE,
   CONVENTIONS_PREFIX,
@@ -215,6 +216,7 @@ async function createRecipeDocument(
   doc: OkfDocument,
   okfVersion: string,
   now: string,
+  actor?: string,
 ): Promise<OkfDocument> {
   const result = await mutateDocument({
     bundle,
@@ -222,8 +224,10 @@ async function createRecipeDocument(
     mode: "create-only",
     registry: RECIPE_WRITE_REGISTRY,
     strict: false,
+    actor,
     // Installed definitions must stay byte-comparable to their recipe source (sameInstalledDoc
-    // strips generated.at but not an engine-seeded generated.by), so never seed a clock here.
+    // preserves upstream generated.by). Record the installer separately as mutation attribution,
+    // without manufacturing content provenance or replacing the recipe producer.
     seedGenerationClock: false,
     now: () => now,
     buildCandidate: (_existing, context) => {
@@ -247,10 +251,14 @@ async function createRecipeDocument(
 export async function installRecipe(
   bundle: Bundle,
   recipe: LoadedRecipe,
-  options: { now?: string } = {},
+  options: { now?: string; actor?: string } = {},
 ): Promise<RecipeInstallResult> {
   const now = options.now ?? new Date().toISOString();
   const okfVersion = await readBundleOkfVersion(bundle) ?? "0.1";
+  // Validate before any artifact write, including recipes whose first artifact is a blob.
+  if (okfVersion === "0.2" && options.actor !== undefined && !isOkfActor(options.actor)) {
+    throw new OkfActorError(options.actor, `OKF v0.2 mutation actor '${options.actor}' must be human:<id>, process:<id>, or <producer>/<version>`);
+  }
   const source = recipe;
   recipe = materializeRecipeForEdition(recipe, okfVersion);
   const identity: RecipeStampIdentity = recipeStampIdentity(source, recipe);
@@ -298,7 +306,7 @@ export async function installRecipe(
     let changed = true;
     let sourceDiffers = false;
     try {
-      doc = await createRecipeDocument(bundle, doc, okfVersion, now);
+      doc = await createRecipeDocument(bundle, doc, okfVersion, now, options.actor);
       stamps.push("current");
     } catch (err) {
       if (err instanceof VersionConflict) {
@@ -332,7 +340,7 @@ export async function installRecipe(
     let changed = true;
     let sourceDiffers = false;
     try {
-      await createRecipeDocument(bundle, doc, okfVersion, now);
+      await createRecipeDocument(bundle, doc, okfVersion, now, options.actor);
       stamps.push("current");
     } catch (err) {
       if (!(err instanceof VersionConflict)) throw err;
@@ -418,7 +426,7 @@ export async function installRecipe(
     let registry = recipeDocumentForApply(page.registry, okfVersion, now);
     let registryChanged = true;
     try {
-      registry = await createRecipeDocument(bundle, registry, okfVersion, now);
+      registry = await createRecipeDocument(bundle, registry, okfVersion, now, options.actor);
     } catch (err) {
       if (!(err instanceof VersionConflict)) throw err;
       const existing = await readDoc(bundle, registry.id);
@@ -440,7 +448,7 @@ export async function installRecipe(
     let desired = recipeDocumentForApply(reference.doc, okfVersion, now);
     let changed = true;
     try {
-      desired = await createRecipeDocument(bundle, desired, okfVersion, now);
+      desired = await createRecipeDocument(bundle, desired, okfVersion, now, options.actor);
     } catch (err) {
       if (!(err instanceof VersionConflict)) throw err;
       const existing = await readDoc(bundle, desired.id);
@@ -606,6 +614,11 @@ export function sameInstalledDoc(existing: OkfDocument, desired: OkfDocument, ok
   // The recipe stamp is install metadata, never definition content.
   const { timestamp: _existingTimestamp, [RECIPE_STAMP_KEY]: _existingStamp, ...existingFrontmatter } = existing.frontmatter;
   const { timestamp: _desiredTimestamp, [RECIPE_STAMP_KEY]: _desiredStamp, ...desiredFrontmatter } = desired.frontmatter;
+  // The installer is the latest mutation actor, not part of the upstream definition. Its
+  // edition-specific coordinate may change without changing source-authored generated.by.
+  const actorField = okfVersion === "0.2" ? "superbee_updated_by" : "actor";
+  delete existingFrontmatter[actorField];
+  delete desiredFrontmatter[actorField];
   // A reading-order placement the bundle added to an installed convention is not drift: the
   // recipe declares none, and evolution keeps it (BUNDLE_LOCAL_PLACEMENT in evolution.ts).
   if (desiredFrontmatter.order === undefined) delete existingFrontmatter.order;
