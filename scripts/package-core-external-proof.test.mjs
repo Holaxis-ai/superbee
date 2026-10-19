@@ -99,6 +99,8 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
     assert.ok(paths.includes("dist/search/index.d.ts"));
     assert.ok(paths.includes("dist/source-engine/index.js"));
     assert.ok(paths.includes("dist/source-engine/index.d.ts"));
+    assert.ok(paths.includes("dist/source-profiles/index.js"));
+    assert.ok(paths.includes("dist/source-profiles/index.d.ts"));
     assert.ok(paths.includes("dist/source-harness/index.js"));
     assert.ok(paths.includes("dist/source-harness/index.d.ts"));
     assert.ok(paths.every((file) => file === "package.json" || file === "README.md" || file.startsWith("dist/")));
@@ -325,8 +327,22 @@ try {
       path.join(scratch, "source-consumer.mjs"),
       `delete globalThis.Buffer;
 const { observeSource, MemoryMachineState, refusedAddress } = await import("@superbee/core/source-engine");
+const { getSourceProfile, SOURCE_PROFILES } = await import("@superbee/core/source-profiles");
+const { parseConnectorDoc, bindSourceFeed } = await import("@superbee/core/connectors");
+const { buildKindRegistry } = await import("@superbee/core/kinds");
+const { ScriptedPeer } = await import("@superbee/core/source-harness");
+const { fetchIdentity } = await import("@superbee/core/source-engine");
 const { peerTransport, runTransportConformance, REQUIRED_SCENARIOS } = await import("@superbee/core/source-harness");
 if (typeof Buffer !== "undefined") throw new Error("proof must execute without Buffer");
+const profile = getSourceProfile("rest-json");
+if (!profile || SOURCE_PROFILES.length !== 1 || getSourceProfile("absent")) throw new Error("profile catalog changed");
+const kinds = buildKindRegistry([{id: "conventions/item", body: "", frontmatter: {type: "Convention", title: "Item", governs: "Item", fields: {required: ["title"]}}}], [], {okfVersion: "0.2"});
+const declaration = parseConnectorDoc({id: "connectors/items", body: "", frontmatter: {type: "Connector", title: "Items", auth: {kind: "none"}, domains: ["items.example.org"], record_sources: [{name: "items", profile: "rest-json", target_kind: "Item", identity: {resource: "https://items.example.org/{list}", id: "{id}"}, fields: {title: "title"}, completeness: "complete", request: {host: "items.example.org", method: "GET", path: "/api/{list}", items: "", complete: "always", fields: {title: {from: "name", type: "text"}}}}]}}, {kinds});
+if (!declaration.ok) throw new Error(JSON.stringify(declaration.errors));
+const bound = bindSourceFeed(declaration.connector, {id: "source-feeds/items", frontmatter: {type: "Source Feed", connector: "connectors/items", source: "items", url: "https://items.example.org/all", owned_fields: ["title"]}}, kinds);
+const transport = peerTransport(new ScriptedPeer(input => input.url.endsWith("robots.txt") ? {status: 404, body: ""} : {status: 200, body: JSON.stringify([{id: "one", name: 42}])}));
+const observation = await observeSource({connector: declaration.connector, bound, profile, spec: bound.source, transport, state: new MemoryMachineState(), identity: fetchIdentity("PackedProfile/1 (+https://example.org/proof)"), mode: "complete", commit: async () => {}});
+if (observation.outcome !== "observed" || !observation.pass.complete || observation.changes.new !== 1) throw new Error(JSON.stringify(observation));
 const rows = await runTransportConformance({ name: "packed memory", create: (peer, credential) => peerTransport(peer, { credential }) });
 const failed = rows.filter((row) => !row.ok);
 if (rows.length !== 6 || failed.length) throw new Error("conformance failed: " + JSON.stringify(failed));
@@ -574,6 +590,7 @@ import { ConnectorTargetUnsatisfied, installRecipe, installedConnectorDocs, inst
 import { applyRecordOverlay, buildSourceIndex, OverlayRefusal, planRecordOverlay, type OverlayBundle, type OverlayPolicy, type OverlayReceipt, type RecordChange } from "@superbee/core/record-overlay";
 import { bundleHealth, bundleKindFindings, type BindDependencies, type BundleHealthReport } from "@superbee/core/bundle-health";
 import { bindSourceFeed, changeBetween, connectorPinDigest, findingsFor, mapRecord, parseConnectorDoc, type Connector, type ConnectorError } from "@superbee/core/connectors";
+import { getSourceProfile, restJsonProfile, SOURCE_PROFILES, type RestJsonCursor } from "@superbee/core/source-profiles";
 import { MemoryMachineState, observeSource, type ObservePage, type SourceProfile, type SourceRunReceipt, type Transport } from "@superbee/core/source-engine";
 import { peerTransport, runTransportConformance, type ConformanceRow, type ScriptedPeer, type TransportCredential } from "@superbee/core/source-harness";
 import type { BundleBinding } from "@superbee/core/cross-bundle";
@@ -747,6 +764,7 @@ export async function exerciseSourceEngine(): Promise<[SourceRunReceipt, Conform
     assert.deepEqual(installedManifest.exports["./record-overlay"], { types: "./dist/record-overlay/index.d.ts", default: "./dist/record-overlay/index.js" });
     assert.deepEqual(installedManifest.exports["./connectors"], { types: "./dist/connectors.d.ts", default: "./dist/connectors.js" });
     assert.deepEqual(installedManifest.exports["./source-engine"], { types: "./dist/source-engine/index.d.ts", default: "./dist/source-engine/index.js" });
+    assert.deepEqual(installedManifest.exports["./source-profiles"], { types: "./dist/source-profiles/index.d.ts", default: "./dist/source-profiles/index.js" });
     assert.deepEqual(installedManifest.exports["./source-harness"], { types: "./dist/source-harness/index.d.ts", default: "./dist/source-harness/index.js" });
     assert.deepEqual(installedManifest.exports["./bundle-health"], { types: "./dist/bundle-health/index.d.ts", default: "./dist/bundle-health/index.js" });
     const installedFiles = await filesUnder(installed);

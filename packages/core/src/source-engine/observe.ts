@@ -1,3 +1,4 @@
+import { validateConnectorRequest, declarationRequestRules, placeholders, providerRequestRules } from "../connector-request.js";
 /**
  * The observation loop: run a profile page by page behind the guarded transport, diff each page
  * against the stored records into record-overlay changes, hand them to the caller's commit, and
@@ -273,9 +274,16 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
   if (problem) return refuse("profile_invalid", problem);
   if (profile.id !== bound.source.profile) return refuse("profile_mismatch", `the source names ${bound.source.profile}`);
   if (requestedMode !== "incremental" && requestedMode !== "complete") return refuse("mode_invalid");
+  const declaredRequest = bound.source.request;
+  if (declaredRequest !== undefined) {
+    const problems = validateConnectorRequest(bound.source, connector);
+    if (problems.length) return refuse("declaration_invalid", problems.map(p => `${p.path} ${p.message}`).join("; "));
+  }
+  if (declaredRequest && placeholders(bound.source.identity.resource).some(name => typeof bound.parameters[name] !== "string" || bound.parameters[name] === "" || [".", ".."].includes(bound.parameters[name]!))) return refuse("binding_invalid", "request requires every resource binding value");
   const budget = budgetOf(options.budget);
   if (!budget) return refuse("budget_invalid");
-  const statuses = statusesOf(options.statuses);
+  if (declaredRequest?.rate) budget.requests = Math.min(budget.requests, declaredRequest.rate.requests);
+  const statuses = statusesOf(declaredRequest?.errors ?? options.statuses);
   if (!statuses) return refuse("statuses_invalid");
   const identity = options.identity;
   if (!record(identity) || typeof identity.userAgent !== "string" || !/^[\x20-\x7e]{1,512}$/.test(identity.userAgent)
@@ -295,6 +303,8 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
   if (!Array.isArray(hosts) || !hosts.every((host) => typeof host === "string")) return refuse("hosts_invalid");
   const hostSet = sourceHostSet(connector, hosts);
   if (!hostSet.ok) return refuse("hosts_undeclared", hostSet.undeclared.join(", "));
+
+  if (hostSet.hosts.credential.size && !declaredRequest) return refuse("declaration_required", "credentialed sources require a binding-scoped request declaration");
 
   const key = bound.policy.feed;
   let version: string | null;
@@ -334,9 +344,17 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
   const ownDeadline = options.signal ? undefined : new AbortController();
   const timer = ownDeadline ? setTimeout(() => ownDeadline.abort(), budget.deadlineMs) : undefined;
   const signal = options.signal ?? ownDeadline!.signal;
+  const declarationRules = declaredRequest ? declarationRequestRules(connector, bound) : undefined;
+  const customRules = options.rules;
+  const rules = declarationRules ? {
+    url: (url: URL, hop: {method: "GET" | "POST"; redirect: boolean}) => declarationRules.url!(url, hop) && (!customRules?.url || customRules.url(url, hop)),
+    post: (url: URL, body: string | undefined) => declarationRules.post!(url, body) && (!customRules?.post || customRules.post(url, body)),
+    header: (name: string, url: URL) => declarationRules.header!(name, url) && (!customRules?.header || customRules.header(name, url)),
+    response: declarationRules.response,
+  } : customRules ?? {};
   const guard = guardTransport({
-    hosts: hostSet.hosts, transport: options.transport, identity, budget, rules: options.rules ?? {}, statuses, now, conditional: mode === "incremental",
-    signal, requestTimeoutMs: budget.requestTimeoutMs,
+    hosts: hostSet.hosts, transport: options.transport, identity, budget, rules, statuses, now, conditional: mode === "incremental",
+    signal, requestTimeoutMs: budget.requestTimeoutMs, graphqlPaths: providerRequestRules(connector.auth)?.read_posts.filter(p => p.graphql).map(p => p.path),
   });
   receipt.requests = guard.requests;
 

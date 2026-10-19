@@ -128,6 +128,8 @@ export interface SourceProfile<Spec = unknown, Cursor = unknown> {
  * method-override headers are never sent, and a POST is refused unless `post` admits it.
  */
 export interface RequestRules {
+  /** The guard inspects a response before a profile receives it. */
+  response?(response: ProfileResponse): void;
   /**
    * A lowercase header name beyond `accept` toward `url`. The validators `if-none-match` and
    * `if-modified-since` are the engine's: sent in incremental mode, never in complete mode.
