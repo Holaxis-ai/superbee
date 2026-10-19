@@ -2,16 +2,26 @@
 // mutation boundary, so a built-in and an external recipe install through the same function and
 // an existing document is never overwritten. Storage-neutral: no Node globals or builtins.
 import { query, readBlob, readBundleOkfVersion, readDoc, writeBlob } from "../bundle-ops.js";
+import { checkConnectorAgainstKinds, CONNECTORS_PREFIX } from "../connectors.js";
 import { resolveContentType } from "../content-type.js";
 import { mutateDocument } from "../document-mutation.js";
-import { CONVENTIONS_PREFIX, PROGRESS_STATUS_FIELD, progressStatusStorageField, type KindRegistry } from "../kinds.js";
-import { okfValuesEqual } from "../okf-authored-values.js";
+import { InvalidInputError } from "../errors.js";
+import {
+  CONVENTION_TYPE,
+  CONVENTIONS_PREFIX,
+  PROGRESS_STATUS_FIELD,
+  buildKindRegistry,
+  progressStatusStorageField,
+  type KindRegistry,
+} from "../kinds.js";
+import { okfValuesEqual, type OkfRecord } from "../okf-authored-values.js";
+import { assertAuthoredOkfStandardFields } from "../okf-standard-fields.js";
 import { PAGE_REGISTRY_PREFIX, parseRegistration, VIEW_REGISTRY_PREFIX } from "../page.js";
 import { RECIPE_PROGRESS_STATUS_TOKEN, type LoadedRecipe } from "../recipes.js";
 import type { Bundle, ConceptId, OkfDocument } from "../types.js";
 import type { ValidationWarning } from "../validation.js";
 import { VersionConflict } from "../versioning.js";
-import { RecipeAssetConflict, RecipeEditionChanged, RecipeInputError } from "./errors.js";
+import { ConnectorTargetUnsatisfied, RecipeAssetConflict, RecipeEditionChanged, RecipeInputError } from "./errors.js";
 import {
   RECIPE_STAMP_KEY,
   recipeStampIdentity,
@@ -66,12 +76,20 @@ export interface RecipeReferenceResult {
   changed: boolean;
 }
 
-/** Per-artifact tally (docs + pages + references; a page's registry/entry pair is ONE artifact). */
+/** One Connector's install outcome: created, or left as it was (`source_differs` when it differs). */
+export interface RecipeConnectorResult {
+  id: ConceptId;
+  changed: boolean;
+  /** The existing document was preserved, but it differs from this recipe's Connector. */
+  source_differs?: true;
+}
+
+/** Per-artifact tally (docs + connectors + pages + references; a page's registry/entry pair is ONE artifact). */
 export interface RecipeInstallCounts {
   created: number;
   existing: number;
   legacy_present: number;
-  /** Existing convention docs whose definitions do not match the recipe source. */
+  /** Existing convention or Connector docs whose definitions do not match the recipe source. */
   source_differs?: number;
   /** Artifacts whose slot is held by RETIRED-name content (see `migration_required` fields). */
   migration_required: number;
@@ -87,19 +105,22 @@ export interface RecipeInstallResult {
   version: string;
   source: string;
   docs: RecipeDocResult[];
+  /** One row per Connector the recipe carries; empty for a recipe without connectors. */
+  connectors: RecipeConnectorResult[];
   pages: RecipePageResult[];
   references: RecipeReferenceResult[];
   counts: RecipeInstallCounts;
   changed: boolean;
   /**
-   * The worst stamp among the recipe's conventions after the install, in the order current,
-   * stale, foreign, missing: a created convention is `current`; an existing one keeps its stamp,
-   * since install never rewrites it. A `stale` or `missing` stamp is converged by `recipe evolve`.
+   * The worst stamp among the recipe's conventions and Connectors after the install, in the order
+   * current, stale, foreign, missing: a created document is `current`; an existing one keeps its
+   * stamp, since install never rewrites it. A `stale` or `missing` stamp is converged by
+   * `recipe evolve`.
    */
   stamp: RecipeStampState;
-  /** Existing conventions whose stamp is `stale` or `missing`: what an evolve plan would re-stamp. */
+  /** Existing conventions and Connectors whose stamp is `stale` or `missing`: what an evolve plan would look at. */
   restamp_ids: string[];
-  /** Existing conventions another recipe's stamp owns; they stay with that recipe. */
+  /** Existing conventions and Connectors another recipe's stamp owns; they stay with that recipe. */
   foreign_ids: string[];
   warnings: ValidationWarning[];
 }
@@ -233,6 +254,8 @@ export async function installRecipe(
   const source = recipe;
   recipe = materializeRecipeForEdition(recipe, okfVersion);
   const identity: RecipeStampIdentity = recipeStampIdentity(source, recipe);
+  assertConnectorsWritable(recipe, identity, okfVersion, now);
+  await assertConnectorTargets(bundle, recipe, okfVersion);
   await assertPortableTargetsCompatible(bundle, recipe, now, okfVersion);
 
   // Legacy-alias probes (see the module comment above the alias helpers): resolved lazily, once.
@@ -300,6 +323,37 @@ export async function installRecipe(
       }
     }
     docs.push({ id: doc.id, changed, ...(sourceDiffers ? { source_differs: true as const } : {}) });
+  }
+
+  // After the conventions, so a Kind the recipe declares exists before the Connector that maps onto it.
+  const connectors: RecipeConnectorResult[] = [];
+  for (const { doc: authored } of recipe.connectors ?? []) {
+    const doc = withRecipeStamp(recipeDocumentForApply(authored, okfVersion, now), identity);
+    let changed = true;
+    let sourceDiffers = false;
+    try {
+      await createRecipeDocument(bundle, doc, okfVersion, now);
+      stamps.push("current");
+    } catch (err) {
+      if (!(err instanceof VersionConflict)) throw err;
+      const existing = await readDoc(bundle, doc.id);
+      const existingStamp = recipeStampState(existing, identity);
+      stamps.push(existingStamp);
+      if (existingStamp === "stale" || existingStamp === "missing") restampIds.push(doc.id);
+      else if (existingStamp === "foreign") foreignIds.push(doc.id);
+      if (!sameInstalledDoc(existing, doc, okfVersion)) {
+        sourceDiffers = true;
+        migrationWarnings.push({
+          code: "RECIPE_SOURCE_DIFFERS",
+          message:
+            `recipe '${recipe.id}' source for '${doc.id}.md' differs from the existing Connector; ` +
+            "the existing bundle content was left untouched; run 'recipe evolve <same-name-or-path>' to inspect the plan, which never replaces a Connector a person changed",
+          severity: "warning",
+        });
+      }
+      changed = false;
+    }
+    connectors.push({ id: doc.id, changed, ...(sourceDiffers ? { source_differs: true as const } : {}) });
   }
 
   const pages: RecipePageResult[] = [];
@@ -398,10 +452,11 @@ export async function installRecipe(
 
   const artifacts: Array<{ changed: boolean; legacy_present?: unknown; migration_required?: unknown }> = [
     ...docs,
+    ...connectors,
     ...pages,
     ...references,
   ];
-  const sourceDiffers = docs.filter((doc) => doc.source_differs).length;
+  const sourceDiffers = [...docs, ...connectors].filter((doc) => doc.source_differs).length;
   const counts: RecipeInstallCounts = {
     created: artifacts.filter((a) => a.changed).length,
     existing: artifacts.filter((a) =>
@@ -419,11 +474,13 @@ export async function installRecipe(
     version: recipe.version,
     source: recipe.source,
     docs,
+    connectors,
     pages,
     references,
     counts,
     changed:
       docs.some((d) => d.changed) ||
+      connectors.some((connector) => connector.changed) ||
       pages.some((page) => page.changed) ||
       references.some((reference) => reference.changed),
     stamp: worstRecipeStampState(stamps),
@@ -431,6 +488,61 @@ export async function installRecipe(
     foreign_ids: foreignIds.sort(),
     warnings: [...recipe.warnings, ...migrationWarnings],
   };
+}
+
+/**
+ * Every Connector as install will write it, against the authoring rules the engine applies on this
+ * edition. The parser tolerates unknown top-level keys, so one OKF v0.2 owns (a `tags` that is not
+ * a list, say) would otherwise be refused at the Connector's create, after the conventions.
+ */
+function assertConnectorsWritable(recipe: LoadedRecipe, identity: RecipeStampIdentity, okfVersion: string, now: string): void {
+  if (okfVersion !== "0.2") return;
+  for (const { doc } of recipe.connectors ?? []) {
+    const candidate = withRecipeStamp(recipeDocumentForApply(doc, okfVersion, now), identity);
+    try {
+      assertAuthoredOkfStandardFields(candidate.frontmatter as unknown as OkfRecord, undefined, { phase: "input" });
+    } catch (error) {
+      if (!(error instanceof InvalidInputError)) throw error;
+      throw new RecipeInputError(`recipe '${recipe.id}' cannot install Connector '${doc.id}': ${error.message}; nothing was written`);
+    }
+  }
+}
+
+/**
+ * Every Connector's sources against the Kinds the bundle will hold once this install is done: its
+ * conventions, plus the recipe's own at ids the bundle does not hold yet (install never rewrites an
+ * existing convention). Runs before the first write of any artifact.
+ */
+async function assertConnectorTargets(bundle: Bundle, recipe: LoadedRecipe, okfVersion: string): Promise<void> {
+  const connectors = recipe.connectors ?? [];
+  if (connectors.length === 0) return;
+  const conventions = new Map(
+    (await query(bundle, { prefix: CONVENTIONS_PREFIX, type: CONVENTION_TYPE })).map((doc) => [doc.id, doc]),
+  );
+  for (const doc of recipe.docs) if (!conventions.has(doc.id)) conventions.set(doc.id, doc);
+  const registry = buildKindRegistry([...conventions.values()], [], { okfVersion });
+  // Each refusal points at /<sources key>/<index>/target_kind or /<sources key>/<index>/fields/<field>.
+  const segments = (pointer: string): string[] => pointer.split("/").slice(1).map((segment) => segment.replaceAll("~1", "/").replaceAll("~0", "~"));
+  for (const { connector } of connectors) {
+    const errors = checkConnectorAgainstKinds(connector, registry);
+    if (errors.length === 0) continue;
+    const index = segments(errors[0]!.path)[1]!;
+    const source = connector.sources[Number(index)]!;
+    const ofSource = errors.filter((error) => segments(error.path)[1] === index);
+    const fields = [...new Set(ofSource.flatMap((error) => {
+      const [, , block, field] = segments(error.path);
+      return block === "fields" && field !== undefined ? [field] : [];
+    }))];
+    throw new ConnectorTargetUnsatisfied(
+      recipe.id,
+      connector.id,
+      source.name,
+      source.target_kind,
+      errors[0]!.code,
+      fields,
+      ofSource.map((error) => error.message).join("; "),
+    );
+  }
 }
 
 async function assertPortableTargetsCompatible(
@@ -517,6 +629,15 @@ export function sameInstalledDoc(existing: OkfDocument, desired: OkfDocument, ok
  */
 export async function installedConventionDocs(bundle: Bundle): Promise<Map<ConceptId, OkfDocument>> {
   const docs = await query(bundle, { prefix: CONVENTIONS_PREFIX });
+  return new Map(docs.map((d) => [d.id, d]));
+}
+
+/**
+ * The documents under `connectors/`, by id: the Connector documents `installedRecipes` reads beside
+ * the conventions, in one round-trip.
+ */
+export async function installedConnectorDocs(bundle: Bundle): Promise<Map<ConceptId, OkfDocument>> {
+  const docs = await query(bundle, { prefix: CONNECTORS_PREFIX });
   return new Map(docs.map((d) => [d.id, d]));
 }
 

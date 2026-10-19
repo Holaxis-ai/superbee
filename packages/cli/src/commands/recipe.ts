@@ -23,7 +23,7 @@ import { render, resolveMode } from "../output.js";
 import { cliInvocation, exactCliInvocation } from "../invocation.js";
 import { applyRecipeEvolution, installRecipe, planRecipeEvolution } from "@superbee/core/recipe-lifecycle";
 import { resolveRecipe } from "../recipe-source.js";
-import { assertKindOnlyRecipe } from "../hosted/refusals.js";
+import { assertRecipeAllowedInHostedCheckout } from "../hosted/refusals.js";
 import { commandFragment, commandLiteral, commandQuoted, commandToken, type CommandText } from "../command-text.js";
 
 export const RECIPE_USAGE = `superbee recipe — apply a recipe to this bundle
@@ -37,8 +37,11 @@ Applies a recipe's definitions to the bundle. <name-or-path> is a built-in name 
 with '~' — a local folder literally named 'foo' is reachable only as './foo'). A recipe folder
 is 'recipe.md' (type: Recipe manifest) plus one or more 'conventions/*.md' docs. A portable recipe
 may opt into 'content_policy: definitions-only' and explicitly declare static 'type: Reference'
-docs plus self-contained View registry/HTML pairs; instance data and undeclared files are then
-rejected before any write.
+docs, self-contained View registry/HTML pairs, and 'type: Connector' declarations under
+'connectors/' (the manifest's 'connectors:' list); instance data and undeclared files are then
+rejected before any write. A Connector says what an integration is; adding one runs nothing. Each
+Connector's sources must map onto a Kind the bundle declares (or the recipe brings), checked
+before anything is written.
 
 Idempotent: a doc the recipe would install that already exists is left untouched (changed:false
 for that doc) rather than overwritten. If its definition differs from the recipe source, the
@@ -54,10 +57,13 @@ writes each changed convention with exact-version CAS. Concurrent non-target cha
 by a postcondition check and reported with completed work. It never replaces existing values,
 active View assets, or artifacts omitted from the source. It may add a field type (fields.types) or
 an enum (fields.values) to a declared field only when every existing instance conforms; otherwise
-the plan names the violating documents. It never changes or removes a type or an enum.
+the plan names the violating documents. It never changes or removes a type or an enum. A Connector
+has no additive merge: a changed one replaces the installed document whole, and only one this
+recipe wrote that nobody changed since. A Connector a person edited, an unstamped one that differs
+and another recipe's Connector each block the plan and are never rewritten.
 
-Every convention 'recipe add' creates or 'recipe evolve' writes carries an 'x_recipe' stamp naming
-the recipe version, in the same write. A plan with changed:false and writes above zero still has an
+Every convention and Connector 'recipe add' creates or 'recipe evolve' writes carries an 'x_recipe'
+stamp naming the recipe version, in the same write. A plan with changed:false and writes above zero still has an
 apply command: it records stamps only, which is how a bundle from before stamps gets them.
 
 Options:
@@ -129,10 +135,14 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
 
   const loaded = await resolveRecipe(ref);
   if (!loaded.ok) {
-    throw new CliError("USAGE", loaded.error.message, { help: `${cliInvocation()} recipes` });
+    throw new CliError("USAGE", loaded.error.message, {
+      help: `${cliInvocation()} recipes`,
+      ...(loaded.error.connector ? { details: { connector: loaded.error.connector } } : {}),
+    });
   }
+  // Before anything reads the bundle: in a hosted checkout, the recipe decides which refusal applies.
+  if (values.remote === undefined) await assertRecipeAllowedInHostedCheckout("recipe evolve", values.dir, loaded.recipe);
   const remote = await resolveRemoteFlag(values.remote, values.dir);
-  if (remote === undefined) await assertKindOnlyRecipe("recipe evolve", values.dir, loaded.recipe);
   const bundle = await openBundle(values.dir, remote);
   const target: CommandText = values.dir !== undefined
     ? commandFragment` --dir ${commandQuoted(values.dir)}`
@@ -208,11 +218,15 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
 
   const loaded = await resolveRecipe(ref);
   if (!loaded.ok) {
-    throw new CliError("USAGE", loaded.error.message, { help: `${cliInvocation()} recipes` });
+    throw new CliError("USAGE", loaded.error.message, {
+      help: `${cliInvocation()} recipes`,
+      ...(loaded.error.connector ? { details: { connector: loaded.error.connector } } : {}),
+    });
   }
 
+  // Before anything reads the bundle: in a hosted checkout, the recipe decides which refusal applies.
+  if (values.remote === undefined) await assertRecipeAllowedInHostedCheckout("recipe add", values.dir, loaded.recipe);
   const remote = await resolveRemoteFlag(values.remote, values.dir);
-  if (remote === undefined) await assertKindOnlyRecipe("recipe add", values.dir, loaded.recipe);
   const bundle = await openBundle(values.dir, remote);
   // Core's recipe lifecycle throws typed errors; classify them here, through the one CLI mapping,
   // so this command throws a CliError like every other command.
@@ -245,6 +259,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
     stamp: result.stamp,
     docs: result.docs,
   };
+  if (result.connectors.length > 0) receipt.connectors = result.connectors;
   if (result.pages.length > 0) receipt.pages = result.pages;
   if (result.references.length > 0) receipt.references = result.references;
   // Honest artifact tally — `legacy_present` > 0 means an existing legacy-named install already
@@ -258,7 +273,10 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
   if (result.foreign_ids.length > 0) {
     receipt.foreign_ids = result.foreign_ids;
     receipt.foreign_help =
-      "another recipe's stamp owns these conventions and keeps them; this recipe reads partial in 'recipes' while it does; an evolve plan takes one over only when it also changes that convention's content, which leaves the other recipe partial";
+      "another recipe's stamp owns these conventions and keeps them; this recipe reads partial in 'recipes' while it does; an evolve plan takes one over only when it also changes that convention's content, which leaves the other recipe partial" +
+      (result.connectors.some((connector) => result.foreign_ids.includes(connector.id))
+        ? "; a Connector another recipe's stamp owns is never taken over: this recipe's evolve plan blocks on it until it is removed by hand"
+        : "");
   }
   const migrationPending = result.docs.some((doc) => doc.migration_required !== undefined);
   if (sourceDiffers > 0 || result.restamp_ids.length > 0 || migrationPending) {

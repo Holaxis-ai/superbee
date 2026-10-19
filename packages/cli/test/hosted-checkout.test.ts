@@ -478,9 +478,12 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
     ["kind", ["field", "Note", "add", "owner", "--dir", folder]],
     ["kind", ["draft", "Note", "--dir", folder]],
     ["kind", ["dismiss", "Note", "--dir", folder]],
-    ["recipe", ["add", "core", "--dir", folder]],
-    ["recipe", ["evolve", "core", "--dir", folder]],
   ];
+  // The recipe commands refuse themselves once they have read the recipe (a recipe carrying a
+  // Connector gets its own refusal), so the up-front check passes them; hosted-definition-writes
+  // pins what each refusal says.
+  await assertAllowedInHostedCheckout("recipe", ["add", "core", "--dir", folder], context);
+  await assertAllowedInHostedCheckout("recipe", ["evolve", "core", "--dir", folder], context);
   for (const [command, args] of kinds) {
     const error = await rejects(assertAllowedInHostedCheckout(command, args, context));
     assert.equal(error.code, "FORBIDDEN", `${command} ${args[0]}`);

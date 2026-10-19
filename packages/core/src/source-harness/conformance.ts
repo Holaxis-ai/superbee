@@ -95,7 +95,7 @@ function probeWorld(): { connector: Connector; bound: BoundFeed } {
   const registry = buildKindRegistry([{ id: "conventions/probe", body: "", frontmatter: { type: "Convention", title: "Probe", governs: "Probe", fields: { required: ["title"] } } }], [], { okfVersion: "0.2" });
   const parsed = parseConnectorDoc({ id: "connectors/conformance", body: "", frontmatter: {
     type: "Connector", title: "Transport conformance probe", auth: { kind: "token", provider: "github" }, domains: [KEYLESS_HOST],
-    sources: [{ name: "probe", profile: PROBE, target_kind: "Probe", identity: { resource: `https://${CREDENTIAL_HOST}/repos/{owner}/{repo}`, id: "{id}" }, fields: { title: "title" }, completeness: "complete" }],
+    record_sources: [{ name: "probe", profile: PROBE, target_kind: "Probe", identity: { resource: `https://${CREDENTIAL_HOST}/repos/{owner}/{repo}`, id: "{id}" }, fields: { title: "title" }, completeness: "complete" }],
   } }, { kinds: registry });
   if (!parsed.ok) throw new Error(`conformance connector refused: ${parsed.errors.map((e) => e.code).join(", ")}`);
   const bound = bindSourceFeed(parsed.connector, { id: "source-feeds/conformance", frontmatter: {

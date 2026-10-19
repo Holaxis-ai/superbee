@@ -34,7 +34,7 @@ auth:
   kind: none
 domains:
   - tracker.example.org
-sources:
+record_sources:
   - name: issues
     profile: issues
     target_kind: Work Item
