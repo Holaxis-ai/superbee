@@ -8,41 +8,23 @@ is the durable process for every browser-local prerelease.
 
 | Package | Version | Access / channel |
 | --- | --- | --- |
-| @superbee/core | 0.2.0-pre.19 | public / next |
-| @superbee/server | 0.2.0-pre.19 | public / next |
-| @superbee/browser-local | 0.1.0-pre.16 | public / next |
-| @superbee/markdown-renderer | 0.1.16 | existing restricted access / latest |
+| @superbee/core | 0.2.0-pre.20 | public / next |
+| @superbee/server | 0.2.0-pre.20 | public / next |
+| @superbee/browser-local | 0.1.0-pre.17 | public / next |
+| @superbee/markdown-renderer | 0.1.17 | existing restricted access / latest |
 
-This candidate adds superbee#504 to the pre.18 source. Core exposes two opt-in,
-browser-safe subpaths: `@superbee/core/builtin-recipes` provides the built-in recipe
-catalog and file/loading helpers, and `@superbee/core/kind-authoring` provides shared
-Kind inference, draft preparation, guarded apply and dismissal APIs. Core does not
-install recipes automatically; CLI adapters now use these owning core APIs. See
-`packages/core/README.md` for the entry points and usage contract. Server moves with
-core with no source change.
+This candidate carries the merged Connector declaration format correction and portable
+search exposed through CLI and local MCP. Breaking prerelease correction: Connector
+documents use `record_sources` instead of `sources`, which OKF reserves. TypeScript
+`Connector.sources` remains unchanged. There is no compatibility alias or automatic
+migration.
 
-The pre.18 compatibility changes remain: direct `mutateDocument` callers must pass
-`bodyReplace` with the matching opt-in when a non-identical whole-body replacement
-drops outbound links (`{ replaceLinks: true }`) or writes back a truncated body preview
-(`{ acceptTruncatedBody: true }`), otherwise `BodyReplaceError` refuses it
-(superbee#498). Any set, assignment or patch of a Kind-declared `string-list` or
-`https-url-list` field is refused with `TypedListPatchError`; use `replace-all` or
-`unset` (superbee#496). File-journal format 3, written when a blob claim is recorded
-as not dispatched, remains unreadable by core pre.17 and older (superbee#497, #500).
-The existing pre.18 staged artifacts retain their own source and approval gates;
-this candidate neither replaces nor modifies those bytes.
-
-Browser-local 0.1.0-pre.16 changes only its exact core pin from pre.18 to pre.19.
-Renderer 0.1.16 changes only its core peer allowance, adding pre.19 while retaining
-the existing alternatives. Neither package has a source change since the pre.18
-preparation. Browser-local pre.14 and pre.15 were never published, so pre.16 also
-carries the source changes since the published pre.13: push pauses persist when an
-unknown outcome carries an authorization refusal, leaving the intent pending
-(superbee#486); editor saves and reviewed conflict resolutions pass
-`bodyReplace: { replaceLinks: true }` for deliberate link removal while still
-refusing a truncated preview (superbee#498). Each needs a new version because
-changed dependency or peer metadata produces different bytes. Their separate
-publication remains optional.
+Browser-local 0.1.0-pre.17 changes only its exact core dependency from pre.19 to
+pre.20. The paired release keeps one core instance for shared error identities in
+source consumers as well as installed artifacts. Renderer 0.1.17 adds exact core
+pre.20 peer compatibility while retaining its existing alternatives and restricted
+access. Neither package changes product source in this preparation. Their literal
+artifacts require the separate approval and publication procedure below.
 
 ## Before release
 
