@@ -5,8 +5,8 @@ name: CI tests
 # Distribution, browser/UI, local release policy, and exhaustive target proofs are
 # platform-independent lanes on one supported runtime. Windows adapters and their native
 # installed-package proof live in the separate Windows distribution repository. Required lanes
-# remain unconditional: path classification and skip receipts require a separate fail-closed
-# classifier contract.
+# run in full except on a first-attempt main push with verified identical-source queue evidence.
+# The independently required engines-floor smoke always executes.
 #
 # Branch-protection migration is additive. Observe `CI required lanes` on an exact SHA, add its
 # app-bound context, then remove the two legacy `gate (node N)` requirements. Roll back by restoring
@@ -32,8 +32,36 @@ env:
   AGENTSTATE_LITE_NO_AUTOPULL: 1
 
 jobs:
+  source-decision:
+    name: exact-source queue proof decision
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      reuse: ${{ steps.decision.outputs.reuse }}
+      proof: ${{ steps.decision.outputs.proof }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.21.0
+      - name: Verify native exact-source queue proof
+        id: decision
+        run: node scripts/ci-queue-proof.mjs decision >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
   # CLI shards build independently; common workspace tests and typechecking run once per Node.
   runtime:
+    needs: source-decision
+    if: ${{ always() && !(needs.source-decision.result == 'success' && needs.source-decision.outputs.reuse == 'true') }}
     name: runtime compatibility (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/4)
     strategy:
       fail-fast: false
@@ -63,6 +91,8 @@ jobs:
         run: npm run ci:runtime-cli
 
   runtime-common:
+    needs: source-decision
+    if: ${{ always() && !(needs.source-decision.result == 'success' && needs.source-decision.outputs.reuse == 'true') }}
     name: common runtime contracts (node ${{ matrix.node-version }})
     strategy:
       fail-fast: false
@@ -90,6 +120,8 @@ jobs:
         run: npm run ci:runtime-common
 
   aliasing-host:
+    needs: source-decision
+    if: ${{ always() && !(needs.source-decision.result == 'success' && needs.source-decision.outputs.reuse == 'true') }}
     name: host-class proofs on an aliasing host (macos, node 24.21.0)
     runs-on: macos-latest
     timeout-minutes: 30
@@ -113,6 +145,8 @@ jobs:
         run: npm run ci:aliasing-host
 
   distribution:
+    needs: source-decision
+    if: ${{ always() && !(needs.source-decision.result == 'success' && needs.source-decision.outputs.reuse == 'true') }}
     name: distribution package and installed behavior
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -131,6 +165,8 @@ jobs:
       - run: npm run ci:distribution
 
   browser:
+    needs: source-decision
+    if: ${{ always() && !(needs.source-decision.result == 'success' && needs.source-decision.outputs.reuse == 'true') }}
     name: browser and UI
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -191,6 +227,8 @@ jobs:
       - run: npm run ci:browser
 
   scripts:
+    needs: source-decision
+    if: ${{ always() && !(needs.source-decision.result == 'success' && needs.source-decision.outputs.reuse == 'true') }}
     name: repository scripts and CI topology
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -254,8 +292,12 @@ jobs:
 
   required:
     name: CI required lanes
-    needs: [runtime, runtime-common, aliasing-host, smoke-node-22, distribution, browser, scripts]
+    needs: [source-decision, runtime, runtime-common, aliasing-host, smoke-node-22, distribution, browser, scripts]
     if: ${{ always() }}
+    permissions:
+      contents: read
+      actions: read
+      checks: read
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -266,23 +308,20 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.21.0
-      - name: Reject every non-success or missing required result
-        uses: ./.github/actions/ci-gate
-        with:
-          needs-json: ${{ toJSON(needs) }}
-          policy-json: >-
-            [{"job":"runtime","required":true},
-             {"job":"runtime-common","required":true},
-             {"job":"aliasing-host","required":true},
-             {"job":"smoke-node-22","required":true},
-             {"job":"distribution","required":true},
-             {"job":"browser","required":true},
-             {"job":"scripts","required":true}]
+      - name: Verify complete current or reused CI proof
+        run: node scripts/ci-queue-proof.mjs aggregate >> "$GITHUB_STEP_SUMMARY"
+        env:
+          REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
+          GITHUB_TOKEN: ${{ github.token }}
 
   compatibility-gate-node-22:
     name: gate (node 22)
-    needs: [runtime, runtime-common, aliasing-host, smoke-node-22, distribution, browser, scripts]
+    needs: [source-decision, runtime, runtime-common, aliasing-host, smoke-node-22, distribution, browser, scripts]
     if: ${{ always() }}
+    permissions:
+      contents: read
+      actions: read
+      checks: read
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -293,23 +332,20 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.21.0
-      - name: Preserve the legacy context without weakening its coverage
-        uses: ./.github/actions/ci-gate
-        with:
-          needs-json: ${{ toJSON(needs) }}
-          policy-json: >-
-            [{"job":"runtime","required":true},
-             {"job":"runtime-common","required":true},
-             {"job":"aliasing-host","required":true},
-             {"job":"smoke-node-22","required":true},
-             {"job":"distribution","required":true},
-             {"job":"browser","required":true},
-             {"job":"scripts","required":true}]
+      - name: Verify complete current or reused CI proof
+        run: node scripts/ci-queue-proof.mjs aggregate >> "$GITHUB_STEP_SUMMARY"
+        env:
+          REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
+          GITHUB_TOKEN: ${{ github.token }}
 
   compatibility-gate-node-26:
     name: gate (node 26)
-    needs: [runtime, runtime-common, aliasing-host, smoke-node-22, distribution, browser, scripts]
+    needs: [source-decision, runtime, runtime-common, aliasing-host, smoke-node-22, distribution, browser, scripts]
     if: ${{ always() }}
+    permissions:
+      contents: read
+      actions: read
+      checks: read
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -320,15 +356,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.21.0
-      - name: Preserve the legacy context without weakening its coverage
-        uses: ./.github/actions/ci-gate
-        with:
-          needs-json: ${{ toJSON(needs) }}
-          policy-json: >-
-            [{"job":"runtime","required":true},
-             {"job":"runtime-common","required":true},
-             {"job":"aliasing-host","required":true},
-             {"job":"smoke-node-22","required":true},
-             {"job":"distribution","required":true},
-             {"job":"browser","required":true},
-             {"job":"scripts","required":true}]
+      - name: Verify complete current or reused CI proof
+        run: node scripts/ci-queue-proof.mjs aggregate >> "$GITHUB_STEP_SUMMARY"
+        env:
+          REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
+          GITHUB_TOKEN: ${{ github.token }}

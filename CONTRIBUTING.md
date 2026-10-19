@@ -119,18 +119,26 @@ treat a branch dispatch as a serial prerequisite for opening or progressing the 
 a PR run on the same SHA are the same coverage paid twice. One run can satisfy both validations
 only when the merged SHA equals the validated SHA. Merge-group CI evaluates GitHub's candidate
 integration SHA; do not substitute its verdict for a different final merge/tag SHA. CI and CodeQL
-support `merge_group: checks_requested`, with the same unconditional lanes and required status
-names as PR runs. Every proof checkout binds `github.sha` explicitly. Queue runs do not cancel each
+support `merge_group: checks_requested`, with the same full lanes and required status names as PR
+runs. A first-attempt main push may reuse a complete successful queue proof only on the identical
+source SHA through `scripts/ci-queue-proof.mjs`; unknown or unavailable proof runs full CI. The
+engines-floor smoke always executes. Manual dispatch and push rerun attempts always execute full
+CI. Every proof checkout binds `github.sha` explicitly. Queue runs do not cancel each
 other through PR cancellation rules.
 `scripts/ci-lanes.json` records queue capability only. Live activation is verified by the read-only
 `infrastructure/github-ci` preflight and recorded in the project bundle. The private
 [holaxis-infrastructure runbook](https://github.com/Holaxis-ai/holaxis-infrastructure/tree/main/github/superbee)
 owns the settings rollout after these workflows and current-main status evidence exist.
 
-The canonical and both legacy engine gates call `.github/actions/ci-gate` from the candidate
-checkout. Its complete explicit policy must agree with every required lane. Consumer repositories
-pin the same action to a reviewed full SHA and retain their own lane/scope wiring tests. The scripts
-lane runs the shared evaluator suite and engine readiness tests. Terraform validation and
+The canonical and both legacy engine gates call the same queue-aware wrapper from the candidate
+checkout. It uses the strict `.github/actions/ci-gate` evaluator for ordinary full results; reuse
+requires complete native queue-run/job/check association, unchanged newest-run and attempt identity,
+successful current engines-floor smoke, and no newer pending or unsuccessful manual/main-push
+run on that source. The current push cannot veto itself. A stale aggregate refuses with full-dispatch
+recovery.
+The complete explicit policy must agree with every required lane. Consumer repositories pin the
+shared action to a reviewed full SHA and retain their own lane/scope wiring tests. The scripts lane
+runs the queue-proof fixtures, shared evaluator suite and engine readiness tests. Terraform validation and
 mocked-provider tests run in the private infrastructure repository.
 
 The finite product-validation lane projection below is checked against `scripts/ci-lanes.json`, root

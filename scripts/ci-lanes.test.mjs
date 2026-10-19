@@ -123,7 +123,7 @@ function validateNodePolicyAgreement({
 
   const ci = read(".github/workflows/ci-tests.yml");
   assert.match(ci, new RegExp(`node-version: \\[${candidate.runtime_nodes.join(", ")}\\]`));
-  assert.equal(count(ci, new RegExp(`node-version: ${policy.default_runtime.replaceAll(".", "\\.")}`, "g")), 8);
+  assert.equal(count(ci, new RegExp(`node-version: ${policy.default_runtime.replaceAll(".", "\\.")}`, "g")), 9);
   assert.equal(count(ci, new RegExp(`node-version: ${policy.compatibility_floor.replaceAll(".", "\\.")}`, "g")), 1);
   assert.equal(count(read(".github/workflows/mutation-tests.yml"), new RegExp(`node-version: ${policy.default_runtime.replaceAll(".", "\\.")}`, "g")), 1);
 
