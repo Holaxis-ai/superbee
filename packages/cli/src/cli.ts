@@ -30,6 +30,7 @@ import { kinds } from "./commands/kinds.js";
 import { kind } from "./commands/kind.js";
 import { recipes } from "./commands/recipes.js";
 import { recipe } from "./commands/recipe.js";
+import { source } from "./commands/source.js";
 import { status } from "./commands/status.js";
 import { serve } from "./commands/serve.js";
 import { ui } from "./commands/ui.js";
@@ -150,6 +151,7 @@ export const PUBLIC_HANDLERS = Object.freeze({
   notify,
   inbox,
   search,
+  source,
 } satisfies PublicHandlerMap);
 
 type RuntimeHandler = (args: string[]) => Promise<string>;

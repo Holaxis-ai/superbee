@@ -510,6 +510,18 @@ export const CLI_COMMAND_GROUPS = [
         summary: "Apply a recipe's content-free definitions — Kinds plus optional declared References and Views — idempotently",
       },
       {
+        id: "recipeValidate",
+        leaves: [publicLeaf("recipeValidate", "recipe validate", one, undefined, { positionals: Object.freeze([Object.freeze({ index: 0, role: "recipe-source" as const })]) })],
+        usage: "recipe validate <path> [--readme] [--json]",
+        summary: "Validate a local recipe and integration declarations without installing or executing code",
+      },
+      {
+        id: "sourceTest",
+        leaves: [publicLeaf("sourceTest", "source test", one, 42, { flags: pathFlags({ flag: "fixture", role: "ingress" }, { flag: "profile", role: "ingress" }), positionals: Object.freeze([Object.freeze({ index: 0, role: "recipe-source" as const })]) })],
+        usage: "source test <recipe-path> --fixture <directory> [--profile <local.mjs>] [--json]",
+        summary: "Replay recorded source fixtures; --profile explicitly executes trusted local code",
+      },
+      {
         id: "recipeEvolve",
         leaves: [publicLeaf("recipeEvolve", "recipe evolve", one, undefined, DIR_RECIPE_ROOT_SURFACE)],
         usage: "recipe evolve <name-or-path> [--apply <plan-token>] [--actor <name>] [--dir <path>] [--remote <url>]",

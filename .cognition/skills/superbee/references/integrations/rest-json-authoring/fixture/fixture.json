@@ -1,0 +1,2466 @@
+{
+  "version": 1,
+  "connector": "connectors/tickets",
+  "source": "tickets",
+  "feed": "source-feeds/board",
+  "documents": [
+    {
+      "id": "conventions/signal",
+      "frontmatter": {
+        "type": "Convention",
+        "title": "Signal",
+        "governs": "Signal",
+        "path": "signals/",
+        "description": "A durable, claimable flag that a monitored source changed in a way that needs judgment. Created deterministically; acted on by an agent or human.",
+        "links": {
+          "from feed": "Source Feed"
+        },
+        "claim": {
+          "owner_field": "assignee",
+          "state_field": "progress_status"
+        },
+        "fields": {
+          "required": [
+            "title",
+            "progress_status",
+            "change_kind",
+            "observed_at"
+          ],
+          "optional": [
+            "provider",
+            "external_id",
+            "diff_summary",
+            "priority",
+            "assignee",
+            "resolution",
+            "expires_at",
+            "content_digest",
+            "about_doc"
+          ],
+          "types": {
+            "observed_at": "datetime",
+            "expires_at": "datetime"
+          },
+          "values": {
+            "progress_status": [
+              "todo",
+              "in_progress",
+              "done",
+              "dismissed"
+            ],
+            "priority": [
+              "urgent",
+              "normal",
+              "low"
+            ]
+          },
+          "terminal": {
+            "progress_status": [
+              "done",
+              "dismissed"
+            ]
+          },
+          "descriptions": {
+            "change_kind": "What changed, in the vocabulary of whoever raised the Signal: new, changed, canceled, disappeared, page-changed, status-check, or a kind a profile or intake defines.",
+            "provider": "The monitored source, as its feed URL or a tool name.",
+            "external_id": "The provider's id for the record the Signal is about.",
+            "diff_summary": "What changed, in one paragraph a claimant can judge without opening the source.",
+            "resolution": "What was done and why, written by whoever closed the signal.",
+            "content_digest": "Digest of the observed external record that raised this signal; used to deduplicate and collapse repeated changes.",
+            "about_doc": "Document id the signal concerns (cross-bundle references are not links)."
+          }
+        },
+        "freshness_horizon": "14d"
+      },
+      "body": "# Signal\n\nA durable, claimable flag that a monitored source changed in a way that needs judgment. Created\ndeterministically; acted on by an agent or human.\n"
+    },
+    {
+      "id": "conventions/source-feed",
+      "frontmatter": {
+        "type": "Convention",
+        "title": "Source Feed",
+        "governs": "Source Feed",
+        "path": "source-feeds/",
+        "description": "A monitored source (structured feed, official page or declared Connector source) and the policy for what its changes may do: which fields it owns and which changes need judgment.",
+        "fields": {
+          "required": [
+            "title",
+            "url",
+            "owned_fields"
+          ],
+          "optional": [
+            "connector",
+            "source",
+            "feed_kind",
+            "target_kind",
+            "poll_interval",
+            "auto_apply",
+            "needs_review",
+            "completeness",
+            "missing_threshold",
+            "exclude_pattern",
+            "retention",
+            "profile",
+            "extract_rule",
+            "wall_time_zone",
+            "terms_url",
+            "rights_note",
+            "last_observed_at",
+            "description"
+          ],
+          "types": {
+            "url": "https-url",
+            "owned_fields": "string-list",
+            "auto_apply": "string-list",
+            "needs_review": "string-list",
+            "missing_threshold": "integer",
+            "terms_url": "https-url",
+            "last_observed_at": "datetime"
+          },
+          "values": {
+            "feed_kind": [
+              "ics",
+              "rss",
+              "json-api",
+              "html-page",
+              "connector"
+            ],
+            "completeness": [
+              "complete",
+              "partial"
+            ],
+            "retention": [
+              "snapshot-ok",
+              "live-only"
+            ]
+          },
+          "descriptions": {
+            "url": "The provider identity of the feed, as documents name it in `sources[].resource`. For a Connector source, a resource its identity template admits, byte for byte.",
+            "owned_fields": "Fields this feed is authoritative for. The overlay may write only these; editor-owned fields are refused. For a Connector source, a subset of the source's mapping keys.",
+            "connector": "For a Connector-backed feed, the id of the Connector document (connectors/<slug>).",
+            "source": "For a Connector-backed feed, the name of the Connector source this feed binds to.",
+            "feed_kind": "How the source is read. One of: ics, rss, json-api, html-page, connector.",
+            "target_kind": "The Kind of the documents this feed overlays. For a Connector source, the source's target Kind.",
+            "auto_apply": "Change kinds applied without judgment (e.g. changed).",
+            "needs_review": "Change kinds that raise a Signal for an agent or human (e.g. new, canceled, disappeared, page-changed).",
+            "completeness": "Whether one observation lists every current record for its window. Only a complete feed may ever imply that a record disappeared. One of: complete, partial. A Connector source's value wins.",
+            "missing_threshold": "Consecutive complete observations a record must be absent from before a `disappeared` change is raised.",
+            "exclude_pattern": "Editorial exclusion: a case-insensitive pattern on record titles. Matching records are still observed and stored but never presented.",
+            "retention": "Whether observed records may be captured into a published snapshot (snapshot-ok) or may only be shown live (live-only), per the provider's terms. One of: snapshot-ok, live-only.",
+            "profile": "Name of the provider profile that decodes this source. A Connector source's value wins.",
+            "extract_rule": "For configurable profiles: the extraction rule as JSON text. Configuration, not code.",
+            "wall_time_zone": "IANA zone to read this provider's times in when it labels local wall-clock times as UTC. A recorded judgment for one feed, set only with evidence; never guessed and never a default.",
+            "terms_url": "The provider's terms of use for this source.",
+            "rights_note": "What the provider's terms allow, in a sentence.",
+            "last_observed_at": "When the source was last observed."
+          }
+        },
+        "freshness_horizon": "30d"
+      },
+      "body": "# Source Feed\n\nA monitored source and the policy for what its changes may do: which fields it owns and which\nchanges need judgment.\n"
+    },
+    {
+      "id": "source-feeds/board",
+      "body": "Synthetic feed.\n",
+      "frontmatter": {
+        "type": "Source Feed",
+        "title": "Main board (synthetic)",
+        "connector": "connectors/tickets",
+        "source": "tickets",
+        "url": "https://tickets.example.org/boards/main",
+        "owned_fields": [
+          "title",
+          "state",
+          "priority"
+        ],
+        "auto_apply": [
+          "new",
+          "changed"
+        ],
+        "needs_review": [
+          "disappeared"
+        ],
+        "missing_threshold": 2
+      }
+    },
+    {
+      "id": "tickets/t1",
+      "body": "Editor notes.\n",
+      "frontmatter": {
+        "type": "Ticket",
+        "title": "First",
+        "state": "open",
+        "priority": "low",
+        "sources": [
+          {
+            "resource": "https://tickets.example.org/boards/main",
+            "id": "t1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "tickets/t2",
+      "body": "Editor notes.\n",
+      "frontmatter": {
+        "type": "Ticket",
+        "title": "Second",
+        "state": "open",
+        "priority": "low",
+        "sources": [
+          {
+            "resource": "https://tickets.example.org/boards/main",
+            "id": "t2"
+          }
+        ]
+      }
+    },
+    {
+      "id": "tickets/t3",
+      "body": "Editor notes.\n",
+      "frontmatter": {
+        "type": "Ticket",
+        "title": "Third",
+        "state": "open",
+        "priority": "low",
+        "sources": [
+          {
+            "resource": "https://tickets.example.org/boards/main",
+            "id": "t3"
+          }
+        ]
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "errors.auth",
+      "runs": [
+        {
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 401,
+                "headers": {},
+                "body": ""
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "credential_refused",
+            "reason": null,
+            "pages": 0,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": false,
+              "complete": false
+            },
+            "changes": {
+              "new": 0,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [],
+          "findings": [
+            {
+              "key": "source:tickets:credential_refused",
+              "title": "Source tickets: credential refused",
+              "summary": "the provider refused the credential; runs stay stopped until the credential changes. Status 401. (https://tickets.example.org/boards/main/items)",
+              "priority": "normal",
+              "facts": {
+                "outcome": "credential_refused",
+                "reason": null,
+                "status": 401
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "errors.rate-limit",
+      "runs": [
+        {
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"items\":[{\"id\":\"t1\",\"title\":\"First\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t1\"}],\"next\":\"c1\"}"
+              }
+            },
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items?after=c1"
+              },
+              "response": {
+                "status": 429,
+                "headers": {
+                  "Retry-After": "120"
+                },
+                "body": ""
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "deferred",
+            "reason": "rate_limited",
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": false,
+              "complete": false
+            },
+            "changes": {
+              "new": 1,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": {
+            "token": "c1",
+            "since": ""
+          },
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items?after=c1",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [
+            {
+              "external_id": "t1",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "First",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t1"
+              },
+              "content_digest": "sha256:46c1f1c86ad59b4e433cb1351c23b323016b611f637bd750376add7d7212e29d"
+            }
+          ],
+          "findings": [
+            {
+              "key": "source:tickets:deferred:rate_limited",
+              "title": "Source tickets: deferred (rate limited)",
+              "summary": "the provider asked to slow down; the run stopped and resumes from the last committed page. Status 429. (https://tickets.example.org/boards/main/items)",
+              "priority": "low",
+              "facts": {
+                "outcome": "deferred",
+                "reason": "rate_limited",
+                "status": 429
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "errors.server",
+      "runs": [
+        {
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 503,
+                "headers": {},
+                "body": ""
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "provider_unavailable",
+            "reason": "server_error",
+            "pages": 0,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": false,
+              "complete": false
+            },
+            "changes": {
+              "new": 0,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [],
+          "findings": [
+            {
+              "key": "source:tickets:provider_unavailable:server_error",
+              "title": "Source tickets: provider unavailable (server error)",
+              "summary": "the provider did not answer usefully; nothing past the last committed page was read. Status 503. (https://tickets.example.org/boards/main/items)",
+              "priority": "low",
+              "facts": {
+                "outcome": "provider_unavailable",
+                "reason": "server_error",
+                "status": 503
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "errors.malformed",
+      "runs": [
+        {
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "content-type": "text/html"
+                },
+                "body": "<html>not json</html>"
+              }
+            }
+          ]
+        },
+        {
+          "budget": {
+            "maxBytes": 64
+          },
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"items\":[{\"id\":\"t1\",\"title\":\"First\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t1\"},{\"id\":\"t2\",\"title\":\"Second\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t2\"},{\"id\":\"t3\",\"title\":\"Third\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t3\"}]}"
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "unsupported_content",
+            "reason": null,
+            "pages": 0,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": false,
+              "complete": false
+            },
+            "changes": {
+              "new": 0,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [],
+          "findings": [
+            {
+              "key": "source:tickets:unsupported_content",
+              "title": "Source tickets: unsupported content",
+              "summary": "the provider sent a body the profile cannot read; nothing from it was written. (https://tickets.example.org/boards/main/items)",
+              "priority": "low",
+              "facts": {
+                "outcome": "unsupported_content",
+                "reason": null,
+                "status": null
+              }
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "outcome": "too_large",
+            "reason": null,
+            "pages": 0,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": false,
+              "complete": false
+            },
+            "changes": {
+              "new": 0,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [],
+          "findings": [
+            {
+              "key": "source:tickets:too_large",
+              "title": "Source tickets: too large",
+              "summary": "the provider sent a body over the byte bound; nothing from it was written. (https://tickets.example.org/boards/main/items)",
+              "priority": "low",
+              "facts": {
+                "outcome": "too_large",
+                "reason": null,
+                "status": null
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "page.incomplete",
+      "runs": [
+        {
+          "mode": "complete",
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"items\":[{\"id\":\"t1\",\"title\":\"First\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t1\"}],\"next\":\"c1\"}"
+              }
+            },
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items?after=c1"
+              },
+              "response": {
+                "hang": true
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "deferred",
+            "reason": "deadline",
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": false,
+              "complete": false
+            },
+            "changes": {
+              "new": 1,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": {
+            "token": "c1",
+            "since": ""
+          },
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items?after=c1",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [
+            {
+              "external_id": "t1",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "First",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t1"
+              },
+              "content_digest": "sha256:46c1f1c86ad59b4e433cb1351c23b323016b611f637bd750376add7d7212e29d"
+            }
+          ],
+          "findings": []
+        }
+      ]
+    },
+    {
+      "name": "cursor.resume",
+      "runs": [
+        {
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"items\":[{\"id\":\"t1\",\"title\":\"First\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t1\"},{\"id\":\"t2\",\"title\":\"Second\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t2\"}],\"next\":\"c1\"}"
+              }
+            },
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items?after=c1"
+              },
+              "response": {
+                "status": 503,
+                "headers": {},
+                "body": ""
+              }
+            }
+          ]
+        },
+        {
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items?after=c1"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"items\":[{\"id\":\"t2\",\"title\":\"Second\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t2\"},{\"id\":\"t3\",\"title\":\"Third\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t3\"}]}"
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "provider_unavailable",
+            "reason": "server_error",
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": false,
+              "complete": false
+            },
+            "changes": {
+              "new": 2,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": {
+            "token": "c1",
+            "since": ""
+          },
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items?after=c1",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [
+            {
+              "external_id": "t1",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "First",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t1"
+              },
+              "content_digest": "sha256:46c1f1c86ad59b4e433cb1351c23b323016b611f637bd750376add7d7212e29d"
+            },
+            {
+              "external_id": "t2",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "Second",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t2"
+              },
+              "content_digest": "sha256:41236f254fb7b7cd5e32a09e5481c98f77de69fc296033b57d38539e327073b3"
+            }
+          ],
+          "findings": [
+            {
+              "key": "source:tickets:provider_unavailable:server_error",
+              "title": "Source tickets: provider unavailable (server error)",
+              "summary": "the provider did not answer usefully; nothing past the last committed page was read. Status 503. (https://tickets.example.org/boards/main/items)",
+              "priority": "low",
+              "facts": {
+                "outcome": "provider_unavailable",
+                "reason": "server_error",
+                "status": 503
+              }
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "outcome": "observed",
+            "reason": null,
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": true,
+              "ended": true,
+              "complete": false
+            },
+            "changes": {
+              "new": 1,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items?after=c1",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [
+            {
+              "external_id": "t3",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "Third",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t3"
+              },
+              "content_digest": "sha256:0386545d30009539465dd5cf855a36f61d7e83d31e66fbd3fb671157267f230e"
+            }
+          ],
+          "findings": []
+        }
+      ]
+    },
+    {
+      "name": "cursor.hostile",
+      "spec": {
+        "name": "tickets",
+        "profile": "rest-json",
+        "target_kind": "Ticket",
+        "mode": "overlay",
+        "identity": {
+          "resource": "https://tickets.example.org/boards/{board}",
+          "id": "{id}"
+        },
+        "fields": {
+          "title": {
+            "from": "title"
+          },
+          "state": {
+            "from": "status",
+            "values": {
+              "OPEN": "open",
+              "DONE": "closed"
+            },
+            "unmapped": "keep"
+          },
+          "priority": {
+            "from": "priority",
+            "values": {
+              "low": "low",
+              "high": "high"
+            },
+            "unmapped": "keep"
+          },
+          "url": {
+            "from": "html_url"
+          }
+        },
+        "completeness": "complete",
+        "request": {
+          "host": "tickets.example.org",
+          "method": "GET",
+          "path": "/boards/{board}/items",
+          "query": {},
+          "items": "items",
+          "paging": {
+            "kind": "cursor",
+            "next_path": "next_url"
+          },
+          "complete": "always"
+        }
+      },
+      "runs": [
+        {
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 200,
+                "body": "{\"items\":[{\"id\":\"t1\",\"title\":\"First\",\"status\":\"OPEN\",\"priority\":\"low\"}],\"next_url\":\"https://unlisted.example.net/items\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "refused",
+            "reason": "host_refused",
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": false,
+              "complete": false
+            },
+            "changes": {
+              "new": 1,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": {
+            "url": "https://unlisted.example.net/items",
+            "since": ""
+          },
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [
+            {
+              "external_id": "t1",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title"
+              ],
+              "before": null,
+              "after": {
+                "title": "First",
+                "state": "open",
+                "priority": "low"
+              },
+              "content_digest": "sha256:7d4f685f1aa6ca5d929ce9d0f613702f21c7d18e1f60438dda658d0f632a8f3e"
+            }
+          ],
+          "findings": [
+            {
+              "key": "source:tickets:refused:host_refused",
+              "title": "Source tickets: refused (host refused)",
+              "summary": "a request was refused before it was sent. (https://unlisted.example.net/items)",
+              "priority": "normal",
+              "facts": {
+                "outcome": "refused",
+                "reason": "host_refused",
+                "status": null
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "complete.disappear",
+      "runs": [
+        {
+          "mode": "complete",
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"items\":[{\"id\":\"t1\",\"title\":\"First\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t1\"},{\"id\":\"t2\",\"title\":\"Second\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t2\"},{\"id\":\"t3\",\"title\":\"Third\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t3\"}]}"
+              }
+            }
+          ]
+        },
+        {
+          "mode": "complete",
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"items\":[{\"id\":\"t1\",\"title\":\"First\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t1\"},{\"id\":\"t2\",\"title\":\"Second\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t2\"}]}"
+              }
+            }
+          ]
+        },
+        {
+          "mode": "complete",
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"items\":[{\"id\":\"t1\",\"title\":\"First\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t1\"}],\"next\":\"c1\"}"
+              }
+            },
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items?after=c1"
+              },
+              "response": {
+                "hang": true
+              }
+            }
+          ]
+        },
+        {
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items?after=c1"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"items\":[{\"id\":\"t2\",\"title\":\"Second\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t2\"}]}"
+              }
+            }
+          ]
+        },
+        {
+          "mode": "complete",
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"items\":[{\"id\":\"t1\",\"title\":\"First\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t1\"},{\"id\":\"t2\",\"title\":\"Second\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t2\"}]}"
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "observed",
+            "reason": null,
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": true,
+              "complete": true
+            },
+            "changes": {
+              "new": 3,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [
+            {
+              "external_id": "t1",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "First",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t1"
+              },
+              "content_digest": "sha256:46c1f1c86ad59b4e433cb1351c23b323016b611f637bd750376add7d7212e29d"
+            },
+            {
+              "external_id": "t2",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "Second",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t2"
+              },
+              "content_digest": "sha256:41236f254fb7b7cd5e32a09e5481c98f77de69fc296033b57d38539e327073b3"
+            },
+            {
+              "external_id": "t3",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "Third",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t3"
+              },
+              "content_digest": "sha256:0386545d30009539465dd5cf855a36f61d7e83d31e66fbd3fb671157267f230e"
+            }
+          ],
+          "findings": []
+        },
+        {
+          "receipt": {
+            "outcome": "observed",
+            "reason": null,
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": true,
+              "complete": true
+            },
+            "changes": {
+              "new": 0,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [],
+          "findings": []
+        },
+        {
+          "receipt": {
+            "outcome": "deferred",
+            "reason": "deadline",
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": false,
+              "complete": false
+            },
+            "changes": {
+              "new": 0,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": {
+            "token": "c1",
+            "since": ""
+          },
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items?after=c1",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [],
+          "findings": []
+        },
+        {
+          "receipt": {
+            "outcome": "observed",
+            "reason": null,
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": true,
+              "ended": true,
+              "complete": false
+            },
+            "changes": {
+              "new": 0,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items?after=c1",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [],
+          "findings": []
+        },
+        {
+          "receipt": {
+            "outcome": "observed",
+            "reason": null,
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": true,
+              "complete": true
+            },
+            "changes": {
+              "new": 0,
+              "changed": 0,
+              "disappeared": 1
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [
+            {
+              "external_id": "t3",
+              "change_kind": "disappeared",
+              "changed_fields": [],
+              "before": {
+                "title": "Third",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t3"
+              },
+              "after": null,
+              "content_digest": "sha256:0386545d30009539465dd5cf855a36f61d7e83d31e66fbd3fb671157267f230e",
+              "missing_count": 2,
+              "first_missing_at": "2026-01-01T01:00:00.000Z"
+            }
+          ],
+          "findings": []
+        }
+      ]
+    },
+    {
+      "name": "fields.owned-conflict",
+      "runs": [
+        {
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"items\":[{\"id\":\"t1\",\"title\":\"First\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t1\"},{\"id\":\"t2\",\"title\":\"Second\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t2\"},{\"id\":\"t3\",\"title\":\"Third\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t3\"}]}"
+              }
+            }
+          ]
+        },
+        {
+          "edits": [
+            {
+              "id": "tickets/t1",
+              "set": {
+                "title": "Editor's title"
+              }
+            }
+          ],
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"items\":[{\"id\":\"t1\",\"title\":\"Provider's title\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t1\"},{\"id\":\"t2\",\"title\":\"Second\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t2\"},{\"id\":\"t3\",\"title\":\"Third\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t3\"}]}"
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "observed",
+            "reason": null,
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": true,
+              "complete": false
+            },
+            "changes": {
+              "new": 3,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [
+            {
+              "external_id": "t1",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "First",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t1"
+              },
+              "content_digest": "sha256:46c1f1c86ad59b4e433cb1351c23b323016b611f637bd750376add7d7212e29d"
+            },
+            {
+              "external_id": "t2",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "Second",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t2"
+              },
+              "content_digest": "sha256:41236f254fb7b7cd5e32a09e5481c98f77de69fc296033b57d38539e327073b3"
+            },
+            {
+              "external_id": "t3",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "Third",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t3"
+              },
+              "content_digest": "sha256:0386545d30009539465dd5cf855a36f61d7e83d31e66fbd3fb671157267f230e"
+            }
+          ],
+          "findings": []
+        },
+        {
+          "receipt": {
+            "outcome": "observed",
+            "reason": null,
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": true,
+              "complete": false
+            },
+            "changes": {
+              "new": 0,
+              "changed": 1,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [
+            {
+              "external_id": "t1",
+              "change_kind": "changed",
+              "changed_fields": [
+                "title"
+              ],
+              "before": {
+                "title": "First",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t1"
+              },
+              "after": {
+                "title": "Provider's title",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t1"
+              },
+              "content_digest": "sha256:2db3386b13038b5ef85f737d55f196ae438d1b5d7f99605fff1c61e467b10fcf"
+            }
+          ],
+          "findings": []
+        }
+      ]
+    },
+    {
+      "name": "fields.unmapped",
+      "runs": [
+        {
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"items\":[{\"id\":\"t1\",\"title\":\"First\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t1\"},{\"id\":\"t2\",\"title\":\"Second\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t2\"},{\"id\":\"t3\",\"title\":\"Third\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t3\"}]}"
+              }
+            }
+          ]
+        },
+        {
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"items\":[{\"id\":\"t1\",\"title\":\"First\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t1\"},{\"id\":\"t2\",\"title\":\"Second\",\"status\":\"BLOCKED\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t2\"},{\"id\":\"t3\",\"title\":\"Third\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t3\"}]}"
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "observed",
+            "reason": null,
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": true,
+              "complete": false
+            },
+            "changes": {
+              "new": 3,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [
+            {
+              "external_id": "t1",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "First",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t1"
+              },
+              "content_digest": "sha256:46c1f1c86ad59b4e433cb1351c23b323016b611f637bd750376add7d7212e29d"
+            },
+            {
+              "external_id": "t2",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "Second",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t2"
+              },
+              "content_digest": "sha256:41236f254fb7b7cd5e32a09e5481c98f77de69fc296033b57d38539e327073b3"
+            },
+            {
+              "external_id": "t3",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "Third",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t3"
+              },
+              "content_digest": "sha256:0386545d30009539465dd5cf855a36f61d7e83d31e66fbd3fb671157267f230e"
+            }
+          ],
+          "findings": []
+        },
+        {
+          "receipt": {
+            "outcome": "observed",
+            "reason": null,
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": true,
+              "complete": false
+            },
+            "changes": {
+              "new": 0,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [],
+          "findings": [
+            {
+              "key": "mapping:tickets:state:VALUE_UNMAPPED:a1f4014f85aac4c0",
+              "title": "Mapping VALUE_UNMAPPED on tickets.state",
+              "summary": "state: value \"BLOCKED\" has no row in the values table; the stored value was kept: 1 record (t2)",
+              "priority": "low",
+              "facts": {
+                "code": "VALUE_UNMAPPED",
+                "field": "state",
+                "native": "BLOCKED"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "fields.null",
+      "runs": [
+        {
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"items\":[{\"id\":\"t1\",\"title\":\"First\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t1\"},{\"id\":\"t2\",\"title\":\"Second\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t2\"},{\"id\":\"t3\",\"title\":\"Third\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t3\"}]}"
+              }
+            }
+          ]
+        },
+        {
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"items\":[{\"id\":\"t1\",\"title\":\"First\",\"status\":\"OPEN\",\"priority\":null,\"html_url\":\"https://tickets.example.org/t/t1\"},{\"id\":\"t2\",\"title\":\"Second\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t2\"},{\"id\":\"t3\",\"title\":\"\",\"status\":\"OPEN\",\"priority\":\"high\",\"html_url\":\"https://tickets.example.org/t/t3\"}]}"
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "observed",
+            "reason": null,
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": true,
+              "complete": false
+            },
+            "changes": {
+              "new": 3,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [
+            {
+              "external_id": "t1",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "First",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t1"
+              },
+              "content_digest": "sha256:46c1f1c86ad59b4e433cb1351c23b323016b611f637bd750376add7d7212e29d"
+            },
+            {
+              "external_id": "t2",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "Second",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t2"
+              },
+              "content_digest": "sha256:41236f254fb7b7cd5e32a09e5481c98f77de69fc296033b57d38539e327073b3"
+            },
+            {
+              "external_id": "t3",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "Third",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t3"
+              },
+              "content_digest": "sha256:0386545d30009539465dd5cf855a36f61d7e83d31e66fbd3fb671157267f230e"
+            }
+          ],
+          "findings": []
+        },
+        {
+          "receipt": {
+            "outcome": "observed",
+            "reason": null,
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": true,
+              "complete": false
+            },
+            "changes": {
+              "new": 0,
+              "changed": 2,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [
+            {
+              "external_id": "t1",
+              "change_kind": "changed",
+              "changed_fields": [
+                "priority"
+              ],
+              "before": {
+                "title": "First",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t1"
+              },
+              "after": {
+                "title": "First",
+                "state": "open",
+                "url": "https://tickets.example.org/t/t1"
+              },
+              "content_digest": "sha256:6f1d86d395c914af6ae584691c3c312805b3128704d3bee2c5cb2394123a4d83"
+            },
+            {
+              "external_id": "t3",
+              "change_kind": "changed",
+              "changed_fields": [
+                "priority"
+              ],
+              "before": {
+                "title": "Third",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t3"
+              },
+              "after": {
+                "state": "open",
+                "priority": "high",
+                "url": "https://tickets.example.org/t/t3",
+                "title": "Third"
+              },
+              "content_digest": "sha256:67309a02295f833f764ab2dcb8a636c668d9ced6ab52be1b998909defd17caf7"
+            }
+          ],
+          "findings": [
+            {
+              "key": "mapping:tickets:title:VALUE_MISSING:empty",
+              "title": "Mapping VALUE_MISSING on tickets.title",
+              "summary": "title: required, and the provider sent no value; the stored value was kept: 1 record (t3)",
+              "priority": "low",
+              "facts": {
+                "code": "VALUE_MISSING",
+                "field": "title",
+                "shape": "empty"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "identity.missing",
+      "runs": [
+        {
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 200,
+                "headers": {
+                  "content-type": "application/json"
+                },
+                "body": "{\"items\":[{\"id\":\"t1\",\"title\":\"First\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t1\"},{\"title\":\"No id\",\"status\":\"OPEN\"},{\"id\":\"t3\",\"title\":\"Third\",\"status\":\"OPEN\",\"priority\":\"low\",\"html_url\":\"https://tickets.example.org/t/t3\"}]}"
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "observed",
+            "reason": null,
+            "pages": 1,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": true,
+              "complete": false
+            },
+            "changes": {
+              "new": 2,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [
+            {
+              "external_id": "t1",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "First",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t1"
+              },
+              "content_digest": "sha256:46c1f1c86ad59b4e433cb1351c23b323016b611f637bd750376add7d7212e29d"
+            },
+            {
+              "external_id": "t3",
+              "change_kind": "new",
+              "changed_fields": [
+                "priority",
+                "state",
+                "title",
+                "url"
+              ],
+              "before": null,
+              "after": {
+                "title": "Third",
+                "state": "open",
+                "priority": "low",
+                "url": "https://tickets.example.org/t/t3"
+              },
+              "content_digest": "sha256:0386545d30009539465dd5cf855a36f61d7e83d31e66fbd3fb671157267f230e"
+            }
+          ],
+          "findings": [
+            {
+              "key": "mapping:tickets:IDENTITY_MISSING",
+              "title": "Mapping IDENTITY_MISSING on tickets.identity",
+              "summary": "records without a value for the identity template were skipped: records",
+              "priority": "normal",
+              "facts": {
+                "code": "IDENTITY_MISSING",
+                "field": "identity",
+                "native": null
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hosts.redirect",
+      "runs": [
+        {
+          "exchanges": [
+            {
+              "request": {
+                "url": "https://tickets.example.org/boards/main/items"
+              },
+              "response": {
+                "status": 302,
+                "headers": {
+                  "location": "https://cdn.example.net/items.json"
+                },
+                "body": ""
+              }
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "refused",
+            "reason": "host_refused",
+            "pages": 0,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": false,
+              "complete": false
+            },
+            "changes": {
+              "new": 0,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [
+            {
+              "url": "https://tickets.example.org/robots.txt",
+              "method": "GET",
+              "headers": {
+                "accept": "text/plain, */*;q=0.1",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            },
+            {
+              "url": "https://tickets.example.org/boards/main/items",
+              "method": "GET",
+              "headers": {
+                "accept": "application/json",
+                "user-agent": "SuperbeeSourceFixture/1 (+https://superbee.example.org/source-fixture)"
+              }
+            }
+          ],
+          "changes": [],
+          "findings": [
+            {
+              "key": "source:tickets:refused:host_refused",
+              "title": "Source tickets: refused (host refused)",
+              "summary": "a request was refused before it was sent. (https://cdn.example.net/items.json)",
+              "priority": "normal",
+              "facts": {
+                "outcome": "refused",
+                "reason": "host_refused",
+                "status": null
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hosts.undeclared",
+      "spec": {
+        "name": "tickets",
+        "profile": "rest-json",
+        "target_kind": "Ticket",
+        "mode": "overlay",
+        "identity": {
+          "resource": "https://tickets.example.org/boards/{board}",
+          "id": "{id}"
+        },
+        "fields": {
+          "title": {
+            "from": "title"
+          },
+          "state": {
+            "from": "status",
+            "values": {
+              "OPEN": "open",
+              "DONE": "closed"
+            },
+            "unmapped": "keep"
+          },
+          "priority": {
+            "from": "priority",
+            "values": {
+              "low": "low",
+              "high": "high"
+            },
+            "unmapped": "keep"
+          },
+          "url": {
+            "from": "html_url"
+          }
+        },
+        "completeness": "complete",
+        "request": {
+          "host": "elsewhere.example.net",
+          "method": "GET",
+          "path": "/boards/{board}/items",
+          "query": {
+            "after": "{cursor}"
+          },
+          "items": "items",
+          "paging": {
+            "kind": "cursor",
+            "cursor_path": "next"
+          },
+          "complete": "always"
+        }
+      },
+      "runs": [
+        {
+          "exchanges": []
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "refused",
+            "reason": "hosts_undeclared",
+            "pages": 0,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": false,
+              "complete": false
+            },
+            "changes": {
+              "new": 0,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [],
+          "changes": [],
+          "findings": [
+            {
+              "key": "source:tickets:refused:hosts_undeclared",
+              "title": "Source tickets: refused (hosts undeclared)",
+              "summary": "a request was refused before it was sent.",
+              "priority": "normal",
+              "facts": {
+                "outcome": "refused",
+                "reason": "hosts_undeclared",
+                "status": null
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hosts.undeclared.post",
+      "spec": {
+        "name": "tickets",
+        "profile": "rest-json",
+        "target_kind": "Ticket",
+        "mode": "overlay",
+        "identity": {
+          "resource": "https://tickets.example.org/boards/{board}",
+          "id": "{id}"
+        },
+        "fields": {
+          "title": {
+            "from": "title"
+          },
+          "state": {
+            "from": "status",
+            "values": {
+              "OPEN": "open",
+              "DONE": "closed"
+            },
+            "unmapped": "keep"
+          },
+          "priority": {
+            "from": "priority",
+            "values": {
+              "low": "low",
+              "high": "high"
+            },
+            "unmapped": "keep"
+          },
+          "url": {
+            "from": "html_url"
+          }
+        },
+        "completeness": "complete",
+        "request": {
+          "host": "tickets.example.org",
+          "method": "POST",
+          "path": "/boards/{board}/items",
+          "query": {
+            "after": "{cursor}"
+          },
+          "items": "items",
+          "paging": {
+            "kind": "cursor",
+            "cursor_path": "next"
+          },
+          "complete": "always"
+        }
+      },
+      "runs": [
+        {
+          "exchanges": []
+        }
+      ],
+      "expect": [
+        {
+          "receipt": {
+            "outcome": "refused",
+            "reason": "method_refused",
+            "pages": 0,
+            "held": 0,
+            "pending": 0,
+            "pass": {
+              "resumed": false,
+              "ended": false,
+              "complete": false
+            },
+            "changes": {
+              "new": 0,
+              "changed": 0,
+              "disappeared": 0
+            }
+          },
+          "cursor": null,
+          "requests": [],
+          "changes": [],
+          "findings": [
+            {
+              "key": "source:tickets:refused:method_refused",
+              "title": "Source tickets: refused (method refused)",
+              "summary": "a request was refused before it was sent. (https://tickets.example.org/boards/main/items)",
+              "priority": "normal",
+              "facts": {
+                "outcome": "refused",
+                "reason": "method_refused",
+                "status": null
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
