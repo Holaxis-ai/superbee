@@ -36,6 +36,7 @@ import {
   type Version,
 } from "@superbee/core";
 import {
+  ConnectorTargetUnsatisfied,
   RecipeAssetConflict,
   RecipeEditionChanged,
   RecipeEvolutionBlocked,
@@ -106,6 +107,7 @@ const MATRIX: MatrixRow[] = [
   // stable CLI code and exit status.
   { name: "RecipeInputError -> USAGE", make: () => new RecipeInputError("recipe 'r' cannot target unsupported OKF mutation version '9'"), code: "USAGE", exit: 2 },
   { name: "RecipeAssetConflict -> ALREADY_EXISTS", make: () => new RecipeAssetConflict("r", "views/r.html"), code: "ALREADY_EXISTS", exit: 5 },
+  { name: "ConnectorTargetUnsatisfied -> USAGE", make: () => new ConnectorTargetUnsatisfied("r", "connectors/c", "events", "Event", "CONNECTOR_TARGET_KIND_INVALID", [], "Event is not declared in this bundle"), code: "USAGE", exit: 2 },
   { name: "RecipeEditionChanged -> CONFLICT", make: () => new RecipeEditionChanged("0.1", "0.2", "installation"), code: "CONFLICT", exit: 5 },
   { name: "RecipeEditionChanged evolution -> STALE_HEAD", make: () => new RecipeEditionChanged("0.2", "0.1", "evolution"), code: "STALE_HEAD", exit: 5 },
   { name: "RecipeEvolutionPlanChanged -> STALE_HEAD", make: () => new RecipeEvolutionPlanChanged("sha256:aa", "sha256:bb"), code: "STALE_HEAD", exit: 5 },
@@ -141,6 +143,19 @@ test("error matrix: recipe lifecycle errors keep their messages and details verb
       "the existing bundle content was left untouched",
   );
   assert.deepEqual(conflict.details, { recipe: "review-workflow", key: "views/review-workflow/reviews.html" });
+
+  const target = classifyBundleError(new ConnectorTargetUnsatisfied("feeds", "connectors/calendar", "events", "Event", "CONNECTOR_FIELD_UNDECLARED", ["event_url"], "Event does not declare 'event_url'"));
+  assert.equal(
+    target.message,
+    "recipe 'feeds' cannot install Connector 'connectors/calendar': source 'events' maps onto Event, and Event does not declare 'event_url'; nothing was written",
+  );
+  assert.deepEqual(target.details, { recipe: "feeds", connector: "connectors/calendar", source: "events", kind: "Event", code: "CONNECTOR_FIELD_UNDECLARED", fields: ["event_url"] });
+  assert.equal(target.help, "declare event_url on the Event Kind, then add this recipe again");
+  const absentKind = classifyBundleError(new ConnectorTargetUnsatisfied("feeds", "connectors/calendar", "events", "Event", "CONNECTOR_TARGET_KIND_INVALID", [], "Event is not declared in this bundle"));
+  assert.equal(absentKind.details?.fields, undefined);
+  assert.equal(absentKind.help, "declare the Event Kind (install the recipe that declares it), then add this recipe again");
+  const misfit = classifyBundleError(new ConnectorTargetUnsatisfied("feeds", "connectors/calendar", "events", "Event", "CONNECTOR_VALUES_INVALID", ["event_status"], "Event.event_status does not allow 'gone'"));
+  assert.match(misfit.help ?? "", /does not fit the Event Kind \(CONNECTOR_VALUES_INVALID\)/);
 
   const edition = classifyBundleError(new RecipeEditionChanged("0.1", "0.2", "installation"));
   assert.equal(edition.message, "bundle OKF version changed from '0.1' to '0.2' during recipe installation; retry");

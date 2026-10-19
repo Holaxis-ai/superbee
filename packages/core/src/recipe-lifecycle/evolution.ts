@@ -5,7 +5,10 @@
 // exact-token preflight and exact-version CAS apply over each target whose content or recipe stamp
 // needs a write. The stamp travels in the same write as the convention's content. Since the bundle
 // has no cross-document transaction, a postcondition reports concurrent non-target changes honestly.
+// A Connector the recipe carries is a declaration without instances: its content change replaces
+// the whole document, and only one this recipe wrote that nobody changed since.
 import { query, readBlob, readBundleOkfVersion, readDocVersioned } from "../bundle-ops.js";
+import { checkConnectorAgainstKinds, CONNECTOR_TYPE } from "../connectors.js";
 import { resolveContentType } from "../content-type.js";
 import { DocumentNotFoundError, mutateDocument } from "../document-mutation.js";
 import { applyV02MutationMetadata } from "../document-write-policy.js";
@@ -58,10 +61,14 @@ function plainRecord(value: unknown): Record<string, unknown> | undefined {
 
 export interface RecipeEvolutionDefinition {
   id: ConceptId;
+  /**
+   * The Kind a convention governs; `Connector` on a Connector row, a value no recipe convention
+   * may govern.
+   */
   governs: string;
-  /** Content only: whether the convention's declarations change. */
+  /** Content only: whether the definition's declarations change (a Connector's, as a whole). */
   action: "missing" | "unchanged" | "update";
-  /** The installed convention's recipe stamp relative to this recipe. */
+  /** The installed definition's recipe stamp relative to this recipe. */
   stamp: RecipeStampState;
   expected_version: Version | null;
   desired_version: Version;
@@ -123,7 +130,7 @@ interface PreparedRecipeEvolution {
 }
 
 interface EvolutionProof {
-  kind: "definition" | "instance" | "reference" | "view-registry" | "view-entry";
+  kind: "definition" | "connector" | "instance" | "reference" | "view-registry" | "view-entry";
   id: string;
   current_version: Version | null;
   desired_version?: Version;
@@ -273,6 +280,70 @@ function additiveConventionCandidate(
     candidate: { id: desired.id, frontmatter: candidateFrontmatter as OkfDocument["frontmatter"], body },
     addedPaths: [...new Set(addedPaths)].sort(),
   };
+}
+
+/**
+ * The recipe's Connector as the replacement of the installed one: every content key and the body
+ * from the recipe, the root metadata and a bundle-local `order` from the installed document, as a
+ * convention update keeps them.
+ */
+function connectorReplacement(existing: OkfDocument, desired: OkfDocument): OkfDocument {
+  const frontmatter: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(desired.frontmatter)) {
+    if (!PRESERVED_ROOT_METADATA.has(key)) setOwn(frontmatter, key, value);
+  }
+  for (const key of [...PRESERVED_ROOT_METADATA, ...BUNDLE_LOCAL_PLACEMENT]) {
+    if (BUNDLE_LOCAL_PLACEMENT.has(key) && desired.frontmatter[key] !== undefined) continue;
+    if (Object.hasOwn(existing.frontmatter, key)) setOwn(frontmatter, key, existing.frontmatter[key]);
+  }
+  return { id: desired.id, frontmatter: frontmatter as OkfDocument["frontmatter"], body: desired.body };
+}
+
+/**
+ * Why an installed Connector may not be written, or null. A Connector has no additive merge, so
+ * evolution writes one only when this recipe's stamp holds and its definition digest shows nobody
+ * changed it since, or when it is unstamped and already equal to the recipe's. A person's edit, a
+ * hand-written declaration and another recipe's Connector all block, so their content is never
+ * replaced and their stamp never rewritten.
+ */
+function connectorWriteBlocker(
+  existing: OkfDocument,
+  stamp: RecipeStampState,
+  unchanged: boolean,
+): { code: string; message: string } | null {
+  const id = existing.id;
+  if (existing.frontmatter.type !== CONNECTOR_TYPE) {
+    return {
+      code: "RECIPE_EVOLUTION_IDENTITY_CONFLICT",
+      message: `existing '${id}' has type '${String(existing.frontmatter.type)}', not '${CONNECTOR_TYPE}'`,
+    };
+  }
+  if (stamp === "foreign") {
+    return {
+      code: "RECIPE_EVOLUTION_REPLACEMENT_UNSUPPORTED",
+      message: `Connector '${id}' belongs to another recipe (its stamp names '${String(plainRecord(existing.frontmatter[RECIPE_STAMP_KEY])?.id)}'); evolution never replaces or re-stamps another recipe's Connector`,
+    };
+  }
+  if (stamp === "missing") {
+    return unchanged ? null : {
+      code: "RECIPE_EVOLUTION_REPLACEMENT_UNSUPPORTED",
+      message: `Connector '${id}' carries no recipe stamp and differs from this recipe's; evolution does not adopt a hand-written declaration: remove it and run 'recipe add', or keep it and leave this recipe where it is`,
+    };
+  }
+  const definition = conventionStampState(existing);
+  if (definition === "diverged") {
+    return {
+      code: "RECIPE_EVOLUTION_REPLACEMENT_UNSUPPORTED",
+      message: `Connector '${id}' changed since this recipe wrote it; evolution never replaces or re-stamps a Connector a person changed: undo the change, or remove the Connector and run 'recipe add'`,
+    };
+  }
+  if (definition === "unknown") {
+    return {
+      code: "RECIPE_EVOLUTION_REPLACEMENT_UNSUPPORTED",
+      message: `Connector '${id}' carries a stamp whose digest rules this release does not read, so it cannot prove nobody changed it`,
+    };
+  }
+  return null;
 }
 
 async function readRecipeDocIfPresent(
@@ -705,6 +776,78 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
     }
   }
 
+  const connectorIds = new Set<ConceptId>();
+  for (const { doc: authored, connector } of recipe.connectors ?? []) {
+    const target = recipeDocumentForApply(authored, okfVersion, "1970-01-01T00:00:00.000Z");
+    connectorIds.add(target.id);
+    // The target-Kind rules over the registry this plan would leave, so an unsatisfied Kind is a
+    // blocker here and never a failure part way through the apply.
+    for (const error of checkConnectorAgainstKinds(connector, prospectiveRegistry)) {
+      evolutionBlocker(blockers, "RECIPE_EVOLUTION_CONNECTOR_TARGET", target.id, `${error.code}: ${error.message}`, error.path);
+    }
+    const existing = await readRecipeDocIfPresent(bundle, target.id);
+    if (!existing) {
+      const desiredVersion = contentVersion(comparableRecipeDoc(target, okfVersion));
+      definitions.push({
+        id: target.id,
+        governs: CONNECTOR_TYPE,
+        action: "missing",
+        stamp: "missing",
+        expected_version: null,
+        desired_version: desiredVersion,
+        added_paths: [],
+      });
+      proofs.push({ kind: "connector", id: target.id, current_version: null, desired_version: desiredVersion });
+      evolutionBlocker(
+        blockers,
+        "RECIPE_EVOLUTION_ASSET_MISSING",
+        target.id,
+        `recipe Connector '${target.id}' is not installed; install the complete recipe with 'recipe add' first`,
+      );
+      continue;
+    }
+    let candidate = connectorReplacement(existing.doc, target);
+    if (okfVersion === "0.2") {
+      try {
+        const withMetadata = applyV02MutationMetadata({
+          existing: existing.doc,
+          candidate: { frontmatter: candidate.frontmatter, body: candidate.body },
+          meaningfulChangeAt: "1970-01-01T00:00:00.000Z",
+          allowGeneratedProvenanceSeed: false,
+        });
+        candidate = { id: candidate.id, ...withMetadata };
+      } catch (error) {
+        if (!(error instanceof InvalidInputError)) throw error;
+        evolutionBlocker(
+          blockers,
+          "RECIPE_EVOLUTION_WRITE_POLICY_INVALID",
+          target.id,
+          `prospective Connector cannot satisfy the OKF v0.2 write policy: ${error.message}`,
+        );
+      }
+    }
+    const desiredVersion = contentVersion(comparableRecipeDoc(candidate, okfVersion));
+    const unchanged = sameInstalledDoc(existing.doc, candidate, okfVersion);
+    const stamp = recipeStampState(existing.doc, identity);
+    definitions.push({
+      id: target.id,
+      governs: CONNECTOR_TYPE,
+      action: unchanged ? "unchanged" : "update",
+      stamp,
+      expected_version: existing.version,
+      desired_version: desiredVersion,
+      added_paths: [],
+    });
+    proofs.push({ kind: "connector", id: target.id, current_version: existing.version, desired_version: desiredVersion });
+    const blocked = connectorWriteBlocker(existing.doc, stamp, unchanged);
+    if (blocked) {
+      evolutionBlocker(blockers, blocked.code, target.id, blocked.message, "/");
+      continue;
+    }
+    if (!unchanged) writes.set(target.id, withRecipeStamp(candidate, identity));
+    else if (stamp === "stale" || stamp === "missing") writes.set(target.id, withRecipeStamp(existing.doc, identity));
+  }
+
   const assetDocProof = async (
     kind: "reference" | "view-registry",
     authored: OkfDocument,
@@ -757,7 +900,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
   }
 
   const changingKinds = definitions
-    .filter((definition) => definition.action === "update")
+    .filter((definition) => definition.action === "update" && !connectorIds.has(definition.id))
     .map((definition) => desiredKinds.get(definition.governs))
     .filter((kind): kind is KindConvention => kind !== undefined);
   let instancesChecked = 0;
@@ -839,7 +982,8 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
   }
   proofs.push(...instanceProofs.sort((a, b) => a.id.localeCompare(b.id)));
 
-  definitions.sort((a, b) => a.id.localeCompare(b.id));
+  // Connectors after conventions, so an apply writes a Kind before a Connector that maps onto it.
+  definitions.sort((a, b) => Number(connectorIds.has(a.id)) - Number(connectorIds.has(b.id)) || a.id.localeCompare(b.id));
   proofs.sort((a, b) => `${a.kind}:${a.id}`.localeCompare(`${b.kind}:${b.id}`));
   blockers.sort((a, b) => `${a.code}:${a.id}:${a.field ?? ""}`.localeCompare(`${b.code}:${b.id}:${b.field ?? ""}`));
   // Each definition's stamp state and the stamp the apply writes (the recipe's source digest)

@@ -30,7 +30,7 @@ auth:
   kind: none
 domains:
   - ${HOST}
-sources:
+record_sources:
   - name: tickets
     profile: json-pages
     target_kind: Ticket

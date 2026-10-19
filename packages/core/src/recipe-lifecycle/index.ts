@@ -1,25 +1,28 @@
 /**
  * `@superbee/core/recipe-lifecycle`: install and evolve a parsed recipe on any bundle.
  *
- * `installRecipe` creates a recipe's conventions, View pairs and References create-only, never
- * overwriting what a bundle already holds. `planRecipeEvolution` is a read-only, state-bound
- * preflight of an additive upgrade to installed conventions, and `applyRecipeEvolution` applies
- * exactly the plan whose token the caller observed, one exact-version CAS write per changed
- * convention. The caller acquires the recipe (`@superbee/core/recipes` parses files into a
+ * `installRecipe` creates a recipe's conventions, Connectors, View pairs and References
+ * create-only, never overwriting what a bundle already holds, after checking every Connector
+ * against the Kinds the bundle will hold. `planRecipeEvolution` is a read-only, state-bound
+ * preflight of an additive upgrade to installed conventions and of the replacement of Connectors
+ * this recipe wrote and nobody changed since, and `applyRecipeEvolution` applies exactly the plan
+ * whose token the caller observed, one exact-version CAS write per changed definition. The caller acquires the recipe (`@superbee/core/recipes` parses files into a
  * `LoadedRecipe`) and presents results and typed errors. Storage-neutral: it runs in Node,
  * Workers and browsers over any `StorageBackend`.
  *
- * Every convention either path writes carries an `x_recipe` stamp in the same write;
+ * Every convention and Connector either path writes carries an `x_recipe` stamp in the same write;
  * `installedRecipes` derives each recipe's install state from those stamps alone.
  */
 export {
   installRecipe,
+  installedConnectorDocs,
   installedConventionDocs,
   isRecipeApplied,
   materializeRecipeForEdition,
   recipeDrifts,
 } from "./install.js";
 export type {
+  RecipeConnectorResult,
   RecipeDocResult,
   RecipeInstallCounts,
   RecipeInstallResult,
@@ -34,6 +37,7 @@ export type {
   RecipeEvolutionPlan,
 } from "./evolution.js";
 export {
+  ConnectorTargetUnsatisfied,
   RecipeAssetConflict,
   RecipeEditionChanged,
   RecipeEvolutionBlocked,

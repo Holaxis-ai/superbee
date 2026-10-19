@@ -14,8 +14,8 @@ needs judgment. `@superbee/core/record-overlay` reads a Source Feed as its polic
 Signals of this shape.
 
 A keyless feed (an iCalendar URL, an RSS feed) sets `feed_kind` and `url`. A feed backed by a
-declared Connector sets `feed_kind: connector`, `connector: connectors/<slug>`, `source: <name>` and
-a `url` the source's identity template admits; `bindSourceFeed` in `@superbee/core/connectors`
+declared Connector sets `feed_kind: connector`, `connector: connectors/<slug>`, `source: <name>` (an
+entry of the Connector's `record_sources`) and a `url` the source's identity template admits; `bindSourceFeed` in `@superbee/core/connectors`
 enforces the rest, and the source's `completeness` and `profile` win over the feed's.
 
 This is an example recipe, installed by path (`superbee recipe add examples/recipes/source-feeds`).

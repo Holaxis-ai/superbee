@@ -149,26 +149,36 @@ if (plan.ready && plan.writes > 0) {
 }
 ```
 
-`installRecipe` is create-only: each convention, View pair and Reference is written with an
-expect-absent compare-and-swap, an existing convention is left untouched (its row reports
-`source_differs` when it differs from the recipe), and a differing View or Reference target is
-refused before anything is written. `planRecipeEvolution` is read-only: it merges each recipe
+`installRecipe` is create-only: each convention, Connector, View pair and Reference is written with
+an expect-absent compare-and-swap, an existing convention or Connector is left untouched (its row
+reports `source_differs` when it differs from the recipe), and a differing View or Reference target
+is refused before anything is written. Before any write it checks each Connector against the
+authoring rules of the bundle's edition (`RecipeInputError` when OKF v0.2 would refuse it) and its
+sources against the Kinds the bundle will hold (its conventions plus the recipe's own), throwing
+`ConnectorTargetUnsatisfied` when one does not fit. `planRecipeEvolution` is read-only: it merges each recipe
 convention into the installed one additively, rechecks existing instances, and returns blockers
 and a `plan_token` bound to everything it read. `applyRecipeEvolution` recomputes the plan,
 refuses a different token, and writes each changed convention at exactly the version the plan
 saw. The bundle has no cross-document transaction, so a failure part way reports the definitions
-written and those still pending.
+written and those still pending. A Connector has no additive merge: the plan replaces it whole,
+after the conventions, and only when this recipe's stamp holds and its definition digest shows
+nobody changed it; an edited, unstamped-and-different or foreign Connector is a blocker and is
+never written, stamp included.
 
-Every convention either path writes carries an `x_recipe` stamp in the same write: the recipe's
-id, version, declared convention count (`of`), `recipeSourceDigest` of the recipe, the
-`definitionDigest` of the convention as written, and the `digest_rules` version. A plan's
-`changed` is about content only; its `writes` also counts conventions whose stamp is stale or
-missing, so a ready plan with `writes > 0` has work to apply. `installedRecipes(conventions,
-known?)` reads each recipe's state (`installed`, `partial`, `diverged`, `unknown`) from the stamps
-alone, without the recipe source.
+Every convention and Connector either path writes carries an `x_recipe` stamp in the same write:
+the recipe's id, version, declared convention count (`of`), `recipeSourceDigest` of the recipe,
+the `definitionDigest` of the document as written, and the `digest_rules` version. A recipe that
+carries connectors adds `connectors`, its declared Connector count, which readers that predate it
+ignore; a recipe without connectors writes and digests exactly as before. A plan's `changed` is
+about content only; its `writes` also counts definitions whose stamp is stale or missing, so a
+ready plan with `writes > 0` has work to apply. `installedRecipes(docs, known?)` reads each
+recipe's state (`installed`, `partial`, `diverged`, `unknown`) from the stamps alone, without the
+recipe source; give it the conventions and the Connectors (`installedConventionDocs` and
+`installedConnectorDocs`).
 
 Failures are typed subclasses of `RecipeLifecycleError`: `RecipeInputError` (the recipe cannot
-target this bundle's edition), `RecipeAssetConflict` (`recipe`, `key`), `RecipeEditionChanged`,
+target this bundle's edition), `ConnectorTargetUnsatisfied` (`recipe`, `connector`, `source`,
+`kind`, `code`, `fields`), `RecipeAssetConflict` (`recipe`, `key`), `RecipeEditionChanged`,
 `RecipeEvolutionPlanChanged` (`expected`, `current`), `RecipeEvolutionBlocked` (`blockers`),
 `RecipeEvolutionInterrupted` (`reason`, `completed`, `pending`, `cause`) and
 `RecipeEvolutionPostcondition` (`reason`, `completed`).
@@ -253,9 +263,12 @@ const findings = findingsFor(mapped.diagnostics, { source: bound.source.name });
 `auth.kind` is `none`, `token`, `github-app`, `oauth2` or `signed-webhook`. A credential's hosts
 come only from core: `token` and `oauth2` name a row of `AUTH_PROVIDERS`, `github-app` is fixed,
 and `credentialHosts` is the one reader. `domains` lists hosts for keyless fetches and may not
-repeat a credential host. Each source names a catalog `profile`, a `target_kind`, mode `overlay`,
-an identity template (`identity.resource`, an https URL whose placeholders are feed parameters, and
-`identity.id` over record paths), `completeness`, and `fields`: target field to a dotted record
+repeat a credential host. The sources live under `record_sources` (OKF v0.2 reserves `sources` for
+provenance, and `CONNECTOR_DOCUMENT_KEYS` lists every top-level key a Connector adds, none of them
+an OKF field); the parsed `Connector.sources` holds them. Each source names a catalog `profile`, a
+`target_kind`, mode `overlay`, an identity template (`identity.resource`, an https URL whose
+placeholders are feed parameters, and `identity.id` over record paths), `completeness`, and
+`fields`: target field to a dotted record
 path, or to `{ from, values, unmapped }`. Mapping keys are the most a Source Feed may own; never-owned
 fields, managed metadata, work state, the body and list-typed fields are refused. Actions and events
 are declared shapes only. Every nested block is closed by `CONNECTOR_KEYS`; `parseConnectorDoc`
@@ -285,6 +298,11 @@ characters is refused as `IDENTITY_MISSING` or `IDENTITY_INVALID`, so two record
 unobserved fields and leaves them out of `changed_fields`. `findingsFor` groups diagnostics per
 source, field, code and value (a list, mapping or empty value by its shape) for `planFindings`, so
 one problem across many records raises one Signal.
+
+A recipe carries Connectors through its manifest's `connectors:` list (`parseRecipeFiles` reads
+each with `parseConnectorDoc`, checking the sources that target the recipe's own Kinds, and refuses
+a malformed one as `RECIPE_CONNECTOR_INVALID`); `@superbee/core/recipe-lifecycle` installs, stamps
+and evolves them as definitions.
 
 `examples/recipes/source-feeds` is an example recipe with the `Source Feed` and `Signal` Kinds a
 connector-backed feed uses.

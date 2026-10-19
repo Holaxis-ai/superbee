@@ -1,8 +1,8 @@
 /**
  * The generic example connector: a keyless iCalendar source over a small `Event` Kind. The recipe
- * files carry the Kind only (connector carriage through recipes arrives later), so the connector
- * document is parsed with `parseConnectorDoc` on its own. `toNormalized` stands in for the `ics`
- * profile and is the only test-only mapping code.
+ * files carry the Kind and, through the manifest's `connectors:` list, the connector document, so
+ * installing the recipe installs both. `toNormalized` stands in for the `ics` profile and is the
+ * only test-only mapping code.
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -37,15 +37,6 @@ fields:
 A dated happening. The test Kind of the example connector.
 `;
 
-/** The example recipe: the Event Kind only. */
-export const RECIPE_FILES: RecipeFile[] = [
-  {
-    path: "recipe.md",
-    bytes: `---\ntype: Recipe\nid: example-calendar\ntitle: Example calendar\nversion: "1"\nsummary: The Event Kind of the example connector.\ncontent_policy: definitions-only\n---\n# Example calendar\n`,
-  },
-  { path: "conventions/event.md", bytes: EVENT_CONVENTION_MD },
-];
-
 export const CONNECTOR_MD = `---
 type: Connector
 title: Example calendar (synthetic)
@@ -55,7 +46,7 @@ auth:
   kind: none
 domains:
   - calendar.example.org
-sources:
+record_sources:
   - name: events
     profile: ics
     target_kind: Event
@@ -84,6 +75,17 @@ events:
 A synthetic calendar feed over the test \`Event\` Kind. It exists to exercise the parser, the pin
 digest and the record-overlay fixture; no real provider publishes it.
 `;
+
+/** The example recipe's manifest at `version`, carrying its connector. */
+export const recipeManifest = (version = "1"): string =>
+  `---\ntype: Recipe\nid: example-calendar\ntitle: Example calendar\nversion: "${version}"\nsummary: The Event Kind and the example connector that maps onto it.\ncontent_policy: definitions-only\nconnectors:\n  - connectors/example-calendar.md\n---\n# Example calendar\n`;
+
+/** The example recipe: the Event Kind and the connector, through the manifest. */
+export const RECIPE_FILES: RecipeFile[] = [
+  { path: "recipe.md", bytes: recipeManifest() },
+  { path: "conventions/event.md", bytes: EVENT_CONVENTION_MD },
+  { path: "connectors/example-calendar.md", bytes: CONNECTOR_MD },
+];
 
 /** The same declaration whose status table refuses an unknown native. */
 export const STRICT_CONNECTOR_MD = CONNECTOR_MD.replace("unmapped: keep", "unmapped: refuse");

@@ -10,6 +10,7 @@ import {
   AUTH_PROVIDERS,
   changeBetween,
   checkConnectorAgainstKinds,
+  CONNECTOR_DOCUMENT_KEYS,
   CONNECTOR_ERROR_CODES,
   CONNECTOR_KEYS,
   connectorPinDigest,
@@ -23,8 +24,14 @@ import {
   type ConnectorParseResult,
   type MappingDiagnostic,
 } from "../src/connectors.js";
+import { isStandardDocumentSetField } from "../src/document-field-actions.js";
+import { mutateDocument } from "../src/document-mutation.js";
 import { parseMarkdown } from "../src/frontmatter.js";
 import { buildKindRegistry, type KindRegistry } from "../src/kinds.js";
+import { isManagedDocumentMetadataField } from "../src/managed-document-metadata.js";
+import { MemoryBackend } from "../src/memory-backend.js";
+import { assertAuthoredOkfStandardFields } from "../src/okf-standard-fields.js";
+import { NEVER_OWNED } from "../src/record-overlay/policy.js";
 import type { OkfDocument } from "../src/types.js";
 import { CONNECTOR_ID, CONNECTOR_MD, EVENT_CONVENTION_MD, parseExampleConnector } from "./fixtures/connectors/example-calendar.js";
 
@@ -48,7 +55,7 @@ function refuses(edit: (fm: Record<string, any>) => void, code: ConnectorErrorCo
   if (path !== undefined) assert.ok(hit.some((e) => e.path === path), `${code} at ${path}; got ${JSON.stringify(hit)}`);
 }
 
-const source = (fm: Record<string, any>) => fm.sources[0];
+const source = (fm: Record<string, any>) => fm.record_sources[0];
 const eventKinds = (): KindRegistry => {
   const { frontmatter, body } = parseMarkdown(EVENT_CONVENTION_MD);
   return buildKindRegistry([{ id: "conventions/event", frontmatter, body }]);
@@ -74,7 +81,7 @@ test("a registry that lacks the target Kind defers its rules with a warning; che
   const result = parse(base().frontmatter, { kinds: empty });
   assert.ok(result.ok);
   assert.deepEqual(result.warnings.map((w) => w.code), ["CONNECTOR_TARGET_KIND_DEFERRED"]);
-  assert.deepEqual(checkConnectorAgainstKinds(result.connector, empty).map((e) => [e.code, e.path]), [["CONNECTOR_TARGET_KIND_INVALID", "/sources/0/target_kind"]]);
+  assert.deepEqual(checkConnectorAgainstKinds(result.connector, empty).map((e) => [e.code, e.path]), [["CONNECTOR_TARGET_KIND_INVALID", "/record_sources/0/target_kind"]]);
   assert.deepEqual(checkConnectorAgainstKinds(result.connector, eventKinds()), []);
 });
 
@@ -88,8 +95,8 @@ test("every refusal is returned in one pass, each with a JSON pointer", () => {
   assert.deepEqual(errorsOf(result).map((e) => [e.code, e.path]), [
     ["CONNECTOR_MALFORMED", "/title"],
     ["CONNECTOR_DOMAIN_INVALID", "/domains/0"],
-    ["CONNECTOR_PROFILE_INVALID", "/sources/0/profile"],
-    ["CONNECTOR_MODE_UNSUPPORTED", "/sources/0/mode"],
+    ["CONNECTOR_PROFILE_INVALID", "/record_sources/0/profile"],
+    ["CONNECTOR_MODE_UNSUPPORTED", "/record_sources/0/mode"],
   ]);
 });
 
@@ -98,12 +105,12 @@ test("CONNECTOR_MALFORMED: type, title, auth, block shapes, empty declarations a
   refuses((fm) => { delete fm.title; }, "CONNECTOR_MALFORMED", "/title");
   refuses((fm) => { delete fm.auth; }, "CONNECTOR_MALFORMED", "/auth");
   refuses((fm) => { fm.auth = "none"; }, "CONNECTOR_MALFORMED", "/auth");
-  refuses((fm) => { fm.sources = { events: {} }; }, "CONNECTOR_MALFORMED", "/sources");
-  refuses((fm) => { fm.sources = []; fm.events = []; }, "CONNECTOR_MALFORMED", "");
-  refuses((fm) => { source(fm).completeness = "full"; }, "CONNECTOR_MALFORMED", "/sources/0/completeness");
-  refuses((fm) => { delete source(fm).completeness; }, "CONNECTOR_MALFORMED", "/sources/0/completeness");
-  refuses((fm) => { source(fm).mode = 1; }, "CONNECTOR_MALFORMED", "/sources/0/mode");
-  refuses((fm) => { source(fm).fields = {}; }, "CONNECTOR_MALFORMED", "/sources/0/fields");
+  refuses((fm) => { fm.record_sources = { events: {} }; }, "CONNECTOR_MALFORMED", "/record_sources");
+  refuses((fm) => { fm.record_sources = []; fm.events = []; }, "CONNECTOR_MALFORMED", "");
+  refuses((fm) => { source(fm).completeness = "full"; }, "CONNECTOR_MALFORMED", "/record_sources/0/completeness");
+  refuses((fm) => { delete source(fm).completeness; }, "CONNECTOR_MALFORMED", "/record_sources/0/completeness");
+  refuses((fm) => { source(fm).mode = 1; }, "CONNECTOR_MALFORMED", "/record_sources/0/mode");
+  refuses((fm) => { source(fm).fields = {}; }, "CONNECTOR_MALFORMED", "/record_sources/0/fields");
   refuses((fm) => { fm.actions = [{ name: "a", method: "FETCH", host: "calendar.example.org" }]; }, "CONNECTOR_MALFORMED", "/actions/0/method");
   refuses((fm) => { fm.actions = [{ name: "a", method: "GET", host: "calendar.example.org", confirm: "sometimes" }]; }, "CONNECTOR_MALFORMED", "/actions/0/confirm");
   refuses((fm) => { fm.actions = [{ name: "a", method: "GET", host: "calendar.example.org", input: { n: { type: "float" } } }]; }, "CONNECTOR_MALFORMED", "/actions/0/input/n/type");
@@ -112,9 +119,9 @@ test("CONNECTOR_MALFORMED: type, title, auth, block shapes, empty declarations a
 
 test("CONNECTOR_UNKNOWN_KEY inside every closed block, identity and signature included", () => {
   refuses((fm) => { fm.auth.hosts = ["collector.example"]; }, "CONNECTOR_UNKNOWN_KEY", "/auth/hosts");
-  refuses((fm) => { source(fm).cursor = "token"; }, "CONNECTOR_UNKNOWN_KEY", "/sources/0/cursor");
-  refuses((fm) => { source(fm).identity.fetch = "https://elsewhere.example.org/"; }, "CONNECTOR_UNKNOWN_KEY", "/sources/0/identity/fetch");
-  refuses((fm) => { source(fm).fields.event_status.default = "scheduled"; }, "CONNECTOR_UNKNOWN_KEY", "/sources/0/fields/event_status/default");
+  refuses((fm) => { source(fm).cursor = "token"; }, "CONNECTOR_UNKNOWN_KEY", "/record_sources/0/cursor");
+  refuses((fm) => { source(fm).identity.fetch = "https://elsewhere.example.org/"; }, "CONNECTOR_UNKNOWN_KEY", "/record_sources/0/identity/fetch");
+  refuses((fm) => { source(fm).fields.event_status.default = "scheduled"; }, "CONNECTOR_UNKNOWN_KEY", "/record_sources/0/fields/event_status/default");
   refuses((fm) => { fm.actions = [{ name: "a", method: "GET", host: "calendar.example.org", path: "/x" }]; }, "CONNECTOR_UNKNOWN_KEY", "/actions/0/path");
   refuses((fm) => { fm.actions = [{ name: "a", method: "GET", host: "calendar.example.org", input: { n: { type: "string", pattern: ".*" } } }]; }, "CONNECTOR_UNKNOWN_KEY", "/actions/0/input/n/pattern");
   refuses((fm) => { fm.events[0].url = "https://hooks.example.org/"; }, "CONNECTOR_UNKNOWN_KEY", "/events/0/url");
@@ -166,22 +173,22 @@ test("CONNECTOR_DOMAIN_INVALID: grammar, address literals, duplicates", () => {
 });
 
 test("CONNECTOR_DUPLICATE: sources, actions, events and references", () => {
-  refuses((fm) => { fm.sources.push(structuredClone(source(fm))); }, "CONNECTOR_DUPLICATE", "/sources/1/name");
+  refuses((fm) => { fm.record_sources.push(structuredClone(source(fm))); }, "CONNECTOR_DUPLICATE", "/record_sources/1/name");
   refuses((fm) => { fm.actions = [{ name: "a", method: "GET", host: "calendar.example.org" }, { name: "a", method: "GET", host: "calendar.example.org" }]; }, "CONNECTOR_DUPLICATE", "/actions/1/name");
   refuses((fm) => { fm.events.push(structuredClone(fm.events[0])); }, "CONNECTOR_DUPLICATE", "/events/1/name");
   refuses((fm) => { fm.events[0].references = ["events", "events"]; }, "CONNECTOR_DUPLICATE", "/events/0/references/1");
 });
 
 test("CONNECTOR_PROFILE_INVALID, CONNECTOR_TARGET_KIND_INVALID and CONNECTOR_MODE_UNSUPPORTED", () => {
-  for (const profile of ["ICS", "", "ics profile", 3]) refuses((fm) => { source(fm).profile = profile; }, "CONNECTOR_PROFILE_INVALID", "/sources/0/profile");
+  for (const profile of ["ICS", "", "ics profile", 3]) refuses((fm) => { source(fm).profile = profile; }, "CONNECTOR_PROFILE_INVALID", "/record_sources/0/profile");
   for (const kind of ["", "  ", "Convention", "View", "Connector", "Reference", "Source Feed", "Signal"]) {
-    refuses((fm) => { source(fm).target_kind = kind; }, "CONNECTOR_TARGET_KIND_INVALID", "/sources/0/target_kind");
+    refuses((fm) => { source(fm).target_kind = kind; }, "CONNECTOR_TARGET_KIND_INVALID", "/record_sources/0/target_kind");
   }
-  refuses((fm) => { source(fm).mode = "mirror"; }, "CONNECTOR_MODE_UNSUPPORTED", "/sources/0/mode");
+  refuses((fm) => { source(fm).mode = "mirror"; }, "CONNECTOR_MODE_UNSUPPORTED", "/record_sources/0/mode");
   const { frontmatter } = base();
   source(frontmatter).mode = "mirror";
   assert.match(errorsOf(parse(frontmatter))[0]!.message, /I4/);
-  refuses((fm) => { source(fm).mode = "sync"; }, "CONNECTOR_MODE_UNSUPPORTED", "/sources/0/mode");
+  refuses((fm) => { source(fm).mode = "sync"; }, "CONNECTOR_MODE_UNSUPPORTED", "/record_sources/0/mode");
 });
 
 test("CONNECTOR_IDENTITY_UNSTABLE: resource template rules and id templates", () => {
@@ -202,14 +209,14 @@ test("CONNECTOR_IDENTITY_UNSTABLE: resource template rules and id templates", ()
     "calendar.example.org/{feed}.ics",
     "",
     7,
-  ]) refuses(resource(bad), "CONNECTOR_IDENTITY_UNSTABLE", "/sources/0/identity/resource");
+  ]) refuses(resource(bad), "CONNECTOR_IDENTITY_UNSTABLE", "/record_sources/0/identity/resource");
   for (const good of ["https://calendar.example.org/feed.ics", "https://calendar.example.org/c/{feed}/events?page={page}&format=ics"]) {
     const { frontmatter } = base();
     resource(good)(frontmatter);
     assert.equal(parse(frontmatter).ok, true, good);
   }
   const id = (value: unknown) => (fm: Record<string, any>) => { source(fm).identity.id = value; };
-  for (const bad of ["uid", "", "{}", "{a..b}", "{__proto__}", "{uid", "{summary}", "{calendar.id}{uid}", "x-{a}{b}-y"]) refuses(id(bad), "CONNECTOR_IDENTITY_UNSTABLE", "/sources/0/identity/id");
+  for (const bad of ["uid", "", "{}", "{a..b}", "{__proto__}", "{uid", "{summary}", "{calendar.id}{uid}", "x-{a}{b}-y"]) refuses(id(bad), "CONNECTOR_IDENTITY_UNSTABLE", "/record_sources/0/identity/id");
   const { frontmatter } = base();
   id("{calendar.id}#{uid}")(frontmatter);
   assert.equal(parse(frontmatter).ok, true);
@@ -226,7 +233,7 @@ test("encoded dot segments, separators and malformed escapes in template literal
     "https://calendar.example.org/%2F{feed}.ics",
     "https://calendar.example.org/{feed}%2f.ics",
     "https://calendar.example.org/%zz/{feed}.ics",
-  ]) refuses((fm) => { source(fm).identity.resource = bad; }, "CONNECTOR_IDENTITY_UNSTABLE", "/sources/0/identity/resource");
+  ]) refuses((fm) => { source(fm).identity.resource = bad; }, "CONNECTOR_IDENTITY_UNSTABLE", "/record_sources/0/identity/resource");
   const { frontmatter } = base();
   source(frontmatter).identity.resource = "https://calendar.example.org/My%20Calendar/{feed}.ics";
   assert.equal(parse(frontmatter).ok, true, "other escapes stay literal");
@@ -246,7 +253,7 @@ test("Kind fields named after Object.prototype members are read as own declarati
   };
   let result: ConnectorParseResult | undefined;
   assert.doesNotThrow(() => { result = parse(frontmatter, { kinds }); });
-  assert.deepEqual(errorsOf(result!).map((e) => [e.code, e.path]), [["CONNECTOR_VALUES_INVALID", "/sources/0/fields/toString/values/Z"]], "only the declared enum is enforced");
+  assert.deepEqual(errorsOf(result!).map((e) => [e.code, e.path]), [["CONNECTOR_VALUES_INVALID", "/record_sources/0/fields/toString/values/Z"]], "only the declared enum is enforced");
   const { frontmatter: ok } = base();
   source(ok).target_kind = "Odd";
   source(ok).fields = { valueOf: { from: "v", values: { A: "a" } }, hasOwnProperty: "h" };
@@ -256,13 +263,13 @@ test("Kind fields named after Object.prototype members are read as own declarati
 });
 
 test("CONNECTOR_FIELD_INVALID and CONNECTOR_FIELD_NEVER_OWNED: key grammar, path grammar and fields no source may own", () => {
-  for (const key of ["1st", "event-status", "constructor"]) refuses((fm) => { source(fm).fields[key] = "x"; }, "CONNECTOR_FIELD_INVALID", `/sources/0/fields/${key}`);
+  for (const key of ["1st", "event-status", "constructor"]) refuses((fm) => { source(fm).fields[key] = "x"; }, "CONNECTOR_FIELD_INVALID", `/record_sources/0/fields/${key}`);
   for (const from of ["a..b", "a b", "__proto__", "a.prototype", ""]) {
-    refuses((fm) => { source(fm).fields.note = { from }; }, "CONNECTOR_FIELD_INVALID", "/sources/0/fields/note/from");
+    refuses((fm) => { source(fm).fields.note = { from }; }, "CONNECTOR_FIELD_INVALID", "/record_sources/0/fields/note/from");
   }
-  refuses((fm) => { source(fm).fields.note = "a.constructor"; }, "CONNECTOR_FIELD_INVALID", "/sources/0/fields/note");
+  refuses((fm) => { source(fm).fields.note = "a.constructor"; }, "CONNECTOR_FIELD_INVALID", "/record_sources/0/fields/note");
   for (const key of ["type", "sources", "status", "tags", "verified", "generated", "stale_after", "superbee_updated_by", "actor", "timestamp", "progress_status", "superbee_progress_status", "body"]) {
-    refuses((fm) => { source(fm).fields[key] = "x"; }, "CONNECTOR_FIELD_NEVER_OWNED", `/sources/0/fields/${key}`);
+    refuses((fm) => { source(fm).fields[key] = "x"; }, "CONNECTOR_FIELD_NEVER_OWNED", `/record_sources/0/fields/${key}`);
   }
 });
 
@@ -278,23 +285,23 @@ test("with a Kind: undeclared keys, claim fields, enum tables and list types", (
     },
   }]);
   const withItem = (fields: Record<string, unknown>) => (fm: Record<string, any>) => { source(fm).target_kind = "Item"; source(fm).fields = fields; };
-  refuses(withItem({ venue: "venue" }), "CONNECTOR_FIELD_UNDECLARED", "/sources/0/fields/venue", { kinds });
-  refuses(withItem({ assignee: "owner" }), "CONNECTOR_FIELD_NEVER_OWNED", "/sources/0/fields/assignee", { kinds });
-  refuses(withItem({ labels: { from: "labels", values: { BUG: "bug" } } }), "CONNECTOR_LIST_FIELD_UNSUPPORTED", "/sources/0/fields/labels", { kinds });
-  refuses(withItem({ links: { from: "links", values: { A: "https://a.example" } } }), "CONNECTOR_LIST_FIELD_UNSUPPORTED", "/sources/0/fields/links", { kinds });
-  refuses(withItem({ state: "state" }), "CONNECTOR_VALUES_INVALID", "/sources/0/fields/state", { kinds });
-  refuses(withItem({ state: { from: "state", values: { OPEN: "open", GONE: "deleted" } } }), "CONNECTOR_VALUES_INVALID", "/sources/0/fields/state/values/GONE", { kinds });
+  refuses(withItem({ venue: "venue" }), "CONNECTOR_FIELD_UNDECLARED", "/record_sources/0/fields/venue", { kinds });
+  refuses(withItem({ assignee: "owner" }), "CONNECTOR_FIELD_NEVER_OWNED", "/record_sources/0/fields/assignee", { kinds });
+  refuses(withItem({ labels: { from: "labels", values: { BUG: "bug" } } }), "CONNECTOR_LIST_FIELD_UNSUPPORTED", "/record_sources/0/fields/labels", { kinds });
+  refuses(withItem({ links: { from: "links", values: { A: "https://a.example" } } }), "CONNECTOR_LIST_FIELD_UNSUPPORTED", "/record_sources/0/fields/links", { kinds });
+  refuses(withItem({ state: "state" }), "CONNECTOR_VALUES_INVALID", "/record_sources/0/fields/state", { kinds });
+  refuses(withItem({ state: { from: "state", values: { OPEN: "open", GONE: "deleted" } } }), "CONNECTOR_VALUES_INVALID", "/record_sources/0/fields/state/values/GONE", { kinds });
   const { frontmatter } = base();
   withItem({ title: "name", state: { from: "state", values: { OPEN: "open", CLOSED: "closed" } } })(frontmatter);
   assert.equal(parse(frontmatter, { kinds }).ok, true, "title counts as declared by every Kind");
 });
 
 test("CONNECTOR_VALUES_INVALID without a Kind: unmapped needs a table, two policies, string rows", () => {
-  refuses((fm) => { source(fm).fields.title = { from: "summary", unmapped: "keep" }; }, "CONNECTOR_VALUES_INVALID", "/sources/0/fields/title/unmapped");
-  refuses((fm) => { source(fm).fields.event_status.unmapped = "skip"; }, "CONNECTOR_VALUES_INVALID", "/sources/0/fields/event_status/unmapped");
-  refuses((fm) => { source(fm).fields.event_status.values = { CONFIRMED: 1 }; }, "CONNECTOR_VALUES_INVALID", "/sources/0/fields/event_status/values/CONFIRMED");
-  refuses((fm) => { source(fm).fields.event_status.values = {}; }, "CONNECTOR_VALUES_INVALID", "/sources/0/fields/event_status/values");
-  refuses((fm) => { source(fm).fields.event_status.values = ["scheduled"]; }, "CONNECTOR_VALUES_INVALID", "/sources/0/fields/event_status/values");
+  refuses((fm) => { source(fm).fields.title = { from: "summary", unmapped: "keep" }; }, "CONNECTOR_VALUES_INVALID", "/record_sources/0/fields/title/unmapped");
+  refuses((fm) => { source(fm).fields.event_status.unmapped = "skip"; }, "CONNECTOR_VALUES_INVALID", "/record_sources/0/fields/event_status/unmapped");
+  refuses((fm) => { source(fm).fields.event_status.values = { CONFIRMED: 1 }; }, "CONNECTOR_VALUES_INVALID", "/record_sources/0/fields/event_status/values/CONFIRMED");
+  refuses((fm) => { source(fm).fields.event_status.values = {}; }, "CONNECTOR_VALUES_INVALID", "/record_sources/0/fields/event_status/values");
+  refuses((fm) => { source(fm).fields.event_status.values = ["scheduled"]; }, "CONNECTOR_VALUES_INVALID", "/record_sources/0/fields/event_status/values");
 });
 
 test("CONNECTOR_ACTION_INVALID and CONNECTOR_EVENT_INVALID", () => {
@@ -349,7 +356,7 @@ test("a YAML alias is a typed refusal, and neither a circular alias nor an alias
   assert.ok(errorsOf(bomb.value).length <= 81, "one refusal per alias written, never per expanded leaf");
   assert.ok(bomb.ms < 1000, `${bomb.ms}ms`);
   const shared = parseYaml(withYaml("x_shared: &shared { from: summary }").replace("      title: summary", "      title: *shared"));
-  assert.deepEqual(errorsOf(shared).map((e) => [e.code, e.path]), [["CONNECTOR_MALFORMED", "/sources/0/fields/title"]], "inside a closed block too");
+  assert.deepEqual(errorsOf(shared).map((e) => [e.code, e.path]), [["CONNECTOR_MALFORMED", "/record_sources/0/fields/title"]], "inside a closed block too");
   const scalar = parseYaml(withYaml("x_kind: &k Event").replace("    target_kind: Event", "    target_kind: *k"));
   assert.equal(scalar.ok, true, "an alias to a scalar shares nothing");
 });
@@ -366,8 +373,8 @@ test("CONNECTOR_SECRET_PRESENT names a path and never the value; a secret-lookin
     [(fm) => { fm.x_note = `Bearer ${SECRET}`; }, "/x_note"],
     [(fm) => { fm.x_note = "xoxb-123456-abcdef"; }, "/x_note"],
     [(fm) => { fm.x_key = "-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----"; }, "/x_key"],
-    [(fm) => { source(fm).identity.resource = "https://user:pass@calendar.example.org/{feed}.ics"; }, "/sources/0/identity/resource"],
-    [(fm) => { source(fm).fields.event_status.values[SECRET] = "scheduled"; }, "/sources/0/fields/event_status/values"],
+    [(fm) => { source(fm).identity.resource = "https://user:pass@calendar.example.org/{feed}.ics"; }, "/record_sources/0/identity/resource"],
+    [(fm) => { source(fm).fields.event_status.values[SECRET] = "scheduled"; }, "/record_sources/0/fields/event_status/values"],
     [(fm) => { fm.events[0].signature.cookie = "x"; }, "/events/0/signature"],
   ];
   for (const [edit, path] of cases) {
@@ -389,8 +396,8 @@ test("a token anywhere in a frontmatter string or key is refused, as in the body
     [(fm) => { fm.version = `1 built with ${SECRET}`; }, "/version"],
     [(fm) => { fm.x_note = `header Authorization: ${bearer}`; }, "/x_note"],
     [(fm) => { fm.x_notes = ["fine", `call it with ${bearer} please`]; }, "/x_notes/1"],
-    [(fm) => { source(fm).fields.event_status.values.CONFIRMED = `scheduled ${SECRET}`; }, "/sources/0/fields/event_status/values/CONFIRMED"],
-    [(fm) => { source(fm).fields.event_status.values[`a ${SECRET}`] = "scheduled"; }, "/sources/0/fields/event_status/values"],
+    [(fm) => { source(fm).fields.event_status.values.CONFIRMED = `scheduled ${SECRET}`; }, "/record_sources/0/fields/event_status/values/CONFIRMED"],
+    [(fm) => { source(fm).fields.event_status.values[`a ${SECRET}`] = "scheduled"; }, "/record_sources/0/fields/event_status/values"],
     [(fm) => { fm.x_slack = "ping xoxb-12345678-abcdef here"; }, "/x_slack"],
   ];
   for (const [edit, path] of cases) {
@@ -410,10 +417,10 @@ test("userinfo anywhere, lowercase bearer and tokens glued into keys are refused
   const cases: Array<[(fm: Record<string, any>) => void, string]> = [
     [(fm) => { fm.description = "Fetch https://reader:hunter2@calendar.example.org/feed.ics daily."; }, "/description"],
     [(fm) => { fm.x_note = "mirror at ftp://reader@files.example.org/x"; }, "/x_note"],
-    [(fm) => { source(fm).identity.resource = "https://calendar.example.org/{feed}.ics?src=https://reader:hunter2@x.example.org/"; }, "/sources/0/identity/resource"],
+    [(fm) => { source(fm).identity.resource = "https://calendar.example.org/{feed}.ics?src=https://reader:hunter2@x.example.org/"; }, "/record_sources/0/identity/resource"],
     [(fm) => { fm.x_note = "bearer abcdef0123456789abcdef01"; }, "/x_note"],
     [(fm) => { fm.auth[`x${SECRET}`] = true; }, "/auth"],
-    [(fm) => { source(fm).fields[`f${SECRET.replace("ghp_", "ghp_")}`] = "a"; }, "/sources/0/fields"],
+    [(fm) => { source(fm).fields[`f${SECRET.replace("ghp_", "ghp_")}`] = "a"; }, "/record_sources/0/fields"],
   ];
   for (const [edit, path] of cases) {
     const { frontmatter } = base();
@@ -440,7 +447,7 @@ test("data names (mapping keys, values natives, input and permission names) are 
   app.auth = { kind: "github-app", permissions: { secrets: "read", authorization: "read" } };
   assert.equal(parse(app).ok, true);
   refuses((fm) => { fm.x_settings = { api_key: "x" }; }, "CONNECTOR_SECRET_PRESENT", "/x_settings");
-  refuses((fm) => { source(fm).identity.token = "x"; }, "CONNECTOR_SECRET_PRESENT", "/sources/0/identity");
+  refuses((fm) => { source(fm).identity.token = "x"; }, "CONNECTOR_SECRET_PRESENT", "/record_sources/0/identity");
   refuses((fm) => { fm.actions = [{ name: "a", method: "GET", host: "calendar.example.org", input: { n: { type: "string", secret: true } } }]; }, "CONNECTOR_SECRET_PRESENT", "/actions/0/input/n");
   const { frontmatter: words } = base();
   source(words).fields.highs_temperature = "summary";
@@ -582,7 +589,7 @@ test("the pin digest is blind to presentation and order, and equal across spelli
     (fm) => { source(fm).fields.title = { from: "summary" }; },
     (fm) => { delete source(fm).fields.event_status.unmapped; },
     (fm) => { delete source(fm).mode; },
-    (fm) => { const s = source(fm); fm.sources[0] = Object.fromEntries(Object.entries(s).reverse()); },
+    (fm) => { const s = source(fm); fm.record_sources[0] = Object.fromEntries(Object.entries(s).reverse()); },
     (fm) => { fm.actions = []; },
     (fm) => { delete fm.actions; },
   ];
@@ -755,4 +762,65 @@ test("findingsFor keys per source, field, code and value; facts hold no record i
   assert.equal(spellings.length, 2, "a number and its decimal string are one lookup, so one finding");
   const long = findingsFor([d("VALUE_UNMAPPED", "title", "x".repeat(200), "a")], { source: "events" })[0]!;
   assert.equal(((long.facts as { native: string }).native).length, 80);
+});
+
+// ------------------------------------------------------------------------------------ OKF fields
+
+test("no top-level key a Connector adds is an OKF field, so the engine writes the document on both editions", async () => {
+  // Core's own authorities: the standard and managed field predicates, the never-owned set, and
+  // the v0.2 authoring validator itself, probed with values no standard field accepts in every shape.
+  const probes: unknown[] = [42, "x", ["x"], [{}], {}, true];
+  const okfOwns = (key: string): boolean =>
+    isStandardDocumentSetField(key, "0.1") || isStandardDocumentSetField(key, "0.2") || isManagedDocumentMetadataField(key) || NEVER_OWNED.has(key)
+    || probes.some((value) => {
+      try {
+        assertAuthoredOkfStandardFields({ type: "Connector", title: "Probe", [key]: value });
+        return false;
+      } catch {
+        return true;
+      }
+    });
+  for (const key of ["sources", "tags", "verified", "generated", "status", "stale_after", "usage_window", "resource", "timestamp"]) {
+    assert.equal(okfOwns(key), true, `the probe recognizes OKF's '${key}'`);
+  }
+  for (const key of CONNECTOR_DOCUMENT_KEYS) assert.equal(okfOwns(key), false, `'${key}' is an OKF field`);
+  // Every top-level key the example declares is OKF's type, title or description, or one of the keys above.
+  for (const key of Object.keys(base().frontmatter)) {
+    assert.ok(["type", "title", "description", ...CONNECTOR_DOCUMENT_KEYS].includes(key), `undeclared top-level key '${key}'`);
+  }
+
+  for (const okfVersion of ["0.1", "0.2"] as const) {
+    const backend = new MemoryBackend();
+    await backend.writeReserved("", "index.md", `---\nokf_version: '${okfVersion}'\n---\n# Connectors\n`);
+    const { frontmatter, body } = base();
+    const written = await mutateDocument({
+      bundle: { root: `mem://okf-${okfVersion}`, backend },
+      id: CONNECTOR_ID,
+      mode: "create-only",
+      registry: { kinds: new Map(), warnings: [] },
+      strict: false,
+      buildCandidate: () => ({ frontmatter: frontmatter as OkfDocument["frontmatter"], body }),
+    });
+    const read = await backend.read(CONNECTOR_ID);
+    assert.equal(read.version, written.version, okfVersion);
+    const reparsed = parseConnectorDoc(read.doc);
+    assert.ok(reparsed.ok, `${okfVersion}: ${JSON.stringify(reparsed.ok ? [] : reparsed.errors)}`);
+    assert.equal(connectorPinDigest(reparsed.connector), connectorPinDigest(parseExampleConnector()), okfVersion);
+  }
+});
+
+test("the parser reads no top-level key beyond type, title, description and CONNECTOR_DOCUMENT_KEYS", () => {
+  const touched = new Set<string>();
+  const note = (key: string | symbol): void => { if (typeof key === "string") touched.add(key); };
+  const { frontmatter, body } = base();
+  const watched = new Proxy(frontmatter, {
+    get: (target, key, receiver) => (note(key), Reflect.get(target, key, receiver)),
+    has: (target, key) => (note(key), Reflect.has(target, key)),
+    getOwnPropertyDescriptor: (target, key) => (note(key), Reflect.getOwnPropertyDescriptor(target, key)),
+  });
+  const parsed = parseConnectorDoc({ id: CONNECTOR_ID, frontmatter: watched, body } as OkfDocument);
+  assert.ok(parsed.ok, JSON.stringify(parsed.ok ? [] : parsed.errors));
+  const declared = new Set<string>(["type", "title", "description", ...CONNECTOR_DOCUMENT_KEYS]);
+  assert.deepEqual([...touched].filter((key) => !declared.has(key)), []);
+  assert.ok([...declared].every((key) => touched.has(key)), "every declared key is read");
 });

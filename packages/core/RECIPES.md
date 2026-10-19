@@ -38,7 +38,12 @@ Each `RecipeFile` contains a recipe-relative POSIX `path` and a UTF-8 text `byte
 The `source` argument is an opaque caller-provided provenance label. The parser never resolves it.
 A recipe needs `recipe.md` and at least one valid Convention under `conventions/`. Definitions-only
 recipes reject undeclared files and malformed definitions; legacy recipes retain their existing
-skip-with-warning behavior. Declared View and Reference assets are returned as data.
+skip-with-warning behavior. Declared View and Reference assets are returned as data. A
+definitions-only recipe may also list `type: Connector` declarations in its manifest's
+`connectors:` (paths under `connectors/`); each is parsed by `parseConnectorDoc` and returned in
+`connectors`, which is absent when the manifest declares none. A malformed one is
+`RECIPE_CONNECTOR_INVALID`, whose `connector` names the first refusal and counts them all, and a
+convention governing `Connector` is `RECIPE_MALFORMED`.
 
 The result retains the existing `LoadedRecipe`, `RecipeError` and `LoadResult` shapes. Parsing
 preserves input order, warnings and messages. `RECIPE_NOT_FOUND` remains in the shared error

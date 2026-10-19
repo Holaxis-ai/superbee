@@ -1,8 +1,9 @@
 // The ONE pure recipe parse+validate+materialize pipeline. Sources only acquire RecipeFile[];
 // everything downstream of that byte boundary is distribution-neutral and branches on content,
 // never on whether the files came from built-in constants, a folder, or a future source adapter.
+import { CONNECTOR_TYPE, CONNECTORS_PREFIX, parseConnectorDoc, type Connector, type ConnectorErrorCode } from "./connectors.js";
 import { parseMarkdown } from "./frontmatter.js";
-import { parseConventionDoc, CONVENTIONS_PREFIX, CONVENTION_TYPE } from "./kinds.js";
+import { buildKindRegistry, parseConventionDoc, CONVENTIONS_PREFIX, CONVENTION_TYPE } from "./kinds.js";
 import { conceptIdFromPath, assertSafeConceptId, isReservedFile } from "./paths.js";
 import type { OkfDocument } from "./types.js";
 import type { ValidationWarning } from "./validation.js";
@@ -39,6 +40,14 @@ export interface RecipeReference {
   doc: OkfDocument;
 }
 
+/** One Connector declaration carried by a recipe package: a definition, never an instance. */
+export interface RecipeConnector {
+  /** The `type: Connector` document installed under `connectors/`. */
+  doc: OkfDocument;
+  /** The declaration as `parseConnectorDoc` read it. */
+  connector: Connector;
+}
+
 /** Parsed recipe definitions. Parsing does not install, authorize or execute these assets. */
 export interface LoadedRecipe {
   id: string;
@@ -55,6 +64,12 @@ export interface LoadedRecipe {
   pages: RecipePage[];
   /** Optional operating references installed with the definitions; never project instances. */
   references: RecipeReference[];
+  /**
+   * Connector declarations the manifest's `connectors:` list carries, installed and evolved as
+   * definitions. Absent when the manifest declares none, so a recipe without connectors parses to
+   * the same value it always did.
+   */
+  connectors?: RecipeConnector[];
   /** Present only for packages opting into the strict portable definitions-only contract. */
   contentPolicy?: "definitions-only";
   /** The `type` values this recipe's conventions govern (derived at parse, for the receipt). */
@@ -69,11 +84,23 @@ export interface LoadedRecipe {
  */
 export const RECIPE_PROGRESS_STATUS_TOKEN = "{{superbee:progress_status}}";
 
-export type RecipeErrorCode ="RECIPE_NOT_FOUND" | "RECIPE_MALFORMED" | "RECIPE_EMPTY" | "RECIPE_UNSAFE_PATH";
+export type RecipeErrorCode =
+  | "RECIPE_NOT_FOUND"
+  | "RECIPE_MALFORMED"
+  | "RECIPE_EMPTY"
+  | "RECIPE_UNSAFE_PATH"
+  | "RECIPE_CONNECTOR_INVALID";
 
 export interface RecipeError {
   code: RecipeErrorCode;
   message: string;
+  /** `RECIPE_CONNECTOR_INVALID`: the first refusal of the connector named, and how many it had. */
+  connector?: { id: string; code: ConnectorErrorCode; path: string; count: number };
+}
+
+/** The connectors a recipe carries; empty when its manifest declares none. */
+export function recipeConnectors(recipe: Pick<LoadedRecipe, "connectors">): readonly RecipeConnector[] {
+  return recipe.connectors ?? [];
 }
 
 export type LoadResult = { ok: true; recipe: LoadedRecipe } | { ok: false; error: RecipeError };
@@ -177,6 +204,89 @@ function parseReferenceDeclarations(manifest: Record<string, unknown>, recipeId:
     references.push({ path: value, id });
   }
   return { ok: true, references };
+}
+
+interface ConnectorDeclaration {
+  path: string;
+  id: string;
+}
+
+function isSafeRecipeConnectorPath(value: string): boolean {
+  if (!value.startsWith(CONNECTORS_PREFIX) || !value.endsWith(".md") || /[\\%?#]/.test(value)) return false;
+  const segments = value.slice(CONNECTORS_PREFIX.length).split("/");
+  return segments.every((segment) => !segment.startsWith(".") && REFERENCE_SEGMENT.test(segment));
+}
+
+/** The manifest's `connectors:` list, under the grammar `references:` uses. */
+function parseConnectorDeclarations(manifest: Record<string, unknown>, recipeId: string, source: string):
+  | { ok: true; connectors: ConnectorDeclaration[] }
+  | { ok: false; error: RecipeError } {
+  if (manifest.connectors === undefined) return { ok: true, connectors: [] };
+  if (manifest.content_policy !== "definitions-only") {
+    return {
+      ok: false,
+      error: {
+        code: "RECIPE_MALFORMED",
+        message:
+          `recipe '${recipeId}' at '${source}' declares connectors but does not declare ` +
+          "'content_policy: definitions-only', which is required for portable assets",
+      },
+    };
+  }
+  if (!Array.isArray(manifest.connectors)) {
+    return {
+      ok: false,
+      error: { code: "RECIPE_MALFORMED", message: `recipe '${recipeId}': 'connectors' must be a list` },
+    };
+  }
+
+  const connectors: ConnectorDeclaration[] = [];
+  const targets = new Set<string>();
+  for (const [index, value] of manifest.connectors.entries()) {
+    if (typeof value !== "string" || value === "") {
+      return {
+        ok: false,
+        error: {
+          code: "RECIPE_MALFORMED",
+          message: `recipe '${recipeId}': connectors[${index}] must be a non-empty path`,
+        },
+      };
+    }
+    if (!isSafeRecipeConnectorPath(value)) {
+      return {
+        ok: false,
+        error: {
+          code: "RECIPE_UNSAFE_PATH",
+          message: `recipe '${recipeId}': Connector '${value}' must be a .md file under '${CONNECTORS_PREFIX}'`,
+        },
+      };
+    }
+    const id = conceptIdFromPath(value);
+    try {
+      assertSafeConceptId(id);
+    } catch {
+      return {
+        ok: false,
+        error: { code: "RECIPE_UNSAFE_PATH", message: `recipe '${recipeId}' contains an unsafe Connector path` },
+      };
+    }
+    if (isReservedFile(value)) {
+      return {
+        ok: false,
+        error: { code: "RECIPE_UNSAFE_PATH", message: `recipe '${recipeId}' contains a reserved filename: '${value}'` },
+      };
+    }
+    const target = id.toLowerCase();
+    if (targets.has(target)) {
+      return {
+        ok: false,
+        error: { code: "RECIPE_MALFORMED", message: `recipe '${recipeId}' declares duplicate Connector '${value}'` },
+      };
+    }
+    targets.add(target);
+    connectors.push({ path: value, id });
+  }
+  return { ok: true, connectors };
 }
 
 function parsePageDeclarations(manifest: Record<string, unknown>, recipeId: string, source: string):
@@ -328,8 +438,11 @@ export function parseRecipeFiles(
   if (!pageDeclarations.ok) return pageDeclarations;
   const referenceDeclarations = parseReferenceDeclarations(manifest, id, source);
   if (!referenceDeclarations.ok) return referenceDeclarations;
+  const connectorDeclarations = parseConnectorDeclarations(manifest, id, source);
+  if (!connectorDeclarations.ok) return connectorDeclarations;
   const declaredPageFiles = new Set(pageDeclarations.pages.flatMap((page) => [page.registry, page.entry]));
   const declaredReferenceFiles = new Set(referenceDeclarations.references.map((reference) => reference.path));
+  const declaredConnectorFiles = new Set(connectorDeclarations.connectors.map((connector) => connector.path));
 
   const warnings: ValidationWarning[] = [];
   for (const key of RESERVED_MANIFEST_KEYS) {
@@ -353,6 +466,7 @@ export function parseRecipeFiles(
     if (!file.path.startsWith(CONVENTIONS_PREFIX)) {
       if (declaredPageFiles.has(file.path)) continue;
       if (declaredReferenceFiles.has(file.path)) continue;
+      if (declaredConnectorFiles.has(file.path)) continue;
       if (contentPolicy === "definitions-only") {
         return {
           ok: false,
@@ -421,6 +535,17 @@ export function parseRecipeFiles(
         severity: "warning",
       });
       continue;
+    }
+
+    // A Connector is a document type core's connector parser owns, never a recipe-declared Kind.
+    if (governs === CONNECTOR_TYPE) {
+      return {
+        ok: false,
+        error: {
+          code: "RECIPE_MALFORMED",
+          message: `recipe '${id}': '${doc.id}' governs '${CONNECTOR_TYPE}'; declare connectors in the manifest's 'connectors:' list instead`,
+        },
+      };
     }
 
     if (contentPolicy === "definitions-only") {
@@ -555,6 +680,41 @@ export function parseRecipeFiles(
     references.push({ doc: { id: declaration.id, frontmatter, body } });
   }
 
+  const connectors: RecipeConnector[] = [];
+  // The recipe's own Kinds check the sources that target them now; a source whose Kind another
+  // recipe declares is checked against the bundle when the recipe is installed or evolved.
+  const ownKinds = connectorDeclarations.connectors.length > 0 ? buildKindRegistry(docs, [], options) : undefined;
+  for (const declaration of connectorDeclarations.connectors) {
+    const connectorFile = files.find((file) => file.path === declaration.path);
+    if (!connectorFile) {
+      return {
+        ok: false,
+        error: {
+          code: "RECIPE_MALFORMED",
+          message: `recipe '${id}' is missing declared Connector file '${declaration.path}'`,
+        },
+      };
+    }
+    const { frontmatter, body } = parseMarkdown(connectorFile.bytes, undefined, options);
+    const doc: OkfDocument = { id: declaration.id, frontmatter, body };
+    const parsed = parseConnectorDoc(doc, { kinds: ownKinds });
+    if (!parsed.ok) {
+      const first = parsed.errors[0]!;
+      const more = parsed.errors.length - 1;
+      return {
+        ok: false,
+        error: {
+          code: "RECIPE_CONNECTOR_INVALID",
+          message:
+            `recipe '${id}': invalid Connector '${declaration.path}': ${first.code} at '${first.path || "/"}': ${first.message}` +
+            (more > 0 ? ` (and ${more} more)` : ""),
+          connector: { id: declaration.id, code: first.code, path: first.path, count: parsed.errors.length },
+        },
+      };
+    }
+    connectors.push({ doc, connector: parsed.connector });
+  }
+
   const recipe: LoadedRecipe = {
     id,
     title,
@@ -568,6 +728,7 @@ export function parseRecipeFiles(
     governs: governsList,
     warnings,
   };
+  if (connectorDeclarations.connectors.length > 0) recipe.connectors = connectors;
   if (contentPolicy === "definitions-only") recipe.contentPolicy = contentPolicy;
   return { ok: true, recipe };
 }
