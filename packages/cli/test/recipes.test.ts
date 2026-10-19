@@ -75,8 +75,10 @@ import {
 } from "../src/recipes.js";
 import {
   applyRecipeEvolution,
+  definitionDigest,
   installRecipe,
   planRecipeEvolution,
+  readRecipeStamp,
   recipeSourceDigest,
   RecipeLifecycleError,
 } from "@superbee/core/recipe-lifecycle";
@@ -1433,17 +1435,34 @@ test("recipe evolve: recipe-authored provenance and mutation attribution are nev
   }
 });
 
-test("recipe evolve: additive declaration arrays behave as sets and never persist duplicates", async () => {
-  const bundle: Bundle = { root: "mem://recipe-evolution-array-set", backend: new MemoryBackend() };
-  await installRecipe(bundle, widgetRecipe("1", widgetFields()), { now: T });
-  const desired = widgetRecipe("2", widgetFields(["title"], ["colour", "colour"]));
+test("recipe evolve: recipe-authored duplicate occurrences match fresh installation and settle", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(T) });
+  for (const edition of ["0.1", "0.2"]) {
+    const bundle: Bundle = { root: "mem://recipe-evolution-source-occurrences", backend: new MemoryBackend() };
+    const fresh: Bundle = { root: "mem://recipe-fresh-source-occurrences", backend: new MemoryBackend() };
+    for (const target of [bundle, fresh]) {
+      await target.backend!.writeReserved("", "index.md", `---\nokf_version: '${edition}'\n---\n`);
+    }
+    await installRecipe(bundle, widgetRecipe("1", widgetFields()), { now: T });
+    const desired = widgetRecipe("2", widgetFields(["title"], ["colour", "colour"]));
 
-  const plan = await planRecipeEvolution(bundle, desired);
-  assert.equal(plan.ready, true);
-  assert.deepEqual(plan.definitions[0]!.added_paths, ["/frontmatter/fields/optional/colour"]);
-  await applyRecipeEvolution(bundle, desired, plan.plan_token);
-  assert.deepEqual((await loadKinds(bundle)).kinds.get("Widget")?.fields.optional, ["colour"]);
-  assert.equal((await planRecipeEvolution(bundle, desired)).changed, false);
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.ready, true);
+    assert.deepEqual(plan.definitions[0]!.added_paths, ["/frontmatter/fields/optional/colour"]);
+    await applyRecipeEvolution(bundle, desired, plan.plan_token);
+    await installRecipe(fresh, desired, { now: T });
+    const evolved = await bundle.backend!.read("conventions/widget");
+    const installed = await fresh.backend!.read("conventions/widget");
+    assert.deepEqual(evolved, installed); // Complete stored document and byte-addressed version.
+    assert.deepEqual((await loadKinds(bundle)).kinds.get("Widget")?.fields.optional, ["colour", "colour"]);
+    assert.equal(definitionDigest(evolved.doc), definitionDigest(installed.doc));
+    assert.deepEqual(readRecipeStamp(evolved.doc), readRecipeStamp(installed.doc));
+    assert.equal(readRecipeStamp(evolved.doc)?.definition, definitionDigest(evolved.doc));
+    const settled = await planRecipeEvolution(bundle, desired);
+    assert.equal(settled.ready, true);
+    assert.equal(settled.changed, false);
+    assert.equal(settled.writes, 0);
+  }
 });
 
 test("recipe evolve: prototype-looking nested declaration keys remain own data properties", async () => {
