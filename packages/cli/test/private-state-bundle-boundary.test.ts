@@ -560,6 +560,20 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
     control: (f) => path.join(f.outside, "fresh-bundle"),
   },
   { leaf: "indexGenerate", surface: "--dir", argv: (t) => ["index", "generate", "--dir", t, "--json"] },
+  {
+    leaf: "sourceBind",
+    surface: "--dir",
+    argv: (target) => ["source", "bind", "source-feeds/boundary", "--anonymous", "--dir", target, "--json"],
+    // The benign control has no Source Feed. It reaches document lookup; the private target must
+    // instead refuse at bundle selection, before reading any private-state content.
+    controlExit: 1,
+  },
+  {
+    leaf: "sourceRun",
+    surface: "--dir",
+    argv: (target) => ["source", "run", "source-feeds/boundary", "--dir", target, "--json"],
+    controlExit: 1,
+  },
   { leaf: "status", surface: "--dir", argv: (t) => ["status", "--dir", t, "--json"] },
   { leaf: "docWrite", surface: "--dir", argv: (t) => ["doc", "write", "probe/dw", "--type", "Note", "--body", "x", "--dir", t, "--json"] },
   { leaf: "docFieldSet", surface: "--dir", argv: (t) => ["doc", "field", "set", "notes/a", "title", "Probe", "--dir", t, "--json"] },

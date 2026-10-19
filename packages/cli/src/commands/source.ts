@@ -42,7 +42,9 @@ export async function source(argv: string[], deps: { stdout?: (text: string) => 
   if (argv[0] === undefined || argv[0] === "--help" || argv[0] === "-h") { stdout(renderUsage(SOURCE_USAGE)); return; }
   if (argv[0] === "bind" || argv[0] === "run") {
     const bind = argv[0] === "bind";
-    const p = parseLeafOrUsage(() => parseArgs({args:argv.slice(1),allowPositionals:true,strict:true,options:{dir:{type:"string"},json:{type:"boolean"},help:{type:"boolean",short:"h"},...(bind?{anonymous:{type:"boolean" as const},"credential-env":{type:"string" as const},accept:{type:"string" as const}}:{complete:{type:"boolean" as const},actor:{type:"string" as const}})}}),bind?CLI_LEAVES.sourceBind:CLI_LEAVES.sourceRun);
+    const p = bind
+      ? parseLeafOrUsage(() => parseArgs({args:argv.slice(1),allowPositionals:true,strict:true,options:{dir:{type:"string"},json:{type:"boolean"},help:{type:"boolean",short:"h"},anonymous:{type:"boolean"},"credential-env":{type:"string"},accept:{type:"string"}}}),CLI_LEAVES.sourceBind)
+      : parseLeafOrUsage(() => parseArgs({args:argv.slice(1),allowPositionals:true,strict:true,options:{dir:{type:"string"},json:{type:"boolean"},help:{type:"boolean",short:"h"},complete:{type:"boolean"},actor:{type:"string"}}}),CLI_LEAVES.sourceRun);
     if(p.values.help){stdout(renderUsage(SOURCE_USAGE));return;}
     const values = p.values as Record<string,string|boolean|undefined>;
     const options={dir:values.dir as string|undefined,anonymous:values.anonymous as boolean|undefined,credentialEnv:values["credential-env"] as string|undefined,accept:values.accept as string|undefined,complete:values.complete as boolean|undefined,actor:values.actor as string|undefined};
