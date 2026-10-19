@@ -1,6 +1,9 @@
 /**
  * `@superbee/core/recipe-lifecycle`: install and evolve a parsed recipe on any bundle.
  *
+ * `prepareRecipeInstall` materializes the same stamped candidates without target reads or writes;
+ * `inspectRecipeInstallTarget` separates target content, recipe identity and stamp integrity.
+ * Neither confers readiness, authority or a new persistent apply path.
  * `installRecipe` creates a recipe's conventions, Connectors, View pairs and References
  * create-only, never overwriting what a bundle already holds, after checking every Connector
  * against the Kinds the bundle will hold. `planRecipeEvolution` is a read-only, state-bound
@@ -17,6 +20,8 @@
  */
 export {
   installRecipe,
+  prepareRecipeInstall,
+  inspectRecipeInstallTarget,
   installedConnectorDocs,
   installedConventionDocs,
   isRecipeApplied,
@@ -24,6 +29,8 @@ export {
   recipeDrifts,
 } from "./install.js";
 export type {
+  PreparedRecipeInstall,
+  RecipeInstallTargetInspection,
   RecipeConnectorResult,
   RecipeDocResult,
   RecipeInstallCounts,
@@ -62,6 +69,7 @@ export {
 } from "./stamp.js";
 export type {
   ConventionStampState,
+  RecipeStampIdentity,
   InstalledRecipeRow,
   RecipeInstallState,
   RecipeStamp,

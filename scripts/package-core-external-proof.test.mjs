@@ -539,14 +539,20 @@ import { query } from "@superbee/core/engine";
 import { mutateDocument } from "@superbee/core/document-mutation";
 import { buildKindRegistry } from "@superbee/core/kinds";
 import { loadBuiltinRecipe } from "@superbee/core/builtin-recipes";
-import { installRecipe } from "@superbee/core/recipe-lifecycle";
+import { installRecipe, prepareRecipeInstall, inspectRecipeInstallTarget } from "@superbee/core/recipe-lifecycle";
 import { prepareKindDraft, applyKindDraft, dismissKind, kindInstanceCandidate, KindAuthoringError } from "@superbee/core/kind-authoring";
 export async function exerciseKindAuthoring() {
   const backend = new MemoryBackend(), bundle = { root: "memory://consumer", backend };
   await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Consumer\n");
   const loaded = loadBuiltinRecipe("work-tracking");
   if (!loaded || !loaded.ok) throw new Error("built-in load failed");
-  await installRecipe(bundle, loaded.recipe);
+  const prepared = prepareRecipeInstall(loaded.recipe, { okfVersion: "0.2", now: "2026-10-19T12:00:00.000Z" });
+  const target = prepared.docs[0];
+  if (!target || inspectRecipeInstallTarget(null, target, prepared).exists) throw new Error("preparation lost absent target");
+  await installRecipe(bundle, loaded.recipe, { now: prepared.now });
+  const installedTarget = (await backend.read(target.id)).doc;
+  const installedState = inspectRecipeInstallTarget(installedTarget, target, prepared);
+  if (!installedState.sameContent || installedState.stamp !== "current" || installedState.stampIntegrity !== "current") throw new Error("prepared and installed candidates disagree");
   const empty = { kinds: new Map(), warnings: [] };
   await mutateDocument({ bundle, id: "research/first", mode: "create-only", registry: empty, strict: false,
     buildCandidate: () => ({ frontmatter: { type: "Research", title: "First" }, body: "# Summary\nObserved" }) });
@@ -588,7 +594,7 @@ import { parseRecipeFiles, recipeConnectors, type RecipeConnector, type RecipeFi
 import { builtinNames, loadBuiltinRecipe } from "@superbee/core/builtin-recipes";
 import { prepareKindDraft, applyKindDraft, dismissKind, kindInstanceCandidate, type KindDraftPlan } from "@superbee/core/kind-authoring";
 import { buildKindRegistry, validateAgainstKind } from "@superbee/core/kinds";
-import { ConnectorTargetUnsatisfied, installRecipe, installedConnectorDocs, installedRecipes, planRecipeEvolution, RecipeLifecycleError, type RecipeInstallState } from "@superbee/core/recipe-lifecycle";
+import { ConnectorTargetUnsatisfied, installRecipe, prepareRecipeInstall, inspectRecipeInstallTarget, installedConnectorDocs, installedRecipes, planRecipeEvolution, RecipeLifecycleError, type RecipeInstallState, type PreparedRecipeInstall, type RecipeInstallTargetInspection, type RecipeStampIdentity } from "@superbee/core/recipe-lifecycle";
 import { applyRecordOverlay, buildSourceIndex, OverlayRefusal, planRecordOverlay, type OverlayBundle, type OverlayPolicy, type OverlayReceipt, type RecordChange } from "@superbee/core/record-overlay";
 import { bundleHealth, bundleKindFindings, type BindDependencies, type BundleHealthReport } from "@superbee/core/bundle-health";
 import { bindSourceFeed, changeBetween, connectorPinDigest, findingsFor, mapRecord, parseConnectorDoc, type Connector, type ConnectorError } from "@superbee/core/connectors";
@@ -624,7 +630,11 @@ export async function exerciseKindAuthoringTypes(bundle: Parameters<typeof prepa
 declare const lifecycleBundle: Parameters<typeof installRecipe>[0];
 export async function exerciseRecipeLifecycle(): Promise<string | undefined> {
   if (!recipe.ok) return undefined;
-  await installRecipe(lifecycleBundle, recipe.recipe, { now: "2026-10-17T00:00:00.000Z" });
+  const prepared: PreparedRecipeInstall = prepareRecipeInstall(recipe.recipe, { okfVersion: "0.2", now: "2026-10-17T00:00:00.000Z" });
+  const identity: RecipeStampIdentity = prepared.identity;
+  const inspected: RecipeInstallTargetInspection = inspectRecipeInstallTarget(null, prepared.docs[0]!, prepared);
+  void [identity.source_digest, inspected.stampIntegrity];
+  await installRecipe(lifecycleBundle, recipe.recipe, { now: prepared.now });
   return (await planRecipeEvolution(lifecycleBundle, recipe.recipe)).plan_token;
 }
 export function installStates(conventions: OkfDocument[]): RecipeInstallState[] {

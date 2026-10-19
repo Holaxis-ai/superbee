@@ -18,7 +18,7 @@ import {
 import { okfValuesEqual, type OkfRecord } from "../okf-authored-values.js";
 import { assertAuthoredOkfStandardFields } from "../okf-standard-fields.js";
 import { PAGE_REGISTRY_PREFIX, parseRegistration, VIEW_REGISTRY_PREFIX } from "../page.js";
-import { RECIPE_PROGRESS_STATUS_TOKEN, type LoadedRecipe } from "../recipes.js";
+import { RECIPE_PROGRESS_STATUS_TOKEN, type LoadedRecipe, type RecipeConnector, type RecipePage, type RecipeReference } from "../recipes.js";
 import type { Bundle, ConceptId, OkfDocument } from "../types.js";
 import type { ValidationWarning } from "../validation.js";
 import { VersionConflict } from "../versioning.js";
@@ -28,10 +28,12 @@ import {
   normalizeDefinitionBody,
   recipeStampIdentity,
   recipeStampState,
+  conventionStampState,
   withRecipeStamp,
   worstRecipeStampState,
   type RecipeStampIdentity,
   type RecipeStampState,
+  type ConventionStampState,
 } from "./stamp.js";
 import {
   findLegacyViewConvention,
@@ -212,6 +214,83 @@ export function recipeDocumentForApply(
     : { ...doc, frontmatter: { ...doc.frontmatter } };
 }
 
+/** Parsed recipe carriers contain YAML values. Copy mappings locally so preparation neither
+ * aliases its source nor changes the record realm used by the owning OKF value comparator. */
+function cloneRecipeData<T>(value: T): T {
+  if (value instanceof Date) return new Date(value.getTime()) as T;
+  if (value instanceof Uint8Array) return Uint8Array.from(value) as T;
+  if (Array.isArray(value)) return value.map((item) => cloneRecipeData(item)) as T;
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cloneRecipeData(item)])) as T;
+  }
+  return value;
+}
+
+/** Edition-specific candidates only: no target reads, permission decision or persistent writes.
+ * Connector and Reference wrappers retain the parsed recipe's public carrier shapes. */
+export interface PreparedRecipeInstall {
+  okfVersion: "0.1" | "0.2";
+  now: string;
+  identity: RecipeStampIdentity;
+  docs: OkfDocument[];
+  connectors: RecipeConnector[];
+  pages: RecipePage[];
+  references: RecipeReference[];
+}
+
+/** Prepare the same candidates installRecipe creates. The caller retains the explicit preparation
+ * time across preview/replay; source identity is calculated before edition materialization.
+ * The result shares no mutable data with the parsed source. It is proposal data, not authority. */
+export function prepareRecipeInstall(
+  recipe: LoadedRecipe,
+  options: { okfVersion: "0.1" | "0.2"; now: string },
+): PreparedRecipeInstall {
+  if (typeof options.now !== "string") {
+    throw new RecipeInputError("recipe installation preparation requires an explicit retained time");
+  }
+  const source = cloneRecipeData(recipe);
+  const materialized = materializeRecipeForEdition(source, options.okfVersion);
+  const identity = recipeStampIdentity(source, materialized);
+  const document = (doc: OkfDocument): OkfDocument => recipeDocumentForApply(doc, options.okfVersion, options.now);
+  const stamped = (doc: OkfDocument): OkfDocument => withRecipeStamp(document(doc), identity);
+  return {
+    okfVersion: options.okfVersion,
+    now: options.now,
+    identity,
+    docs: materialized.docs.map(stamped),
+    connectors: (materialized.connectors ?? []).map((connector) => ({ ...connector, doc: stamped(connector.doc) })),
+    pages: materialized.pages.map((page) => ({ ...page, registry: document(page.registry) })),
+    references: materialized.references.map((reference) => ({ ...reference, doc: stamped(reference.doc) })),
+  };
+}
+
+export interface RecipeInstallTargetInspection {
+  exists: boolean;
+  sameContent: boolean;
+  stamp: RecipeStampState;
+  /** A matching recipe identity alone does not prove that the definition stamp is readable or intact. */
+  stampIntegrity: ConventionStampState;
+}
+
+/** Inspect one candidate's exact target without changing content or adopting a stamp. Registry,
+ * compatibility, permission and storage admission remain the committing caller's responsibility. */
+export function inspectRecipeInstallTarget(
+  existing: OkfDocument | null,
+  desired: OkfDocument,
+  prepared: Pick<PreparedRecipeInstall, "okfVersion" | "identity">,
+): RecipeInstallTargetInspection {
+  if (existing === null) return { exists: false, sameContent: false, stamp: "missing", stampIntegrity: "unknown" };
+  if (existing.id !== desired.id) {
+    throw new RecipeInputError(`recipe installation target '${existing.id}' does not match candidate '${desired.id}'`);
+  }
+  return {
+    exists: true,
+    sameContent: sameInstalledDoc(existing, desired, prepared.okfVersion),
+    stamp: recipeStampState(existing, prepared.identity),
+    stampIntegrity: conventionStampState(existing),
+  };
+}
+
 async function createRecipeDocument(
   bundle: Bundle,
   doc: OkfDocument,
@@ -260,12 +339,11 @@ export async function installRecipe(
   if (okfVersion === "0.2" && options.actor !== undefined && !isOkfActor(options.actor)) {
     throw new OkfActorError(options.actor, `OKF v0.2 mutation actor '${options.actor}' must be human:<id>, process:<id>, or <producer>/<version>`);
   }
-  const source = recipe;
-  recipe = materializeRecipeForEdition(recipe, okfVersion);
-  const identity: RecipeStampIdentity = recipeStampIdentity(source, recipe);
-  assertConnectorsWritable(recipe, identity, okfVersion, now);
+  const prepared = prepareRecipeInstall(recipe, { okfVersion: okfVersion as "0.1" | "0.2", now });
+  recipe = { ...recipe, docs: prepared.docs, connectors: prepared.connectors, pages: prepared.pages, references: prepared.references };
+  assertConnectorsWritable(recipe, okfVersion);
   await assertConnectorTargets(bundle, recipe, okfVersion);
-  await assertPortableTargetsCompatible(bundle, recipe, now, okfVersion);
+  await assertPortableTargetsCompatible(bundle, recipe, okfVersion);
 
   // Legacy-alias probes (see the module comment above the alias helpers): resolved lazily, once.
   const legacyConventionId = recipe.docs.some((d) => governsKind(d, VIEW_KIND_NAME))
@@ -303,7 +381,7 @@ export async function installRecipe(
       continue;
     }
     // The stamp lands in the convention's own create: it exists exactly when the convention does.
-    let doc = withRecipeStamp(recipeDocumentForApply(d, okfVersion, now), identity);
+    let doc = d;
     let changed = true;
     let sourceDiffers = false;
     try {
@@ -312,11 +390,12 @@ export async function installRecipe(
     } catch (err) {
       if (err instanceof VersionConflict) {
         const existing = await readDoc(bundle, doc.id);
-        const existingStamp = recipeStampState(existing, identity);
+        const inspection = inspectRecipeInstallTarget(existing, doc, prepared);
+        const existingStamp = inspection.stamp;
         stamps.push(existingStamp);
         if (existingStamp === "stale" || existingStamp === "missing") restampIds.push(doc.id);
         else if (existingStamp === "foreign") foreignIds.push(doc.id);
-        if (!sameInstalledDoc(existing, doc, okfVersion)) {
+        if (!inspection.sameContent) {
           sourceDiffers = true;
           migrationWarnings.push({
             code: "RECIPE_SOURCE_DIFFERS",
@@ -337,7 +416,7 @@ export async function installRecipe(
   // After the conventions, so a Kind the recipe declares exists before the Connector that maps onto it.
   const connectors: RecipeConnectorResult[] = [];
   for (const { doc: authored } of recipe.connectors ?? []) {
-    const doc = withRecipeStamp(recipeDocumentForApply(authored, okfVersion, now), identity);
+    const doc = authored;
     let changed = true;
     let sourceDiffers = false;
     try {
@@ -346,11 +425,12 @@ export async function installRecipe(
     } catch (err) {
       if (!(err instanceof VersionConflict)) throw err;
       const existing = await readDoc(bundle, doc.id);
-      const existingStamp = recipeStampState(existing, identity);
+      const inspection = inspectRecipeInstallTarget(existing, doc, prepared);
+      const existingStamp = inspection.stamp;
       stamps.push(existingStamp);
       if (existingStamp === "stale" || existingStamp === "missing") restampIds.push(doc.id);
       else if (existingStamp === "foreign") foreignIds.push(doc.id);
-      if (!sameInstalledDoc(existing, doc, okfVersion)) {
+      if (!inspection.sameContent) {
         sourceDiffers = true;
         migrationWarnings.push({
           code: "RECIPE_SOURCE_DIFFERS",
@@ -424,7 +504,7 @@ export async function installRecipe(
       entryChanged = false;
     }
 
-    let registry = recipeDocumentForApply(page.registry, okfVersion, now);
+    let registry = page.registry;
     let registryChanged = true;
     try {
       registry = await createRecipeDocument(bundle, registry, okfVersion, now, options.actor);
@@ -446,7 +526,7 @@ export async function installRecipe(
 
   const references: RecipeReferenceResult[] = [];
   for (const reference of recipe.references) {
-    let desired = withRecipeStamp(recipeDocumentForApply(reference.doc, okfVersion, now), identity);
+    let desired = reference.doc;
     let changed = true;
     try {
       desired = await createRecipeDocument(bundle, desired, okfVersion, now, options.actor);
@@ -504,12 +584,11 @@ export async function installRecipe(
  * edition. The parser tolerates unknown top-level keys, so one OKF v0.2 owns (a `tags` that is not
  * a list, say) would otherwise be refused at the Connector's create, after the conventions.
  */
-function assertConnectorsWritable(recipe: LoadedRecipe, identity: RecipeStampIdentity, okfVersion: string, now: string): void {
+function assertConnectorsWritable(recipe: LoadedRecipe, okfVersion: string): void {
   if (okfVersion !== "0.2") return;
   for (const { doc } of recipe.connectors ?? []) {
-    const candidate = withRecipeStamp(recipeDocumentForApply(doc, okfVersion, now), identity);
     try {
-      assertAuthoredOkfStandardFields(candidate.frontmatter as unknown as OkfRecord, undefined, { phase: "input" });
+      assertAuthoredOkfStandardFields(doc.frontmatter as unknown as OkfRecord, undefined, { phase: "input" });
     } catch (error) {
       if (!(error instanceof InvalidInputError)) throw error;
       throw new RecipeInputError(`recipe '${recipe.id}' cannot install Connector '${doc.id}': ${error.message}; nothing was written`);
@@ -557,7 +636,6 @@ async function assertConnectorTargets(bundle: Bundle, recipe: LoadedRecipe, okfV
 async function assertPortableTargetsCompatible(
   bundle: Bundle,
   recipe: LoadedRecipe,
-  now: string,
   okfVersion: string,
 ): Promise<void> {
   const registries = new Map<ConceptId, OkfDocument>();
@@ -580,7 +658,7 @@ async function assertPortableTargetsCompatible(
 
     const existingRegistry = registries.get(page.registry.id);
     if (existingRegistry) {
-      const desiredRegistry = recipeDocumentForApply(page.registry, okfVersion, now);
+      const desiredRegistry = page.registry;
       if (!sameInstalledDoc(existingRegistry, desiredRegistry, okfVersion)) {
         throw new RecipeAssetConflict(recipe.id, `${page.registry.id}.md`);
       }
@@ -598,7 +676,7 @@ async function assertPortableTargetsCompatible(
     }
     const existing = installedReferences.get(reference.doc.id);
     if (!existing) continue;
-    const desired = recipeDocumentForApply(reference.doc, okfVersion, now);
+    const desired = reference.doc;
     if (!sameInstalledDoc(existing, desired, okfVersion)) {
       throw new RecipeAssetConflict(recipe.id, `${reference.doc.id}.md`);
     }
