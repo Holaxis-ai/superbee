@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 import { initBundle } from "../src/bundle.js";
 import { readBlob, readBundleOkfVersion, readDoc, writeBlob, writeDoc } from "../src/bundle-ops.js";
 import { InvalidInputError } from "../src/errors.js";
+import { parseConventionDoc } from "../src/kinds.js";
+import { kindInstanceCandidate } from "../src/kind-authoring.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { parseRecipeFiles, type LoadedRecipe } from "../src/recipes.js";
 import type { Bundle, ConceptId, OkfDocument, ReservedFilename, ReservedReadResult, Version, WriteOptions } from "../src/types.js";
@@ -940,8 +942,8 @@ test("T16: unknown digest rules read unknown, never diverged; a tampered definit
   await applyRecipeEvolution(bundle, trio("1"), repair.plan_token);
   assert.equal((await stateOf(bundle)).rows[0]!.state, "installed");
   assert.equal((await planRecipeEvolution(bundle, trio("1"))).writes, 0);
-  // A local duplicate in a declaration list is a real edit (the merge compares lists as sets):
-  // it stays diverged and plans no write.
+  // A local duplicate is a real edit: evolution preserves it and blocks removing its occurrence.
+  // It stays diverged and plans no write at the current recipe identity.
   await editConvention(backend, "conventions/beta", (doc) => {
     const fields = doc.frontmatter.fields as KindFields;
     return withFields(doc, { ...fields, required: [...(fields.required ?? []), ...(fields.required ?? [])] });
@@ -1575,4 +1577,172 @@ test("Reference evolution: public core install refuses non-Reference source iden
   recipe.references[0]!.doc.frontmatter.type = "Note";
   await assert.rejects(installRecipe(bundle, recipe), RecipeInputError);
   assert.equal(backend.writes, 0);
+});
+
+// Recipe declaration order: path-independent lists without laundering a locally edited baseline.
+function orderedListRecipe(version: "1" | "2" | "3"): LoadedRecipe {
+  const optional = version === "1" ? ["mode", "alpha", "omega", "state"]
+    : version === "2" ? ["mode", "alpha", "middle", "omega", "state"]
+    : ["mode", "alpha", "before", "middle", "omega", "after", "state"];
+  const modes = version === "1" ? ["start", "end"] : version === "2" ? ["start", "middle", "end"] : ["first", "start", "middle", "end", "last"];
+  return kindRecipe("ordered-lists", version, [{
+    id: "conventions/order", frontmatter: {
+      type: "Convention", title: "Order", governs: "Order",
+      fields: {
+        required: version === "2" ? ["name", "title"] : ["title", "name"], optional,
+        values: { mode: modes, state: ["todo", "done", "cancelled"] },
+        terminal: { state: version === "2" ? ["cancelled", "done"] : ["done", "cancelled"] },
+      },
+      sections: version === "2" ? ["Details", "Summary"] : ["Summary", "Details"],
+      links: { relates: "Order" }, expects_inbound: { relates: "Order" },
+    }, body: "# Order\n",
+  }]);
+}
+
+async function orderedListBundle(edition: "0.1" | "0.2" = "0.2") {
+  const backend = new DescriptionProbeBackend();
+  await backend.writeReserved("", "index.md", `---\nokf_version: '${edition}'\n---\n`);
+  const bundle: Bundle = { root: "mem://ordered-lists", backend };
+  await installRecipe(bundle, orderedListRecipe("1"), { now: NOW });
+  backend.writes = 0;
+  return { bundle, backend };
+}
+
+function changeOrderedList(doc: OkfDocument, keys: string[], change: (values: string[]) => string[]): OkfDocument {
+  const edited = structuredClone(doc);
+  let record = edited.frontmatter as Record<string, unknown>;
+  for (const key of keys.slice(0, -1)) record = record[key] as Record<string, unknown>;
+  const key = keys.at(-1)!;
+  record[key] = change(record[key] as string[]);
+  return edited;
+}
+
+test("list order: direct, stepped and fresh installs reach identical declarations, stamps and section scaffolds in both editions", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(NOW) });
+  for (const edition of ["0.1", "0.2"] as const) {
+    const direct = await orderedListBundle(edition), stepped = await orderedListBundle(edition);
+    await evolve(direct.bundle, orderedListRecipe("3"));
+    await evolve(stepped.bundle, orderedListRecipe("2"));
+    await evolve(stepped.bundle, orderedListRecipe("3"));
+    // Independent installation of the final source uses the exact same definition digest.
+    const backend = new MemoryBackend();
+    await backend.writeReserved("", "index.md", `---\nokf_version: '${edition}'\n---\n`);
+    const fresh: Bundle = { root: "mem://ordered-list-fresh", backend };
+    await installRecipe(fresh, orderedListRecipe("3"), { now: NOW });
+    const expected = await readDoc(fresh, "conventions/order");
+    for (const { bundle } of [direct, stepped]) {
+      const installed = await readDoc(bundle, "conventions/order");
+      assert.deepEqual(installed, expected);
+      assert.equal(definitionDigest(installed), definitionDigest(expected));
+      assert.deepEqual(readRecipeStamp(installed), readRecipeStamp(expected));
+      const parsed = parseConventionDoc(installed, { okfVersion: edition });
+      assert.ok(parsed.ok);
+      assert.equal(kindInstanceCandidate(parsed.kind, { title: "Order", name: "One" }).body, "# Summary\n\n# Details\n");
+      const settled = await planRecipeEvolution(bundle, orderedListRecipe("3"));
+      assert.equal(settled.ready, true);
+      assert.equal(settled.writes, 0);
+    }
+  }
+});
+
+test("list order: local reorders and duplicate occurrences block same-version and bumped-version re-stamping", async () => {
+  const paths = [["fields", "required"], ["fields", "optional"], ["fields", "values", "mode"], ["fields", "terminal", "state"], ["sections"]];
+  for (const keys of paths) for (const duplicate of [false, true]) for (const version of ["1", "2"]) {
+    const { bundle, backend } = await orderedListBundle();
+    await backend.edit("conventions/order", doc => changeOrderedList(doc, keys, values => duplicate ? [...values, values[0]!] : [...values].reverse()));
+    const desired = orderedListRecipe("1");
+    desired.version = version;
+    const before = await backend.read("conventions/order");
+    const plan = await planRecipeEvolution(bundle, desired);
+    const pointer = "/frontmatter/" + keys.join("/");
+    assert.equal(plan.ready, false, `${pointer} ${version} ${duplicate}`);
+    assert.ok(plan.blockers.some(row => row.code === "RECIPE_EVOLUTION_LIST_ORDER_UNPROVEN" && row.field === pointer), JSON.stringify(plan.blockers));
+    await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), RecipeEvolutionBlocked);
+    assert.deepEqual(await backend.read("conventions/order"), before);
+    assert.equal(backend.writes, 0);
+    assert.equal(installedRecipes([(await readDoc(bundle, "conventions/order"))]).rows[0]!.state, "diverged");
+  }
+});
+
+test("list order: unproved baselines allow occurrence-preserving insertions but refuse reordering", async () => {
+  for (const baseline of ["missing", "foreign", "unknown"] as const) {
+    const { bundle, backend } = await orderedListBundle();
+    await backend.edit("conventions/order", doc => {
+      if (baseline === "missing") return withoutStamp(doc);
+      return withStamp(doc, { ...readRecipeStamp(doc)!, ...(baseline === "foreign" ? { id: "other-recipe" } : { digest_rules: 999 }) });
+    });
+    const source = orderedListRecipe("1");
+    source.version = "2";
+    source.docs[0] = changeOrderedList(source.docs[0]!, ["fields", "optional"], values => [values[0]!, "inserted", ...values.slice(1)]);
+    const plan = await planRecipeEvolution(bundle, source);
+    assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+    await applyRecipeEvolution(bundle, source, plan.plan_token);
+    assert.deepEqual((await readDoc(bundle, "conventions/order")).frontmatter.fields, source.docs[0]!.frontmatter.fields);
+    // A separate unproved baseline cannot use a source reorder as permission to reorder locally.
+    await backend.edit("conventions/order", doc => withoutStamp(doc));
+    source.docs[0] = changeOrderedList(source.docs[0]!, ["fields", "required"], values => [...values].reverse());
+    const before = await backend.read("conventions/order");
+    const blocked = await planRecipeEvolution(bundle, source);
+    assert.equal(blocked.ready, false);
+    await assert.rejects(applyRecipeEvolution(bundle, source, blocked.plan_token), RecipeEvolutionBlocked);
+    assert.deepEqual(await backend.read("conventions/order"), before);
+  }
+});
+
+test("list order: omitted local values and terminal membership or multiplicity changes remain blocked", async () => {
+  for (const change of ["local-only", "terminal-add", "terminal-remove", "terminal-duplicate"] as const) {
+    const { bundle, backend } = await orderedListBundle();
+    const desired = orderedListRecipe("1"); desired.version = "2";
+    if (change === "local-only") await backend.edit("conventions/order", doc => changeOrderedList(doc, ["fields", "optional"], values => [...values, "local"]));
+    else desired.docs[0] = changeOrderedList(desired.docs[0]!, ["fields", "terminal", "state"], values => change === "terminal-add" ? ["todo", ...values] : change === "terminal-remove" ? values.slice(1) : [...values, values[0]!]);
+    const before = await backend.read("conventions/order");
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.ready, false, change);
+    assert.ok(plan.blockers.some(row => row.code === (change === "local-only" || change === "terminal-remove" ? "RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED" : "RECIPE_EVOLUTION_TERMINAL_CHANGE")), JSON.stringify(plan.blockers));
+    await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), RecipeEvolutionBlocked);
+    assert.deepEqual(await backend.read("conventions/order"), before);
+    assert.equal(backend.writes, 0);
+  }
+});
+
+test("list order: changed installed order invalidates a plan before writes and loses no post-preflight CAS race", async () => {
+  for (const afterPreflight of [false, true]) {
+    const { bundle, backend } = await orderedListBundle();
+    const source = orderedListRecipe("3");
+    const plan = await planRecipeEvolution(bundle, source);
+    const edit = () => backend.edit("conventions/order", doc => changeOrderedList(doc, ["fields", "optional"], values => [...values].reverse()));
+    if (afterPreflight) backend.beforeCas = edit;
+    else await edit();
+    await assert.rejects(applyRecipeEvolution(bundle, source, plan.plan_token), (error: unknown) => afterPreflight
+      ? error instanceof RecipeEvolutionInterrupted && error.reason === "race"
+      : error instanceof RecipeEvolutionPlanChanged);
+    assert.equal(backend.writes, 0);
+    assert.deepEqual(((await readDoc(bundle, "conventions/order")).frontmatter.fields as { optional: string[] }).optional, ["state", "omega", "alpha", "mode"]);
+  }
+});
+
+test("list order: unknown extension arrays retain their existing append-only behavior", async () => {
+  const { bundle } = await orderedListBundle();
+  const installed = await readDoc(bundle, "conventions/order");
+  const backend = bundle.backend as DescriptionProbeBackend;
+  await backend.edit(installed.id, doc => ({ ...doc, frontmatter: { ...doc.frontmatter, x_steps: ["old", "tail"] } }));
+  const desired = orderedListRecipe("1"); desired.version = "2";
+  desired.docs[0]!.frontmatter.x_steps = ["first", "old", "tail"];
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, true);
+  await applyRecipeEvolution(bundle, desired, plan.plan_token);
+  assert.deepEqual((await readDoc(bundle, installed.id)).frontmatter.x_steps, ["old", "tail", "first"]);
+});
+
+test("list order: occurrences deliberately declared by the recipe retain their multiplicity", async () => {
+  const { bundle } = await orderedListBundle();
+  const desired = orderedListRecipe("1"); desired.version = "2";
+  desired.docs[0] = changeOrderedList(desired.docs[0]!, ["fields", "optional"], values => [values[0]!, values[1]!, values[1]!, ...values.slice(2)]);
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+  await applyRecipeEvolution(bundle, desired, plan.plan_token);
+  const installed = await readDoc(bundle, "conventions/order");
+  assert.deepEqual(installed.frontmatter.fields, desired.docs[0]!.frontmatter.fields);
+  assert.equal(readRecipeStamp(installed)?.definition, definitionDigest(desired.docs[0]!));
+  assert.equal((await planRecipeEvolution(bundle, desired)).writes, 0);
 });
