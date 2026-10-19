@@ -185,6 +185,8 @@ relative order needs no historical proof. Reordering existing values requires a 
 proving that the same recipe still owns the unchanged definition; an unproven reorder or duplicate
 is preserved and blocks with `RECIPE_EVOLUTION_LIST_ORDER_UNPROVEN`. Existing removal and terminal
 membership restrictions remain; unrelated extension arrays keep their existing merge behavior.
+Occurrences explicitly repeated by the selected recipe are retained to match fresh installation;
+unproven local duplicates remain preserved and blocked.
 Evidence:
 `packages/core/test/recipe-lifecycle.test.ts`,
 `packages/cli/test/recipe-evolve-golden.test.ts`, the stamp tests in
