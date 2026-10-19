@@ -602,6 +602,7 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
     controlSkip: "signed out, notify and inbox answer AUTH_REQUIRED (exit 4); hosted-notify.test.ts covers the signed-in runs",
   })),
   { leaf: "docDelete", surface: "--dir", argv: (t) => ["doc", "delete", "probe/absent", "--dir", t, "--json"] },
+  { leaf: "search", surface: "--dir", argv: (t) => ["search", "probe", "--dir", t, "--json"] },
   { leaf: "list", surface: "--dir", argv: (t) => ["list", "--dir", t, "--json"] },
   { leaf: "query", surface: "--dir", argv: (t) => ["query", "--dir", t, "--json"] },
   { leaf: "linkAdd", surface: "--dir", argv: (t) => ["link", "add", "notes/a", "notes/b", "--dir", t, "--json"] },
