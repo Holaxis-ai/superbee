@@ -92,7 +92,7 @@ function assertAggregator(job, label) {
   const gate = parsed.steps[2];
   assert.deepEqual(gate, {
     name: 'Verify complete current or reused CI proof',
-    run: 'node scripts/ci-queue-proof.mjs aggregate',
+    run: 'node scripts/ci-queue-proof.mjs aggregate >> "$GITHUB_STEP_SUMMARY"',
     env: { REQUIRED_RESULTS_JSON: '${{ toJSON(needs) }}', GITHUB_TOKEN: '${{ github.token }}' },
   }, `${label} must use the checked reuse wrapper`);
   assert.deepEqual(parsed.permissions, { contents: 'read', actions: 'read', checks: 'read' });
@@ -389,7 +389,7 @@ function validateCiTopology(
     'runs-on': 'ubuntu-latest', 'timeout-minutes': 5,
     outputs: { reuse: '${{ steps.decision.outputs.reuse }}', proof: '${{ steps.decision.outputs.proof }}' },
     steps: [parsed.jobs['source-decision'].steps[0], parsed.jobs['source-decision'].steps[1], {
-      name: 'Verify native exact-source queue proof', id: 'decision', run: 'node scripts/ci-queue-proof.mjs decision', env: { GITHUB_TOKEN: '${{ github.token }}' },
+      name: 'Verify native exact-source queue proof', id: 'decision', run: 'node scripts/ci-queue-proof.mjs decision >> "$GITHUB_OUTPUT"', env: { GITHUB_TOKEN: '${{ github.token }}' },
     }],
   });
   assert.equal(parsed.jobs['source-decision'].steps[1].with['node-version'], candidate.singleton_node);
@@ -595,9 +595,9 @@ function validateProofCheckouts(text) {
 test("aggregate policy cannot silently weaken", () => {
   const job = extractJobs(workflow).required;
   for (const changed of [
-    job.replace('run: node scripts/ci-queue-proof.mjs aggregate', 'run: true'),
-    job.replace('run: node scripts/ci-queue-proof.mjs aggregate', 'if: false\n        run: node scripts/ci-queue-proof.mjs aggregate'),
-    job.replace('run: node scripts/ci-queue-proof.mjs aggregate', 'continue-on-error: true\n        run: node scripts/ci-queue-proof.mjs aggregate'),
+    job.replace('run: node scripts/ci-queue-proof.mjs aggregate >> "$GITHUB_STEP_SUMMARY"', 'run: true'),
+    job.replace('run: node scripts/ci-queue-proof.mjs aggregate >> "$GITHUB_STEP_SUMMARY"', 'if: false\n        run: node scripts/ci-queue-proof.mjs aggregate >> "$GITHUB_STEP_SUMMARY"'),
+    job.replace('run: node scripts/ci-queue-proof.mjs aggregate >> "$GITHUB_STEP_SUMMARY"', 'continue-on-error: true\n        run: node scripts/ci-queue-proof.mjs aggregate >> "$GITHUB_STEP_SUMMARY"'),
   ]) assert.throws(() => assertAggregator(changed, "mutated"));
   for (const file of ["scripts/ci-queue-proof.test.mjs", ".github/actions/ci-gate/evaluate.test.mjs", "infrastructure/github-ci/preflight.test.mjs"]) {
     assert.ok(rootPackage.scripts["test:scripts"].split(" ").includes(file), `${file} must run in CI`);

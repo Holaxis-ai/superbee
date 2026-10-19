@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import yaml from 'js-yaml';
 import { spawnSync } from 'node:child_process';
 import { manifest, expectedQueueJobs, decide, verifyQueueProof, evaluateQueueResults, eligible, createQueueApi, policyDigest, main } from './ci-queue-proof.mjs';
 const p = manifest.queue_reuse;
@@ -141,7 +142,7 @@ test('HTTP client refuses API failures, redirects, invalid JSON and response ove
   const calls = [];
   const api = createQueueApi({ token: 'fixture-token', fetchImpl: async (url, options) => { calls.push({ url, options }); return new Response('{}'); } });
   assert.deepEqual(await api(route), {});
-  assert.equal(calls[0].url, `https://api.github.com${route}`);
+  assert.equal(calls[0].url.href, `https://api.github.com${route}`);
   assert.equal(calls[0].options.redirect, 'error');
   assert.equal(calls[0].options.method, 'GET');
   await assert.rejects(api('https://evil.example/'));
@@ -155,7 +156,8 @@ test('literal workflow helper writes safe forced-full output and rejects skipped
     const env = { ...process.env, GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_OUTPUT: output, REQUIRED_RESULTS_JSON: JSON.stringify(current(true, {})) };
     const decision = spawnSync(process.execPath, ['scripts/ci-queue-proof.mjs', 'decision'], { env, encoding: 'utf8' });
     assert.equal(decision.status, 0, decision.stderr);
-    assert.equal(readFileSync(output, 'utf8'), 'reuse=false\nproof=\n');
+    assert.equal(decision.stdout, 'reuse=false\nproof=\n');
+    assert.equal(existsSync(output), false, 'the helper has no output file authority');
     const aggregate = spawnSync(process.execPath, ['scripts/ci-queue-proof.mjs', 'aggregate'], { env, encoding: 'utf8' });
     assert.equal(aggregate.status, 1);
     assert.match(aggregate.stderr, /workflow_dispatch.*exact source/);
@@ -168,17 +170,17 @@ test('literal helper main produces admitted outputs and aggregate native evidenc
     const f = fixture(); const output = path.join(dir, 'output'); const summary = path.join(dir, 'summary');
     const env = { GITHUB_EVENT_NAME: context.event, GITHUB_REF: context.ref, GITHUB_SHA: context.sha, GITHUB_RUN_ATTEMPT: '1',
       GITHUB_REPOSITORY: p.repository, GITHUB_REPOSITORY_ID: String(p.repository_id), GITHUB_RUN_ID: String(context.runId), GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary };
-    await main(env, f.api, 'decision');
-    const text = readFileSync(output, 'utf8');
+    const text = await main(env, f.api, 'decision');
     assert.match(text, /^reuse=true\nproof=/);
     const proof = JSON.parse(text.split('\n')[1].slice('proof='.length));
     env.REQUIRED_RESULTS_JSON = JSON.stringify(current(true, proof));
-    await main(env, f.api, 'aggregate');
-    assert.match(readFileSync(summary, 'utf8'), /actions\/runs\/10\/attempts\/1/);
+    const summaryText = await main(env, f.api, 'aggregate');
+    assert.match(summaryText, /actions\/runs\/10\/attempts\/1/);
+    assert.equal(existsSync(output), false);
+    assert.equal(existsSync(summary), false);
     f.runs.push({ ...f.run, id: 11, created_at: '2026-10-19T11:00:00Z' });
     await assert.rejects(main(env, f.api, 'aggregate'), /full CI tests workflow_dispatch/);
-    await main(env, f.api, 'decision');
-    assert.match(readFileSync(output, 'utf8'), /reuse=false\nproof=\n$/);
+    assert.match(await main(env, f.api, 'decision'), /reuse=false\nproof=\n$/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -265,4 +267,59 @@ test('queue creation time remains bound across final detail and newest-list rere
     };
     assert.deepEqual(await decide(api, context), { reuse: false }, changedResponse);
   }
+});
+
+test('native HTTP adapter supports only exact fixed-repository GET routes', async () => {
+  const urls = [];
+  const api = createQueueApi({ fetchImpl: async url => { urls.push(url.href); return new Response('{}'); } });
+  const routes = [
+    '/repos/Holaxis-ai/superbee/actions/runs/10',
+    '/repos/Holaxis-ai/superbee/check-runs/100',
+    '/repos/Holaxis-ai/superbee/actions/runs/10/attempts/2/jobs?per_page=100&page=1',
+    `/repos/Holaxis-ai/superbee/actions/workflows/333080621/runs?head_sha=${context.sha}&event=merge_group&per_page=100&page=1`,
+    `/repos/Holaxis-ai/superbee/actions/workflows/333080621/runs?head_sha=${context.sha}&per_page=100&page=10`,
+    `/repos/Holaxis-ai/superbee/actions/workflows/333080621/runs?head_sha=${'0'.repeat(39)}1&per_page=100&page=1`,
+  ];
+  for (const route of routes) await api(route);
+  assert.deepEqual(urls, routes.map(route => `https://api.github.com${route}`));
+  for (const route of [
+    'https://api.github.com.evil.example/repos/Holaxis-ai/superbee/actions/runs/10',
+    '//evil.example/repos/Holaxis-ai/superbee/actions/runs/10',
+    'https://api.github.com@evil.example/',
+    '/repos/Holaxis-ai/other/actions/runs/10',
+    '/repos/Holaxis-ai/superbee/actions/runs/10/../../secrets',
+    '/repos/Holaxis-ai/superbee/actions/runs/%2e%2e',
+    '/repos/Holaxis-ai/superbee/actions/runs/10\n',
+    '/repos/Holaxis-ai/superbee/actions/runs/9007199254740992',
+    '/repos/Holaxis-ai/superbee/actions/runs/10/attempts/9007199254740992/jobs?per_page=100&page=1',
+    '/repos/Holaxis-ai/superbee/actions/runs/01',
+    '/repos/Holaxis-ai/superbee/actions/runs/10?redirect=https://evil.example',
+    routes[3].replace('333080621', '999'),
+    routes[3].replace('page=1', 'page=11'),
+    routes[3].replace(context.sha, 'g'.repeat(40)),
+    `${routes[3]}&head_sha=${'b'.repeat(40)}`,
+  ]) await assert.rejects(api(route), undefined, route);
+  assert.equal(urls.length, routes.length, 'invalid routes must be rejected before any network call');
+});
+
+test('literal YAML consumers redirect helper stdout only to quoted runner output files', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'ci-queue-consumer-'));
+  try {
+    const jobs = yaml.safeLoad(readFileSync('.github/workflows/ci-tests.yml', 'utf8')).jobs;
+    const decisionCommand = jobs['source-decision'].steps.at(-1).run;
+    const output = path.join(dir, 'runner output with spaces');
+    const summary = path.join(dir, 'runner summary with spaces');
+    const env = { ...process.env, PATH: `${path.dirname(process.execPath)}:${process.env.PATH}`, GITHUB_EVENT_NAME: 'workflow_dispatch',
+      GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary, REQUIRED_RESULTS_JSON: JSON.stringify(current()) };
+    const result = spawnSync('/bin/bash', ['-c', decisionCommand], { env, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '');
+    assert.equal(readFileSync(output, 'utf8'), 'reuse=false\nproof=\n');
+    for (const job of Object.keys(p.aggregates)) {
+      const aggregate = spawnSync('/bin/bash', ['-c', jobs[job].steps.at(-1).run], { env, encoding: 'utf8' });
+      assert.equal(aggregate.status, 0, aggregate.stderr);
+      assert.equal(aggregate.stdout, '');
+    }
+    assert.equal(readFileSync(summary, 'utf8'), 'All current required CI lanes succeeded.\n'.repeat(3));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

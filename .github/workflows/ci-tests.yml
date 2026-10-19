@@ -54,7 +54,7 @@ jobs:
           node-version: 24.21.0
       - name: Verify native exact-source queue proof
         id: decision
-        run: node scripts/ci-queue-proof.mjs decision
+        run: node scripts/ci-queue-proof.mjs decision >> "$GITHUB_OUTPUT"
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -309,7 +309,7 @@ jobs:
         with:
           node-version: 24.21.0
       - name: Verify complete current or reused CI proof
-        run: node scripts/ci-queue-proof.mjs aggregate
+        run: node scripts/ci-queue-proof.mjs aggregate >> "$GITHUB_STEP_SUMMARY"
         env:
           REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -333,7 +333,7 @@ jobs:
         with:
           node-version: 24.21.0
       - name: Verify complete current or reused CI proof
-        run: node scripts/ci-queue-proof.mjs aggregate
+        run: node scripts/ci-queue-proof.mjs aggregate >> "$GITHUB_STEP_SUMMARY"
         env:
           REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -357,7 +357,7 @@ jobs:
         with:
           node-version: 24.21.0
       - name: Verify complete current or reused CI proof
-        run: node scripts/ci-queue-proof.mjs aggregate
+        run: node scripts/ci-queue-proof.mjs aggregate >> "$GITHUB_STEP_SUMMARY"
         env:
           REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
           GITHUB_TOKEN: ${{ github.token }}

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { appendFileSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { isMainModule } from './is-main-module.mjs';
 import { evaluateResults } from '../.github/actions/ci-gate/evaluate.mjs';
@@ -29,12 +29,38 @@ export function expectedQueueJobs() {
 // Routes are constructed locally. Provider URLs and redirect destinations are never request authority.
 export function createQueueApi({ token, fetchImpl = fetch } = {}) {
   return async route => {
-    const prefix = `/repos/${policy.repository}/`;
-    requireProof(route.startsWith(prefix) && /^[/A-Za-z0-9_.?=&%-]+$/.test(route) && !route.includes('..'), 'invalid API route');
+    if (typeof route !== 'string' || /[\u0000-\u0020\u007f]/.test(route)) throw new Error('invalid native API route');
+    const url = new URL('https://api.github.com');
+    const runs = /^\/repos\/Holaxis-ai\/superbee\/actions\/workflows\/333080621\/runs\?head_sha=([a-f0-9]{40})(&event=merge_group)?&per_page=100&page=([1-9]|10)$/.exec(route);
+    const detail = /^\/repos\/Holaxis-ai\/superbee\/actions\/runs\/([1-9][0-9]*)$/.exec(route);
+    const jobs = /^\/repos\/Holaxis-ai\/superbee\/actions\/runs\/([1-9][0-9]*)\/attempts\/([1-9][0-9]*)\/jobs\?per_page=100&page=([1-9]|10)$/.exec(route);
+    const check = /^\/repos\/Holaxis-ai\/superbee\/check-runs\/([1-9][0-9]*)$/.exec(route);
+    if (runs) {
+      // Reconstruct the source query from finite numeric words, never a file-derived route.
+      const sha = runs[1].match(/.{8}/g).map(word => Number.parseInt(word, 16).toString(16).padStart(8, '0')).join('');
+      url.pathname = '/repos/Holaxis-ai/superbee/actions/workflows/333080621/runs';
+      url.searchParams.set('head_sha', sha);
+      if (runs[2]) url.searchParams.set('event', 'merge_group');
+      url.searchParams.set('per_page', '100');
+      url.searchParams.set('page', String(Number(runs[3])));
+    } else if (detail || jobs || check) {
+      const id = Number((detail ?? jobs ?? check)[1]);
+      if (!Number.isSafeInteger(id) || id <= 0) throw new Error('invalid native API ID');
+      if (jobs) {
+        const attempt = Number(jobs[2]);
+        if (!Number.isSafeInteger(attempt) || attempt <= 0) throw new Error('invalid native attempt');
+        url.pathname = `/repos/Holaxis-ai/superbee/actions/runs/${id}/attempts/${attempt}/jobs`;
+        url.searchParams.set('per_page', '100');
+        url.searchParams.set('page', String(Number(jobs[3])));
+      } else url.pathname = detail ? `/repos/Holaxis-ai/superbee/actions/runs/${id}` : `/repos/Holaxis-ai/superbee/check-runs/${id}`;
+    } else throw new Error('unsupported native API route');
+    if (url.origin !== 'https://api.github.com' || url.hostname !== 'api.github.com' || url.protocol !== 'https:' || url.username || url.password) {
+      throw new Error('invalid native API origin');
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
     try {
-      const response = await fetchImpl(`https://api.github.com${route}`, { method: 'GET', redirect: 'error', signal: controller.signal,
+      const response = await fetchImpl(url, { method: 'GET', redirect: 'error', signal: controller.signal,
         headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
       requireProof(response.ok, 'GitHub API unavailable');
       requireProof(response.body, 'missing API body');
@@ -164,22 +190,19 @@ export async function main(env = process.env, api = createQueueApi({ token: env.
   const context = contextFromEnv(env);
   if (mode === 'decision') {
     const result = await decide(api, context);
-    appendFileSync(env.GITHUB_OUTPUT, `reuse=${result.reuse}\nproof=${result.proof ? JSON.stringify(result.proof) : ''}\n`);
-    return;
+    return `reuse=${result.reuse}\nproof=${result.proof ? JSON.stringify(result.proof) : ''}\n`;
   }
   requireProof(mode === 'aggregate', 'unknown queue proof mode');
   try {
     await evaluateQueueResults(JSON.parse(env.REQUIRED_RESULTS_JSON), context, api);
-    if (env.GITHUB_STEP_SUMMARY) {
-      const results = JSON.parse(env.REQUIRED_RESULTS_JSON);
-      const reused = results[policy.decision_job]?.outputs?.reuse === 'true' && results.runtime?.result === 'skipped';
-      const proof = reused ? JSON.parse(results[policy.decision_job].outputs.proof) : undefined;
-      appendFileSync(env.GITHUB_STEP_SUMMARY, reused
-        ? `Verified exact-source queue [run ${proof.run}, attempt ${proof.attempt}](https://github.com/${policy.repository}/actions/runs/${proof.run}/attempts/${proof.attempt}), native check suite ${proof.suite}, source ${proof.sha}, policy ${proof.policy}; current engines-floor smoke succeeded.\n`
-        : 'All current required CI lanes succeeded.\n');
-    }
+    const results = JSON.parse(env.REQUIRED_RESULTS_JSON);
+    const reused = results[policy.decision_job]?.outputs?.reuse === 'true' && results.runtime?.result === 'skipped';
+    const proof = reused ? JSON.parse(results[policy.decision_job].outputs.proof) : undefined;
+    return reused
+      ? `Verified exact-source queue [run ${proof.run}, attempt ${proof.attempt}](https://github.com/${policy.repository}/actions/runs/${proof.run}/attempts/${proof.attempt}), native check suite ${proof.suite}, source ${proof.sha}, policy ${proof.policy}; current engines-floor smoke succeeded.\n`
+      : 'All current required CI lanes succeeded.\n';
   } catch {
     throw new Error('Required CI proof rejected. Run a full CI tests workflow_dispatch on this exact source to recover.');
   }
 }
-if (isMainModule(import.meta.url)) main().catch(error => { console.error(error.message); process.exitCode = 1; });
+if (isMainModule(import.meta.url)) main().then(output => process.stdout.write(output)).catch(error => { console.error(error.message); process.exitCode = 1; });
