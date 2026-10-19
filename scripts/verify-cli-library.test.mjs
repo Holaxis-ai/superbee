@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { verifyReleaseSource } from './verify-cli-library.mjs';
-import { validateCliTarEntries, withRetainedTarball } from './cli-library-proof.mjs';
+import { validateCliTarEntries, withRetainedTarball, assertClosedCliImports } from './cli-library-proof.mjs';
+import ts from 'typescript';
 
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'cli-release-source-'));
@@ -25,6 +26,44 @@ function fixture() {
   const verify = candidate => verifyReleaseSource(candidate ?? record, { root, githubSha: git('rev-parse', 'HEAD'), manifestOf: name => manifests.get(name) });
   return { root, git, commit, record, verify, manifestOf: name => manifests.get(name), close: () => rmSync(root, { recursive: true, force: true }) };
 }
+
+test('closed artifact permits only the guarded explicit local-profile extension', async () => {
+  const bundle = readFileSync(new URL('../packages/cli/dist/index.mjs', import.meta.url), 'utf8');
+  await assertClosedCliImports(bundle);
+  const ast = ts.createSourceFile('cli.mjs', bundle, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const loader = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'explicitProfile');
+  assert.ok(loader);
+  const imports = ast.statements.filter(ts.isImportDeclaration).map(node => node.getText(ast)).join('\n');
+  let predicate, selection;
+  const visit = node => {
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left) && /^record\d*$/.test(node.left.text) && node.right.getText(ast).includes('value !== null')) {
+      // Choose the predicate actually referenced by this loader, not an unrelated same-shape helper.
+      if (loader.getText(ast).includes(`${node.left.text}(module)`)) predicate = `const ${node.left.text} = ${node.right.getText(ast)};`;
+    }
+    if (ts.isConditionalExpression(node) && node.getText(ast).startsWith('options.profile ? await explicitProfile(')) selection = node.getText(ast);
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  assert.ok(predicate && selection);
+  const subject = `${imports}\n${predicate}\n${loader.getText(ast)}\nasync function testSourceForAuthor(recipe, fixture, options = {}) { return ${selection}; }`;
+  await assertClosedCliImports(subject);
+  await assertClosedCliImports('import fs from "node:fs"; export { fs };');
+  const rows = [
+    ['same expression outside boundary', subject + '\nawait import(pathToFileURL(resolved).href);'],
+    ['sole dynamic import moved outside boundary', subject.replace('await import(pathToFileURL(resolved).href)', 'await Promise.resolve({})') + '\nawait import(pathToFileURL(resolved).href);'],
+    ['extra unknown import', subject + '\nawait import(extensionPath);'],
+    ['external static dependency', subject + '\nimport external from "external-package";'],
+    ['missing boundary', 'await import(pathToFileURL(resolved).href);'],
+    ['renamed boundary alone', subject.replaceAll('explicitProfile', 'otherLoader')],
+    ['missing private-state guard', subject.replace(/assertPathOutsidePrivateState\([^;]+;/, '')],
+    ['different local-file loader', subject.replace(/pathToFileURL\(resolved\)\.href/, 'resolved')],
+    ['changed fs member', subject.replace(/\.realpath\(/, '.readFile(')],
+    ['extra loader call', subject.replace('try {', 'try { extraCall();')],
+    ['implicit profile selection', subject.replace('options.profile ? await explicitProfile(options.profile)', 'recipe.profile ? await explicitProfile(recipe.profile)')],
+    ['extra loader reference', subject + '\nconst escape = explicitProfile;'],
+  ];
+  for (const [label, candidate] of rows) await assert.rejects(assertClosedCliImports(candidate), undefined, label);
+});
 
 test('release source requires known clean exact HEAD and GitHub SHA', () => {
   const f = fixture();
