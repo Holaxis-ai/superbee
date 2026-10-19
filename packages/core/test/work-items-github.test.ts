@@ -116,7 +116,7 @@ test("example installs complete recipe definitions and binds the GitHub mapping 
   const w = await world();
   for (const id of ["conventions/work-item", "connectors/github"]) {
     const stamp = (await w.backend.read(id)).doc.frontmatter.x_recipe as Record<string, unknown>;
-    assert.equal(stamp.id, "work-items"); assert.equal(stamp.version, "1"); assert.equal(stamp.connectors, 1);
+    assert.equal(stamp.id, "work-items"); assert.equal(stamp.version, "1"); assert.equal(stamp.connectors, 2);
   }
   assert.equal(w.overlay.registry.kinds.has("Task"), false);
   assert.equal(w.bound.kind.claim, undefined);
