@@ -75,8 +75,10 @@ import {
 } from "../src/recipes.js";
 import {
   applyRecipeEvolution,
+  definitionDigest,
   installRecipe,
   planRecipeEvolution,
+  readRecipeStamp,
   recipeSourceDigest,
   RecipeLifecycleError,
 } from "@superbee/core/recipe-lifecycle";
@@ -1433,17 +1435,34 @@ test("recipe evolve: recipe-authored provenance and mutation attribution are nev
   }
 });
 
-test("recipe evolve: additive declaration arrays behave as sets and never persist duplicates", async () => {
-  const bundle: Bundle = { root: "mem://recipe-evolution-array-set", backend: new MemoryBackend() };
-  await installRecipe(bundle, widgetRecipe("1", widgetFields()), { now: T });
-  const desired = widgetRecipe("2", widgetFields(["title"], ["colour", "colour"]));
+test("recipe evolve: recipe-authored duplicate occurrences match fresh installation and settle", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(T) });
+  for (const edition of ["0.1", "0.2"]) {
+    const bundle: Bundle = { root: "mem://recipe-evolution-source-occurrences", backend: new MemoryBackend() };
+    const fresh: Bundle = { root: "mem://recipe-fresh-source-occurrences", backend: new MemoryBackend() };
+    for (const target of [bundle, fresh]) {
+      await target.backend!.writeReserved("", "index.md", `---\nokf_version: '${edition}'\n---\n`);
+    }
+    await installRecipe(bundle, widgetRecipe("1", widgetFields()), { now: T });
+    const desired = widgetRecipe("2", widgetFields(["title"], ["colour", "colour"]));
 
-  const plan = await planRecipeEvolution(bundle, desired);
-  assert.equal(plan.ready, true);
-  assert.deepEqual(plan.definitions[0]!.added_paths, ["/frontmatter/fields/optional/colour"]);
-  await applyRecipeEvolution(bundle, desired, plan.plan_token);
-  assert.deepEqual((await loadKinds(bundle)).kinds.get("Widget")?.fields.optional, ["colour"]);
-  assert.equal((await planRecipeEvolution(bundle, desired)).changed, false);
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.ready, true);
+    assert.deepEqual(plan.definitions[0]!.added_paths, ["/frontmatter/fields/optional/colour"]);
+    await applyRecipeEvolution(bundle, desired, plan.plan_token);
+    await installRecipe(fresh, desired, { now: T });
+    const evolved = await bundle.backend!.read("conventions/widget");
+    const installed = await fresh.backend!.read("conventions/widget");
+    assert.deepEqual(evolved, installed); // Complete stored document and byte-addressed version.
+    assert.deepEqual((await loadKinds(bundle)).kinds.get("Widget")?.fields.optional, ["colour", "colour"]);
+    assert.equal(definitionDigest(evolved.doc), definitionDigest(installed.doc));
+    assert.deepEqual(readRecipeStamp(evolved.doc), readRecipeStamp(installed.doc));
+    assert.equal(readRecipeStamp(evolved.doc)?.definition, definitionDigest(evolved.doc));
+    const settled = await planRecipeEvolution(bundle, desired);
+    assert.equal(settled.ready, true);
+    assert.equal(settled.changed, false);
+    assert.equal(settled.writes, 0);
+  }
 });
 
 test("recipe evolve: prototype-looking nested declaration keys remain own data properties", async () => {
@@ -3554,6 +3573,32 @@ test("recipe Reference journey: exact matching legacy content is explicitly adop
       assert.equal((adopted.frontmatter.x_recipe as Record<string, unknown>).id, "reference-journey");
       assert.equal(adopted.frontmatter.superbee_updated_by, "process:reference-adopt");
       assert.equal((await runJson(recipe, ["evolve", source, "--dir", dir])).writes, 0);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
+});
+
+test("recipe body normalization: CLI add and evolve settle CRLF bodies in both editions and retain exact stale fences", async () => {
+  for (const edition of ["0.1", "0.2"]) {
+    const root = await tempDir();
+    try {
+      const dir = path.join(root, "bundle");
+      await initBundle(dir, { okfVersion: edition });
+      const source = await referenceJourneySource(root, "Synthetic guidance.", false);
+      await runJson(recipe, ["add", source, "--dir", dir]);
+      const file = path.join(dir, "conventions/widget.md");
+      const crlf = (await readFile(file, "utf8")).replaceAll("\n", "\r\n");
+      await writeFile(file, crlf);
+      const plan = await runJson(recipe, ["evolve", source, "--dir", dir]);
+      assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+      assert.equal(plan.writes, 0);
+      assert.equal((await runJson(recipe, ["add", source, "--dir", dir])).changed, false);
+      await runJson(recipe, ["evolve", source, "--dir", dir, "--apply", String(plan.plan_token)]);
+      assert.equal(await readFile(file, "utf8"), crlf);
+      const lf = crlf.replaceAll("\r\n", "\n");
+      await writeFile(file, lf);
+      await assert.rejects(runJson(recipe, ["evolve", source, "--dir", dir, "--apply", String(plan.plan_token)]),
+        (error: unknown) => error instanceof CliError && error.code === "STALE_HEAD");
+      assert.equal(await readFile(file, "utf8"), lf);
     } finally { await rm(root, { recursive: true, force: true }); }
   }
 });

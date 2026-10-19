@@ -162,6 +162,11 @@ export function recipeSourceDigest(recipe: LoadedRecipe): string {
   });
 }
 
+/** The body canon shared by definition stamps and recipe content comparisons; never a storage rewrite. */
+export function normalizeDefinitionBody(body: string): string {
+  return normalizeDocumentBodyForStorage(lf(body));
+}
+
 /**
  * Digest of a convention as written, rules version 1: its frontmatter without the stripped keys
  * and its body with CRLF read as LF and the storage newline applied. The digest of a candidate
@@ -170,7 +175,7 @@ export function recipeSourceDigest(recipe: LoadedRecipe): string {
 export function definitionDigest(doc: Pick<OkfDocument, "frontmatter" | "body">): string {
   const frontmatter: Record<string, unknown> = { ...doc.frontmatter };
   for (const key of DIGEST_STRIPPED_KEYS) delete frontmatter[key];
-  return digest({ frontmatter, body: normalizeDocumentBodyForStorage(lf(doc.body ?? "")) });
+  return digest({ frontmatter, body: normalizeDefinitionBody(doc.body ?? "") });
 }
 
 function nonNegativeInteger(value: unknown): value is number {

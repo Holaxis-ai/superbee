@@ -46,6 +46,7 @@ import {
   RECIPE_STAMP_KEY,
   conventionStampState,
   definitionDigest,
+  normalizeDefinitionBody,
   recipeStampIdentity,
   recipeStampState,
   withRecipeStamp,
@@ -196,17 +197,35 @@ function setOwn(record: Record<string, unknown>, key: string, value: unknown): v
   });
 }
 
+/** The ordered declaration lists the Kind parser consumes; extension arrays keep their policy. */
+function isOrderedDeclarationList(pointer: string): boolean {
+  return pointer === "/frontmatter/sections"
+    || /^\/frontmatter\/fields\/(?:required|optional)$/.test(pointer)
+    || /^\/frontmatter\/fields\/(?:values|terminal)\/[^/]+$/.test(pointer);
+}
+
+/** Each installed occurrence must survive in the same relative order, including duplicates. */
+function isOccurrenceSubsequence(current: unknown[], next: unknown[]): boolean {
+  let index = 0;
+  for (const value of next) {
+    if (index < current.length && okfValuesEqual(current[index], value)) index += 1;
+  }
+  return index === current.length;
+}
+
 /**
  * Merge recipe declarations into a user-owned convention without deleting or replacing any
  * existing semantic value, except field guidance whose whole-definition stamp proves recipe
- * ownership. Arrays are declaration sets: additions append, while omissions are blockers. Root mutation/provenance metadata is preserved by the shared write policy instead of
- * being treated as recipe-owned schema.
+ * ownership. Kind declaration lists follow recipe order when existing occurrences can be
+ * preserved or the stamp proves an unchanged recipe baseline; omitted values remain blockers.
+ * Extension arrays retain their append-only merge. Root mutation/provenance metadata is preserved
+ * by the shared write policy instead of being treated as recipe-owned schema.
  */
 function additiveConventionCandidate(
   existing: OkfDocument,
   desired: OkfDocument,
   blockers: RecipeEvolutionBlocker[],
-  canReplaceDescriptions: boolean,
+  hasUnchangedRecipeBaseline: boolean,
 ): AdditiveMergeResult {
   const addedPaths: string[] = [];
   const descriptionReplacements: AdditiveMergeResult["descriptionReplacements"] = [];
@@ -228,7 +247,7 @@ function additiveConventionCandidate(
     }
     if (okfValuesEqual(current, next)) return current;
     if (
-      canReplaceDescriptions
+      hasUnchangedRecipeBaseline
       && /^\/frontmatter\/fields\/descriptions\/[^/]+$/.test(pointer)
       && typeof current === "string"
       && typeof next === "string"
@@ -238,8 +257,10 @@ function additiveConventionCandidate(
     }
     if (Array.isArray(current) && Array.isArray(next)) {
       const merged = [...current];
+      let removesValue = false;
       for (const value of current) {
         if (!next.some((candidate) => okfValuesEqual(candidate, value))) {
+          removesValue = true;
           evolutionBlocker(
             blockers,
             "RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED",
@@ -248,6 +269,24 @@ function additiveConventionCandidate(
             pointer,
           );
         }
+      }
+      if (isOrderedDeclarationList(pointer) && !removesValue) {
+        if (!hasUnchangedRecipeBaseline && !isOccurrenceSubsequence(current, next)) {
+          evolutionBlocker(
+            blockers,
+            "RECIPE_EVOLUTION_LIST_ORDER_UNPROVEN",
+            desired.id,
+            `automatic evolution cannot reorder or remove installed occurrences at '${pointer}' without an unchanged recipe baseline; existing order and duplicates are preserved`,
+            pointer,
+          );
+          return current;
+        }
+        for (const value of next) {
+          if (!current.some((candidate) => okfValuesEqual(candidate, value))) {
+            addedPaths.push(`${pointer}/${pointerSegment(String(value))}`);
+          }
+        }
+        return next;
       }
       for (const value of next) {
         if (merged.some((candidate) => okfValuesEqual(candidate, value))) continue;
@@ -295,10 +334,12 @@ function additiveConventionCandidate(
   }
 
   let body = existing.body;
-  if (existing.body === "" && desired.body !== "") {
+  const existingBody = normalizeDefinitionBody(existing.body);
+  const desiredBody = normalizeDefinitionBody(desired.body);
+  if (existingBody === "\n" && desiredBody !== "\n") {
     body = desired.body;
     addedPaths.push("/body");
-  } else if (existing.body !== desired.body) {
+  } else if (existingBody !== desiredBody) {
     evolutionBlocker(
       blockers,
       "RECIPE_EVOLUTION_BODY_REPLACEMENT_UNSUPPORTED",
@@ -486,7 +527,10 @@ function monotonicEvolutionBlockers(
       "expects_inbound",
     );
   }
-  if (!okfValuesEqual(current.fields.terminal, desired.fields.terminal)) {
+  const sameTerminalOccurrences = Object.keys(current.fields.terminal).length === Object.keys(desired.fields.terminal).length
+    && Object.entries(current.fields.terminal).every(([field, values]) => Object.hasOwn(desired.fields.terminal, field)
+      && okfValuesEqual([...values].sort(), [...desired.fields.terminal[field]!].sort()));
+  if (!sameTerminalOccurrences) {
     evolutionBlocker(
       blockers,
       "RECIPE_EVOLUTION_TERMINAL_CHANGE",
@@ -704,9 +748,9 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
 
     const identityState = recipeStampState(existing.doc, identity);
     // A whole-definition stamp proves an unchanged baseline, not individual field history.
-    const canReplaceDescriptions = (identityState === "current" || identityState === "stale")
+    const hasUnchangedRecipeBaseline = (identityState === "current" || identityState === "stale")
       && conventionStampState(existing.doc) === "current";
-    const merged = additiveConventionCandidate(existing.doc, target, blockers, canReplaceDescriptions);
+    const merged = additiveConventionCandidate(existing.doc, target, blockers, hasUnchangedRecipeBaseline);
     let candidate = merged.candidate;
     if (okfVersion === "0.2") {
       try {
@@ -738,7 +782,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       );
     } else {
       desiredKinds.set(parsedCandidate.kind.governs, parsedCandidate.kind);
-      // Additive evolution preserves local declarations that are absent from the recipe.
+      // Omitted declarations remain in the candidate even when they block applying the plan.
       for (const warning of parsedCandidate.warnings) {
         if (warning.code !== "OKF_WORKFLOW_STATUS_COLLISION" || blockers.some(blocker => blocker.id === target.id && blocker.code === warning.code)) continue;
         evolutionBlocker(blockers, warning.code, target.id, warning.message, warning.field);
@@ -749,8 +793,8 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
     const unchanged = sameInstalledDoc(existing.doc, candidate, okfVersion);
     // A current identity whose definition disagrees with the stored content is re-stamped only when
     // that content's definition digest equals the digest of the recipe's own convention: a fresh
-    // stamp is then the honest record. The merge treats lists as sets, so `unchanged` alone would
-    // also re-baseline a local reorder or duplicate.
+    // stamp is then the honest record. `unchanged` alone must not re-baseline preserved local
+    // content that differs from the selected recipe.
     const stamp =
       unchanged &&
       identityState === "current" &&
