@@ -5,7 +5,6 @@ import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { bindSourceFeed, changeBetween, findingsFor, mapRecord, parseConnectorDoc, renderIdentity, type MappingDiagnostic, type Connector } from "../src/connectors.js";
-import { parseMarkdown } from "../src/frontmatter.js";
 import { mutateDocument } from "../src/document-mutation.js";
 import { loadKinds } from "../src/kinds-load.js";
 import { installRecipe } from "../src/recipe-lifecycle/index.js";
