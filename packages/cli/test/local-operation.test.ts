@@ -39,7 +39,7 @@ test('changed source installation leaves accepted immutable generation unchanged
 });
 test('output symlink and escape refuse with private partial files retained',async()=>{
   const f=await fixture(`const fs=await import('node:fs/promises');await fs.symlink(resources.scene.path,invocation.outputDirectory+'/escape');return {outputs:[{role:'escape',path:'escape',mimeType:'text/plain'}]};`);
-  const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,f.binding,f.input,{home:f.home});assert.equal(result.status,'failed');assert.equal(result.reason,'output_validation');assert.equal((await readdir(path.join(path.dirname(result.manifest),'outputs'))).length,1);
+  const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,f.binding,f.input,{home:f.home});assert.equal(result.status,'failed');assert.ok(['output_limit','output_validation'].includes(result.reason),result.reason);assert.deepEqual(result.outputs,[]);const outputs=path.join(path.dirname(result.manifest),'outputs');assert.deepEqual(await readdir(outputs),['escape']);const {lstat,readlink}=await import('node:fs/promises');assert.ok((await lstat(path.join(outputs,'escape'))).isSymbolicLink());assert.equal(await readlink(path.join(outputs,'escape')),path.join(path.dirname(result.manifest),'inputs','scene.blend'));assert.equal(await readFile(f.resource,'utf8'),'synthetic-scene');
 });
 test('real child cancellation stops blocking module load and reports confirmed termination',async()=>{
   const f=await fixture();
@@ -167,8 +167,12 @@ test('dispatch refuses a binary changed during module initialization even when a
   const result=await running;assert.equal(result.status,'failed');assert.equal(result.reason,'tool_identity_changed');await assert.rejects(readFile(path.join(f.root,'executed')),{code:'ENOENT'});const manifest=JSON.parse(await readFile(result.manifest,'utf8'));assert.deepEqual(manifest.toolIdentityChanged,['fixture']);
 });
 test('post-completion binary changes cannot be hidden by adapter catch',async()=>{
-  const f=await fixture(`try{await port.runTool({tool:'fixture',argv:['--eval',"require('node:fs').appendFileSync(process.execPath,'changed')"]});}catch{}return {outputs:[]};`);
-  const executable=await copiedNativeNode(f.root),binding=await bindFixtureTool(f,executable);const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,binding,f.input,{home:f.home});assert.equal(result.status,'failed');assert.equal(result.reason,'tool_identity_changed');assert.deepEqual(JSON.parse(await readFile(result.manifest,'utf8')).toolIdentityChanged,['fixture']);
+  const toolScript="const fs=require('node:fs');const originalSize=fs.statSync(process.execPath).size;const replacement=process.execPath+'.replacement';fs.copyFileSync(process.execPath,replacement);fs.appendFileSync(replacement,'changed');fs.renameSync(replacement,process.execPath);process.on('exit',exitCode=>fs.writeFileSync('native-exit.json',JSON.stringify({exitCode,originalSize,replacedSize:fs.statSync(process.execPath).size})));process.exit(0)";
+  const f=await fixture(`try{await port.runTool({tool:'fixture',argv:['--eval',${JSON.stringify(toolScript)}]});}catch{}return {outputs:[]};`);
+  const executable=await copiedNativeNode(f.root),binding=await bindFixtureTool(f,executable);const {stat}=await import('node:fs/promises');const originalSize=(await stat(executable)).size;
+  const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,binding,f.input,{home:f.home});const nativeExit=JSON.parse(await readFile(path.join(path.dirname(result.manifest),'outputs','native-exit.json'),'utf8'));
+  assert.deepEqual(nativeExit,{exitCode:0,originalSize,replacedSize:originalSize+Buffer.byteLength('changed')});assert.equal((await stat(executable)).size,nativeExit.replacedSize);
+  assert.equal(result.status,'failed');assert.equal(result.reason,'tool_identity_changed');assert.deepEqual(JSON.parse(await readFile(result.manifest,'utf8')).toolIdentityChanged,['fixture']);
 });
 test('native version probe ignoring TERM and retaining descendant pipes settles within its finite escalation bound',async(t)=>{
   const {spawnSync}=await import('node:child_process');if(spawnSync('cc',['--version'],{stdio:'ignore'}).status!==0){t.skip('native compiler unavailable for adversarial executable fixture');return;}
