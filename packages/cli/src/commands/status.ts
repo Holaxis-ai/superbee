@@ -156,7 +156,10 @@ Category semantics (one line each):
   cross_bundle_link_type_violations_rows  A qualified link whose text is a declared type that does
                       not conform (wrong source kind, or the declaration names another or no alias),
                       or a local link under a qualified declaration ('links: {pours: "beers:Beer"}').
-                      The target's kind in the other bundle is not checked.
+                      An explicitly bound resolved target must have the declared kind. Inspect the
+                      target's type and the source convention's links declaration when this row appears.
+                      Unbound, unavailable or unresolved targets remain unchecked/unresolved, not certified.
+                      No foreign schema is loaded; link add without bindings retains metadata-only lint.
   okf_upgrade        Present only when a legacy bundle declares workflow 'status' values that
                       collide with the current standard lifecycle vocabulary. The bundle remains supported;
                       this is migration-readiness guidance, never an automatic rewrite.
