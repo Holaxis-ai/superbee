@@ -114,7 +114,9 @@ export function scanBody(body: string, visit: (term: string, start: number, end:
       flush();
       if (stopped) return;
     }
-    byteOffset += utf8(character).byteLength;
+    // for-of yields one code point; lone surrogates encode as the three-byte replacement character.
+    const point = character.codePointAt(0)!;
+    byteOffset += point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
   }
   flush();
 }
