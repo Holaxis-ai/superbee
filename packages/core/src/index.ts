@@ -445,3 +445,5 @@ export type { BodyPreviewFinding, BodyReplaceFinding, BodyReplacePosture } from 
 
 export { inspectKindDeprecatedUsage, kindDeprecationTransition, kindDeprecationProblems } from "./kind-deprecation.js";
 export type { KindDeprecation, DeprecatedUsage } from "./kind-deprecation.js";
+export { INVENTORY_GUARD_DOMAIN, InventoryGuardConflict, InventoryGuardUnsupported, inventoryGuardFor } from "./inventory-guard.js";
+export type { InventoryEntry, InventoryGuard, InventoryGuardTarget, InventoryGuardRequest, InventoryGuardResult } from "./inventory-guard.js";
