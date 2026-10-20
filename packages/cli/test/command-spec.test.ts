@@ -147,3 +147,10 @@ test("hosted ordinary-file help distinguishes frozen delivery from document reco
   assert.equal(artifact!.when!(["unknown"]), true);
   assert.doesNotMatch(artifact!.why, /blobs.*do not sync/);
 });
+
+
+test("local output export is projected as egress with independent result semantics",()=>{
+  const op=CLI_COMMAND_GROUPS.flatMap(group=>group.commands).find(row=>row.id==='op');assert.ok(op);
+  assert.match(op.usage,/--export-output <json-role>=<path>/);assert.match(op.summary,/uniquely declared application\/json/);assert.match(op.summary,/partial failure/);
+  assert.equal(CLI_LEAVES.opRun.pathFlags.find(flag=>flag.flag==='export-output')?.role,'egress');
+});
