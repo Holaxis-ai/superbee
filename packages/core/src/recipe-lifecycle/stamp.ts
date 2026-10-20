@@ -5,7 +5,7 @@
 // stamps alone, without the recipe source; References have separate evolution rows. Storage-neutral: no Node globals or builtins.
 import { CONNECTOR_TYPE, CONNECTORS_PREFIX } from "../connectors.js";
 import { normalizeDocumentBodyForStorage } from "../frontmatter.js";
-import { CONVENTION_TYPE } from "../kinds.js";
+import { CONVENTION_TYPE, CONVENTIONS_PREFIX } from "../kinds.js";
 import type { LoadedRecipe } from "../recipes.js";
 import type { ConceptId, OkfDocument } from "../types.js";
 import { sha256Hex } from "../versioning.js";
@@ -67,6 +67,8 @@ export interface InstalledRecipeRow {
   missing_ids?: ConceptId[];
   diverged?: ConceptId[];
   unknown_rules?: ConceptId[];
+  /** Retained Convention/Connector ids absent from an explicitly supplied known recipe. */
+  orphaned_ids?: ConceptId[];
 }
 
 /** The recipe-level facts every stamp a recipe writes shares; `definition` is per document. */
@@ -279,6 +281,39 @@ function isConnectorDoc(doc: OkfDocument): boolean {
   return doc.frontmatter.type === CONNECTOR_TYPE && doc.id.startsWith(CONNECTORS_PREFIX);
 }
 
+/** A retained stamped definition absent from the explicitly selected recipe's declarations. */
+export interface RecipeOrphanedDefinition {
+  id: ConceptId;
+  type: "Convention" | "Connector" | "Reference";
+}
+
+/**
+ * Read-only ownership reporting, not a digest proof or removal authority. Even unknown digest
+ * rules and locally changed documents retain their recorded recipe id. An unreadable stamp does
+ * not prove ownership. The caller must supply the recipe whose declarations are being compared.
+ */
+export function recipeOrphanedDefinitions(
+  docs: Iterable<OkfDocument>,
+  recipe: LoadedRecipe,
+): RecipeOrphanedDefinition[] {
+  const declared = new Map<RecipeOrphanedDefinition["type"], Set<ConceptId>>([
+    ["Convention", new Set(recipe.docs.map(doc => doc.id))],
+    ["Connector", new Set((recipe.connectors ?? []).map(connector => connector.doc.id))],
+    ["Reference", new Set(recipe.references.map(reference => reference.doc.id))],
+  ]);
+  const orphans: RecipeOrphanedDefinition[] = [];
+  for (const doc of docs) {
+    let definitionType: RecipeOrphanedDefinition["type"];
+    if (doc.frontmatter.type === CONVENTION_TYPE && doc.id.startsWith(CONVENTIONS_PREFIX)) definitionType = "Convention";
+    else if (isConnectorDoc(doc)) definitionType = "Connector";
+    else if (doc.frontmatter.type === "Reference" && doc.id.startsWith("references/")) definitionType = "Reference";
+    else continue;
+    if (readRecipeStamp(doc)?.id !== recipe.id) continue;
+    if (!declared.get(definitionType)!.has(doc.id)) orphans.push({ id: doc.id, type: definitionType });
+  }
+  return orphans.sort((a, b) => byCodeUnit(a.id, b.id) || byCodeUnit(a.type, b.type));
+}
+
 interface StampedDoc {
   doc: OkfDocument;
   stamp: RecipeStamp;
@@ -403,6 +438,10 @@ export function installedRecipes(
           + (typeof connectorsOf === "number" ? Math.max(0, connectorsOf - stampedConnectors.length) : 0);
       if (missing > 0) row.missing = missing;
       if (recipe && missingIds.length > 0) row.missing_ids = missingIds;
+    }
+    if (recipe) {
+      const orphaned = recipeOrphanedDefinitions(all.map(({ doc }) => doc), recipe).map(({ id }) => id);
+      if (orphaned.length > 0) row.orphaned_ids = orphaned;
     }
     if (diverged.length > 0) row.diverged = diverged;
     if (unknownRules.length > 0) row.unknown_rules = unknownRules;

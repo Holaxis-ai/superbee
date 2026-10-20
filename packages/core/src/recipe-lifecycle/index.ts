@@ -16,7 +16,8 @@
  * Every convention, Connector and Reference either path writes carries an `x_recipe` stamp in the
  * same write. Exact-source unstamped References may be explicitly adopted without replacing content.
  * `installedRecipes` retains its convention/Connector projection; Reference ownership is inspected
- * through evolution's optional `reference_assets` rows.
+ * through evolution's optional `reference_assets` rows. `recipeOrphanedDefinitions` reports retained
+ * ownership absent from an explicit recipe, without deletion or restamping authority.
  */
 export {
   installRecipe,
@@ -64,6 +65,7 @@ export {
   RECIPE_STAMP_KEY,
   definitionDigest,
   installedRecipes,
+  recipeOrphanedDefinitions,
   readRecipeStamp,
   recipeSourceDigest,
 } from "./stamp.js";
@@ -71,6 +73,7 @@ export type {
   ConventionStampState,
   RecipeStampIdentity,
   InstalledRecipeRow,
+  RecipeOrphanedDefinition,
   RecipeInstallState,
   RecipeStamp,
   RecipeStampState,

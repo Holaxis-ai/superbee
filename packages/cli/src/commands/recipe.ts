@@ -60,8 +60,9 @@ it compares definitions, permits additive declarations only, revalidates existin
 returns one exact apply command. Applying requires that plan's token, recomputes the preflight, and
 writes each changed convention with exact-version CAS. Concurrent non-target changes are detected
 by a postcondition check and reported with completed work. It never replaces existing values,
-active View assets, or artifacts omitted from the source. It may add a field type (fields.types) or
-an enum (fields.values) to a declared field only when every existing instance conforms; otherwise
+active View assets, or artifacts omitted from the source. Retained stamped definitions omitted from
+the selected source are reported as orphaned_definitions; a zero-write plan does not remove them.
+It may add a field type (fields.types) or an enum (fields.values) to a declared field only when every existing instance conforms; otherwise
 the plan names the violating documents. It never changes or removes a type or an enum. New outbound
 link types revalidate existing edges; new expects_inbound labels add status graph lint only and do
 not require existing records to have those edges. Inbound additions require an unchanged recipe
@@ -174,7 +175,7 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
     } catch (error) {
       throw classifyBundleError(error);
     }
-    stdout(render({ ...result, help: [planCommand, `${cliInvocation()} kinds`] }, resolveMode(values)));
+    stdout(render({ ...result, ...(result.orphaned_definitions ? { orphaned_help: ORPHANED_HELP } : {}), help: [planCommand, `${cliInvocation()} kinds`] }, resolveMode(values)));
     return;
   }
 
@@ -197,9 +198,12 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
   } else if (plan.blockers.some((blocker) => blocker.code === "RECIPE_EVOLUTION_DEFINITION_MISSING" || blocker.code === "RECIPE_EVOLUTION_ASSET_MISSING")) {
     receipt.commands = { install_missing: `${cliInvocation()} recipe add ${commandQuoted(ref)}${target}` };
   }
+  if (plan.orphaned_definitions) receipt.orphaned_help = ORPHANED_HELP;
   receipt.help = [planCommand, `${cliInvocation()} kinds`];
   stdout(render(receipt, resolveMode(values)));
 }
+
+const ORPHANED_HELP = "orphaned_definitions are retained documents stamped by this recipe that the selected source no longer declares; evolve never changes or removes them, and a zero-write plan does not resolve them; inspect them before deciding whether to keep or remove them";
 
 async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<void> {
   const { values, positionals } = parseLeafOrUsage(
