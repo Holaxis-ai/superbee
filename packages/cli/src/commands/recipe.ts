@@ -1,3 +1,4 @@
+import { readExternalTextFile } from "../external-file.js";
 import { renderUsage } from "../output.js";
 import { recipeValidate } from "./recipe-validate.js";
 // `superbee recipe add <name-or-path>` installs definitions create-only; `recipe evolve` is the
@@ -22,7 +23,7 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation, exactCliInvocation } from "../invocation.js";
-import { applyRecipeEvolution, installRecipe, planRecipeEvolution } from "@superbee/core/recipe-lifecycle";
+import { applyRecipeEvolution, installRecipe, planRecipeEvolution, planRecipeDeclarationRetirement } from "@superbee/core/recipe-lifecycle";
 import { resolveRecipe } from "../recipe-source.js";
 import { assertRecipeAllowedInHostedCheckout } from "../hosted/refusals.js";
 import { commandFragment, commandLiteral, commandQuoted, commandToken, type CommandText } from "../command-text.js";
@@ -33,6 +34,7 @@ Usage:
   superbee recipe validate <path> [--readme] [--json]
   superbee recipe add <name-or-path> [--actor <name>] [--dir <path>] [--remote <url>]
   superbee recipe evolve <name-or-path> [--apply <plan-token>] [--actor <name>] [options]
+  superbee recipe evolve <name-or-path> --retirement-scan [--retirement-evidence <json>] [options]
 
 'recipe validate' reads a local recipe folder without installation or executable profile loading.
 It reports declaration/mapping/profile errors, secret-shaped package text and source metadata.
@@ -85,6 +87,13 @@ Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
   --remote <url>        Talk to a wire-protocol server instead of a local bundle
                          (mutually exclusive with --dir; remote access is always explicit)
+  --retirement-scan   Read-only local declaration retirement evidence. Reports observed concepts,
+                      exact versions, known supplied structural consumers and unknown external use.
+                      No removal token or apply authority; guarded lifecycle apply is not implemented.
+  --retirement-evidence <json>
+                      Explicit recipe-set-preflight/v1 JSON. Bind it to this candidate source,
+                      hypothetical definitions and the report's exact local observation digest.
+                      Missing evidence means unassessed consumers, never ecosystem clearance.
   --apply <plan-token>  Apply the exact ready token returned by 'recipe evolve' (evolve only)
   --actor <name>        Attribute installed or evolved document writes. Add resolves --actor over
                         SUPERBEE_ACTOR, legacy AGENTSTATE_LITE_ACTOR, then absent; conflicting
@@ -125,6 +134,8 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
           dir: { type: "string" },
           remote: { type: "string" },
           apply: { type: "string" },
+          "retirement-scan": { type: "boolean" },
+          "retirement-evidence": { type: "string" },
           actor: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
@@ -138,6 +149,9 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
     return;
   }
 
+  if (values["retirement-scan"] && values.apply !== undefined) throw new CliError("USAGE", "--retirement-scan is read-only and cannot be combined with --apply");
+  if (values["retirement-evidence"] !== undefined && !values["retirement-scan"]) throw new CliError("USAGE", "--retirement-evidence requires --retirement-scan");
+  if (values["retirement-evidence"] !== undefined && !values["retirement-evidence"].trim()) throw new CliError("USAGE", "--retirement-evidence requires a nonempty JSON file path");
   const ref = positionals[0]?.trim();
   if (!ref) {
     throw new CliError("USAGE", "recipe evolve requires a <name-or-path> positional", {
@@ -169,6 +183,21 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
       : commandLiteral("");
   const planCommand = `${cliInvocation()} recipe evolve ${commandQuoted(ref)}${target}`;
   const exactPlanCommand = `${exactCliInvocation()} recipe evolve ${commandQuoted(ref)}${target}`;
+
+  if (values["retirement-scan"]) {
+    let consumerEvidence: unknown;
+    const path = values["retirement-evidence"];
+    if (path !== undefined) {
+      try { consumerEvidence = JSON.parse(await readExternalTextFile(path)); }
+      catch (error) {
+        if (error instanceof CliError) throw error;
+        throw new CliError("USAGE", `--retirement-evidence must name readable JSON: ${error instanceof SyntaxError ? "invalid JSON" : error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    const inspection = await planRecipeDeclarationRetirement(bundle, loaded.recipe, path === undefined ? {} : { consumerEvidence });
+    stdout(render(inspection, resolveMode(values)));
+    return;
+  }
 
   if (values.apply !== undefined) {
     // Before apply: the evolution's own error wrapping would present a write-policy refusal as

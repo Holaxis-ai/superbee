@@ -112,3 +112,27 @@ registry recipe install/evolve asset writes keep their existing import-like beha
 can themselves be governed OKF documents, so successful asset import is not a deprecation-policy
 admission certificate. An empty/stale registry does not prove current bundle policy enforcement.
 No automatic record migration, foreign lookup or permission change occurs.
+
+## Inspecting declaration retirement
+
+`planRecipeDeclarationRetirement(bundle, source, { consumerEvidence? })` from
+`@superbee/core/recipe-lifecycle` inspects omissions of previously deprecated optional fields,
+vocabulary members and outbound labels. The installed definition must retain its readable,
+unchanged same-recipe stamp. Other omissions and schema migrations remain refused. The scanner
+reuses Kind usage semantics: own-key null/empty fields count, list occurrences count, qualified
+edges retain their alias identity, and malformed references remain unknown.
+
+CLI `recipe evolve <source> --retirement-scan` performs this read-only inspection. Optional
+`--retirement-evidence <json>` supplies an actual recipe-set preflight input; it is not fetched
+implicitly and cannot be combined with `--apply`. Evidence must describe this exact source,
+proposed definitions and full observed local concept inventory. A valid unrelated preflight or
+stale observation cannot certify this retirement. Evidence describes the final selected-source
+hypothesis, not an intermediate multi-definition apply stage.
+
+The report separates local usage, supplied known-consumer structural assessment and unknown
+external consumers. It includes exact observed backend versions and repeat-read completeness
+checks, which are not an atomic snapshot or an authenticated storage capability. Unreadable,
+changing or ambiguous inventory remains unknown. Without supplied descriptors, external use is
+unassessed; enum/type/write-intent compatibility and arbitrary code remain outside preflight.
+`can_apply` is always false: lifecycle retirement apply is not implemented by this inspection API.
+Its observation digest is evidence identity, never an apply token. No records or definitions change.
