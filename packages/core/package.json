@@ -214,6 +214,10 @@
     "./domain-model": {
       "types": "./dist/domain-model.d.ts",
       "default": "./dist/domain-model.js"
+    },
+    "./recipe-set-preflight": {
+      "types": "./dist/recipe-set-preflight.d.ts",
+      "default": "./dist/recipe-set-preflight.js"
     }
   },
   "files": [
