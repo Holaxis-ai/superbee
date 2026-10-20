@@ -4,7 +4,7 @@ import { buildSourceIndex } from "../src/record-overlay/source-index.js";
 import { createSourceOverlayAdapter, isSourceOverlaySnapshot, type SourceOverlaySnapshot } from "../src/source-engine/overlay.js";
 import type { SourceState } from "../src/source-engine/machine-state.js";
 import type { PageCommit } from "../src/source-engine/types.js";
-import { ACTOR, event, FEED, overlayWorld, PROVIDER, UID } from "./record-overlay-helpers.js";
+import { ACTOR, event, FEED, overlayWorld, PROVIDER, signalConvention, UID } from "./record-overlay-helpers.js";
 const AT = "2026-10-19T12:00:00Z";
 const A = { start: "2026-10-20T12:00:00Z", venue_text: "A" };
 const B = { ...A, venue_text: "B" };
@@ -84,4 +84,29 @@ test("persisted snapshot validation rejects duplicate tuples and snapshots canno
   const saved = a.snapshot(); saved.entries[0]!.after.venue_text = "Mutated";
   assert.equal(a.snapshot().entries[0]!.after.venue_text, "A");
   assert.equal(isSourceOverlaySnapshot({ v: 1, entries: [...saved.entries, ...saved.entries] }), false);
+});
+
+for (const declaredLink of [false, true]) test(`adapter carries actual feed Kind through change and finding Signal owners (declared link ${declaredLink})`, async () => {
+  const w = await overlayWorld({ feed: { type: "Reference" },
+    signal: signalConvention("superbee_progress_status", declaredLink ? { links: { "from snapshot": "Reference" } } : {}) });
+  const a = createSourceOverlayAdapter({ content: w.content, ops: w.ops, policy: w.policy, actor: ACTOR,
+    overlays: await buildSourceIndex(w.content.bundle), signals: { feedKind: "Reference" } });
+  const change = { external_id: UID("1"), change_kind: "disappeared", before: A, after: null,
+    changed_fields: [], content_digest: "sha256:fixture", missing_count: 2, first_missing_at: AT };
+  const committed = await a.commit({ ...page(), changes: [change] });
+  a.consume();
+  const findings = await a.applyFindings([{ key: "snapshot-input", title: "Input review", facts: { observed: true } }], AT);
+  for (const receipt of [committed.receipt, findings]) {
+    assert.deepEqual(receipt.refusals, []);
+    assert.ok(receipt.results.some(row => row.outcome === "applied"));
+    assert.ok(receipt.results.every(row => row.outcome !== "refused"));
+  }
+  const ids = (await w.opsBackend.list()).filter(id => id.startsWith("signals/"));
+  assert.equal(ids.length, 2);
+  for (const id of ids) {
+    const body = (await w.read(id, "ops")).doc.body;
+    assert.equal(body.includes("[from feed]"), false);
+    assert.equal(body.includes("[from snapshot]"), declaredLink);
+    if (declaredLink) assert.ok(body.includes("../source-feeds/synthetic-library.md"));
+  }
 });

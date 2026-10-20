@@ -116,3 +116,13 @@ returns `stale`, retaining unknown rows. With a nonempty expected original-input
 required dimensions equal, the result is `current` relative to that caller-associated basis;
 otherwise it is `unverifiable`. Absent/empty evidence cannot establish currentness. Informational
 labels outside `required_identities` are outside this declared applicability comparison.
+
+## Review-item prerequisite
+
+The existing overlay owner requires a valid claimable `Signal` convention, even for an empty
+change set. Install the existing definition deliberately before running a snapshot. Hosts pass
+`signals: {feedKind: sourceDocument.frontmatter.type}` to the overlay adapter so it selects only
+link vocabulary declared for the actual source Kind. A Signal convention declaring only
+`from feed: Source Feed` supplies no typed feed link for a `Reference` snapshot source; the
+Signal still retains the provider identity. A bundle may declare a link to its actual source
+Kind to enable that existing vocabulary. No Source Feed URL or new attention engine is implied.

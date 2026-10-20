@@ -5,7 +5,7 @@ import { HOLD_STORE, RETRYABLE } from "../record-overlay/errors.js";
 import { planFindings } from "../record-overlay/findings.js";
 import { planRecordOverlay } from "../record-overlay/plan.js";
 import type { SourceIndex } from "../record-overlay/source-index.js";
-import type { Finding, OverlayBundle, OverlayHooks, OverlayPolicy, OverlayReceipt, RecordChange } from "../record-overlay/types.js";
+import type { Finding, OverlayBundle, OverlayHooks, OverlayPolicy, OverlayReceipt, PlanInput, RecordChange } from "../record-overlay/types.js";
 import type { SourceState } from "./machine-state.js";
 import type { CommitResult, PageCommit } from "./types.js";
 
@@ -29,6 +29,7 @@ export interface SourceOverlayOptions {
   slug?: string;
   sameBundle?: boolean;
   hooks?: OverlayHooks;
+  signals?: PlanInput["signals"];
 }
 const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const key = (e: Omit<SourceOverlayEntry, "after">): string => JSON.stringify([e.feed, e.resource, e.external_id, e.target]);
@@ -62,7 +63,7 @@ export function createSourceOverlayAdapter(options: SourceOverlayOptions) {
   }
   let staged: Map<string, SourceOverlayEntry> | null = null;
   const snapshotOf = (entries: Map<string, SourceOverlayEntry>): SourceOverlaySnapshot => ({ v: 1, entries: structuredClone([...entries.values()].sort((a,b) => key(a).localeCompare(key(b)))) });
-  const context = { content, ops, policy, actor, overlays, hooks: options.hooks };
+  const context = { content, ops, policy, actor, overlays, hooks: options.hooks, signals: options.signals };
 
   async function apply(changes: readonly RecordChange[], observedAt: string, page?: PageCommit): Promise<SourceOverlayResult> {
     if (staged !== null) throw new Error("source overlay acceptance awaits publication");
@@ -79,7 +80,7 @@ export function createSourceOverlayAdapter(options: SourceOverlayOptions) {
     });
     if (committed.size + candidates.filter(e => !committed.has(key(e))).length > MAX_SOURCE_OVERLAY_ENTRIES) throw new Error("source overlay acceptance limit exceeded");
     const plan = await planRecordOverlay({ content, ops, policy, changes: adjusted, observedAt, overlays,
-      sameBundle: options.sameBundle ?? ops === content, hooks: options.hooks,
+      sameBundle: options.sameBundle ?? ops === content, hooks: options.hooks, signals: options.signals,
       ...(page ? { records: { ...page.records }, observation: { baseline: page.baseline, replay: page.replay } } : {}) });
     const receipt = await applyRecordOverlay(plan, context);
     const retry = new Set<string>(); const hold = new Set<string>();
@@ -116,7 +117,7 @@ export function createSourceOverlayAdapter(options: SourceOverlayOptions) {
     async applyFindings(findings: readonly Finding[], observedAt: string): Promise<OverlayReceipt> {
       if (staged !== null) throw new Error("source overlay acceptance awaits publication");
       const steps = await planFindings({ ops, provider: policy.provider, feed: policy.feed,
-        slug: options.slug ?? `${policy.feed.split("/").pop()}-source`, findings, observedAt });
+        slug: options.slug ?? `${policy.feed.split("/").pop()}-source`, findings, observedAt, signals: options.signals });
       return applyRecordOverlay({ feed: policy.feed, provider: policy.provider, observed_at: observedAt, steps, refusals: [] }, context);
     },
   };
