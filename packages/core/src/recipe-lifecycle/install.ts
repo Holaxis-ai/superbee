@@ -195,9 +195,17 @@ export function materializeRecipeForEdition(
         materializedFields[key] = renameLogicalFieldMap(fields[key], storageField, recipe.id, doc.id);
       }
     }
+    const frontmatter: OkfDocument["frontmatter"] = { ...doc.frontmatter, fields: materializedFields };
+    const deprecated = plainRecord(doc.frontmatter.deprecated);
+    if (deprecated && (Object.hasOwn(deprecated, "fields") || Object.hasOwn(deprecated, "values"))) {
+      const policy = { ...deprecated };
+      if (Object.hasOwn(deprecated, "fields")) policy.fields = listField(deprecated.fields);
+      if (Object.hasOwn(deprecated, "values")) policy.values = renameLogicalFieldMap(deprecated.values, storageField, recipe.id, doc.id);
+      frontmatter.deprecated = policy;
+    }
     return {
       ...doc,
-      frontmatter: { ...doc.frontmatter, fields: materializedFields },
+      frontmatter,
       body: materializeRecipeBody(doc.body, storageField),
     };
   });

@@ -558,6 +558,16 @@ recipe baseline because a whole-definition stamp cannot distinguish a new label 
 removed expectation. Removing or retargeting an installed
 relationship label remains blocked, including aliases normalized by the convention parser.
 
+Conventions may declare `deprecated: { fields: [...], values: { field: [...] }, links: [...] }`.
+Core's separate transition owner refuses newly authored deprecated usage through an explicitly
+admitted registry even on lenient writes, while preserving unchanged legacy usage and permitting
+cleanup. Stored usage is informational in `status`, not strict conformance debt. Recognized invalid
+policy keeps its Kind visible and refuses admitted writes. Evolution requires an unchanged readable
+same-recipe ownership baseline to add lifecycle metadata; policy/declaration removal remains blocked.
+Raw/wire imports and intentionally empty-registry recipe asset writes retain their existing posture.
+See [recipe lifecycle policy](packages/core/RECIPES.md#deprecating-declarations) for eligibility,
+qualified-edge identity and the limits of registry admission. No scan/write atomicity is implied.
+
 ## Findings and commitments
 
 A discovery must land in the shared row table for its defect class. The project bundle document

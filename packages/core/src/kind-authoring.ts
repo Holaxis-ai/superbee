@@ -79,6 +79,7 @@ const FIELDS_DECLARES: Record<keyof KindFields, (fields: KindFields) => boolean>
 };
 
 const DECLARES: Record<DeclarationKey, (kind: KindConvention) => boolean> = {
+  deprecated: kind => Boolean(kind.deprecated && (kind.deprecated.fields.length || Object.keys(kind.deprecated.values).length || kind.deprecated.links.length || kind.deprecated.problems?.length)),
   path: (kind) => kind.path !== undefined && kind.path !== "",
   fields: (kind) => Object.values(FIELDS_DECLARES).some((declares) => declares(kind.fields)),
   links: (kind) => kind.links !== undefined && Object.keys(kind.links).length > 0,
