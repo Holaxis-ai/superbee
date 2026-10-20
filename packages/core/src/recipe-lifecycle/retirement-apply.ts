@@ -4,13 +4,13 @@ import { compareStorageKeys } from "../paths.js";
 import { VersionConflict } from "../versioning.js";
 import { backendFor } from "../bundle-ops.js";
 import { DocumentNotFoundError, mutateDocument } from "../document-mutation.js";
-import { INVENTORY_GUARD_DOMAIN, InventoryGuardConflict, InventoryGuardUnsupported, inventoryGuardFor, type InventoryGuardTarget, type InventoryEntry } from "../inventory-guard.js";
+import { captureInventoryGuardRequest, INVENTORY_GUARD_DOMAIN, InventoryGuardConflict, InventoryGuardUnsupported, inventoryGuardFor, type InventoryGuardTarget, type InventoryEntry } from "../inventory-guard.js";
 import { buildKindRegistry } from "../kinds.js";
 import { recipePreflightDigest } from "../recipe-set-preflight.js";
 import type { LoadedRecipe } from "../recipes.js";
 import type { Bundle, OkfDocument } from "../types.js";
 import { prepareRecipeRetirementStage } from "./evolution.js";
-import { recipeDocumentForApply, sameInstalledDoc } from "./install.js";
+import { inspectRecipeInstallTarget, recipeDocumentForApply } from "./install.js";
 import { definitionDigest } from "./stamp.js";
 import { prepareRecipeDeclarationRetirement, type RecipeDeclarationRetirementPlan, type RetirementDeclaration, type RetirementIssue } from "./retirement.js";
 
@@ -112,12 +112,20 @@ async function prepareStage(bundle: Bundle, source: LoadedRecipe, options: Recip
     const owned = prepared.installation ? [...prepared.installation.docs, ...prepared.installation.connectors.map(row => row.doc), ...prepared.installation.references.map(row => row.doc), ...prepared.installation.pages.map(row => row.registry)] : [];
     if (!candidate || !owned.length || owned.some(wanted => {
       const actual = wanted.id === next ? candidate : prepared.snapshots.get(wanted.id)?.doc;
-      return !actual || !sameInstalledDoc(actual, wanted, report.local.okf_version);
+      if (!actual || !prepared.installation) return true;
+      const inspection = inspectRecipeInstallTarget(actual, wanted, prepared.installation);
+      return !inspection.sameContent || inspection.stamp !== "current" || inspection.stampIntegrity !== "current";
     })) block("RETIREMENT_STAGE_CONSUMER_UNREPRESENTABLE", "Final-source evidence does not represent this concrete intermediate stage; supply an actual staged source/evidence or inspect a later stage.");
   }
   if (target) {
     try { if (recipePreflightDigest(await inventoryGuardFor(bound.backend).observeTarget()) !== recipePreflightDigest(target)) block("RETIREMENT_TARGET_CHANGED", "Guard target changed while planning."); }
     catch (error) { block("RETIREMENT_GUARD_UNAVAILABLE", error instanceof Error ? error.message : String(error)); }
+  }
+  if (target && candidate && next) {
+    try {
+      captureInventoryGuardRequest({ target, domain: INVENTORY_GUARD_DOMAIN, inventory, id: next,
+        expectedVersion: prepared.snapshots.get(next)!.version, doc: candidate });
+    } catch (error) { block("RETIREMENT_GUARD_UNAVAILABLE", error instanceof Error ? error.message : String(error)); }
   }
   blockers.sort((a, b) => compare(JSON.stringify(a), JSON.stringify(b)));
   const plan: RecipeDeclarationRetirementApplyPlan = {

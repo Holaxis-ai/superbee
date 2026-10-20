@@ -219,3 +219,39 @@ test("typed guard unsupported remains a proven prewrite refusal", async () => {
     assert.equal(fired, true); assert.deepEqual(await state(f.bundle.backend), before);
   } finally { MemoryBackend.prototype.read = original; await f.cleanup(); }
 });
+
+test("supplied final model cannot certify unchanged content carrying a previous source stamp", async () => {
+  const f = await setup("memory", true);
+  try {
+    const source = sourcePair("2", true); source.docs[1] = sourcePair().docs[1]!;
+    const consumerEvidence = await evidence(f.bundle, source), before = await state(f.bundle.backend);
+    const plan = await planRecipeDeclarationRetirementApply(f.bundle, source, { scope, consumerEvidence });
+    assert.equal(plan.consumers.status, "valid");
+    assert.equal(plan.ready_for_next_stage, false);
+    assert.ok(plan.blockers.some(row => row.code === "RETIREMENT_STAGE_CONSUMER_UNREPRESENTABLE"));
+    await assert.rejects(applyRecipeDeclarationRetirement(f.bundle, source, "retirement-apply/v1:sha256:" + "0".repeat(64), { scope, consumerEvidence }));
+    assert.deepEqual(await state(f.bundle.backend), before);
+    assert.equal((await planRecipeDeclarationRetirementApply(f.bundle, source, { scope })).ready_for_next_stage, true);
+    // A genuine current-source target, prepared by the existing install/stamp owner,
+    // can participate after fresh evidence. C never restamps unselected definitions.
+    const current = prepareRecipeInstall(source, { okfVersion: "0.2", now: "1970-01-01T00:00:00.000Z" }).docs.find(doc => doc.id === "conventions/z-gadget")!;
+    await f.bundle.backend.write(current.id, current);
+    const freshEvidence = await evidence(f.bundle, source);
+    const fresh = await planRecipeDeclarationRetirementApply(f.bundle, source, { scope, consumerEvidence: freshEvidence });
+    assert.equal(fresh.ready_for_next_stage, true, JSON.stringify(fresh.blockers));
+    await applyRecipeDeclarationRetirement(f.bundle, source, fresh.plan_token!, { scope, consumerEvidence: freshEvidence });
+  } finally { await f.cleanup(); }
+});
+
+test("guard-owned request bounds refuse readiness before advertising an apply token", async () => {
+  const f = await setup();
+  try {
+    for (let i = 0; i < 10000; i++) { const id = `notes/n${String(i).padStart(5, "0")}`; await f.bundle.backend.write(id, { id, frontmatter: { type: "Note" }, body: "" }); }
+    const source = parsedRetirementSource("2", true), before = (await f.bundle.backend.read("conventions/widget")).version;
+    const plan = await planRecipeDeclarationRetirementApply(f.bundle, source, { scope });
+    assert.equal(plan.ready_for_next_stage, false); assert.equal(plan.plan_token, undefined);
+    assert.ok(plan.blockers.some(row => row.code === "RETIREMENT_GUARD_UNAVAILABLE" && row.message.includes("inventory_document_bound")));
+    await assert.rejects(applyRecipeDeclarationRetirement(f.bundle, source, "retirement-apply/v1:sha256:" + "0".repeat(64), { scope }), error => error instanceof RecipeRetirementApplyError && error.reason === "blocked");
+    assert.equal((await f.bundle.backend.read("conventions/widget")).version, before);
+  } finally { await f.cleanup(); }
+});
