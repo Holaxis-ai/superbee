@@ -1,3 +1,9 @@
+import path from "node:path";
+import { homedir } from "node:os";
+import { defaultHostedAuthDeps } from "../hosted-auth/session.js";
+import { bindingForPath } from "../hosted/binding.js";
+import { commandFragment } from "../command-text.js";
+import type { HostedSyncDeps } from "../hosted/sync.js";
 import { renderUsage } from "../output.js";
 // `superbee artifact create <file> --title <title>` — the ONE command that owns the
 // produced-output sequence (designs/artifact-runtime Unit 1): derive a collision-safe id, promote
@@ -47,7 +53,11 @@ export const ARTIFACT_USAGE = `superbee artifact — produced outputs you share 
 Usage:
   superbee artifact create <file> --title <title> [options]
 
-'create' owns the whole sequence: it promotes <file>'s bytes under artifacts/, captures the version,
+Hosted checkout: source must already be artifacts/<title-slug>.html. Bytes are acknowledged first;
+record_pending means the record is queued until normal sync confirms it. --supersedes is local only.
+Each checkout retains at most 256 publication identities (4 MiB); no automatic history cleanup.
+
+'create' owns the local sequence: it promotes <file>'s bytes under artifacts/, captures the version,
 derives a collision-safe id from the title, and writes the type:Artifact record (entry, entry_version,
 workflow state: active). One command — no version hash to copy, no two-object dance.
 
@@ -74,6 +84,9 @@ const ARTIFACT_CREATE_OPTIONS = {
 } as const;
 
 export interface ArtifactCliDeps {
+  hosted?: Partial<HostedSyncDeps>;
+  home?: string;
+  cwd?: string;
   stdout: (s: string) => void;
 }
 
@@ -154,6 +167,24 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
     help: `${cliInvocation()} artifact create <file> --title <title> --actor <name>`,
   });
   const remote = await resolveRemoteFlag(remoteUrl, dir);
+  if (remote === undefined) {
+    if (deps.home !== undefined && deps.hosted?.auth && deps.home !== deps.hosted.auth.home) throw new CliError("USAGE", "Artifact admission and delivery must use the same private-state home");
+    const home = deps.home ?? deps.hosted?.auth?.home ?? homedir(), cwd = deps.cwd ?? deps.hosted?.cwd ?? process.cwd();
+    const { resolveLocalBundleTarget } = await import("../bundle.js");
+    const target = await resolveLocalBundleTarget(dir, cwd);
+    const binding = await bindingForPath(home, target.canonicalRoot);
+    if (binding) {
+      if (!actor) throw new CliError("USAGE", "hosted Artifact requires --actor (or SUPERBEE_ACTOR)");
+      if (values.supersedes !== undefined) throw new CliError("USAGE", "hosted Artifact --supersedes is not supported; no bytes were submitted");
+      const { queueHostedArtifact } = await import("../hosted/sync.js");
+      const description = (values.description as string | undefined)?.trim();
+      const resume = commandFragment`${cliInvocation()} artifact create ${commandToken(path.resolve(cwd, file))} --title ${commandToken(title)} --actor ${commandToken(actor)} --dir ${commandToken(binding.path)}${description ? commandFragment` --description ${commandToken(description)}` : commandFragment``}`;
+      const receipt = await queueHostedArtifact(binding, { file, title, actor, ...(description ? { description } : {}) }, { ...deps.hosted, auth: deps.hosted?.auth ?? defaultHostedAuthDeps(home), cwd, stdout }, resume);
+      stdout(render(receipt, mode));
+      if (receipt.artifact === "blob_pending") throw new CliError("TRANSIENT", "Artifact blob outcome is unresolved; record was not queued", { details: receipt, handled: true, help: String(resume) });
+      return;
+    }
+  }
   const route = remote === undefined ? await resolveLocalBundleRoute(dir) : undefined;
   const bundle: Bundle = route?.bundle ?? await openBundle(dir, remote);
   const attribution: BoardAttribution = route ? boardAttributionForRoute(route) : { kind: "none" };

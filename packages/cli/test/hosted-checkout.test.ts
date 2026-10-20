@@ -493,9 +493,10 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
     assert.match(error.help ?? "", /local or Git bundle/);
     assert.equal(error.details?.bundle_id, BUNDLE);
   }
+  // Artifact create now owns a binding-gated, acknowledged-blob/queued-record path.
+  await assertAllowedInHostedCheckout("artifact", ["create", "artifacts/x.html", "--title", "x", "--dir", folder], context);
   const refused: [string, string[]][] = [
     ["doc", ["verify", "notes/alpha", "--dir", folder]],
-    ["artifact", ["create", "x.pdf", "--title", "x", "--dir", folder]],
     // Both succeeded locally and were then held by sync forever: refuse them up front instead.
     ["index", ["generate", "--dir", folder]],
     ["delete", ["--doc-key", "References/logo.png", "--dir", folder]],

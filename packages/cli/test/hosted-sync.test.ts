@@ -1,3 +1,6 @@
+import { commitLocal } from "@superbee/browser-local";
+import { artifact } from "../src/commands/artifact.js";
+import { publications, initialArtifactOwner, admitArtifactRecord } from "../src/hosted/artifact.js";
 // `superbee sync` in a hosted checkout, against a stateful fake of the hosted sync route family
 // that starts from the host's golden transport fixtures (`support/fake-hosted-sync.ts`). No
 // request leaves the process.
@@ -2249,4 +2252,78 @@ test("a recorded blob refusal is reported once and retired too, so an edit is se
 test("the CLI's ordinary-file key policy is core's: protected folders and reserved files are never blob keys", async () => {
   for (const key of ["views/a.html", "Views/a.html", "pages/a.html", "views-registry/x", "pages-registry/x", "conventions/a.png", "recipes/x.bin", "REFERENCES/x.pdf", "index.md", "log.md"]) assert.equal(isOrdinaryBlobKey(key), false, key);
   for (const key of ["media/a.png", "diagrams/café.svg", "viewsx/a.html", "a/views/b.png"]) assert.equal(isOrdinaryBlobKey(key), true, key);
+});
+
+
+test("hosted Artifact acknowledges bytes then queues one visible record; edits and deletes keep ordinary ownership", async () => {
+  const h = await harness(), wire = blobAuthority(h);
+  const file = path.join(h.folder, "artifacts/result.html");
+  await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "<h1>Result</h1>");
+  const out: string[] = [], args = ["create", file, "--title", "Result", "--actor", "process:artifact-test", "--dir", h.folder, "--json"];
+  await artifact(args, commandDeps(h, wire, out));
+  const first = JSON.parse(out.at(-1)!);
+  assert.equal(first.artifact, "record_pending"); assert.equal(wire.calls.length, 1);
+  assert.equal(h.host.writes.length, 0);
+  const recordFile = path.join(h.folder, "artifacts/result.md"); assert.match(await readFile(recordFile, "utf8"), /entry_version: .?sha256:/);
+  await artifact(args, commandDeps(h, wire, out)); assert.equal(JSON.parse(out.at(-1)!).record_request_id, first.record_request_id); assert.equal(wire.calls.length, 1);
+  h.fetch = wire.fetch; await runSync(h); await runSync(h);
+  assert.ok(h.host.docs.get("artifacts/result"));
+  await writeFile(recordFile, (await readFile(recordFile, "utf8")).replace("title: Result", "title: Edited"));
+  await runSync(h); await runSync(h); assert.equal(h.host.docs.get("artifacts/result")!.frontmatter.title, "Edited");
+  await assert.rejects(artifact(args, commandDeps(h, wire, out)), /evidence changed|retired/);
+  await unlink(recordFile); await runSync(h); await runSync(h); assert.equal(h.host.docs.get("artifacts/result"), undefined);
+});
+
+test("hosted Artifact lost ACK recovers original identity; changed bytes and supersedes send nothing", async () => {
+  const h = await harness(), wire = blobAuthority(h, { lostAck: true });
+  const file = path.join(h.folder, "artifacts/lost.html"); await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "<p>frozen</p>");
+  const args = ["create", file, "--title", "Lost", "--actor", "process:artifact-test", "--dir", h.folder, "--json"], out: string[] = [];
+  await artifact(args, commandDeps(h, wire, out)); assert.equal(JSON.parse(out.at(-1)!).artifact, "record_pending");
+  await artifact(args, commandDeps(h, wire, out)); assert.equal(wire.calls.length, 1);
+  await writeFile(file, "changed"); await assert.rejects(artifact(args, commandDeps(h, wire, out)), /frozen/);
+  await assert.rejects(artifact([...args, "--supersedes", "artifacts/old"], commandDeps(h, wire, out)), /not supported/);
+  assert.equal(wire.calls.length, 1); assert.equal(h.host.writes.length, 0);
+});
+
+test("hosted Artifact later projection and already admitted intent cannot be recaptured", async () => {
+  const h = await harness(), wire = blobAuthority(h), file = path.join(h.folder, "artifacts/pending.html");
+  await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "bytes");
+  await artifact(["create", file, "--title", "Pending", "--actor", "process:artifact-test", "--dir", h.folder], commandDeps(h, wire));
+  const b = (await bindingForPath(h.home, h.folder))!, store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, b.checkout_id) });
+  try { const p = (await publications(store))[0]!; assert.ok(p.record); await assert.rejects(admitArtifactRecord(store, p, digestOf(Buffer.from("bytes")), 1000000), /empty create-null/); assert.equal(await initialArtifactOwner(store, { root: null, files: { [p.id]: { digest: "later", version: "later" } } }, p), null); }
+  finally { await store.close(); }
+});
+
+
+test("hosted Artifact absent lookup after lost ACK never queues record or resends; later exact outcome unlocks once", async () => {
+  const h = await harness(), wire = blobAuthority(h, { lostAck: true }); let showOutcome = false;
+  const wrapped: typeof fetch = async (input, init) => {
+    const request = new Request(input, init);
+    if (new URL(request.url).pathname.endsWith("/outcome") && !showOutcome) {
+      const body = await request.clone().json() as { operationId?: string };
+      if (body.operationId?.startsWith("blobs.")) return Response.json({ schemaVersion: 1, requestId: request.headers.get("x-superbee-write-request"), binding: request.headers.get("x-superbee-checkout"), status: "absent" });
+    }
+    return wire.fetch(input, init);
+  };
+  const file = path.join(h.folder, "artifacts/uncertain.html"); await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "frozen");
+  const args = ["create", file, "--title", "Uncertain", "--actor", "process:artifact-test", "--dir", h.folder, "--json"], out: string[] = [], deps = commandDeps(h, { ...wire, fetch: wrapped }, out);
+  await assert.rejects(artifact(args, deps), /unresolved/); assert.equal(JSON.parse(out.at(-1)!).artifact, "blob_pending");
+  await assert.rejects(readFile(path.join(h.folder, "artifacts/uncertain.md")));
+  await assert.rejects(artifact(args, deps), /unresolved/); assert.equal(JSON.parse(out.at(-1)!).artifact, "blob_pending"); assert.equal(wire.calls.length, 1);
+  showOutcome = true; await artifact(args, deps); assert.equal(JSON.parse(out.at(-1)!).artifact, "record_pending"); assert.equal(wire.calls.length, 1); assert.equal(h.host.writes.length, 0);
+});
+
+
+test("hosted Artifact placement collision suppresses only original request; explicit successor still syncs twice", async () => {
+  const h = await harness(), wire = blobAuthority(h), file = path.join(h.folder, "artifacts/collision.html");
+  await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "frozen");
+  await artifact(["create", file, "--title", "Collision", "--actor", "process:artifact-test", "--dir", h.folder], commandDeps(h, wire));
+  const b = (await bindingForPath(h.home, h.folder))!, projectionFile = path.join(checkoutDir(h.home, b.checkout_id), "projection.json"), projection = JSON.parse(await readFile(projectionFile, "utf8"));
+  delete projection.files["artifacts/collision"]; await writeFile(projectionFile, JSON.stringify(projection));
+  const markdown = path.join(h.folder, "artifacts/collision.md"); await writeFile(markdown, "different physical file"); h.fetch = wire.fetch;
+  await failingSync(h); assert.equal(h.host.writes.length, 0); assert.equal(await readFile(markdown, "utf8"), "different physical file");
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, b.checkout_id) });
+  try { await commitLocal(store, "artifacts/collision", { mode: "patch", buildCandidate: doc => ({ frontmatter: { ...doc!.frontmatter, title: "Successor" }, body: doc!.body }) }); await writeFile(markdown, (await store.readWithJournal("artifacts/collision")).raw!); }
+  finally { await store.close(); }
+  await runSync(h); await runSync(h); assert.equal(h.host.docs.get("artifacts/collision")!.frontmatter.title, "Successor");
 });

@@ -92,8 +92,7 @@ inside that checkout. Its frozen bytes and MIME are durable before authenticatio
 retry resumes exactly that request. Changed bytes, MIME or CAS premises are held. The bound is
 16 MiB or a smaller advertised host bound. A new explicit create keeps the extension default;
 a replacement without --content-type preserves its observed hosted MIME. Historical hosted
-MIME is never inferred from a filename or export. Protected namespaces and Artifact commands
-remain refused. Blob conflicts/unknown outcomes do not use document --resolve/--restore-deletes.
+MIME is never inferred from a filename or export. Protected namespaces remain refused. Artifact create acknowledges bytes before queuing its record; normal sync confirms that record. Blob conflicts/unknown outcomes do not use document --resolve/--restore-deletes.
 
 For local/remote backends outside a hosted checkout, the receipt's content_type reports the WRITE-TIME resolution (override, else inferred from the
 key's extension) — history-less backends (the local filesystem) do not persist an explicit

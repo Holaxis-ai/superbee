@@ -87,7 +87,7 @@ export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
   { words: ["kind", "*"], reason: "not_syncable", why: "a hosted bundle's Kinds cannot be changed from a checkout", instead: KINDS_INSTEAD, definitions: true },
   { words: ["recipe", "add"], reason: "not_syncable", why: "recipes change a hosted bundle's Kinds, which cannot be changed from a checkout", instead: KINDS_INSTEAD, definitions: true, deferred: true },
   { words: ["recipe", "evolve"], reason: "not_syncable", why: "recipes change a hosted bundle's Kinds, which cannot be changed from a checkout", instead: KINDS_INSTEAD, definitions: true, deferred: true },
-  { words: ["artifact", "*"], reason: "not_syncable", why: "hosted Artifact publication is not supported yet; use ordinary files until the Artifact publication sequence is available" },
+  { words: ["artifact", "*"], when: args => !args.includes("create"), reason: "not_syncable", why: "this hosted Artifact command is not supported" },
   {
     words: ["promote"],
     reason: "not_syncable",

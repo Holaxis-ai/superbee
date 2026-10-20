@@ -23,7 +23,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { commitLocal, deleteLocal, UNSETTLED_STATES, type LocalBundle } from "@superbee/browser-local";
-import { DOCUMENT_DELETE_KIND } from "@superbee/core/journaled-backend";
+import { DOCUMENT_DELETE_KIND, equalJournalValue } from "@superbee/core/journaled-backend";
 import { assertSafeConceptId, conceptIdFromPath, CONVENTION_TYPE, InvalidInputError, isConventionId, isReservedFile, MalformedDocumentError, parseLinksFromDoc, parseMarkdown, type Frontmatter, type JournaledBackend } from "@superbee/core";
 import { DELETIONS_HELD_REFUSAL_CODE, MAXIMUM_ACCEPTED_DELETIONS, type HostedDefinitionWrites, type HostedRootWrites, FRONTMATTER_KEY_LIMIT, HOSTED_MANAGED_FIELDS, WHOLE_DOCUMENT_BOUNDS, wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
 import { mintRequestId } from "@superbee/core/uncertain-write";
@@ -1220,4 +1220,28 @@ export async function recoverPlacements(folder: string, projection: ProjectionRe
     if (recorded || discarded || Buffer.from(current).equals(aside)) await fs.unlink(temp);
   }
   delete projection.discarded;
+}
+
+/** Initial visibility for one exact create already admitted to the local journal. Never replaces. */
+export async function placeQueuedLocalCreate(folder: string, store: JournaledBackend, projection: ProjectionRecord, admission: { id: string; requestId: string; localVersion: string; rawDigest: string }): Promise<boolean> {
+  if (Object.hasOwn(projection.files, admission.id)) return false;
+  const snapshot = await store.readWithJournal(admission.id), row = snapshot.intents[0];
+  if (!snapshot.document || snapshot.intents.length !== 1 || !row || row.requestId !== admission.requestId || row.kind !== "document.write" || row.target !== admission.id || row.base !== null || row.baseContent !== null || row.after || row.recreates || row.local !== admission.localVersion || snapshot.document.version !== admission.localVersion || !snapshot.raw || digestOf(Buffer.from(snapshot.raw)) !== admission.rawDigest || row.content !== snapshot.raw) return false;
+  const file = path.join(folder, `${admission.id}.md`);
+  const twins = await caseTwins(store, projection), twin = twins.get(foldedPath(admission.id));
+  if (twin !== undefined && twin !== admission.id || await parentUnsafe(folder, file)) return false;
+  const next = Buffer.from(snapshot.raw), found = await readIfPresent(file);
+  if (found !== null && !found.equals(next)) return false;
+  if (found === null) {
+    try { await ensureParentInside(folder, file); } catch (error) { if (error instanceof UnsafePlacementError) return false; throw error; }
+    const placed = await placeNew(file, next);
+    if (!placed.placed) {
+      const raced = await readIfPresent(file);
+      if (!raced?.equals(next)) return false;
+    }
+  }
+  const after = await store.readWithJournal(admission.id);
+  if (!after.document || after.document.version !== snapshot.document.version || after.raw !== snapshot.raw || !equalJournalValue(after.intents, snapshot.intents) || Object.hasOwn(projection.files, admission.id)) return false;
+  projection.files[admission.id] = { digest: digestOf(next), version: snapshot.document.version };
+  return true;
 }

@@ -57,7 +57,7 @@ clean target. A guarded local removal admits a frozen intent before authenticati
 may remain incomplete. Recreated, dirty or unknown targets are held. This is not an unconditional
 or absent-key success path. Document --inspect/--resolve/--restore-deletes does not recover blob
 requests; an uncertain blob request is looked up by its original identity, never resent merely
-because lookup reports absence. Protected namespaces and Artifact commands remain refused.
+because lookup reports absence. Protected namespaces remain refused. Artifact create acknowledges bytes before queuing its record; normal sync confirms that record.
 
 Options:
   --doc-key <key>          Key to delete (required) — ends '.md' -> doc route, else blob route
