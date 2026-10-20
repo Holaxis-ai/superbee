@@ -116,3 +116,97 @@ test("Artifact full metadata guard rejects a premise changed immediately before 
     assert.equal((await f.store.readMeta<Publication>(publicationKey(f.p.id)))!.state, "blob_admitted");
   } finally { await f.cleanup(); }
 });
+
+
+test("review: byte-identical leaf symlink remains an unprojected placement hold", async () => {
+  const f = await fixture();
+  try {
+    const p = await admitArtifactRecord(f.store, f.p, f.p.digest, 983040), projection: ProjectionRecord = { root: null, files: {} };
+    const raw = (await f.store.readWithJournal(p.id)).raw!, file = path.join(f.folder, `${p.id}.md`), outside = path.join(f.dir, "identical-outside");
+    await mkdir(path.dirname(file)); await writeFile(outside, raw); await symlink(outside, file);
+    assert.ok(await recoverArtifactRecord(f.store, f.folder, projection, p), "leaf symlink must remain held even if referent bytes match");
+    assert.equal(Object.keys(projection.files).length,0);
+  } finally { await f.cleanup(); }
+});
+
+test("review: managed ACK without projection uses exact installed shared base", async () => {
+  const f = await fixture();
+  try {
+    const p = await admitArtifactRecord(f.store, f.p, f.p.digest, 983040), projection: ProjectionRecord = { root: null, files: {} };
+    const original = (await f.store.readWithJournal(p.id)).document!;
+    const installed = await f.store.writeJournaled(p.id, { ...original.doc, frontmatter: { ...original.doc.frontmatter, superbee_updated_by: "host-managed" } }, { expectedVersion: original.version });
+    await f.store.updateIntent(p.record!.requestId,"pending",{state:"acknowledged",acknowledgedVersion:installed.version},{meta:[{key:baseKey(p.id),value:{version:installed.version,content:installed.raw}}]});
+    assert.ok(await initialArtifactOwner(f.store,projection,p));
+    assert.equal(await recoverArtifactRecord(f.store,f.folder,projection,p),null);
+    assert.equal(await readFile(path.join(f.folder,`${p.id}.md`),"utf8"),installed.raw);
+    assert.equal(projection.files[p.id]!.version,installed.version);
+  } finally { await f.cleanup(); }
+});
+
+for (const phase of ["preflight", "producer"] as const) test(`Artifact cancellation at final ${phase} boundary leaves no document admission`, async () => {
+  const f = await fixture(), controller = new AbortController();
+  try {
+    if (phase === "preflight") {
+      const original = f.store.listMeta.bind(f.store);
+      f.store.listMeta = async <T = unknown>(prefix?: string) => { const rows = await original<T>(prefix); controller.abort(); return rows; };
+    } else {
+      const original = f.store.writeJournaled.bind(f.store);
+      f.store.writeJournaled = async (id, doc, options) => { controller.abort(); return original(id, doc, options); };
+    }
+    await assert.rejects(admitArtifactRecord(f.store, f.p, f.p.digest, 983040, controller.signal), { name: "AbortError" });
+    assert.equal((await f.store.readWithJournal(f.p.id)).document, null);
+    assert.deepEqual(await f.store.listIntents(), []);
+    assert.equal((await f.store.readMeta<Publication>(publicationKey(f.p.id)))!.state, "blob_admitted");
+  } finally { await f.cleanup(); }
+});
+
+test("Artifact pending placement rechecks a byte-identical symlink installed after initial read", async () => {
+  const f = await fixture();
+  try {
+    const p = await admitArtifactRecord(f.store, f.p, f.p.digest, 983040), projection: ProjectionRecord = { root: null, files: {} };
+    const file = path.join(f.folder, `${p.id}.md`), outside = path.join(f.dir, "race-outside"), raw = (await f.store.readWithJournal(p.id)).raw!;
+    await mkdir(path.dirname(file)); await writeFile(file, raw); await writeFile(outside, raw);
+    const original = f.store.readWithJournal.bind(f.store); let reads = 0;
+    f.store.readWithJournal = async (id, options) => {
+      const result = await original(id, options);
+      if (id === p.id && ++reads === 3) { await unlink(file); await symlink(outside, file); }
+      return result;
+    };
+    assert.ok(await recoverArtifactRecord(f.store, f.folder, projection, p));
+    assert.equal(Object.keys(projection.files).length, 0); assert.equal(await readFile(outside, "utf8"), raw);
+  } finally { await f.cleanup(); }
+});
+
+test("Artifact managed ACK placement refuses identical leaf and parent symlinks", async () => {
+  const f = await fixture();
+  try {
+    const p = await admitArtifactRecord(f.store, f.p, f.p.digest, 983040), projection: ProjectionRecord = { root: null, files: {} };
+    const original = (await f.store.readWithJournal(p.id)).document!;
+    const installed = await f.store.writeJournaled(p.id, { ...original.doc, frontmatter: { ...original.doc.frontmatter, superbee_updated_by: "host-managed" } }, { expectedVersion: original.version });
+    await f.store.updateIntent(p.record!.requestId, "pending", { state: "acknowledged", acknowledgedVersion: installed.version }, { meta: [{ key: baseKey(p.id), value: { version: installed.version, content: installed.raw } }] });
+    const file = path.join(f.folder, `${p.id}.md`), outside = path.join(f.dir, "ack-outside");
+    await mkdir(path.dirname(file)); await writeFile(outside, installed.raw); await symlink(outside, file);
+    assert.ok(await recoverArtifactRecord(f.store, f.folder, projection, p)); assert.deepEqual(projection.files, {});
+    await unlink(file); await rm(path.dirname(file), { recursive: true });
+    const outsideDir = path.join(f.dir, "outside-directory"); await mkdir(outsideDir); await writeFile(path.join(outsideDir, "result.md"), installed.raw); await symlink(outsideDir, path.dirname(file));
+    assert.ok(await recoverArtifactRecord(f.store, f.folder, projection, p)); assert.deepEqual(projection.files, {});
+    assert.equal(await readFile(outside, "utf8"), installed.raw);
+  } finally { await f.cleanup(); }
+});
+
+test("Artifact managed ACK detects a leaf replacement after exclusive placement", async () => {
+  const f = await fixture();
+  const fs = await import("node:fs/promises"), originalLink = fs.default.link;
+  try {
+    const p = await admitArtifactRecord(f.store, f.p, f.p.digest, 983040), projection: ProjectionRecord = { root: null, files: {} };
+    const snapshot = await f.store.readWithJournal(p.id), head = snapshot.document!, raw = snapshot.raw!;
+    await f.store.updateIntent(p.record!.requestId, "pending", { state: "acknowledged", acknowledgedVersion: head.version }, { meta: [{ key: baseKey(p.id), value: { version: head.version, content: raw } }] });
+    const file = path.join(f.folder, `${p.id}.md`), outside = path.join(f.dir, "ack-race-outside"); await writeFile(outside, raw);
+    fs.default.link = async function(...args: Parameters<typeof originalLink>) {
+      await originalLink.apply(this, args);
+      if (String(args[1]) === file) { await unlink(file); await symlink(outside, file); }
+    };
+    assert.ok(await recoverArtifactRecord(f.store, f.folder, projection, p)); assert.deepEqual(projection.files, {});
+    assert.equal(await readFile(outside, "utf8"), raw);
+  } finally { fs.default.link = originalLink; await f.cleanup(); }
+});

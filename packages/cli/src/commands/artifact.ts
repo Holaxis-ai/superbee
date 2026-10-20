@@ -144,8 +144,33 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
     });
   }
 
-  // Read the bytes ONCE, before any write — a missing/unreadable file is caller input and must leave
-  // nothing created.
+  const mode: OutputMode = values.json ? "json" : "default";
+  const dir = values.dir as string | undefined;
+  const remoteUrl = values.remote as string | undefined;
+  const remote = await resolveRemoteFlag(remoteUrl, dir);
+  if (remote === undefined) {
+    if (deps.home !== undefined && deps.hosted?.auth && deps.home !== deps.hosted.auth.home) throw new CliError("USAGE", "Artifact admission and delivery must use the same private-state home");
+    const home = deps.home ?? deps.hosted?.auth?.home ?? homedir(), cwd = deps.cwd ?? deps.hosted?.cwd ?? process.cwd();
+    const { resolveLocalBundleTarget } = await import("../bundle.js");
+    const target = await resolveLocalBundleTarget(dir, cwd);
+    const binding = await bindingForPath(home, target.canonicalRoot);
+    if (binding) {
+      const actor = resolveActor(values.actor as string | undefined, {
+        help: `${cliInvocation()} artifact create <file> --title <title> --actor <name>`,
+      });
+      if (!actor) throw new CliError("USAGE", "hosted Artifact requires --actor (or SUPERBEE_ACTOR)");
+      if (values.supersedes !== undefined) throw new CliError("USAGE", "hosted Artifact --supersedes is not supported; no bytes were submitted");
+      const { queueHostedArtifact } = await import("../hosted/sync.js");
+      const description = (values.description as string | undefined)?.trim();
+      const resume = commandFragment`${cliInvocation()} artifact create ${commandToken(path.resolve(cwd, file))} --title ${commandToken(title)} --actor ${commandToken(actor)} --dir ${commandToken(binding.path)}${description ? commandFragment` --description ${commandToken(description)}` : commandFragment``}`;
+      const receipt = await queueHostedArtifact(binding, { file, title, actor, ...(description ? { description } : {}) }, { ...deps.hosted, auth: deps.hosted?.auth ?? defaultHostedAuthDeps(home), cwd, stdout }, resume);
+      stdout(render(receipt, mode));
+      if (receipt.artifact === "blob_pending") throw new CliError("TRANSIENT", "Artifact blob outcome is unresolved; record was not queued", { details: receipt, handled: true, help: String(resume) });
+      return;
+    }
+  }
+  // Local/wire routes retain their external reader. Hosted input takes only the bounded
+  // no-follow acquisition above; its bytes must never pass through this legacy read.
   let bytes: Buffer;
   try {
     bytes = await readExternalFileBytes(file);
@@ -160,31 +185,9 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
     throw new CliError("RUNTIME", `could not read '${file}': ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const mode: OutputMode = values.json ? "json" : "default";
-  const dir = values.dir as string | undefined;
-  const remoteUrl = values.remote as string | undefined;
   const actor = resolveActor(values.actor as string | undefined, {
     help: `${cliInvocation()} artifact create <file> --title <title> --actor <name>`,
   });
-  const remote = await resolveRemoteFlag(remoteUrl, dir);
-  if (remote === undefined) {
-    if (deps.home !== undefined && deps.hosted?.auth && deps.home !== deps.hosted.auth.home) throw new CliError("USAGE", "Artifact admission and delivery must use the same private-state home");
-    const home = deps.home ?? deps.hosted?.auth?.home ?? homedir(), cwd = deps.cwd ?? deps.hosted?.cwd ?? process.cwd();
-    const { resolveLocalBundleTarget } = await import("../bundle.js");
-    const target = await resolveLocalBundleTarget(dir, cwd);
-    const binding = await bindingForPath(home, target.canonicalRoot);
-    if (binding) {
-      if (!actor) throw new CliError("USAGE", "hosted Artifact requires --actor (or SUPERBEE_ACTOR)");
-      if (values.supersedes !== undefined) throw new CliError("USAGE", "hosted Artifact --supersedes is not supported; no bytes were submitted");
-      const { queueHostedArtifact } = await import("../hosted/sync.js");
-      const description = (values.description as string | undefined)?.trim();
-      const resume = commandFragment`${cliInvocation()} artifact create ${commandToken(path.resolve(cwd, file))} --title ${commandToken(title)} --actor ${commandToken(actor)} --dir ${commandToken(binding.path)}${description ? commandFragment` --description ${commandToken(description)}` : commandFragment``}`;
-      const receipt = await queueHostedArtifact(binding, { file, title, actor, ...(description ? { description } : {}) }, { ...deps.hosted, auth: deps.hosted?.auth ?? defaultHostedAuthDeps(home), cwd, stdout }, resume);
-      stdout(render(receipt, mode));
-      if (receipt.artifact === "blob_pending") throw new CliError("TRANSIENT", "Artifact blob outcome is unresolved; record was not queued", { details: receipt, handled: true, help: String(resume) });
-      return;
-    }
-  }
   const route = remote === undefined ? await resolveLocalBundleRoute(dir) : undefined;
   const bundle: Bundle = route?.bundle ?? await openBundle(dir, remote);
   const attribution: BoardAttribution = route ? boardAttributionForRoute(route) : { kind: "none" };

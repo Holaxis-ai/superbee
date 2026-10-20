@@ -18,6 +18,7 @@
 // held the file). Nothing is sent for it until the person resolves it; sending it against the
 // refreshed version would silently overwrite the host's change, and sending a deleted document
 // as a create would silently re-create it.
+import { readRegularFileNoFollowSync } from "../nofollow-read.js";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -991,7 +992,7 @@ export async function exportCheckout(
   folder: string,
   store: JournaledBackend,
   projection: ProjectionRecord,
-  options: { only?: ReadonlySet<string>; placeMissing?: boolean } = {},
+  options: { only?: ReadonlySet<string>; placeMissing?: boolean; regularFilesOnly?: boolean; signal?: AbortSignal } = {},
 ): Promise<ExportReport> {
   const report: ExportReport = { placed: [], removed: [], kept: [], held: [] };
   const unsettled = new Set((await store.listIntents(UNSETTLED_STATES)).map((row) => row.target));
@@ -1018,15 +1019,22 @@ export async function exportCheckout(
       continue;
     }
     const next = Buffer.from(head.raw, "utf8");
-    const found = await readIfPresent(file);
+    const regular = options.regularFilesOnly ? readRegularFileNoFollowSync(file, { maximumBytes: next.length }) : undefined;
+    if (regular?.state === "unsafe") {
+      report.held.push(held(head.id, rel, "unsafe_path", "initial record placement requires a bounded regular file, never a leaf symlink"));
+      continue;
+    }
+    const found = regular ? regular.state === "present" ? regular.bytes : null : await readIfPresent(file);
     if (found !== null && digestOf(found) === digestOf(next)) {
       // Already placed (a run that stopped before recording it): the record catches up.
+      options.signal?.throwIfAborted();
       projection.files[head.id] = { digest: digestOf(next), version: head.version };
       continue;
     }
     if (found === null) {
       // A recorded document whose file is gone was deleted locally: it stays gone.
       if (entry && !entry.deleted && !options.placeMissing) continue;
+      options.signal?.throwIfAborted();
       try {
         await ensureParentInside(folder, file);
       } catch (error) {
@@ -1034,8 +1042,15 @@ export async function exportCheckout(
         report.held.push(held(head.id, rel, "unsafe_path", error.message));
         continue;
       }
+      options.signal?.throwIfAborted();
       const outcome = await placeNew(file, next);
       if (outcome.placed) {
+        if (options.regularFilesOnly) {
+          if (await parentUnsafe(folder, file)) { report.held.push(held(head.id, rel, "unsafe_path", "record placement parent changed")); continue; }
+          const confirmed = readRegularFileNoFollowSync(file, { maximumBytes: next.length });
+          if (confirmed.state !== "present" || !confirmed.bytes.equals(next)) { report.held.push(held(head.id, rel, "unsafe_path", "record placement leaf changed")); continue; }
+        }
+        options.signal?.throwIfAborted();
         projection.files[head.id] = { digest: digestOf(next), version: head.version };
         report.placed.push(head.id);
       } else report.kept.push(head.id);
@@ -1223,25 +1238,32 @@ export async function recoverPlacements(folder: string, projection: ProjectionRe
 }
 
 /** Initial visibility for one exact create already admitted to the local journal. Never replaces. */
-export async function placeQueuedLocalCreate(folder: string, store: JournaledBackend, projection: ProjectionRecord, admission: { id: string; requestId: string; localVersion: string; rawDigest: string }): Promise<boolean> {
+export async function placeQueuedLocalCreate(folder: string, store: JournaledBackend, projection: ProjectionRecord, admission: { id: string; requestId: string; localVersion: string; rawDigest: string }, signal?: AbortSignal): Promise<boolean> {
+  signal?.throwIfAborted();
   if (Object.hasOwn(projection.files, admission.id)) return false;
   const snapshot = await store.readWithJournal(admission.id), row = snapshot.intents[0];
   if (!snapshot.document || snapshot.intents.length !== 1 || !row || row.requestId !== admission.requestId || row.kind !== "document.write" || row.target !== admission.id || row.base !== null || row.baseContent !== null || row.after || row.recreates || row.local !== admission.localVersion || snapshot.document.version !== admission.localVersion || !snapshot.raw || digestOf(Buffer.from(snapshot.raw)) !== admission.rawDigest || row.content !== snapshot.raw) return false;
   const file = path.join(folder, `${admission.id}.md`);
   const twins = await caseTwins(store, projection), twin = twins.get(foldedPath(admission.id));
   if (twin !== undefined && twin !== admission.id || await parentUnsafe(folder, file)) return false;
-  const next = Buffer.from(snapshot.raw), found = await readIfPresent(file);
-  if (found !== null && !found.equals(next)) return false;
-  if (found === null) {
+  const next = Buffer.from(snapshot.raw), found = readRegularFileNoFollowSync(file, { maximumBytes: Buffer.byteLength(snapshot.raw) });
+  if (found.state === "unsafe" || found.state === "present" && !found.bytes.equals(next)) return false;
+  if (found.state === "missing") {
+    signal?.throwIfAborted();
     try { await ensureParentInside(folder, file); } catch (error) { if (error instanceof UnsafePlacementError) return false; throw error; }
+    signal?.throwIfAborted();
     const placed = await placeNew(file, next);
     if (!placed.placed) {
-      const raced = await readIfPresent(file);
-      if (!raced?.equals(next)) return false;
+      const raced = readRegularFileNoFollowSync(file, { maximumBytes: next.length });
+      if (raced.state !== "present" || !raced.bytes.equals(next)) return false;
     }
   }
   const after = await store.readWithJournal(admission.id);
   if (!after.document || after.document.version !== snapshot.document.version || after.raw !== snapshot.raw || !equalJournalValue(after.intents, snapshot.intents) || Object.hasOwn(projection.files, admission.id)) return false;
+  if (await parentUnsafe(folder, file)) return false;
+  const confirmed = readRegularFileNoFollowSync(file, { maximumBytes: next.length });
+  if (confirmed.state !== "present" || !confirmed.bytes.equals(next)) return false;
+  signal?.throwIfAborted();
   projection.files[admission.id] = { digest: digestOf(next), version: snapshot.document.version };
   return true;
 }

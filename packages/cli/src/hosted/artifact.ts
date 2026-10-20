@@ -63,7 +63,8 @@ export async function acknowledgedArtifactBlob(store: FileJournaledBackend, p: P
   return receipt.head.version;
 }
 /** One exact-target adapter adds a full guard to commitLocal's policy-preserving create. */
-export async function admitArtifactRecord(store: FileJournaledBackend, p: Publication, entryVersion: string, maximumBytes: number): Promise<Publication> {
+export async function admitArtifactRecord(store: FileJournaledBackend, p: Publication, entryVersion: string, maximumBytes: number, signal?: AbortSignal): Promise<Publication> {
+  signal?.throwIfAborted();
   p = decodePublication(p);
   if (await acknowledgedArtifactBlob(store, p) !== entryVersion) throw held("Artifact record admission requires its exact settled blob acknowledgment");
   const key = publicationKey(p.id), base = baseKey(p.id);
@@ -78,12 +79,14 @@ export async function admitArtifactRecord(store: FileJournaledBackend, p: Public
     if (prop === "writeJournaled") return async (id: string, doc: OkfDocument, options: JournaledWriteOptions = {}) => {
       const intent = options.intent;
       if (used || id !== p.id || doc.id !== p.id || options.expectedVersion !== null || !intent || intent.kind !== "document.write" || intent.target !== p.id || intent.base !== null || intent.baseContent !== null || intent.after !== undefined || intent.recreates !== undefined || options.supersede || options.resolveIntents || options.removeMeta || options.meta || options.guard && !equalJournalValue(options.guard, guard)) throw held("Artifact admission refused an incompatible composed create");
+      signal?.throwIfAborted();
       used = true;
       return inner.writeJournaled(id, doc, { ...options, guard, meta: ({ raw, version }) => {
         if (Buffer.byteLength(raw) > maximumBytes || Buffer.byteLength(JSON.stringify(wholeDocumentRequest(p.scope.bundleId, { ...intent, content: raw }, edition).payload)) > maximumBytes) throw held("serialized Artifact document exceeds the host input bound");
         const next = decodePublication({ ...p, state: "record_admitted", record: { requestId: intent.requestId, localVersion: version, rawDigest: digestOf(Buffer.from(raw)) } });
         const future = retained.map(row => row.id === next.id ? next : row);
         if (future.reduce((n, row) => n + Buffer.byteLength(publicationKey(row.id)) + Buffer.byteLength(JSON.stringify(row)), 0) > ARTIFACT_TOTAL_BYTES) throw held("Artifact publication metadata expansion exceeds its total byte bound");
+        signal?.throwIfAborted();
         return [{ key, value: next }];
       } });
     };
@@ -105,11 +108,12 @@ export async function initialArtifactOwner(store: FileJournaledBackend, projecti
   } else if (row.state !== "acknowledged" && snap.meta.has(baseKey(p.id))) return null;
   return { publication: p, intent: row, raw: snap.raw!, version: snap.document.version };
 }
-export async function recoverArtifactRecord(store: FileJournaledBackend, folder: string, projection: ProjectionRecord, p: Publication): Promise<InitialPlacementHold | null> {
+export async function recoverArtifactRecord(store: FileJournaledBackend, folder: string, projection: ProjectionRecord, p: Publication, signal?: AbortSignal): Promise<InitialPlacementHold | null> {
+  signal?.throwIfAborted();
   const owner = await initialArtifactOwner(store, projection, p);
   if (!owner) return null;
-  if (owner.intent.state === "acknowledged") await exportCheckout(folder, store, projection, { only: new Set([p.id]), placeMissing: true });
-  else await placeQueuedLocalCreate(folder, store, projection, { id: p.id, requestId: owner.intent.requestId, localVersion: owner.version, rawDigest: digestOf(Buffer.from(owner.raw)) });
+  if (owner.intent.state === "acknowledged") await exportCheckout(folder, store, projection, { only: new Set([p.id]), placeMissing: true, regularFilesOnly: true, signal });
+  else await placeQueuedLocalCreate(folder, store, projection, { id: p.id, requestId: owner.intent.requestId, localVersion: owner.version, rawDigest: digestOf(Buffer.from(owner.raw)) }, signal);
   const still = await initialArtifactOwner(store, projection, p);
   return still && equalJournalValue(still, owner) ? still : null;
 }

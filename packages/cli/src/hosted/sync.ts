@@ -766,9 +766,19 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
     },
     stream: (route, input, signal) => session.carrier.stream(route, input, signal),
   };
+  // Selection stays in front of resume/requeue as well as delivery. Revalidate original
+  // ownership each time; an updated state alone is not a successor or a visibility baseline.
+  const selectedStore = new Proxy(store, { get(inner, prop) {
+    if (prop === "listIntents") return async (states?: Parameters<JournaledBackend["listIntents"]>[0]) => {
+      const rows = await inner.listIntents(states);
+      const owners = await Promise.all(publicationHolds.map(h => initialArtifactOwner(store, session.projection, h.publication)));
+      return rows.filter(row => !owners.some(owner => owner && equalJournalValue(owner.intent, row)));
+    };
+    const value = Reflect.get(inner, prop, inner); return typeof value === "function" ? value.bind(inner) : value;
+  } });
   // Running sync is the person's decision to retry: a pause from an earlier run (sign-in, quota,
   // a withdrawn grant) is lifted and its refused changes are requeued under their identities.
-  await resume(local);
+  await resume(selectedStore);
   const via = resolveHostedVia(deps.auth.env);
   const transport = createWholeDocumentTransport({
     carrier,
@@ -797,10 +807,6 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
         reason: "convention_folder" as const,
         message: heldPathMessage(`${id}.md`, session.capabilities.definitionWrites),
       }));
-  const selectedStore = new Proxy(store, { get(inner, prop) {
-    if (prop === "listIntents") return async (states?: Parameters<JournaledBackend["listIntents"]>[0]) => (await inner.listIntents(states)).filter(row => !publicationHolds.some(h => equalJournalValue(h.intent, row)));
-    const value = Reflect.get(inner, prop, inner); return typeof value === "function" ? value.bind(inner) : value;
-  } });
   const ordered = createsFirst(selectedStore, new Set(collisions.map((row) => row.id)), models);
   let signInRequired = false;
   const landed: Landed = { types: new Set(), governed: new Set(), conventionChanged: false };
@@ -826,8 +832,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
     }
     if (pass === PUSH_PASSES - 1) break;
     const model = new Set<string>();
-    const requeued = await requeueRefused(store, (row) => {
-      if (publicationHolds.some(h => equalJournalValue(h.intent, row))) return false;
+    const requeued = await requeueRefused(selectedStore, (row) => {
       if (busyRefusal(row)) return true;
       if (retried.has(row.target) || !definitionRetry(row, landed, session.okfVersion, models)) return false;
       model.add(row.target);
@@ -1130,9 +1135,11 @@ async function driveBlobRequests(session: Session, deps: HostedSyncDeps, options
 
 /** Blob ACK then local record admission. This command never pushes documents. */
 export async function queueHostedArtifact(binding: CheckoutBinding, input: { file: string; title: string; description?: string; actor: string }, partial: Partial<HostedSyncDeps>, resume: CommandText): Promise<Record<string, unknown>> {
-  const deps = hostedDeps(partial);
+  const deps = hostedDeps(partial), signal = deps.write?.signal;
+  signal?.throwIfAborted();
   return withSession(binding, deps, resume, async session => {
     const { store, local, projection } = session;
+    signal?.throwIfAborted();
     if (!session.capabilities.operations || session.capabilities.blobWrites !== "allowed") throw new CliError("CONFLICT", "host does not offer the identified blob/document writes Artifact needs");
     await assertActorAcceptedByBundle(local.bundle, input.actor);
     const all = await publications(store);
@@ -1147,7 +1154,7 @@ export async function queueHostedArtifact(binding: CheckoutBinding, input: { fil
       const remoteHeads = await session.reader.heads();
       if (!remoteHeads) throw new CliError("CONFLICT", "Artifact needs a complete current record listing");
       const remote = remoteHeads.heads.map(h => h.id);
-      const blobAdapter = createHostedBlobReadAdapter({ carrier: session.carrier, bundleId: binding.bundle_id, prefix: session.routes, signal: new AbortController().signal, capabilities: () => Promise.resolve(session.capabilities) });
+      const blobAdapter = createHostedBlobReadAdapter({ carrier: session.carrier, bundleId: binding.bundle_id, prefix: session.routes, signal: signal ?? new AbortController().signal, capabilities: () => Promise.resolve(session.capabilities) });
       const remoteBlobs = (await blobAdapter.heads()).heads;
       const taken = new Set([...heads.map(h => h.id), ...blobs.map(k => k.replace(/\.[^/.]+$/, "")), ...remote.filter(id => id.startsWith("artifacts/")), ...remoteBlobs.map(h => h.key.replace(/\.[^/.]+$/, "")), ...all.map(p => p.id)]);
       const id = firstFreeId(slugifyTitle(input.title), taken), entry = `${id}.html`;
@@ -1160,7 +1167,8 @@ export async function queueHostedArtifact(binding: CheckoutBinding, input: { fil
       // Bound the complete eventual row before admitting any blob. The generated request has fixed length.
       const candidate = decodePublication({ ...base, blobRequestId: mintRequestId() });
       await publications(store, candidate);
-      await admitOfflineBlob({ operation: "promote", key: entry, dir: binding.path, source, contentType: "text/html", home: deps.auth.home, cwd: deps.cwd }, { store, meta: { key: publicationKey(id), value: (blobRequestId, prepared) => { const frozen = decodePreparedBlobIntent(prepared); if (frozen.intent.operationId !== "blobs.create.v1" || frozen.intent.version !== base.digest || frozen.intent.contentType !== base.contentType) throw new CliError("CONFLICT", "Artifact source changed before atomic admission; no request was admitted"); return decodePublication({ ...base, blobRequestId }); } } });
+      signal?.throwIfAborted();
+      await admitOfflineBlob({ operation: "promote", key: entry, dir: binding.path, source, contentType: "text/html", home: deps.auth.home, cwd: deps.cwd }, { store, meta: { key: publicationKey(id), value: (blobRequestId, prepared) => { signal?.throwIfAborted(); const frozen = decodePreparedBlobIntent(prepared); if (frozen.intent.operationId !== "blobs.create.v1" || frozen.intent.version !== base.digest || frozen.intent.contentType !== base.contentType) throw new CliError("CONFLICT", "Artifact source changed before atomic admission; no request was admitted"); return decodePublication({ ...base, blobRequestId }); } } });
       publication = decodePublication(await store.readMeta(publicationKey(id)));
     }
     assertPublicationSource(publication, binding.path);
@@ -1170,15 +1178,22 @@ export async function queueHostedArtifact(binding: CheckoutBinding, input: { fil
       const version = await acknowledgedArtifactBlob(store, publication);
       if (!version) return { artifact: "blob_pending", id: publication.id, entry: publication.entry, blob_request_id: publication.blobRequestId, status: "incomplete", help: String(resume) };
       assertPublicationSource(publication, binding.path);
-      try { publication = await admitArtifactRecord(store, publication, version, session.capabilities.documentInputBytes ?? 1024 * 1024); }
-      catch (error) { throw new CliError("CONFLICT", `blob '${publication.entry}' is acknowledged at ${version}; record is not queued: ${error instanceof Error ? error.message : String(error)}`, { details: { reason: "artifact_blob_acknowledged_record_not_queued", entry: publication.entry, entry_version: version, blob_request_id: publication.blobRequestId }, help: String(resume) }); }
+      signal?.throwIfAborted();
+      try { publication = await admitArtifactRecord(store, publication, version, session.capabilities.documentInputBytes ?? 1024 * 1024, signal); }
+      catch (error) { if (signal?.aborted) throw error; throw new CliError("CONFLICT", `blob '${publication.entry}' is acknowledged at ${version}; record is not queued: ${error instanceof Error ? error.message : String(error)}`, { details: { reason: "artifact_blob_acknowledged_record_not_queued", entry: publication.entry, entry_version: version, blob_request_id: publication.blobRequestId }, help: String(resume) }); }
     }
-    const hold = await recoverArtifactRecord(store, binding.path, projection, publication);
+    let hold: InitialPlacementHold | null = null;
+    // Once the record transaction commits, cancellation cannot retract it. Skip later
+    // placement and report the durable pending record instead of claiming an admission failure.
+    if (!signal?.aborted) {
+      try { hold = await recoverArtifactRecord(store, binding.path, projection, publication, signal); }
+      catch (error) { if (!signal?.aborted) throw error; }
+    }
     await session.persist();
     const row = await originalArtifactRecord(store, publication);
     if (row?.state === "refused" || row?.state === "conflict") throw new CliError("CONFLICT", `Artifact record has retained ${row.state} evidence; acknowledged bytes remain at ${publication.entry}`, { details: { id: publication.id, entry: publication.entry, blob_request_id: publication.blobRequestId, record_request_id: row.requestId, state: row.state }, help: "inspect the original record conflict; do not recreate or delete its bytes automatically" });
     const doc = await store.readWithJournal(publication.id);
-    return { artifact: row?.state === "acknowledged" ? "created" : "record_pending", id: publication.id, entry: publication.entry, entry_version: doc.document?.doc.frontmatter.entry_version, blob_request_id: publication.blobRequestId, record_request_id: publication.record!.requestId, status: row?.state ?? "unknown", ...(hold ? { local_placement: "held" } : {}), help: `bytes acknowledged; record queued. ${cliInvocation()} sync --dir ${commandToken(binding.path)}` };
+    return { artifact: row?.state === "acknowledged" ? "created" : "record_pending", id: publication.id, entry: publication.entry, entry_version: doc.document?.doc.frontmatter.entry_version, blob_request_id: publication.blobRequestId, record_request_id: publication.record!.requestId, status: row?.state ?? "unknown", ...(signal?.aborted ? { local_placement: "pending_after_cancellation" } : hold ? { local_placement: "held" } : {}), help: `bytes acknowledged; record queued. ${cliInvocation()} sync --dir ${commandToken(binding.path)}` };
   });
 }
 

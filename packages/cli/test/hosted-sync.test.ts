@@ -2327,3 +2327,97 @@ test("hosted Artifact placement collision suppresses only original request; expl
   finally { await store.close(); }
   await runSync(h); await runSync(h); assert.equal(h.host.docs.get("artifacts/collision")!.frontmatter.title, "Successor");
 });
+
+
+test("review: refused original with placement collision never escapes hold during resume", async () => {
+  const h = await harness(), wire = blobAuthority(h), file = path.join(h.folder, "artifacts/review-hold.html");
+  await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "frozen");
+  await artifact(["create", file, "--title", "Review hold", "--actor", "process:review", "--dir", h.folder], commandDeps(h, wire));
+  const b = (await bindingForPath(h.home, h.folder))!, projectionFile = path.join(checkoutDir(h.home, b.checkout_id), "projection.json"), projection = JSON.parse(await readFile(projectionFile, "utf8"));
+  delete projection.files["artifacts/review-hold"]; await writeFile(projectionFile, JSON.stringify(projection));
+  const markdown = path.join(h.folder, "artifacts/review-hold.md"); await writeFile(markdown, "different physical file");
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, b.checkout_id) });
+  try { const p = (await publications(store))[0]!; await store.updateIntent(p.record!.requestId, "pending", { state: "refused", refusal: { code: "FORBIDDEN", message: "lost grant" } }); }
+  finally { await store.close(); }
+  h.fetch = wire.fetch;
+  await failingSync(h);
+  assert.equal(h.host.writes.length, 0, "original with unresolved placement must not be sent by resume");
+});
+
+test("review: cancellation before resumed record admission preserves blob-only state", async () => {
+  const h = await harness(), wire = blobAuthority(h), file = path.join(h.folder, "artifacts/review-cancel.html");
+  await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "frozen");
+  const original = FileJournaledBackend.prototype.writeJournaled;
+  let refuseOnce = true;
+  FileJournaledBackend.prototype.writeJournaled = async function(id, doc, options) { if (id === "artifacts/review-cancel" && refuseOnce) { refuseOnce = false; throw new Error("review crash before record admission"); } return original.call(this,id,doc,options); };
+  const args = ["create", file, "--title", "Review cancel", "--actor", "process:review", "--dir", h.folder];
+  try { await assert.rejects(artifact(args, commandDeps(h, wire)), /record is not queued/); }
+  finally { FileJournaledBackend.prototype.writeJournaled = original; }
+  const controller = new AbortController(); controller.abort();
+  const deps = commandDeps(h, wire);
+  try { await artifact(args, { ...deps, hosted: { ...deps.hosted, write: { ...deps.hosted.write, signal: controller.signal } } }); } catch {}
+  const b = (await bindingForPath(h.home, h.folder))!, store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, b.checkout_id) });
+  try { const p = (await publications(store))[0]!; assert.equal(p.state, "blob_admitted", "already cancelled replay must not queue a document"); assert.equal((await store.listIntents()).length,0); }
+  finally { await store.close(); }
+});
+
+test("review: hosted oversized source never passes through unbounded readFile", async () => {
+  const h = await harness(), wire = blobAuthority(h), file = path.join(h.folder, "artifacts/review-large.html");
+  await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, Buffer.alloc(16 * 1024 * 1024 + 1, 65));
+  const fs = await import("node:fs/promises"), original = fs.default.readFile;
+  let unboundedReads = 0;
+  fs.default.readFile = async function(this: typeof fs.default, ...args: Parameters<typeof original>) { if (String(args[0]) === file) unboundedReads++; return original.apply(this,args as any); } as typeof original;
+  try { await assert.rejects(artifact(["create",file,"--title","Review large","--actor","process:review","--dir",h.folder],commandDeps(h,wire))); }
+  finally { fs.default.readFile = original; }
+  assert.equal(wire.calls.length,0);
+  assert.equal(unboundedReads,0,"hosted source acquisition must use bounded no-follow reader exclusively");
+});
+
+for (const refusalCode of ["FORBIDDEN", "concurrent_change"]) test(`Artifact ${refusalCode} collision stays held on repeated resume; real successor remains ordinary-owned`, async () => {
+  const h = await harness(), wire = blobAuthority(h), file = path.join(h.folder, "artifacts/refused.html");
+  await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "frozen");
+  await artifact(["create", file, "--title", "Refused", "--actor", "process:fix", "--dir", h.folder], commandDeps(h, wire));
+  const b = (await bindingForPath(h.home, h.folder))!, projectionFile = path.join(checkoutDir(h.home, b.checkout_id), "projection.json"), projection = JSON.parse(await readFile(projectionFile, "utf8"));
+  delete projection.files["artifacts/refused"]; await writeFile(projectionFile, JSON.stringify(projection));
+  const markdown = path.join(h.folder, "artifacts/refused.md"); await writeFile(markdown, "collision");
+  let store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, b.checkout_id) });
+  try { const p = (await publications(store))[0]!; await store.updateIntent(p.record!.requestId, "pending", { state: "refused", refusal: { code: refusalCode, message: "held refusal" } }); } finally { await store.close(); }
+  h.fetch = wire.fetch; await failingSync(h); await failingSync(h); assert.equal(h.host.writes.length, 0);
+  store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, b.checkout_id) });
+  try { await commitLocal(store, "artifacts/refused", { mode: "patch", buildCandidate: doc => ({ frontmatter: { ...doc!.frontmatter, title: "Successor" }, body: doc!.body }) }); await writeFile(markdown, (await store.readWithJournal("artifacts/refused")).raw!); } finally { await store.close(); }
+  await runSync(h); await runSync(h); assert.equal(h.host.docs.get("artifacts/refused")!.frontmatter.title, "Successor");
+});
+
+test("Artifact cancelled fresh acquisition admits nothing; cancellation after commit reports the queued record honestly", async () => {
+  const h = await harness(), wire = blobAuthority(h), file = path.join(h.folder, "artifacts/cancelled.html"), controller = new AbortController();
+  await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "frozen");
+  const args = ["create", file, "--title", "Cancelled", "--actor", "process:fix", "--dir", h.folder, "--json"], out: string[] = [], deps = commandDeps(h, wire, out);
+  controller.abort();
+  await assert.rejects(artifact(args, { ...deps, hosted: { ...deps.hosted, write: { ...deps.hosted.write, signal: controller.signal } } }), { name: "AbortError" });
+  assert.equal(wire.calls.length, 0);
+  const after = new AbortController(), original = FileJournaledBackend.prototype.writeJournaled;
+  FileJournaledBackend.prototype.writeJournaled = async function(id, doc, options) { const saved = await original.call(this, id, doc, options); if (id === "artifacts/cancelled") after.abort(); return saved; };
+  try { await artifact(args, { ...deps, hosted: { ...deps.hosted, write: { ...deps.hosted.write, signal: after.signal } } }); } finally { FileJournaledBackend.prototype.writeJournaled = original; }
+  const receipt = JSON.parse(out.at(-1)!); assert.equal(receipt.artifact, "record_pending"); assert.equal(receipt.local_placement, "pending_after_cancellation");
+  assert.equal(wire.calls.length, 1); assert.equal(h.host.writes.length, 0);
+  await artifact(args, deps); assert.equal(JSON.parse(out.at(-1)!).record_request_id, receipt.record_request_id); assert.equal(wire.calls.length, 1);
+});
+
+test("Artifact hosted source uses injected cwd and refuses symlink/missing input without a legacy acquisition", async () => {
+  const h = await harness(), wire = blobAuthority(h), dir = path.join(h.folder, "artifacts"); await mkdir(dir, { recursive: true });
+  const outside = path.join(h.cwd, "source-outside"); await writeFile(outside, "frozen"); const file = path.join(dir, "source.html"); await symlink(outside, file);
+  const args = ["create", "artifacts/source.html", "--title", "Source", "--actor", "process:fix", "--dir", h.folder], base = commandDeps(h, wire), deps = { ...base, cwd: h.folder };
+  await assert.rejects(artifact(args, deps), /unsafe|missing/); assert.equal(wire.calls.length, 0);
+  await unlink(file); await assert.rejects(artifact(args, deps), /unsafe|missing/); assert.equal(wire.calls.length, 0);
+  await writeFile(file, "frozen"); await artifact(args, deps); assert.equal(wire.calls.length, 1);
+});
+
+test("Artifact cancellation after awaited host preflight precedes new blob reservation", async () => {
+  const h = await harness(), wire = blobAuthority(h), controller = new AbortController(), file = path.join(h.folder, "artifacts/preflight.html");
+  await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "frozen");
+  const base = commandDeps(h, wire), fetcher: typeof fetch = async (input, init) => { const answer = await wire.fetch(input, init); if (new URL(String(input)).pathname.endsWith("/blob-heads")) controller.abort(); return answer; };
+  await assert.rejects(artifact(["create", file, "--title", "Preflight", "--actor", "process:fix", "--dir", h.folder], { ...base, hosted: { ...base.hosted, fetch: fetcher, write: { ...base.hosted.write, signal: controller.signal } } }));
+  const b = (await bindingForPath(h.home, h.folder))!, store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, b.checkout_id) });
+  try { assert.deepEqual(await publications(store), []); assert.deepEqual(await store.listBlobIntents(), []); assert.deepEqual(await store.listIntents(), []); } finally { await store.close(); }
+  assert.equal(wire.calls.length, 0);
+});
