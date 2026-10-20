@@ -76,7 +76,7 @@ function copyData(value: unknown, active = new Set<object>(), budget = { nodes: 
   if (--budget.nodes < 0) throw new InvalidInputError("Inventory guard input exceeds its data bound.");
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value !== "object" || value === null) throw new InvalidInputError("Inventory guard accepts finite plain data only.");
+  if (typeof value !== "object") throw new InvalidInputError("Inventory guard accepts finite plain data only.");
   if (active.has(value)) throw new InvalidInputError("Inventory guard input is cyclic.");
   const array = Array.isArray(value);
   if (Object.getPrototypeOf(value) !== (array ? Array.prototype : Object.prototype) && Object.getPrototypeOf(value) !== null) {

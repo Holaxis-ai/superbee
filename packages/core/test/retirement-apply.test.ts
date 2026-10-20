@@ -9,7 +9,7 @@ import { mutateDocument } from "../src/document-mutation.js";
 import { buildKindRegistry } from "../src/kinds.js";
 import { INVENTORY_GUARD_DOMAIN, InventoryGuardUnsupported, type InventoryGuardRequest } from "../src/inventory-guard.js";
 import { installRecipe, planRecipeEvolution, planRecipeDeclarationRetirement, planRecipeDeclarationRetirementApply, applyRecipeDeclarationRetirement, RecipeRetirementApplyError } from "../src/recipe-lifecycle/index.js";
-import { definitionDigest, recipeSourceDigest, readRecipeStamp, recipeStampIdentity } from "../src/recipe-lifecycle/stamp.js";
+import { definitionDigest, readRecipeStamp, recipeStampIdentity } from "../src/recipe-lifecycle/stamp.js";
 import { prepareRecipeInstall } from "../src/recipe-lifecycle/install.js";
 import { recipePreflightDigest, type RecipePreflightInput } from "../src/recipe-set-preflight.js";
 import { stringifyDoc } from "../src/frontmatter.js";
