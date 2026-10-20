@@ -1080,3 +1080,5 @@ The v0 shape preserves authored array order and warning metadata. It does not
 include `fields.types` or derived `freshnessHorizonMs`; adapters that already add
 these fields keep that enrichment. Projection does not establish snapshot coherence,
 authorization or permission to disclose a bundle's declarations.
+
+See [explicit recipe-set structural preflight](recipe-set-preflight.md) for the opt-in read-only composition checker and its evidence limits.

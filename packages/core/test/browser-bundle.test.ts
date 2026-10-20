@@ -42,6 +42,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 
 /** subpath dist module -> a symbol the bundle must still carry (proves the entry resolved, not an empty file). */
 const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
+  { module: "recipe-set-preflight.js", symbol: "preflightRecipeSet" },
   { module: "artifact-contract.js", symbol: "decodeDocumentTargetV1" },
   { module: "engine.js", symbol: "writeDocVersioned" },
   { module: "links.js", symbol: "resolveConceptId" },

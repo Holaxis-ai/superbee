@@ -596,6 +596,32 @@ export async function exerciseKindAuthoring() {
     const authored = await runInNewContext(authoringBundle.outputFiles[0].text + '\nKindAuthoringProof.exerciseKindAuthoring()', { TextEncoder, TextDecoder, structuredClone }, { timeout: 5000 });
     assert.deepEqual(JSON.parse(JSON.stringify(authored)), { builtin: "work-tracking", kind: "Research", body: "# Summary\n", declined: "conventions/freeform" });
 
+    // A public author constructs exact evidence without sibling imports or private Studio code.
+    await writeFile(path.join(scratch, "recipe-preflight-consumer.mjs"), String.raw`import { preflightRecipeSet, recipePreflightDigest } from "@superbee/core/recipe-set-preflight";
+import { parseRecipeFiles } from "@superbee/core/recipes";
+import { prepareRecipeInstall } from "@superbee/core/recipe-lifecycle";
+import { stringifyDoc } from "@superbee/core/document-codec";
+export async function exerciseRecipePreflight() {
+ const files=[{path:"recipe.md",bytes:"---\ntype: Recipe\nid: public-author\ntitle: Public author\nversion: '1'\nsummary: Synthetic public fixture\n---\n"},{path:"conventions/note.md",bytes:"---\ntype: Convention\ngoverns: Note\npath: notes/\nfields:\n  required: [title]\n---\n"}].map(file=>({...file,digest:recipePreflightDigest(file.bytes)}));
+ const artifact={identity:{publisher:"example",recipeId:"public-author",release:"1"},files};
+ const parsed=parseRecipeFiles(files,"example/public-author@1",{okfVersion:"0.2"});
+ if(!parsed.ok)throw Error(parsed.error.message);
+ const prepared=prepareRecipeInstall(parsed.recipe,{okfVersion:"0.2",now:"2026-01-01T00:00:00.000Z"});
+ const definitions=prepared.docs.map(doc=>({id:doc.id,bytes:stringifyDoc(doc.frontmatter,doc.body)}));
+ const input={schema:"recipe-set-preflight/v1",selected:[{key:"note",role:"base",...artifact.identity,artifact,artifactDigest:recipePreflightDigest(artifact)}],consumers:[],endpoints:[],observations:[{id:"note",provider:"note",scope:"local",availability:"available",complete:true,observedVersion:"fixture-1",definitions}],placementInventories:[{id:"local",scope:"local",availability:"available",complete:true,observedVersion:"fixture-1",files:definitions.map(d=>({path:d.id+".md",bytes:d.bytes}))}]};
+ const result=await preflightRecipeSet(input);
+ if(result.verdict!=="valid"||!result.structuralComplete)throw Error(JSON.stringify(result));
+ delete input.placementInventories;
+ const missing=await preflightRecipeSet(input);
+ if(missing.verdict!=="partial"||!missing.issues.some(i=>i.code==="PLACEMENT_INVENTORY_UNKNOWN"))throw Error("missing collision scope certified");
+ return {verdict:result.verdict,missing:missing.verdict,scope:result.scope};
+}
+`);
+    await run(process.execPath, ["--input-type=module", "-e", 'import {exerciseRecipePreflight} from "./recipe-preflight-consumer.mjs"; await exerciseRecipePreflight();'], scratch);
+    const preflightBundle=await build({absWorkingDir:scratch,entryPoints:["recipe-preflight-consumer.mjs"],bundle:true,platform:"browser",format:"iife",globalName:"PreflightProof",write:false,logLevel:"silent"});
+    const preflightResult=await runInNewContext(preflightBundle.outputFiles[0].text+'\nPreflightProof.exerciseRecipePreflight()', {TextEncoder,TextDecoder,structuredClone}, {timeout:5000});
+    assert.deepEqual(JSON.parse(JSON.stringify(preflightResult)),{verdict:"valid",missing:"partial",scope:"declared-structural-input-only"});
+
     await writeFile(
       path.join(scratch, "worker-consumer.ts"),
       `import { queryHeads, writeDocVersioned } from "@superbee/core/engine";
@@ -619,6 +645,11 @@ import { bindSourceFeed, changeBetween, connectorPinDigest, findingsFor, mapReco
 import { getSourceProfile, restJsonProfile, SOURCE_PROFILES, type RestJsonCursor } from "@superbee/core/source-profiles";
 import { MemoryMachineState, observeSource, type ObservePage, type SourceProfile, type SourceRunReceipt, type Transport } from "@superbee/core/source-engine";
 import { peerTransport, runTransportConformance, type ConformanceRow, type ScriptedPeer, type TransportCredential } from "@superbee/core/source-harness";
+import { preflightRecipeSet, recipePreflightDigest, type RecipePreflightInput, type PreflightResult, type PlacementInventory } from "@superbee/core/recipe-set-preflight";
+declare const preflightInput: RecipePreflightInput;
+const preflightResult: Promise<PreflightResult> = preflightRecipeSet(preflightInput);
+const placementInventory: PlacementInventory | undefined = preflightInput.placementInventories?.[0];
+void preflightResult; void placementInventory; void recipePreflightDigest(preflightInput);
 import type { BundleBinding } from "@superbee/core/cross-bundle";
 
 declare const backend: StorageBackend;
@@ -781,6 +812,7 @@ export async function exerciseSourceEngine(): Promise<[SourceRunReceipt, Conform
     assert.ok(installedManifest.exports["./kinds"]);
     assert.ok(installedManifest.exports["./domain-model"]);
     assert.ok(installedManifest.exports["./recipes"]);
+    assert.deepEqual(installedManifest.exports["./recipe-set-preflight"], {types:"./dist/recipe-set-preflight.d.ts",default:"./dist/recipe-set-preflight.js"});
     for (const module of ["builtin-recipes", "kind-authoring"]) assert.deepEqual(installedManifest.exports[`./${module}`], { types: `./dist/${module}.d.ts`, default: `./dist/${module}.js` });
     assert.ok(installedManifest.exports["./engine"]);
     assert.ok(installedManifest.exports["./remote"]);
@@ -799,6 +831,8 @@ export async function exerciseSourceEngine(): Promise<[SourceRunReceipt, Conform
     assert.deepEqual(installedManifest.exports["./source-harness"], { types: "./dist/source-harness/index.d.ts", default: "./dist/source-harness/index.js" });
     assert.deepEqual(installedManifest.exports["./bundle-health"], { types: "./dist/bundle-health/index.d.ts", default: "./dist/bundle-health/index.js" });
     const installedFiles = await filesUnder(installed);
+    assert.ok(installedFiles.includes("dist/recipe-set-preflight.js"));
+    assert.ok(installedFiles.includes("dist/recipe-set-preflight.d.ts"));
     assert.ok(installedFiles.every((file) => file === "package.json" || file === "README.md" || file.startsWith("dist/")));
     assert.ok(installedFiles.includes("dist/hosted-client/index.js"), "the hosted client subpath is packed");
     assert.ok(installedFiles.includes("dist/hosted-client/node.js"), "the hosted client's Node-only subpath is packed");
