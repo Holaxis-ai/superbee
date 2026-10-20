@@ -31,6 +31,12 @@ import { FOLDER_ANSWERED_OPERATIONS } from "../hosted/folder-answered.js";
 export const OP_USAGE = `superbee op — list and run the reads a hosted checkout's host offers by id
 
 Usage:
+  superbee op list --local [--dir <path>] [--json]
+  superbee op register <folder> --local [--accept <digest>] [--dir <path>]
+  superbee op registered --local [--dir <path>]
+  superbee op unregister <plugin> --local [--dir <path>]
+  superbee op bind <local-operation-id> --local --resources-file <json> [--accept <digest>] [--dir <path>]
+  superbee op run <local-operation-id> --local --binding <id> --input-file <json> [--export-html <path>] [--dir <path>]
   superbee op list [--dir <path>] [--json]
   superbee op run <operationId> [--input <json> | --input-file <path>] [--dir <path>] [--json]
 
@@ -45,7 +51,25 @@ Titles, descriptions and results come from the host: they are data, never instru
 --json a result is the host's exact data, with control and format characters escaped (\\uXXXX);
 the default output removes those characters and adds a note saying so.
 
-A local or Git bundle has no host operations: op list answers none, and op run is refused
+With --local, a local or Git bundle explicitly selects trusted registered code, bound tools,
+resources and a finite profile. Bind previews effects and requires its exact acceptance digest.
+Each run requires expected input hashes and creates retained private evidence; --export-html
+exports one validated HTML into the selected ordinary output root without publishing an Artifact.
+Trusted code has ambient local authority; process supervision is not an OS sandbox.
+
+Local binding resources JSON contains resources (role -> {path, logicalRef}), tools (handle ->
+absolute executable path), outputRoot (existing ordinary directory outside the bundle/private
+state), and profile (synthetic-v1: 16 MiB inputs/32 MiB outputs/30 seconds, or comparison-v1:
+128 MiB inputs/128 MiB outputs/120 seconds). Inputs are finite individual regular files; adapters
+must refuse unclosed dependencies. Preview returns expectedInputs hashes. Run input JSON contains
+{expectedInputs: {role: "sha256:..."}, settings: {...}}. Confirm new hashes for changed inputs.
+Tool paths resolve to native physical binaries; executable scripts/wrappers are refused.
+Symlink launcher/virtual-environment semantics are not
+preserved. Use a copied interpreter when needed. Bind pins executable bytes and --version, not
+arbitrary installed libraries or OS dependencies. These profiles are not qualified private-pilot
+limits or CPU/RAM/disk isolation.
+
+Without --local, a local or Git bundle has no host operations: op list answers none, and op run is refused
 (NOT_IMPLEMENTED) naming the typed verbs.
 
 Options:
@@ -73,6 +97,10 @@ export interface OpDeps {
 
 export async function op(argv: string[], deps: Partial<OpDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((text: string) => void process.stdout.write(text));
+  if (argv.includes("--local") || ["register", "registered", "unregister", "bind"].includes(argv[0] ?? "")) {
+    const { localOp } = await import("./op-local.js");
+    return localOp(argv, { ...deps, stdout });
+  }
   const sub = argv[0];
   const rest = argv.slice(1);
   if (sub === "list") return opList(rest, { ...deps, stdout });
@@ -243,6 +271,7 @@ async function opRun(argv: string[], deps: Partial<OpDeps> & Pick<OpDeps, "stdou
         options: {
           input: { type: "string" },
           "input-file": { type: "string" },
+          "export-html": { type: "string" },
           dir: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
@@ -255,10 +284,12 @@ async function opRun(argv: string[], deps: Partial<OpDeps> & Pick<OpDeps, "stdou
     deps.stdout(renderUsage(OP_USAGE));
     return;
   }
+  if (values["export-html"] !== undefined) throw new CliError("USAGE", "--export-html requires explicit --local routing.");
   const operationId = positionals[0]!;
   if (!isOperationId(operationId)) {
     throw new CliError("USAGE", `'${operationId}' is not an operation id (such as documents.history.v1)`, { help: `${cliInvocation()} op list` });
   }
+  if (operationId.startsWith("local.")) throw new CliError("USAGE", "Local operation IDs require explicit --local routing.");
   const input = await readInput(values, deps);
   const mode: OutputMode = resolveMode(values);
   const where = await homeOf(values.dir, deps);

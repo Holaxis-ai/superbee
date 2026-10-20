@@ -53,6 +53,7 @@ export const workspaceAliases = {
       "@superbee/core/record-overlay": r("../core/src/record-overlay/index.ts"),
       "@superbee/core/source-engine": r("../core/src/source-engine/index.ts"),
       "@superbee/core/source-harness": r("../core/src/source-harness/index.ts"),
+      "@superbee/core/site-capabilities": r("../core/src/site-capabilities.ts"),
       "@superbee/core/source-profiles": r("../core/src/source-profiles/index.ts"),
       "@superbee/core/search": r("../core/src/search/index.ts"),
       "@superbee/core": r("../core/src/index.ts"),

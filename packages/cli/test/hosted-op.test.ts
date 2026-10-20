@@ -422,3 +422,11 @@ test("a local and a Git bundle: op list answers no operations with a note and no
     assert.match(error.help ?? "", /typed verbs \(doc read, doc history/);
   }
 });
+
+test("local namespace never reaches hosted run without explicit local admission", async () => {
+  const h = await harness();
+  await assert.rejects(run(h, ["run", "local.fixture.compare.v1"]), /require explicit --local/);
+  assert.deepEqual(h.host.requests, []);
+  await assert.rejects(run(h, ["list", "--local"]), /hosted_local_execution_not_supported/);
+  assert.deepEqual(h.host.requests, []);
+});
