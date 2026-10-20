@@ -317,6 +317,38 @@ leaves cross-repository PR deduplication and registry-backed consumer automation
 `verified-package-consumer-update-prs` task. Do not widen Core pins: the exact helper version is
 the current plugin ABI. Plugins continue to use reviewed Git checkout/build/folder registration.
 
+For the Core-to-GitHub-plugin release handoff, use the owning command after the native CLI archive
+has been retained and attested. It always invokes the exact-candidate check above, then verifies
+the named successful Core/Server finalizer, both published versions, actual Core registry integrity,
+native CLI/Core tag attestations and candidate Core source-tree equality with its library tag:
+
+```sh
+npm run --silent release:github-handoff -- --candidate /path/to/superbee --candidate-sha FULL_FINAL_SHA --plugin /path/to/superbee-plugins --plugin-sha FULL_BASE_SHA --cli-tarball /path/to/retained-cli.tgz --cli-sha256 EXACT_CLI_SHA256 --core-tarball /path/to/retained-core.tgz --core-sha256 EXACT_CORE_SHA256 --core-finalizer-run SUCCESSFUL_NATIVE_RUN_ID
+```
+
+This explicit operator command uses anonymous npm reads and the existing authenticated `gh`
+session; it adds no stored credential, Actions permission or automatic cross-repository authority.
+It is a read-only plan by default. To create a new draft, review the output and repeat the same
+complete verified invocation with `--create-draft`; restored JSON is never accepted as authority.
+Draft creation is disabled in GitHub Actions. No release/staging workflow invokes this command
+automatically. The earlier source check remains the pre-staging step; this archive-bound command
+owns the subsequent handoff. Keep its result with the existing Task/Release evidence.
+
+The target is fixed to `Holaxis-ai/superbee-plugins`, default `main` and the exact supplied base.
+The command reuses a matching open owner proposal without editing its body, source or draft state,
+and returns the fresh source/archive evidence for that owner. It refuses conflicting owners/files,
+changed bases, incomplete publication and unverifiable evidence. New drafts contain only the exact
+proposed files, with a deterministic native branch/key; partial branch recovery verifies the whole
+tree, parent and message and never overwrites a branch. Closed proposals remain closed. Changed or
+uncertain native outcomes return a hold with the known branch/PR target (exit 3); inspect native
+state before retrying. A lost create response triggers read-back before any later proposal.
+
+The draft is not a release approval or installed-compatibility verdict. Its owner still reviews
+README/install guidance, runs the proposed checkout against the exact archives, checks current
+base/head/evidence, waits for CLI npm approval/finalization and follows ordinary review/CI/merge.
+This command never merges downstream, changes an existing owner's proposal, publishes a plugin,
+widens a version range or registers global plugin state. Broader consumer automation stays deferred.
+
 The private build-only `packages/package-verification` workspace owns shared isolated subprocess,
 cleanup, exact byte/identity comparison, and bounded metadata-access primitives. The installed CLI
 proof consumes it directly; it is absent from product runtime dependencies and tarballs. Docs and
