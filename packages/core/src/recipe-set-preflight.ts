@@ -1,7 +1,7 @@
 /** Read-only structural checks over explicitly supplied snapshots. No storage or admission. */
 import { parseRecipeFiles, type LoadedRecipe } from './recipes.js';
 import { parseMarkdown } from './frontmatter.js';
-import { buildKindRegistry, type KindRegistry } from './kinds.js';
+import { buildKindRegistry, isConventionId, CONVENTION_TYPE, CONVENTIONS_PREFIX, type KindRegistry } from './kinds.js';
 import { isBundleAlias } from './dependencies.js';
 import { assertSafeConceptId } from './paths.js';
 import { prepareRecipeInstall, inspectRecipeInstallTarget, definitionDigest, type PreparedRecipeInstall } from './recipe-lifecycle/index.js';
@@ -421,7 +421,7 @@ export async function preflightRecipeSet(value: unknown): Promise<PreflightResul
         for (const d of ownedDocs(s.prepared))
             if (!o.definitions.some(x => x.id === d.id))
                 issue(o.complete ? 'refused' : 'partial', 'DEFINITION_UNOBSERVED', `${o.id}:${d.id}`);
-        const registry = buildKindRegistry(docs.filter(d => d.id.startsWith('conventions/')));
+        const registry = buildKindRegistry(docs.filter(d => isConventionId(d.id) && d.frontmatter.type === CONVENTION_TYPE));
         for (const w of registry.warnings)
             issue(modelDiagnosticLevel(w.code), w.code, o.id);
         inventories.set(o.id, { o, docs, registry });
@@ -449,7 +449,7 @@ export async function preflightRecipeSet(value: unknown): Promise<PreflightResul
         unique(placement.files, 'path', `placement:${placement.id}`);
         const files = new Map(placement.files.map(f => [f.path, f.bytes]));
         const documents: OkfDocument[] = [];
-        for (const file of placement.files.filter(f => f.path.startsWith('conventions/') && f.path.endsWith('.md'))) {
+        for (const file of placement.files.filter(f => f.path.startsWith(CONVENTIONS_PREFIX) && f.path.endsWith('.md'))) {
             try {
                 documents.push({ id: file.path.slice(0, -3), ...parseMarkdown(file.bytes, undefined, { okfVersion: '0.2' }) });
             }
@@ -457,7 +457,7 @@ export async function preflightRecipeSet(value: unknown): Promise<PreflightResul
                 issue('refused', 'OBSERVATION_PARSE', `${placement.id}:${file.path}`);
             }
         }
-        for (const warning of buildKindRegistry(documents).warnings)
+        for (const warning of buildKindRegistry(documents.filter(d => isConventionId(d.id) && d.frontmatter.type === CONVENTION_TYPE)).warnings)
             issue(modelDiagnosticLevel(warning.code), warning.code, placement.id);
         const claims = new Map<string, string>();
         const scopes = input.observations.filter(o => o.scope === scope);
@@ -519,7 +519,7 @@ export async function preflightRecipeSet(value: unknown): Promise<PreflightResul
                 issue('refused', 'DEFINITION_ID_COLLISION', `${scope}:${doc.id}`);
             ids.add(doc.id);
         }
-        for (const warning of buildKindRegistry(selectedDocs.filter(d => d.id.startsWith('conventions/'))).warnings)
+        for (const warning of buildKindRegistry(selectedDocs.filter(d => isConventionId(d.id) && d.frontmatter.type === CONVENTION_TYPE)).warnings)
             issue(modelDiagnosticLevel(warning.code), warning.code, scope);
     }
     const scopeOf = (e: Endpoint) => e.placement === 'local' ? 'local' : e.alias;
@@ -590,6 +590,11 @@ export async function preflightRecipeSet(value: unknown): Promise<PreflightResul
             for (const field of r.fields ?? [])
                 if (![...kind.fields.required, ...kind.fields.optional].includes(field))
                     issue('refused', 'REQUIRED_FIELD_MISSING', `${at}:${field}`);
+            if (e.placement === 'qualified' && r.links?.length) {
+                // Alias mappings here describe the root scope, not a foreign source's namespace.
+                issue('partial', 'SOURCE_QUALIFIED_LINKS_UNSUPPORTED', at);
+                continue;
+            }
             for (const link of r.links ?? []) {
                 const targets = materializedTargets(c.id, link.target.provider, link.target.kind);
                 const expected = targets[0];
@@ -631,7 +636,7 @@ export function explainRecipePreflightIssue(code: string): {
         [['REQUIRED_KIND_MISSING', 'REQUIRED_FIELD_MISSING', 'LINK_TARGET_MISMATCH'], 'A supplied structural definition contradicts a declared consumer requirement.', 'Align the explicitly selected definitions and consumer contract; optionality does not hide contradictions.'],
         [['INVENTORY_INCONSISTENT', 'PLACEMENT_INVENTORY_AMBIGUOUS'], 'Supplied inventories disagree about the checked snapshot.', 'Collect one consistent placement inventory and matching owned observations.'],
         [['RECIPE_MALFORMED', 'RECIPE_EMPTY', 'RECIPE_UNSAFE_PATH', 'RECIPE_CONNECTOR_INVALID', 'PARSE_FAILURE', 'OBSERVATION_PARSE', 'KIND_CONVENTION_MALFORMED'], 'A supplied recipe or active definition is malformed.', 'Correct the input using the existing Core recipe/Kind parser diagnostics before checking again.'],
-        [['UNSUPPORTED_OPERATOR', 'UNSUPPORTED_CONSTRAINT', 'PARSER_DIAGNOSTIC_UNCLASSIFIED', 'MANIFEST_SEMANTICS_NOT_APPLIED'], 'Requested or declared semantics are not evaluated by this structural checker.', 'Keep this result partial and evaluate those semantics with their owning contract; reserved manifest keys are not enforced.'],
+        [['UNSUPPORTED_OPERATOR', 'UNSUPPORTED_CONSTRAINT', 'SOURCE_QUALIFIED_LINKS_UNSUPPORTED', 'PARSER_DIAGNOSTIC_UNCLASSIFIED', 'MANIFEST_SEMANTICS_NOT_APPLIED'], 'Requested or declared semantics are not evaluated by this structural checker.', 'Keep this result partial and evaluate those semantics with their owning contract; reserved manifest keys are not enforced.'],
     ];
     for (const [codes, message, action] of groups)
         if (codes.includes(code))

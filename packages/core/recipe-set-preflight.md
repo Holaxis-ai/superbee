@@ -56,8 +56,9 @@ placementInventories?: Array<{
 Supply one consistent, available, complete inventory with an observed version for
 each checked scope. Include all relevant local definition Markdown and selected
 View entry HTML, including definitions not owned by selected recipes. Only
-`conventions/` contains active Kind declarations; an ordinary record or Convention
-outside that namespace does not become a model declaration.
+`type: Convention` documents under `conventions/` are active Kind declarations.
+Readable ordinary records under that prefix and Convention documents outside it
+do not become model declarations; parse failures remain diagnostic.
 
 Missing or incomplete placement evidence makes the result partial, even if every
 provider observation says complete. Duplicate placement inventories, conflicting
@@ -134,6 +135,12 @@ Field checks establish declaration membership only, not required values, types,
 vocabulary, workflow semantics or coercion. Link checks compare source labels and
 logical targets after explicit placement mapping, not cardinality, actual record
 Kinds or existence. Conflicting mappings for the same logical target refuse.
+Declared links are evaluated only when their source requirement is local. A
+qualified source's aliases and unqualified targets are relative to its own bundle,
+which this root-relative v1 mapping does not describe. Such requested link checks
+emit `SOURCE_QUALIFIED_LINKS_UNSUPPORTED` and remain partial, without asserting a
+match or mismatch. Local sources with explicitly qualified targets are supported.
+
 Topology-specific local/qualified recipe variants retain separate exact artifact
 identities; this checker never relocates or rewrites definitions.
 

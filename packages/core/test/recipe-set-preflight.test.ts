@@ -148,3 +148,30 @@ test('hostile reflection fails closed without invoking getters',async()=>{
 test('unsupported active model semantics remain partial while malformed declarations refuse',async()=>{
  await probe(x=>{x.placementInventories[0].files.push({path:'conventions/local.md',bytes:'---\ntype: Convention\ngoverns: Local\nfields:\n  optional: [score]\n  types: {score: future-type}\n---\n'});},'partial','KIND_CONVENTION_UNKNOWN_FIELD_TYPE');
 });
+
+test('ordinary readable records under the convention namespace are not active model declarations',async()=>{
+ await probe(x=>x.placementInventories[0].files.push({path:'conventions/readme.md',bytes:'---\ntype: Reference\ntitle: Ordinary reference\n---\nReadable record.\n'}),'valid');
+ await probe(x=>x.placementInventories[0].files.push({path:'conventions/bad.md',bytes:'---\ntype: Convention\nfields: [not-a-map]\n---\n'}),'refused','KIND_CONVENTION_MALFORMED');
+ await probe(x=>x.placementInventories[0].files.push({path:'conventions/corrupt.md',bytes:'---\ntype: Convention\nbroken: [\n---\n'}),'refused','OBSERVATION_PARSE');
+});
+test('qualified source links remain unsupported while local sources can target qualified models',async()=>{
+ assert.equal((await preflightRecipeSet(addPlacementInventories(base(true)))).verdict,'valid');
+ const input=base();
+ for(const observation of input.observations.filter(o=>o.provider!=='goal')){
+  observation.scope='team';observation.bundleId='bnd_synthetic_team';observation.expectedBundleId='bnd_synthetic_team';
+ }
+ for(const endpoint of input.endpoints.filter(e=>e.requirement!=='goal')){endpoint.placement='qualified';endpoint.alias='team';}
+ input.selected[2].artifact.files[1].bytes=input.selected[2].artifact.files[1].bytes.replace('work: Work Item','work: team:Work Item');
+ refresh(input,'contribution');addPlacementInventories(input);
+ const result=await preflightRecipeSet(input);
+ assert.equal(result.verdict,'partial',JSON.stringify(result.issues));
+ assert.ok(result.issues.some(i=>i.code==='SOURCE_QUALIFIED_LINKS_UNSUPPORTED'));
+ assert.ok(!result.issues.some(i=>i.code==='LINK_TARGET_MISMATCH'));
+ // A different spelling is also unknown in this unmodeled reference frame, never a claimed mismatch.
+ input.selected[2].artifact.files[1].bytes=input.selected[2].artifact.files[1].bytes.replace('goal: Goal','goal: root:Goal');
+ refresh(input,'contribution');addPlacementInventories(input);
+ const changed=await preflightRecipeSet(input);
+ assert.equal(changed.verdict,'partial',JSON.stringify(changed.issues));
+ assert.ok(changed.issues.some(i=>i.code==='SOURCE_QUALIFIED_LINKS_UNSUPPORTED'));
+ assert.ok(!changed.issues.some(i=>i.code==='LINK_TARGET_MISMATCH'));
+});
