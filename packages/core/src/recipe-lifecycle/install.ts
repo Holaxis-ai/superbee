@@ -342,6 +342,7 @@ export async function installRecipe(
   const prepared = prepareRecipeInstall(recipe, { okfVersion: okfVersion as "0.1" | "0.2", now });
   recipe = { ...recipe, docs: prepared.docs, connectors: prepared.connectors, pages: prepared.pages, references: prepared.references };
   assertConnectorsWritable(recipe, okfVersion);
+  assertReferencesWritable(recipe, okfVersion);
   await assertConnectorTargets(bundle, recipe, okfVersion);
   await assertPortableTargetsCompatible(bundle, recipe, okfVersion);
 
@@ -592,6 +593,20 @@ function assertConnectorsWritable(recipe: LoadedRecipe, okfVersion: string): voi
     } catch (error) {
       if (!(error instanceof InvalidInputError)) throw error;
       throw new RecipeInputError(`recipe '${recipe.id}' cannot install Connector '${doc.id}': ${error.message}; nothing was written`);
+    }
+  }
+}
+
+/** References follow Views in the write order, so authoring admission must precede even a
+ * blob-only recipe's first write. Use the same edition-specific owner as document mutation. */
+function assertReferencesWritable(recipe: LoadedRecipe, okfVersion: string): void {
+  if (okfVersion !== "0.2") return;
+  for (const { doc } of recipe.references) {
+    try {
+      assertAuthoredOkfStandardFields(doc.frontmatter as unknown as OkfRecord, undefined, { phase: "input" });
+    } catch (error) {
+      if (!(error instanceof InvalidInputError)) throw error;
+      throw new RecipeInputError(`recipe '${recipe.id}' cannot install Reference '${doc.id}': ${error.message}; nothing was written`);
     }
   }
 }
