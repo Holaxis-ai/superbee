@@ -551,7 +551,12 @@ field is not checked. `fields.values` may restrict any scalar type and checks ea
 form text converts through `kindFieldInputValue` in browser-safe `@superbee/core/kinds`. Domain
 composites such as opening hours, phone numbers or money stay in recipe or site tooling.
 `recipe evolve` may add a `fields.types` or `fields.values` entry when the instance scan is clean;
-its additive merge refuses changing or removing one.
+its additive merge refuses changing or removing one. It may add outbound link types after checking
+existing edges, and inbound expectation labels (`expects_inbound`) as status graph lint only;
+missing expected links never block writes or evolution. Inbound additions require an unchanged
+recipe baseline because a whole-definition stamp cannot distinguish a new label from a locally
+removed expectation. Removing or retargeting an installed
+relationship label remains blocked, including aliases normalized by the convention parser.
 
 ## Findings and commitments
 
