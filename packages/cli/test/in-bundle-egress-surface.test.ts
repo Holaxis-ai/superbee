@@ -48,9 +48,11 @@ interface EgressRow {
   readonly argv?: (target: string) => string[];
   readonly expect?: Readonly<Record<TargetShape, Expected>>;
   readonly fixture?: "local" | "board";
+  readonly skip?: string;
 }
 
 const EGRESS_ROWS: readonly EgressRow[] = [
+  {leaf:"opRun",flag:"--export-html",skip:"Requires a reviewed registered capability plus accepted machine binding; local-operation.test.ts exercises all seven in-bundle/alias shapes and the ordinary-output control with that complete fixture"},
   {
     leaf: "docRead",
     flag: "--out",
@@ -259,7 +261,7 @@ const SHAPES: readonly TargetShape[] = [
 
 for (const row of EGRESS_ROWS) {
   const key = `${row.leaf} ${row.flag}`;
-  test(`${key}: classifies every in-bundle target shape`, async () => {
+  test(`${key}: classifies every in-bundle target shape`, row.skip===undefined?{}:{skip:row.skip}, async () => {
     for (const shape of SHAPES) {
       const fx = row.fixture === "board" ? await boardFixture() : fixture();
       try {

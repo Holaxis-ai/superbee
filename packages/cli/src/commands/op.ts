@@ -162,12 +162,13 @@ function inputsOf(operation: HostedOperation): { required: string[]; optional: s
   return { required: names.filter((name) => listed.has(name)), optional: names.filter((name) => !listed.has(name)) };
 }
 
-async function opList(argv: string[], deps: Partial<OpDeps> & Pick<OpDeps, "stdout">): Promise<void> {
-  const { values } = parseLeafOrUsage(
+export function parseOpListArgs(argv:string[]) {
+  return parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
         options: {
+          local: { type: "boolean" },
           dir: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
@@ -176,6 +177,10 @@ async function opList(argv: string[], deps: Partial<OpDeps> & Pick<OpDeps, "stdo
       }),
     CLI_LEAVES.opList,
   );
+}
+
+async function opList(argv: string[], deps: Partial<OpDeps> & Pick<OpDeps, "stdout">): Promise<void> {
+  const { values } = parseOpListArgs(argv);
   if (values.help) {
     deps.stdout(renderUsage(OP_USAGE));
     return;
@@ -263,12 +268,14 @@ async function readInput(values: { input?: string; "input-file"?: string }, deps
   return parsed as JsonObject;
 }
 
-async function opRun(argv: string[], deps: Partial<OpDeps> & Pick<OpDeps, "stdout">): Promise<void> {
-  const { values, positionals } = parseLeafOrUsage(
+export function parseOpRunArgs(argv:string[]) {
+  return parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
         options: {
+          local: { type: "boolean" },
+          binding: { type: "string" },
           input: { type: "string" },
           "input-file": { type: "string" },
           "export-html": { type: "string" },
@@ -280,10 +287,15 @@ async function opRun(argv: string[], deps: Partial<OpDeps> & Pick<OpDeps, "stdou
       }),
     CLI_LEAVES.opRun,
   );
+}
+
+async function opRun(argv: string[], deps: Partial<OpDeps> & Pick<OpDeps, "stdout">): Promise<void> {
+  const { values, positionals } = parseOpRunArgs(argv);
   if (values.help) {
     deps.stdout(renderUsage(OP_USAGE));
     return;
   }
+  if (values.binding !== undefined) throw new CliError("USAGE", "--binding requires explicit --local routing.");
   if (values["export-html"] !== undefined) throw new CliError("USAGE", "--export-html requires explicit --local routing.");
   const operationId = positionals[0]!;
   if (!isOperationId(operationId)) {

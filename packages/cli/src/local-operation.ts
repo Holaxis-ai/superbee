@@ -1,16 +1,17 @@
-import { spawn, execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
-import { lstat, mkdir, open, realpath, readdir, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, realpath, readdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { canonicalJson, DEFAULT_MAXIMUM_OUTPUT_BYTES } from '@superbee/core/site-capabilities';
 import { resolveLocalBundleTarget } from './bundle.js';
 import { bundleHomeAt } from './bundle-home.js';
+import { commandToken } from './command-text.js';
 import { CliError } from './errors.js';
 import { assertPathOutsidePrivateState, assertBundleOutsidePrivateState } from './private-state-bundle-boundary.js';
 import { ensureUserStateRoot, canonicalUserStateDir, readUserStateFile, writeUserStateFileAtomic0600, type UserStateInput } from './user-state.js';
 import { selectLocalOperation } from './operation-plugins.js';
+import { boundedLocalFileBytes } from './local-operation-file.js';
 import { localOperationChild } from './local-operation-child.js';
 
 export const LOCAL_OPERATION_PROFILES = Object.freeze({
@@ -28,19 +29,8 @@ const refuse = (reason:string) => new CliError('USAGE',`Local operation refused 
 const key = /^[a-z][a-z0-9_-]{0,63}$/;
 const within = (root:string,target:string) => {const rel=path.relative(root,target);return rel !== '' && !rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel);};
 
-/** A bounded descriptor read freezes one regular inode; pipes, symlinks and changing files refuse. */
-export async function localFileBytes(file:string,maximum:number):Promise<Buffer> {
-  const handle=await open(file,constants.O_RDONLY|constants.O_NONBLOCK|(constants.O_NOFOLLOW??0));
-  try {
-    const before=await handle.stat({bigint:true});
-    if(!before.isFile() || before.nlink !== 1n || before.size > BigInt(maximum)) throw refuse('file_shape_or_limit');
-    const bytes=Buffer.alloc(Number(before.size)); let offset=0;
-    while(offset<bytes.length){const read=await handle.read(bytes,offset,bytes.length-offset,null);if(!read.bytesRead)throw refuse('input_changed');offset+=read.bytesRead;}
-    if((await handle.read(Buffer.alloc(1),0,1,null)).bytesRead)throw refuse('input_changed');
-    const after=await handle.stat({bigint:true}),named=await lstat(file,{bigint:true});
-    if(before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs||!named.isFile()||named.dev!==after.dev||named.ino!==after.ino)throw refuse('input_changed');
-    return bytes;
-  } finally {await handle.close();}
+export async function localFileBytes(file:string,maximum:number):Promise<Buffer>{
+  try{return await boundedLocalFileBytes(file,maximum);}catch(error){if(error instanceof Error&&['file_shape_or_limit','input_changed'].includes(error.message))throw refuse(error.message);throw error;}
 }
 async function ordinaryDirectory(value:string,home:UserStateInput,bundle:string):Promise<string>{
   if(typeof value!=='string'||!path.isAbsolute(value))throw refuse('absolute_directory_required');
@@ -64,9 +54,28 @@ async function toolIdentity(file:string):Promise<Tool>{
   const native=process.platform==='linux'?magic==='7f454c46':['feedface','cefaedfe','feedfacf','cffaedfe','cafebabe','bebafeca','cafebabf','bfbafeca'].includes(magic);
   if(!native)throw refuse('native_tool_binary_required');
   // Availability is deliberately probed only during explicit binding, with a finite timeout.
-  const version=await new Promise<string>((resolve,reject)=>execFile(resolved,['--version'],{timeout:5000,maxBuffer:4096,env:{PATH:'/usr/bin:/bin'},encoding:'utf8'},(error,stdout)=>error?reject(refuse('tool_probe_failed')):resolve(stdout.trim().slice(0,1024))));
+  const version=await probeToolVersion(resolved);
+  if(await realpath(resolved)!==resolved||hash(await localFileBytes(resolved,256*1024*1024))!==hash(bytes))throw refuse('tool_changed_rebind_required');
   return {path:resolved,sha256:hash(bytes),version};
 }
+async function probeToolVersion(file:string):Promise<string>{
+  return new Promise((resolve,reject)=>{
+    const child=spawn(file,['--version'],{detached:true,env:{PATH:'/usr/bin:/bin'},stdio:['ignore','pipe','pipe']});
+    let settled=false,stdout='',bytes=0,failureReason:string|undefined;
+    const finish=async(reason?:string)=>{
+      failureReason??=reason;if(settled)return;settled=true;clearTimeout(timer);
+      const stopped=child.pid===undefined||await stopGroup(child.pid,300);
+      child.stdout.destroy();child.stderr.destroy();child.unref();
+      if(!stopped)reject(refuse('tool_probe_interrupted_unconfirmed'));else if(failureReason)reject(refuse(failureReason));else resolve(stdout.trim().slice(0,1024));
+    };
+    const timer=setTimeout(()=>void finish('tool_probe_timed_out'),5000);
+    const capture=(chunk:Buffer,isStdout:boolean)=>{bytes+=chunk.length;if(bytes>4096){void finish('tool_probe_log_limit');return;}if(isStdout)stdout+=chunk.toString();};
+    child.stdout.on('data',chunk=>capture(chunk,true));child.stderr.on('data',chunk=>capture(chunk,false));
+    child.once('error',()=>void finish('tool_probe_failed'));
+    child.once('exit',(code)=>void finish(code===0?undefined:'tool_probe_failed'));
+  });
+}
+
 export async function bindLocalOperation(operation:string,bundle:string,config:LocalBindingConfig,accept?:string,home:UserStateInput=homedir()):Promise<unknown>{
   if(await localBundle(bundle,process.cwd(),home)!==bundle)throw refuse('canonical_bundle_required');
   const selection=await selectLocalOperation(operation,home);
@@ -85,10 +94,10 @@ export async function bindLocalOperation(operation:string,bundle:string,config:L
   const outputRoot=await ordinaryDirectory(config.outputRoot,home,bundle),rootStatus=await lstat(outputRoot);
   const binding:Binding={v:1,bundle,operation,pluginDigest:selection.digest,generation:selection.generation,capability:selection.capability,resources,tools,outputRoot,outputRootIdentity:{dev:rootStatus.dev,ino:rootStatus.ino},profile:config.profile};
   const digest=hash(canonicalJson(binding));
-  if(accept===undefined)return {status:'preview',digest,operation,profile:config.profile,expectedInputs,resources:Object.keys(resources),tools:Object.fromEntries(Object.entries(tools).map(([name,t])=>[name,{sha256:t.sha256,version:t.version}])),effects:['trusted code with ambient authority; no OS sandbox','copies selected inputs; creates private local files; consumes compute','supported adapter makes no network requests; network is not sandboxed','HTML export is separate from Artifact publication'],next:`superbee op bind ${operation} --local --resources-file <same-file> --accept ${digest} --dir <same-bundle>`};
+  if(accept===undefined)return {status:'preview',digest,operation,profile:config.profile,expectedInputs,resources:Object.keys(resources),tools:Object.fromEntries(Object.entries(tools).map(([name,t])=>[name,{sha256:t.sha256,version:t.version}])),effects:['trusted code with ambient authority; no OS sandbox','copies selected inputs; creates private local files; consumes compute','supported adapter makes no network requests; network is not sandboxed','HTML export is separate from Artifact publication'],next:`superbee op bind ${commandToken(operation)} --local --resources-file <same-file> --accept ${commandToken(digest)} --dir <same-bundle>`};
   if(accept!==digest)throw refuse('binding_acceptance_changed');
   const id=randomUUID();await writeUserStateFileAtomic0600(home,path.join(canonicalUserStateDir(home),'local-operation-bindings'),`${id}.json`,JSON.stringify(binding));
-  return {status:'bound',binding:id,digest,operation,expectedInputs,next:`superbee op run ${operation} --local --binding ${id} --input-file <run-input.json> --dir <same-bundle>`};
+  return {status:'bound',binding:id,digest,operation,expectedInputs,next:`superbee op run ${commandToken(operation)} --local --binding ${commandToken(id)} --input-file <run-input.json> --dir <same-bundle>`};
 }
 export interface LocalRunInput {expectedInputs:Record<string,string>;settings:Record<string,unknown>;}
 export interface LocalRunOptions {home?:UserStateInput;signal?:AbortSignal;exportHtml?:string;}
@@ -109,7 +118,7 @@ async function outputBudget(directory:string,maximumBytes:number,maximumFiles:nu
   return scan(directory);
 }
 
-async function groupPresent(pid:number):Promise<boolean>{try{process.kill(-pid,0);return true;}catch(error){if((error as NodeJS.ErrnoException).code==='ESRCH')return false;throw error;}}
+async function groupPresent(pid:number):Promise<boolean>{try{process.kill(-pid,0);return true;}catch(error){if((error as NodeJS.ErrnoException).code==='ESRCH')return false;return true;}}
 async function stopGroup(pid:number,grace:number):Promise<boolean>{
   try{process.kill(-pid,'SIGTERM');}catch{}
   await new Promise(resolve=>setTimeout(resolve,grace));
@@ -146,7 +155,7 @@ export async function runLocalOperation(operation:string,bundle:string,bindingId
   const manifest:any={version:1,invocationId:id,operation,implementationId:selection.capability.implementationId,plugin:{digest:selection.digest,generation:selection.generation,assets:selection.assets},inputs,settingsDigest:hash(canonicalJson(input.settings)),tools:Object.fromEntries(Object.entries(binding.tools).map(([name,t])=>[name,{sha256:t.sha256,version:t.version}])),profile:binding.profile,platform:{os:process.platform,arch:process.arch,node:process.version},startedAt:new Date().toISOString(),status:'interrupted_unconfirmed',reason:'parent_outcome_unknown',outputs:[],publication:'not_attempted'};
   const manifestPath=path.join(workspace,'manifest.json');await writeFile(manifestPath,JSON.stringify(manifest,null,2),{mode:0o600,flag:'wx'});
   const maximumOutputBytes=Math.min(selection.capability.maximumOutputBytes??DEFAULT_MAXIMUM_OUTPUT_BYTES,DEFAULT_MAXIMUM_OUTPUT_BYTES);
-  const child=spawn(process.execPath,['--input-type=module','--eval',`(${localOperationChild.toString()})()`],{detached:true,env:{PATH:'/usr/bin:/bin'},cwd:workspace,stdio:['ignore','pipe','pipe','ipc']});
+  const child=spawn(process.execPath,['--input-type=module','--eval',`(${localOperationChild.toString()})(${boundedLocalFileBytes.toString()})`],{detached:true,env:{PATH:'/usr/bin:/bin'},cwd:workspace,stdio:['ignore','pipe','pipe','ipc']});
   let reason:string|undefined,result:any,closed=false,logBytes=0;const chunks:Buffer[]=[];
   const terminate=(why:string)=>{if(reason!==undefined)return;reason=why;if(child.connected)child.send({type:'abort'},()=>{});};
   const capture=(chunk:Buffer)=>{logBytes+=chunk.length;if(logBytes>profile.logBytes){terminate('log_limit');return;}chunks.push(chunk);};child.stdout!.on('data',capture);child.stderr!.on('data',capture);
@@ -163,6 +172,7 @@ export async function runLocalOperation(operation:string,bundle:string,bindingId
         if(!Array.isArray(descriptors)||Buffer.byteLength(JSON.stringify(descriptors))>DEFAULT_MAXIMUM_OUTPUT_BYTES||canonicalJson(descriptors)!==canonicalJson(selection.capabilities))return terminate('descriptor_changed');
         child.send({type:'execute'});
       }else if(message.type==='result'){if(result!==undefined||Buffer.byteLength(JSON.stringify(message.result))>maximumOutputBytes)return terminate('result_limit');result=message.result;}
+      else if(message.type==='tool_identity_changed'&&typeof message.tool==='string'&&Object.hasOwn(binding.tools,message.tool)){manifest.toolIdentityChanged=[...new Set([...(manifest.toolIdentityChanged??[]),message.tool])];terminate('tool_identity_changed');}
       else if(message.type==='overflow')terminate('log_limit');else terminate('child_fault');
       } catch { terminate('protocol'); }
     });
@@ -171,6 +181,7 @@ export async function runLocalOperation(operation:string,bundle:string,bindingId
   clearTimeout(deadline);clearInterval(budget);options.signal?.removeEventListener('abort',abort);
   // Even a successful adapter may have left a tool alive; never declare success before the group stops.
   const stopped=child.pid!==undefined ? await stopGroup(child.pid,profile.graceMs):closed;
+  for(const [tool,identity]of Object.entries(binding.tools)){try{if(await realpath(identity.path)!==identity.path||hash(await localFileBytes(identity.path,256*1024*1024))!==identity.sha256)throw Error();}catch{manifest.toolIdentityChanged=[...new Set([...(manifest.toolIdentityChanged??[]),tool])];reason='tool_identity_changed';}}
   manifest.endedAt=new Date().toISOString();
   manifest.status=!stopped?'interrupted_unconfirmed':reason==='cancelled'?'cancelled_confirmed':reason==='deadline'?'timed_out_confirmed':reason?'failed':'succeeded';
   manifest.reason=!stopped?'descendants_unconfirmed':reason??'completed';

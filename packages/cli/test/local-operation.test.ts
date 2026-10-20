@@ -149,3 +149,41 @@ test('private host log retains bounded tool diagnostics even when adapter report
   const config={...f.config,tools:{node:process.execPath}};const preview:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,undefined,f.home);const bound:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,preview.digest,f.home);
   const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,bound.binding,f.input,{home:f.home});assert.equal(result.status,'failed');const log=await readFile(path.join(path.dirname(result.manifest),'host.log'),'utf8');assert.match(log,/fixture-tool-diagnostic/);assert.ok(Buffer.byteLength(log)<=LOCAL_OPERATION_PROFILES['synthetic-v1'].logBytes);const manifest=await readFile(result.manifest,'utf8');assert.doesNotMatch(manifest,/fixture-tool-diagnostic/);
 });
+
+async function copiedNativeNode(root:string):Promise<string>{
+  const {copyFile,chmod}=await import('node:fs/promises');const bin=path.join(root,'native-bin');await mkdir(bin);const file=path.join(bin,'node');await copyFile(process.execPath,file);await chmod(file,0o700);await symlink(path.resolve(path.dirname(process.execPath),'../lib'),path.join(root,'lib'),'dir');return file;
+}
+async function bindFixtureTool(f:Awaited<ReturnType<typeof fixture>>,file:string):Promise<string>{
+  const config={...f.config,tools:{fixture:file}};const preview:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,undefined,f.home);const bound:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,preview.digest,f.home);return bound.binding;
+}
+test('dispatch refuses a binary changed during module initialization even when adapter catches the refusal',async()=>{
+  const f=await fixture(root=>`try{await port.runTool({tool:'fixture',argv:['--eval',${JSON.stringify(`require('node:fs').writeFileSync(${JSON.stringify(path.join(root,'executed'))},'executed')`)}]});}catch{}return {outputs:[]};`);
+  const executable=await copiedNativeNode(f.root),entry=path.join(f.plugin,'entry.mjs');const original=await readFile(entry,'utf8');
+  await writeFile(entry,`const fs=await import('node:fs/promises');await fs.writeFile(${JSON.stringify(path.join(f.root,'loaded'))},'loaded');while(true){try{await fs.stat(${JSON.stringify(path.join(f.root,'release'))});break;}catch{}await new Promise(r=>setTimeout(r,10));}\n`+original);
+  const preview:any=await registerOperationPlugin(f.plugin,undefined,f.home);await registerOperationPlugin(f.plugin,preview.digest,f.home);const binding=await bindFixtureTool(f,executable);
+  const running=runLocalOperation('local.fixture.compare.v1',f.bundle,binding,f.input,{home:f.home});
+  let loaded=false;for(let i=0;i<100;i++){try{await readFile(path.join(f.root,'loaded'));loaded=true;break;}catch{}await new Promise(r=>setTimeout(r,10));}assert.ok(loaded);
+  const {appendFile}=await import('node:fs/promises');await appendFile(executable,'changed');await writeFile(path.join(f.root,'release'),'release');
+  const result=await running;assert.equal(result.status,'failed');assert.equal(result.reason,'tool_identity_changed');await assert.rejects(readFile(path.join(f.root,'executed')),{code:'ENOENT'});const manifest=JSON.parse(await readFile(result.manifest,'utf8'));assert.deepEqual(manifest.toolIdentityChanged,['fixture']);
+});
+test('post-completion binary changes cannot be hidden by adapter catch',async()=>{
+  const f=await fixture(`try{await port.runTool({tool:'fixture',argv:['--eval',"require('node:fs').appendFileSync(process.execPath,'changed')"]});}catch{}return {outputs:[]};`);
+  const executable=await copiedNativeNode(f.root),binding=await bindFixtureTool(f,executable);const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,binding,f.input,{home:f.home});assert.equal(result.status,'failed');assert.equal(result.reason,'tool_identity_changed');assert.deepEqual(JSON.parse(await readFile(result.manifest,'utf8')).toolIdentityChanged,['fixture']);
+});
+test('native version probe ignoring TERM and retaining descendant pipes settles within its finite escalation bound',async(t)=>{
+  const {spawnSync}=await import('node:child_process');if(spawnSync('cc',['--version'],{stdio:'ignore'}).status!==0){t.skip('native compiler unavailable for adversarial executable fixture');return;}
+  const f=await fixture(),source=path.join(f.root,'probe.c'),binary=path.join(f.root,'probe'),marker=path.join(f.root,'probe.pid');
+  await writeFile(source,`#include <signal.h>\n#include <unistd.h>\n#include <stdio.h>\nint main(){signal(SIGTERM,SIG_IGN);pid_t child=fork();if(child==0){for(;;)sleep(1);}FILE*f=fopen(${JSON.stringify(marker)},"w");fprintf(f,"%d %d",getpid(),child);fclose(f);for(;;)sleep(1);}`);
+  const built=spawnSync('cc',[source,'-o',binary],{encoding:'utf8'});assert.equal(built.status,0,built.stderr);
+  const cleanup=async()=>{try{for(const pid of (await readFile(marker,'utf8')).trim().split(' ').map(Number))try{process.kill(pid,'SIGKILL');}catch{}}catch{}};const watchdog=setTimeout(()=>void cleanup(),7000);
+  const started=Date.now();try{await assert.rejects(bindFixtureTool(f,binary),/tool_probe_timed_out|tool_probe_interrupted_unconfirmed/);assert.ok(Date.now()-started<6500,'probe must settle without the independent watchdog');}finally{clearTimeout(watchdog);await cleanup();}
+});
+
+test('HTML export refuses all in-bundle and alias shapes with an ordinary-output control',async()=>{
+  const f=await fixture();const config={...f.config,outputRoot:f.root};const preview:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,undefined,f.home);const bound:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,preview.digest,f.home);
+  const indexBefore=await readFile(path.join(f.bundle,'index.md'),'utf8');const doc=path.join(f.bundle,'document.md');await writeFile(doc,'retained document');await symlink(f.bundle,path.join(f.root,'outside-alias'),'dir');await symlink(path.join(f.bundle,'new.md'),path.join(f.root,'outside-dangling.html'));const outside=path.join(f.root,'outside');await mkdir(outside);await symlink(outside,path.join(f.bundle,'alias-out'),'dir');
+  const targets=[doc,path.join(f.bundle,'index.md'),path.join(f.bundle,'export.html'),path.join(f.root,'outside-alias','document.md'),path.join(f.root,'outside-dangling.html'),path.join(f.bundle,'alias-out','export.html')];
+  for(const target of targets){const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,bound.binding,f.input,{home:f.home,exportHtml:target});assert.equal(result.status,'succeeded');assert.equal(result.export.status,'failed');}
+  assert.equal(await readFile(path.join(f.bundle,'index.md'),'utf8'),indexBefore);await assert.rejects(readFile(path.join(f.bundle,'export.html')),{code:'ENOENT'});assert.equal(await readFile(doc,'utf8'),'retained document');await assert.rejects(readFile(path.join(f.bundle,'new.md')),{code:'ENOENT'});await assert.rejects(readFile(path.join(outside,'export.html')),{code:'ENOENT'});
+  const control=await runLocalOperation('local.fixture.compare.v1',f.bundle,bound.binding,f.input,{home:f.home,exportHtml:path.join(f.root,'ordinary.html')});assert.equal(control.export.status,'exported');
+});

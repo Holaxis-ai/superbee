@@ -1,6 +1,7 @@
 /** Fresh-process host. Accepted code has ambient local authority; this is supervision, not a sandbox. */
-export async function localOperationChild(): Promise<void> {
+export async function localOperationChild(readBytes:(file:string,maximum:number)=>Promise<Buffer>): Promise<void> {
   const { spawn } = await import('node:child_process');
+  const {createHash}=await import('node:crypto');
   const fs = await import('node:fs/promises');
   const path = await import('node:path');
   const { pathToFileURL } = await import('node:url');
@@ -29,6 +30,12 @@ export async function localOperationChild(): Promise<void> {
           readJson: async (name: string) => { const file = outputPath(name); const stat = await fs.lstat(file); if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65536) throw Error('invalid_json_output'); return JSON.parse(await fs.readFile(file, 'utf8')); },
           runTool: async ({ tool, argv, signal }: { tool: string; argv: string[]; signal?: AbortSignal }) => {
             if (!Object.hasOwn(request.tools, tool) || !Array.isArray(argv) || argv.length > 128 || argv.some(x => typeof x !== 'string' || x.includes('\0') || x.length > 8192)) throw Error('invalid_tool_request');
+            const checkIdentity=async()=>{
+              const selected=request.tools[tool];let matches=false;
+              try{matches=await fs.realpath(selected.path)===selected.path&&`sha256:${createHash('sha256').update(await readBytes(selected.path,256*1024*1024)).digest('hex')}`===selected.sha256;}catch{}
+              if(!matches){send({type:'tool_identity_changed',tool});throw Error('tool_identity_changed');}
+            };
+            await checkIdentity();
             controller.signal.throwIfAborted();
             return await new Promise((resolve, reject) => {
               const child = spawn(request.tools[tool].path, argv, { shell: false, cwd: request.invocation.outputDirectory, env: { PATH: '/usr/bin:/bin', HOME: request.invocation.outputDirectory, TMPDIR: request.invocation.outputDirectory, PYTHONNOUSERSITE: '1', PYTHONDONTWRITEBYTECODE: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -37,7 +44,7 @@ export async function localOperationChild(): Promise<void> {
               child.stdout.on('data', chunk => capture('stdout', chunk)); child.stderr.on('data', chunk => capture('stderr', chunk));
               const abort = () => child.kill('SIGTERM');
               controller.signal.addEventListener('abort', abort, { once: true }); signal?.addEventListener('abort', abort, { once: true });
-              child.on('error', reject); child.on('close', exitCode => { controller.signal.removeEventListener('abort', abort); signal?.removeEventListener('abort', abort); resolve({exitCode:exitCode ?? -1,stdout,stderr}); });
+              child.on('error', reject); child.on('close', exitCode => { controller.signal.removeEventListener('abort', abort); signal?.removeEventListener('abort', abort); void checkIdentity().then(()=>resolve({exitCode:exitCode ?? -1,stdout,stderr}),reject); });
             });
           },
         };
