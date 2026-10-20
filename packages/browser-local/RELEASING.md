@@ -8,23 +8,29 @@ is the durable process for every browser-local prerelease.
 
 | Package | Version | Intended access / channel | Preparation status |
 | --- | --- | --- | --- |
-| @superbee/core | 0.2.0-pre.22 | public / next | Native release candidate; unpublished |
-| @superbee/server | 0.2.0-pre.22 | public / next | Native release candidate; unpublished |
-| @superbee/browser-local | 0.1.0-pre.18 | public / next | Source alignment only; publication deferred |
+| @superbee/core | 0.2.0-pre.30 | public / next | Native release candidate; unpublished |
+| @superbee/server | 0.2.0-pre.30 | public / next | Native release candidate; unpublished |
+| @superbee/browser-local | 0.1.0-pre.20 | public / next | Product-source candidate; publication required for this delivery |
 | @superbee/markdown-renderer | 0.1.18 | existing restricted access / latest | Source alignment only; publication deferred |
 
-This preparation carries public integration authoring, the first-party GitHub profile,
-and consented local source bind/run through the shared core engine. The separately versioned public
-`superbee` executable candidate is 0.4.3-pre.12. Source preparation does not authorize
-release tags, staged publication, human npm approval or downstream adoption.
+This preparation carries shared body-replacement safeguards through public Server writes,
+with explicit editor intent preserved across the browser-local durable journal and wire
+transport. The separately versioned bundled `superbee` executable candidate is
+0.4.3-pre.20. Source preparation does not authorize release tags, staged publication,
+human npm approval or downstream adoption.
 
-Browser-local 0.1.0-pre.18 changes only its exact core dependency from pre.21 to
-pre.22. Keeping the workspace pair aligned avoids a fresh install resolving a nested
-older core and splitting shared error identities. Renderer 0.1.18 adds exact core
-pre.22 peer compatibility while retaining its existing alternatives and restricted
-access. Neither package changes product source in this preparation. Their separate
-artifact approval/publication procedures below remain deferred. Their publication is not required for the public Core API or the
-self-contained executable release.
+Browser-local 0.1.0-pre.20 contains the durable editor-intent implementation and requires
+exactly Core 0.2.0-pre.30. Its publication and actual-archive consumer qualification are
+part of this delivery; dependency alignment alone does not deliver its product changes.
+Published browser-local 0.1.0-pre.17 retains its exact Core 0.2.0-pre.20 dependency.
+Core/Server pre.30 and CLI pre.20 use the native workflows and human npm stage approvals.
+Browser-local uses the separately approved literal-artifact process below, after Core
+pre.30 registry verification. Its locally packed proof is not a native release attestation.
+
+Renderer 0.1.18 adds exact Core pre.30 peer compatibility while retaining all existing
+alternatives and restricted access. Renderer product source is unchanged; publication and
+its separate publisher handoff remain deferred. Renderer publication is not required for
+this Server/browser-local delivery or the self-contained executable release.
 
 ## Before release
 

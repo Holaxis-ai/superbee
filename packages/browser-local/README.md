@@ -1,9 +1,11 @@
 # @superbee/browser-local
 
 Shared browser-local working-copy and editor-recovery primitives for Superbee hosts.
-Source preparation for 0.1.0-pre.18 requires exactly `@superbee/core@0.2.0-pre.21`.
-This browser-local candidate is unpublished; its publication and downstream adoption
-are deferred. Published 0.1.0-pre.17 retains its exact core 0.2.0-pre.20 dependency.
+Source preparation for 0.1.0-pre.20 requires exactly `@superbee/core@0.2.0-pre.30`.
+This unpublished candidate preserves explicit editor intent in the durable journal and
+wire delivery, including reviewed relationship removal. Publication and actual-archive
+consumer qualification are required for this delivery; downstream adoption is separate.
+Published 0.1.0-pre.17 retains its exact Core 0.2.0-pre.20 dependency.
 Core 0.2.0-pre.8 added
 `retireAcknowledged` to the journaled backend seam (IndexedDB adapter included), which
 this package's body runtime calls to retire acknowledged history, and raised the body
