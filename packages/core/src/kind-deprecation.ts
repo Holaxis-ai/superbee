@@ -87,6 +87,8 @@ export interface DeprecatedUsage {
   /** Stable occurrence identity; qualified identities include the alias and remain distinct from local edges. */
   identity: string;
   count: number;
+  /** The matched enum member, when this row describes value usage. */
+  value?: string;
   unknown?: true;
 }
 
@@ -98,7 +100,7 @@ export function inspectKindDeprecatedUsage(doc: OkfDocument, kind: KindConventio
     const key = JSON.stringify([code, field, ...identity]);
     const previous = rows.get(key);
     if (previous) previous.count += 1;
-    else rows.set(key, { code, field, identity: key, count: 1, ...(unknown ? { unknown: true as const } : {}) });
+    else rows.set(key, { code, field, identity: key, count: 1, ...(code === "KIND_DEPRECATED_VALUE" ? { value: String(identity[0]) } : {}), ...(unknown ? { unknown: true as const } : {}) });
   };
   for (const field of kind.deprecated.fields) if (Object.hasOwn(doc.frontmatter, field)) add("KIND_DEPRECATED_FIELD", field, ["field"]);
   for (const [field, values] of Object.entries(kind.deprecated.values)) {
