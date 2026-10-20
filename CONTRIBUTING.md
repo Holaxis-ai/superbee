@@ -289,6 +289,34 @@ The existing CI install jobs run this check before `npm ci`; no new build lane i
 Its timing covers JSON validation only, not registry availability or artifact compatibility.
 Existing packed consumer proofs and release controls remain required and separate.
 
+Before staging or handing off a CLI/Core candidate intended for the GitHub plugin, the release
+owner runs the offline impact check against the **final** source and supported plugin checkout:
+
+```sh
+npm run --silent check:consumer-impact -- --candidate /path/to/superbee --candidate-sha FULL_FINAL_SHA --plugin /path/to/superbee-plugins --plugin-sha FULL_REVIEWED_PLUGIN_SHA
+```
+
+Repeat with `--cli-tarball /path/to/retained-cli.tgz` and, when available,
+`--core-tarball /path/to/retained-core.tgz` after the existing native build. This reads the literal
+archives without executing them, binds their SHA-256 and the CLI's baked source/Core ABI to the
+final candidate, and checks the plugin descriptor, exact peer/development pins, lock projection,
+CI install target and contract assertion. Exit 0 means those declared expectations agree; exit 1
+reports required companion changes; exit 2 refuses incomplete or changed evidence. Re-run after
+any queue composition, source SHA, plugin checkout or archive change, even if the CLI version is
+unchanged. Keep the result with the existing Task/Release handoff; it is evidence, never release
+authority or a substitute for the existing archive tests, attestations or finalizer.
+
+The JSON proposal includes only exact replacement files with old-byte SHA-256 preconditions.
+It does not edit a checkout or create a PR. Apply it only to the named plugin SHA after checking
+those preconditions; review current README/install guidance separately while preserving historical
+checkout pins. A lock containing installed Core registry bytes refuses a proposal until a normal
+registry-verified lock update is prepared. Proposed metadata is unverified: after the existing
+finalizers verify publication, test the proposed checkout against the exact published Core and
+final CLI archive, then use ordinary review/CI for the companion PR. This first slice deliberately
+leaves cross-repository PR deduplication and registry-backed consumer automation with the existing
+`verified-package-consumer-update-prs` task. Do not widen Core pins: the exact helper version is
+the current plugin ABI. Plugins continue to use reviewed Git checkout/build/folder registration.
+
 The private build-only `packages/package-verification` workspace owns shared isolated subprocess,
 cleanup, exact byte/identity comparison, and bounded metadata-access primitives. The installed CLI
 proof consumes it directly; it is absent from product runtime dependencies and tarballs. Docs and
