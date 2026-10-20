@@ -442,3 +442,6 @@ export {
   guardDroppedLinks, guardBodyReplace, TypedListPatchError, assertTypedListPatch,
 } from "./body-replace-guards.js";
 export type { BodyPreviewFinding, BodyReplaceFinding, BodyReplacePosture } from "./body-replace-guards.js";
+
+export { inspectKindDeprecatedUsage, kindDeprecationTransition, kindDeprecationProblems } from "./kind-deprecation.js";
+export type { KindDeprecation, DeprecatedUsage } from "./kind-deprecation.js";

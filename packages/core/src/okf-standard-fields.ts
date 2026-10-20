@@ -5,6 +5,10 @@ import { isOkfActor } from "./okf-actor.js";
 import { assertAuthoredOkfTimestamps } from "./okf-timestamps.js";
 import { authoredOkfRows, isOkfRecord, okfValuesEqual, type OkfRecord } from "./okf-authored-values.js";
 
+/** Standard authoring coordinates cannot be retired by a domain Kind convention. */
+export const OKF_STANDARD_FIELD_NAMES = ["type", "title", "description", "resource", "tags", "status", "sources", "generated", "verified", "stale_after", "usage_window", "runtime", "computation", "parameters", "executor", "attester", "okf_version"] as const;
+export function isOkfStandardField(field: string): boolean { return (OKF_STANDARD_FIELD_NAMES as readonly string[]).includes(field); }
+
 const string = (value: unknown): boolean => typeof value === "string";
 const nonempty = (value: unknown): boolean => typeof value === "string" && value.trim().length > 0;
 const count = (value: unknown): boolean => typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= 0;

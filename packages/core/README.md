@@ -197,6 +197,11 @@ target this bundle's edition), `ConnectorTargetUnsatisfied` (`recipe`, `connecto
 `RecipeEvolutionInterrupted` (`reason`, `completed`, `pending`, `cause`) and
 `RecipeEvolutionPostcondition` (`reason`, `completed`).
 
+Declaration deprecation uses the same Kind/mutation owners, with explicit-registry transition
+refusal and separate informational read usage. See [the grammar and admission limits](RECIPES.md#deprecating-declarations).
+Adding lifecycle policy requires unchanged same-recipe ownership. Declaration removal is still
+unsupported; existing scan, per-definition CAS and postcondition do not establish atomic non-use.
+
 ## Record overlay
 
 `@superbee/core/record-overlay` is the write half of binding documents to external records. A

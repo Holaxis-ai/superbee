@@ -11,6 +11,7 @@ import { parseArgs } from "node:util";
 import {
   freshnessHorizonMs,
   KIND_FIELD_TYPES,
+  kindDeprecationProblems,
   kindCoverage,
   query,
   parseTimestamp,
@@ -59,6 +60,12 @@ Kind schema vocabulary (the product-facing projection; raw document reads remain
                                  also warns. Drives 'list --open' (excludes terminal instances) and
                                  the 'status' command's missing_expected_links sweep (excludes them
                                  from the count/rows and its sort)
+  deprecated           map      fields: optional domain names; values: field -> deprecated members;
+                                 links: outbound labels. Admitted-registry writes refuse new usage
+                                 even when lenient; unchanged legacy usage can be preserved/removed.
+                                 Reads remain permissive. Invalid policy refuses admitted writes.
+                                 Recipe asset/raw imports retain their existing registry posture.
+                                 This does not authorize declaration removal or scan/write closure.
   fields.types         map      field name -> value type, one of: ${KIND_FIELD_TYPES.join(", ")}.
                                  date is YYYY-MM-DD; datetime requires an explicit UTC offset;
                                  https-url is an https URL (max 2048 chars, no credentials); slug is
@@ -134,6 +141,11 @@ function toRow(kind: KindConvention, okfVersion: string | undefined): Record<str
     optional: kind.fields.optional,
   };
   if (kind.order !== undefined) row.order = kind.order;
+  if (kind.deprecated) {
+    row.deprecated = { fields: kind.deprecated.fields, values: kind.deprecated.values, links: kind.deprecated.links };
+    const problems = kindDeprecationProblems(kind);
+    if (problems.length) row.deprecation_problems = problems;
+  }
   if (kind.description) row.description = kind.description;
   if (Object.keys(kind.fields.descriptions).length > 0) row.descriptions = kind.fields.descriptions;
   if (Object.keys(kind.fields.values).length > 0) row.values = kind.fields.values;

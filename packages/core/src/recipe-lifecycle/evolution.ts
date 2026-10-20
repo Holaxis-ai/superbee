@@ -780,6 +780,13 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
     // A whole-definition stamp proves an unchanged baseline, not individual field history.
     const hasUnchangedRecipeBaseline = (identityState === "current" || identityState === "stale")
       && conventionStampState(existing.doc) === "current";
+    if (!hasUnchangedRecipeBaseline && !okfValuesEqual(existing.doc.frontmatter.deprecated, target.frontmatter.deprecated)) {
+      evolutionBlocker(blockers, "RECIPE_EVOLUTION_DEPRECATION_OWNERSHIP_UNPROVEN", target.id,
+        "changing declaration lifecycle policy requires an unchanged same-recipe ownership baseline", "deprecated");
+    }
+    if (parsedCurrent.ok) for (const warning of parsedCurrent.kind.deprecated?.problems ?? []) {
+      evolutionBlocker(blockers, warning.code, target.id, warning.message, warning.field);
+    }
     const merged = additiveConventionCandidate(existing.doc, target, blockers, hasUnchangedRecipeBaseline);
     let candidate = merged.candidate;
     if (okfVersion === "0.2") {
@@ -867,6 +874,9 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
 
   const prospectiveRegistry = buildKindRegistry([...prospectiveById.values()], [], { okfVersion });
   for (const warning of prospectiveRegistry.warnings) {
+    if (warning.code === "KIND_DEPRECATION_INVALID") {
+      evolutionBlocker(blockers, warning.code, recipe.id, warning.message, warning.field);
+    }
     if (warning.code !== "KIND_DUPLICATE_GOVERNS" || !warning.field || !desiredKinds.has(warning.field)) continue;
     evolutionBlocker(
       blockers,

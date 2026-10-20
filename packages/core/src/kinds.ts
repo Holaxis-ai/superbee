@@ -24,6 +24,9 @@
  * `kinds-load.ts`, which reads through `bundle-ops.ts` and is browser-safe too: the split is
  * between pure parsing and the bundle read, over the same ONE registry.
  */
+import { parseKindDeprecation, kindDeprecationProblems, type KindDeprecation } from "./kind-deprecation.js";
+export { inspectKindDeprecatedUsage, kindDeprecationTransition, kindDeprecationProblems } from "./kind-deprecation.js";
+export type { KindDeprecation, DeprecatedUsage } from "./kind-deprecation.js";
 import { isOkfLifecycleStatus, OKF_LIFECYCLE_STATUSES } from "./okf-lifecycle.js";
 import { isUsableTimestamp } from "./frontmatter.js";
 import { parseIsoInstant } from "./verification.js";
@@ -119,6 +122,8 @@ export interface KindClaimPolicy {
 
 /** A parsed kind convention: the governed `type` plus its declared shape. */
 export interface KindConvention {
+  /** Explicit lifecycle policy, independent of stored-document conformance. */
+  deprecated?: KindDeprecation;
   /** Concept id of the convention doc itself (e.g. `conventions/roadmap-item`). */
   id: ConceptId;
   /** Display title (defaults to `governs` when the convention doc omits one). */
@@ -244,6 +249,7 @@ export function buildKindRegistry(
     accepted.set(kind.governs, kind);
   }
 
+  for (const kind of accepted.values()) warnings.push(...kindDeprecationProblems(kind, { kinds: accepted, warnings: [] }).filter(w => !warnings.includes(w)));
   const kinds = new Map<string, KindConvention>();
   for (const kind of [...accepted.values()].sort(compareReadingOrder)) kinds.set(kind.governs, kind);
   return { kinds, warnings };
@@ -427,6 +433,7 @@ export function projectKindForAuthoring(
   };
   return {
     ...kind,
+    ...(kind.deprecated ? { deprecated: { ...kind.deprecated, fields: kind.deprecated.fields.map(projectField), values: projectRecord(kind.deprecated.values) } } : {}),
     fields: {
       required: kind.fields.required.map(projectField),
       optional: kind.fields.optional.map(projectField),
@@ -1131,6 +1138,10 @@ export function parseConventionDoc(
   if (browseCollapsed !== undefined) kind.browseCollapsed = browseCollapsed;
   if (order !== undefined) kind.order = order;
   if (claim !== undefined) kind.claim = claim;
+  if (Object.hasOwn(fm, "deprecated")) {
+    kind.deprecated = parseKindDeprecation(fm.deprecated, kind, RESERVED_KIND_FIELD_NAMES, claimCoordinates(options.okfVersion, kind)?.fields ?? []);
+    warnings.push(...(kind.deprecated.problems ?? []));
+  }
   return {
     ok: true,
     kind,
@@ -1531,6 +1542,9 @@ export function kindConventionDoc(kind: KindConvention, prose: string, timestamp
     frontmatter.claim = claim;
   }
   frontmatter.fields = fields;
+  if (kind.deprecated) frontmatter.deprecated = kind.deprecated.problems?.length
+    ? structuredClone(kind.deprecated.raw)
+    : { fields: kind.deprecated.fields, values: kind.deprecated.values, links: kind.deprecated.links };
   if (kind.sections && kind.sections.length > 0) frontmatter.sections = kind.sections;
   if (kind.freshnessHorizon !== undefined) frontmatter.freshness_horizon = kind.freshnessHorizon;
   if (kind.browseCollapsed) frontmatter.browse_collapsed = true;

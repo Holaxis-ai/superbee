@@ -33,6 +33,7 @@ import {
   validateAgainstKind,
   type KindRegistry,
 } from "../kinds.js";
+import { inspectKindDeprecatedUsage, type DeprecatedUsage } from "../kind-deprecation.js";
 import { loadKinds } from "../kinds-load.js";
 import { collectLinkDeclarations, localEdgeQualifiedDeclaration, qualifiedEdgeViolation } from "../link-types.js";
 import { parseLinksFromDoc } from "../links.js";
@@ -234,6 +235,8 @@ export interface BundleHealthReport {
   kinds: number;
   malformed: MalformedRow[];
   kindLint: KindLintRow[];
+  /** Informational stored usage, not conformance debt or retirement clearance. */
+  deprecatedUsage?: Array<DeprecatedUsage & { id: string }>;
   /** One row per governed document with a frontmatter-level violation; null when the bundle declares no Kind. */
   conformanceDebt: DocTypeRow[] | null;
   registryWarnings: ValidationWarning[];
@@ -359,10 +362,12 @@ export async function bundleHealth(bundle: Bundle, options: BundleHealthOptions 
   // Kind lint, per violation; conformance debt regroups the same pass by document and keeps only
   // frontmatter-level codes (a missing body section names no field an update could set).
   const kindLint: KindLintRow[] = [];
+  const deprecatedUsage: Array<DeprecatedUsage & { id: string }> = [];
   const conformanceDebtDocs = new Map<string, string>(); // id -> type, first seen (docs is id-sorted)
   for (const doc of docs) {
     const kind = registry.kinds.get(docType(doc));
     if (!kind) continue;
+    deprecatedUsage.push(...inspectKindDeprecatedUsage(doc, kind).map(row => ({ id: doc.id, ...row })));
     for (const w of projectKindValidationWarnings(okfVersion, kind, validateAgainstKind(doc, kind))) {
       kindLint.push({ id: doc.id, field: w.field ?? "", code: w.code });
       if (isKindFieldValidationWarning(w) && !conformanceDebtDocs.has(doc.id)) {
@@ -671,6 +676,7 @@ export async function bundleHealth(bundle: Bundle, options: BundleHealthOptions 
     kinds: registry.kinds.size,
     malformed,
     kindLint,
+    ...(deprecatedUsage.length ? { deprecatedUsage } : {}),
     conformanceDebt: registry.kinds.size > 0 ? [...conformanceDebtDocs].map(([id, type]) => ({ id, type })) : null,
     registryWarnings: registry.warnings,
     unresolvedLinks,
