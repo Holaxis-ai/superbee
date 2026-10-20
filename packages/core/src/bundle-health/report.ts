@@ -433,12 +433,14 @@ export async function bundleHealth(bundle: Bundle, options: BundleHealthOptions 
 
   // Cross-bundle links, parsed from the documents already in hand.
   const qualifiedLinks: QualifiedLink[] = [];
+  const metadataViolations = new Set<QualifiedLink>();
   for (const doc of docs) {
     for (const q of parseQualifiedLinks(doc)) {
       qualifiedLinks.push(q);
       if (!q.ref) continue;
       const violation = qualifiedEdgeViolation(linkTypeDeclarations.get(q.text), docType(doc), q.ref.alias);
       if (violation) {
+        metadataViolations.add(q);
         crossLinkTypeViolations.push({
           from: doc.id,
           href: q.href,
@@ -484,7 +486,20 @@ export async function bundleHealth(bundle: Bundle, options: BundleHealthOptions 
     });
     const unresolved: CrossUnresolvedRow[] = [];
     for (const { link, resolution } of results.slice(0, checked.length)) {
-      if (resolution.state === "resolved") continue;
+      if (resolution.state === "resolved") {
+        // Reuse the admitted document from the existing resolution batch, never a foreign registry.
+        if (!metadataViolations.has(link)) {
+          const violation = qualifiedEdgeViolation(
+            linkTypeDeclarations.get(link.text), docType(docsById.get(link.from)!),
+            resolution.ref.alias, docType(resolution.document),
+          );
+          if (violation) crossLinkTypeViolations.push({
+            from: link.from, href: link.href, text: link.text,
+            expected: `${violation.governs} -> ${violation.target}`,
+          });
+        }
+        continue;
+      }
       unresolved.push({ from: link.from, href: link.href, reason: resolution.reason, detail: resolution.detail });
     }
     const dependencies: DependencyRow[] = [];

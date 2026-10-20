@@ -7,6 +7,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { bundleHealth, type BundleHealthReport } from "../src/bundle-health/index.js";
+import { QUALIFIED_EDGE_CASES } from "./fixtures/qualified-edge-cases.js";
 import type { BundleBinding, PinCheck } from "../src/cross-bundle.js";
 import { InvalidInputError } from "../src/errors.js";
 import { MalformedDocumentError } from "../src/frontmatter-contract.js";
@@ -326,4 +327,72 @@ test("bundle health: the report reads only, and a backend-less bundle in a runti
   // This file never loads the Node entry, so no filesystem default is installed.
   const bare: Bundle = { root: "/nowhere" };
   await assert.rejects(bundleHealth(bare), (error: unknown) => error instanceof InvalidInputError);
+});
+
+
+for (const row of QUALIFIED_EDGE_CASES) test(`bundle health qualified target: ${row.name}`, async () => {
+  const definitions = Object.fromEntries(row.declared.map((d, i) => [
+    `conventions/source-${i}`, convention(d.governs, { links: { relates: d.target } }),
+  ]));
+  const local = await store("0.2", {
+    ...definitions,
+    "docs/dependencies": { frontmatter: { type: "Bundle Dependencies", dependencies: { [row.alias]: { bundle_id: "foreign-bundle" } } }, body: "" },
+    "items/source": { frontmatter: { type: row.source }, body: `[relates](okf://${row.alias}/items/target.md)` },
+  });
+  const foreign = await store("0.2", {
+    "docs/bundle": { frontmatter: { type: "Bundle Name", bundle_id: "foreign-bundle" }, body: "" },
+    "items/target": { frontmatter: row.actual === "" ? {} : { type: row.actual ?? "Reference" }, body: "" },
+    // A tempting foreign schema never changes the actual document's type or enters local discovery.
+    "conventions/target": convention("Beer"),
+  });
+  const bound = row.actual !== undefined;
+  const report = await bundleHealth({ root: "memory://qualified", backend: local.backend }, {
+    bindings: bound ? new Map([[row.alias, { backend: foreign.backend, label: "explicit-copy", identity: "foreign-bundle" }]]) : undefined,
+  });
+  assert.equal(report.crossLinkTypeViolations.length, row.violation ? 1 : 0);
+  if (row.violation) {
+    const declaration = row.declared.find(d => d.governs === row.source) ?? row.declared[0];
+    assert.deepEqual(report.crossLinkTypeViolations[0], { from: "items/source", href: `okf://${row.alias}/items/target.md`, text: "relates", expected: `${declaration.governs} -> ${declaration.target}` });
+  }
+  assert.equal(report.crossBundle?.unchecked, bound ? 0 : 1);
+  assert.deepEqual(report.crossBundle?.unresolved, []);
+  assert.deepEqual(foreign.calls.filter(call => call !== "read" && call !== "readMany"), [], "no foreign registry, listing, query or write");
+  assert.deepEqual(foreign.calls, bound ? ["readMany"] : [], "only the existing single resolution batch; no foreign reads without binding");
+  assert.deepEqual(local.calls.filter(call => WRITE_METHODS.has(call)), []);
+});
+
+test("bundle health qualified target: unresolved admission states never run target-Kind checks", async () => {
+  const local = await store("0.2", {
+    "conventions/source": convention("Menu Item", { links: { relates: "beers:Beer" } }),
+    "docs/dependencies": { frontmatter: { type: "Bundle Dependencies", dependencies: { beers: { bundle_id: "foreign-bundle", pin: "abcdef1" } } }, body: "" },
+    "items/source": { frontmatter: { type: "Menu Item" }, body: "[relates](okf://beers/items/target.md)" },
+  });
+  for (const scenario of ["identity", "pin", "missing", "throws"] as const) {
+    const foreign = await store("0.2", {});
+    const backend = scenario === "throws" ? new Proxy(foreign.backend, {
+      get(target, key) { if (key === "readMany" || key === "read") return async () => { throw Error("copy unavailable"); }; return Reflect.get(target, key); },
+    }) : foreign.backend;
+    const report = await bundleHealth({ root: "memory://qualified", backend: local.backend }, {
+      bindings: new Map([["beers", { backend, label: scenario, identity: scenario === "identity" ? "other" : "foreign-bundle", pin: async () => scenario === "pin" ? { ok: false as const, detail: "different commit" } : { ok: true as const } }]]),
+    });
+    const reason = scenario === "pin" ? "pin_mismatch" : scenario === "missing" ? "target_missing" : "bundle_unavailable";
+    assert.equal(report.crossBundle?.unresolved[0].reason, reason);
+    assert.deepEqual(report.crossLinkTypeViolations, [], "unresolved is not a known wrong Kind");
+    if (scenario === "identity" || scenario === "pin") assert.deepEqual(foreign.calls, [], "admission refuses before foreign read");
+  }
+});
+
+
+test("bundle health qualified target: a resolved nonstring type is a known mismatch", async () => {
+  const local = await store("0.2", {
+    "conventions/source": convention("Menu Item", { links: { relates: "beers:Beer" } }),
+    "docs/dependencies": { frontmatter: { type: "Bundle Dependencies", dependencies: { beers: { bundle_id: "foreign-bundle" } } }, body: "" },
+    "items/source": { frontmatter: { type: "Menu Item" }, body: "[relates](okf://beers/items/target.md)" },
+  });
+  const foreign = await store("0.2", { "items/target": { frontmatter: { type: 42 }, body: "" } });
+  const report = await bundleHealth({ root: "memory://qualified", backend: local.backend }, {
+    bindings: new Map([["beers", { backend: foreign.backend, label: "explicit", identity: "foreign-bundle" }]]),
+  });
+  assert.equal(report.crossLinkTypeViolations.length, 1);
+  assert.deepEqual(report.crossBundle?.unresolved, []);
 });

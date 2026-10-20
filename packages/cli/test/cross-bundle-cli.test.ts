@@ -20,6 +20,7 @@ import { isWithPathValue, parseWithFlags, resolveBundleBindings } from "../src/b
 import { CliError } from "../src/errors.js";
 import { loadKinds, parseDependencies } from "@superbee/core";
 import { recipe } from "../src/commands/recipe.js";
+import { BUILT_COMMAND, commandEnv } from "./support/command-batch.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SAMPLE_BUNDLE = path.resolve(here, "../../../examples/sample-bundle");
@@ -411,6 +412,38 @@ test("link types: a qualified edge under its alias conforms; another alias and a
   } finally {
     await fx.cleanup();
   }
+});
+
+test("status typed target: explicit bound wrong Kind reports once; no binding stays unchecked", async () => {
+  const fx = await makeRepo();
+  try {
+    await menuKind(fx.town);
+    await writeDoc(fx.beer, { id: "beers/little-whale", frontmatter: { type: "Reference", title: "Wrong actual type" }, body: "" });
+    // Foreign registry existence must not stand in for the returned target document's actual type.
+    await writeDoc(fx.beer, { id: "conventions/beer", frontmatter: { type: "Convention", governs: "Beer" }, body: "" });
+    const unbound = await statusJson(fx);
+    assert.equal(unbound.cross_bundle_unchecked, 1);
+    assert.equal(unbound.cross_bundle_link_type_violations_rows, undefined);
+    const bound = await statusJson(fx, ["--with", `beers=${fx.beer.root}`]);
+    assert.equal(bound.cross_bundle_unresolved, 0);
+    assert.deepEqual(rows(bound, "cross_bundle_link_type_violations_rows"), [
+      { from: "menus/whale", href: "okf://beers/beers/little-whale.md", text: "pours", expected: "Menu Item -> beers:Beer" },
+    ]);
+    const compiled = JSON.parse(execFileSync(process.execPath, [BUILT_COMMAND, "status", "--dir", fx.town.root,
+      "--with", `beers=${fx.beer.root}`, "--json"], { cwd: fx.root, env: commandEnv(fx.home), encoding: "utf8" }));
+    assert.deepEqual(rows(compiled, "cross_bundle_link_type_violations_rows"), rows(bound, "cross_bundle_link_type_violations_rows"));
+    // The same declaration passes when the admitted record really has the expected Kind.
+    await writeDoc(fx.beer, { id: "beers/little-whale", frontmatter: { type: "Beer", title: "Correct type" }, body: "" });
+    const correct = await statusJson(fx, ["--with-deps"]);
+    assert.equal(correct.cross_bundle_link_type_violations_rows, undefined);
+    assert.equal(correct.cross_bundle_unchecked, 0);
+    // Write-time link lint has no binding argument and must not read this copy's target.
+    await writeDoc(fx.beer, { id: "beers/wrong", frontmatter: { type: "Reference", title: "Wrong" }, body: "" });
+    const added = await runLink(["add", "menus/whale", "beers/wrong", "--bundle", "beers", "--text", "pours", "--dir", fx.town.root]);
+    assert.equal(added.warnings, undefined);
+    const afterAdd = await statusJson(fx, ["--with-deps"]);
+    assert.equal(rows(afterAdd, "cross_bundle_link_type_violations_rows").length, 1);
+  } finally { await fx.cleanup(); }
 });
 
 test("recipe evolve adds links: {pours: \"beers:Beer\"} to an installed Menu Item convention", async () => {
