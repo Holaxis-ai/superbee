@@ -217,7 +217,7 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
     const evidence = path === undefined ? {} : { consumerEvidence };
     if (removal) {
       const options = { scope: "cooperating-local-writers-v1" as const, ...(values["retirement-definition"] === undefined ? {} : { definitionId: values["retirement-definition"] }), ...evidence };
-      const retirementCommand = (exact: boolean, definition?: string): string => `${exact ? exactCliInvocation() : cliInvocation()} recipe evolve ${commandQuoted(ref)}${target} --remove-deprecated --retirement-scope cooperating-local-writers-v1${definition ? ` --retirement-definition ${commandQuoted(definition)}` : ""}${path === undefined ? "" : ` --retirement-evidence ${commandQuoted(path)}`}`;
+      const retirementCommand = (exact: boolean, definition?: string): string => `${exact ? exactCliInvocation() : cliInvocation()} recipe evolve ${commandQuoted(ref)}${target} --remove-deprecated --retirement-scope cooperating-local-writers-v1${definition ? commandFragment` --retirement-definition ${commandQuoted(definition)}` : commandLiteral("")}${path === undefined ? commandLiteral("") : commandFragment` --retirement-evidence ${commandQuoted(path)}`}`;
       if (values.apply !== undefined) {
         await assertActorAcceptedByBundle(bundle, values.actor?.trim());
         // Re-resolve strict authority immediately before Core independently replans and guards.
