@@ -204,12 +204,14 @@ export class FilesystemBackend implements StorageBackend {
 
   async #guardTarget(): Promise<InventoryGuardTarget> {
     const witness = await filesystemRootWitness(this.#port, this.#root);
-    const metadata = await this.readReserved("", "index.md");
-    const edition = guardEdition(metadata?.content ?? null);
+    const metadata = await readRawFilesystemReserved(this, "", "index.md");
+    // A lossy replacement character cannot stand in for an exact root-metadata premise.
+    const content = metadata === null ? null : new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(metadata.bytes);
+    const edition = guardEdition(content);
     const after = await filesystemRootWitness(this.#port, this.#root);
     if (witness !== after) throw new InventoryGuardConflict("identity");
     const store = versionOfBytes(`${await filesystemRootMutationKey(this.#root)}:${this.#coordinator.namespace()}:${witness}`);
-    return { contract: "inventory-guard/v1", domain: INVENTORY_GUARD_DOMAIN, adapter: "filesystem", store, edition, root_version: metadata!.version };
+    return { contract: "inventory-guard/v1", domain: INVENTORY_GUARD_DOMAIN, adapter: "filesystem", store, edition, root_version: blobVersion(metadata!.bytes) };
   }
 
   /**

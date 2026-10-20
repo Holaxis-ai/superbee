@@ -6,6 +6,7 @@ import path from "node:path";
 import { FilesystemBackend } from "../src/backend.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { InventoryGuardConflict, InventoryGuardUnsupported, INVENTORY_GUARD_DOMAIN, inventoryGuardFor, type InventoryGuardRequest } from "../src/inventory-guard.js";
+import { blobVersion } from "../src/versioning.js";
 import { InvalidInputError } from "../src/errors.js";
 import type { StorageBackend } from "../src/types.js";
 
@@ -135,5 +136,37 @@ test("filesystem malformed document leaves the guarded definition unchanged", as
     await fs.writeFile(path.join(f.directory, "malformed.md"), "---\ntype: [\n---\n");
     await assert.rejects(inventoryGuardFor(f.backend).compareInventoryAndWrite(input));
     assert.equal((await f.backend.read(input.id)).version, input.expectedVersion);
+  } finally { await f.cleanup(); }
+});
+
+
+for (const invalidByte of [0x80, 0x81]) {
+  test(`filesystem root metadata rejects malformed UTF-8 ${invalidByte} at observation and comparison`, async () => {
+    const f = await fixture("filesystem");
+    try {
+      const input = await request(f.backend);
+      const file = path.join(f.directory, "index.md");
+      const valid = await fs.readFile(file);
+      await fs.writeFile(file, Buffer.concat([valid, Buffer.from([invalidByte])]));
+      const guard = inventoryGuardFor(f.backend);
+      await assert.rejects(guard.observeTarget(), { code: "ERR_ENCODING_INVALID_ENCODED_DATA" });
+      await assert.rejects(guard.compareInventoryAndWrite(input), { code: "ERR_ENCODING_INVALID_ENCODED_DATA" });
+      assert.equal((await f.backend.read(input.id)).version, input.expectedVersion);
+      // Ordinary reserved reads remain the existing repair/transport projection.
+      const lossy = await f.backend.readReserved("", "index.md");
+      assert.ok(lossy!.content.endsWith("\ufffd"));
+    } finally { await f.cleanup(); }
+  });
+}
+
+test("filesystem readable root metadata retains exact valid UTF-8 byte version", async () => {
+  const f = await fixture("filesystem");
+  try {
+    const file = path.join(f.directory, "index.md");
+    const valid = Buffer.from("---\nokf_version: '0.2'\n---\ncafé 雪\n", "utf8");
+    await fs.writeFile(file, valid);
+    assert.equal((await inventoryGuardFor(f.backend).observeTarget()).root_version, blobVersion(valid));
+    assert.equal((await f.backend.readReserved("", "index.md"))!.version, blobVersion(valid));
+    await inventoryGuardFor(f.backend).compareInventoryAndWrite(await request(f.backend));
   } finally { await f.cleanup(); }
 });
