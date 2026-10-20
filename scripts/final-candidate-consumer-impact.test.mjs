@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,7 +14,7 @@ function put(root, file, bytes) {
   writeFileSync(path.join(root, file), bytes);
 }
 function commit(root) { run(root, 'add', '.'); run(root, 'commit', '-qm', 'fixture'); return run(root, 'rev-parse', 'HEAD'); }
-function fixture(t, { core = '0.2.0-pre.23', plugin = core, devPin = false } = {}) {
+function fixture(t, { core = '0.2.0-pre.23', plugin = core, devPin = false, blender = false } = {}) {
   const directory = mkdtempSync(path.join(tmpdir(), 'consumer-impact-fixture-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const candidateRoot = path.join(directory, 'candidate'), pluginRoot = path.join(directory, 'plugin');
@@ -35,7 +36,8 @@ function fixture(t, { core = '0.2.0-pre.23', plugin = core, devPin = false } = {
   put(pluginRoot, 'package-lock.json', json({ lockfileVersion: 3, packages: { '': root,
     'integrations/github': { peerDependencies: pkg.peerDependencies } } }));
   put(pluginRoot, '.github/workflows/ci.yml', `steps:\n  - run: npm install --no-save --package-lock=false --ignore-scripts @superbee/core@${plugin}\n  - run: npm test\n`);
-  put(pluginRoot, 'scripts/package-contract.test.mjs', `assert.deepEqual(pkg.peerDependencies,{'@superbee/core':'${plugin}'});\n`);
+  put(pluginRoot, 'scripts/package-contract.test.mjs', `import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport {readFile} from 'node:fs/promises';\nconst readJson = async file => JSON.parse(await readFile(new URL(file,import.meta.url),'utf8'));\nconst pkg = await readJson('../integrations/github/package.json');\nassert.deepEqual(pkg.peerDependencies,{'@superbee/core':'${plugin}'});\n`);
+  if (blender) put(pluginRoot, 'integrations/blender/package.json', json({name:'@superbee/integration-blender',private:true,superbeeLocalOperations:{contract:1,id:'blender',core:plugin,helper:1,entry:'dist/operation.mjs',assets:['assets/capture.py','assets/compare.py']}}));
   const args = { candidateRoot, candidateSha: producer(core), pluginRoot, pluginSha: commit(pluginRoot) };
   function archive({ sha = args.candidateSha, abi = core, version = '0.4.3-pre.14', identity = true, coreOnly = false, name = 'fixture.tgz' } = {}) {
     const contents = path.join(directory, name + '-contents');
@@ -153,4 +155,66 @@ test('command reports compatible, impact and invalid evidence with distinct exit
   assert.equal(impact.status, 1); assert.equal(JSON.parse(impact.stdout).status, 'companion-update-required');
   args.candidateSha = 'HEAD';
   assert.equal(execute().status, 2);
+});
+
+
+test('Blender and GitHub share one proposal, exact old-byte preconditions and combined test replacement', t => {
+  const { args, producer } = fixture(t, { blender: true });
+  args.candidateSha = producer('0.2.0-pre.24');
+  const report = inspectConsumerImpact(args);
+  assert.equal(report.expectations.find(row => row.field === 'Blender exact Core assertion').actual, null);
+  const testRows = report.proposal.files.filter(row => row.file === 'scripts/package-contract.test.mjs');
+  assert.equal(testRows.length, 1);
+  assert.ok(testRows[0].content.includes("pkg.peerDependencies,{'@superbee/core':'0.2.0-pre.24'}"));
+  assert.ok(testRows[0].content.includes("blender.superbeeLocalOperations.core,'0.2.0-pre.24'"));
+  for (const row of report.proposal.files) {
+    const actual = `sha256:${createHash('sha256').update(readFileSync(path.join(args.pluginRoot,row.file))).digest('hex')}`;
+    assert.equal(row.expected_sha256, actual);
+    put(args.pluginRoot,row.file,row.content);
+  }
+  args.pluginSha = commit(args.pluginRoot);
+  assert.equal(inspectConsumerImpact(args).status,'compatible');
+  const check = spawnSync(process.execPath,['--test',path.join(args.pluginRoot,'scripts/package-contract.test.mjs')],{encoding:'utf8'});
+  assert.equal(check.status,0,check.stderr+check.stdout);
+  args.candidateSha = producer('0.2.0-pre.25');
+  const next = inspectConsumerImpact(args);
+  assert.equal(next.proposal.files.filter(row => row.file === 'scripts/package-contract.test.mjs').length,1);
+  for (const row of next.proposal.files) put(args.pluginRoot,row.file,row.content);
+  args.pluginSha = commit(args.pluginRoot);
+  assert.equal(inspectConsumerImpact(args).status,'compatible');
+});
+
+test('same-version Blender manifest still requires the missing assertion, without unrelated file edits', t => {
+  const {args} = fixture(t,{blender:true});
+  const report = inspectConsumerImpact(args);
+  assert.deepEqual(report.proposal.files.map(row => row.file),['scripts/package-contract.test.mjs']);
+});
+
+for (const [label,mutate,expected] of [
+  ['range', p => {p.superbeeLocalOperations.core='^0.2.0';}, /ranges are not the plugin ABI/],
+  ['missing exact pin', p => {delete p.superbeeLocalOperations.core;}, /expected one exact version/],
+  ['helper drift', p => {p.superbeeLocalOperations.helper=2;}, /strictly equal/],
+  ['entry drift', p => {p.superbeeLocalOperations.entry='other.mjs';}, /strictly equal/],
+  ['asset closure drift', p => {p.superbeeLocalOperations.assets.push('other.py');}, /deep-equal/],
+  ['publication', p => {p.private=false;}, /Git checkout distribution/],
+  ['dependency policy', p => {p.peerDependencies={'@superbee/core':'0.2.0-pre.23'};}, /reviewed consumer policy/],
+]) test(`present Blender metadata cannot be silently omitted: ${label}`,t => {
+  const {args} = fixture(t,{blender:true});
+  const file='integrations/blender/package.json';
+  const pkg=JSON.parse(readFileSync(path.join(args.pluginRoot,file),'utf8'));
+  mutate(pkg); put(args.pluginRoot,file,json(pkg)); args.pluginSha=commit(args.pluginRoot);
+  assert.throws(() => inspectConsumerImpact(args),expected);
+});
+
+test('unrecognized or duplicate Blender assertion refuses rather than appending an unchecked assertion', t => {
+  const {args} = fixture(t,{blender:true});
+  const file='scripts/package-contract.test.mjs';
+  const original=readFileSync(path.join(args.pluginRoot,file),'utf8');
+  put(args.pluginRoot,file,original+"assert.equal(blender.superbeeLocalOperations.core, '0.2.0-pre.23');\n");
+  args.pluginSha=commit(args.pluginRoot);
+  assert.throws(() => inspectConsumerImpact(args),/unsupported Blender assertion/);
+  put(args.pluginRoot,file,original); args.pluginSha=commit(args.pluginRoot);
+  const proposed=inspectConsumerImpact(args).proposal.files.find(row => row.file===file).content;
+  put(args.pluginRoot,file,proposed+proposed.slice(proposed.indexOf("test('Blender"))); args.pluginSha=commit(args.pluginRoot);
+  assert.throws(() => inspectConsumerImpact(args),/Blender exact Core assertion/);
 });

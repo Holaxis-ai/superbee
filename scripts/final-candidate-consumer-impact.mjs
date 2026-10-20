@@ -12,6 +12,9 @@ const digest = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex
 const git = (root, ...args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
 const manifestPath = 'integrations/github/package.json';
 const coreName = '@superbee/core';
+const blenderPath = 'integrations/blender/package.json';
+const blenderTestPattern = /(assert\.equal\(blender\.superbeeLocalOperations\.core,')([^']+)('\);)/g;
+const blenderTest = version => `test('Blender local operation retains exact Core compatibility',async () => {\n  const blender = await readJson('../integrations/blender/package.json');\n  assert.equal(blender.superbeeLocalOperations.core,'${version}');\n});\n`;
 
 function checkout(root, sha) {
   assert.match(sha ?? '', /^[a-f0-9]{40}$/, 'an exact 40-hex checkout SHA is required');
@@ -91,6 +94,25 @@ export function inspectConsumerImpact({ candidateRoot, candidateSha, pluginRoot,
   });
 
   const files = Object.fromEntries([manifestPath, 'package.json', 'package-lock.json', '.github/workflows/ci.yml', 'scripts/package-contract.test.mjs'].map(file => [file, plugin(file)]));
+  // GitHub-only historical checkouts remain supported; a present Blender manifest must be understood.
+  const hasBlender = git(pluginRoot, 'ls-tree', pluginSha, '--', blenderPath).trim() !== '';
+  if (hasBlender) files[blenderPath] = plugin(blenderPath);
+  const blender = hasBlender ? JSON.parse(files[blenderPath]) : undefined;
+  if (hasBlender) {
+    assert.ok(blender && typeof blender === 'object', 'Blender manifest must be an object');
+    assert.equal(blender.name, '@superbee/integration-blender');
+    assert.equal(blender.private, true, 'Blender must retain Git checkout distribution');
+    assert.equal(blender.publishConfig, undefined, 'Blender publication is outside this check');
+    assert.equal(blender.superbeeLocalOperations?.contract, 1);
+    assert.equal(blender.superbeeLocalOperations?.id, 'blender');
+    assert.equal(blender.superbeeLocalOperations?.helper, 1);
+    assert.equal(blender.superbeeLocalOperations?.entry, 'dist/operation.mjs');
+    assert.deepEqual(blender.superbeeLocalOperations?.assets, ['assets/capture.py', 'assets/compare.py']);
+    for (const record of [blender, JSON.parse(files['package-lock.json']).packages?.['integrations/blender']]) {
+      for (const field of ['dependencies', 'optionalDependencies', 'devDependencies', 'peerDependencies'])
+        assert.equal(record?.[field]?.[coreName], undefined, 'Blender Core dependency needs a reviewed consumer policy');
+    }
+  }
   const pkg = JSON.parse(files[manifestPath]);
   const root = JSON.parse(files['package.json']);
   const lock = JSON.parse(files['package-lock.json']);
@@ -125,16 +147,30 @@ export function inspectConsumerImpact({ candidateRoot, candidateSha, pluginRoot,
   const testPattern = /(assert\.deepEqual\(pkg\.peerDependencies,\{'@superbee\/core':')([^']+)('\}\);)/g;
   const test = single(files['scripts/package-contract.test.mjs'], testPattern, 'plugin exact peer assertion');
   add('scripts/package-contract.test.mjs', 'exact Core peer assertion', test[2]);
+  if (blender) {
+    add(blenderPath, 'superbeeLocalOperations.core', blender.superbeeLocalOperations.core);
+    const text = files['scripts/package-contract.test.mjs'];
+    const matches = [...text.matchAll(blenderTestPattern)];
+    if (matches.length) {
+      const assertion = single(text, blenderTestPattern, 'Blender exact Core assertion');
+      assert.equal(text.split(blenderTest(assertion[2])).length, 2, 'Blender assertion must retain the supported manifest read and test shape');
+      add('scripts/package-contract.test.mjs', 'Blender exact Core assertion', assertion[2]);
+    } else {
+      assert.ok(!text.includes('superbeeLocalOperations') && !text.includes("readJson('../integrations/blender/package.json')"), 'unsupported Blender assertion; inspect changed format before proposing updates');
+      rows.push({ file: 'scripts/package-contract.test.mjs', field: 'Blender exact Core assertion', actual: null, expected: sourceCore });
+    }
+  }
   const changes = rows.filter(row => row.actual !== row.expected);
   const replacements = {};
-  for (const [file, parsed] of [[manifestPath, pkg], ['package.json', root], ['package-lock.json', lock]]) {
+  for (const [file, parsed] of [[manifestPath, pkg], ...(blender ? [[blenderPath, blender]] : []), ['package.json', root], ['package-lock.json', lock]]) {
     const selected = changes.filter(row => row.file === file);
     if (!selected.length) continue;
     // Explicit property paths avoid replacing unrelated version strings or old historical rows.
     if (file === manifestPath) {
       parsed.superbeeIntegration.core = sourceCore; parsed.peerDependencies[coreName] = sourceCore;
       if (parsed.devDependencies?.[coreName] !== undefined) parsed.devDependencies[coreName] = sourceCore;
-    } else if (file === 'package.json') parsed.devDependencies[coreName] = sourceCore;
+    } else if (file === blenderPath) parsed.superbeeLocalOperations.core = sourceCore;
+    else if (file === 'package.json') parsed.devDependencies[coreName] = sourceCore;
     else {
       parsed.packages['integrations/github'].peerDependencies[coreName] = sourceCore;
       for (const key of ['integrations/github', '']) if (parsed.packages[key]?.devDependencies?.[coreName] !== undefined) parsed.packages[key].devDependencies[coreName] = sourceCore;
@@ -143,6 +179,13 @@ export function inspectConsumerImpact({ candidateRoot, candidateSha, pluginRoot,
   }
   if (changes.some(row => row.file === '.github/workflows/ci.yml')) replacements['.github/workflows/ci.yml'] = files['.github/workflows/ci.yml'].replace(ciPattern, (_, before, _version, after) => `${before}${sourceCore}${after}`);
   if (changes.some(row => row.file === 'scripts/package-contract.test.mjs')) replacements['scripts/package-contract.test.mjs'] = files['scripts/package-contract.test.mjs'].replace(testPattern, (_, before, _version, after) => `${before}${sourceCore}${after}`);
+  if (blender && changes.some(row => row.field === 'Blender exact Core assertion')) {
+    const file = 'scripts/package-contract.test.mjs';
+    const text = replacements[file] ?? files[file];
+    replacements[file] = [...text.matchAll(blenderTestPattern)].length
+      ? text.replace(blenderTestPattern, (_, before, _version, after) => `${before}${sourceCore}${after}`)
+      : `${text}\n${blenderTest(sourceCore)}`;
+  }
   checkout(candidateRoot, candidateSha); checkout(pluginRoot, pluginSha);
   return {
     schema: 'superbee.consumer-impact.v1',
@@ -155,7 +198,7 @@ export function inspectConsumerImpact({ candidateRoot, candidateSha, pluginRoot,
       key: digest(JSON.stringify([candidateSha, pluginSha, core.version, cli.version, archives])),
       changes,
       files: Object.entries(replacements).map(([file, content]) => ({ file, expected_sha256: digest(files[file]), content })),
-      manual_followups: changes.length ? ['Review README.md and integrations/github/README.md current compatibility/install guidance; preserve historical checkout pins.', 'Qualify the proposed checkout with the exact final CLI/Core archives before a companion PR or registration.'] : [],
+      manual_followups: changes.length ? ['Review README.md, integrations/github/README.md and (when present) integrations/blender/README.md current compatibility/install guidance; preserve historical checkout pins.', 'Qualify the proposed checkout with the exact final CLI/Core archives before a companion PR or registration.'] : [],
     },
     evidence_scope: 'Exact declared plugin ABI and candidate/archive identity only; no execution, registry, attestation, publication or activation verdict.',
   };
