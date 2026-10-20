@@ -54,6 +54,7 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "query-order.js", symbol: "compareByMeaningfulChange" },
   { module: "query-selection.js", symbol: "applyQuerySelectionFilters" },
   { module: "kinds.js", symbol: "isTerminal" },
+  { module: "domain-model.js", symbol: "projectDomainModelV0" },
   { module: "remote.js", symbol: "RemoteBackend" },
   { module: "remote-operations.js", symbol: "createRemoteOperationTransport" },
   { module: "storage.js", symbol: "assertSafeConceptId" },

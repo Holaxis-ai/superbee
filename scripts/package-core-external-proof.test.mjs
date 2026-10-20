@@ -69,6 +69,8 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
     assert.ok(paths.includes("dist/engine.d.ts"));
     assert.ok(paths.includes("dist/kinds.js"));
     assert.ok(paths.includes("dist/kinds.d.ts"));
+    assert.ok(paths.includes("dist/domain-model.js"));
+    assert.ok(paths.includes("dist/domain-model.d.ts"));
     assert.ok(paths.includes("dist/recipes.js"));
     assert.ok(paths.includes("dist/recipes.d.ts"));
     for (const module of ["builtin-recipes", "kind-authoring"]) {
@@ -136,7 +138,11 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
   type StorageBackend,
 } from "@superbee/core";
 import { createFilesystemRuntime, type FilesystemHostPolicy, type FilesystemRuntime } from "@superbee/core/filesystem";
-import { isTerminal, type KindConvention } from "@superbee/core/kinds";
+import { isTerminal, buildKindRegistry, type KindConvention } from "@superbee/core/kinds";
+import { projectDomainModelV0, type DomainModelV0 } from "@superbee/core/domain-model";
+const projected: DomainModelV0 = projectDomainModelV0(buildKindRegistry([]));
+// @ts-expect-error projected arrays are readonly
+projected.kinds.push({});
 import {
   MalformedDocumentError,
   type EdgeFilter,
@@ -411,6 +417,18 @@ export async function exerciseSiteCapabilities() {
     const siteBundle = await build({ absWorkingDir: scratch, entryPoints: ["site-capability-consumer.mjs"], bundle: true, platform: "browser", format: "iife", globalName: "SiteProof", write: false, logLevel: "silent" });
     assert.doesNotMatch(siteBundle.outputFiles[0].text, /require\(|node:/);
     assert.equal(await runInNewContext(siteBundle.outputFiles[0].text + '\nSiteProof.exerciseSiteCapabilities()', { TextEncoder, URL }, { timeout: 5000 }), "sha256::site-record");
+
+    // Exercise the packed public subpath alone, including its browser import closure.
+    await writeFile(path.join(scratch, "model.mjs"), `import { projectDomainModelV0 } from "@superbee/core/domain-model";
+export const model = projectDomainModelV0({ kinds: new Map(), warnings: [] });
+if (JSON.stringify(model) !== '{"schemaVersion":0,"kinds":[],"relationships":[],"registryWarnings":[],"diagnostics":[]}') throw Error("model bytes changed");
+if (!Object.isFrozen(model.kinds)) throw Error("model is mutable");
+`);
+    await run(process.execPath, ["model.mjs"], scratch);
+    const browser = await build({ entryPoints: [path.join(scratch, "model.mjs")], platform: "browser", format: "iife", globalName: "proof", bundle: true, write: false, metafile: true });
+    assert.equal(Object.keys(browser.metafile.inputs).length, 2);
+    assert.ok(Object.values(browser.metafile.outputs).every(({ imports }) => imports.length === 0));
+    assert.equal(runInNewContext(browser.outputFiles[0].text + "\nproof.model.schemaVersion", {}), 0);
 
     // N3: the filesystem identity unit is not reachable from the packed package. Each negative
     // consumer must FAIL to typecheck for the named reason, and a runtime deep import must be
@@ -761,6 +779,7 @@ export async function exerciseSourceEngine(): Promise<[SourceRunReceipt, Conform
     assert.deepEqual(installedManifest.files, ["dist"]);
     assert.ok(installedManifest.exports["."]);
     assert.ok(installedManifest.exports["./kinds"]);
+    assert.ok(installedManifest.exports["./domain-model"]);
     assert.ok(installedManifest.exports["./recipes"]);
     for (const module of ["builtin-recipes", "kind-authoring"]) assert.deepEqual(installedManifest.exports[`./${module}`], { types: `./dist/${module}.d.ts`, default: `./dist/${module}.js` });
     assert.ok(installedManifest.exports["./engine"]);
