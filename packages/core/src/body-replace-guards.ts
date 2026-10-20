@@ -97,6 +97,22 @@ export interface BodyReplacePosture {
   replaceLinks?: boolean;
 }
 
+/** Capture explicit per-write intent; truthy values and unknown flags never grant an override. */
+export function captureBodyReplacePosture(value: unknown): BodyReplacePosture | undefined {
+  if (value === undefined) return;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new InvalidInputError("bodyReplace must be an object with boolean acceptTruncatedBody and/or replaceLinks fields.");
+  }
+  const captured: BodyReplacePosture = {};
+  for (const key of Reflect.ownKeys(value)) {
+    if (key !== "acceptTruncatedBody" && key !== "replaceLinks") throw new InvalidInputError("Unknown bodyReplace field.");
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+    if (!("value" in descriptor) || typeof descriptor.value !== "boolean") throw new InvalidInputError(`bodyReplace.${key} must be a boolean.`);
+    captured[key] = descriptor.value;
+  }
+  return captured;
+}
+
 /** Exact pairs consume first; target mode then admits retext while preserving occurrence counts.
  * Exact-edge mode is available to authorities that protect relationship text as well. */
 export function computeDroppedLinks(existingLinks: readonly Link[], nextLinks: readonly Link[], mode: "target" | "exact-edge" = "target"): Link[] {

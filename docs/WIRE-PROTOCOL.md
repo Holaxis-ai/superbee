@@ -58,7 +58,7 @@ not make the reference server enforce it. A gated deployment owns the meaning of
   same token as a quoted `ETag` (secondary). A conforming client must refuse a successful versioned
   read that has neither header; it must not silently downgrade a later CAS write.
 - `If-None-Match: *` means expect-absent create. `If-Match` accepts the bare token and quoted or weak
-  ETag forms. Omitting both requests an unconditional write. An empty expected version is invalid
+  ETag forms. Omitting both requests a write without a client premise. Document PUT still binds its body-safety decision to the head it reads; a concurrent change returns 412 without retry. Other resources retain unconditional writes. An empty expected version is invalid
   client input, not an unconditional-write spelling.
 - `X-Actor` is advisory write attribution. `X-Agent` is reserved for a trusted authentication gate;
   see the no-auth caveat above. Deletes create no revision and send neither attribution header from
@@ -84,7 +84,7 @@ operation route is exactly one.
 | GET | `/v0/bundles/{bundle}/heads` | `200 { count, digest, heads }` with the digest as `ETag`, or bodyless `304` when `If-None-Match` names it; see "Heads and snapshot". |
 | GET | `/v0/bundles/{bundle}/snapshot` | `200` NDJSON stream of every document between a header and an `end` line, digest as `ETag`; see "Heads and snapshot". |
 | GET | `/v0/bundles/{bundle}/docs/{id...}` | `200 { id, frontmatter, body }` plus version headers. |
-| PUT | `/v0/bundles/{bundle}/docs/{id...}` | JSON `{ frontmatter, body? }`; `201` for expect-absent create, otherwise `200`, with `{ version }` plus version headers. |
+| PUT | `/v0/bundles/{bundle}/docs/{id...}` | JSON `{ frontmatter, body?, bodyReplace? }`; `201` for expect-absent create, otherwise `200`, with `{ version }` plus version headers. |
 | HEAD | `/v0/bundles/{bundle}/docs/{id...}` | Bodyless `200` plus version headers, `404` absent, or `400` invalid. |
 | DELETE | `/v0/bundles/{bundle}/docs/{id...}` | `200 { deleted }`; optional `If-Match`, echoed as version headers when supplied. |
 | GET | `/v0/bundles/{bundle}/docs/{id...}/versions` | `200 { versions }`, each carrying version, actor, timestamp, and optional agent. |
@@ -122,6 +122,37 @@ answers `500 RUNTIME` with `details.malformed: { id, reason }`, which `RemoteBac
 Blob list accepts `prefix`, `limit`, and `cursor` with the same page-size and envelope semantics.
 Both cursors are the last returned ID/key. If that cursor vanished, the next page resumes using the
 same `localeCompare` ordering as the backend scan.
+
+## Whole-document replacement safety
+
+Document PUT runs the shared Core body-replacement policy against the current document.
+A truncated preview or removal of existing semantic links is `400 USAGE`, with `details.id`
+and the Core finding (`reason` plus preview information or `dropped_links`). The request writes
+nothing on refusal. Read the full document and preserve its links before resubmitting.
+Unchanged bodies, preserving edits, and unknown frontmatter remain supported; this is not Kind
+validation or an authoring operation and does not synthesize generation/update metadata.
+
+A caller deliberately removing links may send `bodyReplace: { replaceLinks: true }`.
+Deliberately storing a preview requires the separate `acceptTruncatedBody: true` flag; neither
+flag implies the other. Each true override requires an explicit client premise (`If-Match`,
+or expect-absent `If-None-Match: *` for a create). An absent posture defaults to protection.
+`bodyReplace` must be an object containing only these boolean fields; null, arrays, unknown
+fields and nonbooleans are `400 USAGE`. Unknown outer envelope fields remain ignored.
+`RemoteBackend.write` carries this same per-call posture via `WriteOptions.bodyReplace`,
+captured with the document before asynchronous capability discovery. Raw storage adapters
+ignore this transport intent; there is no global override. Core document mutations forward
+an already explicit posture so reviewed edits retain their intent across the remote seam.
+The generic `createRemoteOperationTransport` journal intent has no replacement-posture field:
+its writes use protection by default and cannot authorize intentional link removal or preview
+storage. A caller requiring that deliberate edit uses an explicit per-call document write;
+the journal grammar and separate Hosted whole-document transport are unchanged.
+
+An explicit stale premise returns `412` before body safety is evaluated. Every accepted PUT,
+even one without a client premise, persists with CAS against the inspected head (or absence).
+A concurrent change returns `412`; the authority never reapplies the stale replacement against
+a fresh head. Explicit expect-absent creates return `201`; creates without that header retain
+`200`. Existing request identity replay rules also apply to body refusals and posture: changing
+posture under a recorded request key replays the prior outcome rather than executing a new edit.
 
 ## Documents, canonical bytes, and blobs
 
@@ -357,7 +388,7 @@ failed or interrupted claim to apply again. The reference memory store has no re
   whose response was lost may surface a conservative conflict after retry. If another writer
   returns the document to exactly the state the premise names before a retry arrives (the same
   bytes, so the same version), the retry is applied again and silently overwrites that change.
-  `RemoteBackend` also permits unconditional writes, and mints no key for them; because a retry
+  `RemoteBackend` also permits writes without a client premise, and mints no key for them; because a retry
   after an ambiguous transport failure can repeat one, callers that require lost-update safety must
   supply `If-Match`/expect-absent semantics.
 - Full-frontmatter list pagination supplies the optional `queryHeads` push-down. Core re-applies
@@ -409,6 +440,7 @@ suites exercise the semantics through the router, `RemoteBackend`, and a real so
 | WIRE-PROOF-10 | Identified writes apply once while their record is kept, replay it, and are looked up by key; past retention a premise that matches again is applied again. | `packages/server/src/router.ts::id: "operation-lookup"`; `packages/server/src/operation-outcomes.ts::class MemoryOperationOutcomeStore` | `packages/core/test/wire-protocol.test.ts::identified PUT is applied once`; `packages/browser-local/test/sync.test.ts::lost acknowledgement: the fixture applies then drops the response`; `packages/core/test/wire-protocol.test.ts::a byte-identical revert to the premise's content lets a resubmission apply a second time`; `packages/core/test/wire-protocol.test.ts::a guarded write whose answer is lost is retried under the same minted Idempotency-Key` |
 | WIRE-PROOF-11 | Heads digest, `304` on `If-None-Match`, and deletions visible as missing ids. | `packages/server/src/router.ts::id: "docs-heads"`; `packages/core/src/heads-digest.ts::export function headsDigest` | `packages/core/test/wire-protocol.test.ts::GET /heads lists every id and version under the documented digest`; `packages/core/test/wire-protocol.test.ts::RemoteBackend.heads maps 304 to null` |
 | WIRE-PROOF-12 | Snapshot streams terminated NDJSON; a cut body or count mismatch is truncation. | `packages/server/src/router.ts::id: "docs-snapshot"`; `packages/server/src/serve.ts::pipeline(Readable.fromWeb` | `packages/core/test/wire-protocol.test.ts::GET /snapshot streams header, docs in id order, and end`; `packages/core/test/wire-protocol.test.ts::a snapshot cut after 40 lines`; `packages/core/test/wire-protocol.test.ts::serve() streams a 500-document snapshot` |
+| WIRE-PROOF-13 | Shared body replacement safety, independent explicit overrides, and observed-head CAS. | `packages/server/src/router.ts::writeDocVersionedGuarded`; `packages/core/src/engine.ts::export async function writeDocVersionedGuarded` | `packages/server/test/body-replacement.test.ts::PUT body replacement agreement rows`; `packages/server/test/body-replacement.test.ts::observed-head CAS prevents` |
 
 ## Known deviations and open questions
 
@@ -429,7 +461,7 @@ These are current limitations, not promises that a client may paper over:
 7. Authentication, authorization, and trusted principal/agent attribution belong to a gated host;
    the reference server implements none of them.
 8. `backlinks` is reported false and has no wire endpoint; clients derive graph results from reads.
-9. Transient retry applies at the transport boundary, including unconditional writes. The storage
+9. Transient retry applies at the transport boundary, including writes without a client premise. The storage
    seam permits those writes, so a caller that needs lost-update protection must provide a CAS premise.
    Only an identified write turns a retry into a replay. `RemoteBackend` identifies guarded document
    writes on a host with `operations`; any guarded write it sends without a key, including every

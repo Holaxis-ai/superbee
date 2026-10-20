@@ -1,3 +1,5 @@
+import { captureBodyReplacePosture, guardBodyReplace } from "./body-replace-guards.js";
+import { VersionConflict } from "./version-transport.js";
 /**
  * Runtime-neutral Superbee engine operations.
  *
@@ -328,3 +330,35 @@ export async function deleteBlob(
 ): Promise<boolean> {
   return backend.deleteBlob(key, options);
 }
+
+/** Whole-document replacement policy without Kind authoring or metadata synthesis.
+ * A decision is persisted only against the head it inspected; a concurrent change is terminal.
+ * Raw writeDocVersioned remains available to storage and trusted transport adapters.
+ */
+export async function writeDocVersionedGuarded(
+  backend: StorageBackend,
+  doc: OkfDocument,
+  options: WriteOptions = {},
+): Promise<WriteResult> {
+  const candidate = structuredClone(doc);
+  assertWritableConceptDocument(candidate);
+  const posture = captureBodyReplacePosture(options.bodyReplace);
+  const captured = { ...options, ...(posture === undefined ? {} : { bodyReplace: posture }) };
+  let existing: ReadResult | undefined;
+  try {
+    existing = await backend.read(candidate.id);
+  } catch (error) {
+    if ((error as { code?: string })?.code !== "ENOENT") throw error;
+  }
+  const observed = existing?.version ?? null;
+  if (captured.expectedVersion !== undefined && captured.expectedVersion !== observed) {
+    throw new VersionConflict(candidate.id, captured.expectedVersion, observed);
+  }
+  if ((posture?.replaceLinks || posture?.acceptTruncatedBody) && captured.expectedVersion === undefined) {
+    throw new InvalidInputError("bodyReplace overrides require an explicit expected version (If-Match or If-None-Match: *).");
+  }
+  if (existing) guardBodyReplace({ root: "", backend }, existing.doc, candidate.body, posture);
+  return writeDocVersioned(backend, candidate, { ...captured, expectedVersion: observed });
+}
+
+export { BodyReplaceError, captureBodyReplacePosture } from "./body-replace-guards.js";

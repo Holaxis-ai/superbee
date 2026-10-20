@@ -5,7 +5,7 @@
  * `Response`, so the identical router can mount unchanged in another Fetch-compatible runtime.
  *
  * ONE-ENGINE RULE: this module contains NO parsing/link/OKF logic of its own.
- * Doc WRITES route through the engine (`writeDocVersioned` from `@superbee/core`)
+ * Doc WRITES route through the engine (`writeDocVersionedGuarded` from `@superbee/core`)
  * so server-side OKF enforcement (non-empty `type`, id safety, reserved-file
  * rejection) comes free — the engine keeps ALL semantics, the router only maps
  * HTTP <-> the `StorageBackend` seam. Reads / list / versions / reserved-file
@@ -41,7 +41,7 @@ import {
   type Version,
   type WriteOptions,
 } from "@superbee/core/storage";
-import { queryHeads, writeDocVersioned } from "@superbee/core/engine";
+import { queryHeads, writeDocVersionedGuarded, BodyReplaceError, captureBodyReplacePosture } from "@superbee/core/engine";
 import { isRequestIdentity } from "@superbee/core/storage";
 import { captureRemoteFrontmatter, RemoteDocumentValueError } from "@superbee/core/document-codec";
 
@@ -239,6 +239,9 @@ function errorFromCaught(err: unknown): Response {
   }
   if (err instanceof RemoteDocumentValueError) {
     return errorResponse(500, "RUNTIME", err.message);
+  }
+  if (err instanceof BodyReplaceError) {
+    return errorResponse(400, "USAGE", err.message, { id: err.id, ...err.finding });
   }
   if (err instanceof InvalidInputError) {
     return errorResponse(400, "USAGE", err.message);
@@ -821,9 +824,9 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
     id: ConceptId,
     req: Request,
   ): Promise<Response> {
-    let payload: { frontmatter?: Frontmatter; body?: string };
+    let payload: { frontmatter?: Frontmatter; body?: string; bodyReplace?: unknown };
     try {
-      payload = (await req.json()) as { frontmatter?: Frontmatter; body?: string };
+      payload = (await req.json()) as { frontmatter?: Frontmatter; body?: string; bodyReplace?: unknown };
     } catch {
       return errorResponse(400, "USAGE", "request body must be JSON { frontmatter, body }");
     }
@@ -834,7 +837,9 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
       return errorResponse(400, "USAGE", "request body field body must be a string when present");
     }
     const writeOptions = writeOptionsFromRequest(req, attribution);
-    const result = await writeDocVersioned(
+    const posture = captureBodyReplacePosture(payload.bodyReplace);
+    if (posture !== undefined) writeOptions.bodyReplace = posture;
+    const result = await writeDocVersionedGuarded(
       backend,
       { id, frontmatter: payload.frontmatter, body: payload.body ?? "" },
       writeOptions,

@@ -154,7 +154,7 @@ test("bundle dispatch resolves one trusted context exactly once and public heade
   assert.equal(contextCalls, 1);
   assert.equal(observedRoute?.bundleId, BUNDLE_B);
   assert.equal(observedRoute?.endpointId, "doc-write");
-  assert.deepEqual(backend.writes.at(-1), { actor: "principal_7", agent: "verified-agent" });
+  assert.deepEqual(backend.writes.at(-1), { actor: "principal_7", agent: "verified-agent", expectedVersion: null });
 });
 
 test("deployment capabilities bypass context and backend resolution", async () => {

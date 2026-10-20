@@ -478,6 +478,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
     const { doc, version } = await writeDocVersionedForEdition(opts.bundle, { id: opts.id, ...candidate }, okfVersion, {
       expectedVersion: null,
       actor: opts.actor,
+      bodyReplace: opts.bodyReplace,
     });
     return { doc, changed: true, version, warnings };
   }
@@ -565,6 +566,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         const written = await writeDocVersionedForEdition(opts.bundle, next, okfVersion, {
           expectedVersion,
           actor: opts.actor,
+          bodyReplace: opts.bodyReplace,
         });
         savedDoc = written.doc;
         return written.version;
@@ -607,6 +609,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       const written = await writeDocVersionedForEdition(opts.bundle, next, okfVersion, {
         expectedVersion: hardCas ? opts.expectedVersion! : expectedVersion,
         actor: opts.actor,
+        bodyReplace: opts.bodyReplace,
       });
       savedDoc = written.doc;
       return written.version;
