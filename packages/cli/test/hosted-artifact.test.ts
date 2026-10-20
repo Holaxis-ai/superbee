@@ -11,7 +11,7 @@ import { prepareBlobIntent, blobReceipt } from "@superbee/core/storage";
 import { ARTIFACT_ROWS, decodePublication, publicationKey, publications, admitArtifactRecord, initialArtifactOwner, recoverArtifactRecord, type Publication } from "../src/hosted/artifact.js";
 import { BLOB_SYNC_META_KEY, encodeBlobSyncMap, readBlobSyncState, settleBlobSyncReceipt } from "../src/hosted/blob-sync.js";
 import { digestOf } from "../src/hosted/projection.js";
-import { exportCheckout, placeQueuedLocalCreate, type ProjectionRecord } from "../src/hosted/sync-scan.js";
+import { exportCheckout, type ProjectionRecord } from "../src/hosted/sync-scan.js";
 
 async function fixture(maximumBytes?: number) {
   const dir = await mkdtemp(path.join(tmpdir(), "artifact-native-")), folder = path.join(dir, "folder"); await mkdir(folder);
