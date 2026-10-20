@@ -50,6 +50,15 @@ const identityGate: TextGate = (text) => ({ text, ok: true, tells: [], changed: 
  * Condition's `status`) are plain record fields there, and its policy carries no `target_kind`.
  */
 export function readOverlayPolicy(doc: { id: ConceptId; frontmatter: Frontmatter }, ctx: PolicyContext = {}): OverlayPolicy {
+  return policyAt(doc, (doc.frontmatter as unknown as Record<string, unknown>)?.url, ctx, "url");
+}
+
+/** Read the same field policy at an explicit identity coordinate, without a transport URL. */
+export function readOverlayPolicyForResource(doc: { id: ConceptId; frontmatter: Frontmatter }, resource: string, ctx: PolicyContext = {}): OverlayPolicy {
+  return policyAt(doc, resource, ctx, "resource");
+}
+
+function policyAt(doc: { id: ConceptId; frontmatter: Frontmatter }, resource: unknown, ctx: PolicyContext, coordinateKey: "url" | "resource"): OverlayPolicy {
   const fm = (doc.frontmatter ?? {}) as unknown as Record<string, unknown>;
   const refuse = (message: string, details: Record<string, unknown> = {}): never => {
     throw new OverlayRefusal(REFUSAL_CODES.POLICY_INVALID, `${doc.id}: ${message}`, { feed: doc.id, ...details });
@@ -78,13 +87,13 @@ export function readOverlayPolicy(doc: { id: ConceptId; frontmatter: Frontmatter
   }
   const threshold = fm.missing_threshold === undefined || fm.missing_threshold === null ? undefined : Number(fm.missing_threshold);
   if (threshold !== undefined && !(Number.isInteger(threshold) && threshold >= 1)) refuse("missing_threshold must be a whole number >= 1", { key: "missing_threshold" });
-  if (typeof fm.url !== "string" || !fm.url) refuse("url (provider identity) is required", { key: "url" });
+  if (typeof resource !== "string" || !resource) refuse(`${coordinateKey} (provider identity) is required`, { key: coordinateKey });
   const zone = fm.wall_time_zone === undefined || fm.wall_time_zone === null ? undefined : String(fm.wall_time_zone).trim();
   const targetKind = !presentation && typeof fm.target_kind === "string" && fm.target_kind ? fm.target_kind : undefined;
   const listFields = declaredListFields(ctx.targetKind);
   return {
     feed: doc.id,
-    provider: fm.url as string,
+    provider: resource as string,
     ...(targetKind ? { target_kind: targetKind } : {}),
     owned_fields: ownedFields,
     auto_apply: list(fm.auto_apply) ?? [...DEFAULT_AUTO_APPLY],

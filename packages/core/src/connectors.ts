@@ -544,7 +544,7 @@ function parseMapping(field: string, raw: unknown, at: Path, errors: Errors): Co
   return errors.list.length === before ? mapping : undefined;
 }
 
-function parseSource(raw: unknown, index: number, errors: Errors): ConnectorSource | undefined {
+function parseSource(raw: unknown, index: number, errors: Errors, explicitResource?: string): ConnectorSource | undefined {
   const at = ["record_sources", index] as const;
   if (!record(raw)) { errors.add("CONNECTOR_MALFORMED", at, "a source must be a mapping"); return undefined; }
   const before = errors.list.length;
@@ -568,7 +568,8 @@ function parseSource(raw: unknown, index: number, errors: Errors): ConnectorSour
   if (!record(raw.identity)) errors.add("CONNECTOR_MALFORMED", [...at, "identity"], "identity must be a mapping of resource and id");
   else {
     errors.closed("identity", raw.identity, [...at, "identity"]);
-    const resource = parseResourceTemplate(raw.identity.resource);
+    const resource = explicitResource === undefined ? parseResourceTemplate(raw.identity.resource)
+      : raw.identity.resource === explicitResource ? { ok: true as const } : { ok: false as const, reason: "must equal the explicit resource" };
     if (!resource.ok) errors.add("CONNECTOR_IDENTITY_UNSTABLE", [...at, "identity", "resource"], `identity.resource ${resource.reason}`);
     const id = parseIdTemplate(raw.identity.id);
     if (!id.ok) errors.add("CONNECTOR_IDENTITY_UNSTABLE", [...at, "identity", "id"], `identity.id ${id.reason}`);
@@ -678,6 +679,15 @@ function sourceKindErrors(source: ConnectorSource, index: number, kind: KindConv
     }
   }
   return errors.list;
+}
+
+/** @internal Shared source grammar and Kind checks; the caller owns the explicit resource grammar. */
+export function parseRecordSourceDeclaration(raw: unknown, kind: KindConvention | undefined, explicitResource: string):
+  { ok: true; source: ConnectorSource } | { ok: false; errors: ConnectorError[] } {
+  const errors = new Errors();
+  const source = parseSource(raw, 0, errors, explicitResource);
+  if (source && kind) errors.list.push(...sourceKindErrors(source, 0, kind));
+  return source && !errors.list.length ? { ok: true, source } : { ok: false, errors: errors.list };
 }
 
 /**

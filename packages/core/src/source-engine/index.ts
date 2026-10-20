@@ -11,6 +11,9 @@
  * the cursor rule (a cursor is stored only after its page commits), completeness, and the diff into
  * record-overlay changes, with disappearance only from a complete observation.
  *
+ * Finite local inputs use bindSnapshotSource/decodeSnapshot/admitSnapshot/observeSnapshot;
+ * admission precedes reconciliation and the same internal driver owns state transitions.
+ *
  * Storage-neutral and Worker-free: no Node globals or builtins, and nothing here calls `fetch`.
  */
 export {
@@ -53,3 +56,9 @@ export type {
 } from "./types.js";
 export { createSourceOverlayAdapter, isSourceOverlaySnapshot, MAX_SOURCE_OVERLAY_ENTRIES } from "./overlay.js";
 export type { SourceOverlayAdapter, SourceOverlayEntry, SourceOverlayOptions, SourceOverlayResult, SourceOverlaySnapshot } from "./overlay.js";
+export { SNAPSHOT_MAX_BYTES, SNAPSHOT_MAX_RECORDS, SNAPSHOT_PROFILE, SNAPSHOT_REFUSAL_CODES, SnapshotRefusal,
+  bindSnapshotSource, decodeSnapshot, admitSnapshot, observeSnapshot } from "./snapshot.js";
+export type { BoundSnapshotSource, SnapshotDocument, DecodedSnapshot, SnapshotRefusalCode, SnapshotCapacityInput, SnapshotCapacityFacts,
+  SnapshotAdmissionOptions, SnapshotAdmission, ObserveSnapshotOptions, SnapshotRunReceipt } from "./snapshot.js";
+export { SnapshotEvidenceRefusal, parseSnapshotEvidence, assessSnapshotFreshness } from "./evidence.js";
+export type { SnapshotEvidenceIdentity, SnapshotEvidence, SnapshotEvidenceObservation, SnapshotFreshnessRow, SnapshotFreshness } from "./evidence.js";

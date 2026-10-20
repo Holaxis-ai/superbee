@@ -20,6 +20,7 @@ export {
   gateSafeValue,
   isExcludedRecord,
   readOverlayPolicy,
+  readOverlayPolicyForResource,
 } from "./policy.js";
 export { disappearedPhase, planRecordOverlay, summarizeChange } from "./plan.js";
 export { FINDING_CHANGE_KIND, findingDigest, planFindings } from "./findings.js";

@@ -1082,3 +1082,5 @@ these fields keep that enrichment. Projection does not establish snapshot cohere
 authorization or permission to disclose a bundle's declarations.
 
 See [explicit recipe-set structural preflight](recipe-set-preflight.md) for the opt-in read-only composition checker and its evidence limits.
+
+Finite data-only local observations use [Snapshot Sources](SNAPSHOT-SOURCES.md) through the existing source-engine and record-overlay owners.
