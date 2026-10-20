@@ -7,7 +7,7 @@ import { bundleHealth } from "../src/bundle-health/index.js";
 import { installRecipe, planRecipeEvolution, applyRecipeEvolution } from "../src/recipe-lifecycle/index.js";
 import type { LoadedRecipe } from "../src/recipes.js";
 import type { Bundle, OkfDocument, WriteOptions, Version } from "../src/types.js";
-import { deprecationConvention, deprecationRows, widget } from "./fixtures/kind-deprecation-rows.js";
+import { deprecationConvention, deprecationRows, deprecationEligibilityRows, widget } from "./fixtures/kind-deprecation-rows.js";
 
 const registry = () => buildKindRegistry([deprecationConvention], [], { okfVersion: "0.2" });
 async function memory(backend = new MemoryBackend()): Promise<Bundle & { backend: MemoryBackend }> {
@@ -161,4 +161,40 @@ test("explicit list and multi-action patches share final transition policy", asy
     input: { kind: "field-action", action: { action: "replace-all", field: "topics", value: ["new", "old"] } } });
   await assert.rejects(mutateDocument({ bundle, id: old.id, mode: "patch", registry: registry(), strict: false,
     input: { kind: "field-actions", actions: [{ action: "set", field: "category", value: "old" }] } }), KindConformanceError);
+});
+
+
+test("eligibility agreement rows: resolved claims and legal prototype-named vocabularies", async t => {
+  for (const row of deprecationEligibilityRows) await t.test(row.name, async () => {
+    const reg = buildKindRegistry([row.convention], [], { okfVersion: "0.2" });
+    assert.ok(reg.kinds.has("Widget"), "invalid policy must not erase the readable Kind");
+    assert.equal(reg.warnings.some(w => w.code === "KIND_DEPRECATION_INVALID"), row.invalid);
+    const kind = reg.kinds.get("Widget")!;
+    const roundtrip = buildKindRegistry([kindConventionDoc(kind, row.convention.body, "2026-10-20T00:00:00Z")], [], { okfVersion: "0.2" });
+    assert.deepEqual(roundtrip.kinds.get("Widget")!.deprecated, kind.deprecated);
+    const old = widget(Object.fromEntries([[row.field, "old"]]));
+    assert.equal(kindDeprecationTransition(old, { ...old, body: "Unrelated edit" }, reg).length > 0, row.invalid);
+    const bundle = await memory(); await bundle.backend.write(old.id, old);
+    const mutation = mutateDocument({ bundle, id: old.id, mode: "patch", registry: reg, strict: false,
+      buildCandidate: d => ({ frontmatter: d!.frontmatter, body: "Unrelated edit" }) });
+    if (row.invalid) await assert.rejects(mutation, KindConformanceError);
+    else {
+      await mutation;
+      await assert.rejects(mutateDocument({ bundle, id: "widgets/new", mode: "create-only", registry: reg, strict: false,
+        buildCandidate: () => ({ frontmatter: old.frontmatter, body: "" }) }), KindConformanceError);
+    }
+    // The same eligibility result must reach the lifecycle front door, without changing instances.
+    const target = recipe("2", true); target.docs = [row.convention];
+    const initial = recipe("1", false); initial.docs = [structuredClone(row.convention)]; delete initial.docs[0]!.frontmatter.deprecated;
+    const lifecycleBundle = await memory();
+    if (row.recipeUnsupported) {
+      await assert.rejects(installRecipe(lifecycleBundle, initial), /declares both logical/);
+      await assert.rejects(planRecipeEvolution(lifecycleBundle, target), /declares both logical/);
+      return; // Existing recipe materialization refuses the dual declaration; registry/mutation checks above still apply.
+    }
+    await installRecipe(lifecycleBundle, initial);
+    const plan = await planRecipeEvolution(lifecycleBundle, target);
+    assert.equal(plan.ready, !row.invalid, JSON.stringify(plan.blockers));
+    if (row.invalid) assert.ok(plan.blockers.some(b => b.code === "KIND_DEPRECATION_INVALID"));
+  });
 });

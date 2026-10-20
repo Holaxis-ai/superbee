@@ -41,3 +41,41 @@ export const deprecationRows: DeprecationRow[] = [
   { name: "copy gets no grandfathering", candidate: widget({ legacy: "old" }), refused: true },
   { name: "unrelated active link", existing: widget({}, "[legacy_link](two.md)"), candidate: widget({}, "[legacy_link](two.md)\n[active_link](three.md)"), refused: false },
 ];
+
+
+/** One eligibility table drives registry/serializer, mutation and lifecycle boundary probes. */
+export interface DeprecationEligibilityRow {
+  name: string;
+  convention: OkfDocument;
+  invalid: boolean;
+  field: string;
+  mode: "fields" | "values";
+  recipeUnsupported?: boolean;
+}
+const eligibilityConvention = (optional: string[], values: Record<string, string[]>, claim: { owner_field?: string; state_field?: string } | undefined,
+  policy: unknown, terminal?: Record<string, string[]>): OkfDocument => ({
+    id: "conventions/widget", body: "Eligibility fixture.\n",
+    frontmatter: { type: "Convention", title: "Widget", governs: "Widget",
+      fields: { required: ["title"], optional, values, ...(terminal ? { terminal } : {}) },
+      ...(claim ? { claim } : {}), deprecated: policy },
+  });
+export const deprecationEligibilityRows: DeprecationEligibilityRow[] = [];
+for (const mode of ["fields", "values"] as const) {
+  for (const entry of [
+    { name: "logical claim resolves physical progress", optional: ["superbee_progress_status"], claim: { state_field: "progress_status" }, field: "superbee_progress_status", invalid: true },
+    { name: "physical claim remains protected", optional: ["superbee_progress_status"], claim: { state_field: "superbee_progress_status" }, field: "superbee_progress_status", invalid: true },
+    { name: "literal logical collision owns claim", optional: ["progress_status", "superbee_progress_status"], claim: { state_field: "progress_status" }, field: "progress_status", invalid: true },
+    { name: "literal logical collision leaves physical independent", optional: ["progress_status", "superbee_progress_status"], claim: { state_field: "progress_status" }, field: "superbee_progress_status", invalid: false },
+    { name: "logical owner resolves physical progress", optional: ["superbee_progress_status"], claim: { owner_field: "progress_status" }, field: "superbee_progress_status", invalid: true },
+  ]) {
+    const values = Object.fromEntries(entry.optional.map(field => [field, ["old", "new"]]));
+    const policy = mode === "fields" ? { fields: [entry.field] } : { values: Object.fromEntries([[entry.field, ["old"]]]) };
+    deprecationEligibilityRows.push({ name: `${entry.name}: ${mode}`, convention: eligibilityConvention(entry.optional, values, entry.claim, policy), invalid: entry.invalid, field: entry.field, mode, recipeUnsupported: entry.optional.length > 1 });
+  }
+}
+for (const field of ["toString", "constructor", "__proto__"]) for (const terminal of [false, true]) {
+  deprecationEligibilityRows.push({ name: `${field}: ${terminal ? "own terminal excluded" : "prototype is not terminal"}`,
+    convention: eligibilityConvention([field], Object.fromEntries([[field, ["old", "new"]]]), undefined,
+      { values: Object.fromEntries([[field, ["old"]]]) }, terminal ? Object.fromEntries([[field, ["old"]]]) : undefined),
+    invalid: terminal, field, mode: "values" });
+}

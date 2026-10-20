@@ -23,7 +23,7 @@ const problem = (field: string, message: string): ValidationWarning => ({
   code: "KIND_DEPRECATION_INVALID", field, message: `${field}: ${message}`, severity: "warning",
 });
 
-export function parseKindDeprecation(raw: unknown, kind: KindConvention, reserved: readonly string[]): KindDeprecation {
+export function parseKindDeprecation(raw: unknown, kind: KindConvention, reserved: readonly string[], claimFields: readonly string[]): KindDeprecation {
   const result: KindDeprecation = { fields: [], values: {}, links: [] };
   const problems: ValidationWarning[] = [];
   const fail = (field: string, message: string): void => { problems.push(problem(field, message)); };
@@ -34,7 +34,7 @@ export function parseKindDeprecation(raw: unknown, kind: KindConvention, reserve
     return [...new Set(value as string[])];
   };
   const protectedField = (field: string): boolean => reserved.includes(field) || isOkfStandardField(field)
-    || isManagedDocumentMetadataField(field) || field === kind.claim?.ownerField || field === kind.claim?.stateField;
+    || isManagedDocumentMetadataField(field) || claimFields.includes(field);
   if (!isOkfRecord(raw)) fail("deprecated", "expected a map of fields, values and links");
   else {
     for (const key of Object.keys(raw)) if (!["fields", "values", "links"].includes(key)) fail(`deprecated.${key}`, "unknown policy coordinate");
@@ -58,7 +58,8 @@ export function parseKindDeprecation(raw: unknown, kind: KindConvention, reserve
           || !allowed || values.some(v => !allowed.includes(v)) || kind.fields.types?.[field] === "https-url-list") {
           fail(path, "expected members of a declared, nonstandard, nonclaim vocabulary");
         }
-        if (values.some(v => kind.fields.terminal[field]?.includes(v))) fail(path, "terminal members require a separate migration");
+        const terminal = Object.hasOwn(kind.fields.terminal, field) ? kind.fields.terminal[field]! : [];
+        if (values.some(v => terminal.includes(v))) fail(path, "terminal members require a separate migration");
         if (kind.fields.required.includes(field) && allowed && !allowed.some(v => !values.includes(v))) fail(path, "a required field must retain an active member");
       }
     }

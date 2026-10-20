@@ -1139,7 +1139,7 @@ export function parseConventionDoc(
   if (order !== undefined) kind.order = order;
   if (claim !== undefined) kind.claim = claim;
   if (Object.hasOwn(fm, "deprecated")) {
-    kind.deprecated = parseKindDeprecation(fm.deprecated, kind, RESERVED_KIND_FIELD_NAMES);
+    kind.deprecated = parseKindDeprecation(fm.deprecated, kind, RESERVED_KIND_FIELD_NAMES, claimCoordinates(options.okfVersion, kind)?.fields ?? []);
     warnings.push(...(kind.deprecated.problems ?? []));
   }
   return {
