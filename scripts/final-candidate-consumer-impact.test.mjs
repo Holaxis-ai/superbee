@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -114,6 +114,15 @@ test('archive mode binds literal bytes, source, version and embedded Core ABI', 
     assert.throws(() => inspectConsumerImpact({ ...args, cliTarball: archive(options) }), expected);
   }
   assert.throws(() => inspectConsumerImpact({ ...args, coreTarball: archive({ coreOnly: true, abi: '9.9.9' }) }), /strictly equal/);
+});
+
+test('archive input refuses symlinks and nonregular files before reading bytes', t => {
+  const { args, archive, directory } = fixture(t);
+  const target = archive();
+  const alias = path.join(directory, 'alias.tgz');
+  symlinkSync(target, alias);
+  assert.throws(() => inspectConsumerImpact({ ...args, cliTarball: alias }), /ELOOP/);
+  assert.throws(() => inspectConsumerImpact({ ...args, cliTarball: directory }), /regular file/);
 });
 
 for (const [label, file, mutate, expected] of [

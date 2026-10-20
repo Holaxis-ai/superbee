@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { constants, openSync, closeSync, fstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
@@ -36,8 +36,14 @@ function single(text, pattern, label) {
 
 // Read fixed members from one private byte snapshot; never extract or execute archive contents.
 function archive(file, consume) {
-  assert.ok(lstatSync(file).isFile(), 'archive must be a regular file, not a symlink');
-  const bytes = readFileSync(file);
+  const handle = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  let bytes;
+  try {
+    assert.ok(fstatSync(handle).isFile(), 'archive must be a regular file');
+    bytes = readFileSync(handle);
+  } finally {
+    closeSync(handle);
+  }
   const scratch = mkdtempSync(path.join(tmpdir(), 'superbee-consumer-impact-'));
   try {
     const snapshot = path.join(scratch, 'package.tgz');
