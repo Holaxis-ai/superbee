@@ -1158,6 +1158,7 @@ async function runInstalledProof(spec) {
       setupBeforeIntegrations.setup.next,
       {
         action: "run",
+        cwd: scratch,
         command: ["superbee", "skill", "install", "--scope", "user"],
         description: "Install Superbee's Agent Skill for the selected scope.",
         mutates: true,
@@ -1166,9 +1167,67 @@ async function runInstalledProof(spec) {
           reason: "This writes to user-level host configuration.",
         },
       },
-      "the installed artifact must guide the first missing host integration without exposing paths",
+      "the installed artifact must guide the first missing host integration from its literal working directory",
     );
-    assert.doesNotMatch(JSON.stringify(setupBeforeIntegrations), new RegExp(scratch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    const { cwd: verifyCwd, ...verifyWithoutCwd } = setupBeforeIntegrations.setup.verify;
+    const { cwd: nextCwd, ...nextWithoutCwd } = setupBeforeIntegrations.setup.next;
+    assert.equal(verifyCwd, scratch);
+    assert.equal(nextCwd, scratch);
+    assert.doesNotMatch(
+      JSON.stringify({ ...setupBeforeIntegrations, setup: { ...setupBeforeIntegrations.setup, next: nextWithoutCwd, verify: verifyWithoutCwd } }),
+      new RegExp(scratch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      "only the explicit action cwd fields may expose the invocation directory; private installation paths stay omitted",
+    );
+    assert.equal(setupBeforeIntegrations.setup.workspace.project_selection, "unselected");
+    assert.equal(setupBeforeIntegrations.setup.workspace.project_directory, null);
+    assert.deepEqual(setupBeforeIntegrations.setup.verification, { configured_only: true, live_host_activation: "not_observed" });
+    const unselectedBundle = setupBeforeIntegrations.setup.capabilities.find((row) => row.id === "bundle");
+    assert.match(unselectedBundle.command, /<project-choice>/);
+    assert.ok(!setupBeforeIntegrations.setup.capabilities.some((row) => row.command?.startsWith("superbee init ")));
+
+    const chosenProject = path.join(scratch, "empty notes '$literal;");
+    await mkdir(chosenProject);
+    if (await resolveCommandOnPath("git", commandEnv) === undefined) {
+      const withoutGitSetup = parseJson(
+        (await runCli(target.preferred_command, ["setup", "--host", "claude-code", "--project-selected", "--json"], {
+          cwd: chosenProject, env: { CLAUDE_CONFIG_DIR: "" },
+        })).stdout,
+        "confirmed project without Git discovery",
+      ).setup;
+      assert.equal(withoutGitSetup.capabilities.find((row) => row.id === "bundle").state, "blocked");
+      assert.ok(!withoutGitSetup.capabilities.some((row) => row.command?.startsWith("superbee init ")),
+        "unavailable board discovery must never authorize first initialization");
+    }
+    // Confirmed-project setup inspects board ownership through Git. Expose only that declared
+    // executable in the isolated bin rather than inheriting a PATH that could shadow the CLI.
+    const gitExecutable = await resolveCommandOnPath("git", process.env);
+    assert.ok(gitExecutable, "confirmed-project package proof requires Git discovery");
+    await symlink(gitExecutable, path.join(binDir, "git"));
+    for (const [flag, selection] of [["--project-selected", "confirmed"], ["--skip-project", "deferred"]]) {
+      const selectedSetup = parseJson(
+        (await runCli(target.preferred_command, ["setup", "--host", "claude-code", flag, "--json"], {
+          cwd: chosenProject, env: { CLAUDE_CONFIG_DIR: "" },
+        })).stdout,
+        `setup ${flag}`,
+      ).setup;
+      assert.equal(selectedSetup.workspace.project_selection, selection);
+      assert.equal(selectedSetup.next.cwd, chosenProject);
+      assert.equal(selectedSetup.verify.cwd, chosenProject);
+      assert.deepEqual(selectedSetup.verify.command, ["superbee", "setup", "--host", "claude-code", "--scope", "user", flag, "--json"]);
+      const bundleCapability = selectedSetup.capabilities.find((row) => row.id === "bundle");
+      const catalogCapability = selectedSetup.capabilities.find((row) => row.id === "catalog");
+      if (selection === "confirmed") {
+        assert.equal(selectedSetup.workspace.project_directory, chosenProject);
+        assert.equal(bundleCapability.command, "superbee init --create-only --recipe work-tracking --dir .superbee");
+      } else {
+        assert.equal(selectedSetup.workspace.project_directory, null);
+        assert.equal(selectedSetup.workspace.current_project_bundle, "not_checked");
+        assert.equal(selectedSetup.workspace.catalog_access, "not_checked");
+        assert.equal(bundleCapability.state, "not_applicable");
+        assert.equal(catalogCapability.state, "not_applicable");
+      }
+      assert.deepEqual(await readdir(chosenProject), [], "setup inspection never creates project files");
+    }
 
     // ── skill-channel proof: install → status → reinstall no-op → uninstall, project + user ──
     const project = path.join(scratch, "skill-project");
@@ -1354,6 +1413,7 @@ async function runInstalledProof(spec) {
       const migrationAction = legacySetup.setup.next;
       assert.deepEqual(migrationAction, {
         action: "run",
+        cwd: scratch,
         command: ["superbee", "setup", "migrate-state"],
         description: "Migrate validated legacy private state into Superbee's canonical user-state directory.",
         mutates: true,
@@ -1364,7 +1424,7 @@ async function runInstalledProof(spec) {
       });
       const [migrationBin, ...migrationArgs] = migrationAction.command;
       assert.equal(migrationBin, target.preferred_command);
-      const migrationOutput = (await runCli(migrationBin, migrationArgs, { cwd: scratch })).stdout;
+      const migrationOutput = (await runCli(migrationBin, migrationArgs, { cwd: migrationAction.cwd })).stdout;
       assert.match(migrationOutput, /^migration:/);
       assert.match(migrationOutput, /status: migrated/);
       assert.equal(await readFile(path.join(legacyState, "catalog.json"), "utf8"), legacyCatalog);
@@ -1377,8 +1437,8 @@ async function runInstalledProof(spec) {
         '{"product":"superbee","schema_version":1}\n',
       );
       const setupAfterMigration = parseJson(
-        (await runCli(target.preferred_command, ["setup", "--host", "claude-code", "--json"], {
-          cwd: scratch, env: { CLAUDE_CONFIG_DIR: "" },
+        (await runCli(legacySetup.setup.verify.command[0], legacySetup.setup.verify.command.slice(1), {
+          cwd: legacySetup.setup.verify.cwd, env: { CLAUDE_CONFIG_DIR: "" },
         })).stdout,
         "setup after one-shot state migration",
       );
