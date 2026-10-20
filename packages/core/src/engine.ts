@@ -362,3 +362,5 @@ export async function writeDocVersionedGuarded(
 }
 
 export { BodyReplaceError, captureBodyReplacePosture } from "./body-replace-guards.js";
+
+export type { BodyReplacePosture } from "./body-replace-guards.js";

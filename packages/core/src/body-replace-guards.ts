@@ -100,7 +100,7 @@ export interface BodyReplacePosture {
 /** Capture explicit per-write intent; truthy values and unknown flags never grant an override. */
 export function captureBodyReplacePosture(value: unknown): BodyReplacePosture | undefined {
   if (value === undefined) return;
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
     throw new InvalidInputError("bodyReplace must be an object with boolean acceptTruncatedBody and/or replaceLinks fields.");
   }
   const captured: BodyReplacePosture = {};

@@ -1,3 +1,4 @@
+import { captureNewDocumentIntent } from "./journaled-backend.js";
 /**
  * IndexedDB-backed {@link JournaledBackend}: the browser-local working copy's first persistent
  * store candidate, sitting behind the same core seam as {@link FilesystemBackend} and
@@ -778,6 +779,7 @@ export class IndexedDbBackend implements JournaledBackend {
     if (snapshotGuard !== undefined) { options = captureJournalWriteOptions(options); doc = captureJournalValue(doc); }
     assertSafeConceptId(id);
     assertJournalResolutionOptions(id, options);
+    if (options.intent) options = { ...options, intent: captureNewDocumentIntent(options.intent) };
     const raw = stringifyDoc(doc.frontmatter, doc.body ?? "");
     const version = versionOfBytes(raw);
     if (snapshotGuard && (doc.id !== id || (options.intent && options.intent.target !== id))) throw new JournalGuardConflict(id);

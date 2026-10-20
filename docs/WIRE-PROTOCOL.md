@@ -142,10 +142,13 @@ fields and nonbooleans are `400 USAGE`. Unknown outer envelope fields remain ign
 captured with the document before asynchronous capability discovery. Raw storage adapters
 ignore this transport intent; there is no global override. Core document mutations forward
 an already explicit posture so reviewed edits retain their intent across the remote seam.
-The generic `createRemoteOperationTransport` journal intent has no replacement-posture field:
-its writes use protection by default and cannot authorize intentional link removal or preview
-storage. A caller requiring that deliberate edit uses an explicit per-call document write;
-the journal grammar and separate Hosted whole-document transport are unchanged.
+The generic `createRemoteOperationTransport` forwards the journal's optional immutable per-intent
+`bodyReplace` declaration. Explicit editor saves and reviewed keep-local/revise resolutions
+record their replacement intent durably; absent declarations on old or automatic writes retain
+protection. A never-delivered composition retains explicit grants for its cumulative content,
+while independently delivered chain successors carry their own intent. Unknown flags or malformed
+posture are refused before submission; an existing request identity cannot widen its declaration.
+Separate Hosted whole-document delivery is unchanged.
 
 An explicit stale premise returns `412` before body safety is evaluated. Every accepted PUT,
 even one without a client premise, persists with CAS against the inspected head (or absence).

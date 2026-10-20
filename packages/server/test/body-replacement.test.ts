@@ -172,3 +172,25 @@ test("wire journal transport keeps default protection and does not invent editor
   assert.equal(outcome.kind, "refused");
   assert.equal((await backend.read("note")).version, base);
 });
+
+
+test("wire journal posture is per intent, captured before discovery, and malformed declarations send nothing", async () => {
+  const { createRemoteOperationTransport } = await import("@superbee/core/remote-operations");
+  const { backend, router } = fixture();
+  const base = await backend.write("note", doc("[Source](./source.md)"));
+  let requests = 0;
+  const remote = new RemoteBackend({ baseUrl: "https://example.test", bundle: bundleId, fetchImpl: request => { requests++; return router(request); } });
+  const transport = createRemoteOperationTransport(remote);
+  const intent = { kind: "document.write", requestId: "posture-grant", target: "note", base,
+    local: base, attempts: 0, state: "pending" as const, createdAt: "2026-10-20T12:00:00Z",
+    content: "---\ntype: Unregistered\ntimestamp: '2026-10-20T12:00:00Z'\n---\nreplacement" };
+  for (const bodyReplace of [null, [], { replaceLinks: "true" }, { unknown: true }, Object.create({ replaceLinks: true }), Object.defineProperty({}, "replaceLinks", { enumerable: true, get: () => true })]) {
+    assert.equal((await transport.submit({ ...intent, bodyReplace } as never)).kind, "refused");
+    assert.equal(requests, 0);
+  }
+  const getterIntent = Object.defineProperty({ ...intent }, "bodyReplace", { get: () => ({ replaceLinks: true }) });
+  assert.equal((await transport.submit(getterIntent)).kind, "refused");
+  assert.equal(requests, 0);
+  assert.equal((await transport.submit({ ...intent, bodyReplace: { replaceLinks: true } })).kind, "committed");
+  assert.equal((await backend.read("note")).doc.body.trimEnd(), "replacement");
+});
