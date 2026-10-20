@@ -15,6 +15,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -22,6 +23,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { decode } from "@toon-format/toon";
 
 import {
   binShim,
@@ -216,10 +218,17 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     help: /help: superbee setup/,
     remedy: () => ({ command: "superbee setup" }),
     effect: "guidance-only",
-    verify: (_f, executed) => {
-      assert.match(executed.stdout, /capabilities\[1\]\{id,requirement,state,reason,command\}/);
-      assert.match(executed.stdout, /state,required,blocked,/);
-      assert.match(executed.stdout, /next:\n\s+action: inspect\n\s+command\[\d+]:/);
+    verify: (f, executed) => {
+      const plan = (decode(executed.stdout) as SetupEnvelope).setup;
+      assert.equal(plan.capabilities.length, 1);
+      assert.equal(plan.capabilities[0]?.id, "state");
+      assert.equal(plan.capabilities[0]?.requirement, "required");
+      assert.equal(plan.capabilities.find((row) => row.id === "state")?.state, "blocked");
+      assert.equal(plan.next.action, "inspect");
+      assert.equal(plan.next.cwd, realpathSync(f.project));
+      assert.deepEqual(plan.next.command, ["superbee", "setup", "quarantine-state"]);
+      assert.equal(plan.next.mutates, true);
+      assert.equal(plan.next.approval.required, true);
     },
   },
   {
@@ -329,11 +338,12 @@ interface SetupEnvelope {
   readonly setup: {
     readonly next: {
       readonly action: string;
+      readonly cwd?: string;
       readonly command: readonly string[];
       readonly mutates: boolean;
       readonly approval: { readonly required: boolean };
     };
-    readonly capabilities: readonly { readonly id: string; readonly state: string; readonly reason: string; readonly command?: string }[];
+    readonly capabilities: readonly { readonly id: string; readonly requirement: string; readonly state: string; readonly reason: string; readonly command?: string }[];
   };
 }
 

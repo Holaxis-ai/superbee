@@ -69,15 +69,40 @@ async function absentBindingHelp(root: string): Promise<string> {
   return help;
 }
 
-/** Setup's project-bundle state and bundle capability row for the checkout at `root`. */
+/** Setup's project-bundle state and recovery row after explicitly selecting the checkout. */
 async function setupBundleRow(root: string, homeDir: string): Promise<{ bundle: string; row: { state: string; reason: string; command?: string } }> {
   let out = "";
-  await withHome(homeDir, () => inDir(root, () => setup(["--host", "claude-code", "--scope", "project", "--json"], { stdout: (text) => (out += text) })));
+  await withHome(homeDir, () => inDir(root, () => setup(["--host", "claude-code", "--scope", "project", "--project-selected", "--json"], { stdout: (text) => (out += text) })));
   const plan = JSON.parse(out).setup as { workspace: { current_project_bundle: string }; capabilities: Array<{ id: string; state: string; reason: string; command?: string }> };
   const row = plan.capabilities.find((capability) => capability.id === "bundle");
   assert.ok(row, "setup reports a bundle capability");
   return { bundle: plan.workspace.current_project_bundle, row };
 }
+
+test("an unconfirmed checkout with a missing bound board asks for a project before joining or creating", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-unconfirmed-bound-home-"));
+  try {
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: ".superbee" }));
+    const refsBefore = git(topo.a.root, ["show-ref"]);
+    let output = "";
+    await withHome(homeDir, () => inDir(topo.a.root, () => setup(["--host", "claude-code", "--scope", "project", "--json"], {
+      stdout: (text) => (output += text),
+    })));
+    const plan = JSON.parse(output).setup as {
+      workspace: { project_selection: string };
+      capabilities: Array<{ id: string; command?: string }>;
+    };
+    assert.equal(plan.workspace.project_selection, "unselected");
+    assert.match(plan.capabilities.find((row) => row.id === "bundle")?.command ?? "", /<project-choice>/);
+    assert.ok(!plan.capabilities.some((row) => /^superbee (?:init|sync)\b/.test(row.command ?? "")));
+    assert.equal(existsSync(topo.a.board), false, "inspection never materializes or creates the unselected board");
+    assert.equal(git(topo.a.root, ["show-ref"]), refsBefore);
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
 
 /** Home's rendered orientation without the static command manual, which always lists `init`. */
 function orientation(view: Record<string, unknown>): string {
