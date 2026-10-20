@@ -210,6 +210,10 @@
     "./source-profiles": {
       "types": "./dist/source-profiles/index.d.ts",
       "default": "./dist/source-profiles/index.js"
+    },
+    "./domain-model": {
+      "types": "./dist/domain-model.d.ts",
+      "default": "./dist/domain-model.js"
     }
   },
   "files": [

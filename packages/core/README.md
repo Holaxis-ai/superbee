@@ -1066,3 +1066,17 @@ and bound String/ID inputs. GraphQL execution is deferred to the later GraphQL p
 `graphql_scope_unsupported` refuses even a well-formed read body before transport. Syntax alone
 does not establish resource-scoped traversal. Mutations and malformed extension bodies are refused
 by the engine wrapper; caller hooks cannot enable them.
+
+## Declared Kind model
+
+`@superbee/core/domain-model` exports `projectDomainModelV0(registry)` and its
+readonly input/output types. Pass a canonical registry from `buildKindRegistry`
+(`@superbee/core/kinds`) or `loadKinds`; the projection performs no parsing or I/O.
+It returns deeply frozen JSON with deterministically ordered Kind definitions,
+declared relationships, registry warnings and informational outside-scope endpoints.
+Structurally malformed inputs throw `TypeError`.
+
+The v0 shape preserves authored array order and warning metadata. It does not
+include `fields.types` or derived `freshnessHorizonMs`; adapters that already add
+these fields keep that enrichment. Projection does not establish snapshot coherence,
+authorization or permission to disclose a bundle's declarations.
