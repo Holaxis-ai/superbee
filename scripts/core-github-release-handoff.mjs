@@ -56,7 +56,7 @@ export function githubTransport() {
       return execFileSync('gh', ['api', '--hostname', 'github.com', '--allow-escape-sequences', `${root(PRODUCER)}/actions/jobs/${job}/logs`], { encoding: 'utf8', timeout: 60_000, maxBuffer: 4 * 1024 * 1024 });
     },
     async attest(file, tag, workflow) {
-      execFileSync('gh', ['attestation', 'verify', file, '-R', `https://github.com/${PRODUCER}`, '--signer-workflow', `${PRODUCER}/.github/workflows/${workflow}`, '--source-ref', `refs/tags/${tag}`, '--format', 'json'], { timeout: 90_000, maxBuffer: 4 * 1024 * 1024 });
+      execFileSync('gh', ['attestation', 'verify', file, '-R', PRODUCER, '--signer-workflow', `${PRODUCER}/.github/workflows/${workflow}`, '--source-ref', `refs/tags/${tag}`, '--format', 'json'], { timeout: 90_000, maxBuffer: 4 * 1024 * 1024 });
     },
   };
 }
@@ -215,7 +215,7 @@ export async function createDraft(plan, io) {
     return { ...plan, status: 'draft-outcome-unknown', created_branch: { branch: plan.branch, sha: commit }, next_action: 'Read native PR/branch state before retrying. No branch overwrite or downstream merge is permitted.' };
   }
   const status = pr.draft !== true ? 'draft-state-uncertain' : pr.head.sha !== commit ? 'draft-head-changed' : pr.base.sha === plan.base_sha ? 'draft-created' : 'draft-base-changed';
-  return { ...plan, status, created: { number: pr.number, url: pr.html_url, head_sha: commit, base_sha: pr.base.sha },
+  return { ...plan, status, created: { number: pr.number, url: pr.html_url, head_sha: pr.head.sha, expected_head_sha: commit, base_sha: pr.base.sha },
     next_action: status === 'draft-created' ? 'Existing owner/review/CI and release approval gates remain; do not merge automatically.' : 'Native proposal state changed during creation. Owner must inspect and replan before review or merge.' };
 }
 

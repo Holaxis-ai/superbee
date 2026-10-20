@@ -126,6 +126,28 @@ test('base moves during native PR creation: draft retained and explicitly stale'
   assert.match(result.next_action, /inspect and replan/);
 });
 
+test('changed native draft head is held with observed and expected commits distinguished', async t => {
+  const f = fixture(t), plan = await prepareHandoff(f.options, f.io), api = f.io.api;
+  f.io.api = async (...args) => {
+    const result = await api(...args);
+    if (args[0] === 'POST' && args[1].endsWith('/pulls')) result.head.sha = 'f'.repeat(40);
+    return result;
+  };
+  const result = await createDraft(plan, f.io);
+  assert.equal(result.status, 'draft-head-changed');
+  assert.equal(result.created.head_sha, 'f'.repeat(40));
+  assert.equal(result.created.expected_head_sha, f.state.commit);
+  assert.equal(f.state.prs.length, 1);
+});
+
+test('native attestation adapter uses the gh repository slug contract', t => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'core-github-native-gh-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  writeFileSync(path.join(directory, 'gh'), `#!${process.execPath}\nconst args = process.argv.slice(2);\nif (args[0] !== 'attestation' || args[1] !== 'verify' || !/^[^/:]+\\/[^/:]+$/.test(args[args.indexOf('-R') + 1])) process.exit(2);\nprocess.stdout.write('[]');\n`, { mode: 0o755 });
+  const source = `import { githubTransport } from ${JSON.stringify(new URL('./core-github-release-handoff.mjs', import.meta.url).href)}; await githubTransport().attest('archive.tgz', 'libraries/v0.2.0-pre.24', 'release-libraries.yml');`;
+  execFileSync(process.execPath, ['--input-type=module', '--eval', source], { env: { ...process.env, GH_HOST: 'github.com', PATH: `${directory}${path.delimiter}${process.env.PATH}` }, stdio: 'pipe' });
+});
+
 test('partial branch creation recovers only its exact parent, message and whole tree', async t => {
   const f = fixture(t), plan = await prepareHandoff(f.options, f.io);
   f.state.before = (method, route) => { if (method === 'POST' && route.endsWith('/git/refs')) f.state.base = '9'.repeat(40); };
