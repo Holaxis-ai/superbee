@@ -67,3 +67,48 @@ vocabulary for acquisition adapters; the parser itself reports a missing manifes
 The package proof installs core alone, typechecks the public subpaths, runs parsing and record
 checks in Node, and executes a browser-target bundle without Node globals. This is not a live
 browser or Worker integration guarantee. No CLI runtime dependency or new package is required.
+
+## Deprecating declarations
+
+A convention can keep a declaration readable while preventing new admitted usage:
+
+```yaml
+deprecated:
+  fields: [legacy_category]
+  values:
+    category: [old]
+  links: [legacy_relation]
+```
+
+Names must remain declared. Whole fields must be optional domain fields, excluding standard,
+reserved and claim coordinates. Deprecated values must be declared vocabulary members; required
+fields retain an active member, and terminal/claim values require a separate migration. A link
+label still required by an inbound expectation in the admitted registry cannot be deprecated.
+Malformed or ineligible recognized policy keeps the Kind visible but refuses admitted authoring.
+
+`kindDeprecationTransition(existing, candidate, registry)` and
+`inspectKindDeprecatedUsage(document, kind)` are pure exports from `@superbee/core/kinds`.
+The first returns authoring refusals; the second reports informational stored occurrences, including
+unknown malformed qualified references. Ordinary `validateAgainstKind` keeps its read-conformance
+meaning. `mutateDocument` applies the transition policy for its explicitly supplied registry on
+create, replacement, patch and each fresh retry, even when `strict:false`.
+
+An unchanged deprecated field or scalar value can survive unrelated edits or be removed; a whole
+deprecated field cannot change its value. A deprecated list member or body edge cannot gain an
+occurrence. Edge identity distinguishes local targets from qualified alias plus target ID; changing
+an alias cannot inherit an existing allowance. A byte-identical malformed qualified reference can
+survive an unrelated edit, but new/changed deprecated-label usage refuses. Copying, recreating or
+retyping a document does not inherit another Kind's legacy allowance. Existing typed-list, body
+replacement, standard-field and other Kind guards still apply.
+
+CLI `kinds` exposes metadata; `status` reports `deprecated_usage` separately from conformance debt.
+Recipe evolution can add lifecycle metadata only with an unchanged readable same-recipe ownership
+baseline. It preserves instances and blocks silent policy removal/reactivation. Actual declaration
+removal remains unsupported: per-definition CAS and a postcondition are not atomic instance-scan
+closure or evidence of ecosystem-wide non-use.
+
+Admission is bounded to the supplied registry. Raw storage/wire imports and intentionally empty
+registry recipe install/evolve asset writes keep their existing import-like behavior. Recipe assets
+can themselves be governed OKF documents, so successful asset import is not a deprecation-policy
+admission certificate. An empty/stale registry does not prove current bundle policy enforcement.
+No automatic record migration, foreign lookup or permission change occurs.

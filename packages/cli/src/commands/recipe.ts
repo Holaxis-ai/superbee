@@ -55,6 +55,11 @@ recipe is fully applied or clobbers a bundle author's own hand-edit. See 'superb
 list built-ins and which are already applied, and 'superbee kinds' for the resulting live
 per-bundle registry.
 
+Valid deprecated fields/values/links metadata can be added only with an unchanged same-recipe
+ownership baseline. Existing records stay readable; admitted-registry writes preserve/remove
+legacy usage but refuse new deprecated usage. Removal stays unsupported; no atomic instance-scan
+closure or ecosystem-wide non-use is claimed. Recipe asset writes keep their import-like posture.
+
 'recipe evolve' is the explicit installed-convention upgrade path. Without --apply it is READ-ONLY:
 it compares definitions, permits additive declarations only, revalidates existing instances, and
 returns one exact apply command. Applying requires that plan's token, recomputes the preflight, and

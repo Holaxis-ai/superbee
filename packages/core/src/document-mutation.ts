@@ -14,6 +14,7 @@ import { prepareKindFieldMutation, type KindFieldMutation } from "./kind-field-m
 import { appendVerificationEvent, type AppendVerificationOptions } from "./verification.js";
 import { okfValuesEqual } from "./okf-authored-values.js";
 import { InvalidInputError } from "./errors.js";
+import { kindDeprecationTransition } from "./kind-deprecation.js";
 import { KindConformanceError } from "./kind-conformance-error.js";
 import { assertAuthoredOkfStandardFields } from "./okf-standard-fields.js";
 import { applyV02MutationMetadata } from "./document-write-policy.js";
@@ -245,6 +246,11 @@ function attributeCandidate(
  * timestamp first. Returns the kind alongside the warnings so overwrite's ratchet (below) can
  * reuse this ONE validation pass instead of re-deriving the candidate's kind separately.
  */
+function assertDeprecation(id: ConceptId, candidate: DocumentMutationCandidate, registry: KindRegistry, existing?: OkfDocument): void {
+  const violations = kindDeprecationTransition(existing, { id, ...candidate }, registry);
+  if (violations.length) throw new KindConformanceError(id, String(candidate.frontmatter.type), violations);
+}
+
 function validateCandidate(
   id: ConceptId,
   candidate: DocumentMutationCandidate,
@@ -254,6 +260,7 @@ function validateCandidate(
   now: () => string,
   existing?: OkfDocument,
 ): RegistryValidationResult {
+  assertDeprecation(id, candidate, registry, existing);
   const result = defaultTimestampAndValidateAgainstRegistry(
     { id, ...candidate },
     registry,
@@ -273,6 +280,7 @@ function validateUnchangedDocument(
   strict: boolean,
   okfVersion: "0.1" | "0.2",
 ): ValidationWarning[] {
+  assertDeprecation(existing.id, existing, registry, existing);
   const kind = registry.kinds.get(String(existing.frontmatter.type));
   const warnings = kind ? validateAgainstKind(existing, kind) : [];
   if (strict && kind && warnings.length > 0) {
@@ -348,6 +356,7 @@ export function prepareDocumentMutationCandidate(
   const decisionNow = onceNow(opts.now ?? (() => new Date().toISOString()));
   const comparison = withV02Metadata(structuredClone(rawCandidate), existing, opts.okfVersion, opts.registry,
     decisionNow, opts.seedGenerationClock ?? true, opts.actor, opts.compareTimestamp ?? false, opts.producer);
+  assertDeprecation(opts.id, comparison, opts.registry, existing);
   if (existing && isNoopMutation(existing, comparison, opts.compareTimestamp ?? false, opts.okfVersion,
     opts.okfVersion === "0.2" && persistActor && opts.actor !== undefined,
     opts.registry.kinds.get(String(comparison.frontmatter.type))?.fields.required.includes("actor") ?? false)) {
@@ -528,6 +537,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
           okfVersion,
           opts.registry,
         );
+        assertDeprecation(opts.id, candidate, opts.registry, existing);
         if (existing && isNoopMutation(
           existing, candidate, compareTimestamp, okfVersion,
           persistActor && opts.actor !== undefined,
