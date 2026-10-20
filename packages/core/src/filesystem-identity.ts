@@ -59,7 +59,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
 import { ConcurrentReplacementError, FilesystemIdentityAliasError, InvalidInputError } from "./errors.js";
-import { acquireFilesystemIdentityLock } from "./filesystem-lock.js";
+import { acquireFilesystemIdentityLock, filesystemMutationLockRoot } from "./filesystem-lock.js";
 import { captureFilesystemHostPolicy, type FilesystemHostPolicy } from "./filesystem-host.js";
 
 export type EntryKind = "file" | "directory" | "symlink" | "other";
@@ -261,12 +261,66 @@ async function existingAnchor(resolved: string): Promise<{ anchor: string; tail:
  * and identical for every case or normalization spelling of any segment. It depends on nothing
  * else: not the environment, the clock, the process, or the host name.
  */
-export async function identityKey(root: string, rel: string): Promise<string> {
-  const foldedRel = relSegments(rel).map(foldSegment).join("/");
+async function foldedPhysicalRoot(root: string): Promise<string> {
   const { anchor, tail } = await existingAnchor(path.resolve(root));
   const anchorSegments = anchor.split(path.sep).filter((segment, index) => index === 0 || segment !== "");
-  const foldedRoot = [...anchorSegments, ...tail].map(foldSegment).join("/");
-  return createHash("sha256").update(`superbee-identity/v1\0${foldedRoot}\0${foldedRel}`).digest("hex");
+  return [...anchorSegments, ...tail].map(foldSegment).join("/");
+}
+
+export async function identityKey(root: string, rel: string): Promise<string> {
+  const foldedRel = relSegments(rel).map(foldSegment).join("/");
+  return createHash("sha256").update(`superbee-identity/v1\0${await foldedPhysicalRoot(root)}\0${foldedRel}`).digest("hex");
+}
+
+/** Same root key before/after directory creation; physical replacement is a separate witness. */
+export async function filesystemRootMutationKey(root: string): Promise<string> {
+  return createHash("sha256").update(`superbee-root-mutation/v1\0${await foldedPhysicalRoot(root)}`).digest("hex");
+}
+
+/** Existing physical-root/ancestor witnesses supplement the stable coordination pathname. */
+export async function filesystemRootWitness(port: FilesystemIdentityPort, root: string): Promise<string> {
+  const physical = await fs.realpath(root);
+  const witnesses: Array<[string, number, number]> = [];
+  let current = physical;
+  for (;;) {
+    const witness = await port.probe(current);
+    if (!witness || witness.kind !== "directory") throw new InvalidInputError("Inventory guard root identity is unavailable.");
+    witnesses.push([current, witness.dev, witness.ino]);
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return createHash("sha256").update(JSON.stringify(witnesses)).digest("hex");
+}
+
+const rootMutationQueues = new Map<string, Promise<void>>();
+
+/** Internal per-backend root coordinator; never re-exported by a public entrypoint. */
+export function createFilesystemMutationCoordinator(
+  _port: FilesystemIdentityPort,
+  root: string,
+  hostPolicy?: FilesystemHostPolicy,
+): { run<T>(body: () => Promise<T>): Promise<T>; namespace(): string } {
+  const policy = captureFilesystemHostPolicy(hostPolicy);
+  let lockRoot: string | undefined;
+  const namespace = () => lockRoot ??= filesystemMutationLockRoot(root, policy);
+  return Object.freeze({
+    namespace,
+    async run<T>(body: () => Promise<T>): Promise<T> {
+      const key = await filesystemRootMutationKey(root);
+      const lockRoot = namespace();
+      const queueKey = `${lockRoot}:${key}`;
+      const previous = rootMutationQueues.get(queueKey) ?? Promise.resolve();
+      const run = previous.then(async () => {
+        const release = await acquireFilesystemIdentityLock(key, root, { portableRoot: root, lockRoot, hostPolicy: policy });
+        try { return await body(); } finally { await release(); }
+      });
+      const settled = run.then(() => {}, () => {});
+      rootMutationQueues.set(queueKey, settled);
+      void settled.then(() => { if (rootMutationQueues.get(queueKey) === settled) rootMutationQueues.delete(queueKey); });
+      return run;
+    },
+  });
 }
 
 // ── pure decisions ────────────────────────────────────────────────────────────

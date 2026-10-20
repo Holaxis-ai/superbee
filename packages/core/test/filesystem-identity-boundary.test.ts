@@ -170,6 +170,7 @@ test("N2: FilesystemBackend retains one required constructor argument, the contr
     "deleteBlob",
     "exists",
     "existsBlob",
+    "inventoryGuard",
     "list",
     "listBlobs",
     "read",
@@ -341,7 +342,7 @@ test("N4: backend.ts imports exactly the protocol entry points and the productio
     ts.forEachChild(node, visit);
   };
   visit(backend);
-  assert.deepEqual(values.sort(), ["createNodeFilesystemIdentityPort", "mutateExact", "observeExact", "openObservationPass", "probeExact"]);
+  assert.deepEqual(values.sort(), ["createFilesystemMutationCoordinator", "createNodeFilesystemIdentityPort", "filesystemRootMutationKey", "filesystemRootWitness", "mutateExact", "observeExact", "openObservationPass", "probeExact"]);
 });
 
 test("N4: production ports are constructed per backend rather than exported as mutable singleton state", async () => {
@@ -350,12 +351,13 @@ test("N4: production ports are constructed per backend rather than exported as m
   assert.match(identity.text, /export function createNodeFilesystemIdentityPort/);
   const backend = await parse("backend.ts");
   assert.match(backend.text, /this\.#port = createNodeFilesystemIdentityPort\(options.hostPolicy\)/);
+  assert.match(backend.text, /this\.#coordinator = createFilesystemMutationCoordinator\(this\.#port, this\.#root, options.hostPolicy\)/);
   assert.match(backend.text, /publicationContexts.set\(this, \{ root: this\.#root, port: this\.#port \}\)/);
 });
 
 test("N4: every protocol call uses the backend port or its private publication context", async () => {
   const backend = await parse("backend.ts");
-  const protocolEntryPoints = new Set(["mutateExact", "observeExact", "probeExact"]);
+  const protocolEntryPoints = new Set(["mutateExact", "observeExact", "probeExact", "filesystemRootWitness"]);
   const line = (node: ts.Node): number => backend.getLineAndCharacterOfPosition(node.getStart(backend)).line + 1;
 
   // One route in. Every module reference that is not a static import declaration is rejected
@@ -431,7 +433,10 @@ test("N4: every protocol call uses the backend port or its private publication c
   // The publication-only exact document and reserved-object reads add two observation calls while
   // retaining the same production port and without widening the StorageBackend prototype.
   // The metadata-only projection probe adds one probeExact call under that same private context.
-  assert.equal(passed.length, 14, `expected the backend's protocol call sites, found ${passed.length}`);
+  // Five ordinary mutation sites now share one private root-before-leaf wrapper; guarded apply
+  // adds its own already-held leaf path. Two root witness observations bring 11 leaf/read
+  // sites to 13 production-port protocol calls.
+  assert.equal(passed.length, 13, `expected the backend's protocol call sites, found ${passed.length}`);
   assert.deepEqual([...new Set(passed)].sort(), ["port", "this.#port"], "a protocol call bypasses the instance/publication context");
   assert.equal(passed.filter((name) => name === "port").length, 3, "only the raw publication readers and metadata-only projection probe use their captured context port");
 });

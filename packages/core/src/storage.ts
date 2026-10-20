@@ -66,3 +66,6 @@ export * from "./blob-journal.js";
 
 export { captureBlobHead, isBlobContentType } from "./blob-contract.js";
 export type { BlobHead } from "./blob-contract.js";
+
+export { INVENTORY_GUARD_DOMAIN, InventoryGuardConflict, InventoryGuardUnsupported, inventoryGuardFor } from "./inventory-guard.js";
+export type { InventoryEntry, InventoryGuard, InventoryGuardTarget, InventoryGuardRequest, InventoryGuardResult } from "./inventory-guard.js";

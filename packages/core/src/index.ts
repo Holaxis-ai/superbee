@@ -442,3 +442,6 @@ export {
   guardDroppedLinks, guardBodyReplace, TypedListPatchError, assertTypedListPatch,
 } from "./body-replace-guards.js";
 export type { BodyPreviewFinding, BodyReplaceFinding, BodyReplacePosture } from "./body-replace-guards.js";
+
+export { INVENTORY_GUARD_DOMAIN, InventoryGuardConflict, InventoryGuardUnsupported, inventoryGuardFor } from "./inventory-guard.js";
+export type { InventoryEntry, InventoryGuard, InventoryGuardTarget, InventoryGuardRequest, InventoryGuardResult } from "./inventory-guard.js";
