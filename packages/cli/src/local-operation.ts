@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import type { Dirent, Stats } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, realpath, readdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -20,8 +21,10 @@ export const LOCAL_OPERATION_PROFILES = Object.freeze({
 });
 type ProfileName = keyof typeof LOCAL_OPERATION_PROFILES;
 type Resource = {path:string;logicalRef:string};
-type Tool = {path:string;sha256:string;version:string};
-export interface LocalBindingConfig {resources:Record<string,Resource>;tools:Record<string,string>;outputRoot:string;profile:ProfileName;}
+type VersionFlag = '--version' | '-version';
+type ToolSelection = {path:string;versionFlag:VersionFlag};
+type Tool = {path:string;sha256:string;version:string;versionFlag?:VersionFlag};
+export interface LocalBindingConfig {resources:Record<string,Resource>;tools:Record<string,string|ToolSelection>;outputRoot:string;profile:ProfileName;}
 interface Binding {v:1;bundle:string;operation:string;pluginDigest:string;generation:string;capability:unknown;resources:Record<string,Resource>;tools:Record<string,Tool>;outputRoot:string;outputRootIdentity:{dev:number;ino:number};profile:ProfileName;}
 const record = (value:unknown):value is Record<string,any> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const hash = (bytes:Buffer|string) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -47,20 +50,35 @@ export async function localBundle(dir:string|undefined,cwd=process.cwd(),home:Us
   if(process.platform!=='darwin'&&process.platform!=='linux')throw refuse('unsupported_supervision_platform');
   return target.canonicalRoot;
 }
-async function toolIdentity(file:string):Promise<Tool>{
-  if(typeof file!=='string'||!path.isAbsolute(file))throw refuse('absolute_tool_required');
+function toolSelections(values:LocalBindingConfig['tools'],home:UserStateInput):Record<string,ToolSelection>{
+  const selections:Record<string,ToolSelection>={};
+  for(const [handle,value]of Object.entries(values)){
+    if(!key.test(handle))throw refuse('tool_handle');
+    let selected:ToolSelection;
+    if(typeof value==='string')selected={path:value,versionFlag:'--version'};
+    else{
+      if(!record(value)||Object.keys(value).length!==2||!Object.hasOwn(value,'path')||!Object.hasOwn(value,'versionFlag')||typeof value.path!=='string'||(value.versionFlag!=='--version'&&value.versionFlag!=='-version'))throw refuse('tool_selection');
+      selected={path:value.path,versionFlag:value.versionFlag};
+    }
+    if(!path.isAbsolute(selected.path))throw refuse('absolute_tool_required');
+    assertPathOutsidePrivateState(selected.path,home);selections[handle]=selected;
+  }
+  return selections;
+}
+const toolEvidence=(tools:Record<string,Tool>)=>Object.fromEntries(Object.entries(tools).map(([name,t])=>[name,{sha256:t.sha256,version:t.version,versionFlag:t.versionFlag??'--version'}]));
+async function toolIdentity({path:file,versionFlag}:ToolSelection):Promise<Tool>{
   const resolved=await realpath(file); const bytes=await localFileBytes(resolved,256*1024*1024);
   const magic=bytes.subarray(0,4).toString('hex');
   const native=process.platform==='linux'?magic==='7f454c46':['feedface','cefaedfe','feedfacf','cffaedfe','cafebabe','bebafeca','cafebabf','bfbafeca'].includes(magic);
   if(!native)throw refuse('native_tool_binary_required');
   // Availability is deliberately probed only during explicit binding, with a finite timeout.
-  const version=await probeToolVersion(resolved);
+  const version=await probeToolVersion(resolved,versionFlag);
   if(await realpath(resolved)!==resolved||hash(await localFileBytes(resolved,256*1024*1024))!==hash(bytes))throw refuse('tool_changed_rebind_required');
-  return {path:resolved,sha256:hash(bytes),version};
+  return {path:resolved,sha256:hash(bytes),version,versionFlag};
 }
-async function probeToolVersion(file:string):Promise<string>{
+async function probeToolVersion(file:string,versionFlag:VersionFlag):Promise<string>{
   return new Promise((resolve,reject)=>{
-    const child=spawn(file,['--version'],{detached:true,env:{PATH:'/usr/bin:/bin'},stdio:['ignore','pipe','pipe']});
+    const child=spawn(file,[versionFlag],{detached:true,env:{PATH:'/usr/bin:/bin'},stdio:['ignore','pipe','pipe']});
     let settled=false,stdout='',bytes=0,failureReason:string|undefined;
     const finish=async(reason?:string)=>{
       failureReason??=reason;if(settled)return;settled=true;clearTimeout(timer);
@@ -83,6 +101,8 @@ export async function bindLocalOperation(operation:string,bundle:string,config:L
   if(!record(config)||!record(config.resources)||!record(config.tools)||!Object.hasOwn(LOCAL_OPERATION_PROFILES,config.profile))throw refuse('binding_config');
   const profile=LOCAL_OPERATION_PROFILES[config.profile];
   if(Object.keys(config.resources).length===0||Object.keys(config.resources).length>profile.files||Object.keys(config.tools).length>8)throw refuse('binding_count');
+  // Validate every selection before any availability probe can execute a binary.
+  const selectedTools=toolSelections(config.tools,home);
   const resources:Record<string,Resource>={},tools:Record<string,Tool>={},expectedInputs:Record<string,string>={}; let total=0;
   for(const [role,value] of Object.entries(config.resources)){
     if(!key.test(role)||!record(value)||typeof value.path!=='string'||!path.isAbsolute(value.path)||typeof value.logicalRef!=='string'||!value.logicalRef||value.logicalRef.length>256||path.isAbsolute(value.logicalRef))throw refuse('resource_selection');
@@ -90,11 +110,11 @@ export async function bindLocalOperation(operation:string,bundle:string,config:L
     const bytes=await localFileBytes(selected,profile.inputBytes-total);total+=bytes.length;
     resources[role]={path:selected,logicalRef:value.logicalRef};expectedInputs[role]=hash(bytes);
   }
-  for(const [handle,file]of Object.entries(config.tools)){if(typeof file!=='string')throw refuse('tool_selection');if(!key.test(handle))throw refuse('tool_handle');assertPathOutsidePrivateState(file,home);tools[handle]=await toolIdentity(file);}
+  for(const [handle,selected]of Object.entries(selectedTools))tools[handle]=await toolIdentity(selected);
   const outputRoot=await ordinaryDirectory(config.outputRoot,home,bundle),rootStatus=await lstat(outputRoot);
   const binding:Binding={v:1,bundle,operation,pluginDigest:selection.digest,generation:selection.generation,capability:selection.capability,resources,tools,outputRoot,outputRootIdentity:{dev:rootStatus.dev,ino:rootStatus.ino},profile:config.profile};
   const digest=hash(canonicalJson(binding));
-  if(accept===undefined)return {status:'preview',digest,operation,profile:config.profile,expectedInputs,resources:Object.keys(resources),tools:Object.fromEntries(Object.entries(tools).map(([name,t])=>[name,{sha256:t.sha256,version:t.version}])),effects:['trusted code with ambient authority; no OS sandbox','copies selected inputs; creates private local files; consumes compute','supported adapter makes no network requests; network is not sandboxed','HTML export is separate from Artifact publication'],next:`superbee op bind ${commandToken(operation)} --local --resources-file <same-file> --accept ${commandToken(digest)} --dir <same-bundle>`};
+  if(accept===undefined)return {status:'preview',digest,operation,profile:config.profile,expectedInputs,resources:Object.keys(resources),tools:toolEvidence(tools),effects:['trusted code with ambient authority; no OS sandbox','copies selected inputs; creates private local files; consumes compute','supported adapter makes no network requests; network is not sandboxed','HTML export is separate from Artifact publication'],next:`superbee op bind ${commandToken(operation)} --local --resources-file <same-file> --accept ${commandToken(digest)} --dir <same-bundle>`};
   if(accept!==digest)throw refuse('binding_acceptance_changed');
   const id=randomUUID();await writeUserStateFileAtomic0600(home,path.join(canonicalUserStateDir(home),'local-operation-bindings'),`${id}.json`,JSON.stringify(binding));
   return {status:'bound',binding:id,digest,operation,expectedInputs,next:`superbee op run ${commandToken(operation)} --local --binding ${commandToken(id)} --input-file <run-input.json> --dir <same-bundle>`};
@@ -102,20 +122,53 @@ export async function bindLocalOperation(operation:string,bundle:string,config:L
 export interface LocalRunInput {expectedInputs:Record<string,string>;settings:Record<string,unknown>;}
 export interface LocalRunOptions {home?:UserStateInput;signal?:AbortSignal;exportHtml?:string;}
 
-async function outputBudget(directory:string,maximumBytes:number,maximumFiles:number):Promise<boolean>{
-  let bytes=0,count=0;
-  const scan=async(dir:string):Promise<boolean>=>{
-    const entries=await readdir(dir,{withFileTypes:true});
-    for(const entry of entries){
-      if(++count>maximumFiles*2)return false;
-      const file=path.join(dir,entry.name),status=await lstat(file);
-      if(status.isSymbolicLink()||(!status.isFile()&&!status.isDirectory()))return false;
-      if(status.isDirectory()){if(!await scan(file))return false;}
-      else{bytes+=status.size;if(bytes>maximumBytes)return false;}
+interface OutputBudgetIo {readdir:(directory:string)=>Promise<Dirent[]>;lstat:(file:string)=>Promise<Stats>;}
+const outputBudgetIo:OutputBudgetIo={readdir:directory=>readdir(directory,{withFileTypes:true}),lstat:file=>lstat(file)};
+class OutputScanError extends Error {
+  readonly errno:string;
+  readonly syscall:string;
+  readonly vanishedDescendant:boolean;
+  constructor(error:unknown,descendant:boolean){
+    super('output_scan_failed');
+    const value=error as NodeJS.ErrnoException|undefined;
+    this.errno=typeof value?.code==='string'&&/^E[A-Z0-9]{1,30}$/.test(value.code)?value.code:'unknown';
+    this.syscall=value?.syscall==='lstat'||value?.syscall==='scandir'?value.syscall:'unknown';
+    this.vanishedDescendant=descendant&&this.errno==='ENOENT';
+  }
+}
+function outputFailure(phase:'live'|'final',error?:unknown){
+  return {phase,errno:error instanceof OutputScanError?error.errno:'unknown',syscall:error instanceof OutputScanError?error.syscall:'unknown'};
+}
+export async function outputBudget(directory:string,maximumBytes:number,maximumFiles:number,live=false,io:OutputBudgetIo=outputBudgetIo):Promise<boolean>{
+  for(let attempt=1;;attempt++){
+    // An invalidated enumeration contributes neither bytes nor entries to the next attempt.
+    let bytes=0,count=0;
+    const scan=async(dir:string):Promise<boolean>=>{
+      let entries:Dirent[];
+      try{entries=await io.readdir(dir);}catch(error){throw new OutputScanError(error,dir!==directory);}
+      for(const entry of entries){
+        if(++count>maximumFiles*2)return false;
+        const file=path.join(dir,entry.name);let status:Stats;
+        try{status=await io.lstat(file);}catch(error){throw new OutputScanError(error,true);}
+        if(status.isSymbolicLink()||(!status.isFile()&&!status.isDirectory()))return false;
+        if(status.isDirectory()){if(!await scan(file))return false;}
+        else{bytes+=status.size;if(bytes>maximumBytes)return false;}
+      }
+      return true;
+    };
+    try{return await scan(directory);}catch(error){
+      if(live&&attempt<3&&error instanceof OutputScanError&&error.vanishedDescendant)continue;
+      throw error;
     }
-    return true;
-  };
-  return scan(directory);
+  }
+}
+export function startOutputBudgetPoll(directory:string,maximumBytes:number,maximumFiles:number,report:(reason:'output_limit'|'output_validation',error?:unknown)=>void,scan:typeof outputBudget=outputBudget):()=>Promise<void>{
+  let pending:Promise<void>|undefined,stopped=false;
+  const timer=setInterval(()=>{
+    if(stopped||pending)return;
+    pending=scan(directory,maximumBytes,maximumFiles,true).then(ok=>{if(!ok)report('output_limit');}).catch(error=>report('output_validation',error)).finally(()=>{pending=undefined;});
+  },50);
+  return async()=>{stopped=true;clearInterval(timer);await pending;};
 }
 
 async function groupPresent(pid:number):Promise<boolean>{try{process.kill(-pid,0);return true;}catch(error){if((error as NodeJS.ErrnoException).code==='ESRCH')return false;return true;}}
@@ -152,14 +205,14 @@ export async function runLocalOperation(operation:string,bundle:string,bindingId
     const captured=path.join(inputsDirectory,role+path.extname(resource.path));await writeFile(captured,bytes,{mode:0o400,flag:'wx'});
     resources[role]={path:captured,logicalRef:resource.logicalRef,sha256};inputs.push({role,logicalRef:resource.logicalRef,sha256,bytes:bytes.length});
   }
-  const manifest:any={version:1,invocationId:id,operation,implementationId:selection.capability.implementationId,plugin:{digest:selection.digest,generation:selection.generation,assets:selection.assets},inputs,settingsDigest:hash(canonicalJson(input.settings)),tools:Object.fromEntries(Object.entries(binding.tools).map(([name,t])=>[name,{sha256:t.sha256,version:t.version}])),profile:binding.profile,platform:{os:process.platform,arch:process.arch,node:process.version},startedAt:new Date().toISOString(),status:'interrupted_unconfirmed',reason:'parent_outcome_unknown',outputs:[],publication:'not_attempted'};
+  const manifest:any={version:1,invocationId:id,operation,implementationId:selection.capability.implementationId,plugin:{digest:selection.digest,generation:selection.generation,assets:selection.assets},inputs,settingsDigest:hash(canonicalJson(input.settings)),tools:toolEvidence(binding.tools),profile:binding.profile,platform:{os:process.platform,arch:process.arch,node:process.version},startedAt:new Date().toISOString(),status:'interrupted_unconfirmed',reason:'parent_outcome_unknown',outputs:[],publication:'not_attempted'};
   const manifestPath=path.join(workspace,'manifest.json');await writeFile(manifestPath,JSON.stringify(manifest,null,2),{mode:0o600,flag:'wx'});
   const maximumOutputBytes=Math.min(selection.capability.maximumOutputBytes??DEFAULT_MAXIMUM_OUTPUT_BYTES,DEFAULT_MAXIMUM_OUTPUT_BYTES);
   const child=spawn(process.execPath,['--input-type=module','--eval',`(${localOperationChild.toString()})(${boundedLocalFileBytes.toString()})`],{detached:true,env:{PATH:'/usr/bin:/bin'},cwd:workspace,stdio:['ignore','pipe','pipe','ipc']});
   let reason:string|undefined,result:any,closed=false,logBytes=0;const chunks:Buffer[]=[];
   const terminate=(why:string)=>{if(reason!==undefined)return;reason=why;if(child.connected)child.send({type:'abort'},()=>{});};
   const capture=(chunk:Buffer)=>{logBytes+=chunk.length;if(logBytes>profile.logBytes){terminate('log_limit');return;}chunks.push(chunk);};child.stdout!.on('data',capture);child.stderr!.on('data',capture);
-  let checking=false;const budget=setInterval(()=>{if(checking)return;checking=true;void outputBudget(outputDirectory,profile.outputBytes,profile.files).then(ok=>{if(!ok)terminate('output_limit');}).catch(()=>terminate('output_validation')).finally(()=>{checking=false;});},50);
+  const stopBudget=startOutputBudgetPoll(outputDirectory,profile.outputBytes,profile.files,(why,error)=>{manifest.outputValidationFailure??=outputFailure('live',error);terminate(why);});
   const deadline=setTimeout(()=>terminate('deadline'),profile.deadlineMs);const abort=()=>terminate('cancelled');options.signal?.addEventListener('abort',abort,{once:true});if(options.signal?.aborted)abort();
   await new Promise<void>(resolve=>{
     const poll=setInterval(()=>{if(reason){clearInterval(poll);resolve();}},10);
@@ -178,9 +231,10 @@ export async function runLocalOperation(operation:string,bundle:string,bindingId
     });
     child.send({type:'initialize',entryPath:selection.entryPath,capabilityName:selection.capability.name,maximumOutputBytes,protocolBytes:DEFAULT_MAXIMUM_OUTPUT_BYTES,tools:binding.tools,resources,profile,invocation:{id,outputDirectory,assetDirectory:selection.rootPath,profile:binding.profile},input:input.settings});
   });
-  clearTimeout(deadline);clearInterval(budget);options.signal?.removeEventListener('abort',abort);
+  clearTimeout(deadline);const budgetStopped=stopBudget();options.signal?.removeEventListener('abort',abort);
   // Even a successful adapter may have left a tool alive; never declare success before the group stops.
   const stopped=child.pid!==undefined ? await stopGroup(child.pid,profile.graceMs):closed;
+  await budgetStopped;
   for(const [tool,identity]of Object.entries(binding.tools)){try{if(await realpath(identity.path)!==identity.path||hash(await localFileBytes(identity.path,256*1024*1024))!==identity.sha256)throw Error();}catch{manifest.toolIdentityChanged=[...new Set([...(manifest.toolIdentityChanged??[]),tool])];reason='tool_identity_changed';}}
   manifest.endedAt=new Date().toISOString();
   manifest.status=!stopped?'interrupted_unconfirmed':reason==='cancelled'?'cancelled_confirmed':reason==='deadline'?'timed_out_confirmed':reason?'failed':'succeeded';
@@ -203,7 +257,7 @@ export async function runLocalOperation(operation:string,bundle:string,bindingId
       if(all.length>profile.files*2||all.some(entry=>entry.isSymbolicLink()||(!entry.isDirectory()&&!entry.isFile())))throw refuse('output_tree');
       for(const entry of all)if(entry.isFile()&&!seen.has(path.relative(outputDirectory,path.join(entry.parentPath,entry.name))))throw refuse('undeclared_output');
       manifest.settings=result.settings??input.settings;manifest.partialOutputState='validated';
-    }catch{manifest.status='failed';manifest.reason='output_validation';manifest.outputs=[];}
+    }catch(error){manifest.status='failed';manifest.reason='output_validation';manifest.outputValidationFailure=outputFailure('final',error);manifest.outputs=[];}
   }
   let exportPath:string|undefined;
   if(options.exportHtml!==undefined){

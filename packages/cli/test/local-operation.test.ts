@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, realpath, symlink, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, realpath, symlink, readdir, lstat, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { registerOperationPlugin, listOperationPlugins } from '../src/operation-plugins.js';
-import { bindLocalOperation, runLocalOperation, LOCAL_OPERATION_PROFILES } from '../src/local-operation.js';
+import { bindLocalOperation, runLocalOperation, LOCAL_OPERATION_PROFILES, outputBudget, startOutputBudgetPoll } from '../src/local-operation.js';
 import { init } from '../src/commands/init.js';
 import { SOURCE_PLUGIN_CORE_VERSION } from '@superbee/core/source-profiles';
 
@@ -219,6 +219,59 @@ test('post-completion binary changes cannot be hidden by adapter catch',async()=
   assert.deepEqual(nativeExit,{exitCode:0,originalSize,replacedSize:originalSize+Buffer.byteLength('changed')});assert.equal((await stat(executable)).size,nativeExit.replacedSize);
   assert.equal(result.status,'failed');assert.equal(result.reason,'tool_identity_changed');assert.deepEqual(JSON.parse(await readFile(result.manifest,'utf8')).toolIdentityChanged,['fixture']);
 });
+async function nativeProbeFixture(t:{skip:(reason:string)=>void},root:string,singleOnly=false){
+  const {spawnSync}=await import('node:child_process');
+  if(spawnSync('cc',['--version'],{stdio:'ignore'}).status!==0){t.skip('native compiler unavailable for version probe fixture');return;}
+  const source=path.join(root,'version-probe.c'),binary=path.join(root,'version-probe'),marker=path.join(root,'version-probe.argv');
+  await writeFile(source,`#include <stdio.h>\n#include <string.h>\nint main(int argc,char**argv){FILE*f=fopen(${JSON.stringify(marker)},"a");for(int i=1;i<argc;i++)fprintf(f,"%s\\n",argv[i]);fclose(f);if(argc!=2||strcmp(argv[1],"-version")${singleOnly?'': '&&strcmp(argv[1],"--version")'})return 2;puts("fixture 1.0");return 0;}`);
+  const built=spawnSync('cc',[source,'-o',binary],{encoding:'utf8'});assert.equal(built.status,0,built.stderr);
+  return {binary,marker};
+}
+test('version flag selections reject every malformed later tool before any native probe executes',async(t)=>{
+  const f=await fixture(),native=await nativeProbeFixture(t,f.root);if(!native)return;
+  const badSelections:unknown[]=[null,[],0,{}, {path:native.binary},{versionFlag:'-version'}, {path:native.binary,versionFlag:'--help'}, {path:native.binary,versionFlag:['-version']}, {path:native.binary,versionFlag:'-version',argv:[]}, {path:native.binary,versionFlag:'-version',env:{}}, {path:7,versionFlag:'-version'}, {path:'relative',versionFlag:'-version'}, 'relative'];
+  for(const invalid of badSelections){
+    await assert.rejects(bindLocalOperation('local.fixture.compare.v1',f.bundle,{...f.config,tools:{first:native.binary,later:invalid}} as any,undefined,f.home),/tool_selection|absolute_tool_required/);
+    await assert.rejects(readFile(native.marker),{code:'ENOENT'});
+  }
+  await assert.rejects(bindLocalOperation('local.fixture.compare.v1',f.bundle,{...f.config,tools:{first:native.binary,'bad handle':native.binary}},undefined,f.home),/tool_handle/);
+  await assert.rejects(readFile(native.marker),{code:'ENOENT'});
+  const wrapper=path.join(f.root,'wrapper');await writeFile(wrapper,'#!/bin/sh\nexit 0\n',{mode:0o700});
+  await assert.rejects(bindLocalOperation('local.fixture.compare.v1',f.bundle,{...f.config,tools:{wrapper:{path:wrapper,versionFlag:'-version'}}},undefined,f.home),/native_tool_binary_required/);
+});
+test('version flag selects exactly one native probe with no automatic fallback and is retained in run evidence',async(t)=>{
+  const f=await fixture(`const result=await port.runTool({tool:'fixture',argv:['-version']});if(result.exitCode!==0)throw Error('native_run_failed');return {outputs:[]};`),native=await nativeProbeFixture(t,f.root,true);if(!native)return;
+  const config={...f.config,tools:{fixture:{path:native.binary,versionFlag:'-version' as const}}};
+  await assert.rejects(bindLocalOperation('local.fixture.compare.v1',f.bundle,{...config,tools:{fixture:native.binary}},undefined,f.home),/tool_probe_failed/);
+  assert.equal(await readFile(native.marker,'utf8'),'--version\n');
+  const preview:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,undefined,f.home);assert.equal(preview.tools.fixture.versionFlag,'-version');assert.equal(preview.tools.fixture.version,'fixture 1.0');
+  const bound:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,preview.digest,f.home);
+  const stored=JSON.parse(await readFile(path.join(f.home,'.superbee-state','local-operation-bindings',bound.binding+'.json'),'utf8'));assert.equal(stored.tools.fixture.versionFlag,'-version');
+  const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,bound.binding,f.input,{home:f.home});assert.equal(result.status,'succeeded');
+  const manifest=JSON.parse(await readFile(result.manifest,'utf8'));assert.deepEqual(manifest.tools.fixture,preview.tools.fixture);
+  assert.equal(await readFile(native.marker,'utf8'),'--version\n-version\n-version\n-version\n');
+});
+test('version flag changes binding acceptance even when native bytes and version output agree',async(t)=>{
+  const f=await fixture(),native=await nativeProbeFixture(t,f.root);if(!native)return;
+  const config={...f.config,tools:{fixture:native.binary}};
+  const defaults:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,undefined,f.home);
+  const explicitDefault:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,{...config,tools:{fixture:{path:native.binary,versionFlag:'--version'}}},undefined,f.home);
+  assert.equal(explicitDefault.digest,defaults.digest);assert.equal(defaults.tools.fixture.versionFlag,'--version');
+  const changed={...config,tools:{fixture:{path:native.binary,versionFlag:'-version' as const}}};const preview:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,changed,undefined,f.home);
+  assert.equal(preview.tools.fixture.sha256,defaults.tools.fixture.sha256);assert.equal(preview.tools.fixture.version,defaults.tools.fixture.version);assert.notEqual(preview.digest,defaults.digest);
+  await assert.rejects(bindLocalOperation('local.fixture.compare.v1',f.bundle,changed,defaults.digest,f.home),/binding_acceptance_changed/);
+});
+test('version flag default preserves string tools and legacy binding and receipt bytes',async()=>{
+  const f=await fixture(`const r=await port.runTool({tool:'node',argv:['--version']});if(r.exitCode!==0)throw Error('native_run_failed');return {outputs:[]};`);
+  const config={...f.config,tools:{node:process.execPath}};const preview:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,undefined,f.home);assert.equal(preview.tools.node.versionFlag,'--version');assert.equal(preview.tools.node.version,process.version);
+  const bound:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,preview.digest,f.home);
+  const bindingFile=path.join(f.home,'.superbee-state','local-operation-bindings',bound.binding+'.json');
+  const binding=JSON.parse(await readFile(bindingFile,'utf8'));delete binding.tools.node.versionFlag;const legacyBinding=JSON.stringify(binding);await writeFile(bindingFile,legacyBinding);
+  const earlier=await runLocalOperation('local.fixture.compare.v1',f.bundle,bound.binding,f.input,{home:f.home});assert.equal(earlier.status,'succeeded');
+  const oldReceipt=JSON.parse(await readFile(earlier.manifest,'utf8'));delete oldReceipt.tools.node.versionFlag;const legacyReceipt=JSON.stringify(oldReceipt,null,2);await writeFile(earlier.manifest,legacyReceipt);
+  const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,bound.binding,f.input,{home:f.home});assert.equal(result.status,'succeeded');assert.equal(JSON.parse(await readFile(result.manifest,'utf8')).tools.node.versionFlag,'--version');
+  assert.equal(await readFile(bindingFile,'utf8'),legacyBinding);assert.equal(await readFile(earlier.manifest,'utf8'),legacyReceipt);
+});
 test('native version probe ignoring TERM and retaining descendant pipes settles within its finite escalation bound',async(t)=>{
   const {spawnSync}=await import('node:child_process');if(spawnSync('cc',['--version'],{stdio:'ignore'}).status!==0){t.skip('native compiler unavailable for adversarial executable fixture');return;}
   const f=await fixture(),source=path.join(f.root,'probe.c'),binary=path.join(f.root,'probe'),marker=path.join(f.root,'probe.pid');
@@ -226,6 +279,69 @@ test('native version probe ignoring TERM and retaining descendant pipes settles 
   const built=spawnSync('cc',[source,'-o',binary],{encoding:'utf8'});assert.equal(built.status,0,built.stderr);
   const cleanup=async()=>{try{for(const pid of (await readFile(marker,'utf8')).trim().split(' ').map(Number))try{process.kill(pid,'SIGKILL');}catch{}}catch{}};const watchdog=setTimeout(()=>void cleanup(),7000);
   const started=Date.now();try{await assert.rejects(bindFixtureTool(f,binary),/tool_probe_timed_out|tool_probe_interrupted_unconfirmed/);assert.ok(Date.now()-started<6500,'probe must settle without the independent watchdog');}finally{clearTimeout(watchdog);await cleanup();}
+});
+
+test('live output scan restarts whole enumeration after actual file and directory deletion with fresh counters',async(t)=>{
+  await t.test('enumerated file disappears after a counted surviving file',async()=>{
+    const root=await mkdtemp(path.join(tmpdir(),'sb-output-scan-'));await writeFile(path.join(root,'a-retained'),'x');await writeFile(path.join(root,'z-temporary'),'x');
+    let reads=0,retainedStats=0;
+    const io={readdir:async(dir:string)=>{const entries=(await readdir(dir,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name));if(++reads===1)await rm(path.join(root,'z-temporary'));return entries;},lstat:async(file:string)=>{if(path.basename(file)==='a-retained')retainedStats++;return lstat(file);}};
+    assert.equal(await outputBudget(root,1,1,true,io),true);assert.equal(reads,2);assert.equal(retainedStats,2);
+  });
+  await t.test('directory disappears after stat and before recursive entry',async()=>{
+    const root=await mkdtemp(path.join(tmpdir(),'sb-output-scan-')),nested=path.join(root,'temporary');await mkdir(nested);let rootReads=0,deleted=false;
+    const io={readdir:async(dir:string)=>{if(dir===root)rootReads++;if(dir===nested&&!deleted){await rm(nested,{recursive:true});deleted=true;}return readdir(dir,{withFileTypes:true});},lstat};
+    assert.equal(await outputBudget(root,1,1,true,io),true);assert.equal(rootReads,2);assert.equal(deleted,true);
+  });
+});
+test('live output scan refuses repeated churn after exactly three attempts and final scan remains single pass',async()=>{
+  for(const live of [true,false]){
+    const root=await mkdtemp(path.join(tmpdir(),'sb-output-scan-'));let reads=0;
+    const io={readdir:async(dir:string)=>{const file=path.join(dir,`temporary-${++reads}`);await writeFile(file,'x');const entries=await readdir(dir,{withFileTypes:true});await rm(file);return entries;},lstat};
+    await assert.rejects(outputBudget(root,1,1,live,io),{message:'output_scan_failed',errno:'ENOENT',syscall:'lstat'});assert.equal(reads,live?3:1);
+  }
+});
+test('live output scan refuses root loss other filesystem errors unsafe entries and exceeded budgets without retries',async(t)=>{
+  await t.test('root ENOENT is not a vanished descendant',async()=>{
+    const root=await mkdtemp(path.join(tmpdir(),'sb-output-scan-'));await rm(root,{recursive:true});let reads=0;
+    await assert.rejects(outputBudget(root,1,1,true,{readdir:async dir=>{reads++;return readdir(dir,{withFileTypes:true});},lstat}),{errno:'ENOENT',syscall:'scandir'});assert.equal(reads,1);
+  });
+  await t.test('actual ENOTDIR does not retry',async()=>{
+    const root=await mkdtemp(path.join(tmpdir(),'sb-output-scan-')),nested=path.join(root,'entry');await mkdir(nested);let reads=0;
+    const io={readdir:async(dir:string)=>{reads++;return readdir(dir,{withFileTypes:true});},lstat:async(file:string)=>{const status=await lstat(file);if(file===nested){await rm(nested,{recursive:true});await writeFile(nested,'x');}return status;}};
+    await assert.rejects(outputBudget(root,1,1,true,io),{errno:'ENOTDIR',syscall:'scandir'});assert.equal(reads,2);
+  });
+  for(const kind of ['symlink','special','bytes','entries'])await t.test(kind,async()=>{
+    const root=await mkdtemp(path.join(tmpdir(),'sb-output-scan-'));let reads=0;
+    if(kind==='symlink')await symlink(root,path.join(root,'link'));
+    else if(kind==='special'){const {spawnSync}=await import('node:child_process');const made=spawnSync('/usr/bin/mkfifo',[path.join(root,'fifo')],{encoding:'utf8'});assert.equal(made.status,0,made.stderr);}
+    else await writeFile(path.join(root,'entry'),'xx');
+    assert.equal(await outputBudget(root,kind==='bytes'?1:16,kind==='entries'?0:8,true,{readdir:async dir=>{reads++;return readdir(dir,{withFileTypes:true});},lstat}),false);assert.equal(reads,1);
+  });
+});
+test('live output poll drains an in-flight scan before final decisions and never reports after stopping',async(t)=>{
+  for(const disappear of [false,true])await t.test(disappear?'pending filesystem failure':'pending complete scan',async()=>{
+    const root=await mkdtemp(path.join(tmpdir(),'sb-output-scan-'));await writeFile(path.join(root,'temporary'),'x');
+    let enter!:()=>void,release!:()=>void,scans=0,held=false;
+    const entered=new Promise<void>(resolve=>{enter=resolve;}),gate=new Promise<void>(resolve=>{release=resolve;}),events:string[]=[];
+    const scan:typeof outputBudget=async(directory,bytes,files,live)=>{scans++;return outputBudget(directory,bytes,files,live,{readdir:async dir=>{const entries=await readdir(dir,{withFileTypes:true});if(!held){held=true;enter();await gate;if(disappear)await rm(root,{recursive:true});}return entries;},lstat});};
+    const stop=startOutputBudgetPoll(root,16,8,reason=>events.push(reason),scan);
+    try{
+      await Promise.race([entered,delay(1000).then(()=>{throw Error('scan_did_not_start');})]);
+      const draining=stop().then(()=>{events.push('drained');});await new Promise<void>(resolve=>setImmediate(resolve));assert.equal(events.length,0);
+      release();await draining;assert.deepEqual(events,disappear?['output_validation','drained']:['drained']);
+      if(disappear)await assert.rejects(outputBudget(root,16,8),{errno:'ENOENT'});else assert.equal(await outputBudget(root,16,8),true);
+      events.push('final_decision');await delay(75);assert.deepEqual(events,disappear?['output_validation','drained','final_decision']:['drained','final_decision']);assert.equal(scans,1);
+    }finally{release();await stop();}
+  });
+});
+test('output validation failure evidence retains only bounded phase errno and syscall diagnostics',async()=>{
+  const f=await fixture(`const fs=await import('node:fs/promises');await fs.rm(invocation.outputDirectory,{recursive:true});await new Promise(()=>{});`);
+  const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,f.binding,f.input,{home:f.home});assert.equal(result.status,'failed');assert.equal(result.reason,'output_validation');
+  const manifest=JSON.parse(await readFile(result.manifest,'utf8'));assert.deepEqual(manifest.outputValidationFailure,{phase:'live',errno:'ENOENT',syscall:'scandir'});assert.ok(!JSON.stringify(manifest.outputValidationFailure).includes(f.root));
+  const final=await fixture(`await port.writeJson('undeclared.json',{x:1});return {outputs:[]};`);
+  const finalResult=await runLocalOperation('local.fixture.compare.v1',final.bundle,final.binding,final.input,{home:final.home});assert.equal(finalResult.status,'failed');assert.equal(finalResult.reason,'output_validation');
+  assert.deepEqual(JSON.parse(await readFile(finalResult.manifest,'utf8')).outputValidationFailure,{phase:'final',errno:'unknown',syscall:'unknown'});
 });
 
 test('HTML export refuses all in-bundle and alias shapes with an ordinary-output control',async()=>{
