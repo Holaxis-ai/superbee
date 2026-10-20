@@ -158,7 +158,7 @@ export const restJsonProfile: SourceProfile<ConnectorSource, RestJsonCursor> = O
 });
 
 /** Contract-1 composition helpers for explicitly trusted standalone source plugins. */
-export const SOURCE_PLUGIN_CORE_VERSION = "0.2.0-pre.31";
+export const SOURCE_PLUGIN_CORE_VERSION = "0.2.0-pre.32";
 
 export interface SourcePluginHelpers {
   readonly restJsonProfile: typeof restJsonProfile;
