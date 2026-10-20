@@ -2,6 +2,7 @@ import { renderUsage } from "../output.js";
 // `superbee setup` — one read-only AXI conductor plus one explicit, bounded state-migration leaf.
 
 import { homedir } from "node:os";
+import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { parseSelectorOrUsage } from "../args.js";
 import { ownConventionalBoardRoot, resolveLocalBundleTarget, resolveProjectBinding, samePhysicalPath, type LocalBundleTarget } from "../bundle.js";
@@ -18,8 +19,11 @@ import { render, resolveMode } from "../output.js";
 import {
   buildSetupPlan,
   AGENT_SETUP_INSTRUCTION,
+  SETUP_VERIFICATION,
   setupNextForCapability,
   setupStateCapability,
+  setupProjectArgs,
+  type SetupProjectSelection,
   type SetupHookHostState,
   type SetupPlan,
   type SetupSkillHostState,
@@ -44,7 +48,7 @@ export const SETUP_USAGE = `superbee setup — inspect setup readiness and retur
 
 Usage:
   superbee setup [--host codex|claude-code|claude-desktop|opencode]
-                 [--scope project|user] [--json]
+                 [--scope project|user] [--project-selected | --skip-project] [--json]
   superbee setup migrate-state [--json]
   superbee setup harden-state [--json]
   superbee setup quarantine-state [--json]
@@ -58,6 +62,19 @@ SessionStart hook, MCP registration, local bundle, and private catalog inspector
 deterministic plan. It never writes configuration or treats detected software as mutation
 authority. \`--json\` returns argv arrays plus mutation and approval metadata; a command template is
 not executable until its placeholder value is chosen.
+
+Choose the actual project folder before creating its first notes folder (.superbee). A project
+folder may be empty and need not contain code or Git. Run setup from that folder with
+--project-selected to confirm it, or --skip-project to finish user integration without choosing
+a project. An existing resolved bundle remains selected without this flag. An unconfirmed launch
+directory and unrelated catalog entries never authorize a new notes folder. Project scope requires
+a selected project; --skip-project is user-scope only. Follow returned action.cwd as literal working
+directory data, alongside each argv array. These flags apply only to setup inspection.
+
+status, ready and complete describe configured readiness on disk, not live host activation.
+Keep restart_required action receipts until the host is actually restarted/reloaded; a later ready
+inspection cannot observe or clear that requirement. Verify live MCP access after restart before
+reporting it active.
 
 Without --host, the command reports private-state health plus the four bounded supported host
 surfaces. A required state remedy comes first; otherwise the calling agent selects the exact host.
@@ -77,6 +94,8 @@ relay the AUTH_REQUIRED link it returns to the person, then re-run it (see setup
 Options:
   --host <id>           Exact host: codex, claude-code, claude-desktop, or opencode
   --scope <scope>       Skill and hook scope: user (default) or project
+  --project-selected    Confirm this invocation's directory is the chosen project folder
+  --skip-project        Defer project selection and notes-folder/catalog setup (user scope only)
   --json                Emit compact JSON instead of TOON
   -h, --help            Show this help
 `;
@@ -142,12 +161,16 @@ function planForHost(
   host: McpInstallTargetId,
   scope: InstallScope,
   invocation: readonly string[],
+  projectSelection: SetupProjectSelection,
+  cwd: string,
 ): SetupPlan {
   const mcp = inspection.mcp.find((row) => row.host === host);
   if (!mcp) throw new Error(`missing setup MCP inspection for ${host}`);
   return buildSetupPlan({
     host,
     scope,
+    projectSelection,
+    cwd,
     distribution: {
       ...inspection.distribution,
       persistent: inspection.distribution.allowed
@@ -173,7 +196,10 @@ export async function inspectSetupBoard(startDir: string): Promise<ChannelDetect
   return detectBoardChannel(boardRoot, { budget: { fetchTimeoutMs: 2000, connectTimeoutSeconds: 2 } });
 }
 
-async function inspectWorkspace(deps: SetupDeps): Promise<SetupWorkspaceState> {
+async function inspectWorkspace(deps: SetupDeps, projectSelection: SetupProjectSelection): Promise<SetupWorkspaceState> {
+  if (projectSelection === "deferred") {
+    return { bundle: "not_checked", catalog: "not_checked", selected_registered: false };
+  }
   let selected: LocalBundleTarget | undefined;
   let bundle: SetupWorkspaceState["bundle"] = "absent";
   let recovery: string | undefined;
@@ -190,7 +216,7 @@ async function inspectWorkspace(deps: SetupDeps): Promise<SetupWorkspaceState> {
     }
   }
   let board: ChannelDetection | undefined;
-  if (bundle === "absent") {
+  if (bundle === "absent" && projectSelection === "confirmed") {
     try {
       board = await deps.inspectBoard(deps.cwd());
     } catch {
@@ -218,25 +244,28 @@ async function inspectAll(
   scope: InstallScope,
   targets: readonly McpInstallTarget[],
   deps: SetupDeps,
+  projectSelection: SetupProjectSelection,
 ): Promise<SetupInspection> {
   let skill: SkillStatusInspection | undefined;
   let hook: HookStatusInspection | undefined;
   let projectHook: HookStatusInspection | undefined;
   let projectHookUnavailable = false;
-  if (targets.some((target) => target.id === "codex" || target.id === "claude-code" || target.id === "opencode")) {
+  const workspace = await inspectWorkspace(deps, projectSelection);
+  const canInspectProject = projectSelection === "confirmed" || workspace.bundle === "selected";
+  if ((scope === "user" || canInspectProject) && targets.some((target) => target.id === "codex" || target.id === "claude-code" || target.id === "opencode")) {
     try {
       skill = deps.inspectSkill(scope);
     } catch {
       skill = undefined;
     }
   }
-  if (targets.some((target) => target.id !== "claude-desktop")) {
+  if ((scope === "user" || canInspectProject) && targets.some((target) => target.id !== "claude-desktop")) {
     try {
       hook = deps.inspectHook(scope);
     } catch {
       hook = undefined;
     }
-    if (scope === "user") {
+    if (scope === "user" && canInspectProject) {
       try {
         projectHook = deps.inspectHook("project");
       } catch {
@@ -245,8 +274,7 @@ async function inspectAll(
       }
     }
   }
-  const [workspace, mcp, state] = await Promise.all([
-    inspectWorkspace(deps),
+  const [mcp, state] = await Promise.all([
     Promise.resolve(deps.inspectMcp(targets)),
     deps.inspectState(deps.home()),
   ]);
@@ -275,6 +303,8 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
       options: {
         host: { type: "string" },
         scope: { type: "string" },
+        "project-selected": { type: "boolean" },
+        "skip-project": { type: "boolean" },
         json: { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
@@ -341,13 +371,21 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
       help: `${cliInvocation()} setup --host <id>`,
     });
   }
+  if (values["project-selected"] && values["skip-project"]) {
+    throw new CliError("USAGE", "--project-selected and --skip-project are mutually exclusive", { help: `${cliInvocation()} setup --help` });
+  }
+  if (values["skip-project"] && scope === "project") {
+    throw new CliError("USAGE", "--skip-project requires user scope; choose a project folder before project-scoped integration", { help: `${cliInvocation()} setup --help` });
+  }
+  const projectSelection: SetupProjectSelection = values["skip-project"] ? "deferred" : values["project-selected"] ? "confirmed" : "unselected";
+  const cwd = resolve(injected.cwd?.() ?? process.cwd());
   const deps: SetupDeps = {
     stdout,
-    cwd: injected.cwd ?? (() => process.cwd()),
+    cwd: () => cwd,
     home: injected.home ?? homedir,
     inspectDistribution: injected.inspectDistribution ?? (() => resolvePersistentInstallAuthority()),
-    inspectSkill: injected.inspectSkill ?? ((selectedScope) => inspectSkillStatus(selectedScope)),
-    inspectHook: injected.inspectHook ?? ((selectedScope) => inspectHookStatus(selectedScope)),
+    inspectSkill: injected.inspectSkill ?? ((selectedScope) => inspectSkillStatus(selectedScope, { cwd })),
+    inspectHook: injected.inspectHook ?? ((selectedScope) => inspectHookStatus(selectedScope, { cwd })),
     inspectMcp: injected.inspectMcp ?? ((targets) => inspectMcpHosts(targets)),
     resolveBundle: injected.resolveBundle ?? ((startDir) => resolveLocalBundleTarget(undefined, startDir)),
     inspectBoard: injected.inspectBoard ?? inspectSetupBoard,
@@ -359,8 +397,8 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
     invocation: injected.invocation ?? cliInvocation,
   };
   if (parsed.selection.kind === "selected" && parsed.selection.payload.action !== "inspect") {
-    if (values.host !== undefined || values.scope !== undefined) {
-      throw new CliError("USAGE", `setup ${parsed.selection.payload.action}-state does not accept --host or --scope`, {
+    if (values.host !== undefined || values.scope !== undefined || values["project-selected"] !== undefined || values["skip-project"] !== undefined) {
+      throw new CliError("USAGE", `setup ${parsed.selection.payload.action}-state does not accept --host, --scope, --project-selected or --skip-project`, {
         help: `${cliInvocation()} setup ${parsed.selection.payload.action}-state [--json]`,
       });
     }
@@ -382,16 +420,16 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
   }
   if (requestedHost) {
     const target = MCP_INSTALL_TARGETS.find((candidate) => candidate.id === requestedHost)!;
-    const inspection = await inspectAll(scope, [target], deps);
-    stdout(render({ setup: planForHost(inspection, requestedHost, scope, deps.invocation().split(/\s+/)) }, resolveMode(values)));
+    const inspection = await inspectAll(scope, [target], deps, projectSelection);
+    stdout(render({ setup: planForHost(inspection, requestedHost, scope, deps.invocation().split(/\s+/), projectSelection, cwd) }, resolveMode(values)));
     return;
   }
-  const inspection = await inspectAll(scope, MCP_INSTALL_TARGETS, deps);
+  const inspection = await inspectAll(scope, MCP_INSTALL_TARGETS, deps, projectSelection);
   const invocation = deps.invocation().split(/\s+/);
   const state = setupStateCapability(inspection.state);
-  const stateNext = setupNextForCapability(state, invocation);
+  const stateNext = setupNextForCapability(state, invocation, cwd);
   const hosts = MCP_INSTALL_TARGETS.map((target) => {
-    const plan = planForHost(inspection, target.id, scope, invocation);
+    const plan = planForHost(inspection, target.id, scope, invocation, projectSelection, cwd);
     return {
       id: target.id,
       label: target.label,
@@ -400,7 +438,8 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
       mcp_state: inspection.mcp.find((row) => row.host === target.id)!.state,
       action: {
         action: "run" as const,
-        command: [...invocation, "setup", "--host", target.id, "--scope", scope, "--json"],
+        command: [...invocation, "setup", "--host", target.id, "--scope", scope, ...setupProjectArgs(projectSelection), "--json"],
+        cwd,
         description: `Inspect setup readiness for ${target.label}.`,
         mutates: false,
         approval: { required: false, reason: null },
@@ -415,10 +454,20 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
       agent_instruction: AGENT_SETUP_INSTRUCTION,
       mode: "select_host",
       scope,
+      verification: SETUP_VERIFICATION,
+      verify: {
+        action: "run",
+        command: [...invocation, "setup", "--scope", scope, ...setupProjectArgs(projectSelection), "--json"],
+        cwd,
+        description: "Reinspect configured setup readiness while preserving project choice and scope.",
+        mutates: false,
+        approval: { required: false, reason: null },
+      },
       hosts,
       capabilities: [state],
       next: stateNext ?? {
         action: "select_host",
+        cwd,
         description: "Identify the exact host running this agent, then execute that host row's action.",
         mutates: false,
         approval: { required: false, reason: null },

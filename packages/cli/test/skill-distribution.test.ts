@@ -212,9 +212,8 @@ test("the shipped View authoring reference teaches Superbee commands while prese
 const renderedNpm = renderNpm();
 
 test("the eager npm Skill stays lean and routes exact syntax to the live CLI", () => {
-  // 109: the hosted-checkout section (sign-in relay, batch sync, app refusals) and the one conflict
-  // section both homes share are eager because an agent meets them before it would read a reference.
-  assert.ok(renderedNpm.split("\n").length <= 109, "the eager Skill must remain a bounded front door");
+  // Keep the eager onboarding, authority and conflict guidance bounded; exact syntax lives in help.
+  assert.ok(renderedNpm.split("\n").length <= 118, "the eager Skill must remain a bounded front door");
   assert.match(renderedNpm, /## Keep the front door short/);
   assert.match(renderedNpm, /Each outcome is one short sentence/);
   assert.match(renderedNpm, /complete opener to five lines and at most 80 words/);
@@ -237,7 +236,8 @@ test("the eager npm Skill teaches the cognitive modeling spectrum without task a
 
 test("the eager npm Skill preserves bundle and publication authority", () => {
   assert.match(renderedNpm, /catalog entry is available for selection; it is not ambient project context/);
-  assert.match(renderedNpm, /clarify the\s+intended purpose, privacy, participants, and sharing boundary/);
+  assert.match(renderedNpm, /Keep new notes local unless sharing is requested/);
+  assert.match(renderedNpm, /Check the selected project for an existing bundle or shared board/);
   assert.match(renderedNpm, /`superbee sync` joins an existing shared board/);
   assert.match(renderedNpm, /only for a confirmed greenfield local bundle/);
   assert.match(renderedNpm, /Ask before creating durable structure or publishing a local bundle/);
@@ -268,7 +268,7 @@ test("private Portal guidance is internal-only and preserves both generated proj
   assert.equal(internal.split(guide).length - 1, 1);
   assert.match(internal, /For internal Holaxis site publishing/);
   assert.match(internal, /local\/Git snapshots or hosted authority, public or protected reads, and a separate authenticated-write path/);
-  assert.ok(internal.split("\n").length <= 109);
+  assert.ok(internal.split("\n").length <= 118);
   for (const [file, expected] of [["packages/superbee/SKILL.md", renderedNpm], [".cognition/skills/superbee/SKILL.md", internal]] as const) {
     assert.equal(readFileSync(path.join(REPO_ROOT, file), "utf8"), expected);
   }
@@ -308,6 +308,15 @@ test("the npm Skill keeps the AXI setup conductor and mutation boundary eager", 
   assert.match(renderedNpm, /Do not ask the user to copy or run a setup command/);
   assert.match(renderedNpm, /restarts after Skill, Hook, or MCP changes/);
   assert.match(renderedNpm, /never makes that workspace the current project/);
+  assert.match(renderedNpm, /--project-selected/);
+  assert.match(renderedNpm, /--skip-project/);
+  assert.match(renderedNpm, /literal action\.cwd/);
+  assert.match(renderedNpm, /Empty and non-code folders are valid/);
+  assert.match(renderedNpm, /launch directory alone is not a project choice/);
+  assert.match(renderedNpm, /configured readiness, not a host restart or live MCP activation/);
+  assert.match(renderedNpm, /Remember restart_required action receipts/);
+  assert.match(renderedNpm, /No-match file discovery\s+is normal absence/);
+  assert.doesNotMatch(renderedNpm, /intended purpose, privacy, participants, and sharing boundary before creating/);
 });
 
 test("no SKILL_CAPABILITY_PATTERNS entry is dead — each fires and is backed in the npm channel", () => {

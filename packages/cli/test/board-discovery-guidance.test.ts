@@ -13,6 +13,7 @@ import { testInvocation } from "./support/command-prefix.js";
 const INV = testInvocation("superbee");
 const READY: SetupPlanInput = {
   host: "claude-code", scope: "project",
+  projectSelection: "confirmed",
   distribution: { allowed: true, state: "durable_global", reason: "fixture", persistent: true },
   state: { state: "ready", reason: "fixture", records: 0 },
   skill: { canonical: { state: "installed" }, legacy: { state: "absent" } },
@@ -32,7 +33,7 @@ test("discovery guidance agreement: known, cached offline, unknown, greenfield, 
       { name: "known shared board", dir: topo.a.root, expected: "shared", catalog: "empty" },
       { name: "unrelated catalog cannot hide this project's board", dir: topo.a.root, expected: "shared", catalog: "ready" },
       { name: "greenfield", dir: greenfield, expected: "greenfield", catalog: "empty" },
-      { name: "unrelated catalog stays explicitly selectable", dir: greenfield, expected: "catalog", catalog: "ready" },
+      { name: "unrelated catalog does not replace this chosen project", dir: greenfield, expected: "greenfield", catalog: "ready" },
     ] as const) {
       const board = await inspectSetupBoard(row.dir);
       const plan = buildSetupPlan({ ...READY, workspace: { ...READY.workspace, board, catalog: row.catalog } });
@@ -45,12 +46,13 @@ test("discovery guidance agreement: known, cached offline, unknown, greenfield, 
         assert.equal(existsSync(path.join(row.dir, ".superbee")), false, "inspection never provisions");
         const block = buildBoardBlock(await defaultLoadBoardStatus(row.dir), undefined, INV);
         assert.match(block.firstContact!, /sync/);
-      } else if (row.expected === "greenfield") {
-        assert.equal(plan.next?.command?.[1], "init");
       } else {
-        assert.equal(plan.next, undefined);
-        assert.equal(plan.capabilities.find((c) => c.id === "bundle")?.state, "not_applicable");
+        assert.equal(plan.next?.command?.[1], "init");
       }
+      const unselected = buildSetupPlan({ ...READY, projectSelection: "unselected", workspace: { ...READY.workspace, board, catalog: row.catalog } });
+      assert.equal(unselected.next?.action, "choose_value");
+      assert.equal(unselected.next?.command, undefined);
+      assert.equal(unselected.next?.mutates, false);
     }
     assert.equal(git(topo.a.root, ["status", "--porcelain"]), before);
 
@@ -69,7 +71,7 @@ test("discovery guidance agreement: known, cached offline, unknown, greenfield, 
       assert.equal(plan.status, "blocked");
       assert.equal(plan.next?.mutates, false);
       assert.equal(plan.next?.action, "inspect");
-      assert.deepEqual(plan.next?.command, ["superbee", "setup", "--host", "claude-code", "--scope", "project"]);
+      assert.deepEqual(plan.next?.command, ["superbee", "setup", "--host", "claude-code", "--scope", "project", "--project-selected"]);
     }
     const outcome = await sessionStartPull(topo.b.root, 1000);
     assert.ok(outcome?.discoveryUnknown);

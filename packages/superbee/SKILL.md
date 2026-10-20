@@ -51,8 +51,10 @@ becoming a second source of truth. Add only the layer justified by current evide
 - Superbee does not create the remote repository. If absence is confirmed, create it externally if authorized, or ask an authorized owner/teammate.
 - On an existing repository without `board`, establishment needs consent, repository-specific Write access,
   and branch-create policy clearance; creation authority is irrelevant. If `origin/board` exists, join with `superbee sync`; never establish another board.
-- If no bundle resolves, determine whether this repository already shares a board and clarify the
-  intended purpose, privacy, participants, and sharing boundary before creating anything.
+- Before creating a first notes folder (.superbee), use the project folder the user selected or ask
+  them to choose an existing folder, a new folder, or to defer. Empty and non-code folders are valid;
+  the launch directory alone is not a project choice. Keep new notes local unless sharing is requested.
+  Check the selected project for an existing bundle or shared board before creating anything.
   `superbee sync` joins an existing shared board; `superbee init --create-only --dir .superbee` is
   only for a confirmed greenfield local bundle.
 - Ask before creating durable structure or publishing a local bundle. `sync --establish` is an
@@ -99,10 +101,17 @@ When the tone fits, a single 🐝 may mark a successful Superbee outcome.
 
 Persistent integrations require `npm install -g superbee` followed by `superbee setup`. Fresh cloud containers need the CLI provisioned before agent tool use and container-valid hook paths; copied laptop hooks do not provision them. Startup pulls are best-effort; inspect sync receipts to verify publication.
 Setup is an agent-driven read-only conductor: the calling agent selects its exact host, executes
-the returned argv action, reports what it is doing, requests approval only when the action says
+the returned argv action from its literal action.cwd, reports what it is doing, requests approval only when the action says
 `approval.required: true`, restarts after Skill, Hook, or MCP changes, and reruns setup to verify.
 Do not ask the user to copy or run a setup command unless execution is unavailable. A catalog entry
 preserves a workspace for explicit selection; it never makes that workspace the current project.
+Run setup from a chosen project folder with --project-selected, or --skip-project to finish user
+integration without project setup. Project scope needs a selected project. No-match file discovery
+is normal absence (rg exits 1); diagnose actual command or permission errors instead of hiding them.
+Setup ready/complete describe configured readiness, not a host restart or live MCP activation.
+Remember restart_required action receipts even after a later setup inspection is ready; report
+integration as active only after an actual restart/reload and live MCP evidence. If restart is
+pending, name the host and exact setup command to resume. Defer deeper modeling until real work needs it.
 If home or SessionStart reports `skill_update`, run its exact scope-specific command, restart the
 host, and continue; Superbee never rewrites an installed Skill automatically.
 

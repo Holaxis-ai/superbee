@@ -33,7 +33,7 @@ test("setup plan agreement: every supported host has a ready agent protocol", ()
     assert.equal(plan.next, undefined, host);
     assert.deepEqual(plan.verify, {
       action: "run", command: ["superbee", "setup", "--host", host, "--scope", "user", "--json"],
-      description: "Reinspect setup readiness after the preceding action.", mutates: false,
+      description: "Reinspect configured setup readiness after the preceding action; host activation is not observed.", mutates: false,
       approval: { required: false, reason: null },
     });
   }
@@ -203,13 +203,13 @@ test("an absent Codex CLI blocks setup on the same truthful MCP state", () => {
 
 test("bundle creation and catalog templates remain distinguishable to the agent", () => {
   const missingBundle = next(buildSetupPlan(input({
+    projectSelection: "confirmed",
     workspace: { bundle: "absent", catalog: "empty", selected_registered: false },
   })));
   assert.deepEqual(missingBundle.command, ["superbee", "init", "--create-only", "--recipe", "work-tracking", "--dir", ".superbee"]);
   assert.equal(missingBundle.approval.required, true);
 
   const uncataloged = next(buildSetupPlan(input({
-    hook: { installed: false, compatibility: { state: "absent", reason: "absent" } },
     workspace: { bundle: "selected", catalog: "empty", selected_registered: false },
   })));
   assert.equal(uncataloged.action, "choose_value");
@@ -217,4 +217,56 @@ test("bundle creation and catalog templates remain distinguishable to the agent"
   assert.equal(uncataloged.command_template, "superbee catalog add <label>");
   assert.equal(uncataloged.mutates, true);
   assert.equal(uncataloged.approval.required, true);
+});
+
+test("first notes folder requires a project choice regardless of unrelated catalog entries", () => {
+  for (const catalog of ["empty", "ready"] as const) {
+    const plan = buildSetupPlan(input({ workspace: { bundle: "absent", catalog, selected_registered: false } }));
+    assert.equal(next(plan).action, "choose_value");
+    assert.equal(next(plan).command, undefined);
+    assert.match(next(plan).command_template ?? "", /<project-choice>/);
+    assert.match(next(plan).description, /empty|non-code/);
+    assert.match(next(plan).description, /--skip-project/);
+    assert.equal(next(plan).mutates, false);
+    assert.equal(plan.workspace.project_selection, "unselected");
+    assert.ok(!plan.capabilities.some((row) => row.command?.startsWith("superbee init")));
+    const confirmed = buildSetupPlan(input({ projectSelection: "confirmed", workspace: { bundle: "absent", catalog, selected_registered: false } }));
+    assert.deepEqual(next(confirmed).command, ["superbee", "init", "--create-only", "--recipe", "work-tracking", "--dir", ".superbee"]);
+  }
+});
+
+test("user hook configuration progresses before project choice; project installs require selection", () => {
+  const absentSkill = { canonical: { state: "absent" as const }, legacy: { state: "absent" as const } };
+  const missingHook = { installed: false, compatibility: { state: "absent" as const, reason: "absent" } };
+  const workspace = { bundle: "absent" as const, catalog: "empty" as const, selected_registered: false };
+  assert.deepEqual(next(buildSetupPlan(input({ workspace, hook: missingHook }))).command, ["superbee", "hook", "install", "--scope", "user"]);
+  const project = next(buildSetupPlan(input({ scope: "project", workspace, skill: absentSkill, hook: missingHook })));
+  assert.equal(project.action, "choose_value");
+  assert.equal(project.mutates, false);
+  assert.doesNotMatch(project.description, /--skip-project/);
+});
+
+test("deferred projects finish configuration without claiming live activation", () => {
+  for (const host of ["codex", "claude-code", "claude-desktop", "opencode"] as const) {
+    const cwd = "/tmp/notes with ' $x; literal";
+    const plan = buildSetupPlan(input({ host, cwd, projectSelection: "deferred", workspace: { bundle: "not_checked", catalog: "not_checked", selected_registered: false } }));
+    assert.equal(plan.complete, true);
+    assert.equal(plan.workspace.project_selection, "deferred");
+    assert.equal(plan.workspace.project_directory, null);
+    assert.deepEqual(plan.verification, { configured_only: true, live_host_activation: "not_observed" });
+    assert.equal(plan.verify.cwd, cwd);
+    assert.ok(plan.verify.command?.includes("--skip-project"));
+    for (const id of ["bundle", "catalog"]) assert.equal(plan.capabilities.find((row) => row.id === id)?.state, "not_applicable");
+  }
+});
+
+test("every setup continuation preserves literal cwd and explicit project choice", () => {
+  const cwd = "/tmp/project with ' $(not-executed);";
+  for (const invocation of [["superbee"], ["npx", "--no-install", "superbee"]]) {
+    const plan = buildSetupPlan(input({ cwd, invocation, projectSelection: "confirmed", workspace: { bundle: "absent", catalog: "empty", selected_registered: false } }));
+    assert.equal(next(plan).cwd, cwd);
+    assert.equal(plan.verify.cwd, cwd);
+    assert.deepEqual(plan.verify.command, [...invocation, "setup", "--host", "codex", "--scope", "user", "--project-selected", "--json"]);
+    assert.ok(!next(plan).command?.includes("sh"));
+  }
 });
