@@ -636,3 +636,12 @@ test("check finds off-site URLs inside prose and Markdown links, not only whole-
   );
   assert.ok(!fine.problems.some((problem) => problem.requirement === "public_urls"), JSON.stringify(fine.problems));
 });
+
+test("serializable local action metadata uses descriptor rules without read fixture execution", async () => {
+  const { siteCapabilityMetadataProblem } = await import("../src/site-capabilities.js");
+  const metadata = { name: "fixture_compare", implementationId: "fixture/1", description: "Local action", inputSchema: { type: "object" }, annotations: { readOnlyHint: false } };
+  assert.equal(siteCapabilityMetadataProblem(metadata), undefined);
+  assert.match(siteCapabilityMetadataProblem({ ...metadata, inputSchema: { type: "string" } })!, /inputSchema/);
+  assert.match(siteCapabilityMetadataProblem({ ...metadata, maximumOutputBytes: 0 })!, /positive integer/);
+  assert.match(siteCapabilityMetadataProblem({ ...metadata, annotations: { invalid: () => 1 } })!, /plain JSON/);
+});

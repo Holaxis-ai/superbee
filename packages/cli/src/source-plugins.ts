@@ -83,8 +83,9 @@ function manifest(raw: string): Manifest {
         throw pluginRefusal("plugin_recipe_invalid");
     return m as unknown as Manifest;
 }
-/** Every artifact component is checked; unrelated node_modules/package metadata are never walked. */
-async function snapshot(root: string, input?: UserStateInput): Promise<Snapshot> {
+export type PluginSnapshotFile = { path: string; bytes: string };
+/** Shared bounded UTF-8 artifact reader. Binary assets are unsupported by this contract. */
+export async function boundedPluginSnapshotReader(root: string, input?: UserStateInput) {
     const privateRead = input !== undefined;
     const directory = async (dir: string) => {
         const s = await lstat(dir);
@@ -92,7 +93,7 @@ async function snapshot(root: string, input?: UserStateInput): Promise<Snapshot>
             throw pluginRefusal("plugin_path_unsafe");
     };
     await directory(root);
-    const files: Snapshot["files"] = [];
+    const files: PluginSnapshotFile[] = [];
     let total = 0, entries = 0;
     const read = async (rel: string, limit = SOURCE_PLUGIN_LIMITS.file) => {
         if (++entries > SOURCE_PLUGIN_LIMITS.files)
@@ -115,6 +116,27 @@ async function snapshot(root: string, input?: UserStateInput): Promise<Snapshot>
         files.push({ path: rel, bytes });
         return bytes;
     };
+    return { files, read, directory, countDirectory: () => {
+        if (++entries > SOURCE_PLUGIN_LIMITS.files) throw pluginRefusal("plugin_limit");
+    } };
+}
+/** Install one captured generation before atomically selecting it in the caller's typed pointer. */
+export async function installPluginSnapshot(root: string, areaName: string, files: PluginSnapshotFile[], digest: string, input: UserStateInput): Promise<{ generation: string; target: string }> {
+    const area = path.join(root, areaName);
+    await mkdir(area, { mode: 0o700 }).catch(e => { if (e.code !== "EEXIST") throw e; });
+    if (!privateStateEntryIsSafe(await lstat(area), "directory", input)) throw pluginRefusal("plugin_path_unsafe");
+    const generation = `g-${digest.slice(7)}-${randomBytes(8).toString("hex")}`;
+    const target = path.join(area, `.pending-${randomBytes(8).toString("hex")}`);
+    await mkdir(target, { mode: 0o700 });
+    for (const f of files) {
+        await mkdir(path.dirname(path.join(target, f.path)), { recursive: true, mode: 0o700 });
+        await writeFile(path.join(target, f.path), f.bytes, { flag: "wx", mode: 0o600 });
+    }
+    return { generation, target };
+}
+/** Every artifact component is checked; unrelated node_modules/package metadata are never walked. */
+async function snapshot(root: string, input?: UserStateInput): Promise<Snapshot> {
+    const { files, read, directory, countDirectory } = await boundedPluginSnapshotReader(root, input);
     const m = manifest(await read("package.json", SOURCE_PLUGIN_LIMITS.manifest));
     await read("dist/profile.mjs");
     const walk = async (rel: string, depth: number): Promise<void> => {
@@ -126,8 +148,7 @@ async function snapshot(root: string, input?: UserStateInput): Promise<Snapshot>
                 throw pluginRefusal("plugin_path_unsafe");
             const child = `${rel}/${e.name}`;
             if (e.isDirectory()) {
-                if (++entries > SOURCE_PLUGIN_LIMITS.files)
-                    throw pluginRefusal("plugin_limit");
+                countDirectory();
                 await walk(child, depth + 1);
             }
             else if (e.isFile() && e.name.endsWith(".md"))
@@ -198,18 +219,7 @@ export async function registerSourcePlugin(folder: string, accept?: string, inpu
         const root = await ensureUserStateRoot(input);
         return await withCliFilesystemMutationLock(path.join(root, ACTIVE), async () => {
             const area = path.join(root, AREA);
-            await mkdir(area, { mode: 0o700 }).catch(e => {
-                if (e.code !== "EEXIST")
-                    throw e;
-            });
-            if (!privateStateEntryIsSafe(await lstat(area), "directory", input))
-                throw pluginRefusal("plugin_path_unsafe");
-            const generation = `g-${s.digest.slice(7)}-${randomBytes(8).toString("hex")}`, target = path.join(area, `.pending-${randomBytes(8).toString("hex")}`);
-            await mkdir(target, { mode: 0o700 });
-            for (const f of s.files) {
-                await mkdir(path.dirname(path.join(target, f.path)), { recursive: true, mode: 0o700 });
-                await writeFile(path.join(target, f.path), f.bytes, { flag: "wx", mode: 0o600 });
-            }
+            const { generation, target } = await installPluginSnapshot(root, AREA, s.files, s.digest, input);
             const a: Active = { v: 1, plugin: "github", generation, digest: s.digest, package: s.manifest.name, version: s.manifest.version, contract: 1, core: s.manifest.superbeeIntegration.core, profile: { id: "github-issues", version: s.manifest.superbeeIntegration.profiles[0].version } };
             if ((await snapshot(target, input)).digest !== s.digest)
                 throw pluginRefusal("plugin_changed");
