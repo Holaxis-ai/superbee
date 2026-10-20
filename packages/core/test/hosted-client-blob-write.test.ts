@@ -1119,3 +1119,23 @@ test("credentials: a credential header fetch cannot carry is denied before sendi
   const carrier = createFetchCarrier({ baseUrl: ORIGIN, credentials: async () => ({ "bad header": "x" }), fetch: async () => assert.fail("never fetched") });
   await assert.rejects(carrier.json(`${PREFIX}/whoami`, {}, new AbortController().signal, { maximum: 1024 }), (error: unknown) => (error as { code?: string }).code === "denied");
 });
+
+
+test("zero-baseline delete hold remains held without automatic resend or outcome lookup", async () => {
+  const name = "blob-delete-428-held", request = JSON.parse(fixture(name).request.body!), requestId = idOf(name);
+  const { fetch, sent } = golden({ capabilities: ["capabilities-200"], "blob-delete": [() => json({ error: {
+    code: "deletions_held", message: "This would make 1 file deletions in 24 hours of the 0 files this bundle held. Nothing was deleted; a person must confirm this mass delete.",
+    retryable: false, writeState: "not_applied", deletions: 1, baseline: 0,
+  } }, 428)] });
+  const blobJournal = createMemoryBlobJournal(), client = clientOf(fetch, { blobJournal });
+  const held = await client.deleteBlob(BUNDLE, { key: request.key, expected: { version: request.expectedVersion, contentType: request.expectedContentType } }, { requestId });
+  assert.deepEqual(held, { requestId, key: request.key, operation: "delete", status: "held", deletions: 1, baseline: 0 });
+  const row = (await blobJournal.listBlobIntents())[0]!;
+  assert.equal(row.attempts, 1); assert.equal(row.notAppliedThrough, 1); assert.equal(row.receipt, undefined);
+  assert.deepEqual(row.deletionHold, { deletions: 1, baseline: 0 });
+  const before = sent.length;
+  assert.equal((await client.settleBlobWrite(requestId)).status, "held");
+  assert.equal((await client.lookupBlobWrite(requestId)).status, "held");
+  assert.deepEqual((await client.heldBlobWrites())[0]?.hold, { deletions: 1, baseline: 0 });
+  assert.equal(sent.length, before); assert.deepEqual(blobRoutes(sent), ["blob-delete"]);
+});

@@ -84,7 +84,7 @@ export function decodeBlobWriteResult(raw: unknown, expected: BlobWriteExpected)
     if ((error.scope !== "principal" && error.scope !== "bundle") || (error.resetAt !== undefined && (typeof error.resetAt !== "string" || !Number.isFinite(Date.parse(error.resetAt))))) throw refuse();
   } else if (error.scope !== undefined || error.resetAt !== undefined) throw refuse();
   if (error.code === "deletions_held") {
-    if (operationId !== "blobs.delete.v1" || !count(error.deletions) || !count(error.baseline)) throw refuse();
+    if (operationId !== "blobs.delete.v1" || !count(error.deletions) || !Number.isSafeInteger(error.baseline) || (error.baseline as number) < 0) throw refuse();
   } else if (error.deletions !== undefined || error.baseline !== undefined) throw refuse();
   return { ok: false, operationId, error: { ...(error as BlobWriteFailure["error"]) } };
 }

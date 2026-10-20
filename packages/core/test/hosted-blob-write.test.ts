@@ -215,3 +215,17 @@ test("lookup snapshots its full original intent and binding before awaiting capa
   assert.equal(result.status, "committed");
   if (result.status === "committed") assert.deepEqual(result.result, JSON.parse(exchange.response.body).result);
 });
+
+
+test("zero opening baseline is authoritative held evidence; malformed hold counts stay unknown", async () => {
+  const exchange = fixture("blob-delete-428-held"), expected = intentFor(exchange), id = identityFor(exchange);
+  const body = { error: { code: "deletions_held", deletions: 1, baseline: 0, message: "This would make 1 file deletions in 24 hours of the 0 files this bundle held. Nothing was deleted; a person must confirm this mass delete.", retryable: false, writeState: "not_applied" } };
+  const send = async (error: Record<string, unknown>) => adapter({ json: async () => ({ status: 428, body: { error }, headers: new Headers() }), stream: unused }).send(expected, id);
+  const held = await send(body.error);
+  assert.equal(held.row.answer, "428 deletions_held"); assert.equal(held.settled, false);
+  assert.deepEqual(held.result, { ok: false, operationId: "blobs.delete.v1", error: body.error });
+  for (const baseline of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity, "0", null, undefined]) {
+    const invalid = await send({ ...body.error, baseline }); assert.equal(invalid.result, undefined); assert.equal(invalid.row.answer, "other status");
+  }
+  for (const deletions of [0, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, "1", null, undefined]) assert.equal((await send({ ...body.error, deletions })).result, undefined);
+});
