@@ -8,7 +8,7 @@
 // A Connector the recipe carries is a declaration without instances: its content change replaces
 // the whole document, and only one this recipe wrote that nobody changed since.
 import { query, readBlob, readBundleOkfVersion, readDocVersioned } from "../bundle-ops.js";
-import { checkConnectorAgainstKinds, CONNECTOR_TYPE } from "../connectors.js";
+import { checkConnectorAgainstKinds, CONNECTOR_TYPE, CONNECTORS_PREFIX } from "../connectors.js";
 import { resolveContentType } from "../content-type.js";
 import { DocumentNotFoundError, mutateDocument } from "../document-mutation.js";
 import { applyV02MutationMetadata } from "../document-write-policy.js";
@@ -49,6 +49,8 @@ import {
   normalizeDefinitionBody,
   recipeStampIdentity,
   recipeStampState,
+  recipeOrphanedDefinitions,
+  type RecipeOrphanedDefinition,
   withRecipeStamp,
   type RecipeStampState,
 } from "./stamp.js";
@@ -115,6 +117,8 @@ export interface RecipeEvolutionPlan {
   writes: number;
   plan_token: string;
   definitions: RecipeEvolutionDefinition[];
+  /** Informational retained ownership only; never part of this plan's write set. */
+  orphaned_definitions?: RecipeOrphanedDefinition[];
   /** Present only for recipes declaring References. Top-level writes/changed cover both sets. */
   reference_assets?: RecipeEvolutionReferenceAssets;
   counts: {
@@ -140,6 +144,8 @@ export interface RecipeEvolutionApplyResult {
   changed: boolean;
   plan_token: string;
   definitions: RecipeEvolutionCompletedDefinition[];
+  /** Freshly observed retained ownership after apply, with no writes to these documents. */
+  orphaned_definitions?: RecipeOrphanedDefinition[];
   reference_assets?: { rows: RecipeEvolutionCompletedDefinition[]; counts: { updated: number; stamped: number; unchanged: number } };
   counts: { updated: number; stamped: number; unchanged: number };
 }
@@ -677,6 +683,11 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       `cannot prove the prospective registry while convention '${skipped.id}' is unreadable: ${skipped.reason}`,
     );
   }
+  const orphaned = recipeOrphanedDefinitions([
+    ...installedConventions,
+    ...await query(bundle, { prefix: CONNECTORS_PREFIX, type: CONNECTOR_TYPE }),
+    ...await query(bundle, { prefix: "references/", type: "Reference" }),
+  ], recipe);
   const prospectiveById = new Map(installedConventions.map((doc) => [doc.id, doc]));
   const currentRegistry = buildKindRegistry(installedConventions, [], { okfVersion });
 
@@ -1156,6 +1167,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       writes: writes.size,
       plan_token: token,
       definitions,
+      ...(orphaned.length > 0 ? { orphaned_definitions: orphaned } : {}),
       ...(references.length > 0 ? { reference_assets: {
         rows: references,
         counts: {
@@ -1316,6 +1328,7 @@ export async function applyRecipeEvolution(
     changed: written > 0,
     plan_token: plan.plan_token,
     definitions: completed.filter(row => row.asset_kind !== "reference"),
+    ...(postcondition.plan.orphaned_definitions ? { orphaned_definitions: postcondition.plan.orphaned_definitions } : {}),
     ...(plan.reference_assets ? { reference_assets: {
       rows: completed.filter(row => row.asset_kind === "reference"),
       counts: {
