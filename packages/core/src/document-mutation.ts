@@ -1,3 +1,4 @@
+import { captureInventoryGuardRequest, type InventoryGuardRequest } from "./inventory-guard.js";
 import { assertTypedListPatch, guardBodyReplace, type BodyReplacePosture } from "./body-replace-guards.js";
 /**
  * CLI-neutral document mutation policy.
@@ -30,6 +31,7 @@ import {
 import { versionedMutation } from "./mutation.js";
 import { VersionConflict } from "./versioning.js";
 import {
+  backendFor,
   readBundleOkfVersion,
   readDocVersioned,
   writeDocVersionedForEdition,
@@ -88,6 +90,8 @@ export type DocumentMutationInput =
   | { kind: "kind-field"; mutation: KindFieldMutation };
 
 export interface MutateDocumentOptions {
+  /** Fixed data-only persistence premise; only hard-CAS existing replacement is supported. */
+  inventoryGuard?: Pick<InventoryGuardRequest, "target" | "domain" | "inventory">;
   bundle: Bundle;
   id: ConceptId;
   mode: DocumentMutationMode;
@@ -387,6 +391,16 @@ function resolvePersistActor(opts: { actor?: string; persistActor?: boolean }): 
 }
 
 export async function mutateDocument(opts: MutateDocumentOptions): Promise<DocumentMutationResult> {
+  opts = { ...opts, bundle: { ...opts.bundle, backend: backendFor(opts.bundle) } };
+  if (opts.inventoryGuard !== undefined) {
+    if (opts.mode !== "replace-document" || opts.onAbsent !== "fail" || typeof opts.expectedVersion !== "string" || (opts.maxAttempts !== undefined && opts.maxAttempts !== 1)) {
+      throw new InvalidInputError("Inventory guard requires existing replace-document, exact target version and one attempt.");
+    }
+    const captured = captureInventoryGuardRequest({ ...opts.inventoryGuard, id: opts.id, expectedVersion: opts.expectedVersion,
+      doc: { id: opts.id, frontmatter: { type: "Concept" }, body: "" } });
+    opts.inventoryGuard = { target: captured.target, domain: captured.domain, inventory: captured.inventory };
+  }
+
   const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const onAbsent = opts.onAbsent ?? "fail";
   const compareTimestamp = opts.compareTimestamp ?? false;
@@ -612,6 +626,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         id: opts.id, registry: opts.registry, strict: opts.strict, okfVersion, now: decisionNow,
         actor: opts.actor, producer: opts.producer, persistActor, compareTimestamp, seedGenerationClock: seedClock,
       });
+      if (!changed && opts.inventoryGuard) throw new InvalidInputError("Inventory-guarded replacement requires a meaningful change.");
       if (!changed) return { action: "done", result: { doc: existing, warnings } };
       return { action: "write", next: { id: opts.id, ...candidate }, result: { warnings } };
     },
@@ -620,7 +635,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         expectedVersion: hardCas ? opts.expectedVersion! : expectedVersion,
         actor: opts.actor,
         bodyReplace: opts.bodyReplace,
-      });
+      }, opts.inventoryGuard);
       savedDoc = written.doc;
       return written.version;
     },

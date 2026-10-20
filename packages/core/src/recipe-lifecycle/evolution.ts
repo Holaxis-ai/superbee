@@ -653,7 +653,60 @@ function evolutionPlanToken(input: unknown): string {
   return `sha256:${sha256Hex(JSON.stringify(input))}`;
 }
 
-async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe): Promise<PreparedRecipeEvolution> {
+interface RetirementStage {
+  definition: string;
+  coordinates: readonly Pick<import("./retirement.js").RetirementDeclaration, "coordinate" | "name" | "value">[];
+}
+
+/** Only the lifecycle scanner's admitted coordinates reach this internal merge exception. */
+function retirementMergeBaseline(existing: OkfDocument, desired: OkfDocument, coordinates: RetirementStage["coordinates"]): OkfDocument {
+  const base = structuredClone(existing);
+  const fm = base.frontmatter as Record<string, unknown>;
+  const fields = plainRecord(fm.fields) ?? {};
+  const deprecated = plainRecord(fm.deprecated) ?? {};
+  const removeMember = (parent: Record<string, unknown>, key: string, value: string): void => {
+    if (Array.isArray(parent[key])) setOwn(parent, key, (parent[key] as unknown[]).filter(member => String(member) !== value));
+  };
+  const removeKey = (parent: Record<string, unknown>, key: string, name: string): void => {
+    const mapping = plainRecord(parent[key]);
+    if (mapping) delete mapping[name];
+  };
+  for (const row of coordinates) {
+    if (row.coordinate === "field") {
+      removeMember(fields, "optional", row.name);
+      for (const key of ["types", "values", "descriptions", "value_descriptions"]) removeKey(fields, key, row.name);
+      removeMember(deprecated, "fields", row.name);
+      removeKey(deprecated, "values", row.name);
+    } else if (row.coordinate === "value") {
+      const values = plainRecord(fields.values); if (values) removeMember(values, row.name, row.value!);
+      const markers = plainRecord(deprecated.values); if (markers) removeMember(markers, row.name, row.value!);
+      const descriptions = plainRecord(fields.value_descriptions); if (descriptions) removeKey(descriptions, row.name, row.value!);
+    } else {
+      removeKey(fm, "links", row.name);
+      removeKey(fm, "link_descriptions", row.name);
+      removeMember(deprecated, "links", row.name);
+    }
+  }
+  // Empty containers belonging to the admitted coordinates may disappear with their last member.
+  const prune = (current: Record<string, unknown>, wanted: Record<string, unknown>, names: string[]): void => {
+    for (const key of names) {
+      const value = current[key];
+      if (wanted[key] === undefined && value && typeof value === "object" && Object.keys(value).length === 0) delete current[key];
+    }
+  };
+  const desiredFields = plainRecord(desired.frontmatter.fields) ?? {};
+  const desiredDeprecated = plainRecord(desired.frontmatter.deprecated) ?? {};
+  const markers = plainRecord(deprecated.values);
+  if (markers) prune(markers, plainRecord(desiredDeprecated.values) ?? {}, Object.keys(markers));
+  const descriptions = plainRecord(fields.value_descriptions);
+  if (descriptions) prune(descriptions, plainRecord(desiredFields.value_descriptions) ?? {}, Object.keys(descriptions));
+  prune(fields, desiredFields, ["types", "values", "descriptions", "value_descriptions"]);
+  prune(deprecated, desiredDeprecated, ["fields", "values", "links"]);
+  prune(fm, desired.frontmatter, ["deprecated", "link_descriptions", "links"]);
+  return base;
+}
+
+async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe, stage?: RetirementStage): Promise<PreparedRecipeEvolution> {
   const okfVersion = await readBundleOkfVersion(bundle) ?? "0.1";
   const recipe = materializeRecipeForEdition(sourceRecipe, okfVersion);
   const identity = recipeStampIdentity(sourceRecipe, recipe);
@@ -691,7 +744,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
   const prospectiveById = new Map(installedConventions.map((doc) => [doc.id, doc]));
   const currentRegistry = buildKindRegistry(installedConventions, [], { okfVersion });
 
-  for (const authored of recipe.docs) {
+  for (const authored of stage ? recipe.docs.filter(doc => doc.id === stage.definition) : recipe.docs) {
     const target = recipeDocumentForApply(authored, okfVersion, "1970-01-01T00:00:00.000Z");
     const parsedDesired = parseConventionDoc(target, { okfVersion });
     if (!parsedDesired.ok) {
@@ -787,7 +840,8 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
     if (parsedCurrent.ok) for (const warning of parsedCurrent.kind.deprecated?.problems ?? []) {
       evolutionBlocker(blockers, warning.code, target.id, warning.message, warning.field);
     }
-    const merged = additiveConventionCandidate(existing.doc, target, blockers, hasUnchangedRecipeBaseline);
+    const mergeBaseline = stage ? retirementMergeBaseline(existing.doc, target, stage.coordinates) : existing.doc;
+    const merged = additiveConventionCandidate(mergeBaseline, target, blockers, hasUnchangedRecipeBaseline);
     let candidate = merged.candidate;
     if (okfVersion === "0.2") {
       try {
@@ -866,9 +920,11 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       && parsedCandidate.ok
       && parsedCurrent.kind.governs === parsedCandidate.kind.governs
     ) {
-      monotonicEvolutionBlockers(parsedCurrent.kind, parsedCandidate.kind, blockers, hasUnchangedRecipeBaseline);
-      addedRestrictions.set(parsedCandidate.kind.governs, addedFieldRestrictions(parsedCurrent.kind, parsedCandidate.kind));
-      for (const linkType of addedLinkTypes(parsedCurrent.kind, parsedCandidate.kind)) addedLinkTexts.add(linkType);
+      const parsedBaseline = stage ? parseConventionDoc(mergeBaseline, { okfVersion }) : parsedCurrent;
+      if (!parsedBaseline.ok) throw new InvalidInputError("Retirement merge baseline is invalid.");
+      monotonicEvolutionBlockers(parsedBaseline.kind, parsedCandidate.kind, blockers, hasUnchangedRecipeBaseline);
+      addedRestrictions.set(parsedCandidate.kind.governs, addedFieldRestrictions(parsedBaseline.kind, parsedCandidate.kind));
+      for (const linkType of addedLinkTypes(parsedBaseline.kind, parsedCandidate.kind)) addedLinkTexts.add(linkType);
     }
   }
 
@@ -899,7 +955,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
   }
 
   const connectorIds = new Set<ConceptId>();
-  for (const { doc: authored, connector } of recipe.connectors ?? []) {
+  for (const { doc: authored, connector } of stage ? [] : recipe.connectors ?? []) {
     const target = recipeDocumentForApply(authored, okfVersion, "1970-01-01T00:00:00.000Z");
     connectorIds.add(target.id);
     // The target-Kind rules over the registry this plan would leave, so an unsatisfied Kind is a
@@ -995,7 +1051,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
     }
   };
 
-  for (const reference of recipe.references) {
+  for (const reference of stage ? [] : recipe.references) {
     const target = recipeDocumentForApply({ ...reference.doc, body: normalizeDocumentBodyForStorage(reference.doc.body) }, okfVersion, "1970-01-01T00:00:00.000Z");
     const existing = await readRecipeDocIfPresent(bundle, target.id);
     let candidate = existing ? ownedAssetReplacement(existing.doc, target) : target;
@@ -1039,7 +1095,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
     else if (stamp === "missing" || stamp === "stale") writes.set(target.id, withRecipeStamp(existing.doc, identity));
   }
   references.sort((a, b) => a.id.localeCompare(b.id));
-  for (const page of recipe.pages) {
+  for (const page of stage ? [] : recipe.pages) {
     await assetDocProof("view-registry", page.registry);
     const existing = await readBlob(bundle, page.entry);
     const wantedBytes = new TextEncoder().encode(page.html);
@@ -1200,6 +1256,11 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
     },
     writes,
   };
+}
+
+/** Internal actual-source stage preparation; no synthetic comparison identity is stamped. */
+export async function prepareRecipeRetirementStage(bundle: Bundle, source: LoadedRecipe, definition: string, coordinates: RetirementStage["coordinates"]): Promise<PreparedRecipeEvolution> {
+  return prepareRecipeEvolution(bundle, source, { definition, coordinates });
 }
 
 /** Build a read-only, state-bound preflight for recipe definitions and Reference ownership. */

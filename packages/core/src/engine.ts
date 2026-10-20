@@ -1,4 +1,5 @@
 import { captureBodyReplacePosture, guardBodyReplace } from "./body-replace-guards.js";
+import { inventoryGuardFor, InventoryGuardConflict, type InventoryGuardRequest } from "./inventory-guard.js";
 import { VersionConflict } from "./version-transport.js";
 /**
  * Runtime-neutral Superbee engine operations.
@@ -79,12 +80,15 @@ function assertWritableConceptDocument(doc: OkfDocument): string {
   return type;
 }
 
+export type DocumentInventoryPremise = Pick<InventoryGuardRequest, "target" | "domain" | "inventory">;
+
 async function persistDocForEdition(
   backend: StorageBackend,
   doc: OkfDocument,
   type: string,
   okfVersion: string,
   options?: WriteOptions,
+  inventoryPremise?: DocumentInventoryPremise,
 ): Promise<WriteResult> {
   let saved: OkfDocument;
   if (okfVersion === "0.1") {
@@ -96,7 +100,14 @@ async function persistDocForEdition(
   } else {
     saved = normalizeV02DocumentForWrite(doc, type);
   }
-  const version = await backend.write(doc.id, saved, options);
+  let version: Version;
+  if (inventoryPremise) {
+    if (inventoryPremise.target.edition !== okfVersion) throw new InventoryGuardConflict("edition");
+    if (typeof options?.expectedVersion !== "string") throw new InvalidInputError("Inventory-guarded persistence requires a target version.");
+    const result = await inventoryGuardFor(backend).compareInventoryAndWrite({ ...inventoryPremise, id: doc.id, expectedVersion: options.expectedVersion, doc: saved,
+      options: { ...(options.actor === undefined ? {} : { actor: options.actor }), ...(options.agent === undefined ? {} : { agent: options.agent }) } });
+    version = result.version;
+  } else version = await backend.write(doc.id, saved, options);
   return { doc: saved, version };
 }
 
@@ -117,8 +128,9 @@ export async function writeDocVersionedForEdition(
   doc: OkfDocument,
   okfVersion: string,
   options?: WriteOptions,
+  inventoryPremise?: DocumentInventoryPremise,
 ): Promise<WriteResult> {
-  return persistDocForEdition(backend, doc, assertWritableConceptDocument(doc), okfVersion, options);
+  return persistDocForEdition(backend, doc, assertWritableConceptDocument(doc), okfVersion, options, inventoryPremise);
 }
 
 /** Persist a document while keeping the historical document-only result. */

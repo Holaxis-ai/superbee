@@ -72,8 +72,9 @@ export async function writeDocVersionedForEdition(
   doc: OkfDocument,
   okfVersion: string,
   options?: WriteOptions,
+  inventoryPremise?: engine.DocumentInventoryPremise,
 ): Promise<engine.WriteResult> {
-  return engine.writeDocVersionedForEdition(backendFor(bundle), doc, okfVersion, options);
+  return engine.writeDocVersionedForEdition(backendFor(bundle), doc, okfVersion, options, inventoryPremise);
 }
 
 export async function writeDoc(
