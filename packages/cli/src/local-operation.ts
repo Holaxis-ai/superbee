@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import type { Dirent, Stats } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, realpath, readdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -121,20 +122,53 @@ export async function bindLocalOperation(operation:string,bundle:string,config:L
 export interface LocalRunInput {expectedInputs:Record<string,string>;settings:Record<string,unknown>;}
 export interface LocalRunOptions {home?:UserStateInput;signal?:AbortSignal;exportHtml?:string;}
 
-async function outputBudget(directory:string,maximumBytes:number,maximumFiles:number):Promise<boolean>{
-  let bytes=0,count=0;
-  const scan=async(dir:string):Promise<boolean>=>{
-    const entries=await readdir(dir,{withFileTypes:true});
-    for(const entry of entries){
-      if(++count>maximumFiles*2)return false;
-      const file=path.join(dir,entry.name),status=await lstat(file);
-      if(status.isSymbolicLink()||(!status.isFile()&&!status.isDirectory()))return false;
-      if(status.isDirectory()){if(!await scan(file))return false;}
-      else{bytes+=status.size;if(bytes>maximumBytes)return false;}
+interface OutputBudgetIo {readdir:(directory:string)=>Promise<Dirent[]>;lstat:(file:string)=>Promise<Stats>;}
+const outputBudgetIo:OutputBudgetIo={readdir:directory=>readdir(directory,{withFileTypes:true}),lstat:file=>lstat(file)};
+class OutputScanError extends Error {
+  readonly errno:string;
+  readonly syscall:string;
+  readonly vanishedDescendant:boolean;
+  constructor(error:unknown,descendant:boolean){
+    super('output_scan_failed');
+    const value=error as NodeJS.ErrnoException|undefined;
+    this.errno=typeof value?.code==='string'&&/^E[A-Z0-9]{1,30}$/.test(value.code)?value.code:'unknown';
+    this.syscall=value?.syscall==='lstat'||value?.syscall==='scandir'?value.syscall:'unknown';
+    this.vanishedDescendant=descendant&&this.errno==='ENOENT';
+  }
+}
+function outputFailure(phase:'live'|'final',error?:unknown){
+  return {phase,errno:error instanceof OutputScanError?error.errno:'unknown',syscall:error instanceof OutputScanError?error.syscall:'unknown'};
+}
+export async function outputBudget(directory:string,maximumBytes:number,maximumFiles:number,live=false,io:OutputBudgetIo=outputBudgetIo):Promise<boolean>{
+  for(let attempt=1;;attempt++){
+    // An invalidated enumeration contributes neither bytes nor entries to the next attempt.
+    let bytes=0,count=0;
+    const scan=async(dir:string):Promise<boolean>=>{
+      let entries:Dirent[];
+      try{entries=await io.readdir(dir);}catch(error){throw new OutputScanError(error,dir!==directory);}
+      for(const entry of entries){
+        if(++count>maximumFiles*2)return false;
+        const file=path.join(dir,entry.name);let status:Stats;
+        try{status=await io.lstat(file);}catch(error){throw new OutputScanError(error,true);}
+        if(status.isSymbolicLink()||(!status.isFile()&&!status.isDirectory()))return false;
+        if(status.isDirectory()){if(!await scan(file))return false;}
+        else{bytes+=status.size;if(bytes>maximumBytes)return false;}
+      }
+      return true;
+    };
+    try{return await scan(directory);}catch(error){
+      if(live&&attempt<3&&error instanceof OutputScanError&&error.vanishedDescendant)continue;
+      throw error;
     }
-    return true;
-  };
-  return scan(directory);
+  }
+}
+export function startOutputBudgetPoll(directory:string,maximumBytes:number,maximumFiles:number,report:(reason:'output_limit'|'output_validation',error?:unknown)=>void,scan:typeof outputBudget=outputBudget):()=>Promise<void>{
+  let pending:Promise<void>|undefined,stopped=false;
+  const timer=setInterval(()=>{
+    if(stopped||pending)return;
+    pending=scan(directory,maximumBytes,maximumFiles,true).then(ok=>{if(!ok)report('output_limit');}).catch(error=>report('output_validation',error)).finally(()=>{pending=undefined;});
+  },50);
+  return async()=>{stopped=true;clearInterval(timer);await pending;};
 }
 
 async function groupPresent(pid:number):Promise<boolean>{try{process.kill(-pid,0);return true;}catch(error){if((error as NodeJS.ErrnoException).code==='ESRCH')return false;return true;}}
@@ -178,7 +212,7 @@ export async function runLocalOperation(operation:string,bundle:string,bindingId
   let reason:string|undefined,result:any,closed=false,logBytes=0;const chunks:Buffer[]=[];
   const terminate=(why:string)=>{if(reason!==undefined)return;reason=why;if(child.connected)child.send({type:'abort'},()=>{});};
   const capture=(chunk:Buffer)=>{logBytes+=chunk.length;if(logBytes>profile.logBytes){terminate('log_limit');return;}chunks.push(chunk);};child.stdout!.on('data',capture);child.stderr!.on('data',capture);
-  let checking=false;const budget=setInterval(()=>{if(checking)return;checking=true;void outputBudget(outputDirectory,profile.outputBytes,profile.files).then(ok=>{if(!ok)terminate('output_limit');}).catch(()=>terminate('output_validation')).finally(()=>{checking=false;});},50);
+  const stopBudget=startOutputBudgetPoll(outputDirectory,profile.outputBytes,profile.files,(why,error)=>{manifest.outputValidationFailure??=outputFailure('live',error);terminate(why);});
   const deadline=setTimeout(()=>terminate('deadline'),profile.deadlineMs);const abort=()=>terminate('cancelled');options.signal?.addEventListener('abort',abort,{once:true});if(options.signal?.aborted)abort();
   await new Promise<void>(resolve=>{
     const poll=setInterval(()=>{if(reason){clearInterval(poll);resolve();}},10);
@@ -197,9 +231,10 @@ export async function runLocalOperation(operation:string,bundle:string,bindingId
     });
     child.send({type:'initialize',entryPath:selection.entryPath,capabilityName:selection.capability.name,maximumOutputBytes,protocolBytes:DEFAULT_MAXIMUM_OUTPUT_BYTES,tools:binding.tools,resources,profile,invocation:{id,outputDirectory,assetDirectory:selection.rootPath,profile:binding.profile},input:input.settings});
   });
-  clearTimeout(deadline);clearInterval(budget);options.signal?.removeEventListener('abort',abort);
+  clearTimeout(deadline);const budgetStopped=stopBudget();options.signal?.removeEventListener('abort',abort);
   // Even a successful adapter may have left a tool alive; never declare success before the group stops.
   const stopped=child.pid!==undefined ? await stopGroup(child.pid,profile.graceMs):closed;
+  await budgetStopped;
   for(const [tool,identity]of Object.entries(binding.tools)){try{if(await realpath(identity.path)!==identity.path||hash(await localFileBytes(identity.path,256*1024*1024))!==identity.sha256)throw Error();}catch{manifest.toolIdentityChanged=[...new Set([...(manifest.toolIdentityChanged??[]),tool])];reason='tool_identity_changed';}}
   manifest.endedAt=new Date().toISOString();
   manifest.status=!stopped?'interrupted_unconfirmed':reason==='cancelled'?'cancelled_confirmed':reason==='deadline'?'timed_out_confirmed':reason?'failed':'succeeded';
@@ -222,7 +257,7 @@ export async function runLocalOperation(operation:string,bundle:string,bindingId
       if(all.length>profile.files*2||all.some(entry=>entry.isSymbolicLink()||(!entry.isDirectory()&&!entry.isFile())))throw refuse('output_tree');
       for(const entry of all)if(entry.isFile()&&!seen.has(path.relative(outputDirectory,path.join(entry.parentPath,entry.name))))throw refuse('undeclared_output');
       manifest.settings=result.settings??input.settings;manifest.partialOutputState='validated';
-    }catch{manifest.status='failed';manifest.reason='output_validation';manifest.outputs=[];}
+    }catch(error){manifest.status='failed';manifest.reason='output_validation';manifest.outputValidationFailure=outputFailure('final',error);manifest.outputs=[];}
   }
   let exportPath:string|undefined;
   if(options.exportHtml!==undefined){

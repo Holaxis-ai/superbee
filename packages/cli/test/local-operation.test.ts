@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, realpath, symlink, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, realpath, symlink, readdir, lstat, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { registerOperationPlugin, listOperationPlugins } from '../src/operation-plugins.js';
-import { bindLocalOperation, runLocalOperation, LOCAL_OPERATION_PROFILES } from '../src/local-operation.js';
+import { bindLocalOperation, runLocalOperation, LOCAL_OPERATION_PROFILES, outputBudget, startOutputBudgetPoll } from '../src/local-operation.js';
 import { init } from '../src/commands/init.js';
 import { SOURCE_PLUGIN_CORE_VERSION } from '@superbee/core/source-profiles';
 
@@ -279,6 +279,69 @@ test('native version probe ignoring TERM and retaining descendant pipes settles 
   const built=spawnSync('cc',[source,'-o',binary],{encoding:'utf8'});assert.equal(built.status,0,built.stderr);
   const cleanup=async()=>{try{for(const pid of (await readFile(marker,'utf8')).trim().split(' ').map(Number))try{process.kill(pid,'SIGKILL');}catch{}}catch{}};const watchdog=setTimeout(()=>void cleanup(),7000);
   const started=Date.now();try{await assert.rejects(bindFixtureTool(f,binary),/tool_probe_timed_out|tool_probe_interrupted_unconfirmed/);assert.ok(Date.now()-started<6500,'probe must settle without the independent watchdog');}finally{clearTimeout(watchdog);await cleanup();}
+});
+
+test('live output scan restarts whole enumeration after actual file and directory deletion with fresh counters',async(t)=>{
+  await t.test('enumerated file disappears after a counted surviving file',async()=>{
+    const root=await mkdtemp(path.join(tmpdir(),'sb-output-scan-'));await writeFile(path.join(root,'a-retained'),'x');await writeFile(path.join(root,'z-temporary'),'x');
+    let reads=0,retainedStats=0;
+    const io={readdir:async(dir:string)=>{const entries=(await readdir(dir,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name));if(++reads===1)await rm(path.join(root,'z-temporary'));return entries;},lstat:async(file:string)=>{if(path.basename(file)==='a-retained')retainedStats++;return lstat(file);}};
+    assert.equal(await outputBudget(root,1,1,true,io),true);assert.equal(reads,2);assert.equal(retainedStats,2);
+  });
+  await t.test('directory disappears after stat and before recursive entry',async()=>{
+    const root=await mkdtemp(path.join(tmpdir(),'sb-output-scan-')),nested=path.join(root,'temporary');await mkdir(nested);let rootReads=0,deleted=false;
+    const io={readdir:async(dir:string)=>{if(dir===root)rootReads++;if(dir===nested&&!deleted){await rm(nested,{recursive:true});deleted=true;}return readdir(dir,{withFileTypes:true});},lstat};
+    assert.equal(await outputBudget(root,1,1,true,io),true);assert.equal(rootReads,2);assert.equal(deleted,true);
+  });
+});
+test('live output scan refuses repeated churn after exactly three attempts and final scan remains single pass',async()=>{
+  for(const live of [true,false]){
+    const root=await mkdtemp(path.join(tmpdir(),'sb-output-scan-'));let reads=0;
+    const io={readdir:async(dir:string)=>{const file=path.join(dir,`temporary-${++reads}`);await writeFile(file,'x');const entries=await readdir(dir,{withFileTypes:true});await rm(file);return entries;},lstat};
+    await assert.rejects(outputBudget(root,1,1,live,io),{message:'output_scan_failed',errno:'ENOENT',syscall:'lstat'});assert.equal(reads,live?3:1);
+  }
+});
+test('live output scan refuses root loss other filesystem errors unsafe entries and exceeded budgets without retries',async(t)=>{
+  await t.test('root ENOENT is not a vanished descendant',async()=>{
+    const root=await mkdtemp(path.join(tmpdir(),'sb-output-scan-'));await rm(root,{recursive:true});let reads=0;
+    await assert.rejects(outputBudget(root,1,1,true,{readdir:async dir=>{reads++;return readdir(dir,{withFileTypes:true});},lstat}),{errno:'ENOENT',syscall:'scandir'});assert.equal(reads,1);
+  });
+  await t.test('actual ENOTDIR does not retry',async()=>{
+    const root=await mkdtemp(path.join(tmpdir(),'sb-output-scan-')),nested=path.join(root,'entry');await mkdir(nested);let reads=0;
+    const io={readdir:async(dir:string)=>{reads++;return readdir(dir,{withFileTypes:true});},lstat:async(file:string)=>{const status=await lstat(file);if(file===nested){await rm(nested,{recursive:true});await writeFile(nested,'x');}return status;}};
+    await assert.rejects(outputBudget(root,1,1,true,io),{errno:'ENOTDIR',syscall:'scandir'});assert.equal(reads,2);
+  });
+  for(const kind of ['symlink','special','bytes','entries'])await t.test(kind,async()=>{
+    const root=await mkdtemp(path.join(tmpdir(),'sb-output-scan-'));let reads=0;
+    if(kind==='symlink')await symlink(root,path.join(root,'link'));
+    else if(kind==='special'){const {spawnSync}=await import('node:child_process');const made=spawnSync('/usr/bin/mkfifo',[path.join(root,'fifo')],{encoding:'utf8'});assert.equal(made.status,0,made.stderr);}
+    else await writeFile(path.join(root,'entry'),'xx');
+    assert.equal(await outputBudget(root,kind==='bytes'?1:16,kind==='entries'?0:8,true,{readdir:async dir=>{reads++;return readdir(dir,{withFileTypes:true});},lstat}),false);assert.equal(reads,1);
+  });
+});
+test('live output poll drains an in-flight scan before final decisions and never reports after stopping',async(t)=>{
+  for(const disappear of [false,true])await t.test(disappear?'pending filesystem failure':'pending complete scan',async()=>{
+    const root=await mkdtemp(path.join(tmpdir(),'sb-output-scan-'));await writeFile(path.join(root,'temporary'),'x');
+    let enter!:()=>void,release!:()=>void,scans=0,held=false;
+    const entered=new Promise<void>(resolve=>{enter=resolve;}),gate=new Promise<void>(resolve=>{release=resolve;}),events:string[]=[];
+    const scan:typeof outputBudget=async(directory,bytes,files,live)=>{scans++;return outputBudget(directory,bytes,files,live,{readdir:async dir=>{const entries=await readdir(dir,{withFileTypes:true});if(!held){held=true;enter();await gate;if(disappear)await rm(root,{recursive:true});}return entries;},lstat});};
+    const stop=startOutputBudgetPoll(root,16,8,reason=>events.push(reason),scan);
+    try{
+      await Promise.race([entered,delay(1000).then(()=>{throw Error('scan_did_not_start');})]);
+      const draining=stop().then(()=>{events.push('drained');});await new Promise<void>(resolve=>setImmediate(resolve));assert.equal(events.length,0);
+      release();await draining;assert.deepEqual(events,disappear?['output_validation','drained']:['drained']);
+      if(disappear)await assert.rejects(outputBudget(root,16,8),{errno:'ENOENT'});else assert.equal(await outputBudget(root,16,8),true);
+      events.push('final_decision');await delay(75);assert.deepEqual(events,disappear?['output_validation','drained','final_decision']:['drained','final_decision']);assert.equal(scans,1);
+    }finally{release();await stop();}
+  });
+});
+test('output validation failure evidence retains only bounded phase errno and syscall diagnostics',async()=>{
+  const f=await fixture(`const fs=await import('node:fs/promises');await fs.rm(invocation.outputDirectory,{recursive:true});await new Promise(()=>{});`);
+  const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,f.binding,f.input,{home:f.home});assert.equal(result.status,'failed');assert.equal(result.reason,'output_validation');
+  const manifest=JSON.parse(await readFile(result.manifest,'utf8'));assert.deepEqual(manifest.outputValidationFailure,{phase:'live',errno:'ENOENT',syscall:'scandir'});assert.ok(!JSON.stringify(manifest.outputValidationFailure).includes(f.root));
+  const final=await fixture(`await port.writeJson('undeclared.json',{x:1});return {outputs:[]};`);
+  const finalResult=await runLocalOperation('local.fixture.compare.v1',final.bundle,final.binding,final.input,{home:final.home});assert.equal(finalResult.status,'failed');assert.equal(finalResult.reason,'output_validation');
+  assert.deepEqual(JSON.parse(await readFile(finalResult.manifest,'utf8')).outputValidationFailure,{phase:'final',errno:'unknown',syscall:'unknown'});
 });
 
 test('HTML export refuses all in-bundle and alias shapes with an ordinary-output control',async()=>{
