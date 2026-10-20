@@ -38,7 +38,7 @@ import {
   type PullReport,
   type SharedBase,
 } from "@superbee/browser-local";
-import { assertSafeConceptId, conceptIdFromPath, FilesystemMutationLockError, isConventionId, InvalidInputError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
+import { queryHeads, listBlobs, assertSafeConceptId, conceptIdFromPath, FilesystemMutationLockError, isConventionId, InvalidInputError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
 import { decodePreparedBlobIntent, isOrdinaryBlobKey, type BlobIntentRecord, type BlobTargetScope } from "@superbee/core/storage";
 import { performHostedBlobDelivery } from "@superbee/core/hosted-client";
 import { createHostedBlobReadAdapter, createHostedBlobWriteAdapter } from "@superbee/core/hosted-transport";
@@ -61,6 +61,11 @@ import { commandFragment, commandLiteral, commandToken, type CommandText } from 
 import { CliError } from "../errors.js";
 import { BLOB_UNRECORDED_REFUSAL_CODES } from "@superbee/core/hosted-client";
 import { retirableBlobRefusal, retireBlobRefusals, BLOB_SYNC_META_KEY, recoverBlobPlacements, refreshBlobCheckout, blobHostDeletionsToken, readBlobSyncState, settleBlobSyncReceipt, projectBlobSyncReceipt, blobFrozenPhysicalMatches, decodeBlobSyncMap, readBlobConflict, resolveBlobConflict, settledBlobConflict, blobConflictMessage, type BlobConflictResolution, type BlobSyncSnapshot, type OfflineBlobAdmission, type BlobRefreshReport, type BlobCaptureContext } from "./blob-sync.js";
+import { ARTIFACT_META_PREFIX, ARTIFACT_ROWS, acknowledgedArtifactBlob, admitArtifactRecord, assertPublicationBinding, assertPublicationSource, decodePublication, initialArtifactOwner, originalArtifactRecord, publicationKey, publications, publicationScope, recoverArtifactRecord, type Publication, type InitialPlacementHold } from "./artifact.js";
+import { admitOfflineBlob } from "./blob-sync.js";
+import { assertActorAcceptedByBundle } from "../actor.js";
+import { readRegularFileNoFollowSync } from "../nofollow-read.js";
+import { slugifyTitle, firstFreeId } from "../commands/artifact.js";
 import { resolveHostedVia } from "./via.js";
 import { cliInvocation } from "../invocation.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
@@ -73,6 +78,7 @@ import { storeOkfVersion, withIdleCheckoutStore } from "./checkout-store.js";
 import { bundleAbsent } from "./refusals.js";
 import { buildRows, BUSY_REFUSAL_CODES, countRows, receiptFailure, rowsFailure, type NotSentReason, type SyncRow } from "./sync-rows.js";
 import {
+  walk,
   exportCheckout,
   folderConflictFor,
   folderConflicts,
@@ -162,7 +168,7 @@ your decision, 2 when the host refuses writes to the bundle, 1 for a pause or a 
 4 (AUTH_REQUIRED, with the sign-in link) when you must sign in.
 An uncertain blob request is looked up by its original identity. Absence alone does not
 authorize resubmission; it can remain unknown. Unknown ordinary-file outcomes do not use
---inspect/--resolve/--restore-deletes. Artifact commands remain refused in hosted checkouts.
+--inspect/--resolve/--restore-deletes. Artifact create acknowledges bytes before queuing its record; normal sync confirms that record.
 The blobs: token for --accept-deletes authorizes only its exact held outgoing write set, after
 person confirmation; this targeted delivery does not run unrelated sync work. The separate
 blobs: token for --take-host-deletions authorizes only a recorded refused incoming deletion set;
@@ -739,7 +745,7 @@ async function caseCollidingCreates(store: JournaledBackend): Promise<HeldFile[]
   return out;
 }
 
-async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes?: number, heldSink: { value?: { deletions: number; baseline: number } } = {}): Promise<PushOutcome> {
+async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes?: number, heldSink: { value?: { deletions: number; baseline: number } } = {}, publicationHolds: readonly InitialPlacementHold[] = []): Promise<PushOutcome> {
   const { store, local, binding, reader } = session;
   const acknowledged = new Map<string, string>();
   const deleted = new Set<string>();
@@ -760,9 +766,19 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
     },
     stream: (route, input, signal) => session.carrier.stream(route, input, signal),
   };
+  // Selection stays in front of resume/requeue as well as delivery. Revalidate original
+  // ownership each time; an updated state alone is not a successor or a visibility baseline.
+  const selectedStore = new Proxy(store, { get(inner, prop) {
+    if (prop === "listIntents") return async (states?: Parameters<JournaledBackend["listIntents"]>[0]) => {
+      const rows = await inner.listIntents(states);
+      const owners = await Promise.all(publicationHolds.map(h => initialArtifactOwner(store, session.projection, h.publication)));
+      return rows.filter(row => !owners.some(owner => owner && equalJournalValue(owner.intent, row)));
+    };
+    const value = Reflect.get(inner, prop, inner); return typeof value === "function" ? value.bind(inner) : value;
+  } });
   // Running sync is the person's decision to retry: a pause from an earlier run (sign-in, quota,
   // a withdrawn grant) is lifted and its refused changes are requeued under their identities.
-  await resume(local);
+  await resume(selectedStore);
   const via = resolveHostedVia(deps.auth.env);
   const transport = createWholeDocumentTransport({
     carrier,
@@ -791,7 +807,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
         reason: "convention_folder" as const,
         message: heldPathMessage(`${id}.md`, session.capabilities.definitionWrites),
       }));
-  const ordered = createsFirst(store, new Set(collisions.map((row) => row.id)), models);
+  const ordered = createsFirst(selectedStore, new Set(collisions.map((row) => row.id)), models);
   let signInRequired = false;
   const landed: Landed = { types: new Set(), governed: new Set(), conventionChanged: false };
   // A model-change refusal is resent at most once per document per run.
@@ -816,7 +832,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
     }
     if (pass === PUSH_PASSES - 1) break;
     const model = new Set<string>();
-    const requeued = await requeueRefused(store, (row) => {
+    const requeued = await requeueRefused(selectedStore, (row) => {
       if (busyRefusal(row)) return true;
       if (retried.has(row.target) || !definitionRetry(row, landed, session.okfVersion, models)) return false;
       model.add(row.target);
@@ -1117,6 +1133,89 @@ async function driveBlobRequests(session: Session, deps: HostedSyncDeps, options
   return out;
 }
 
+/** Blob ACK then local record admission. This command never pushes documents. */
+export async function queueHostedArtifact(binding: CheckoutBinding, input: { file: string; title: string; description?: string; actor: string }, partial: Partial<HostedSyncDeps>, resume: CommandText): Promise<Record<string, unknown>> {
+  const deps = hostedDeps(partial), signal = deps.write?.signal;
+  signal?.throwIfAborted();
+  let committedReceipt: Record<string, unknown> | undefined;
+  let placementFailure: unknown;
+  try { return await withSession(binding, deps, resume, async session => {
+    const { store, local, projection } = session;
+    signal?.throwIfAborted();
+    if (!session.capabilities.operations || session.capabilities.blobWrites !== "allowed") throw new CliError("CONFLICT", "host does not offer the identified blob/document writes Artifact needs");
+    await assertActorAcceptedByBundle(local.bundle, input.actor);
+    const all = await publications(store);
+    const source = path.resolve(deps.cwd, input.file), rel = path.relative(binding.path, source).split(path.sep).join("/");
+    let publication = all.find(p => p.entry === rel);
+    if (publication) {
+      assertPublicationBinding(publication, binding);
+      if (publication.title !== input.title || publication.actor !== input.actor || publication.description !== input.description) throw new CliError("CONFLICT", "Artifact arguments differ from the frozen publication; no new identity was selected");
+    } else {
+      const heads = await queryHeads(local.bundle, { prefix: "artifacts/" });
+      const blobs = await listBlobs(local.bundle, "artifacts/");
+      const remoteHeads = await session.reader.heads();
+      if (!remoteHeads) throw new CliError("CONFLICT", "Artifact needs a complete current record listing");
+      const remote = remoteHeads.heads.map(h => h.id);
+      const blobAdapter = createHostedBlobReadAdapter({ carrier: session.carrier, bundleId: binding.bundle_id, prefix: session.routes, signal: signal ?? new AbortController().signal, capabilities: () => Promise.resolve(session.capabilities) });
+      const remoteBlobs = (await blobAdapter.heads()).heads;
+      const taken = new Set([...heads.map(h => h.id), ...blobs.map(k => k.replace(/\.[^/.]+$/, "")), ...remote.filter(id => id.startsWith("artifacts/")), ...remoteBlobs.map(h => h.key.replace(/\.[^/.]+$/, "")), ...all.map(p => p.id)]);
+      const id = firstFreeId(slugifyTitle(input.title), taken), entry = `${id}.html`;
+      if (source !== path.join(binding.path, ...entry.split("/"))) throw new CliError("USAGE", "hosted Artifact requires its source at the canonical checkout target", { help: `copy the source to ${commandToken(path.join(binding.path, ...entry.split("/")))}, then ${cliInvocation()} artifact create ${commandToken(path.join(binding.path, ...entry.split("/")))} --title ${commandToken(input.title)} --actor ${commandToken(input.actor)} --dir ${commandToken(binding.path)}${input.description ? commandFragment` --description ${commandToken(input.description)}` : commandFragment``}` });
+      const file = readRegularFileNoFollowSync(source, { maximumBytes: 16 * 1024 * 1024 });
+      if (file.state !== "present") throw new CliError("CONFLICT", "Artifact source is unsafe or missing");
+      const doc = readRegularFileNoFollowSync(path.join(binding.path, `${id}.md`), { maximumBytes: 1 });
+      if (doc.state !== "missing") throw new CliError("CONFLICT", "Artifact record pathname already exists; no bytes were submitted");
+      const base = { schema: 1 as const, id, entry, scope: publicationScope(binding), binding: checkoutBindingDigest(binding.checkout_id), principal: binding.principal_id, title: input.title, ...(input.description === undefined ? {} : { description: input.description }), actor: input.actor, digest: digestOf(file.bytes), contentType: "text/html" as const, state: "blob_admitted" as const };
+      // Bound the complete eventual row before admitting any blob. The generated request has fixed length.
+      const candidate = decodePublication({ ...base, blobRequestId: mintRequestId() });
+      await publications(store, candidate);
+      signal?.throwIfAborted();
+      await admitOfflineBlob({ operation: "promote", key: entry, dir: binding.path, source, contentType: "text/html", home: deps.auth.home, cwd: deps.cwd }, { store, meta: { key: publicationKey(id), value: (blobRequestId, prepared) => { signal?.throwIfAborted(); const frozen = decodePreparedBlobIntent(prepared); if (frozen.intent.operationId !== "blobs.create.v1" || frozen.intent.version !== base.digest || frozen.intent.contentType !== base.contentType) throw new CliError("CONFLICT", "Artifact source changed before atomic admission; no request was admitted"); return decodePublication({ ...base, blobRequestId }); } } });
+      publication = decodePublication(await store.readMeta(publicationKey(id)));
+    }
+    assertPublicationSource(publication, binding.path);
+    if (publication.state === "blob_admitted") {
+      const declared = declaredHostedSyncGate(binding.path);
+      await driveBlobRequests(session, deps, { requestIds: [publication.blobRequestId], gatePresent: declared.kind !== "none", gate: async (fresh, count) => { await judgeHostedWrites(session, declared, resume, fresh, count); } });
+      const version = await acknowledgedArtifactBlob(store, publication);
+      if (!version) return { artifact: "blob_pending", id: publication.id, entry: publication.entry, blob_request_id: publication.blobRequestId, status: "incomplete", help: String(resume) };
+      assertPublicationSource(publication, binding.path);
+      signal?.throwIfAborted();
+      try { publication = await admitArtifactRecord(store, publication, version, session.capabilities.documentInputBytes ?? 1024 * 1024, signal); }
+      catch (error) { if (signal?.aborted) throw error; throw new CliError("CONFLICT", `blob '${publication.entry}' is acknowledged at ${version}; record is not queued: ${error instanceof Error ? error.message : String(error)}`, { details: { reason: "artifact_blob_acknowledged_record_not_queued", entry: publication.entry, entry_version: version, blob_request_id: publication.blobRequestId }, help: String(resume) }); }
+    }
+    // Capture only proved committed truth before placement or session cleanup can fail.
+    const committedRow = await originalArtifactRecord(store, publication);
+    const committedDoc = await store.readWithJournal(publication.id);
+    if (committedRow && committedRow.state !== "refused" && committedRow.state !== "conflict") committedReceipt = {
+      artifact: "record_pending", id: publication.id, entry: publication.entry,
+      entry_version: committedDoc.document?.doc.frontmatter.entry_version,
+      blob_request_id: publication.blobRequestId, record_request_id: publication.record!.requestId,
+      status: committedRow.state, help: String(resume),
+    };
+    try {
+      let hold: InitialPlacementHold | null = null;
+      // Once the record transaction commits, cancellation cannot retract it. Skip later
+      // placement and report the durable pending record instead of claiming an admission failure.
+      if (!signal?.aborted) {
+        try { hold = await recoverArtifactRecord(store, binding.path, projection, publication, signal); }
+        catch (error) { if (!signal?.aborted) throw error; }
+      }
+      await session.persist();
+      const row = await originalArtifactRecord(store, publication);
+      if (row?.state === "refused" || row?.state === "conflict") { committedReceipt = undefined; throw new CliError("CONFLICT", `Artifact record has retained ${row.state} evidence; acknowledged bytes remain at ${publication.entry}`, { details: { id: publication.id, entry: publication.entry, blob_request_id: publication.blobRequestId, record_request_id: row.requestId, state: row.state }, help: "inspect the original record conflict; do not recreate or delete its bytes automatically" }); }
+      const doc = await store.readWithJournal(publication.id);
+      return { artifact: row?.state === "acknowledged" ? "created" : "record_pending", id: publication.id, entry: publication.entry, entry_version: doc.document?.doc.frontmatter.entry_version, blob_request_id: publication.blobRequestId, record_request_id: publication.record!.requestId, status: row?.state ?? "unknown", ...(signal?.aborted ? { local_placement: "pending_after_cancellation" } : hold ? { local_placement: "held" } : {}), help: `bytes acknowledged; record queued. ${cliInvocation()} sync --dir ${commandToken(binding.path)}` };
+    } catch (error) { placementFailure = error; throw error; }
+  }); } catch (error) {
+    if (!committedReceipt) throw error;
+    throw Object.assign(new CliError("RUNTIME", "Artifact record is durable, but local placement or session persistence failed", {
+      details: { ...committedReceipt, reason: "artifact_record_committed_local_placement_incomplete", local_placement: "local_placement_incomplete" },
+      help: String(resume),
+    }), { cause: placementFailure ?? error, ...(placementFailure !== undefined && placementFailure !== error ? { cleanupCause: error } : {}) });
+  }
+}
+
 /** Exact-request command/confirmation path: no scan, pull, export, document push or root write. */
 export async function deliverHostedBlobRequests(binding: CheckoutBinding, requestIds: readonly string[] | undefined, partial: Partial<HostedSyncDeps> = {}, acceptToken?: string, resume?: CommandText): Promise<BlobDriveReport> {
   const deps = hostedDeps(partial), ids = requestIds === undefined ? undefined : [...requestIds];
@@ -1217,7 +1316,27 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // An earlier run that died mid-push left its claims in flight; this run holds the lock, so no
     // push is live, and each such change is looked up before it is ever sent again.
     await reclaimInFlight(local);
+    const publicationHolds: InitialPlacementHold[] = [];
+    const recoveryRows = await store.listMeta(ARTIFACT_META_PREFIX);
+    if (recoveryRows.length <= ARTIFACT_ROWS) for (const row of recoveryRows) {
+      let publication: Publication;
+      try {
+        publication = decodePublication(row.value);
+        if (row.key !== publicationKey(publication.id)) continue;
+        assertPublicationBinding(publication, binding);
+      } catch { continue; } // Invalid/foreign replay evidence never owns ordinary edits.
+      const hold = await recoverArtifactRecord(store, binding.path, projection, publication);
+      if (hold) publicationHolds.push(hold);
+    }
+    await session.persist();
+    const currentHolds: InitialPlacementHold[] = [];
+    for (const hold of publicationHolds) {
+      const current = await initialArtifactOwner(store, projection, hold.publication);
+      if (equalJournalValue(current, hold)) currentHolds.push(hold);
+    }
+    const scanOnly = currentHolds.length ? new Set((await walk(binding.path)).filter(row => row.rel.endsWith(".md") && !row.symlink).map(row => row.rel.slice(0, -3)).concat(Object.keys(projection.files)).filter(id => !currentHolds.some(h => h.publication.id === id))) : undefined;
     const scan = await scanCheckout({
+      ...(scanOnly ? { only: scanOnly } : {}),
       blobs: await blobCaptureContext(session, deps),
       folder: binding.path,
       bundleId: binding.bundle_id,
@@ -1272,7 +1391,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     let outcome: PushOutcome;
     const heldSink: { value?: { deletions: number; baseline: number } } = {};
     try {
-      outcome = await pushChanges(session, deps, scan.acceptDeletes, heldSink);
+      outcome = await pushChanges(session, deps, scan.acceptDeletes, heldSink, currentHolds);
     } catch (error) {
       // The deletes the host held before the push failed stay parked; keep its counts with them.
       await recordHostHold(store, heldSink.value, scan.hold).catch(() => undefined);
@@ -1320,7 +1439,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       unsettled: await store.listIntents(UNSETTLED_STATES),
       acknowledged: outcome.acknowledged,
       deleted: inbound,
-      held: [...scan.held.filter(row => !blobOutcome.rows.some(blob => blob.key === row.id && blob.key === row.path)), ...exported.held, ...(blobs?.held.filter(row => !blobOutcome.rows.some(blob => blob.key === row.key)).map(row => ({ id: row.key, path: row.key, reason: row.reason, message: row.message })) ?? []), ...unsafeIdRows(session.unsafeIds)],
+      held: [...currentHolds.map(h => ({ id: h.publication.id, path: `${h.publication.id}.md`, reason: "not_sendable" as const, message: "initial Artifact record placement is held; original request was not sent" })), ...scan.held.filter(row => !blobOutcome.rows.some(blob => blob.key === row.id && blob.key === row.path)), ...exported.held, ...(blobs?.held.filter(row => !blobOutcome.rows.some(blob => blob.key === row.key)).map(row => ({ id: row.key, path: row.key, reason: row.reason, message: row.message })) ?? []), ...unsafeIdRows(session.unsafeIds)],
       blocked: outcome.collisions,
       accessWithdrawn: outcome.accessWithdrawn,
       notSent: outcome.notSent,

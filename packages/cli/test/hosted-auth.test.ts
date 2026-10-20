@@ -900,6 +900,8 @@ test("only explicit hosted-session owners and binding-gated checkout consumers i
         path.join("hosted", "sync.ts"),
         // Opaque-file commands construct session defaults only after durable admission returns a hosted binding.
         path.join("commands", "promote.ts"),
+        // Artifact constructs session defaults only after its checkout binding is confirmed.
+        path.join("commands", "artifact.ts"),
         path.join("commands", "delete.ts"),
         // Hosted-checkout triggers: each reaches the session only for a folder bound as a hosted checkout.
         "autopull.ts",

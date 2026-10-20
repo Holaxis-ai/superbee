@@ -140,9 +140,10 @@ test("hosted ordinary-file help distinguishes frozen delivery from document reco
   assert.match(DELETE_USAGE, /delivery\s+may remain incomplete/);
   assert.match(DELETE_USAGE, /Recreated, dirty or unknown targets are held/);
   assert.match(DELETE_USAGE, /not an unconditional\s+or absent-key success path/);
-  for (const usage of [HOSTED_SYNC_USAGE, PROMOTE_USAGE, DELETE_USAGE]) assert.match(usage, /Artifact commands\s+remain refused/);
+  for (const usage of [HOSTED_SYNC_USAGE, PROMOTE_USAGE, DELETE_USAGE]) assert.match(usage, /Artifact create acknowledges bytes before queuing its record; normal sync confirms that record/);
   const artifact = HOSTED_CHECKOUT_REFUSALS.find(row => row.words.join(" ") === "artifact *");
   assert.equal(artifact?.reason, "not_syncable");
-  assert.match(artifact!.why, /hosted Artifact publication is not supported yet/);
+  assert.equal(artifact!.when!(["create"]), false);
+  assert.equal(artifact!.when!(["unknown"]), true);
   assert.doesNotMatch(artifact!.why, /blobs.*do not sync/);
 });

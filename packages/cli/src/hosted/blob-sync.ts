@@ -495,7 +495,7 @@ export interface OfflineBlobAdmission {
 export async function admitOfflineBlob(options: {
   operation: "promote" | "delete"; key: string; dir?: string; source?: string;
   expectedVersion?: string; contentType?: string; home: string; cwd: string;
-}): Promise<OfflineBlobAdmission | null> {
+}, locked?: { store: import("@superbee/core/file-journaled-backend").FileJournaledBackend; meta: { key: string; value: (requestId: string, prepared: string) => unknown } }): Promise<OfflineBlobAdmission | null> {
   const { resolveLocalBundleTarget } = await import("../bundle.js");
   const { bindingForPath, checkoutBindingDigest } = await import("./binding.js");
   const { readCheckoutMarker } = await import("./marker.js");
@@ -516,12 +516,18 @@ export async function admitOfflineBlob(options: {
   if (!isOrdinaryBlobKey(input.key)) throw refuse("ordinary-file admission refuses this reserved, document, model, View or publisher-owned key");
   const file = path.join(binding.path, ...input.key.split("/"));
   if (input.operation === "promote" && (!input.source || path.resolve(input.cwd, input.source) !== file)) throw new CliError("USAGE", "hosted promote requires the source to be the checkout target pathname", { help: `copy the source into ${commandToken(file)}, then promote that target with --doc-key ${commandToken(input.key)}` });
-  const result = await withIdleCheckoutStore(binding, input.home, async store => {
+  const admit = async (store: import("@superbee/core/file-journaled-backend").FileJournaledBackend) => {
     if (!equalJournalValue(await bindingForPath(input.home, binding.path), binding)) throw refuse("checkout binding or folder changed before admission");
     const scope: BlobTargetScope = { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null };
     const recovery = await recoverBlobPlacements(binding.path, store, scope);
     if (recovery.held.some(row => row.key === null || row.key === input.key)) throw refuse("ordinary-file placement evidence must be recovered before admission");
     let snapshot = await readBlobSyncState(store, input.key, scope), entry = snapshot.map.entries.find(row => row.key === input.key);
+    if (locked) {
+      const journal = await store.readBlobWithJournal(input.key, { meta: [BLOB_SYNC_META_KEY, locked.meta.key] });
+      if (journal.meta.has(locked.meta.key) || journal.intents.length) throw refuse("publication already has durable evidence");
+      snapshot = { journal, map: decodeBlobSyncMap(journal.meta.get(BLOB_SYNC_META_KEY), scope) };
+      entry = snapshot.map.entries.find(row => row.key === input.key);
+    }
     if (entry?.placement) throw refuse("this file has unresolved placement evidence");
     if (findFilePathCollision([...snapshot.map.entries.map(row => row.key), input.key])) throw refuse("this key aliases another ordinary-file projection owner");
     if (!await blobPathSafe(binding.path, input.key)) throw refuse("this file has an unsafe parent");
@@ -591,13 +597,14 @@ export async function admitOfflineBlob(options: {
     let record: BlobIntentRecord;
     try {
       if (!equalJournalValue(await bindingForPath(input.home, binding.path), binding)) throw refuse("checkout binding or folder changed before durable admission");
-      record = await store.admitPreparedBlob(prepared, { guard: snapshot.journal.guard, ...(input.operation === "promote" ? { meta: [{ key: BLOB_SYNC_META_KEY, value: encodeBlobSyncMap(next) }] } : {}) }); }
+      record = await store.admitPreparedBlob(prepared, { guard: snapshot.journal.guard, ...(input.operation === "promote" ? { meta: [{ key: BLOB_SYNC_META_KEY, value: encodeBlobSyncMap(next) }, ...(locked ? [{ key: locked.meta.key, value: locked.meta.value(decodePreparedBlobIntent(prepared).identity.requestId, prepared) }] : [])] } : {}) }); }
     catch (error) {
       if (removed) throw Object.assign(new CliError("TRANSIENT", "the file was removed locally but its deletion was not submitted or durably admitted; sync can capture its genuine absence", { details: { reason: "blob_delete_local_unsubmitted", key: input.key, local_removed: true, submitted: false }, help: "keep the preserved baseline and run sync to capture the local deletion" }), { cause: error });
       throw error;
     }
     return { binding, requestIds: [record.requestId], resumed: false, receipt: { [input.operation]: "pending", status: "incomplete", route: "blob", key: input.key, request_id: record.requestId, submitted: false, ...(contentType === undefined ? { local_removed: removed } : { content_type: contentType, version: physicalDigest }) } };
-  }, { readOnly: false });
+  };
+  const result = locked ? await admit(locked.store) : await withIdleCheckoutStore(binding, input.home, admit, { readOnly: false });
   if (result === null) throw refuse("checkout is busy; nothing was admitted", "sync_busy");
   return result;
 }
