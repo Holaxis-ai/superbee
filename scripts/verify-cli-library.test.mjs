@@ -232,7 +232,24 @@ test('local operation imports require the serialized child and accepted-entry de
     await assert.rejects(assertClosedCliImports(withReader.replace('localOperationChild(readBytes)', 'localOperationChild(unreviewedReader)')));
   }
   const replace = (pattern, value) => { const changed=subject.replace(pattern,value);assert.notEqual(changed,subject,'mutation must apply');return changed; };
+  const capture = subject.match(/(request\d*) = (message\d*);/);
+  assert.ok(capture);
+  const [,requestName,messageName] = capture;
+  const afterCapture = code => replace(capture[0],capture[0]+' '+code);
   for (const [label,candidate] of [
+    ['Astra accepted request replaced',afterCapture(`${requestName} = {...${messageName}, entryPath: '/tmp/not-the-accepted-entry.mjs'};`)],
+    ['request escapes through alias',afterCapture(`const alias = ${requestName}; alias.entryPath = 'other';`)],
+    ['message escapes through alias',afterCapture(`const alias = ${messageName}; alias.entryPath = 'other';`)],
+    ['initialization guard reset',afterCapture('initialized = false;')],
+    ['message root replaced',afterCapture(`${messageName} = {...${messageName}, entryPath: 'other'};`)],
+    ['message mutated through call',afterCapture(`Object.assign(${messageName}, {entryPath:'other'});`)],
+    ['request mutated through defineProperty',afterCapture(`Object.defineProperty(${requestName}, 'entryPath', {value:'other'});`)],
+    ['computed entry access',afterCapture(`${requestName}['entryPath'] = 'other';`)],
+    ['shadow request binding',afterCapture(`{ let ${requestName}; }`)],
+    ['capture moved after import',replace(capture[0],';')+'\n'+capture[0]],
+    ['factory before import',replace(/(const module\d* = await import\([^;]+;)(\s*)(const capabilities\d* = await module\d*\.createLocalCapabilities\([^;]+;)/,'$3$2$1')],
+    ['execute before descriptor guard',replace(/(if \(!Array\.isArray\(descriptors\d*\)[^\n]+\n)(\s*child\d*\.send\(\{ type: "execute" \}\);)/,'$2\n$1')],
+    ['selection field changed',replace(/const (selection\d*) = await selectLocalOperation\([^;]+;/,"$& $1.entryPath = 'other';")],
     ['unknown import',subject+'\nawait import(otherEntry);'],
     ['same accepted expression outside child',subject+'\nawait import(pathToFileURL(request.entryPath).href);'],
     ['entry is caller input',replace(/pathToFileURL\d*\(request\d*\.entryPath\)/,'pathToFileURL(message.entryPath)')],

@@ -137,9 +137,63 @@ function localOperationImports(source, external) {
   requireStatement(statements,'if (!Array.isArray(capabilities) || capabilities.length > 32) throw Error("invalid_capabilities");');
   requireStatement(statements,'const descriptors = capabilities.map(({ execute, mintSources, ...descriptor }) => descriptor);');
   requireStatement(statements,'send({ type: "ready", descriptors });');
+  assert.equal(text(statements[0]), expected('initialized = true;'), 'initialization guard precedes request capture');
+  assert.equal(text(statements[1]), expected('request = message;'), 'accepted request captured before port construction/import');
+  const importIndex = statements.findIndex(node => ts.isVariableStatement(node) && node.declarationList.declarations.includes(declaration));
+  assert.ok(importIndex >= 2);
+  const initializationTail = [
+    'const module = await import(pathToFileURL(request.entryPath).href);',
+    'const capabilities = await module.createLocalCapabilities({ port, resources: request.resources, invocation: request.invocation });',
+    'if (!Array.isArray(capabilities) || capabilities.length > 32) throw Error("invalid_capabilities");',
+    'const descriptors = capabilities.map(({ execute, mintSources, ...descriptor }) => descriptor);',
+    'if (Buffer.byteLength(JSON.stringify(descriptors)) > request.protocolBytes) throw Error("descriptor_limit");',
+    'request.capabilities = capabilities;',
+    'send({ type: "ready", descriptors });',
+  ];
+  assert.deepEqual(statements.slice(importIndex).map(text), initializationTail.map(expected), 'ordered child import/factory/descriptor handshake');
+
   assert.ok(ts.isIfStatement(branch.elseStatement));
   assert.equal(text(branch.elseStatement.expression),'message.type === "execute" && request?.capabilities');
   const childNodes=all.filter(node=>node.getStart(source)>=loader.getStart(source)&&node.end<=loader.end);
+  const rootReferences = (nodes, name) => nodes.filter(node => ts.isIdentifier(node) && names.get(node.text) === name
+    && !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node));
+  for (const node of rootReferences(childNodes, 'request')) {
+    const parent = node.parent;
+    if (ts.isVariableDeclaration(parent) && parent.name === node && parent.initializer === undefined) continue;
+    if (ts.isBinaryExpression(parent) && parent.left === node && text(parent) === 'request = message') continue;
+    assert.ok(ts.isPropertyAccessExpression(parent) && parent.expression === node, 'request identity cannot escape or be replaced');
+    assert.ok(['invocation','protocolBytes','tools','profile','entryPath','resources','capabilities','capabilityName','input','maximumOutputBytes'].includes(parent.name.text), 'unknown request identity access');
+    const use = parent.parent;
+    if (ts.isBinaryExpression(use) && use.left === parent && ts.isAssignmentOperator(use.operatorToken.kind))
+      assert.equal(text(use),'request.capabilities = capabilities','request fields cannot change before import');
+    if (ts.isDeleteExpression(use)) assert.equal(text(use),'delete request.capabilities');
+    assert.ok(!ts.isPostfixUnaryExpression(use) && !ts.isPrefixUnaryExpression(use), 'request fields cannot be incremented');
+  }
+  const messageReferences = rootReferences(childNodes, 'message');
+  assert.equal(messageReferences.filter(node => ts.isParameter(node.parent) && node.parent.name === node).length,1,'one message callback parameter');
+  const parameter=messageReferences.find(node=>ts.isParameter(node.parent)&&node.parent.name===node).parent;
+  const callback=parameter.parent;
+  assert.ok(ts.isArrowFunction(callback)&&callback.parameters.length===1&&ts.isCallExpression(callback.parent)&&callback.parent.arguments[1]===callback&&text(callback.parent.expression)==='process.on'&&ts.isStringLiteral(callback.parent.arguments[0])&&callback.parent.arguments[0].text==='message','message is the IPC callback parameter');
+
+  for (const node of messageReferences) {
+    const parent = node.parent;
+    if (ts.isParameter(parent) && parent.name === node) continue;
+    if (ts.isBinaryExpression(parent) && parent.right === node && text(parent) === 'request = message') continue;
+    assert.ok(ts.isPropertyAccessExpression(parent) && parent.expression === node && parent.name.text === 'type', 'message identity cannot escape or be replaced');
+    assert.ok(ts.isBinaryExpression(parent.parent) && parent.parent.left === parent && parent.parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken, 'message type is read only');
+  }
+  assert.equal(rootReferences(childNodes,'request').filter(node => ts.isVariableDeclaration(node.parent) && node.parent.name === node).length,1,'one request binding');
+  const requestDeclaration=rootReferences(childNodes,'request').find(node=>ts.isVariableDeclaration(node.parent)&&node.parent.name===node).parent;
+  assert.equal(requestDeclaration.parent.parent.parent,loader.body,'request binding belongs to child scope');
+  assert.deepEqual(branch.elseStatement.thenStatement.statements.slice(0,2).map(text), ['const capabilities = request.capabilities;', 'delete request.capabilities;'].map(expected),'execute consumes the single captured capability list');
+  const capabilityWrites=childNodes.filter(node=>ts.isBinaryExpression(node)&&ts.isPropertyAccessExpression(node.left)&&text(node.left)==='request.capabilities'&&ts.isAssignmentOperator(node.operatorToken.kind));
+  assert.equal(capabilityWrites.length,1,'one initialization capability assignment');
+
+  assert.equal(rootReferences(childNodes,'request').filter(node => ts.isBinaryExpression(node.parent) && node.parent.left === node).length,1,'one request capture');
+  const initializationReferences=childNodes.filter(node=>ts.isIdentifier(node)&&/^initialized\d*$/.test(node.text));
+  assert.equal(initializationReferences.length,3,'initialization state has one declaration, guard and write');
+  assert.equal(initializationReferences.filter(node=>ts.isVariableDeclaration(node.parent)&&node.parent.name===node&&node.parent.initializer?.kind===ts.SyntaxKind.FalseKeyword).length,1);
+  assert.equal(initializationReferences.filter(node=>ts.isBinaryExpression(node.parent)&&node.parent.left===node&&node.parent.operatorToken.kind===ts.SyntaxKind.EqualsToken&&node.parent.right.kind===ts.SyntaxKind.TrueKeyword).length,1);
   const entryReads=childNodes.filter(node=>ts.isPropertyAccessExpression(node)&&node.name.text==='entryPath');
   assert.equal(entryReads.length,1,'accepted child entry cannot be rewritten');
   const executions=childNodes.filter(node=>ts.isCallExpression(node)&&ts.isPropertyAccessExpression(node.expression)&&node.expression.name.text==='execute');
@@ -160,6 +214,9 @@ function localOperationImports(source, external) {
   requireStatement(parent,'const selection = await selectLocalOperation(operation, home);');
   requireStatement(parent,'if (!selection) throw refuse("unknown_local_operation");');
   requireStatement(parent,'if (binding.v !== 1 || binding.bundle !== bundle || binding.operation !== operation || binding.pluginDigest !== selection.digest || binding.generation !== selection.generation || canonicalJson(binding.capability) !== canonicalJson(selection.capability)) throw refuse("binding_changed_rebind_required");');
+  const selectionIndex=parent.findIndex(node=>text(node)===expected('const selection = await selectLocalOperation(operation, home);'));
+  const rebindIndex=parent.findIndex(node=>text(node).includes('binding_changed_rebind_required'));
+  assert.ok(selectionIndex>=0&&rebindIndex>selectionIndex&&parent.indexOf(launch)>rebindIndex,'accepted selection/rebind precede child launch');
   const initialize=all.filter(node=>ts.isCallExpression(node)&&text(node).startsWith('child.send({ type: "initialize",'));
   assert.equal(initialize.length,1,'one accepted-entry initialize message');
   assert.equal(text(initialize[0]),'child.send({ type: "initialize", entryPath: selection.entryPath, capabilityName: selection.capability.name, maximumOutputBytes, protocolBytes: DEFAULT_MAXIMUM_OUTPUT_BYTES, tools: binding.tools, resources, profile, invocation: { id, outputDirectory, assetDirectory: selection.rootPath, profile: binding.profile }, input: input.settings })');
@@ -167,6 +224,21 @@ function localOperationImports(source, external) {
   assert.equal(ready.length,1,'one parent descriptor authorization');
   requireStatement(ready[0].thenStatement.statements,'if (!Array.isArray(descriptors) || Buffer.byteLength(JSON.stringify(descriptors)) > DEFAULT_MAXIMUM_OUTPUT_BYTES || canonicalJson(descriptors) !== canonicalJson(selection.capabilities)) return terminate("descriptor_changed");');
   requireStatement(ready[0].thenStatement.statements,'child.send({ type: "execute" });');
+  assert.deepEqual(ready[0].thenStatement.statements.map(text), [
+    'const descriptors = message.descriptors;',
+    'if (!Array.isArray(descriptors) || Buffer.byteLength(JSON.stringify(descriptors)) > DEFAULT_MAXIMUM_OUTPUT_BYTES || canonicalJson(descriptors) !== canonicalJson(selection.capabilities)) return terminate("descriptor_changed");',
+    'child.send({ type: "execute" });',
+  ].map(expected), 'parent descriptor guard precedes the sole execute authorization');
+  const ownerNodes=all.filter(node=>node.getStart(source)>=owner.getStart(source)&&node.end<=owner.end);
+  for (const node of rootReferences(ownerNodes,'selection')) {
+    const parent=node.parent;
+    if(ts.isVariableDeclaration(parent)&&parent.name===node)continue;
+    if(ts.isPrefixUnaryExpression(parent)&&parent.operator===ts.SyntaxKind.ExclamationToken)continue;
+    assert.ok(ts.isPropertyAccessExpression(parent)&&parent.expression===node,'accepted selection cannot escape or be replaced');
+    const use=parent.parent;
+    assert.ok(!(ts.isBinaryExpression(use)&&use.left===parent&&ts.isAssignmentOperator(use.operatorToken.kind))&&!ts.isDeleteExpression(use)&&!ts.isPostfixUnaryExpression(use)&&!ts.isPrefixUnaryExpression(use),'accepted selection fields are read only');
+  }
+
   assert.equal(all.filter(node=>ts.isCallExpression(node)&&text(node)==='child.send({ type: "execute" })').length,1,'single parent execute authorization');
   return admitted;
 }
