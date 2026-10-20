@@ -1137,7 +1137,9 @@ async function driveBlobRequests(session: Session, deps: HostedSyncDeps, options
 export async function queueHostedArtifact(binding: CheckoutBinding, input: { file: string; title: string; description?: string; actor: string }, partial: Partial<HostedSyncDeps>, resume: CommandText): Promise<Record<string, unknown>> {
   const deps = hostedDeps(partial), signal = deps.write?.signal;
   signal?.throwIfAborted();
-  return withSession(binding, deps, resume, async session => {
+  let committedReceipt: Record<string, unknown> | undefined;
+  let placementFailure: unknown;
+  try { return await withSession(binding, deps, resume, async session => {
     const { store, local, projection } = session;
     signal?.throwIfAborted();
     if (!session.capabilities.operations || session.capabilities.blobWrites !== "allowed") throw new CliError("CONFLICT", "host does not offer the identified blob/document writes Artifact needs");
@@ -1182,19 +1184,36 @@ export async function queueHostedArtifact(binding: CheckoutBinding, input: { fil
       try { publication = await admitArtifactRecord(store, publication, version, session.capabilities.documentInputBytes ?? 1024 * 1024, signal); }
       catch (error) { if (signal?.aborted) throw error; throw new CliError("CONFLICT", `blob '${publication.entry}' is acknowledged at ${version}; record is not queued: ${error instanceof Error ? error.message : String(error)}`, { details: { reason: "artifact_blob_acknowledged_record_not_queued", entry: publication.entry, entry_version: version, blob_request_id: publication.blobRequestId }, help: String(resume) }); }
     }
-    let hold: InitialPlacementHold | null = null;
-    // Once the record transaction commits, cancellation cannot retract it. Skip later
-    // placement and report the durable pending record instead of claiming an admission failure.
-    if (!signal?.aborted) {
-      try { hold = await recoverArtifactRecord(store, binding.path, projection, publication, signal); }
-      catch (error) { if (!signal?.aborted) throw error; }
-    }
-    await session.persist();
-    const row = await originalArtifactRecord(store, publication);
-    if (row?.state === "refused" || row?.state === "conflict") throw new CliError("CONFLICT", `Artifact record has retained ${row.state} evidence; acknowledged bytes remain at ${publication.entry}`, { details: { id: publication.id, entry: publication.entry, blob_request_id: publication.blobRequestId, record_request_id: row.requestId, state: row.state }, help: "inspect the original record conflict; do not recreate or delete its bytes automatically" });
-    const doc = await store.readWithJournal(publication.id);
-    return { artifact: row?.state === "acknowledged" ? "created" : "record_pending", id: publication.id, entry: publication.entry, entry_version: doc.document?.doc.frontmatter.entry_version, blob_request_id: publication.blobRequestId, record_request_id: publication.record!.requestId, status: row?.state ?? "unknown", ...(signal?.aborted ? { local_placement: "pending_after_cancellation" } : hold ? { local_placement: "held" } : {}), help: `bytes acknowledged; record queued. ${cliInvocation()} sync --dir ${commandToken(binding.path)}` };
-  });
+    // Capture only proved committed truth before placement or session cleanup can fail.
+    const committedRow = await originalArtifactRecord(store, publication);
+    const committedDoc = await store.readWithJournal(publication.id);
+    if (committedRow && committedRow.state !== "refused" && committedRow.state !== "conflict") committedReceipt = {
+      artifact: "record_pending", id: publication.id, entry: publication.entry,
+      entry_version: committedDoc.document?.doc.frontmatter.entry_version,
+      blob_request_id: publication.blobRequestId, record_request_id: publication.record!.requestId,
+      status: committedRow.state, help: String(resume),
+    };
+    try {
+      let hold: InitialPlacementHold | null = null;
+      // Once the record transaction commits, cancellation cannot retract it. Skip later
+      // placement and report the durable pending record instead of claiming an admission failure.
+      if (!signal?.aborted) {
+        try { hold = await recoverArtifactRecord(store, binding.path, projection, publication, signal); }
+        catch (error) { if (!signal?.aborted) throw error; }
+      }
+      await session.persist();
+      const row = await originalArtifactRecord(store, publication);
+      if (row?.state === "refused" || row?.state === "conflict") { committedReceipt = undefined; throw new CliError("CONFLICT", `Artifact record has retained ${row.state} evidence; acknowledged bytes remain at ${publication.entry}`, { details: { id: publication.id, entry: publication.entry, blob_request_id: publication.blobRequestId, record_request_id: row.requestId, state: row.state }, help: "inspect the original record conflict; do not recreate or delete its bytes automatically" }); }
+      const doc = await store.readWithJournal(publication.id);
+      return { artifact: row?.state === "acknowledged" ? "created" : "record_pending", id: publication.id, entry: publication.entry, entry_version: doc.document?.doc.frontmatter.entry_version, blob_request_id: publication.blobRequestId, record_request_id: publication.record!.requestId, status: row?.state ?? "unknown", ...(signal?.aborted ? { local_placement: "pending_after_cancellation" } : hold ? { local_placement: "held" } : {}), help: `bytes acknowledged; record queued. ${cliInvocation()} sync --dir ${commandToken(binding.path)}` };
+    } catch (error) { placementFailure = error; throw error; }
+  }); } catch (error) {
+    if (!committedReceipt) throw error;
+    throw Object.assign(new CliError("RUNTIME", "Artifact record is durable, but local placement or session persistence failed", {
+      details: { ...committedReceipt, reason: "artifact_record_committed_local_placement_incomplete", local_placement: "local_placement_incomplete" },
+      help: String(resume),
+    }), { cause: placementFailure ?? error, ...(placementFailure !== undefined && placementFailure !== error ? { cleanupCause: error } : {}) });
+  }
 }
 
 /** Exact-request command/confirmation path: no scan, pull, export, document push or root write. */

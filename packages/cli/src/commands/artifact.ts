@@ -163,7 +163,16 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
       const { queueHostedArtifact } = await import("../hosted/sync.js");
       const description = (values.description as string | undefined)?.trim();
       const resume = commandFragment`${cliInvocation()} artifact create ${commandToken(path.resolve(cwd, file))} --title ${commandToken(title)} --actor ${commandToken(actor)} --dir ${commandToken(binding.path)}${description ? commandFragment` --description ${commandToken(description)}` : commandFragment``}`;
-      const receipt = await queueHostedArtifact(binding, { file, title, actor, ...(description ? { description } : {}) }, { ...deps.hosted, auth: deps.hosted?.auth ?? defaultHostedAuthDeps(home), cwd, stdout }, resume);
+      let receipt: Record<string, unknown>;
+      try {
+        receipt = await queueHostedArtifact(binding, { file, title, actor, ...(description ? { description } : {}) }, { ...deps.hosted, auth: deps.hosted?.auth ?? defaultHostedAuthDeps(home), cwd, stdout }, resume);
+      } catch (error) {
+        if (error instanceof CliError && error.details?.reason === "artifact_record_committed_local_placement_incomplete") {
+          stdout(render(error.details, mode));
+          throw Object.assign(new CliError(error.code, error.message, { details: error.details, help: error.help, handled: true }), { cause: error });
+        }
+        throw error;
+      }
       stdout(render(receipt, mode));
       if (receipt.artifact === "blob_pending") throw new CliError("TRANSIENT", "Artifact blob outcome is unresolved; record was not queued", { details: receipt, handled: true, help: String(resume) });
       return;

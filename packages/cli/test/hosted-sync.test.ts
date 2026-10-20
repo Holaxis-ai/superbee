@@ -2421,3 +2421,45 @@ test("Artifact cancellation after awaited host preflight precedes new blob reser
   try { assert.deepEqual(await publications(store), []); assert.deepEqual(await store.listBlobIntents(), []); assert.deepEqual(await store.listIntents(), []); } finally { await store.close(); }
   assert.equal(wire.calls.length, 0);
 });
+
+test('independent QA: projection persistence failure after durable record admission reopens exact record',async()=>{
+ const h=await harness(),wire=blobAuthority(h),file=path.join(h.folder,'artifacts/persist.html');await mkdir(path.dirname(file),{recursive:true});await writeFile(file,'frozen');
+ const b=(await bindingForPath(h.home,h.folder))!,pf=path.join(checkoutDir(h.home,b.checkout_id),'projection.json'),saved=await readFile(pf);const original=FileJournaledBackend.prototype.writeJournaled;let injected=false;
+ FileJournaledBackend.prototype.writeJournaled=async function(id,doc,options){const result=await original.call(this,id,doc,options);if(id==='artifacts/persist'&&!injected){injected=true;await unlink(pf);await mkdir(pf);}return result;};
+ const out:string[]=[],args=['create',file,'--title','Persist','--actor','process:qa','--dir',h.folder,'--json'];
+ try{await assert.rejects(artifact(args,commandDeps(h,wire,out)), (error: unknown) => {
+   assert.ok(error instanceof CliError); assert.equal(error.handled,true); assert.notEqual(error.exitCode,0);
+   const committedFailure=(error as Error).cause as Error & {cleanupCause?:unknown};
+   assert.ok(committedFailure.cause instanceof Error); assert.ok(committedFailure.cleanupCause instanceof Error); return true;
+ });}finally{FileJournaledBackend.prototype.writeJournaled=original;await rm(pf,{recursive:true});await writeFile(pf,saved);}
+ assert.ok(injected);assert.ok(out.some(text => text.includes('record_pending') && text.includes('local_placement_incomplete')), 'postcommit projection failure must emit promised record_pending/local_placement_incomplete receipt');const state=await (async()=>{const store=await FileJournaledBackend.open({directory:checkoutStoreDir(h.home,b.checkout_id)});try{return {p:(await publications(store))[0],blobs:await store.listBlobIntents(),intents:await store.listIntents()};}finally{await store.close();}})();assert.equal(state.p!.state,'record_admitted');assert.equal(state.blobs[0]!.state,'acknowledged');assert.equal(state.intents.length,1);assert.equal(h.host.writes.length,0);
+ const failedReceipt=JSON.parse(out.at(-1)!);assert.equal(failedReceipt.record_request_id,state.p!.record!.requestId);assert.equal(failedReceipt.blob_request_id,state.p!.blobRequestId);
+ await artifact(args,commandDeps(h,wire,out));const receipt=JSON.parse(out.at(-1)!);assert.equal(receipt.artifact,'record_pending');assert.equal(receipt.record_request_id,state.p!.record!.requestId);assert.equal(receipt.blob_request_id,state.p!.blobRequestId);assert.equal(wire.calls.length,1);assert.equal(h.host.writes.length,0);
+ h.fetch=wire.fetch;await runSync(h);const md=path.join(h.folder,'artifacts/persist.md');await writeFile(md,(await readFile(md,'utf8')).replace('title: Persist','title: Later'));await runSync(h);await runSync(h);assert.equal(h.host.docs.get('artifacts/persist')!.frontmatter.title,'Later');await unlink(md);await runSync(h);await runSync(h);assert.ok(!h.host.docs.has('artifacts/persist'));
+});
+
+
+test("Artifact final session cleanup failure retains committed receipt and original cause", async () => {
+  const h = await harness(), wire = blobAuthority(h), file = path.join(h.folder, "artifacts/cleanup.html");
+  await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "frozen");
+  const write = FileJournaledBackend.prototype.writeJournaled, close = FileJournaledBackend.prototype.close;
+  const fault = new Error("injected final cleanup failure"); let committed = false, injected = false;
+  FileJournaledBackend.prototype.writeJournaled = async function(id, doc, options) {
+    const result = await write.call(this, id, doc, options); if (id === "artifacts/cleanup") committed = true; return result;
+  };
+  FileJournaledBackend.prototype.close = async function() {
+    await close.call(this); if (committed && !injected) { injected = true; throw fault; }
+  };
+  const out: string[] = [], args = ["create", file, "--title", "Cleanup", "--actor", "process:qa", "--dir", h.folder, "--json"];
+  try {
+    await assert.rejects(artifact(args, commandDeps(h, wire, out)), (error: unknown) => {
+      assert.ok(error instanceof CliError); assert.equal(error.handled, true); assert.notEqual(error.exitCode, 0);
+      assert.equal(((error as Error).cause as Error)?.cause, fault); return true;
+    });
+  } finally { FileJournaledBackend.prototype.writeJournaled = write; FileJournaledBackend.prototype.close = close; }
+  assert.ok(injected); assert.equal(out.length, 1);
+  const receipt = JSON.parse(out[0]!); assert.equal(receipt.artifact, "record_pending"); assert.equal(receipt.local_placement, "local_placement_incomplete");
+  assert.equal(h.host.writes.length, 0);
+  await artifact(args, commandDeps(h, wire, out)); const replay = JSON.parse(out.at(-1)!);
+  assert.equal(replay.record_request_id, receipt.record_request_id); assert.equal(replay.blob_request_id, receipt.blob_request_id); assert.equal(wire.calls.length, 1);
+});
