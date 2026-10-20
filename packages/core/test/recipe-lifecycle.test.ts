@@ -1841,3 +1841,132 @@ test("install target inspection separates content, recipe identity and readable 
     assert.throws(() => inspectRecipeInstallTarget({ ...desired, id: "conventions/wrong" }, desired, prepared), RecipeInputError);
   }
 });
+
+function inboundRecipe(version: string, expectations: Record<string, string>): LoadedRecipe {
+  return kindRecipe("inbound-evolution", version, [{
+    id: "conventions/widget", frontmatter: {
+      type: "Convention", governs: "Widget", fields: { required: ["title"] }, expects_inbound: expectations,
+    }, body: "# Widget\n",
+  }]);
+}
+
+async function inboundFixture(edition: "0.1" | "0.2") {
+  const backend = new DescriptionProbeBackend();
+  await backend.writeReserved("", "index.md", `---\nokf_version: '${edition}'\n---\n`);
+  const bundle: Bundle = { root: "mem://inbound-evolution", backend };
+  await installRecipe(bundle, inboundRecipe("1", { contains: "Box" }), { now: NOW });
+  await writeDoc(bundle, { id: "widgets/one", frontmatter: { type: "Widget", title: "One" }, body: "No inbound edges.\n" });
+  backend.writes = 0;
+  return { bundle, backend };
+}
+
+test("inbound evolution: new labels apply without requiring edges, preserve stamps and settle in both editions", async () => {
+  for (const edition of ["0.1", "0.2"] as const) {
+    const { bundle, backend } = await inboundFixture(edition);
+    const instance = await backend.read("widgets/one");
+    const desired = inboundRecipe("2", { contains: "Box", reviews: "Reviewer" });
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+    assert.deepEqual(plan.definitions[0]!.added_paths, ["/frontmatter/expects_inbound/reviews"]);
+    assert.equal(backend.writes, 0, "planning is read-only");
+    await applyRecipeEvolution(bundle, desired, plan.plan_token, { actor: "process:inbound-test" });
+    const written = await readDoc(bundle, "conventions/widget");
+    const parsed = parseConventionDoc(written, { okfVersion: edition });
+    assert.ok(parsed.ok);
+    assert.deepEqual(parsed.kind.expectsInbound, { contains: "Box", reviews: "Reviewer" });
+    assert.equal(readRecipeStamp(written)?.definition, definitionDigest(written));
+    assert.equal(readRecipeStamp(written)?.version, "2");
+    assert.deepEqual(await backend.read("widgets/one"), instance, "evolution never edits records");
+    assert.equal(await readBundleOkfVersion(bundle), edition);
+    const settled = await planRecipeEvolution(bundle, desired);
+    assert.equal(settled.ready, true);
+    assert.equal(settled.writes, 0);
+    backend.writes = 0;
+    await applyRecipeEvolution(bundle, desired, settled.plan_token);
+    assert.equal(backend.writes, 0, "repeat apply is a no-op");
+  }
+});
+
+test("inbound evolution: removal, retargeting and normalized alias retargeting refuse without writes", async () => {
+  for (const edition of ["0.1", "0.2"] as const) for (const [expectations, code, field] of [
+    [{ reviews: "Reviewer" }, "RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED", "/frontmatter/expects_inbound/contains"],
+    [{ contains: "Other" }, "RECIPE_EVOLUTION_REPLACEMENT_UNSUPPORTED", "/frontmatter/expects_inbound/contains"],
+    [{ contains: "Box", "contains ": "Other" }, "RECIPE_EVOLUTION_RELATIONSHIP_CHANGE", "expects_inbound.contains"],
+  ] as const) {
+    const { bundle, backend } = await inboundFixture(edition);
+    const before = await backend.read("conventions/widget");
+    const desired = inboundRecipe("2", expectations);
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.ready, false);
+    assert.ok(plan.blockers.some(row => row.code === code && row.field === field), JSON.stringify(plan.blockers));
+    await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), RecipeEvolutionBlocked);
+    assert.equal(backend.writes, 0);
+    assert.deepEqual(await backend.read("conventions/widget"), before);
+  }
+});
+
+test("inbound evolution: locally removed or retargeted expectations are not silently restored or re-stamped", async () => {
+  for (const expectations of [{}, { contains: "Other" }]) {
+    const { bundle, backend } = await inboundFixture("0.2");
+    await backend.edit("conventions/widget", doc => ({ ...doc, frontmatter: { ...doc.frontmatter, expects_inbound: expectations } }));
+    const before = await backend.read("conventions/widget");
+    const desired = inboundRecipe("2", { contains: "Box", reviews: "Reviewer" });
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.ready, false);
+    await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), RecipeEvolutionBlocked);
+    assert.equal(backend.writes, 0);
+    assert.deepEqual(await backend.read("conventions/widget"), before);
+  }
+});
+
+test("inbound evolution: a convention changed after planning invalidates the token before any write", async () => {
+  const { bundle, backend } = await inboundFixture("0.2");
+  const desired = inboundRecipe("2", { contains: "Box", reviews: "Reviewer" });
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, true);
+  await backend.edit("conventions/widget", doc => ({ ...doc, body: "Locally edited after planning.\n" }));
+  const before = await backend.read("conventions/widget");
+  await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), RecipeEvolutionPlanChanged);
+  assert.equal(backend.writes, 0);
+  assert.deepEqual(await backend.read("conventions/widget"), before);
+});
+
+test("inbound evolution: absent, foreign, unknown and locally edited baselines cannot authorize new labels", async () => {
+  for (const state of ["absent", "foreign", "unknown", "edited"] as const) {
+    const { bundle, backend } = await inboundFixture("0.2");
+    await backend.edit("conventions/widget", doc => {
+      if (state === "edited") return { ...doc, frontmatter: { ...doc.frontmatter, order: 3, local_note: "Keep this" } };
+      const frontmatter = { ...doc.frontmatter };
+      const stamp = readRecipeStamp(doc)!;
+      if (state === "absent") delete frontmatter.x_recipe;
+      else frontmatter.x_recipe = { ...stamp, ...(state === "foreign" ? { id: "another-recipe" } : { digest_rules: 999 }) };
+      return { ...doc, frontmatter };
+    });
+    const before = await backend.read("conventions/widget");
+    const desired = inboundRecipe("2", { contains: "Box", reviews: "Reviewer" });
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.ready, false, state);
+    assert.ok(plan.blockers.some(row => row.code === "RECIPE_EVOLUTION_RELATIONSHIP_CHANGE" && row.field === "expects_inbound.reviews"), JSON.stringify(plan.blockers));
+    await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), RecipeEvolutionBlocked);
+    assert.equal(backend.writes, 0);
+    assert.deepEqual(await backend.read("conventions/widget"), before);
+  }
+});
+
+test("inbound evolution: identical legacy content can adopt a stamp without adding labels", async () => {
+  for (const edition of ["0.1", "0.2"] as const) {
+    const { bundle, backend } = await inboundFixture(edition);
+    await backend.edit("conventions/widget", doc => {
+      const frontmatter = { ...doc.frontmatter };
+      delete frontmatter.x_recipe;
+      return { ...doc, frontmatter };
+    });
+    const desired = inboundRecipe("1", { contains: "Box" });
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+    assert.equal(plan.changed, false);
+    assert.equal(plan.writes, 1);
+    await applyRecipeEvolution(bundle, desired, plan.plan_token);
+    assert.equal((await planRecipeEvolution(bundle, desired)).writes, 0);
+  }
+});

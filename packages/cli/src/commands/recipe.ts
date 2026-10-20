@@ -62,7 +62,11 @@ writes each changed convention with exact-version CAS. Concurrent non-target cha
 by a postcondition check and reported with completed work. It never replaces existing values,
 active View assets, or artifacts omitted from the source. It may add a field type (fields.types) or
 an enum (fields.values) to a declared field only when every existing instance conforms; otherwise
-the plan names the violating documents. It never changes or removes a type or an enum. A Connector
+the plan names the violating documents. It never changes or removes a type or an enum. New outbound
+link types revalidate existing edges; new expects_inbound labels add status graph lint only and do
+not require existing records to have those edges. Inbound additions require an unchanged recipe
+baseline so locally removed expectations are not restored silently. Neither declaration may remove
+or retarget an installed label. A Connector
 has no additive merge: a changed one replaces the installed document whole, and only one this
 recipe wrote that nobody changed since. A Connector a person edited, an unstamped one that differs
 and another recipe's Connector each block the plan and are never rewritten.

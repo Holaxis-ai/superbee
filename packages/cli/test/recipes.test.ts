@@ -3602,3 +3602,43 @@ test("recipe body normalization: CLI add and evolve settle CRLF bodies in both e
     } finally { await rm(root, { recursive: true, force: true }); }
   }
 });
+
+test("recipe evolve: CLI admits new inbound expectations as status lint, then a matching source edge clears it", async () => {
+  const root = await tempDir();
+  const bundleDir = path.join(root, "bundle");
+  const recipeDir = path.join(root, "recipe");
+  const conventionPath = path.join(recipeDir, "conventions", "widget.md");
+  const manifest = (version: string) =>
+    `---\ntype: Recipe\nid: inbound-workflow\ntitle: Inbound workflow\nversion: "${version}"\nsummary: Inbound expectation fixture.\n---\n`;
+  const convention = (expectations: boolean) =>
+    "---\ntype: Convention\ngoverns: Widget\nfields:\n  required: [title]\n" +
+    (expectations ? "expects_inbound:\n  contains: Box\n" : "") + "---\n# Widget\n";
+  try {
+    await initBundle(bundleDir);
+    await mkdir(path.dirname(conventionPath), { recursive: true });
+    await writeFile(path.join(recipeDir, "recipe.md"), manifest("1"));
+    await writeFile(conventionPath, convention(false));
+    await runJson(recipe, ["add", recipeDir, "--dir", bundleDir]);
+    const bundle: Bundle = { root: bundleDir };
+    await writeDoc(bundle, { id: "widgets/one", frontmatter: { type: "Widget", title: "One" }, body: "Unowned.\n" });
+    await writeFile(path.join(recipeDir, "recipe.md"), manifest("2"));
+    await writeFile(conventionPath, convention(true));
+    const before = await readFile(path.join(bundleDir, "conventions/widget.md"), "utf8");
+    const plan = await runJson(recipe, ["evolve", recipeDir, "--dir", bundleDir]);
+    assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+    assert.equal(await readFile(path.join(bundleDir, "conventions/widget.md"), "utf8"), before);
+    const applied = await runJson(recipe, ["evolve", recipeDir, "--apply", String(plan.plan_token), "--dir", bundleDir]);
+    assert.equal(applied.changed, true);
+    assert.deepEqual((await loadKinds(bundle)).kinds.get("Widget")?.expectsInbound, { contains: "Box" });
+    const missing = await runJson(status, ["--dir", bundleDir]);
+    assert.equal(missing.missing_expected_links, 1);
+    assert.deepEqual((missing.missing_expected_links_rows as { rows: unknown[] }).rows, [{ id: "widgets/one", missing: ["contains"] }]);
+    await writeDoc(bundle, { id: "boxes/one", frontmatter: { type: "Box", title: "Box" }, body: "[contains](../widgets/one.md)\n" });
+    assert.equal((await runJson(status, ["--dir", bundleDir])).missing_expected_links, 0);
+    const settled = await runJson(recipe, ["evolve", recipeDir, "--dir", bundleDir]);
+    assert.equal(settled.changed, false);
+    assert.equal(settled.writes, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

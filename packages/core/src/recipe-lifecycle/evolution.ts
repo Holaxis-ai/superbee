@@ -446,6 +446,7 @@ function monotonicEvolutionBlockers(
   current: KindConvention,
   desired: KindConvention,
   blockers: RecipeEvolutionBlocker[],
+  hasUnchangedRecipeBaseline: boolean,
 ): void {
   const currentRequired = new Set(current.fields.required);
   for (const field of desired.fields.required) {
@@ -518,14 +519,32 @@ function monotonicEvolutionBlockers(
       `links.${linkType}`,
     );
   }
-  if (!okfValuesEqual(current.expectsInbound ?? {}, desired.expectsInbound ?? {})) {
+  // Inbound expectations are graph-lint guidance, never write-time validation. New labels may
+  // expose missing expected links; preserve the parsed meaning of every installed label.
+  const desiredInbound = desired.expectsInbound ?? {};
+  for (const [linkType, source] of Object.entries(current.expectsInbound ?? {})) {
+    if (Object.hasOwn(desiredInbound, linkType) && desiredInbound[linkType] === source) continue;
     evolutionBlocker(
       blockers,
       "RECIPE_EVOLUTION_RELATIONSHIP_CHANGE",
       desired.id,
-      `automatic evolution does not change inbound relationship expectations for '${desired.governs}'`,
-      "expects_inbound",
+      `automatic evolution does not remove or retarget the inbound relationship expectation '${linkType}' for '${desired.governs}'`,
+      `expects_inbound.${linkType}`,
     );
+  }
+  // Without an unchanged baseline a missing label could have been deliberately removed locally.
+  // The whole-definition stamp cannot prove field history, so do not restore that expectation.
+  if (!hasUnchangedRecipeBaseline) {
+    for (const linkType of Object.keys(desiredInbound)) {
+      if (Object.hasOwn(current.expectsInbound ?? {}, linkType)) continue;
+      evolutionBlocker(
+        blockers,
+        "RECIPE_EVOLUTION_RELATIONSHIP_CHANGE",
+        desired.id,
+        `adding inbound relationship expectation '${linkType}' for '${desired.governs}' requires an unchanged recipe baseline; restore any locally removed expectations manually first`,
+        `expects_inbound.${linkType}`,
+      );
+    }
   }
   const sameTerminalOccurrences = Object.keys(current.fields.terminal).length === Object.keys(desired.fields.terminal).length
     && Object.entries(current.fields.terminal).every(([field, values]) => Object.hasOwn(desired.fields.terminal, field)
@@ -829,7 +848,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       && parsedCandidate.ok
       && parsedCurrent.kind.governs === parsedCandidate.kind.governs
     ) {
-      monotonicEvolutionBlockers(parsedCurrent.kind, parsedCandidate.kind, blockers);
+      monotonicEvolutionBlockers(parsedCurrent.kind, parsedCandidate.kind, blockers, hasUnchangedRecipeBaseline);
       addedRestrictions.set(parsedCandidate.kind.governs, addedFieldRestrictions(parsedCurrent.kind, parsedCandidate.kind));
       for (const linkType of addedLinkTypes(parsedCurrent.kind, parsedCandidate.kind)) addedLinkTexts.add(linkType);
     }
