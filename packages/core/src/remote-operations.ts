@@ -1,3 +1,4 @@
+import { captureBodyReplacePosture, type BodyReplacePosture } from "./body-replace-guards.js";
 /**
  * The uncertain-write transport over a wire authority: one {@link OperationTransport} that
  * delivers a `document.write` intent as an identified `PUT` through {@link RemoteBackend} and
@@ -95,7 +96,11 @@ function buildTransport(remote: RemoteBackend, options: RemoteOperationTransport
         return { kind: "refused", code: "USAGE", message: `remote operation transport: unsupported intent kind '${intent.kind}'`, executed: false };
       }
       let parsed: ReturnType<typeof parseMarkdown>;
+      let posture: BodyReplacePosture | undefined;
       try {
+        const descriptor = Object.getOwnPropertyDescriptor(intent, "bodyReplace");
+        if (descriptor && !("value" in descriptor)) throw new Error("bodyReplace must be an explicit data field.");
+        posture = captureBodyReplacePosture(descriptor?.value);
         parsed = parseMarkdown(intent.content, pathFromConceptId(intent.target));
       } catch (error) {
         return { kind: "refused", code: "USAGE", message: error instanceof Error ? error.message : String(error), executed: false };
@@ -104,6 +109,7 @@ function buildTransport(remote: RemoteBackend, options: RemoteOperationTransport
       const writeOptions = {
         expectedVersion: intent.base,
         requestId: intent.requestId,
+        ...(posture === undefined ? {} : { bodyReplace: posture }),
         ...(options.actor === undefined ? {} : { actor: options.actor }),
       };
       try {

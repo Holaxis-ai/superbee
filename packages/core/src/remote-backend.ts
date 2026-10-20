@@ -470,7 +470,7 @@ export class RemoteBackend implements StorageBackend {
     if (options.actor) headers["X-Actor"] = options.actor;
     // Captured before the capability question can yield, so the payload is the document as it
     // stood when `write` was called and an unencodable one is refused before any request.
-    const body = encodeRemoteDocument(doc.frontmatter, doc.body ?? "");
+    const body = encodeRemoteDocument(doc.frontmatter, doc.body ?? "", options.bodyReplace);
     let minted = false;
     if (options.requestId !== undefined) {
       assertRequestIdentity(options.requestId);

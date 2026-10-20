@@ -1,3 +1,4 @@
+import { captureBodyReplacePosture, type BodyReplacePosture } from "@superbee/core/engine";
 /**
  * The browser-local working copy's runtime: one {@link JournaledBackend} per bundle name (an
  * {@link IndexedDbBackend} unless the caller supplies another adapter), handed to the engine as
@@ -749,6 +750,15 @@ export interface CommitResult extends DocumentMutationResult {
   intent: IntentRecord | null;
 }
 
+function composedBodyReplace(...postures: (Readonly<BodyReplacePosture> | undefined)[]): BodyReplacePosture | undefined {
+  const declarations = postures.map(captureBodyReplacePosture).filter((row): row is BodyReplacePosture => row !== undefined);
+  if (!declarations.length) return;
+  return {
+    replaceLinks: declarations.some(row => row.replaceLinks === true),
+    acceptTruncatedBody: declarations.some(row => row.acceptTruncatedBody === true),
+  };
+}
+
 /**
  * The intent a change journals in place of one the authority never applied (never sent, or
  * refused): a fresh identity on the superseded intent's premise, its base, its base content and
@@ -770,6 +780,7 @@ function supersedingIntent(kind: "document.write" | typeof DOCUMENT_DELETE_KIND,
     base: superseded.base,
     baseContent: superseded.baseContent,
     createdAt: now,
+    ...(!deleting && superseded.kind === "document.write" && superseded.bodyReplace !== undefined ? { bodyReplace: composedBodyReplace(superseded.bodyReplace) } : {}),
     ...(superseded.after !== undefined ? { after: superseded.after } : {}),
     ...(!deleting && superseded.recreates !== undefined && superseded.base === null ? { recreates: superseded.recreates } : {}),
   };
@@ -869,8 +880,11 @@ const COMPOSE_ATTEMPTS = 3;
 function journalingBackend(backend: JournaledBackend, id: ConceptId, recorded: { intent: IntentRecord | null }): StorageBackend {
   const write = async (target: ConceptId, doc: OkfDocument, options: WriteOptions = {}): Promise<Version> => {
     if (target !== id) throw new Error(`commitLocal for '${id}' cannot write '${target}'`);
+    const declaredPosture = captureBodyReplacePosture(options.bodyReplace);
     for (let attempt = 0; ; attempt++) {
       const composed = await composeIntent(backend, id, new Date().toISOString());
+      const posture = composedBodyReplace(composed.intent.bodyReplace, declaredPosture);
+      if (posture !== undefined) composed.intent = { ...composed.intent, bodyReplace: posture };
       try {
         const written = await backend.writeJournaled(id, doc, { ...options, ...composed });
         recorded.intent = written.intent;
@@ -1308,6 +1322,7 @@ export async function resolveConflict(
   const intent: NewIntentRecord = {
     requestId: requestId!, kind: "document.write", target: review.id,
     base: shared.base.version, baseContent: shared.base.content, createdAt: resolvedAt,
+    bodyReplace: { replaceLinks: true },
     ...(recreates !== undefined ? { recreates } : {}),
   };
   let written: Awaited<ReturnType<JournaledBackend["writeJournaled"]>> | undefined;
@@ -1726,7 +1741,11 @@ async function foldRefusedChain(backend: JournaledBackend, listed: IntentRecord)
       successor.state !== "pending" || successor.attempts !== 0 || successor.after !== head.requestId) return null;
   const deleting = successor.kind === DOCUMENT_DELETE_KIND;
   if (deleting ? snapshot.document !== null : !snapshot.document || successor.local !== snapshot.document.version || successor.content !== snapshot.raw) return null;
-  const intent = supersedingIntent(deleting ? DOCUMENT_DELETE_KIND : "document.write", head, new Date().toISOString());
+  let intent = supersedingIntent(deleting ? DOCUMENT_DELETE_KIND : "document.write", head, new Date().toISOString());
+  if (!deleting && intent) {
+    const posture = composedBodyReplace(intent.bodyReplace, successor.bodyReplace);
+    if (posture !== undefined) intent = { ...intent, bodyReplace: posture };
+  }
   const resolveIntents = { expected: chain };
   try {
     if (deleting) {

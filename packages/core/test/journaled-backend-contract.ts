@@ -66,6 +66,28 @@ async function withFixture(create: JournaledBackendContractOptions["create"], ru
 export function registerJournaledBackendContract(options: JournaledBackendContractOptions): void {
   const { name, create, seam } = options;
 
+  test(`${name} durable body replacement intent is captured, validated, and immutable per identity`, async () => {
+    await withFixture(create, async backend => {
+      const id = "guard/body-posture";
+      const posture = { replaceLinks: true };
+      const pending = backend.writeJournaled(id, doc(id, "edited"), { intent: { ...newIntent("posture", id, null), bodyReplace: posture } });
+      posture.replaceLinks = false;
+      const result = await pending;
+      assert.deepEqual(result.intent!.bodyReplace, { replaceLinks: true });
+      (result.intent!.bodyReplace as { replaceLinks: boolean }).replaceLinks = false;
+      assert.deepEqual((await backend.readIntent("posture"))!.bodyReplace, { replaceLinks: true });
+      await assert.rejects(backend.updateIntent("posture", "pending", { bodyReplace: { replaceLinks: false } } as IntentPatch));
+      assert.deepEqual((await backend.readIntent("posture"))!.bodyReplace, { replaceLinks: true });
+      for (const bad of [null, [], { replaceLinks: "true" }, { replaceLinks: true, unknown: true }, Object.create({ replaceLinks: true }), Object.defineProperty({}, "replaceLinks", { enumerable: true, get: () => true })]) {
+        await assert.rejects(backend.writeJournaled(id, doc(id, "bad"), { intent: { ...newIntent("bad", id, null), bodyReplace: bad as never } }));
+        assert.equal((await backend.read(id)).version, result.version);
+        assert.equal(await backend.readIntent("bad"), undefined);
+      }
+      await backend.updateIntent("posture", "pending", { state: "in_flight", attempts: 1 });
+      assert.deepEqual((await backend.readIntent("posture"))!.bodyReplace, { replaceLinks: true });
+    });
+  });
+
   const snapshot = async (backend: JournaledBackend, target: string, keys = ["base", "missing"]): Promise<JournalGuard> => {
     const read = await backend.readWithJournal(target, { meta: keys });
     return { target, document: read.document ? { version: read.document.version, raw: read.raw! } : null, intents: read.intents,

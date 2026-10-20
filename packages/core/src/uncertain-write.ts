@@ -16,6 +16,7 @@
  * injectable clock, and a transport's own latency is real.
  */
 
+import type { BodyReplacePosture } from "./body-replace-guards.js";
 import type { Version } from "./types.js";
 
 /**
@@ -36,6 +37,10 @@ export interface OperationIntent {
   /** Durable request identity: minted once at record time, reused verbatim on every retry. */
   requestId: string;
   kind: OperationKind;
+  /** Explicit whole-document edit intent, captured durably with this request identity.
+   * Absent on legacy/automatic writes, which retain body-replacement protection.
+   */
+  readonly bodyReplace?: Readonly<BodyReplacePosture>;
   /** The target the operation applies to; a concept id for `document.write`. */
   target: string;
   /**
