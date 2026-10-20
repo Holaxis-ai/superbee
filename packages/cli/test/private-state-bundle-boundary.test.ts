@@ -592,6 +592,13 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
       + "resolveLocalBundleTarget authority every executed row above exercises",
   },
   { leaf: "docHistory", surface: "--dir", argv: (t) => ["doc", "history", "notes/a", "--dir", t, "--json"] },
+  { leaf:"opRegister",surface:"--dir",argv:(t)=>["op","register","ordinary-plugin","--local","--dir",t,"--json"],controlSkip:"local-operation.test.ts supplies a reviewed operation manifest; this row proves bundle guarding before registration reads" },
+  { leaf:"opRegistered",surface:"--dir",argv:(t)=>["op","registered","--local","--dir",t,"--json"] },
+  { leaf:"opUnregister",surface:"--dir",argv:(t)=>["op","unregister","fixture","--local","--dir",t,"--json"] },
+  { leaf:"opBind",surface:"--dir",argv:(t)=>["op","bind","local.fixture.compare.v1","--local","--resources-file","input.json","--dir",t,"--json"],controlSkip:"local-operation.test.ts supplies accepted operation/resource configuration; bundle guarding precedes that input" },
+  { leaf:"opBind",surface:"--resources-file",argv:(t)=>["op","bind","local.fixture.compare.v1","--local","--resources-file",t,"--dir",".superbee","--json"],controlSkip:"the benign boundary fixture is not resource JSON; local-operation.test.ts proves a complete binding preview and acceptance" },
+  { leaf:"opRegister",surface:"<0>",argv:(t)=>["op","register",t,"--local","--dir",".superbee","--json"],controlSkip:"local-operation.test.ts supplies the operation-specific manifest; registration guards private paths before metadata reads" },
+  { leaf:"opRun",surface:"--export-html",skip:"Requires a registered operation and accepted machine binding; local-operation.test.ts proves explicit export containment, private-state refusal, expected absence and facade failure exit with a complete operation fixture" },
   { leaf: "opList", surface: "--dir", argv: (t) => ["op", "list", "--dir", t, "--json"] },
   {
     leaf: "opRun",

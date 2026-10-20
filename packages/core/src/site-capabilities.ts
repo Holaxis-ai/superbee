@@ -90,6 +90,10 @@ export interface SiteCapability<Result = unknown> {
   mintSources?(result: Result): readonly SiteRecordCitation[];
 }
 
+/** Serializable capability identity, also used by deliberately trusted local actions.
+ * Read-only conformance remains the separate checkSiteCapability contract. */
+export type SiteCapabilityMetadata = Omit<SiteCapability, "execute" | "mintSources">;
+
 /** Portal's `PortalWebMcpAdditionalToolV0` (`@superbee/portal-webmcp` 0.3.1, `registration.d.ts`),
  * restated so this package stays dependency-free. */
 export interface PortalAdditionalTool {
@@ -352,7 +356,7 @@ export function mergeAnnotations(...sets: readonly (SiteCapabilityAnnotations | 
 }
 
 /** The descriptor a surface shows a model: what the descriptor limits and the identity cover. */
-export function siteCapabilityDescriptor(capability: SiteCapability) {
+export function siteCapabilityDescriptor(capability: SiteCapabilityMetadata) {
   return {
     name: capability.name,
     ...(capability.title === undefined ? {} : { title: capability.title }),
@@ -365,7 +369,8 @@ export function siteCapabilityDescriptor(capability: SiteCapability) {
 
 /** Why a value is not a structurally valid `SiteCapability`, or `undefined` when it is. Checks the
  * descriptor only; the name rules of a tier are compose's. */
-function descriptorProblem(capability: SiteCapability): string | undefined {
+export function siteCapabilityMetadataProblem(value: unknown): string | undefined {
+  const capability = value as SiteCapabilityMetadata;
   if (!isRecord(capability)) return "not an object";
   if (typeof capability.name !== "string" || !SITE_CAPABILITY_NAME_PATTERN.test(capability.name))
     return "name must match ^[a-z][a-z0-9_]{2,63}$";
@@ -390,14 +395,20 @@ function descriptorProblem(capability: SiteCapability): string | undefined {
     (!Number.isSafeInteger(capability.maximumOutputBytes) || capability.maximumOutputBytes <= 0)
   )
     return "maximumOutputBytes must be a positive integer when present";
-  if (typeof capability.execute !== "function") return "execute must be a function";
-  if (capability.mintSources !== undefined && typeof capability.mintSources !== "function")
-    return "mintSources must be a function when present";
   try {
     canonicalJson(siteCapabilityDescriptor(capability));
   } catch {
     return "descriptor must be plain JSON";
   }
+  return undefined;
+}
+
+function descriptorProblem(capability: SiteCapability): string | undefined {
+  const problem = siteCapabilityMetadataProblem(capability);
+  if (problem) return problem;
+  if (typeof capability.execute !== "function") return "execute must be a function";
+  if (capability.mintSources !== undefined && typeof capability.mintSources !== "function")
+    return "mintSources must be a function when present";
   return undefined;
 }
 

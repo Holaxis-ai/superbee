@@ -213,3 +213,56 @@ async function selectSourceProfile(selected,a,input) {return {load:()=>loadRegis
     registered+'\nawait import(other);',
   ]) await assert.rejects(assertClosedCliImports(candidate));
 });
+
+test('local operation imports require the serialized child and accepted-entry descriptor handshake', async () => {
+  const bundle = readFileSync(new URL('../packages/cli/dist/index.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('cli.mjs', bundle, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const declarations = ['localOperationChild','runLocalOperation'].map(name => ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name));
+  assert.ok(declarations.every(Boolean), 'built local operation dispatch required');
+  const subject = declarations.map(node => node.getText(ast)).join('\n');
+  await assertClosedCliImports(subject);
+  // The shared inode reader is serialized as a single explicit child argument by the
+  // host's reviewed loader variant; it must not turn into an arbitrary eval payload.
+  if (subject.includes('function localOperationChild()')) {
+    const withReader = subject.replace('function localOperationChild()', 'function localOperationChild(readBytes)')
+      .replace('${localOperationChild.toString()})()', '${localOperationChild.toString()})(${boundedLocalFileBytes.toString()})');
+    assert.notEqual(withReader, subject);
+    await assertClosedCliImports(withReader);
+    await assertClosedCliImports(withReader.replace('localOperationChild(readBytes)', 'localOperationChild(readBytes2)'));
+    await assert.rejects(assertClosedCliImports(withReader.replace('localOperationChild(readBytes)', 'localOperationChild(unreviewedReader)')));
+  }
+  const replace = (pattern, value) => { const changed=subject.replace(pattern,value);assert.notEqual(changed,subject,'mutation must apply');return changed; };
+  const capture = subject.match(/(request\d*) = (message\d*);/);
+  assert.ok(capture);
+  const [,requestName,messageName] = capture;
+  const afterCapture = code => replace(capture[0],capture[0]+' '+code);
+  for (const [label,candidate] of [
+    ['Astra accepted request replaced',afterCapture(`${requestName} = {...${messageName}, entryPath: '/tmp/not-the-accepted-entry.mjs'};`)],
+    ['request escapes through alias',afterCapture(`const alias = ${requestName}; alias.entryPath = 'other';`)],
+    ['message escapes through alias',afterCapture(`const alias = ${messageName}; alias.entryPath = 'other';`)],
+    ['initialization guard reset',afterCapture('initialized = false;')],
+    ['message root replaced',afterCapture(`${messageName} = {...${messageName}, entryPath: 'other'};`)],
+    ['message mutated through call',afterCapture(`Object.assign(${messageName}, {entryPath:'other'});`)],
+    ['request mutated through defineProperty',afterCapture(`Object.defineProperty(${requestName}, 'entryPath', {value:'other'});`)],
+    ['computed entry access',afterCapture(`${requestName}['entryPath'] = 'other';`)],
+    ['shadow request binding',afterCapture(`{ let ${requestName}; }`)],
+    ['capture moved after import',replace(capture[0],';')+'\n'+capture[0]],
+    ['factory before import',replace(/(const module\d* = await import\([^;]+;)(\s*)(const capabilities\d* = await module\d*\.createLocalCapabilities\([^;]+;)/,'$3$2$1')],
+    ['execute before descriptor guard',replace(/(if \(!Array\.isArray\(descriptors\d*\)[^\n]+\n)(\s*child\d*\.send\(\{ type: "execute" \}\);)/,'$2\n$1')],
+    ['selection field changed',replace(/const (selection\d*) = await selectLocalOperation\([^;]+;/,"$& $1.entryPath = 'other';")],
+    ['unknown import',subject+'\nawait import(otherEntry);'],
+    ['same accepted expression outside child',subject+'\nawait import(pathToFileURL(request.entryPath).href);'],
+    ['entry is caller input',replace(/pathToFileURL\d*\(request\d*\.entryPath\)/,'pathToFileURL(message.entryPath)')],
+    ['import outside initialize branch',replace(/message\d*\.type === "initialize" && !initialized/,'message.type === "execute" && !initialized')],
+    ['factory missing',replace(/\.createLocalCapabilities\(/,'.otherFactory(')],
+    ['child eager invocation',subject+'\nlocalOperationChild();'],
+    ['entry rewritten inside child',replace('initialized = true;', 'initialized = true; request.entryPath = other;')],
+    ['extra execute message',subject+'\nchild.send({ type: "execute" });'],
+    ['extra serializer reference',subject+'\nconst other = localOperationChild.toString();'],
+    ['wrong process boundary',replace(/"--input-type=module", "--eval"/,'"--input-type=module", "--other"')],
+    ['parent caller-selected entry',replace(/entryPath: selection\d*\.entryPath/,'entryPath: input.entryPath')],
+    ['generation rebind gate removed',replace(/binding\d*\.generation !== selection\d*\.generation \|\| /,'')],
+    ['descriptor authorization weakened',replace(/canonicalJson\d*\(descriptors\d*\) !== canonicalJson\d*\(selection\d*\.capabilities\)/,'false')],
+    ['no deferred execute',replace(/child\d*\.send\(\{ type: "execute" \}\);/,'child.send({ type: "other" });')],
+  ]) await assert.rejects(assertClosedCliImports(candidate),undefined,label);
+});
