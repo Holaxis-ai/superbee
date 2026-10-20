@@ -3,7 +3,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { gunzipSync } from "node:zlib";
-import { mkdtemp, mkdir, readFile, writeFile, appendFile, readdir, lstat, open, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, appendFile, readdir, lstat, realpath, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -54,7 +54,7 @@ const registeredProfileLoader = String.raw`async function loadRegisteredSourcePr
     throw pluginRefusal("plugin_execution_failed");
   }
 }`;
-// Freeze only the two deliberately reviewed executable boundaries; no arbitrary module allowance.
+// Freeze the registered-profile boundary; no arbitrary module allowance.
 function registeredProfileImports(source, external) {
   const loaders = source.statements.filter(node => ts.isFunctionDeclaration(node) && node.name?.text === 'loadRegisteredSourceProfile');
   if (!loaders.length) return [];
@@ -103,6 +103,74 @@ function registeredProfileImports(source, external) {
   return admitted;
 }
 
+// The operation module is loaded only inside a serialized fresh child, after accepted
+// selection. Recognize that dispatch and its parent authorization handshake, not arbitrary imports.
+function localOperationImports(source, external) {
+  const loaders = source.statements.filter(node => ts.isFunctionDeclaration(node) && node.name?.text === 'localOperationChild');
+  if (!loaders.length) return [];
+  assert.equal(loaders.length, 1, 'unique local operation child');
+  const loader = loaders[0];
+  assert.ok(loader.parameters.length === 0 || (loader.parameters.length === 1 && ts.isIdentifier(loader.parameters[0].name) && loader.parameters[0].name.text === 'readBytes'), 'reviewed child signature');
+  const names = new Map();
+  const stable = ['pathToFileURL','request','module','capabilities','descriptors','message','send','port','resources','invocation','controller','selection','operation','home','binding','canonicalJson','refuse','spawn','workspace','child','maximumOutputBytes','profile','input','id','outputDirectory','localOperationChild','boundedLocalFileBytes'];
+  function identify(node) { if (ts.isIdentifier(node)) for (const name of stable) if(new RegExp('^'+name+'\\d*$').test(node.text)) names.set(node.text,name); ts.forEachChild(node,identify); }
+  identify(source);
+  const text = node => printed(node,source,names);
+  const expected = value => {const ast=ts.createSourceFile('boundary.mjs',value,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);return printed(ast.statements[0],ast);};
+  const all=[];function walk(node){all.push(node);ts.forEachChild(node,walk);}walk(source);
+  const admitted=external.filter(item=>item.ss>=loader.getStart(source)&&item.se<=loader.end);
+  assert.equal(admitted.length,1,'child owns exactly one operation import');
+  assert.equal(admitted[0].n,undefined,'operation import selects accepted entry');
+  const imports=all.filter(node=>ts.isCallExpression(node)&&node.expression.kind===ts.SyntaxKind.ImportKeyword&&node.getStart(source)===admitted[0].ss);
+  assert.equal(imports.length,1);const imported=imports[0];
+  assert.equal(text(imported), 'import(pathToFileURL(request.entryPath).href)');
+  const declaration=imported.parent.parent;
+  assert.ok(ts.isVariableDeclaration(declaration)&&ts.isIdentifier(declaration.name));
+  assert.equal(text(declaration),'module = await import(pathToFileURL(request.entryPath).href)');
+  let branch=imported;while(branch.parent&&!ts.isIfStatement(branch))branch=branch.parent;
+  assert.ok(ts.isIfStatement(branch));
+  assert.equal(text(branch.expression),'message.type === "initialize" && !initialized');
+  const statements=branch.thenStatement.statements;
+  const requireStatement = (rows,value) => assert.equal(rows.filter(node=>text(node)===expected(value)).length,1,'missing operation boundary: '+value);
+  requireStatement(statements,'initialized = true;');requireStatement(statements,'request = message;');
+  requireStatement(statements,'const capabilities = await module.createLocalCapabilities({ port, resources: request.resources, invocation: request.invocation });');
+  requireStatement(statements,'if (!Array.isArray(capabilities) || capabilities.length > 32) throw Error("invalid_capabilities");');
+  requireStatement(statements,'const descriptors = capabilities.map(({ execute, mintSources, ...descriptor }) => descriptor);');
+  requireStatement(statements,'send({ type: "ready", descriptors });');
+  assert.ok(ts.isIfStatement(branch.elseStatement));
+  assert.equal(text(branch.elseStatement.expression),'message.type === "execute" && request?.capabilities');
+  const childNodes=all.filter(node=>node.getStart(source)>=loader.getStart(source)&&node.end<=loader.end);
+  const entryReads=childNodes.filter(node=>ts.isPropertyAccessExpression(node)&&node.name.text==='entryPath');
+  assert.equal(entryReads.length,1,'accepted child entry cannot be rewritten');
+  const executions=childNodes.filter(node=>ts.isCallExpression(node)&&ts.isPropertyAccessExpression(node.expression)&&node.expression.name.text==='execute');
+  assert.equal(executions.length,1,'single deliberate child invocation');
+  let executionBranch=executions[0];while(executionBranch.parent&&!ts.isIfStatement(executionBranch))executionBranch=executionBranch.parent;
+  assert.equal(executionBranch,branch.elseStatement,'capability execution requires parent execute message');
+  const references=all.filter(node=>ts.isIdentifier(node)&&node.text===loader.name.text&&node!==loader.name);
+  assert.equal(references.length,1,'operation child serialized once, never called in parent');
+  const ref=references[0],member=ref.parent;
+  assert.ok(ts.isPropertyAccessExpression(member)&&member.name.text==='toString'&&ts.isCallExpression(member.parent)&&member.parent.arguments.length===0);
+  let launch=ref;while(launch.parent&&!ts.isVariableStatement(launch))launch=launch.parent;
+  assert.ok(ts.isVariableStatement(launch));
+  const serialized = loader.parameters.length === 0 ? '(${localOperationChild.toString()})()' : '(${localOperationChild.toString()})(${boundedLocalFileBytes.toString()})';
+  requireStatement([launch],'const child = spawn(process.execPath, ["--input-type=module", "--eval", `'+serialized+'`], { detached: true, env: { PATH: "/usr/bin:/bin" }, cwd: workspace, stdio: ["ignore", "pipe", "pipe", "ipc"] });');
+  let owner=launch;while(owner.parent&&!ts.isFunctionDeclaration(owner))owner=owner.parent;
+  assert.ok(ts.isFunctionDeclaration(owner)&&owner.name?.text==='runLocalOperation');
+  const parent=owner.body.statements;
+  requireStatement(parent,'const selection = await selectLocalOperation(operation, home);');
+  requireStatement(parent,'if (!selection) throw refuse("unknown_local_operation");');
+  requireStatement(parent,'if (binding.v !== 1 || binding.bundle !== bundle || binding.operation !== operation || binding.pluginDigest !== selection.digest || binding.generation !== selection.generation || canonicalJson(binding.capability) !== canonicalJson(selection.capability)) throw refuse("binding_changed_rebind_required");');
+  const initialize=all.filter(node=>ts.isCallExpression(node)&&text(node).startsWith('child.send({ type: "initialize",'));
+  assert.equal(initialize.length,1,'one accepted-entry initialize message');
+  assert.equal(text(initialize[0]),'child.send({ type: "initialize", entryPath: selection.entryPath, capabilityName: selection.capability.name, maximumOutputBytes, protocolBytes: DEFAULT_MAXIMUM_OUTPUT_BYTES, tools: binding.tools, resources, profile, invocation: { id, outputDirectory, assetDirectory: selection.rootPath, profile: binding.profile }, input: input.settings })');
+  const ready=all.filter(node=>ts.isIfStatement(node)&&text(node.expression)==='message.type === "ready"'&&node.getStart(source)>owner.getStart(source)&&node.end<owner.end);
+  assert.equal(ready.length,1,'one parent descriptor authorization');
+  requireStatement(ready[0].thenStatement.statements,'if (!Array.isArray(descriptors) || Buffer.byteLength(JSON.stringify(descriptors)) > DEFAULT_MAXIMUM_OUTPUT_BYTES || canonicalJson(descriptors) !== canonicalJson(selection.capabilities)) return terminate("descriptor_changed");');
+  requireStatement(ready[0].thenStatement.statements,'child.send({ type: "execute" });');
+  assert.equal(all.filter(node=>ts.isCallExpression(node)&&text(node)==='child.send({ type: "execute" })').length,1,'single parent execute authorization');
+  return admitted;
+}
+
 export async function assertClosedCliImports(text) {
   await init;
   const [imports] = parse(text);
@@ -110,7 +178,8 @@ export async function assertClosedCliImports(text) {
   const source = ts.createSourceFile("retained-cli.mjs", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
   assert.equal(source.parseDiagnostics.length, 0, "invalid retained CLI syntax");
   const registered = registeredProfileImports(source, external);
-  external = external.filter(item => !registered.includes(item));
+  const operations = localOperationImports(source, external);
+  external = external.filter(item => !registered.includes(item) && !operations.includes(item));
   if (!external.length) return;
   assert.equal(external.length, 1, "unclosed imports outside the explicit author-profile boundary");
   assert.equal(external[0].n, undefined, `unclosed import ${external[0].n}`);
@@ -323,7 +392,7 @@ export function validateCliTarEntries(entries) {
 // Development tests own build/pack setup; this proof consumes the retained CLI and
 // auxiliary workspace inventory evidence without rebuilding or repacking that CLI.
 export async function proveCliTarball(tarball, { checkSource, execute = exec } = {}) {
-  const scratch = await mkdtemp(path.join(tmpdir(), "superbee-cli-consumer-"));
+  const scratch = await realpath(await mkdtemp(path.join(tmpdir(), "superbee-cli-consumer-")));
   const npm = process.env.npm_execpath;
   assert.ok(npm, "run through npm test:scripts or npm exec");
   const run = (args, cwd = scratch, env = {}) => execute(process.execPath, args, { cwd, env: { ...process.env, ...env }, maxBuffer: 10 * 1024 * 1024, timeout: 30_000 });
@@ -437,6 +506,34 @@ export async function proveCliTarball(tarball, { checkSource, execute = exec } =
       await run([entry, "init", "--create-only", "--dir", bundle, "--recipe", "none"], cwd, env);
       await run([entry, "doc", "write", "notes/proof", "--type", "Note", "--body", "portable proof", "--actor", "process:external-proof", "--dir", bundle], cwd, env);
       assert.match((await run([entry, "doc", "read", "notes/proof", "--dir", bundle], cwd, env)).stdout, /portable proof/);
+      // Exercise the serialized child from the installed tarball, outside the checkout and
+      // without tools or package imports in the accepted self-contained operation entry.
+      if (process.platform === "darwin" || process.platform === "linux") {
+        const plugin = path.join(scratch, "operation-plugin");
+        await mkdir(plugin); await mkdir(path.join(scratch, "operation-exports"));
+        const outputRoot = await realpath(path.join(scratch, "operation-exports"));
+        const capability = { name: "fixture_export", implementationId: "fixture/export/1", description: "Installed synthetic export proof", inputSchema: { type: "object" }, maximumOutputBytes: 4096 };
+        const core = record.packages.find(row => row.name === "@superbee/core").version;
+        await writeFile(path.join(plugin, "package.json"), JSON.stringify({ name: "fixture-local-operation", version: "1.0.0", superbeeLocalOperations: { contract: 1, id: "fixture-proof", core, helper: 1, entry: "entry.mjs", assets: [], operations: [{ id: "local.fixture.export.v1", capability }] } }));
+        await writeFile(path.join(plugin, "entry.mjs"), `import { writeFile } from 'node:fs/promises';
+export function createLocalCapabilities({invocation}) { return [{...${JSON.stringify(capability)}, async execute() { await writeFile(invocation.outputDirectory+'/comparison.html', '<!doctype html><title>Installed child proof</title><p>'+invocation.id+'</p>', {flag:'wx'}); return {outputs:[{role:'comparison',path:'comparison.html',mimeType:'text/html'}]}; }}]; }`);
+        const jsonCommand = async args => JSON.parse((await run([entry, "op", ...args, "--local", "--dir", bundle, "--json"], cwd, env)).stdout);
+        const preview = await jsonCommand(["register", plugin]);
+        await jsonCommand(["register", plugin, "--accept", preview.digest]);
+        const inputFile = path.join(scratch,"operation-source.txt"), resourcesFile = path.join(scratch,"operation-resources.json"), runInputFile = path.join(scratch,"operation-input.json"), exported = path.join(outputRoot,"comparison.html");
+        await writeFile(inputFile,"closed synthetic input");
+        await writeFile(resourcesFile,JSON.stringify({resources:{source:{path:inputFile,logicalRef:"fixture/source"}},tools:{},outputRoot,profile:"synthetic-v1"}));
+        const bindingPreview = await jsonCommand(["bind","local.fixture.export.v1","--resources-file",resourcesFile]);
+        const binding = await jsonCommand(["bind","local.fixture.export.v1","--resources-file",resourcesFile,"--accept",bindingPreview.digest]);
+        await writeFile(runInputFile,JSON.stringify({expectedInputs:binding.expectedInputs,settings:{}}));
+        const result = await jsonCommand(["run","local.fixture.export.v1","--binding",binding.binding,"--input-file",runInputFile,"--export-html",exported]);
+        assert.equal(result.status,"succeeded"); assert.equal(result.export.status,"exported"); assert.equal(result.publication,"not_attempted");
+        const manifest = JSON.parse(await readFile(result.manifest,"utf8")), html = await readFile(exported);
+        assert.equal(manifest.invocationId,result.invocationId); assert.deepEqual(manifest.tools,{});
+        assert.equal(manifest.inputs[0].sha256,createHash("sha256").update("closed synthetic input").digest("hex").replace(/^/,"sha256:"));
+        assert.ok(html.includes(Buffer.from(result.invocationId)));
+        assert.equal(result.export.sha256,`sha256:${createHash("sha256").update(html).digest("hex")}`);
+      }
       await assert.rejects(run([entry, "unknown-command"], cwd, env), error => error.code === 2);
       // superbee's private-state identity must not drift to the library package coordinate.
       assert.equal((await readdir(home)).some(name => name.includes("cli") || name === "@superbee"), false);
