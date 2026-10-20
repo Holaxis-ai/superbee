@@ -36,7 +36,7 @@ Usage:
   superbee op registered --local [--dir <path>]
   superbee op unregister <plugin> --local [--dir <path>]
   superbee op bind <local-operation-id> --local --resources-file <json> [--accept <digest>] [--dir <path>]
-  superbee op run <local-operation-id> --local --binding <id> --input-file <json> [--export-html <path>] [--dir <path>]
+  superbee op run <local-operation-id> --local --binding <id> --input-file <json> [--export-html <path>] [--export-output <json-role>=<path>] [--dir <path>]
   superbee op list [--dir <path>] [--json]
   superbee op run <operationId> [--input <json> | --input-file <path>] [--dir <path>] [--json]
 
@@ -55,6 +55,12 @@ With --local, a local or Git bundle explicitly selects trusted registered code, 
 resources and a finite profile. Bind previews effects and requires its exact acceptance digest.
 Each run requires expected input hashes and creates retained private evidence; --export-html
 exports one validated HTML into the selected ordinary output root without publishing an Artifact.
+--export-output <role>=<path> exports exactly one returned application/json output with that role.
+Roles and MIME are checked after execution; repeated --export-output flags are refused before it.
+Both destinations must be absent ordinary files within the bound output root, outside the bundle
+and private state. When both are requested, HTML is attempted first, then JSON independently:
+a completed file remains if the other export fails; the same destination makes JSON fail.
+Execution status and retained outputs remain intact; export and outputExport report each outcome.
 Trusted code has ambient local authority; process supervision is not an OS sandbox.
 
 Local binding resources JSON contains resources (role -> {path, logicalRef}), tools (handle ->
@@ -273,21 +279,29 @@ async function readInput(values: { input?: string; "input-file"?: string }, deps
 
 export function parseOpRunArgs(argv:string[]) {
   return parseLeafOrUsage(
-    () =>
-      parseArgs({
+    () => {
+      const parsed = parseArgs({
         args: argv,
+        tokens: true,
         options: {
           local: { type: "boolean" },
           binding: { type: "string" },
           input: { type: "string" },
           "input-file": { type: "string" },
           "export-html": { type: "string" },
+          "export-output": { type: "string" },
           dir: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
         allowPositionals: true,
-      }),
+      });
+      if(parsed.tokens.filter(token=>token.kind==='option'&&token.name==='export-output').length>1)throw new CliError('USAGE','--export-output may be selected only once');
+      const output=parsed.values['export-output'];
+      if(output!==undefined&&!/^[a-z][a-z0-9_-]{0,63}=.+$/s.test(output))throw new CliError('USAGE','--export-output requires <json-role>=<path>');
+      if(output?.includes('\0'))throw new CliError('USAGE','--export-output requires an ordinary file path');
+      return parsed;
+    },
     CLI_LEAVES.opRun,
   );
 }
@@ -300,6 +314,7 @@ async function opRun(argv: string[], deps: Partial<OpDeps> & Pick<OpDeps, "stdou
   }
   if (values.binding !== undefined) throw new CliError("USAGE", "--binding requires explicit --local routing.");
   if (values["export-html"] !== undefined) throw new CliError("USAGE", "--export-html requires explicit --local routing.");
+  if (values["export-output"] !== undefined) throw new CliError("USAGE", "--export-output requires explicit --local routing.");
   const operationId = positionals[0]!;
   if (!isOperationId(operationId)) {
     throw new CliError("USAGE", `'${operationId}' is not an operation id (such as documents.history.v1)`, { help: `${cliInvocation()} op list` });

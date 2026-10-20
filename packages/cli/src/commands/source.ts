@@ -1,5 +1,6 @@
 import { registerSourcePlugin,listSourcePlugins,removeSourcePlugin,SOURCE_PLUGIN_TRUST } from "../source-plugins.js";
 import { sourceRefusal } from "../source-local/state.js";
+import { bindLocalSnapshot, runLocalSnapshot, checkLocalSnapshot } from "../source-local/snapshot.js";
 import { bindLocalSource, runLocalSource } from "../source-local/run.js";
 import { parseArgs } from "node:util";
 import { parseLeafOrUsage } from "../args.js";
@@ -17,7 +18,26 @@ Usage:
   superbee source plugin remove github [--json]
   superbee source bind <feed-id> (--anonymous | --credential-env <NAME>) [--accept <digest>] [--dir <bundle>]
   superbee source run <feed-id> [--complete] [--actor <actor>] [--dir <bundle>]
+  superbee source snapshot bind <source-doc> [--accept <digest>] [--dir <bundle>]
+  superbee source snapshot run <source-doc> --snapshot <ordinary.json> [--accept <digest>] [--actor <actor>] [--dir <bundle>]
+  superbee source snapshot check <file> --inputs-file <explicit-map.json> [--settings-file <original-settings.json>]
   superbee source test <recipe-path> --fixture <directory> [--profile <local.mjs>] [--json]
+
+Snapshot run requires previously accepted snapshot bind consent and the existing valid Signal Kind
+used by record-overlay, alongside the target Kind. Missing binding refuses without creating state.
+Signal links require vocabulary for the actual source/target Kinds; unsupported typed links are omitted.
+Snapshot run defaults to input_preview (effects_planned:false, applied:false); --accept authorizes
+these exact bytes/policy/private version. Target effects are evaluated only during execution.
+Snapshot consent contains no credential and cannot be used by HTTP source run. Changed snapshot
+binding with observation history requires a deliberately new source document/state key.
+Snapshot check reads a closed {inputs:{logicalId:path},required_identities?:{logicalId:path}} map.
+Only explicit ordinary files outside bundles/private state are read. Missing observations are unknown.
+The map permits 64 selections per namespace. Original input/identity observations total at most
+128 MiB; map/settings JSON at most 64 KiB each. Unselected required dimensions stay unknown.
+Settings use original invocation JSON, not exported/normalized settings. Current means equal to the
+caller_asserted basis; hashes observed now do not establish historical consumption.
+Target updates use existing document CAS. A second identity claimant added during execution may
+only be detected on a later fresh index/run; there is no bundle-wide membership transaction.
 
 Replays fixture.json through core's source harness and MemoryBackend. The report compares explicit
 receipt, request, cursor, change and finding expectations and lists missing required scenarios.
@@ -50,6 +70,26 @@ Options:
 export async function source(argv: string[], deps: { stdout?: (text: string) => void; run?: typeof runLocalSource } = {}): Promise<void> {
   const stdout = deps.stdout ?? ((text: string) => void process.stdout.write(text));
   if (argv[0] === undefined || argv[0] === "--help" || argv[0] === "-h") { stdout(renderUsage(SOURCE_USAGE)); return; }
+  if(argv[0]==="snapshot") {
+    const action=argv[1];
+    if(!["bind","run","check"].includes(action??""))throw sourceRefusal("snapshot_action_invalid");
+    const shared={json:{type:"boolean" as const},help:{type:"boolean" as const,short:"h"}};
+    const p=action==="bind"
+      ?parseLeafOrUsage(()=>parseArgs({args:argv.slice(2),allowPositionals:true,strict:true,options:{...shared,dir:{type:"string"},accept:{type:"string"}}}),CLI_LEAVES.sourceSnapshotBind)
+      :action==="run"
+        ?parseLeafOrUsage(()=>parseArgs({args:argv.slice(2),allowPositionals:true,strict:true,options:{...shared,dir:{type:"string"},snapshot:{type:"string"},accept:{type:"string"},actor:{type:"string"}}}),CLI_LEAVES.sourceSnapshotRun)
+        :parseLeafOrUsage(()=>parseArgs({args:argv.slice(2),allowPositionals:true,strict:true,options:{...shared,"inputs-file":{type:"string"},"settings-file":{type:"string"}}}),CLI_LEAVES.sourceSnapshotCheck);
+    if(p.values.help){stdout(renderUsage(SOURCE_USAGE));return;}
+    const values=p.values as Record<string,string|boolean|undefined>;
+    if(action==="run"&&!values.snapshot)throw sourceRefusal("snapshot_file_required");
+    if(action==="check"&&!values["inputs-file"])throw sourceRefusal("snapshot_inputs_file_required");
+    const options={dir:values.dir as string|undefined,accept:values.accept as string|undefined,snapshot:values.snapshot as string|undefined,actor:values.actor as string|undefined};
+    const result=action==="bind"?await bindLocalSnapshot(p.positionals[0]!,options):action==="run"?await runLocalSnapshot(p.positionals[0]!,options)
+      :await checkLocalSnapshot(p.positionals[0]!,{inputsFile:values["inputs-file"] as string,settingsFile:values["settings-file"] as string|undefined});
+    stdout(render(result,resolveMode(p.values)));
+    if(action==="run"&&result.status==="executed"&&result.outcome!=="observed"&&result.outcome!=="deferred")throw new CliError("RUNTIME","Local snapshot run did not complete successfully; inspect its receipt.",{handled:true});
+    return;
+  }
   if(argv[0]==="plugin") {
     const action=argv[1];
     if(!["register","list","remove"].includes(action??""))throw new CliError("USAGE","Expected source plugin register, list or remove.");
@@ -83,7 +123,7 @@ export async function source(argv: string[], deps: { stdout?: (text: string) => 
       return;
     } catch(error) { if(error instanceof CliError) throw error; throw sourceRefusal("operation_failed","RUNTIME"); }
   }
-  if (argv[0] !== "test") throw new CliError("USAGE", "Expected source plugin, test, bind or run.");
+  if (argv[0] !== "test") throw new CliError("USAGE", "Expected source snapshot, plugin, test, bind or run.");
   const parsed = parseLeafOrUsage(() => parseArgs({ args: argv.slice(1), allowPositionals: true, strict: true,
     options: { fixture: { type: "string" }, profile: { type: "string" }, json: { type: "boolean" }, help: { type: "boolean", short: "h" } } }), CLI_LEAVES.sourceTest);
   if (parsed.values.help) { stdout(renderUsage(SOURCE_USAGE)); return; }

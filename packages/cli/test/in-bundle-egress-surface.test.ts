@@ -53,6 +53,7 @@ interface EgressRow {
 
 const EGRESS_ROWS: readonly EgressRow[] = [
   {leaf:"opRun",flag:"--export-html",skip:"Requires a reviewed registered capability plus accepted machine binding; local-operation.test.ts exercises all seven in-bundle/alias shapes and the ordinary-output control with that complete fixture"},
+  {leaf:"opRun",flag:"--export-output",skip:"Requires a reviewed registered capability plus accepted machine binding; local-operation.test.ts exercises all seven in-bundle/alias shapes and the ordinary-output control with that complete fixture"},
   {
     leaf: "docRead",
     flag: "--out",

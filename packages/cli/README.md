@@ -110,3 +110,41 @@ distribution and executable identity. Runtime construction requires a resolvable
 validates all captured configuration before committing it. A refused construction leaves the
 previous identity intact. The standalone `registerExecutableEntry` API retains its no-op behavior
 for unresolved paths and does not establish executable authority for them.
+
+## Local snapshot observations
+
+`source snapshot bind <source-doc> --dir <bundle>` previews consent for an ordinary source document;
+repeat with `--accept <digest>` to save it. `source snapshot run <source-doc> --snapshot <ordinary.json>
+--dir <bundle>` then emits `input_preview`, `effects_planned:false`, `applied:false`. Repeat with that
+preview's `--accept <digest>` to ingest the exact input under current policy and private state.
+Run requires previously accepted binding; an absent binding refuses without creating private state.
+The bundle needs the target Kind and the existing valid record-overlay Signal Kind (for example the
+existing source-feeds recipe definition). No executable profile or credential is selected.
+Signal links use the actual source/target Kinds. The existing Signal definition's `from feed` link
+names Source Feed, so it is omitted for a Reference snapshot source; its provider URN is retained.
+A bundle may declare Signal links to its actual source and target Kinds for typed links.
+See [Core's snapshot contract](../core/SNAPSHOT-SOURCES.md) for declaration, data, generation,
+complete-scope, stable identity, ownership, and caller-associated evidence rules.
+
+Input acceptance binds the exact source document head, target Kind and edition policy, bounds,
+snapshot bytes and private state version. It evaluates no target effects. Execution builds one fresh
+identity index and uses the existing target CAS/ownership conflict rules. A second identity claimant
+added during execution can be detected only on a later fresh index/run; there is no bundle membership
+transaction. Changed binding after observation history requires a deliberately new source document
+and state key. Existing observations and original run/Artifact evidence are retained.
+
+`source snapshot check <ordinary.json> --inputs-file <explicit-map.json> [--settings-file
+<original-settings.json>]` needs no bundle. The map is closed JSON:
+`{"inputs":{"original-model":"/explicit/model.blend"},"required_identities":{"tool":"/explicit/tool"}}`.
+Each namespace permits at most 64 logical IDs; required identities are optional. Only explicit paths
+are read; snapshot evidence selects no files. Snapshot files are at most 2 MiB; each selection map
+and original settings file is at most 64 KiB. Original inputs and required identities share a 128 MiB
+per-check byte ceiling, using the existing comparison operation bound. Missing, unreadable or
+unchecked dimensions remain unknown. Inputs, maps and settings must be ordinary files outside
+bundle stores and private state; symlink/hardlink file ingress is refused or uncheckable.
+
+Settings comparison uses the original invocation JSON's existing canonical JSON digest. All hashes
+are observed now and caller-associated; they do not prove historical tool consumption. `current`
+means equal to every declared required dimension with a nonempty original input basis. A known
+mismatch is `stale`; otherwise unavailable dimensions or absent/empty basis are `unverifiable`.
+Informational tool labels outside `required_identities` are outside that applicability claim.

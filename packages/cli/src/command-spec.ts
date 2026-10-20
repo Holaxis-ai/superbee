@@ -139,7 +139,7 @@ const DIR_TO_SURFACE: LeafPathSurface = Object.freeze({
   flags: pathFlags({ flag: "dir", role: "bundle-root" }, { flag: "to", role: "bundle-root" }),
 });
 const DIR_LOCAL_BIND_SURFACE: LeafPathSurface = Object.freeze({ flags: pathFlags({flag:"dir",role:"bundle-root"},{flag:"resources-file",role:"ingress"}) });
-const DIR_LOCAL_RUN_SURFACE: LeafPathSurface = Object.freeze({ flags: pathFlags({flag:"dir",role:"bundle-root"},{flag:"input-file",role:"ingress"},{flag:"export-html",role:"egress"}) });
+const DIR_LOCAL_RUN_SURFACE: LeafPathSurface = Object.freeze({ flags: pathFlags({flag:"dir",role:"bundle-root"},{flag:"input-file",role:"ingress"},{flag:"export-html",role:"egress"},{flag:"export-output",role:"egress"}) });
 const DIR_PLUGIN_SURFACE: LeafPathSurface = Object.freeze({ flags:BUNDLE_DIR, positionals:[{index:0,role:"recipe-source" as const}] });
 const DIR_REJECTED_SURFACE: LeafPathSurface = Object.freeze({ flags: BUNDLE_DIR_REJECTED });
 const DIR_BODY_FILE_SURFACE: LeafPathSurface = Object.freeze({ flags: BUNDLE_DIR_AND_BODY_FILE });
@@ -538,6 +538,21 @@ export const CLI_COMMAND_GROUPS = [
         summary: "Run one consented built-in or registered source over DNS-pinned HTTPS",
       },
       {
+        id:"sourceSnapshotBind",leaves:[publicLeaf("sourceSnapshotBind","source snapshot bind",one,undefined,DIR_SURFACE)],
+        usage:"source snapshot bind <source-doc> [--accept <digest>] [--dir <bundle>]",
+        summary:"Preview and accept finite local snapshot policy without credentials or executable profiles",
+      },
+      {
+        id:"sourceSnapshotRun",leaves:[publicLeaf("sourceSnapshotRun","source snapshot run",one,undefined,{flags:pathFlags({flag:"dir",role:"bundle-root"},{flag:"snapshot",role:"ingress"})})],
+        usage:"source snapshot run <source-doc> --snapshot <ordinary.json> [--accept <digest>] [--actor <actor>] [--dir <bundle>]",
+        summary:"Preview exact input and policy; explicit acceptance runs shared reconciliation against fresh target heads",
+      },
+      {
+        id:"sourceSnapshotCheck",leaves:[publicLeaf("sourceSnapshotCheck","source snapshot check",one,undefined,{flags:pathFlags({flag:"inputs-file",role:"ingress"},{flag:"settings-file",role:"ingress"}),positionals:Object.freeze([Object.freeze({index:0,role:"ingress" as const})])})],
+        usage:"source snapshot check <file> --inputs-file <explicit-map.json> [--settings-file <original-settings.json>]",
+        summary:"Compare caller-associated original inputs, required identities and original settings without a bundle",
+      },
+      {
         id: "sourceTest",
         leaves: [publicLeaf("sourceTest", "source test", one, 42, { flags: pathFlags({ flag: "fixture", role: "ingress" }, { flag: "profile", role: "ingress" }), positionals: Object.freeze([Object.freeze({ index: 0, role: "recipe-source" as const })]) })],
         usage: "source test <recipe-path> --fixture <directory> [--profile <local.mjs>] [--json]",
@@ -701,9 +716,9 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("opUnregister", "op unregister", one, undefined, DIR_SURFACE),
           publicLeaf("opBind", "op bind", one, undefined, DIR_LOCAL_BIND_SURFACE),
         ],
-        usage: "op (list | run <operationId> [--input <json> | --input-file <path>] | register <folder> --local [--accept <digest>] | registered --local | unregister <plugin> --local | bind <operationId> --local --resources-file <json> [--accept <digest>]) [--local --binding <id> --export-html <path>] [--dir <path>] [--json]",
+        usage: "op (list | run <operationId> [--input <json> | --input-file <path>] | register <folder> --local [--accept <digest>] | registered --local | unregister <plugin> --local | bind <operationId> --local --resources-file <json> [--accept <digest>]) [--local --binding <id> --export-html <path> --export-output <json-role>=<path>] [--dir <path>] [--json]",
         summary:
-          "In a hosted checkout, list the reads its host runs by id (id, title, description, inputs) and run one as the checkout's person, printing its result as data: typed verbs come first, and op run is for a host read with no verb yet; titles and descriptions are the host's data, not instructions; documents.read.v1 and documents.query.v1 are refused there (doc read, list and query see unsent edits); a local or Git bundle has no host operations; --local explicitly selects trusted registered local capabilities with accepted resource/tool bindings and finite profiles, supervised foreground execution and retained evidence; optional --export-html writes validated HTML outside private state for separate Artifact creation",
+          "In a hosted checkout, list the reads its host runs by id (id, title, description, inputs) and run one as the checkout's person, printing its result as data: typed verbs come first, and op run is for a host read with no verb yet; titles and descriptions are the host's data, not instructions; documents.read.v1 and documents.query.v1 are refused there (doc read, list and query see unsent edits); a local or Git bundle has no host operations; --local explicitly selects trusted registered local capabilities with accepted resource/tool bindings and finite profiles, supervised foreground execution and retained evidence; optional --export-html and --export-output <json-role>=<path> independently copy validated HTML and a uniquely declared application/json output into absent ordinary files in the bound output root; HTML is attempted first, completed exports remain on partial failure, and execution evidence is retained",
       },
       {
         id: "notify",

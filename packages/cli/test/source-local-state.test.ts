@@ -57,3 +57,11 @@ test("per-binding state lock excludes an independent Node process",()=>fixture(a
  try {await once(child.stdout,"data");await assert.rejects(withSourceState(f.root,"feeds/one",async()=>{},f.home,f.locks),e=>(e as {details?:{reason:string}}).details?.reason==="source_busy");}
  finally {child.stdin.end("done");const [exit]=await once(child,"exit");assert.equal(exit,0);}
 }));
+
+test("snapshot envelope consent is closed and cannot carry credential fields",()=>fixture(async f=>{
+ const consent={v:1,acquisition:"local-snapshot",root:f.root,feed:"feeds/one",document_version:"fixture",core_binding_digest:`sha256:${"a".repeat(64)}`,edition:"0.2",bounds:{input_bytes:2097152,records:10000,envelope_bytes:4194304}};
+ for(const invalid of [{...consent,credential:{kind:"none"}},{...consent,token:"private-sentinel"},{...consent,core_binding_digest:null}]){
+  const e={...f.envelope,binding:{...f.envelope.binding,consent:invalid,digest:sourceDigest(invalid)}};
+  await writeFile(join(canonicalUserStateDir(f.home),f.file),JSON.stringify(e),{mode:0o600});await assert.rejects(readSourceEnvelope(f.file,f.home),error=>(error as {details?:{reason:string}}).details?.reason==="state_invalid");
+ }
+}));

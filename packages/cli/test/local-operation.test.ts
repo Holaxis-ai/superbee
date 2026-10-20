@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, realpath, symlink, readdir, lstat, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, realpath, symlink, readdir, lstat, rm, rename, link } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { registerOperationPlugin, listOperationPlugins } from '../src/operation-plugins.js';
-import { bindLocalOperation, runLocalOperation, LOCAL_OPERATION_PROFILES, outputBudget, startOutputBudgetPoll } from '../src/local-operation.js';
+import { bindLocalOperation, runLocalOperation, LOCAL_OPERATION_PROFILES, outputBudget, startOutputBudgetPoll, exportValidatedLocalOutput } from '../src/local-operation.js';
 import { init } from '../src/commands/init.js';
 import { SOURCE_PLUGIN_CORE_VERSION } from '@superbee/core/source-profiles';
 
@@ -344,13 +344,14 @@ test('output validation failure evidence retains only bounded phase errno and sy
   assert.deepEqual(JSON.parse(await readFile(finalResult.manifest,'utf8')).outputValidationFailure,{phase:'final',errno:'unknown',syscall:'unknown'});
 });
 
-test('HTML export refuses all in-bundle and alias shapes with an ordinary-output control',async()=>{
+test('HTML and JSON exports refuse all in-bundle and alias shapes with ordinary-output controls',async()=>{
   const f=await fixture();const config={...f.config,outputRoot:f.root};const preview:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,undefined,f.home);const bound:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,preview.digest,f.home);
   const indexBefore=await readFile(path.join(f.bundle,'index.md'),'utf8');const doc=path.join(f.bundle,'document.md');await writeFile(doc,'retained document');await symlink(f.bundle,path.join(f.root,'outside-alias'),'dir');await symlink(path.join(f.bundle,'new.md'),path.join(f.root,'outside-dangling.html'));const outside=path.join(f.root,'outside');await mkdir(outside);await symlink(outside,path.join(f.bundle,'alias-out'),'dir');
   const targets=[doc,path.join(f.bundle,'index.md'),path.join(f.bundle,'export.html'),path.join(f.root,'outside-alias','document.md'),path.join(f.root,'outside-dangling.html'),path.join(f.bundle,'alias-out','export.html')];
-  for(const target of targets){const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,bound.binding,f.input,{home:f.home,exportHtml:target});assert.equal(result.status,'succeeded');assert.equal(result.export.status,'failed');}
+  for(const target of targets)for(const kind of ['html','json']){const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,bound.binding,f.input,{home:f.home,...(kind==='html'?{exportHtml:target}:{exportOutput:{role:'data',path:target}})});assert.equal(result.status,'succeeded');assert.equal((kind==='html'?result.export:result.outputExport).status,'failed');}
   assert.equal(await readFile(path.join(f.bundle,'index.md'),'utf8'),indexBefore);await assert.rejects(readFile(path.join(f.bundle,'export.html')),{code:'ENOENT'});assert.equal(await readFile(doc,'utf8'),'retained document');await assert.rejects(readFile(path.join(f.bundle,'new.md')),{code:'ENOENT'});await assert.rejects(readFile(path.join(outside,'export.html')),{code:'ENOENT'});
   const control=await runLocalOperation('local.fixture.compare.v1',f.bundle,bound.binding,f.input,{home:f.home,exportHtml:path.join(f.root,'ordinary.html')});assert.equal(control.export.status,'exported');
+  const json=await runLocalOperation('local.fixture.compare.v1',f.bundle,bound.binding,f.input,{home:f.home,exportOutput:{role:'data',path:path.join(f.root,'ordinary.json')}});assert.equal(json.outputExport.status,'exported');
 });
 
 test('child readJson refuses unsafe leaves independently of whole-output supervision',async()=>{
@@ -405,4 +406,80 @@ test('supervised source and compiled CLI readJson accept ordinary JSON output',a
   const manifest=JSON.parse(await readFile(result.manifest,'utf8'));assert.deepEqual(manifest.settings,{value:7});
   const inputFile=path.join(f.root,'read-input.json');await writeFile(inputFile,JSON.stringify(f.input));
   const {runCommandBatch}=await import('./support/command-batch.js');const rows=runCommandBatch([{id:'read_json',argv:['op','run','local.fixture.compare.v1','--local','--binding',f.binding,'--input-file',inputFile,'--dir',f.bundle,'--json']}],{cwd:f.root,home:f.home});const compiled=rows.get('read_json')!;assert.equal(compiled.status,0,compiled.stdout);assert.equal(compiled.stderr,'');assert.equal(JSON.parse(compiled.stdout).status,'succeeded');
+});
+
+
+test('declared JSON export preserves exact validated bytes and independent HTML receipt shape',async()=>{
+  const f=await fixture(),html=path.join(f.config.outputRoot,'review.html'),json=path.join(f.config.outputRoot,'data.json');
+  const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,f.binding,f.input,{home:f.home,exportHtml:html,exportOutput:{role:'data',path:json}});
+  assert.equal(result.status,'succeeded');assert.equal(result.export.status,'exported');assert.equal(result.outputExport.status,'exported');
+  const bytes=await readFile(json,'utf8'),row=result.outputs.find((row:any)=>row.role==='data');
+  assert.deepEqual(JSON.parse(bytes),{source:f.input.expectedInputs.scene});assert.equal(hash(bytes),row.sha256);assert.equal(row.bytes,Buffer.byteLength(bytes));assert.equal(Object.isFrozen(row),true);
+  assert.deepEqual(result.export,{status:'exported',relativePath:'review.html',sha256:hash(await readFile(html,'utf8')),path:html});
+  assert.deepEqual(result.outputExport,{status:'exported',relativePath:'data.json',sha256:row.sha256,role:'data',mimeType:'application/json',path:json});
+  const manifest=JSON.parse(await readFile(result.manifest,'utf8'));
+  assert.deepEqual(manifest.export,{status:'exported',relativePath:'review.html',sha256:result.export.sha256});
+  const {path:_,...metadata}=result.outputExport;assert.deepEqual(manifest.outputExport,metadata);assert.equal(manifest.partialOutputState,'validated');assert.equal(manifest.publication,'not_attempted');
+});
+
+test('JSON role selector refuses missing ambiguous and wrong MIME declarations without changing execution evidence',async()=>{
+  for(const kind of ['missing','mime','duplicate','mixed']){
+    const body=kind==='duplicate'||kind==='mixed'?`await port.writeJson('one.json',{a:1});await port.writeJson('two.json',{a:2});return {outputs:[{role:'data',path:'one.json',mimeType:'application/json'},{role:'data',path:'two.json',mimeType:'${kind==='mixed'?'text/plain':'application/json'}'}]};`:undefined;
+    const f=await fixture(body),target=path.join(f.config.outputRoot,'data.json');
+    const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,f.binding,f.input,{home:f.home,exportOutput:{role:kind==='missing'?'host-log':kind==='mime'?'review':'data',path:target}});
+    assert.equal(result.status,'succeeded',kind);assert.deepEqual(result.outputExport,{status:'failed',reason:'export_refused_or_failed'});assert.equal(result.export,undefined);assert.equal(result.outputs.length,2);await assert.rejects(readFile(target),{code:'ENOENT'});
+    const manifest=JSON.parse(await readFile(result.manifest,'utf8'));assert.equal(manifest.partialOutputState,'validated');assert.deepEqual(manifest.outputs,result.outputs);
+  }
+});
+
+test('combined exports are independent and expected-absent even on destination collision',async()=>{
+  for(const kind of ['html-blocked','json-blocked','collision']){
+    const f=await fixture(),html=path.join(f.config.outputRoot,'review.html'),json=kind==='collision'?html:path.join(f.config.outputRoot,'data.json');
+    if(kind!=='collision')await writeFile(kind==='html-blocked'?html:json,'original');
+    const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,f.binding,f.input,{home:f.home,exportHtml:html,exportOutput:{role:'data',path:json}});
+    assert.equal(result.status,'succeeded');assert.equal(result.export.status,kind==='html-blocked'?'failed':'exported');assert.equal(result.outputExport.status,kind==='html-blocked'?'exported':'failed');
+    if(kind==='html-blocked'){assert.equal(await readFile(html,'utf8'),'original');assert.deepEqual(JSON.parse(await readFile(json,'utf8')),{source:f.input.expectedInputs.scene});}
+    else {assert.match(await readFile(html,'utf8'),new RegExp(result.invocationId));if(kind==='json-blocked')assert.equal(await readFile(json,'utf8'),'original');}
+    const manifest=JSON.parse(await readFile(result.manifest,'utf8'));assert.equal(manifest.outputs.length,2);assert.equal(manifest.export.status,result.export.status);assert.equal(manifest.outputExport.status,result.outputExport.status);
+  }
+});
+
+test('failed execution attempts neither requested export',async()=>{
+  const f=await fixture(`await port.writeJson('partial.json',{a:1});throw Error('fixture_failed');`),html=path.join(f.config.outputRoot,'review.html'),json=path.join(f.config.outputRoot,'data.json');
+  const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,f.binding,f.input,{home:f.home,exportHtml:html,exportOutput:{role:'data',path:json}});
+  assert.equal(result.status,'failed');assert.deepEqual(result.export,{status:'not_attempted'});assert.deepEqual(result.outputExport,{status:'not_attempted'});assert.deepEqual(result.outputs,[]);
+  await assert.rejects(readFile(html),{code:'ENOENT'});await assert.rejects(readFile(json),{code:'ENOENT'});assert.equal(JSON.parse(await readFile(result.manifest,'utf8')).partialOutputState,'retained_unvalidated');
+});
+
+test('one export primitive rechecks actual bound root and validated source bytes before copying',async()=>{
+  const f=await fixture(),bindingFile=path.join(f.home,'.superbee-state','local-operation-bindings',f.binding+'.json'),binding=JSON.parse(await readFile(bindingFile,'utf8'));
+  const sourceRoot=path.join(f.root,'validated-outputs');await mkdir(sourceRoot);const source=path.join(sourceRoot,'data.json'),original='{"value":1}';await writeFile(source,original);
+  const row=Object.freeze({path:'data.json',sha256:hash(original),bytes:Buffer.byteLength(original)});
+  const target=path.join(f.config.outputRoot,'data.json');
+  const copy=(selected:Readonly<{path:string;sha256:string;bytes:number}>=row,destination=target)=>exportValidatedLocalOutput(binding,f.bundle,f.home,sourceRoot,selected,destination,65536);
+  await writeFile(source,'{"value":2}');await assert.rejects(copy(),/export_source_changed/);await assert.rejects(readFile(target),{code:'ENOENT'});
+  await writeFile(source,original);await assert.rejects(copy({...row,bytes:row.bytes+1}),/export_source_changed/);
+  await assert.rejects(copy({...row,path:'../scene.blend'}),/export_source/);
+  await rm(source);await symlink(f.resource,source);await assert.rejects(copy(),/export_source/);await rm(source);await writeFile(source,original);
+  const hardlink=path.join(sourceRoot,'linked.json');await link(source,hardlink);await assert.rejects(copy(),/file_shape_or_limit/);await rm(hardlink);
+  await rename(f.config.outputRoot,f.config.outputRoot+'-old');await mkdir(f.config.outputRoot);await assert.rejects(copy(),/output_root_changed_rebind_required/);await rm(f.config.outputRoot,{recursive:true});await rename(f.config.outputRoot+'-old',f.config.outputRoot);
+  await symlink(path.join(f.root,'absent.json'),target);await assert.rejects(copy(),{code:'EEXIST'});await assert.rejects(readFile(path.join(f.root,'absent.json')),{code:'ENOENT'});await rm(target);
+  await assert.rejects(copy(row,path.join(f.home,'.superbee-state','data.json')));await assert.rejects(copy(row,path.join(f.root,'outside.json')),/export_destination/);
+  const receipt=await copy();assert.equal(receipt.sha256,row.sha256);assert.equal(await readFile(target,'utf8'),original);assert.equal((await lstat(target)).mode&0o777,0o600);
+});
+
+test('compiled CLI exports a tiny declared JSON fixture and reports parse refusal and partial failure truthfully',async()=>{
+  const f=await fixture(),inputFile=path.join(f.root,'run.json');await writeFile(inputFile,JSON.stringify(f.input));
+  const {spawnSync}=await import('node:child_process'),{commandEnv}=await import('./support/command-batch.js');
+  const executable=path.resolve(import.meta.dirname,'../../../superbee');
+  const argv=['op','run','local.fixture.compare.v1','--local','--binding',f.binding,'--input-file',inputFile,'--dir',f.bundle,'--json'];
+  const run=(extra:string[],base=argv)=>{const row=spawnSync(executable,[...base,...extra],{cwd:f.root,env:commandEnv(f.home),encoding:'utf8'});assert.ifError(row.error);assert.equal(row.signal,null);return row;};
+  const area=path.join(f.home,'.superbee-state','local-operation-runs');
+  for(const flags of [['--export-output','data'],['--export-output','=file'],['--export-output','data='],['--export-output','data=a','--export-output=data=b']]){const result=run(flags);assert.equal(result.status,2,result.stdout);assert.match(result.stdout+result.stderr,/requires <json-role>=<path>|may be selected only once/);}
+  await assert.rejects(readdir(area),{code:'ENOENT'});
+  const target=path.join(f.config.outputRoot,'tiny=fixture.json'),result=run(['--export-output',`data=${target}`]);assert.equal(result.status,0,result.stdout+result.stderr);assert.equal(result.stderr,'');
+  const receipt=JSON.parse(result.stdout);assert.equal(receipt.outputExport.status,'exported');assert.equal(receipt.export,undefined);assert.deepEqual(JSON.parse(await readFile(target,'utf8')),{source:f.input.expectedInputs.scene});assert.equal((await readdir(area)).length,1);
+  const html=path.join(f.config.outputRoot,'review.html'),partial=run(['--export-html',html,'--export-output',`data=${target}`]);assert.equal(partial.status,1,partial.stdout+partial.stderr);const partialReceipt=JSON.parse(partial.stdout);assert.equal(partialReceipt.status,'succeeded');assert.equal(partialReceipt.export.status,'exported');assert.equal(partialReceipt.outputExport.status,'failed');assert.equal((await readdir(area)).length,2);
+  const hosted=run(['--export-output',`data=${target}`],['op','run','documents.history.v1','--json']);assert.equal(hosted.status,2);assert.match(hosted.stdout+hosted.stderr,/explicit --local/);
+  const help=run(['--help']);assert.equal(help.status,0);assert.match(help.stdout,/--export-output <role>=<path>/);assert.match(help.stdout,/completed file remains/);
 });

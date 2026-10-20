@@ -120,7 +120,23 @@ export async function bindLocalOperation(operation:string,bundle:string,config:L
   return {status:'bound',binding:id,digest,operation,expectedInputs,next:`superbee op run ${commandToken(operation)} --local --binding ${commandToken(id)} --input-file <run-input.json> --dir <same-bundle>`};
 }
 export interface LocalRunInput {expectedInputs:Record<string,string>;settings:Record<string,unknown>;}
-export interface LocalRunOptions {home?:UserStateInput;signal?:AbortSignal;exportHtml?:string;}
+export interface LocalRunOptions {home?:UserStateInput;signal?:AbortSignal;exportHtml?:string;exportOutput?:{role:string;path:string};}
+
+/** Both explicit exports copy only the immutable row captured by final output validation. */
+export async function exportValidatedLocalOutput(binding:Pick<Binding,'outputRoot'|'outputRootIdentity'>,bundle:string,home:UserStateInput,outputDirectory:string,row:Readonly<{path:string;sha256:string;bytes:number}>,destination:string,maximum:number){
+  const target=path.resolve(destination);assertPathOutsidePrivateState(target,home);
+  await ordinaryDirectory(binding.outputRoot,home,bundle);
+  const outputRootNow=await lstat(binding.outputRoot);
+  if(outputRootNow.dev!==binding.outputRootIdentity.dev||outputRootNow.ino!==binding.outputRootIdentity.ino)throw refuse('output_root_changed_rebind_required');
+  if(!within(binding.outputRoot,target)||await realpath(path.dirname(target))!==path.dirname(target)||target===bundle||within(bundle,target))throw refuse('export_destination');
+  if(path.isAbsolute(row.path)||row.path.includes('\\')||row.path.split('/').some(x=>!x||x==='.'||x==='..'))throw refuse('export_source');
+  const source=path.join(outputDirectory,row.path);
+  if(await realpath(source)!==source)throw refuse('export_source');
+  const bytes=await localFileBytes(source,maximum);
+  if(bytes.length!==row.bytes||hash(bytes)!==row.sha256)throw refuse('export_source_changed');
+  await writeFile(target,bytes,{mode:0o600,flag:'wx'});
+  return {status:'exported' as const,relativePath:path.relative(binding.outputRoot,target),sha256:row.sha256,path:target};
+}
 
 interface OutputBudgetIo {readdir:(directory:string)=>Promise<Dirent[]>;lstat:(file:string)=>Promise<Stats>;}
 const outputBudgetIo:OutputBudgetIo={readdir:directory=>readdir(directory,{withFileTypes:true}),lstat:file=>lstat(file)};
@@ -182,6 +198,7 @@ async function stopGroup(pid:number,grace:number):Promise<boolean>{
 
 export async function runLocalOperation(operation:string,bundle:string,bindingId:string,input:LocalRunInput,options:LocalRunOptions={}):Promise<any>{
   const home=options.home??homedir();
+  if(options.exportOutput!==undefined&&(!record(options.exportOutput)||typeof options.exportOutput.role!=='string'||!key.test(options.exportOutput.role)||typeof options.exportOutput.path!=='string'||!options.exportOutput.path||options.exportOutput.path.includes('\0')))throw refuse('export_output_argument');
   if(!/^[0-9a-f-]{36}$/.test(bindingId))throw refuse('binding_id');
   const binding=JSON.parse(await readUserStateFile(home,path.join(canonicalUserStateDir(home),'local-operation-bindings',`${bindingId}.json`),65536)) as Binding;
   if(await localBundle(bundle,process.cwd(),home)!==bundle)throw refuse('canonical_bundle_required');
@@ -251,7 +268,7 @@ export async function runLocalOperation(operation:string,bundle:string,bindingId
         seen.add(output.path);const file=path.join(outputDirectory,output.path);
         if(await realpath(file)!==file)throw refuse('output_escape');
         const bytes=await localFileBytes(file,profile.outputBytes-total);total+=bytes.length;
-        manifest.outputs.push({role:output.role,path:output.path,mimeType:output.mimeType,bytes:bytes.length,sha256:hash(bytes)});
+        manifest.outputs.push(Object.freeze({role:output.role,path:output.path,mimeType:output.mimeType,bytes:bytes.length,sha256:hash(bytes)}));
       }
       const all=await readdir(outputDirectory,{recursive:true,withFileTypes:true});
       if(all.length>profile.files*2||all.some(entry=>entry.isSymbolicLink()||(!entry.isDirectory()&&!entry.isFile())))throw refuse('output_tree');
@@ -259,19 +276,23 @@ export async function runLocalOperation(operation:string,bundle:string,bindingId
       manifest.settings=result.settings??input.settings;manifest.partialOutputState='validated';
     }catch(error){manifest.status='failed';manifest.reason='output_validation';manifest.outputValidationFailure=outputFailure('final',error);manifest.outputs=[];}
   }
-  let exportPath:string|undefined;
-  if(options.exportHtml!==undefined){
-    manifest.export={status:'not_attempted'};
-    if(manifest.status==='succeeded')try{
-      const target=path.resolve(options.exportHtml);assertPathOutsidePrivateState(target,home);
-      const outputRootNow=await lstat(binding.outputRoot);if(outputRootNow.dev!==binding.outputRootIdentity.dev||outputRootNow.ino!==binding.outputRootIdentity.ino)throw refuse("output_root_changed_rebind_required");
-      if(!within(binding.outputRoot,target)||await realpath(path.dirname(target))!==path.dirname(target)||target===bundle||within(bundle,target))throw refuse('export_destination');
-      const html=manifest.outputs.filter((row:any)=>row.mimeType==='text/html');if(html.length!==1)throw refuse('export_html_count');
-      const bytes=await localFileBytes(path.join(outputDirectory,html[0].path),profile.outputBytes);
-      if(hash(bytes)!==html[0].sha256)throw refuse('export_source_changed');
-      await writeFile(target,bytes,{mode:0o600,flag:'wx'});exportPath=target;manifest.export={status:'exported',relativePath:path.relative(binding.outputRoot,target),sha256:hash(bytes)};
-    }catch{manifest.export={status:'failed',reason:'export_refused_or_failed'};}
+  let exportPath:string|undefined,outputExportPath:string|undefined;
+  // Each requested export completes independently, HTML first. A later failure never rolls back a file.
+  for(const kind of ['html','output'] as const){
+    const request=kind==='html'?options.exportHtml:options.exportOutput?.path;
+    if(request===undefined)continue;
+    const field=kind==='html'?'export':'outputExport';
+    manifest[field]={status:'not_attempted'};
+    if(manifest.status!=='succeeded')continue;
+    try{
+      const rows=manifest.outputs.filter((row:any)=>kind==='html'?row.mimeType==='text/html':row.role===options.exportOutput!.role);
+      if(rows.length!==1)throw refuse(kind==='html'?'export_html_count':'export_output_role_count');
+      if(kind==='output'&&rows[0].mimeType!=='application/json')throw refuse('export_output_mime');
+      const {path:exported,...metadata}=await exportValidatedLocalOutput(binding,bundle,home,outputDirectory,rows[0],request,profile.outputBytes);
+      manifest[field]=kind==='html'?metadata:{...metadata,role:rows[0].role,mimeType:rows[0].mimeType};
+      if(kind==='html')exportPath=exported;else outputExportPath=exported;
+    }catch{manifest[field]={status:'failed',reason:'export_refused_or_failed'};}
   }
   await writeFile(manifestPath,JSON.stringify(manifest,null,2),{mode:0o600});
-  return {invocationId:id,status:manifest.status,reason:manifest.reason,manifest:manifestPath,outputs:manifest.outputs,export:manifest.export===undefined?undefined:{...manifest.export,...(exportPath?{path:exportPath}:{})},publication:'not_attempted'};
+  return {invocationId:id,status:manifest.status,reason:manifest.reason,manifest:manifestPath,outputs:manifest.outputs,export:manifest.export===undefined?undefined:{...manifest.export,...(exportPath?{path:exportPath}:{})},outputExport:manifest.outputExport===undefined?undefined:{...manifest.outputExport,...(outputExportPath?{path:outputExportPath}:{})},publication:'not_attempted'};
 }

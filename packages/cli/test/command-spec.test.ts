@@ -147,3 +147,18 @@ test("hosted ordinary-file help distinguishes frozen delivery from document reco
   assert.equal(artifact!.when!(["unknown"]), true);
   assert.doesNotMatch(artifact!.why, /blobs.*do not sync/);
 });
+
+
+test("local output export is projected as egress with independent result semantics",()=>{
+  const op=CLI_COMMAND_GROUPS.flatMap(group=>group.commands).find(row=>row.id==='op');assert.ok(op);
+  assert.match(op.usage,/--export-output <json-role>=<path>/);assert.match(op.summary,/uniquely declared application\/json/);assert.match(op.summary,/partial failure/);
+  assert.equal(CLI_LEAVES.opRun.pathFlags.find(flag=>flag.flag==='export-output')?.role,'egress');
+});
+
+test("snapshot leaves own the closed ingress surface and input-only preview language",()=>{
+ assert.deepEqual(CLI_LEAVES.sourceSnapshotRun.pathFlags,[{flag:"dir",role:"bundle-root"},{flag:"snapshot",role:"ingress"}]);
+ assert.deepEqual(CLI_LEAVES.sourceSnapshotCheck.pathFlags,[{flag:"inputs-file",role:"ingress"},{flag:"settings-file",role:"ingress"}]);
+ assert.deepEqual(CLI_LEAVES.sourceSnapshotCheck.pathPositionals,[{index:0,role:"ingress"}]);
+ const rows=CLI_COMMAND_GROUPS.flatMap(group=>group.commands);assert.match(rows.find(row=>row.id==="sourceSnapshotRun")!.summary,/Preview exact input and policy/);
+ assert.match(rows.find(row=>row.id==="sourceSnapshotCheck")!.usage,/--inputs-file.*--settings-file/);
+});
