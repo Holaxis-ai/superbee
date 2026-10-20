@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { registerOperationPlugin, listOperationPlugins } from '../src/operation-plugins.js';
-import { bindLocalOperation, runLocalOperation, localBundle, LOCAL_OPERATION_PROFILES } from '../src/local-operation.js';
+import { bindLocalOperation, runLocalOperation, LOCAL_OPERATION_PROFILES } from '../src/local-operation.js';
 import { init } from '../src/commands/init.js';
 import { SOURCE_PLUGIN_CORE_VERSION } from '@superbee/core/source-profiles';
 
