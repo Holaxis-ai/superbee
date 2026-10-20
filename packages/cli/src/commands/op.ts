@@ -58,15 +58,18 @@ exports one validated HTML into the selected ordinary output root without publis
 Trusted code has ambient local authority; process supervision is not an OS sandbox.
 
 Local binding resources JSON contains resources (role -> {path, logicalRef}), tools (handle ->
-absolute executable path), outputRoot (existing ordinary directory outside the bundle/private
+absolute executable path or exact {path, versionFlag}), outputRoot (existing ordinary directory outside the bundle/private
 state), and profile (synthetic-v1: 16 MiB inputs/32 MiB outputs/30 seconds, or comparison-v1:
 128 MiB inputs/128 MiB outputs/120 seconds). Inputs are finite individual regular files; adapters
 must refuse unclosed dependencies. Preview returns expectedInputs hashes. Run input JSON contains
 {expectedInputs: {role: "sha256:..."}, settings: {...}}. Confirm new hashes for changed inputs.
 Tool paths resolve to native physical binaries; executable scripts/wrappers are refused.
 Symlink launcher/virtual-environment semantics are not
-preserved. Use a copied interpreter when needed. Bind pins executable bytes and --version, not
-arbitrary installed libraries or OS dependencies. These profiles are not qualified private-pilot
+preserved. Use a copied interpreter when needed. String tool paths probe with --version; explicit
+versionFlag accepts only --version or -version. All selections are validated before any probe;
+there is no flag fallback or arbitrary probe argv. Bind pins executable bytes, version output
+and the selected flag, not arbitrary installed libraries or OS dependencies. Existing stored
+bindings without a flag retain --version in new run evidence; earlier receipts are unchanged. These profiles are not qualified private-pilot
 limits or CPU/RAM/disk isolation.
 
 Without --local, a local or Git bundle has no host operations: op list answers none, and op run is refused

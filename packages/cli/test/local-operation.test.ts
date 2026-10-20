@@ -174,6 +174,59 @@ test('post-completion binary changes cannot be hidden by adapter catch',async()=
   assert.deepEqual(nativeExit,{exitCode:0,originalSize,replacedSize:originalSize+Buffer.byteLength('changed')});assert.equal((await stat(executable)).size,nativeExit.replacedSize);
   assert.equal(result.status,'failed');assert.equal(result.reason,'tool_identity_changed');assert.deepEqual(JSON.parse(await readFile(result.manifest,'utf8')).toolIdentityChanged,['fixture']);
 });
+async function nativeProbeFixture(t:{skip:(reason:string)=>void},root:string,singleOnly=false){
+  const {spawnSync}=await import('node:child_process');
+  if(spawnSync('cc',['--version'],{stdio:'ignore'}).status!==0){t.skip('native compiler unavailable for version probe fixture');return;}
+  const source=path.join(root,'version-probe.c'),binary=path.join(root,'version-probe'),marker=path.join(root,'version-probe.argv');
+  await writeFile(source,`#include <stdio.h>\n#include <string.h>\nint main(int argc,char**argv){FILE*f=fopen(${JSON.stringify(marker)},"a");for(int i=1;i<argc;i++)fprintf(f,"%s\\n",argv[i]);fclose(f);if(argc!=2||strcmp(argv[1],"-version")${singleOnly?'': '&&strcmp(argv[1],"--version")'})return 2;puts("fixture 1.0");return 0;}`);
+  const built=spawnSync('cc',[source,'-o',binary],{encoding:'utf8'});assert.equal(built.status,0,built.stderr);
+  return {binary,marker};
+}
+test('version flag selections reject every malformed later tool before any native probe executes',async(t)=>{
+  const f=await fixture(),native=await nativeProbeFixture(t,f.root);if(!native)return;
+  const badSelections:unknown[]=[null,[],0,{}, {path:native.binary},{versionFlag:'-version'}, {path:native.binary,versionFlag:'--help'}, {path:native.binary,versionFlag:['-version']}, {path:native.binary,versionFlag:'-version',argv:[]}, {path:native.binary,versionFlag:'-version',env:{}}, {path:7,versionFlag:'-version'}, {path:'relative',versionFlag:'-version'}, 'relative'];
+  for(const invalid of badSelections){
+    await assert.rejects(bindLocalOperation('local.fixture.compare.v1',f.bundle,{...f.config,tools:{first:native.binary,later:invalid}} as any,undefined,f.home),/tool_selection|absolute_tool_required/);
+    await assert.rejects(readFile(native.marker),{code:'ENOENT'});
+  }
+  await assert.rejects(bindLocalOperation('local.fixture.compare.v1',f.bundle,{...f.config,tools:{first:native.binary,'bad handle':native.binary}},undefined,f.home),/tool_handle/);
+  await assert.rejects(readFile(native.marker),{code:'ENOENT'});
+  const wrapper=path.join(f.root,'wrapper');await writeFile(wrapper,'#!/bin/sh\nexit 0\n',{mode:0o700});
+  await assert.rejects(bindLocalOperation('local.fixture.compare.v1',f.bundle,{...f.config,tools:{wrapper:{path:wrapper,versionFlag:'-version'}}},undefined,f.home),/native_tool_binary_required/);
+});
+test('version flag selects exactly one native probe with no automatic fallback and is retained in run evidence',async(t)=>{
+  const f=await fixture(`const result=await port.runTool({tool:'fixture',argv:['-version']});if(result.exitCode!==0)throw Error('native_run_failed');return {outputs:[]};`),native=await nativeProbeFixture(t,f.root,true);if(!native)return;
+  const config={...f.config,tools:{fixture:{path:native.binary,versionFlag:'-version' as const}}};
+  await assert.rejects(bindLocalOperation('local.fixture.compare.v1',f.bundle,{...config,tools:{fixture:native.binary}},undefined,f.home),/tool_probe_failed/);
+  assert.equal(await readFile(native.marker,'utf8'),'--version\n');
+  const preview:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,undefined,f.home);assert.equal(preview.tools.fixture.versionFlag,'-version');assert.equal(preview.tools.fixture.version,'fixture 1.0');
+  const bound:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,preview.digest,f.home);
+  const stored=JSON.parse(await readFile(path.join(f.home,'.superbee-state','local-operation-bindings',bound.binding+'.json'),'utf8'));assert.equal(stored.tools.fixture.versionFlag,'-version');
+  const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,bound.binding,f.input,{home:f.home});assert.equal(result.status,'succeeded');
+  const manifest=JSON.parse(await readFile(result.manifest,'utf8'));assert.deepEqual(manifest.tools.fixture,preview.tools.fixture);
+  assert.equal(await readFile(native.marker,'utf8'),'--version\n-version\n-version\n-version\n');
+});
+test('version flag changes binding acceptance even when native bytes and version output agree',async(t)=>{
+  const f=await fixture(),native=await nativeProbeFixture(t,f.root);if(!native)return;
+  const config={...f.config,tools:{fixture:native.binary}};
+  const defaults:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,undefined,f.home);
+  const explicitDefault:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,{...config,tools:{fixture:{path:native.binary,versionFlag:'--version'}}},undefined,f.home);
+  assert.equal(explicitDefault.digest,defaults.digest);assert.equal(defaults.tools.fixture.versionFlag,'--version');
+  const changed={...config,tools:{fixture:{path:native.binary,versionFlag:'-version' as const}}};const preview:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,changed,undefined,f.home);
+  assert.equal(preview.tools.fixture.sha256,defaults.tools.fixture.sha256);assert.equal(preview.tools.fixture.version,defaults.tools.fixture.version);assert.notEqual(preview.digest,defaults.digest);
+  await assert.rejects(bindLocalOperation('local.fixture.compare.v1',f.bundle,changed,defaults.digest,f.home),/binding_acceptance_changed/);
+});
+test('version flag default preserves string tools and legacy binding and receipt bytes',async()=>{
+  const f=await fixture(`const r=await port.runTool({tool:'node',argv:['--version']});if(r.exitCode!==0)throw Error('native_run_failed');return {outputs:[]};`);
+  const config={...f.config,tools:{node:process.execPath}};const preview:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,undefined,f.home);assert.equal(preview.tools.node.versionFlag,'--version');assert.equal(preview.tools.node.version,process.version);
+  const bound:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,preview.digest,f.home);
+  const bindingFile=path.join(f.home,'.superbee-state','local-operation-bindings',bound.binding+'.json');
+  const binding=JSON.parse(await readFile(bindingFile,'utf8'));delete binding.tools.node.versionFlag;const legacyBinding=JSON.stringify(binding);await writeFile(bindingFile,legacyBinding);
+  const earlier=await runLocalOperation('local.fixture.compare.v1',f.bundle,bound.binding,f.input,{home:f.home});assert.equal(earlier.status,'succeeded');
+  const oldReceipt=JSON.parse(await readFile(earlier.manifest,'utf8'));delete oldReceipt.tools.node.versionFlag;const legacyReceipt=JSON.stringify(oldReceipt,null,2);await writeFile(earlier.manifest,legacyReceipt);
+  const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,bound.binding,f.input,{home:f.home});assert.equal(result.status,'succeeded');assert.equal(JSON.parse(await readFile(result.manifest,'utf8')).tools.node.versionFlag,'--version');
+  assert.equal(await readFile(bindingFile,'utf8'),legacyBinding);assert.equal(await readFile(earlier.manifest,'utf8'),legacyReceipt);
+});
 test('native version probe ignoring TERM and retaining descendant pipes settles within its finite escalation bound',async(t)=>{
   const {spawnSync}=await import('node:child_process');if(spawnSync('cc',['--version'],{stdio:'ignore'}).status!==0){t.skip('native compiler unavailable for adversarial executable fixture');return;}
   const f=await fixture(),source=path.join(f.root,'probe.c'),binary=path.join(f.root,'probe'),marker=path.join(f.root,'probe.pid');
