@@ -1,3 +1,4 @@
+import type { BodyReplacePosture } from "./body-replace-guards.js";
 /**
  * Shared type shapes for the OKF store engine.
  *
@@ -169,6 +170,10 @@ export interface VersionInfo {
 
 /** Options controlling a conditional / attributed {@link StorageBackend.write}. */
 export interface WriteOptions {
+  /** Explicit per-document replacement intent carried by RemoteBackend to the wire authority.
+   * Raw storage adapters ignore it; it grants no metadata/Kind policy bypass.
+   */
+  bodyReplace?: BodyReplacePosture;
   /**
    * Compare-and-swap guard. When set to a {@link Version} token, the write succeeds
    * ONLY if the backend's current version for `id` equals that token; otherwise it

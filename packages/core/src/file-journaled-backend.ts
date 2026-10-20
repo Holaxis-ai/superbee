@@ -1,3 +1,4 @@
+import { captureNewDocumentIntent } from "./journaled-backend.js";
 /**
  * The API is experimental (`0.2.0-pre`) and may change before a stable release. The on-disk
  * format is a supported compatibility promise, because the hosted client's durable journal
@@ -530,6 +531,9 @@ function validateIntentChanges(changes: readonly Change[], format: number, file:
   for (const change of changes) {
     if (change.family !== "intent" || change.value === null) continue;
     const row = change.value;
+    if (!("recordFamily" in row) && row.bodyReplace !== undefined) {
+      try { captureNewDocumentIntent(row); } catch { throw new FileJournalCorruptError(file, "invalid document edit intent"); }
+    }
     if ("recordFamily" in row) {
       if (row.recordFamily !== "blob" || format < 2) throw new FileJournalCorruptError(file, "blob intent is not allowed in this format");
       if (blobIntentFormat(row) > format) throw new FileJournalCorruptError(file, "blob not-dispatched evidence is not allowed in this format");
@@ -1137,6 +1141,7 @@ export class FileJournaledBackend implements JournaledBackend, BlobJournaledBack
     if (snapshotGuard !== undefined) { options = captureJournalWriteOptions(options); doc = captureJournalValue(doc); }
     assertSafeConceptId(id);
     assertJournalResolutionOptions(id, options);
+    if (options.intent) options = { ...options, intent: captureNewDocumentIntent(options.intent) };
     if (snapshotGuard && (doc.id !== id || (options.intent && options.intent.target !== id))) throw new JournalGuardConflict(id);
     const raw = stringifyDoc(doc.frontmatter, doc.body ?? "");
     const version = versionOfBytes(raw);

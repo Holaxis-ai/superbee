@@ -259,6 +259,7 @@ export function platformContractRows(): ContractRow[] {
         const { runtime, authority, mode } = session;
         const second = await session.secondClient();
         const before = await runtime.read("notes/alpha");
+        assert.match(before.doc.body, /\[beta\]\(\.\.\/notes\/beta.md\)/, "the editor explicitly removes an existing relationship");
         const commit = await runtime.commit("notes/alpha", { body: "alpha v2\n", expectedVersion: before.provenance.version });
         assert.equal(commit.changed, true);
         if (mode === "request-driven") {

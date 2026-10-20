@@ -76,6 +76,7 @@ const makeHarness = (structural: boolean): ContractHarness => ({
           for (const key of ["requestId", "kind", "target", "base", "local", "content", "createdAt"] as const) {
             assert.equal(intent[key], recorded[key], `submission preserves the journal's original ${key}`);
           }
+          assert.deepEqual(intent.bodyReplace, recorded.bodyReplace, "submission preserves durable per-intent edit posture");
           return wireTransport.submit(intent, options);
         },
         lookup: async (requestId) => {

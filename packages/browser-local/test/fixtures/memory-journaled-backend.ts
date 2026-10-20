@@ -26,6 +26,7 @@ import {
   captureJournalDeleteOptions,
   captureJournalWriteOptions,
   captureIntentUpdate,
+  captureNewDocumentIntent,
   captureMetaWrite,
   captureJournalValue,
   captureRetireAcknowledged,
@@ -238,6 +239,7 @@ export class MemoryJournaledBackend implements JournaledBackend {
     if (snapshotGuard !== undefined) { options = captureJournalWriteOptions(options); doc = captureJournalValue(doc); }
     assertSafeConceptId(id);
     assertJournalResolutionOptions(id, options);
+    if (options.intent) options = { ...options, intent: captureNewDocumentIntent(options.intent) };
     if (snapshotGuard && (doc.id !== id || (options.intent && options.intent.target !== id))) throw new JournalGuardConflict(id);
     const now = new Date().toISOString();
     // The producer can synchronously cause another write. Finish it and capture its result

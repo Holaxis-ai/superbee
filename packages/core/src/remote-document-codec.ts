@@ -1,3 +1,4 @@
+import { captureBodyReplacePosture, type BodyReplacePosture } from "./body-replace-guards.js";
 import { InvalidInputError } from "./errors.js";
 
 /** Metadata cannot be represented by the JSON document transport without loss. */
@@ -87,7 +88,7 @@ export function captureRemoteFrontmatter(frontmatter: unknown): JsonValue {
 }
 
 /** Encode only the captured value, never the caller's live metadata a second time. */
-export function encodeRemoteDocument(frontmatter: unknown, body: string): string {
-  const payload = Object.assign(Object.create(null), { frontmatter: captureRemoteFrontmatter(frontmatter), body });
+export function encodeRemoteDocument(frontmatter: unknown, body: string, bodyReplace?: BodyReplacePosture): string {
+  const payload = Object.assign(Object.create(null), { frontmatter: captureRemoteFrontmatter(frontmatter), body, ...(bodyReplace === undefined ? {} : { bodyReplace: captureBodyReplacePosture(bodyReplace) }) });
   return JSON.stringify(payload);
 }

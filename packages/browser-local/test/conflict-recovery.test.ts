@@ -195,3 +195,73 @@ for (const adapter of ["indexeddb", "memory"]) {
     } finally { local.close(); }
   });
 }
+
+
+for (const choice of ["keep-local", "revise"] as const) {
+  test(`indexeddb: reviewed ${choice} durably authorizes relationship replacement through actual wire`, async () => {
+    const remote = await createRemoteFixture();
+    const factory = new IDBFactory(), name = `intent-recovery-${crypto.randomUUID()}`;
+    await remote.authority.write(id, doc("original [source](./source.md)\n"));
+    let local = openLocalBundle(name, { indexedDB: factory });
+    await bootstrap(remote.remote, local);
+    const runtime = createBrowserLocalRuntime({ local, remote: remote.remote, transport: remote.transport, write: immediate });
+    await runtime.commit(id, { body: "my deliberate link removal\n" });
+    await remote.authority.write(id, doc("their [new source](./different.md)\n"));
+    await push(local, remote.transport, { remote: remote.remote, write: immediate });
+    const review = await inspectConflict(local, remote.remote, id);
+    const result = await resolveConflict(local, remote.remote, review, choice === "keep-local" ? { kind: choice } : { kind: choice, body: "reviewed revision without links\n" });
+    assert.deepEqual(result.intent!.bodyReplace, { replaceLinks: true });
+    local.close();
+    local = openLocalBundle(name, { indexedDB: factory });
+    try {
+      assert.deepEqual((await local.backend.readIntent(result.intent!.requestId))!.bodyReplace, { replaceLinks: true });
+      const pushed = await push(local, remote.transport, { remote: remote.remote, write: immediate });
+      assert.ok(pushed.settled.every(row => row.state === "acknowledged"));
+      assert.equal((await remote.authority.read(id)).doc.body, choice === "keep-local" ? "my deliberate link removal\n" : "reviewed revision without links\n");
+    } finally { local.close(); }
+  });
+}
+
+
+test("indexeddb: explicit cumulative editor intent survives supersession, independent chain, and refusal fold", async () => {
+  const remote = await createRemoteFixture();
+  await remote.authority.write(id, doc("original [source](./source.md)\n"));
+  const local = openLocalBundle(`posture-fold-${crypto.randomUUID()}`, { indexedDB: new IDBFactory() });
+  await bootstrap(remote.remote, local);
+  try {
+    const first = await commitLocal(local, id, { ...edit("removed relationship\n"), bodyReplace: { replaceLinks: true } });
+    const cumulative = await commitLocal(local, id, edit("removed relationship plus automatic append\n"));
+    assert.equal(await local.backend.readIntent(first.intent!.requestId), undefined);
+    assert.equal(cumulative.intent!.bodyReplace!.replaceLinks, true, "unsent cumulative content retains prior explicit declaration");
+    await local.backend.updateIntent(cumulative.intent!.requestId, "pending", { state: "in_flight", attempts: 1 });
+    const successor = await commitLocal(local, id, edit("later independent append\n"));
+    assert.equal(successor.intent!.after, cumulative.intent!.requestId);
+    assert.equal(successor.intent!.bodyReplace, undefined, "possibly delivered predecessor does not grant a successor override");
+    await local.backend.updateIntent(cumulative.intent!.requestId, "in_flight", { state: "refused", refusal: { code: "USAGE", message: "content refusal" } });
+    const pushed = await push(local, remote.transport, { remote: remote.remote, write: immediate });
+    assert.equal(pushed.rebased!.length, 1);
+    assert.ok(pushed.settled.every(row => row.state === "acknowledged"));
+    assert.equal((await remote.authority.read(id)).doc.body, "later independent append\n");
+  } finally { local.close(); }
+});
+
+test("indexeddb: legacy unflagged intent remains protected until a new explicit editor identity supersedes it", async () => {
+  const remote = await createRemoteFixture();
+  const base = await remote.authority.write(id, doc("original [source](./source.md)\n"));
+  const local = openLocalBundle(`legacy-posture-${crypto.randomUUID()}`, { indexedDB: new IDBFactory() });
+  await bootstrap(remote.remote, local);
+  try {
+    const before = await local.backend.read(id);
+    await local.backend.writeJournaled(id, doc("legacy replacement\n"), { expectedVersion: before.version,
+      intent: { requestId: "legacy-unflagged", kind: "document.write", target: id, base, baseContent: null, createdAt: "2026-10-20T12:00:00Z" } });
+    const refused = await push(local, remote.transport, { remote: remote.remote, write: immediate });
+    assert.equal(refused.settled[0]!.state, "refused");
+    assert.equal((await remote.authority.read(id)).version, base);
+    assert.equal((await local.backend.readIntent("legacy-unflagged"))!.bodyReplace, undefined);
+    const runtime = createBrowserLocalRuntime({ local, remote: remote.remote, transport: remote.transport, write: immediate });
+    await runtime.commit(id, { body: "new deliberate replacement\n" });
+    assert.equal(await local.backend.readIntent("legacy-unflagged"), undefined);
+    await runtime.sync();
+    assert.equal((await remote.authority.read(id)).doc.body, "new deliberate replacement\n");
+  } finally { local.close(); }
+});

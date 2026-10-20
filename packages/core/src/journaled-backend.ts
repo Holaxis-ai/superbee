@@ -1,3 +1,4 @@
+import { captureBodyReplacePosture } from "./body-replace-guards.js";
 /**
  * The journaled-backend seam: what a storage adapter must add to {@link StorageBackend} to host
  * a browser-local working copy whose synchronization is a durable intent journal. The engine
@@ -203,6 +204,7 @@ export interface MetaWriteOptions {
 
 /** Capture guarded updates before any asynchronous adapter work and protect original history. */
 export function captureIntentUpdate(patch: IntentPatch, options: IntentUpdateOptions): { patch: IntentPatch; options: IntentUpdateOptions } {
+  if (Object.hasOwn(patch, "bodyReplace")) throw new JournalGuardConflict("bodyReplace");
   const guard = captureJournalGuardOption(options);
   if (guard !== undefined) captureJournalValue({ patch, options });
   if (options.document && guard === undefined) throw new JournalGuardConflict(options.document.id);
@@ -371,7 +373,18 @@ export interface IntentRecord extends OperationIntent {
 
 /** The caller-supplied part of a new intent; the adapter fills content, version, sequence, and state. */
 export type NewIntentRecord = Pick<IntentRecord, "requestId" | "kind" | "target" | "base" | "baseContent" | "createdAt"> &
-  Partial<Pick<IntentRecord, "after" | "recreates">>;
+  Partial<Pick<IntentRecord, "after" | "recreates" | "bodyReplace">>;
+
+/** Capture durable per-request edit intent before an adapter queues asynchronous work. */
+export function captureNewDocumentIntent(intent: NewIntentRecord): NewIntentRecord {
+  const captured = captureJournalValue(intent);
+  const posture = captureBodyReplacePosture(captured.bodyReplace);
+  if (posture !== undefined) {
+    if (captured.kind !== "document.write") throw new JournalGuardConflict(captured.target);
+    return { ...captured, bodyReplace: posture };
+  }
+  return captured;
+}
 
 /** An opaque key-value row in the meta store (bootstrap marker, per-document base, pause flag). */
 export interface MetaRecord {
@@ -395,6 +408,7 @@ export class JournalSnapshotConflict extends Error {
  * nothing). The adapter fills content, local version, sequence and state.
  */
 export function assertDeletionIntent(target: ConceptId, options: JournaledDeleteOptions): void {
+  if (options.intent && Object.hasOwn(options.intent, "bodyReplace")) throw new JournalSnapshotConflict(target);
   if (options.intent === undefined && options.supersede === undefined) return;
   if (options.guard !== undefined || (options.intent !== undefined && (options.intent.kind !== DOCUMENT_DELETE_KIND || options.intent.target !== target))) {
     throw new JournalSnapshotConflict(target);
@@ -558,7 +572,7 @@ export interface JournaledHeadsOptions<T> {
 }
 
 /** Fields a caller may change when settling or reclaiming an intent. */
-export type IntentPatch = Partial<Omit<IntentRecord, "requestId" | "sequence" | "createdAt" | "kind" | "target">>;
+export type IntentPatch = Partial<Omit<IntentRecord, "requestId" | "sequence" | "createdAt" | "kind" | "target" | "bodyReplace">>;
 
 /**
  * A {@link StorageBackend} that also journals local writes as intents and keeps opaque meta

@@ -192,7 +192,7 @@ test('HTML export refuses all in-bundle and alias shapes with an ordinary-output
   const control=await runLocalOperation('local.fixture.compare.v1',f.bundle,bound.binding,f.input,{home:f.home,exportHtml:path.join(f.root,'ordinary.html')});assert.equal(control.export.status,'exported');
 });
 
-test('readJson uses bounded inode reads for regular JSON and refuses symlink, directory, hardlink and oversized leaves',async()=>{
+test('child readJson refuses unsafe leaves independently of whole-output supervision',async()=>{
   const f=await fixture(`
     const fs=await import('node:fs/promises');
     await port.writeJson('normal.json',{value:7});
@@ -205,8 +205,43 @@ test('readJson uses bounded inode reads for regular JSON and refuses symlink, di
     await fs.writeFile(invocation.outputDirectory+'/oversized.json',' '.repeat(65537));await refuse('oversized.json');await fs.unlink(invocation.outputDirectory+'/oversized.json');
     return {settings:{value:normal.value,rejected},outputs:[{role:'normal',path:'normal.json',mimeType:'application/json'}]};
   `);
+  // Unsafe read fixtures intentionally violate the parent output-tree policy. Exercise the
+  // real child port alone; the supervised operation below retains an ordinary-output control.
+  const {spawn}=await import('node:child_process');
+  const {localOperationChild}=await import('../src/local-operation-child.js');
+  const {boundedLocalFileBytes}=await import('../src/local-operation-file.js');
+  const outputDirectory=path.join(f.root,'read-json-probes');await mkdir(outputDirectory);
+  const child=spawn(process.execPath,['--input-type=module','--eval',`(${localOperationChild.toString()})(${boundedLocalFileBytes.toString()})`],{detached:true,env:{PATH:'/usr/bin:/bin'},cwd:f.root,stdio:['ignore','pipe','pipe','ipc']});
+  let stderr='',result:any;
+  child.stderr!.on('data',chunk=>{stderr+=chunk;});
+  const deadline=setTimeout(()=>child.kill('SIGKILL'),10000);
+  try {
+    await new Promise<void>((resolve,reject)=>{
+      child.once('error',reject);
+      child.on('message',(message:any)=>{
+        if(message.type==='ready')child.send({type:'execute'});
+        else if(message.type==='result')result=message.result;
+        else reject(new Error(`unexpected child reply: ${JSON.stringify(message)}; ${stderr}`));
+      });
+      child.once('exit',(code,signal)=>{
+        if(code===0&&signal===null&&result!==undefined)resolve();
+        else reject(new Error(`child readJson failed (${code}, ${signal}): ${stderr}`));
+      });
+      child.send({type:'initialize',entryPath:path.join(f.plugin,'entry.mjs'),capabilityName:capability.name,maximumOutputBytes:65536,protocolBytes:65536,tools:{},resources:{},profile:LOCAL_OPERATION_PROFILES['synthetic-v1'],invocation:{id:'read-json-probe',outputDirectory,assetDirectory:f.plugin,profile:'synthetic-v1'},input:f.input.settings});
+    });
+    assert.equal(stderr,'');
+    assert.deepEqual(result.settings,{value:7,rejected:['symlink.json','directory.json','hardlink.json','oversized.json']});
+  } finally {clearTimeout(deadline);if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');}
+});
+
+test('supervised source and compiled CLI readJson accept ordinary JSON output',async()=>{
+  const f=await fixture(`
+    await port.writeJson('normal.json',{value:7});
+    const normal=await port.readJson('normal.json');if(normal.value!==7)throw Error('normal_json_changed');
+    return {settings:{value:normal.value},outputs:[{role:'normal',path:'normal.json',mimeType:'application/json'}]};
+  `);
   const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,f.binding,f.input,{home:f.home});assert.equal(result.status,'succeeded');
-  const manifest=JSON.parse(await readFile(result.manifest,'utf8'));assert.deepEqual(manifest.settings,{value:7,rejected:['symlink.json','directory.json','hardlink.json','oversized.json']});
+  const manifest=JSON.parse(await readFile(result.manifest,'utf8'));assert.deepEqual(manifest.settings,{value:7});
   const inputFile=path.join(f.root,'read-input.json');await writeFile(inputFile,JSON.stringify(f.input));
   const {runCommandBatch}=await import('./support/command-batch.js');const rows=runCommandBatch([{id:'read_json',argv:['op','run','local.fixture.compare.v1','--local','--binding',f.binding,'--input-file',inputFile,'--dir',f.bundle,'--json']}],{cwd:f.root,home:f.home});const compiled=rows.get('read_json')!;assert.equal(compiled.status,0,compiled.stdout);assert.equal(compiled.stderr,'');assert.equal(JSON.parse(compiled.stdout).status,'succeeded');
 });

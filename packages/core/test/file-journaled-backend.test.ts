@@ -750,3 +750,24 @@ test("removeMeta: an interrupted append leaves the row, and a read-only store re
     await root.cleanup();
   }
 });
+
+
+test("FileJournaledBackend durable body replacement intent survives reopen without format migration", async () => {
+  const root = await newRoot();
+  let backend = await FileJournaledBackend.open(root.options());
+  try {
+    const posture = { replaceLinks: true };
+    await backend.writeJournaled("intent/posture", { id: "intent/posture", frontmatter: { type: "Note" }, body: "replacement" }, {
+      intent: { requestId: "posture-reopen", kind: "document.write", target: "intent/posture", base: null, baseContent: null, createdAt: NOW, bodyReplace: posture },
+    });
+    posture.replaceLinks = false;
+    await backend.close();
+    backend = await FileJournaledBackend.open(root.options());
+    assert.deepEqual((await backend.readIntent("posture-reopen"))!.bodyReplace, { replaceLinks: true });
+    await backend.updateIntent("posture-reopen", "pending", { state: "in_flight", attempts: 1 });
+    await backend.close();
+    backend = await FileJournaledBackend.open(root.options());
+    assert.deepEqual((await backend.readIntent("posture-reopen"))!.bodyReplace, { replaceLinks: true });
+    assert.equal((await backend.readIntent("posture-reopen"))!.attempts, 1);
+  } finally { await backend.close(); await root.cleanup(); }
+});
