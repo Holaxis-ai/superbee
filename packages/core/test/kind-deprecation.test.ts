@@ -4,10 +4,10 @@ import { buildKindRegistry, inspectKindDeprecatedUsage, kindConventionDoc, kindD
 import { mutateDocument, KindConformanceError } from "../src/document-mutation.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { bundleHealth } from "../src/bundle-health/index.js";
-import { installRecipe, planRecipeEvolution, applyRecipeEvolution } from "../src/recipe-lifecycle/index.js";
+import { installRecipe, planRecipeEvolution, applyRecipeEvolution, prepareRecipeInstall, materializeRecipeForEdition } from "../src/recipe-lifecycle/index.js";
 import type { LoadedRecipe } from "../src/recipes.js";
 import type { Bundle, OkfDocument, WriteOptions, Version } from "../src/types.js";
-import { deprecationConvention, deprecationRows, deprecationEligibilityRows, widget } from "./fixtures/kind-deprecation-rows.js";
+import { deprecationConvention, deprecationRows, deprecationEligibilityRows, deprecationMaterializationRows, widget } from "./fixtures/kind-deprecation-rows.js";
 
 const registry = () => buildKindRegistry([deprecationConvention], [], { okfVersion: "0.2" });
 async function memory(backend = new MemoryBackend()): Promise<Bundle & { backend: MemoryBackend }> {
@@ -197,4 +197,70 @@ test("eligibility agreement rows: resolved claims and legal prototype-named voca
     assert.equal(plan.ready, !row.invalid, JSON.stringify(plan.blockers));
     if (row.invalid) assert.ok(plan.blockers.some(b => b.code === "KIND_DEPRECATION_INVALID"));
   });
+});
+
+
+test("materialization agreement rows: cross-edition logical/physical policy prepare, install, evolve and transition", async t => {
+  for (const row of deprecationMaterializationRows) await t.test(row.name, async () => {
+    const source = recipe("2", true); source.docs = [structuredClone(row.convention)]; const before = structuredClone(source);
+    const prepared = prepareRecipeInstall(source, { okfVersion: row.edition, now: "2026-10-20T00:00:00Z" });
+    const reg = buildKindRegistry(prepared.docs, [], { okfVersion: row.edition });
+    const kind = reg.kinds.get("Widget")!;
+    assert.ok(kind.fields.optional.includes(row.storageField));
+    assert.equal(reg.warnings.some(w => w.code === "KIND_DEPRECATION_INVALID"), row.invalid);
+    if (row.hasPolicy) {
+      assert.ok(kind.deprecated?.fields.includes(row.storageField) || Object.hasOwn(kind.deprecated?.values ?? {}, row.storageField));
+      assert.equal(JSON.stringify(prepared.docs[0]!.frontmatter.deprecated).includes('"progress_status"'), false);
+    } else assert.equal(kind.deprecated, undefined);
+    assert.deepEqual(source, before, "preparation does not rewrite the author's recipe");
+    const installed = await memory(); await installed.backend.writeReserved("", "index.md", `---\nokf_version: '${row.edition}'\n---\n`);
+    await installRecipe(installed, source);
+    const installedPolicy = buildKindRegistry([(await installed.backend.read(row.convention.id)).doc], [], { okfVersion: row.edition });
+    assert.equal(installedPolicy.warnings.some(w => w.code === "KIND_DEPRECATION_INVALID"), row.invalid,
+      "import-like install preserves policy validity/invalidity without claiming authoring admission");
+    const create = mutateDocument({ bundle: installed, id: "widgets/new", mode: "create-only", registry: installedPolicy, strict: false,
+      buildCandidate: () => ({ frontmatter: widget(Object.fromEntries([[row.storageField, "old"]])).frontmatter, body: "" }) });
+    if (row.hasPolicy) await assert.rejects(create, KindConformanceError); else await create;
+    const evolving = await memory(); await evolving.backend.writeReserved("", "index.md", `---\nokf_version: '${row.edition}'\n---\n`);
+    const baseline = recipe("1", false); baseline.docs = [structuredClone(row.convention)]; delete baseline.docs[0]!.frontmatter.deprecated;
+    await installRecipe(evolving, baseline);
+    const legacy = widget(Object.fromEntries([[row.storageField, "old"]])); const version = await evolving.backend.write(legacy.id, legacy);
+    const plan = await planRecipeEvolution(evolving, source);
+    assert.equal(plan.ready, !row.invalid, JSON.stringify(plan.blockers));
+    if (row.invalid) assert.ok(plan.blockers.some(b => b.code === "KIND_DEPRECATION_INVALID"));
+    else {
+      await applyRecipeEvolution(evolving, source, plan.plan_token);
+      assert.equal((await evolving.backend.read(legacy.id)).version, version, "evolution does not migrate legacy instances");
+      assert.equal((await planRecipeEvolution(evolving, source)).writes, 0);
+      const evolvedPolicy = buildKindRegistry([(await evolving.backend.read(row.convention.id)).doc], [], { okfVersion: row.edition });
+      const saved = await mutateDocument({ bundle: evolving, id: legacy.id, mode: "patch", registry: evolvedPolicy, strict: false,
+        buildCandidate: d => ({ frontmatter: d!.frontmatter, body: "Unrelated edit" }) });
+      assert.equal(saved.doc.frontmatter[row.storageField], "old");
+    }
+  });
+});
+
+test("materializer preserves malformed policy payloads, link labels and dual-coordinate refusals", () => {
+  const malformed: unknown[] = [null, ["progress_status"], { fields: "progress_status" }, { values: ["progress_status"] },
+    { values: { progress_status: "not a list" }, links: ["progress_status"], unknown: { raw: true } },
+    { fields: ["progress_status", null], links: ["progress_status"] }];
+  for (const policy of malformed) {
+    const source = recipe("1", false); source.docs[0]!.frontmatter.fields = { optional: ["progress_status"], values: { progress_status: ["old", "new"] } };
+    source.docs[0]!.frontmatter.deprecated = policy; const before = structuredClone(source);
+    const prepared = prepareRecipeInstall(source, { okfVersion: "0.2", now: "2026-10-20T00:00:00Z" });
+    const reg = buildKindRegistry(prepared.docs, [], { okfVersion: "0.2" });
+    assert.ok(reg.warnings.some(w => w.code === "KIND_DEPRECATION_INVALID"));
+    assert.deepEqual(source, before);
+    const materialized = prepared.docs[0]!.frontmatter.deprecated as any;
+    if (policy && !Array.isArray(policy) && typeof policy === "object" && Object.hasOwn(policy, "links")) assert.deepEqual(materialized.links, (policy as any).links);
+    if (policy === null || Array.isArray(policy) || typeof (policy as any)?.fields === "string" || Array.isArray((policy as any)?.values)) assert.deepEqual(materialized, policy);
+    if ((policy as any)?.values?.progress_status === "not a list") assert.equal(materialized.values.superbee_progress_status, "not a list");
+    if (Array.isArray((policy as any)?.fields)) assert.deepEqual(materialized.fields, ["superbee_progress_status", null]);
+  }
+  for (const policy of [ { fields: ["progress_status", "superbee_progress_status"] },
+    { values: { progress_status: ["old"], superbee_progress_status: ["old"] } } ]) {
+    const source = recipe("1", false); source.docs[0]!.frontmatter.fields = { optional: ["progress_status"], values: { progress_status: ["old", "new"] } };
+    source.docs[0]!.frontmatter.deprecated = policy;
+    assert.throws(() => materializeRecipeForEdition(source, "0.2"), /declares both logical/);
+  }
 });

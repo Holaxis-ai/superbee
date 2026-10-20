@@ -79,3 +79,26 @@ for (const field of ["toString", "constructor", "__proto__"]) for (const termina
       { values: Object.fromEntries([[field, ["old"]]]) }, terminal ? Object.fromEntries([[field, ["old"]]]) : undefined),
     invalid: terminal, field, mode: "values" });
 }
+
+
+/** Recipe-author logical vocabulary and explicitly physical coordinates share one materializer. */
+export interface DeprecationMaterializationRow {
+  name: string;
+  edition: "0.1" | "0.2";
+  storageField: string;
+  convention: OkfDocument;
+  invalid: boolean;
+  hasPolicy: boolean;
+}
+export const deprecationMaterializationRows: DeprecationMaterializationRow[] = [];
+for (const edition of ["0.1", "0.2"] as const) for (const spelling of ["logical", "physical"]) {
+  const storageField = edition === "0.1" ? "status" : "superbee_progress_status";
+  const field = spelling === "logical" ? "progress_status" : storageField;
+  for (const mode of ["fields", "values"] as const) for (const hasPolicy of [false, true]) {
+    const policy = mode === "fields" ? { fields: [field] } : { values: Object.fromEntries([[field, ["old"]]]) };
+    const convention = eligibilityConvention([field], Object.fromEntries([[field, ["old", "new"]]]), undefined, policy);
+    if (!hasPolicy) delete convention.frontmatter.deprecated;
+    deprecationMaterializationRows.push({ name: `${edition} ${spelling} ${mode} ${hasPolicy ? "deprecated" : "absent policy"}`,
+      edition, storageField, convention, invalid: hasPolicy && edition === "0.1", hasPolicy });
+  }
+}
