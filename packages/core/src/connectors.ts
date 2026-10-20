@@ -180,6 +180,8 @@ const PARAMETER = "[A-Za-z0-9._~-]+";
 const HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const URL_CHARS = /^[A-Za-z0-9\-._~:/?[\]@!$&'()*+,;=%]*$/;
 const PROTOTYPE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+/** @internal Shared rejection of prototype-sensitive record keys. */
+export const isPrototypeKey = (value: string): boolean => PROTOTYPE_KEYS.has(value);
 const RESERVED_TARGET_KINDS = new Set(["Convention", "View", "Connector", "Reference", "Source Feed", "Signal"]);
 const AUTH_KINDS: readonly ConnectorAuthKind[] = ["none", "token", "github-app", "oauth2", "signed-webhook"];
 const AUTH_KEYS_BY_KIND: Readonly<Record<ConnectorAuthKind, readonly string[]>> = {

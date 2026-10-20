@@ -59,7 +59,7 @@ test("decoder bounds exact bytes, finite JSON, depth and closed envelope/evidenc
 
 test("admission refuses all invalid and duplicate rendered identities before any write", async () => {
   const b = bind(), state = new MemoryMachineState(); let commits = 0;
-  for (const records of [[{ key: "x" }, { key: "x" }], [{ key: "" }], [{}], [{ key: true }], [{ key: "x".repeat(2049) }], [{ key: "__proto__" }], [{ key: "a\nb" }]]) {
+  for (const records of [[{ key: "x" }, { key: "x" }], [{ key: "" }], [{}], [{ key: true }], [{ key: "x".repeat(2049) }], [{ key: "__proto__" }], [{ key: "constructor" }], [{ key: "prototype" }], [{ key: "a\nb" }]]) {
     await assert.rejects(run(b, input(1, records), state, async () => { commits++; }), code(records.length === 2 ? "SNAPSHOT_IDENTITY_DUPLICATE" : "SNAPSHOT_IDENTITY_INVALID"));
   }
   assert.equal(commits, 0); assert.deepEqual(state.keys(), []);

@@ -1,5 +1,5 @@
 /** Finite, data-only acquisition over the existing observation and overlay owners. */
-import { findingsFor, mapRecord, parseRecordSourceDeclaration, renderIdentity, type BoundFeed } from "../connectors.js";
+import { findingsFor, isPrototypeKey, mapRecord, parseRecordSourceDeclaration, renderIdentity, type BoundFeed } from "../connectors.js";
 import type { KindRegistry } from "../kinds.js";
 import { readOverlayPolicyForResource } from "../record-overlay/policy.js";
 import type { SourceIndex } from "../record-overlay/source-index.js";
@@ -190,7 +190,7 @@ function capacityFacts(bound: BoundSnapshotSource, snapshot: DecodedSnapshot, st
 function snapshotStateValid(value: unknown): value is SourceState {
   if (!isSourceState(value) || !isJsonData(value)) return false;
   const count = (v: unknown): boolean => Number.isSafeInteger(v) && (v as number) >= 0;
-  const idValid = (id: string): boolean => id.length > 0 && id.length <= 2048 && !["__proto__", "constructor", "prototype"].includes(id) && !/[\x00-\x1f\x7f]/.test(id);
+  const idValid = (id: string): boolean => id.length > 0 && id.length <= 2048 && !isPrototypeKey(id) && !/[\x00-\x1f\x7f]/.test(id);
   const entryValid = (entry: unknown): boolean => object(entry) && object(entry.after) && typeof entry.digest === "string" && SNAPSHOT_SHA256.test(entry.digest)
     && count(entry.missing) && typeof entry.seen_at === "string" && (entry.gone === undefined || entry.gone === true)
     && (entry.first_missing_at === undefined || typeof entry.first_missing_at === "string");
@@ -233,7 +233,7 @@ export function admitSnapshot(options: SnapshotAdmissionOptions): SnapshotAdmiss
   const ids = new Set<string>();
   for (const raw of snapshot.data.records) {
     const identity = renderIdentity(bound.source, bound, raw);
-    if (!identity.ok || ["__proto__", "prototype", "constructor"].includes(identity.id) || /[\x00-\x1f\x7f]/.test(identity.id)) return refuse("SNAPSHOT_IDENTITY_INVALID");
+    if (!identity.ok || isPrototypeKey(identity.id) || /[\x00-\x1f\x7f]/.test(identity.id)) return refuse("SNAPSHOT_IDENTITY_INVALID");
     if (ids.has(identity.id)) return refuse("SNAPSHOT_IDENTITY_DUPLICATE");
     ids.add(identity.id);
   }
