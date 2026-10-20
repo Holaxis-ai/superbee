@@ -9,7 +9,7 @@ import { bundleHomeAt, inspectBundleHomeAt } from "../src/bundle-home.js";
 import { folderIdentity, indexCheckoutPath, writeBinding, hostedCheckoutsRoot } from "../src/hosted/binding.js";
 import { createHash } from "node:crypto";
 
-const rows = ["plain", "navigation-index", "nested-root", "ancestor-root", "nested-binding", "malformed-binding", "marker-copy", "malformed-marker", "marker-link", "bad-git", "board", "bad-private-index", "null-private-index", "hosted-binding", "bad-binding-record", "descendant-symlink", "deep-tree", "unsafe-index"] as const;
+const rows = ["plain", "navigation-index", "nested-root", "ancestor-root", "quoted-nested-root", "flow-nested-root", "quoted-ancestor-root", "flow-ancestor-root", "malformed-index", "nested-binding", "malformed-binding", "marker-copy", "malformed-marker", "marker-link", "bad-git", "board", "bad-private-index", "null-private-index", "hosted-binding", "bad-binding-record", "descendant-symlink", "deep-tree", "unsafe-index"] as const;
 test("retirement admission agreement distinguishes absent, known authority and unknown evidence", async t => {
  for (const row of rows) await t.test(row, async () => {
   const temp = await mkdtemp(path.join(tmpdir(), "retirement-route-"));
@@ -19,6 +19,9 @@ test("retirement admission agreement distinguishes absent, known authority and u
    if(row === "navigation-index") await writeFile(path.join(child,"index.md"),"---\ntitle: Navigation\n---\n");
    if(row === "nested-root") await writeFile(path.join(child,"index.md"),"---\nokf_version: '0.2'\n---\n");
    if(row === "ancestor-root") await writeFile(path.join(temp,"index.md"),"---\nokf_version: '0.2'\n---\n");
+   if(row === "quoted-nested-root" || row === "quoted-ancestor-root") await writeFile(path.join(row.includes("ancestor") ? temp : child,"index.md"),"---\n'okf_version': '0.2'\n---\n");
+   if(row === "flow-nested-root" || row === "flow-ancestor-root") await writeFile(path.join(row.includes("ancestor") ? temp : child,"index.md"),"---\n{okf_version: '0.2'}\n---\n");
+   if(row === "malformed-index") await writeFile(path.join(child,"index.md"),"---\ntitle: [bad\n---\n");
    if(row === "nested-binding") await writeFile(path.join(child,".superbee.json"),JSON.stringify({bundle:home}));
    if(row === "malformed-binding") await writeFile(path.join(child,".superbee.json"),"{");
    if(row.includes("marker")) { await mkdir(path.join(root,".superbee")); const marker=path.join(root,".superbee/checkout.json");

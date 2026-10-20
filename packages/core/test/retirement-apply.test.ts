@@ -7,7 +7,7 @@ import { MemoryBackend } from "../src/memory-backend.js";
 import { FilesystemBackend } from "../src/backend.js";
 import { mutateDocument } from "../src/document-mutation.js";
 import { buildKindRegistry } from "../src/kinds.js";
-import { INVENTORY_GUARD_DOMAIN, type InventoryGuardRequest } from "../src/inventory-guard.js";
+import { INVENTORY_GUARD_DOMAIN, InventoryGuardUnsupported, type InventoryGuardRequest } from "../src/inventory-guard.js";
 import { installRecipe, planRecipeEvolution, planRecipeDeclarationRetirement, planRecipeDeclarationRetirementApply, applyRecipeDeclarationRetirement, RecipeRetirementApplyError } from "../src/recipe-lifecycle/index.js";
 import { definitionDigest, recipeSourceDigest, readRecipeStamp, recipeStampIdentity } from "../src/recipe-lifecycle/stamp.js";
 import { prepareRecipeInstall } from "../src/recipe-lifecycle/install.js";
@@ -183,4 +183,39 @@ test("ordinary mutation resolves a bare bundle backend exactly once", async () =
     assert.equal(receipt.changed, true); assert.equal(resolutions, 1);
     assert.equal((await backend.read("notes/a")).version, receipt.version);
   } finally { setDefaultBackendFactory(undefined); }
+});
+
+for (const kind of ["memory", "filesystem"] as const) test(`${kind}: legal mixed-case inventory uses storage-owner ordering`, async () => {
+  const f = await setup(kind);
+  try {
+    for (const id of ["notes/Z", "notes/a"]) await f.bundle.backend.write(id, { id, frontmatter: { type: "Note" }, body: "" });
+    const source = parsedRetirementSource("2", true);
+    const plan = await planRecipeDeclarationRetirementApply(f.bundle, source, { scope });
+    assert.equal(plan.ready_for_next_stage, true);
+    assert.equal((await applyRecipeDeclarationRetirement(f.bundle, source, plan.plan_token!, { scope })).complete, true);
+  } finally { await f.cleanup(); }
+});
+test("typed invalid actor remains a proven prewrite refusal", async () => {
+  const f = await setup();
+  try {
+    const source = parsedRetirementSource("2", true), before = await state(f.bundle.backend);
+    const plan = await planRecipeDeclarationRetirementApply(f.bundle, source, { scope });
+    await assert.rejects(applyRecipeDeclarationRetirement(f.bundle, source, plan.plan_token!, { scope, actor: "bad-actor" }), error => error instanceof InvalidInputError && error.name === "OkfActorError");
+    assert.deepEqual(await state(f.bundle.backend), before);
+  } finally { await f.cleanup(); }
+});
+
+test("typed guard unsupported remains a proven prewrite refusal", async () => {
+  const f = await setup(), original = MemoryBackend.prototype.read;
+  try {
+    const source = parsedRetirementSource("2", true), plan = await planRecipeDeclarationRetirementApply(f.bundle, source, { scope });
+    const before = await state(f.bundle.backend); let fired = false;
+    const refusal = new InventoryGuardUnsupported("inventory_document_bound");
+    MemoryBackend.prototype.read = async function(id) {
+      if (this === f.bundle.backend && new Error().stack?.includes("readExisting")) { fired = true; throw refusal; }
+      return original.call(this, id);
+    };
+    await assert.rejects(applyRecipeDeclarationRetirement(f.bundle, source, plan.plan_token!, { scope }), error => error === refusal && error.written === false);
+    assert.equal(fired, true); assert.deepEqual(await state(f.bundle.backend), before);
+  } finally { MemoryBackend.prototype.read = original; await f.cleanup(); }
 });

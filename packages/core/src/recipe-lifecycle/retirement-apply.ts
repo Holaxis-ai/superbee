@@ -1,7 +1,10 @@
 /** One explicitly selected actual-source retirement stage; storage remains the commit authority. */
+import { InvalidInputError } from "../errors.js";
+import { compareStorageKeys } from "../paths.js";
+import { VersionConflict } from "../versioning.js";
 import { backendFor } from "../bundle-ops.js";
-import { mutateDocument } from "../document-mutation.js";
-import { INVENTORY_GUARD_DOMAIN, InventoryGuardConflict, inventoryGuardFor, type InventoryGuardTarget, type InventoryEntry } from "../inventory-guard.js";
+import { DocumentNotFoundError, mutateDocument } from "../document-mutation.js";
+import { INVENTORY_GUARD_DOMAIN, InventoryGuardConflict, InventoryGuardUnsupported, inventoryGuardFor, type InventoryGuardTarget, type InventoryEntry } from "../inventory-guard.js";
 import { buildKindRegistry } from "../kinds.js";
 import { recipePreflightDigest } from "../recipe-set-preflight.js";
 import type { LoadedRecipe } from "../recipes.js";
@@ -80,7 +83,7 @@ async function prepareStage(bundle: Bundle, source: LoadedRecipe, options: Recip
   catch (error) { guardIssue = error instanceof Error ? error.message : String(error); }
   const prepared = await prepareRecipeDeclarationRetirement(bound, source, options);
   const report = prepared.report;
-  const ids = [...new Set(report.declarations.map(row => row.definition))].sort(compare);
+  const ids = [...new Set(report.declarations.map(row => row.definition))].sort(compareStorageKeys);
   const next = options.definitionId ?? ids[0] ?? null;
   const selected = report.declarations.filter(row => row.definition === next);
   const blockers = [...report.blockers];
@@ -91,7 +94,7 @@ async function prepareStage(bundle: Bundle, source: LoadedRecipe, options: Recip
   if (selected.some(row => row.usage.some(usage => usage.unknown || usage.count > 0))) block("RETIREMENT_DECLARATION_USED_OR_UNKNOWN", "The selected definition has used or unknown retired coordinates.");
   if (guardIssue || !target) block("RETIREMENT_GUARD_UNAVAILABLE", guardIssue ?? "The actual backend has no supported guard.");
   if (target && (target.edition !== report.local.okf_version || target.root_version !== report.local.root_index_version)) block("RETIREMENT_TARGET_CHANGED", "Guard target metadata differs from the inspected local scope.");
-  const inventory: InventoryEntry[] = report.local.inventory.filter((row): row is InventoryEntry => row.version !== null);
+  const inventory: InventoryEntry[] = report.local.inventory.filter((row): row is InventoryEntry => row.version !== null).sort((a, b) => compareStorageKeys(a.id, b.id));
   let candidate: OkfDocument | undefined;
   if (next && selected.length && report.local.complete) {
     try {
@@ -155,6 +158,9 @@ export async function applyRecipeDeclarationRetirement(bundle: Bundle, source: L
       pending_definitions: plan.pending_definitions, complete: plan.pending_definitions.length === 0, refresh_needed: plan.pending_definitions.length > 0,
       consumers: plan.consumers, external_consumers: plan.external_consumers };
   } catch (error) {
+    // These owning typed refusals establish that publication did not occur. Keep their
+    // authority; only an unclassified persistence failure has an uncertain outcome.
+    if (error instanceof InventoryGuardUnsupported || error instanceof InvalidInputError || error instanceof VersionConflict || error instanceof DocumentNotFoundError) throw error;
     throw new RecipeRetirementApplyError(error instanceof InventoryGuardConflict ? "interrupted" : "outcome_unknown", plan, error);
   }
 }
