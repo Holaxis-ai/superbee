@@ -33,7 +33,7 @@ export interface BlobDeletionHold { deletions: number; baseline: number }
 /** Bounded diagnostics, never acceptance or a terminal receipt. */
 export function captureBlobDeletionHold(value: BlobDeletionHold): BlobDeletionHold {
   const hold = captureJournalValue(value);
-  if (!object(hold) || !only(hold, ["deletions", "baseline"]) || ![hold.deletions, hold.baseline].every(n => Number.isSafeInteger(n) && n >= 1)) throw new TypeError("invalid blob deletion hold");
+  if (!object(hold) || !only(hold, ["deletions", "baseline"]) || !Number.isSafeInteger(hold.deletions) || hold.deletions < 1 || !Number.isSafeInteger(hold.baseline) || hold.baseline < 0) throw new TypeError("invalid blob deletion hold");
   return hold;
 }
 /**

@@ -451,3 +451,20 @@ test("held prefix keeps settlement capacity reserved and proof plus named metada
     assert.deepEqual((await b.readBlobIntent(row.requestId))?.receipt, receipt);
   } finally { await f.cleanup(); }
 });
+
+
+test("zero-baseline deletion hold replays and compacts with its exact non-execution prefix", async () => {
+  const f = await fixture(); let b = f.backend;
+  try {
+    const value = input("delete"), row = await b.admitPreparedBlob(prepared(value), { guard: (await b.readBlobWithJournal(value.intent.key)).guard });
+    const guard = async () => (await b.readBlobWithJournal(row.target)).guard;
+    await b.updateBlobIntent(row.requestId, "pending", { state: "in_flight", attempts: 1 }, { guard: await guard() });
+    for (const baseline of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, "0", null]) await assert.rejects(b.updateBlobIntent(row.requestId, "in_flight", { state: "pending", attempts: 1, notAppliedThrough: 1, deletionHold: { deletions: 1, baseline } } as never, { guard: await guard() }));
+    await assert.rejects(b.updateBlobIntent(row.requestId, "in_flight", { state: "pending", attempts: 1, notAppliedThrough: 1, deletionHold: { deletions: 0, baseline: 0 } }, { guard: await guard() }));
+    const held = await b.updateBlobIntent(row.requestId, "in_flight", { state: "pending", attempts: 1, notAppliedThrough: 1, deletionHold: { deletions: 1, baseline: 0 } }, { guard: await guard() });
+    assert.equal(held.receipt, undefined);
+    await b.close(); b = await FileJournaledBackend.open(f.options); assert.deepEqual(await b.readBlobIntent(row.requestId), held);
+    await b.compact(); await b.close(); b = await FileJournaledBackend.open(f.options); assert.deepEqual(await b.readBlobIntent(row.requestId), held);
+    await assert.rejects(b.updateBlobIntent(row.requestId, "pending", { state: "pending", attempts: 1, notAppliedThrough: 2, deletionHold: held.deletionHold }, { guard: await guard() }));
+  } finally { await b.close(); await fs.rm(f.directory, { recursive: true, force: true }); }
+});
