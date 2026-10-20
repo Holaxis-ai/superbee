@@ -124,6 +124,9 @@ for (const [label, file, mutate, expected] of [
   ['missing lock projection', 'package-lock.json', text => text.replace('peerDependencies', 'other'), /expected one exact version/],
   ['publication enabled', 'integrations/github/package.json', text => text.replace('"private": true', '"private": false'), /Git checkout distribution/],
   ['installed registry lock needs verified integrity', 'package-lock.json', text => text.replace('"packages": {', '"packages": {"node_modules/@superbee/core":{"version":"0.2.0-pre.23","integrity":"sha512-unverified"},'), /registry-verified lock update/],
+  ['orphaned root development pin', 'package-lock.json', text => text.replace('"devDependencies": {}', '"devDependencies": {"@superbee/core":"0.2.0-pre.22"}'), /orphaned Core development pin/],
+  ['orphaned plugin development pin', 'package-lock.json', text => text.replace('"integrations/github": {', '"integrations/github": {"devDependencies":{"@superbee/core":"0.2.0-pre.22"},'), /orphaned Core development pin/],
+  ['orphaned runtime Core pin', 'package-lock.json', text => text.replace('"integrations/github": {', '"integrations/github": {"dependencies":{"@superbee/core":"0.2.0-pre.22"},'), /runtime Core dependency/],
 ]) test(`unsupported consumer shape refuses an automatic proposal: ${label}`, t => {
   const { args } = fixture(t);
   put(args.pluginRoot, file, mutate(readFileSync(path.join(args.pluginRoot, file), 'utf8')));

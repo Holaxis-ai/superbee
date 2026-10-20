@@ -93,8 +93,10 @@ export function inspectConsumerImpact({ candidateRoot, candidateSha, pluginRoot,
   assert.equal(pkg.publishConfig, undefined, 'plugin publication is outside this check');
   assert.equal(lock.lockfileVersion, 3);
   assert.equal(lock.packages?.['node_modules/@superbee/core'], undefined, 'installed Core lock entry requires a registry-verified lock update; no integrity is fabricated');
-  assert.equal(pkg.dependencies?.[coreName], undefined, 'required runtime Core dependency needs a reviewed consumer policy');
-  assert.equal(root.dependencies?.[coreName], undefined, 'required runtime Core dependency needs a reviewed consumer policy');
+  for (const record of [pkg, root, lock.packages?.['integrations/github'], lock.packages?.['']]) {
+    for (const field of ['dependencies', 'optionalDependencies']) assert.equal(record?.[field]?.[coreName], undefined, 'runtime Core dependency needs a reviewed consumer policy');
+  }
+  for (const record of [root, lock.packages?.['']]) assert.equal(record?.peerDependencies?.[coreName], undefined, 'root Core peer needs a reviewed consumer policy');
   assert.equal(pkg.superbeeIntegration?.contract, 1);
   assert.equal(pkg.superbeeIntegration?.id, 'github');
   const rows = [];
@@ -104,11 +106,12 @@ export function inspectConsumerImpact({ candidateRoot, candidateSha, pluginRoot,
   add('package-lock.json', 'packages.integrations/github.peerDependencies.@superbee/core', lock.packages?.['integrations/github']?.peerDependencies?.[coreName]);
   // Some supported older checkouts carry an exact development pin; never invent one when absent.
   for (const [file, record, field] of [[manifestPath, pkg, 'devDependencies.@superbee/core'], ['package.json', root, 'devDependencies.@superbee/core']]) {
+    const key = file === manifestPath ? 'integrations/github' : '';
+    const locked = lock.packages?.[key]?.devDependencies?.[coreName];
     if (record.devDependencies?.[coreName] !== undefined) {
       add(file, field, record.devDependencies[coreName]);
-      const key = file === manifestPath ? 'integrations/github' : '';
-      add('package-lock.json', `packages.${key}.devDependencies.@superbee/core`, lock.packages?.[key]?.devDependencies?.[coreName]);
-    }
+      add('package-lock.json', `packages.${key}.devDependencies.@superbee/core`, locked);
+    } else assert.equal(locked, undefined, `package-lock.json packages.${key}: orphaned Core development pin has no manifest expectation`);
   }
   const ciPattern = /^(\s*- run: npm install --no-save --package-lock=false --ignore-scripts @superbee\/core@)(\S+)([ \t]*)$/gm;
   const ci = single(files['.github/workflows/ci.yml'], ciPattern, 'plugin CI Core install');
