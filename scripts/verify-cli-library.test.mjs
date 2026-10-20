@@ -228,6 +228,8 @@ test('local operation imports require the serialized child and accepted-entry de
       .replace('${localOperationChild.toString()})()', '${localOperationChild.toString()})(${boundedLocalFileBytes.toString()})');
     assert.notEqual(withReader, subject);
     await assertClosedCliImports(withReader);
+    await assertClosedCliImports(withReader.replace('localOperationChild(readBytes)', 'localOperationChild(readBytes2)'));
+    await assert.rejects(assertClosedCliImports(withReader.replace('localOperationChild(readBytes)', 'localOperationChild(unreviewedReader)')));
   }
   const replace = (pattern, value) => { const changed=subject.replace(pattern,value);assert.notEqual(changed,subject,'mutation must apply');return changed; };
   for (const [label,candidate] of [

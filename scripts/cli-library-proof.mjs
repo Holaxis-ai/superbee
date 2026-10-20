@@ -110,7 +110,7 @@ function localOperationImports(source, external) {
   if (!loaders.length) return [];
   assert.equal(loaders.length, 1, 'unique local operation child');
   const loader = loaders[0];
-  assert.ok(loader.parameters.length === 0 || (loader.parameters.length === 1 && ts.isIdentifier(loader.parameters[0].name) && loader.parameters[0].name.text === 'readBytes'), 'reviewed child signature');
+  assert.ok(loader.parameters.length === 0 || (loader.parameters.length === 1 && ts.isIdentifier(loader.parameters[0].name) && /^readBytes\d*$/.test(loader.parameters[0].name.text)), 'reviewed child signature');
   const names = new Map();
   const stable = ['pathToFileURL','request','module','capabilities','descriptors','message','send','port','resources','invocation','controller','selection','operation','home','binding','canonicalJson','refuse','spawn','workspace','child','maximumOutputBytes','profile','input','id','outputDirectory','localOperationChild','boundedLocalFileBytes'];
   function identify(node) { if (ts.isIdentifier(node)) for (const name of stable) if(new RegExp('^'+name+'\\d*$').test(node.text)) names.set(node.text,name); ts.forEachChild(node,identify); }
