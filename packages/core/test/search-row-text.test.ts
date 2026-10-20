@@ -8,6 +8,7 @@ import test from "node:test";
 
 import { createHash } from "node:crypto";
 
+import { scanBody } from "../src/search/text.js";
 import { FINGERPRINT_SAMPLE } from "../src/search/row-text.js";
 import {
   BODY_OCCURRENCE_CAP,
@@ -94,4 +95,52 @@ test("the fingerprint sample's text is pinned", () => {
     createHash("sha256").update(JSON.stringify(FINGERPRINT_SAMPLE)).digest("hex"),
     "ecbed22daf459e266fbfc97831264eab6af6814cb0eec93d4434696cb56bbad1",
   );
+});
+
+test("body byte ranges preserve UTF-8 widths, lone surrogates and stopping across normalization", () => {
+  const encoder = new TextEncoder();
+  for (const prefix of [
+    "\0",
+    "\u007f",
+    "\u0080",
+    "\u07ff",
+    "\u0800",
+    "\ud7ff",
+    "\ue000",
+    "\uffff",
+    "\u{10000}",
+    "\u{10ffff}",
+    "\ud800",
+    "\udc00",
+    "\ud800a\udc00",
+    "𐐀",
+    "é",
+    "Ａ",
+    "½",
+  ]) {
+    const body = `${prefix} alpha βeta`;
+    const hits: { term: string; start: number; end: number }[] = [];
+    scanBody(body, (term, start, end) => {
+      hits.push({ term, start, end });
+    });
+    for (const term of ["alpha", "βeta"]) {
+      const at = body.indexOf(term);
+      assert.deepEqual(
+        hits.find((hit) => hit.term === term),
+        {
+          term,
+          start: encoder.encode(body.slice(0, at)).byteLength,
+          end: encoder.encode(body.slice(0, at + term.length)).byteLength,
+        },
+        JSON.stringify(prefix),
+      );
+    }
+    const stopped: string[] = [];
+    scanBody(body, (term) => {
+      stopped.push(term);
+      return term === "alpha";
+    });
+    assert.equal(stopped.at(-1), "alpha");
+    assert.ok(!stopped.includes("βeta"));
+  }
 });
