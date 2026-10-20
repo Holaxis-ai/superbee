@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, realpath, symlink, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { registerOperationPlugin, listOperationPlugins } from '../src/operation-plugins.js';
@@ -73,15 +74,59 @@ test('ordinary resource symlink and changed output root require explicit selecti
   await assert.rejects(runLocalOperation('documents.history.v1',f.bundle,f.binding,f.input,{home:f.home}),/unknown_local_operation/);
 });
 
-test('controlled executable is cancelled together with operation child',async()=>{
-  const f=await fixture(`await port.runTool({tool:'node',argv:['--eval',"require('node:fs').writeFileSync('tool.json',JSON.stringify({pid:process.pid}));setInterval(()=>{},1000)"]});return {outputs:[]};`);
-  const config={...f.config,tools:{node:process.execPath}};
-  const bp:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,undefined,f.home);const binding:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,bp.digest,f.home);
-  const controller=new AbortController();setTimeout(()=>controller.abort(),600);
-  const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,binding.binding,f.input,{home:f.home,signal:controller.signal});
-  assert.equal(result.status,'cancelled_confirmed');
-  const tool=JSON.parse(await readFile(path.join(path.dirname(result.manifest),'outputs','tool.json'),'utf8'));
-  assert.throws(()=>process.kill(tool.pid,0),{code:'ESRCH'});
+interface ToolReadiness { pid:number; operationPid:number }
+async function waitForToolReadiness(file:string, signal:AbortSignal, timeoutMs=10000):Promise<ToolReadiness>{
+  const deadline=performance.now()+timeoutMs;
+  while(true){
+    signal.throwIfAborted();
+    try{
+      const value=JSON.parse(await readFile(file,'utf8')) as ToolReadiness;
+      assert.ok(Number.isInteger(value.pid)&&value.pid>0&&Number.isInteger(value.operationPid)&&value.operationPid>0,'valid fixture PIDs');
+      return value;
+    }catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+    if(performance.now()>=deadline)throw Error('tool_readiness_timeout');
+    await delay(10,undefined,{signal});
+  }
+}
+
+test('controlled executable is cancelled together with operation child',async(t)=>{
+  for(const release of [true,false])await t.test(release?'cancel after gated tool readiness':'readiness timeout still cleans up tool and operation',async()=>{
+    let markers:{entered:string;ready:string;release:string};
+    const f=await fixture(root=>{
+      markers={entered:path.join(root,'tool-entered.json'),ready:path.join(root,'tool-ready.json'),release:path.join(root,'tool-release')};
+      const script=`const fs=require('node:fs');const pids={pid:process.pid,operationPid:process.ppid};
+        const mark=file=>{fs.writeFileSync(file+'.tmp',JSON.stringify(pids));fs.renameSync(file+'.tmp',file);};
+        mark(${JSON.stringify(markers.entered)});
+        const gate=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(markers.release)}))return;clearInterval(gate);
+          fs.writeFileSync('tool.json',JSON.stringify(pids));mark(${JSON.stringify(markers.ready)});setInterval(()=>{},1000);},10);`;
+      return `await port.runTool({tool:'node',argv:['--eval',${JSON.stringify(script)}]});return {outputs:[]};`;
+    });
+    const config={...f.config,tools:{node:process.execPath}};
+    const bp:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,undefined,f.home);const binding:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,bp.digest,f.home);
+    const controller=new AbortController();
+    const running=runLocalOperation('local.fixture.compare.v1',f.bundle,binding.binding,f.input,{home:f.home,signal:controller.signal});
+    const beforeCompletion=<T>(waiting:Promise<T>)=>Promise.race([waiting,running.then(result=>{throw Error(`operation ended before tool readiness: ${result.status}/${result.reason}`);})]);
+    let observed:ToolReadiness|undefined;
+    try{
+      observed=await beforeCompletion(waitForToolReadiness(markers!.entered,controller.signal));
+      process.kill(observed.pid,0);process.kill(observed.operationPid,0);
+      // Startup is held by a gate, independently of scheduling or a nominal cancellation delay.
+      await assert.rejects(readFile(markers!.ready),{code:'ENOENT'});
+      if(release){
+        await writeFile(markers!.release,'go');
+        assert.deepEqual(await beforeCompletion(waitForToolReadiness(markers!.ready,controller.signal)),observed);
+      }else await assert.rejects(beforeCompletion(waitForToolReadiness(markers!.ready,controller.signal,0)),/tool_readiness_timeout/);
+      controller.abort();
+      const result=await running;assert.equal(result.status,'cancelled_confirmed');
+      if(release){const tool=JSON.parse(await readFile(path.join(path.dirname(result.manifest),'outputs','tool.json'),'utf8'));assert.deepEqual(tool,observed);}
+      assert.throws(()=>process.kill(observed!.pid,0),{code:'ESRCH'});
+      assert.throws(()=>process.kill(observed!.operationPid,0),{code:'ESRCH'});
+    }finally{
+      controller.abort();await Promise.allSettled([running]);
+      // A failing liveness assertion must not leave this fixture's process group behind.
+      if(observed)try{process.kill(-observed.operationPid,'SIGKILL');}catch(error){if((error as NodeJS.ErrnoException).code!=='ESRCH')throw error;}
+    }
+  });
 });
 
 test('unexpected parent loss preserves an unconfirmed initial manifest, never successful or retryable',async()=>{
