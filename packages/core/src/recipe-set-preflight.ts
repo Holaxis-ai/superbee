@@ -176,7 +176,21 @@ function jsonValue(value: unknown, seen = new Set<object>()): boolean {
         return false;
     seen.add(value);
     const descriptors = Object.getOwnPropertyDescriptors(value);
-    const ok = (Array.isArray(value) || record(value)) && Reflect.ownKeys(value).every(k => typeof k === 'string' && ('value' in descriptors[k]!)) && Object.values(value).every(v => jsonValue(v, seen));
+    let ok: boolean;
+    if (Array.isArray(value)) {
+        const length = descriptors.length?.value;
+        ok = Number.isSafeInteger(length) && length >= 0 && Reflect.ownKeys(value).length === length + 1;
+        // JSON observes every index, including nonenumerable indices, but never inherited holes.
+        if (ok) for (let index = 0; index < length; index++) {
+            const descriptor = descriptors[String(index)];
+            if (!descriptor || !('value' in descriptor) || !jsonValue(descriptor.value, seen)) {
+                ok = false;
+                break;
+            }
+        }
+    } else {
+        ok = record(value) && Reflect.ownKeys(value).every(k => typeof k === 'string' && ('value' in descriptors[k]!)) && Object.values(value).every(v => jsonValue(v, seen));
+    }
     seen.delete(value);
     return ok;
 }

@@ -191,3 +191,21 @@ test('synthetic artifact golden pins stay stable across canonical object seriali
  ]);
  assert.equal(base(true).selected[2].artifactDigest,'sha256:4479f0b3d899097ca43d51434654d546c59ec6f01b924f405ad59bb0974b3120');
 });
+
+test('finite JSON array boundary rejects holes and hidden non-JSON indices before hashing', async()=>{
+ const hidden=(value:unknown)=>Object.defineProperty([], '0', {value,enumerable:false,configurable:true,writable:true});
+ const inherited=new Array(1);Object.setPrototypeOf(inherited,{0:'inherited'});
+ for(const invalid of [new Array(1),new Array(2),{nested:[new Array(1)]},hidden(()=>1),hidden(undefined),inherited]){
+  assert.throws(()=>recipePreflightDigest(invalid),TypeError);
+  const input=base();input.consumers[0].requirements[0].future=invalid;
+  const result=await preflightRecipeSet(input);assert.equal(result.verdict,'refused');assert.ok(result.issues.some(i=>i.code==='INPUT_SHAPE'));
+ }
+ let getters=0;const accessor=Object.defineProperty([], '0', {get(){getters++;return 1;}});
+ assert.throws(()=>recipePreflightDigest(accessor),TypeError);assert.equal(getters,0);
+ const pin=(text:string)=>'sha256:'+createHash('sha256').update(text).digest('hex');
+ assert.equal(recipePreflightDigest([null,1,'two']),pin('[null,1,"two"]'));
+ assert.equal(recipePreflightDigest(hidden(2)),pin('[2]'));
+ assert.equal(recipePreflightDigest([]),pin('[]'));
+ assert.equal(recipePreflightDigest('raw'),pin('raw'));
+ assert.equal(recipePreflightDigest({'2':2,'10':10}),pin('{"10":10,"2":2}'));
+});

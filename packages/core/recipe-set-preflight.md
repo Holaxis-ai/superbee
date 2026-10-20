@@ -16,6 +16,8 @@ remain `unknown-out-of-scope` for every verdict.
 Use the exported `RecipePreflightInput` type, tagged `recipe-set-preflight/v1`.
 `preflightRecipeSet` accepts `unknown` so runtime callers receive `INPUT_SHAPE`
 refusals for malformed finite JSON, rather than trusting TypeScript assertions.
+Sparse arrays are refused without hole-to-null normalization. Non-JSON element
+values are refused even when their indexed properties are nonenumerable.
 Unknown schema versions refuse. Unknown requirement operators or constraints make
 the result partial; they are never silently treated as satisfied.
 
