@@ -11,7 +11,7 @@ import { assertPathOutsidePrivateState } from "../private-state-bundle-boundary.
 import { assertActorAcceptedByBundle, resolveActor } from "../actor.js";
 import type { UserStateInput } from "../user-state.js";
 import { nodeSourceTransport } from "./transport.js";
-import { emptyAccepted, readSourceEnvelope, sourceCanonical, sourceDigest, sourceMachineState, sourceRefusal, withSourceState, writeSourceEnvelope, type SourceBinding, type SourceEnvelope } from "./state.js";
+import { emptyAccepted, isSnapshotBinding, readSourceEnvelope, sourceCanonical, sourceDigest, sourceMachineState, sourceRefusal, sourceStateFile, withSourceState, writeSourceEnvelope, type SourceBinding, type SourceEnvelope } from "./state.js";
 // Only fixed engine-owned codes may cross the public receipt boundary.
 const PUBLIC_SOURCE_REASONS = new Set([
   "profile_invalid", "profile_mismatch", "mode_invalid", "declaration_invalid", "binding_invalid",
@@ -58,7 +58,10 @@ function binding(c:Awaited<ReturnType<typeof context>>,credential:SourceBinding[
 export async function bindLocalSource(feed:string,options:LocalSourceOptions,deps:LocalSourceDeps={}):Promise<Record<string,unknown>> {
   if(options.anonymous===!!options.credentialEnv || !options.anonymous && !options.credentialEnv || options.credentialEnv!==undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(options.credentialEnv)) throw sourceRefusal("credential_reference_invalid");
   const credential:SourceBinding["credential"] = options.credentialEnv?{kind:"env",name:options.credentialEnv}:{kind:"none"};
-  const c = await qualify(await context(feed,options.dir,deps.stateInput));
+  const selected = await context(feed,options.dir,deps.stateInput);
+  const existing = await readSourceEnvelope(sourceStateFile(selected.root,feed),deps.stateInput);
+  if(existing && isSnapshotBinding(existing.binding)) throw sourceRefusal("acquisition_mismatch");
+  const c = await qualify(selected);
   const b = binding(c,credential);
   const preview = {operation:"source bind",feed,digest:b.digest,accepted:false,resource:c.bound.resource,profile:{id:c.profile.id,version:c.profile.version,implementation:c.selection.implementation},auth:credential,
     method:c.bound.source.request?.method??"GET",path:c.bound.source.request?renderRequestValue(c.bound.source.request.path,c.bound.parameters,{}):null,hosts:c.profile.hostsFor(c.spec,c.bound),owned_fields:c.bound.policy.owned_fields,budget:DEFAULT_SOURCE_BUDGET};
@@ -67,6 +70,7 @@ export async function bindLocalSource(feed:string,options:LocalSourceOptions,dep
     const fresh = binding(await context(feed,options.dir,deps.stateInput),credential);
     if(fresh.digest!==options.accept || fresh.digest!==b.digest) throw sourceRefusal("binding_changed","CONFLICT");
     const current = await readSourceEnvelope(file,deps.stateInput);
+    if(current && isSnapshotBinding(current.binding)) throw sourceRefusal("acquisition_mismatch");
     if(current?.binding.digest!==fresh.digest) await writeSourceEnvelope(file,{product:"superbee",schema_version:1,v:1,binding:fresh,version:(current?.version??0)+1,observation:null,accepted:emptyAccepted()},deps.stateInput);
     return {...preview,accepted:true};
   },deps.stateInput,deps.lockRoot);
@@ -78,6 +82,7 @@ export async function runLocalSource(feed:string,options:LocalSourceOptions,deps
   return withSourceState(c.root,feed,async file=>{
     const envelope = await readSourceEnvelope(file,deps.stateInput);
     if(!envelope) throw sourceRefusal("binding_missing");
+    if(isSnapshotBinding(envelope.binding)) throw sourceRefusal("acquisition_mismatch");
     const selected = await context(feed,options.dir,deps.stateInput);
     const currentBinding = binding(selected,envelope.binding.credential);
     if(currentBinding.digest!==envelope.binding.digest) throw sourceRefusal("binding_changed","CONFLICT");

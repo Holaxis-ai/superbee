@@ -538,6 +538,21 @@ export const CLI_COMMAND_GROUPS = [
         summary: "Run one consented built-in or registered source over DNS-pinned HTTPS",
       },
       {
+        id:"sourceSnapshotBind",leaves:[publicLeaf("sourceSnapshotBind","source snapshot bind",one,undefined,DIR_SURFACE)],
+        usage:"source snapshot bind <source-doc> [--accept <digest>] [--dir <bundle>]",
+        summary:"Preview and accept finite local snapshot policy without credentials or executable profiles",
+      },
+      {
+        id:"sourceSnapshotRun",leaves:[publicLeaf("sourceSnapshotRun","source snapshot run",one,undefined,{flags:pathFlags({flag:"dir",role:"bundle-root"},{flag:"snapshot",role:"ingress"})})],
+        usage:"source snapshot run <source-doc> --snapshot <ordinary.json> [--accept <digest>] [--actor <actor>] [--dir <bundle>]",
+        summary:"Preview exact input and policy; explicit acceptance runs shared reconciliation against fresh target heads",
+      },
+      {
+        id:"sourceSnapshotCheck",leaves:[publicLeaf("sourceSnapshotCheck","source snapshot check",one,undefined,{flags:pathFlags({flag:"inputs-file",role:"ingress"},{flag:"settings-file",role:"ingress"}),positionals:Object.freeze([Object.freeze({index:0,role:"ingress" as const})])})],
+        usage:"source snapshot check <file> --inputs-file <explicit-map.json> [--settings-file <original-settings.json>]",
+        summary:"Compare caller-associated original inputs, required identities and original settings without a bundle",
+      },
+      {
         id: "sourceTest",
         leaves: [publicLeaf("sourceTest", "source test", one, 42, { flags: pathFlags({ flag: "fixture", role: "ingress" }, { flag: "profile", role: "ingress" }), positionals: Object.freeze([Object.freeze({ index: 0, role: "recipe-source" as const })]) })],
         usage: "source test <recipe-path> --fixture <directory> [--profile <local.mjs>] [--json]",

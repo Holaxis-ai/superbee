@@ -7,7 +7,7 @@ import { parseMarkdown } from "@superbee/core";
 import { source } from "../src/commands/source.js";
 import { CliError } from "../src/errors.js";
 import { publicSourceReason, bindLocalSource, runLocalSource, type LocalSourceDeps } from "../src/source-local/run.js";
-import { readSourceEnvelope, sourceStateFile } from "../src/source-local/state.js";
+import { readSourceEnvelope, sourceStateFile, sourceDigest, writeSourceEnvelope, withSourceState } from "../src/source-local/state.js";
 import { syntheticFeed,syntheticResource,syntheticRecords,syntheticFeedDoc,writeSyntheticRecipe,pluginFixture,registerFixture } from "./source-plugin-fixture.js";
 const feed=syntheticFeed,resource=syntheticResource;
 async function fixture(run:(f:{root:string;home:string;deps:LocalSourceDeps;issues:Record<string,unknown>[]})=>Promise<void>) {
@@ -78,4 +78,15 @@ test("a run retains its selected generation while registration changes during tr
  const result=await runLocalSource(feed,{dir:f.root},{...f.deps,transport:{async request(){calls++;await registerFixture(upgraded,f.home);const body=JSON.stringify([f.issues[0]]);return {ok:true as const,status:200,headers:{},body,bytes:Buffer.byteLength(body)};}}});
  assert.equal(result.outcome,"observed");assert.equal(calls,1);
  await assert.rejects(runLocalSource(feed,{dir:f.root},f.deps),e=>(e as {details?:{reason:string}}).details?.reason==="binding_changed");
+}));
+
+// Snapshot consent is data-only; even a valid HTTP declaration cannot consume its state.
+test("HTTP run and rebind explicitly reject snapshot consent before transport",()=>fixture(async f=>{
+ await accept(f.root,f.deps);const root=await realpath(f.root),file=sourceStateFile(root,feed),e=(await readSourceEnvelope(file,f.home))!;
+ e.binding.consent={v:1,acquisition:"local-snapshot",root,feed,document_version:"fixture",core_binding_digest:`sha256:${"a".repeat(64)}`,edition:"0.2",bounds:{input_bytes:2097152,records:10000,envelope_bytes:4194304}};e.binding.credential={kind:"none"};e.binding.digest=sourceDigest(e.binding.consent);
+ await withSourceState(root,feed,()=>writeSourceEnvelope(file,e,f.home),f.home,f.deps.lockRoot);let sends=0;
+ await assert.rejects(runLocalSource(feed,{dir:f.root},{...f.deps,transport:{async request(){sends++;throw Error();}}}),error=>(error as {details?:{reason:string}}).details?.reason==="acquisition_mismatch");assert.equal(sends,0);
+ const sentinel="__snapshotHttpBindSentinel",global=globalThis as unknown as Record<string,unknown>;global[sentinel]=0;
+ await registerFixture(await pluginFixture(dirname(f.root),{version:"1.1.0",prefix:`globalThis.${sentinel}++;\n`}),f.home);
+ for(const accept of [undefined,"sha256:invalid"])await assert.rejects(bindLocalSource(feed,{dir:f.root,anonymous:true,accept},f.deps),error=>(error as {details?:{reason:string}}).details?.reason==="acquisition_mismatch");assert.equal(global[sentinel],0);delete global[sentinel];
 }));

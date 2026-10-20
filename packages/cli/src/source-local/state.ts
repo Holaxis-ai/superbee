@@ -18,6 +18,23 @@ export function sourceCanonical(v: unknown): unknown {
 export function sourceDigest(value: unknown): string {
   return `sha256:${createHash("sha256").update(JSON.stringify(sourceCanonical(value))).digest("hex")}`;
 }
+export interface SnapshotConsent extends Record<string,unknown> {
+  v:1; acquisition:"local-snapshot"; root:string; feed:string; document_version:string;
+  core_binding_digest:string; edition:"0.1"|"0.2"; bounds:{input_bytes:number; records:number; envelope_bytes:number};
+}
+export function isSnapshotBinding(binding:SourceBinding):binding is SourceBinding & {consent:SnapshotConsent;credential:{kind:"none"}} {
+  return binding.consent.acquisition === "local-snapshot";
+}
+function consentValid(binding:SourceBinding):boolean {
+  const c=binding.consent;
+  if(c.acquisition === undefined || c.acquisition === "http") return true; // Existing HTTP bindings remain readable.
+  return c.acquisition === "local-snapshot" && binding.credential.kind === "none"
+    && Object.keys(binding.credential).length===1 && Object.keys(c).every(k=>["v","acquisition","root","feed","document_version","core_binding_digest","edition","bounds"].includes(k))
+    && c.v===1 && c.root===binding.root && c.feed===binding.feed && typeof c.document_version==="string"
+    && typeof c.core_binding_digest==="string" && /^sha256:[a-f0-9]{64}$/.test(c.core_binding_digest)
+    && ["0.1","0.2"].includes(String(c.edition)) && c.bounds!==null && typeof c.bounds==="object" && !Array.isArray(c.bounds)
+    && Object.keys(c.bounds).length===3 && Object.entries(c.bounds).every(([k,v])=>["input_bytes","records","envelope_bytes"].includes(k)&&Number.isSafeInteger(v)&&Number(v)>0);
+}
 export interface SourceBinding { v:1; root:string; feed:string; digest:string; consent:Record<string,unknown>; credential:{kind:"none"}|{kind:"env";name:string} }
 export interface SourceEnvelope { product:"superbee"; schema_version:1; v:1; binding:SourceBinding; version:number; observation:SourceState|null; accepted:SourceOverlaySnapshot; summary?:Record<string,unknown> }
 export const emptyAccepted = (): SourceOverlaySnapshot => ({v:1,entries:[]});
@@ -30,7 +47,7 @@ export async function readSourceEnvelope(file:string,input:UserStateInput=homedi
     const raw = await readUserStateFile(input,join(canonicalUserStateDir(input),file),SOURCE_STATE_MAX_BYTES);
     const e = JSON.parse(raw) as SourceEnvelope;
     if (e?.product!=="superbee" || e.schema_version!==1 || e.v!==1 || !Number.isSafeInteger(e.version) || e.version<0 || e.binding?.v!==1 || typeof e.binding.root!=="string" || typeof e.binding.feed!=="string" || typeof e.binding.digest!=="string" || !e.binding.consent || typeof e.binding.consent!=="object" || !["none","env"].includes(e.binding.credential?.kind) || e.binding.credential.kind==="env" && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(e.binding.credential.name) || !isSourceOverlaySnapshot(e.accepted) || e.observation!==null && !isSourceState(e.observation)) throw new Error();
-    if (sourceDigest(e.binding.consent)!==e.binding.digest || sourceStateFile(e.binding.root,e.binding.feed)!==file) throw new Error();
+    if (!consentValid(e.binding) || sourceDigest(e.binding.consent)!==e.binding.digest || sourceStateFile(e.binding.root,e.binding.feed)!==file) throw new Error();
     return e;
   } catch(e) { if ((e as NodeJS.ErrnoException).code==="ENOENT") return null; throw sourceRefusal("state_invalid"); }
 }
