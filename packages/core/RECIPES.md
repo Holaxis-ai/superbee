@@ -103,9 +103,9 @@ replacement, standard-field and other Kind guards still apply.
 
 CLI `kinds` exposes metadata; `status` reports `deprecated_usage` separately from conformance debt.
 Recipe evolution can add lifecycle metadata only with an unchanged readable same-recipe ownership
-baseline. It preserves instances and blocks silent policy removal/reactivation. Actual declaration
-removal remains unsupported: per-definition CAS and a postcondition are not atomic instance-scan
-closure or evidence of ecosystem-wide non-use.
+baseline. It preserves instances and blocks silent policy removal/reactivation. Ordinary additive evolution does not remove declarations: per-definition CAS and a postcondition
+are not atomic instance-scan closure or evidence of ecosystem-wide non-use. Explicit guarded
+retirement is a separate one-definition-stage operation, described below.
 
 Admission is bounded to the supplied registry. Raw storage/wire imports and intentionally empty
 registry recipe install/evolve asset writes keep their existing import-like behavior. Recipe assets
@@ -136,3 +136,34 @@ changing or ambiguous inventory remains unknown. Without supplied descriptors, e
 unassessed; enum/type/write-intent compatibility and arbitrary code remain outside preflight.
 `can_apply` is always false: lifecycle retirement apply is not implemented by this inspection API.
 Its observation digest is evidence identity, never an apply token. No records or definitions change.
+
+## Applying one retirement stage
+
+`recipe evolve <source> --remove-deprecated --retirement-scope cooperating-local-writers-v1`
+plans a single definition stage. Optional `--retirement-definition <id>` selects the stage;
+otherwise the planner selects the first eligible definition in storage-key order. Only a ready
+stage emits an exact apply command. Repeat that command with its `--apply <token>` to commit that
+one definition, then inspect a fresh plan for any remaining definitions. An old token never
+advances another stage. No ordinary records, source files or unrelated recipe assets are migrated.
+
+The CLI admits only a known plain local filesystem route. It uses the existing home, binding,
+marker, Git and root-index owners with strict evidence: malformed/unreadable evidence refuses.
+Known ancestor/descendant edition-declaring roots, independently targeted project bindings,
+hosted authorities/copies and Git-board routes refuse. Descendant symlinks, custom filesystem
+hosts/wrappers, unknown Git classification and bounded-walk exhaustion also refuse. The walk
+covers at most 128 ancestors and 4096 descendant directories with depth at most 32; a normal
+navigation index without an edition does not establish a separate root. Nested Git routes whose
+existing committed selector cannot distinguish failed probes from absence remain unsupported.
+These checks run during planning and again before apply.
+
+The guard covers participating writers in this exact physical-root/domain only. Raw editors,
+old binaries, other hosts and unregistered overlapping roots remain outside it; nondetection
+never proves exclusive root ownership or prevents a new external authority appearing later.
+Core independently replans and binds actual source, target, inventory and candidate before one
+shared guarded mutation. Conflicts require fresh inspection, without ordinary-CAS fallback.
+
+Omitted consumer evidence explicitly selects consumer-unassessed local-only retirement; external,
+offline and arbitrary-code use stays unknown. Supplied failing/partial evidence cannot be dropped
+implicitly. A final-source structural preflight cannot certify a different mixed intermediate
+stage. Successful stage receipts retain actual completed versions and pending IDs; ambiguous
+outcomes remain outcome-unknown and require a fresh scan, never blind replay or rollback.

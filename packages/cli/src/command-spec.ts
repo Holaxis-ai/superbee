@@ -561,7 +561,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "recipeEvolve",
         leaves: [publicLeaf("recipeEvolve", "recipe evolve", one, undefined, { ...DIR_RECIPE_ROOT_SURFACE, flags: pathFlags(...BUNDLE_DIR, { flag: "retirement-evidence", role: "ingress" }) })],
-        usage: "recipe evolve <name-or-path> [--apply <plan-token> | --retirement-scan [--retirement-evidence <json>]] [--actor <name>] [--dir <path>] [--remote <url>]",
+        usage: "recipe evolve <name-or-path> [--apply <plan-token> | --retirement-scan | --remove-deprecated --retirement-scope <scope>] [--retirement-definition <id>] [--retirement-evidence <json>] [--actor <name>] [--dir <path>] [--remote <url>]",
         summary: "Plan/apply additive evolution or inspect read-only local declaration retirement evidence",
       },
     ],

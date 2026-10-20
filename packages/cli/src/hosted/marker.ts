@@ -92,21 +92,24 @@ function isMarker(value: unknown): value is CheckoutMarker & { superbee_checkout
  * The marker in this folder, or null when there is none or it cannot be read as one (a symbolic
  * link, an oversized file, malformed JSON). Never throws.
  */
-export function readCheckoutMarker(folder: string): CheckoutMarker | null {
+export function readCheckoutMarker(folder: string, strict = false): CheckoutMarker | null {
   let read;
   try {
     read = readRegularFileTextNoFollowSync(checkoutMarkerPath(folder));
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     return null;
   }
-  if (read.state !== "present" || Buffer.byteLength(read.text) > MAX_MARKER_BYTES) return null;
+  if (read.state === "missing") return null;
+  if (read.state !== "present" || Buffer.byteLength(read.text) > MAX_MARKER_BYTES) { if (strict) throw new Error("unverifiable hosted checkout marker"); return null; }
   let value: unknown;
   try {
     value = JSON.parse(read.text);
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     return null;
   }
-  if (!isMarker(value)) return null;
+  if (!isMarker(value)) { if (strict) throw new Error("malformed hosted checkout marker"); return null; }
   return {
     home: "hosted",
     host: value.host,

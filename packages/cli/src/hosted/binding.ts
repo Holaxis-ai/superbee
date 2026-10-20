@@ -166,7 +166,7 @@ export function newCheckoutId(): string {
   return randomUUID();
 }
 
-async function readJson(home: string, file: string): Promise<unknown | null> {
+async function readJson(home: string, file: string, strict = false): Promise<unknown | null> {
   try {
     await lstat(file);
   } catch (error) {
@@ -177,12 +177,15 @@ async function readJson(home: string, file: string): Promise<unknown | null> {
   try {
     raw = await readUserStateFile(home, file, MAX_RECORD_BYTES);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if (!strict && (error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
   try {
-    return JSON.parse(raw) as unknown;
-  } catch {
+    const value: unknown = JSON.parse(raw);
+    if (strict && value === null) throw new Error("null hosted checkout evidence");
+    return value;
+  } catch (error) {
+    if (strict) throw error;
     return null;
   }
 }
@@ -213,9 +216,9 @@ export async function writeBinding(home: string, binding: CheckoutBinding): Prom
   await writeUserStateFileAtomic0600(home, checkoutDir(home, binding.checkout_id), "binding.json", `${JSON.stringify(binding)}\n`);
 }
 
-export async function readBinding(home: string, checkoutId: string): Promise<CheckoutBinding | null> {
-  const value = await readJson(home, join(checkoutDir(home, checkoutId), "binding.json"));
-  if (!isBinding(value) || value.checkout_id !== checkoutId) return null;
+export async function readBinding(home: string, checkoutId: string, strict = false): Promise<CheckoutBinding | null> {
+  const value = await readJson(home, join(checkoutDir(home, checkoutId), "binding.json"), strict);
+  if (!isBinding(value) || value.checkout_id !== checkoutId) { if (strict) throw new Error("unverifiable hosted checkout binding"); return null; }
   // A `definition_writes` this CLI does not know (a newer CLI's) reads as `refused`: rejecting the
   // record would read as no checkout, turning every up-front refusal off.
   const stated: unknown = value.definition_writes;
@@ -242,14 +245,17 @@ export async function indexCheckoutPath(home: string, binding: CheckoutBinding):
  * one it was made for. Only reclaim and release read this; every other caller uses
  * {@link bindingForPath}.
  */
-export async function indexedBindingForPath(home: string, canonicalPath: string): Promise<CheckoutBinding | null> {
-  const entry = (await readJson(home, join(pathIndexDir(home), `${pathKey(canonicalPath)}.json`))) as {
+export async function indexedBindingForPath(home: string, canonicalPath: string, strict = false): Promise<CheckoutBinding | null> {
+  const entry = (await readJson(home, join(pathIndexDir(home), `${pathKey(canonicalPath)}.json`), strict)) as {
     path?: unknown;
     checkout_id?: unknown;
   } | null;
-  if (!entry || entry.path !== canonicalPath || typeof entry.checkout_id !== "string" || !/^[0-9a-f-]{36}$/.test(entry.checkout_id)) return null;
-  const binding = await readBinding(home, entry.checkout_id);
-  return binding && binding.state === "ready" && binding.path === canonicalPath ? binding : null;
+  if (entry === null) return null;
+  if (!entry || entry.path !== canonicalPath || typeof entry.checkout_id !== "string" || !/^[0-9a-f-]{36}$/.test(entry.checkout_id)) { if (strict) throw new Error("unverifiable hosted checkout path index"); return null; }
+  const binding = await readBinding(home, entry.checkout_id, strict);
+  if (binding && binding.state === "ready" && binding.path === canonicalPath) return binding;
+  if (strict) throw new Error("unverifiable hosted checkout binding identity");
+  return null;
 }
 
 /**
@@ -257,11 +263,13 @@ export async function indexedBindingForPath(home: string, canonicalPath: string)
  * the same path, and the folder there must still be the one it was made for (its identity
  * marker). Any disagreement reads as no checkout, never as a different one.
  */
-export async function bindingForPath(home: string, canonicalPath: string): Promise<CheckoutBinding | null> {
-  const binding = await indexedBindingForPath(home, canonicalPath);
+export async function bindingForPath(home: string, canonicalPath: string, strict = false): Promise<CheckoutBinding | null> {
+  const binding = await indexedBindingForPath(home, canonicalPath, strict);
   if (!binding) return null;
   const identity = await folderIdentity(canonicalPath);
-  return identity && sameFolder(identity, binding.folder_identity) ? binding : null;
+  if (identity && sameFolder(identity, binding.folder_identity)) return binding;
+  if (strict) throw new Error("hosted checkout folder identity disagrees");
+  return null;
 }
 
 /** Remove a checkout's path index entry and its private state (binding and store). The folder is never touched. */
