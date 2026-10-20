@@ -74,14 +74,23 @@ test('ordinary resource symlink and changed output root require explicit selecti
 });
 
 test('controlled executable is cancelled together with operation child',async()=>{
-  const f=await fixture(`await port.runTool({tool:'node',argv:['--eval',"require('node:fs').writeFileSync('tool.json',JSON.stringify({pid:process.pid}));setInterval(()=>{},1000)"]});return {outputs:[]};`);
+  const f=await fixture(root=>`await port.runTool({tool:'node',argv:['--eval',${JSON.stringify(`const fs=require('node:fs');const ready=JSON.stringify({pid:process.pid});fs.writeFileSync('tool.json',ready);fs.writeFileSync(${JSON.stringify(path.join(root,'tool-ready.json'))},ready);setInterval(()=>{},1000)`)}]});return {outputs:[]};`);
   const config={...f.config,tools:{node:process.execPath}};
   const bp:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,undefined,f.home);const binding:any=await bindLocalOperation('local.fixture.compare.v1',f.bundle,config,bp.digest,f.home);
-  const controller=new AbortController();setTimeout(()=>controller.abort(),600);
-  const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,binding.binding,f.input,{home:f.home,signal:controller.signal});
-  assert.equal(result.status,'cancelled_confirmed');
-  const tool=JSON.parse(await readFile(path.join(path.dirname(result.manifest),'outputs','tool.json'),'utf8'));
-  assert.throws(()=>process.kill(tool.pid,0),{code:'ESRCH'});
+  const controller=new AbortController();
+  const running=runLocalOperation('local.fixture.compare.v1',f.bundle,binding.binding,f.input,{home:f.home,signal:controller.signal});
+  let settled=false;void running.then(()=>{settled=true;},()=>{settled=true;});
+  try{
+    const deadline=Date.now()+15000;let ready:{pid:number}|undefined;
+    while(Date.now()<deadline&&!settled){
+      try{ready=JSON.parse(await readFile(path.join(f.root,'tool-ready.json'),'utf8'));break;}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT'&&!(error instanceof SyntaxError))throw error;}
+      await new Promise(resolve=>setTimeout(resolve,25));
+    }
+    assert.ok(ready,'native child must report readiness before cancellation');
+    controller.abort();const result=await running;assert.equal(result.status,'cancelled_confirmed');
+    const tool=JSON.parse(await readFile(path.join(path.dirname(result.manifest),'outputs','tool.json'),'utf8'));assert.equal(tool.pid,ready.pid);
+    assert.throws(()=>process.kill(tool.pid,0),{code:'ESRCH'});
+  }finally{controller.abort();await running;}
 });
 
 test('unexpected parent loss preserves an unconfirmed initial manifest, never successful or retryable',async()=>{
