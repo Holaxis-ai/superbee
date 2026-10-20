@@ -27,7 +27,7 @@ export async function localOperationChild(readBytes:(file:string,maximum:number)
         };
         const port = {
           writeJson: async (name: string, value: unknown) => { const text=JSON.stringify(value); if(Buffer.byteLength(text)>request.protocolBytes)throw Error('json_limit'); await fs.writeFile(outputPath(name),text,{mode:0o600,flag:'wx'}); },
-          readJson: async (name: string) => { const file = outputPath(name); const stat = await fs.lstat(file); if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65536) throw Error('invalid_json_output'); return JSON.parse(await fs.readFile(file, 'utf8')); },
+          readJson: async (name: string) => JSON.parse((await readBytes(outputPath(name),65536)).toString('utf8')),
           runTool: async ({ tool, argv, signal }: { tool: string; argv: string[]; signal?: AbortSignal }) => {
             if (!Object.hasOwn(request.tools, tool) || !Array.isArray(argv) || argv.length > 128 || argv.some(x => typeof x !== 'string' || x.includes('\0') || x.length > 8192)) throw Error('invalid_tool_request');
             const checkIdentity=async()=>{

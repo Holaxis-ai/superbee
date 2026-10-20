@@ -187,3 +187,22 @@ test('HTML export refuses all in-bundle and alias shapes with an ordinary-output
   assert.equal(await readFile(path.join(f.bundle,'index.md'),'utf8'),indexBefore);await assert.rejects(readFile(path.join(f.bundle,'export.html')),{code:'ENOENT'});assert.equal(await readFile(doc,'utf8'),'retained document');await assert.rejects(readFile(path.join(f.bundle,'new.md')),{code:'ENOENT'});await assert.rejects(readFile(path.join(outside,'export.html')),{code:'ENOENT'});
   const control=await runLocalOperation('local.fixture.compare.v1',f.bundle,bound.binding,f.input,{home:f.home,exportHtml:path.join(f.root,'ordinary.html')});assert.equal(control.export.status,'exported');
 });
+
+test('readJson uses bounded inode reads for regular JSON and refuses symlink, directory, hardlink and oversized leaves',async()=>{
+  const f=await fixture(`
+    const fs=await import('node:fs/promises');
+    await port.writeJson('normal.json',{value:7});
+    const normal=await port.readJson('normal.json');if(normal.value!==7)throw Error('normal_json_changed');
+    const rejected=[];
+    const refuse=async name=>{try{await port.readJson(name);}catch{rejected.push(name);return;}throw Error('unsafe_json_accepted:'+name);};
+    await fs.symlink(invocation.outputDirectory+'/normal.json',invocation.outputDirectory+'/symlink.json');await refuse('symlink.json');await fs.unlink(invocation.outputDirectory+'/symlink.json');
+    await fs.mkdir(invocation.outputDirectory+'/directory.json');await refuse('directory.json');await fs.rmdir(invocation.outputDirectory+'/directory.json');
+    await fs.link(invocation.outputDirectory+'/normal.json',invocation.outputDirectory+'/hardlink.json');await refuse('hardlink.json');await fs.unlink(invocation.outputDirectory+'/hardlink.json');
+    await fs.writeFile(invocation.outputDirectory+'/oversized.json',' '.repeat(65537));await refuse('oversized.json');await fs.unlink(invocation.outputDirectory+'/oversized.json');
+    return {settings:{value:normal.value,rejected},outputs:[{role:'normal',path:'normal.json',mimeType:'application/json'}]};
+  `);
+  const result=await runLocalOperation('local.fixture.compare.v1',f.bundle,f.binding,f.input,{home:f.home});assert.equal(result.status,'succeeded');
+  const manifest=JSON.parse(await readFile(result.manifest,'utf8'));assert.deepEqual(manifest.settings,{value:7,rejected:['symlink.json','directory.json','hardlink.json','oversized.json']});
+  const inputFile=path.join(f.root,'read-input.json');await writeFile(inputFile,JSON.stringify(f.input));
+  const {runCommandBatch}=await import('./support/command-batch.js');const rows=runCommandBatch([{id:'read_json',argv:['op','run','local.fixture.compare.v1','--local','--binding',f.binding,'--input-file',inputFile,'--dir',f.bundle,'--json']}],{cwd:f.root,home:f.home});const compiled=rows.get('read_json')!;assert.equal(compiled.status,0,compiled.stdout);assert.equal(compiled.stderr,'');assert.equal(JSON.parse(compiled.stdout).status,'succeeded');
+});
