@@ -147,18 +147,24 @@ const MALFORMED_MODEL_DIAGNOSTICS = new Set([
 ]);
 const modelDiagnosticLevel = (code: string): PreflightIssue['level'] => MALFORMED_MODEL_DIAGNOSTICS.has(code) ? 'refused' : 'partial';
 const compareCodeUnits = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
-function canonical(value: unknown): unknown {
-    if (Array.isArray(value))
-        return (value.every(v => record(v) && typeof v.path === 'string') ? [...value].sort((a, b) => compareCodeUnits(a.path, b.path)) : value).map(canonical);
-    if (record(value))
-        return Object.fromEntries(Object.keys(value).sort(compareCodeUnits).map(k => [k, canonical(value[k])]));
-    return value;
+function canonicalJson(value: unknown): string {
+    if (Array.isArray(value)) {
+        const ordered = value.every(v => record(v) && typeof v.path === 'string')
+            ? [...value].sort((a, b) => compareCodeUnits(a.path, b.path)) : value;
+        return '[' + ordered.map(canonicalJson).join(',') + ']';
+    }
+    if (record(value)) {
+        // Rebuilding an object would let JSON.stringify reorder integer-like keys numerically.
+        return '{' + Object.keys(value).sort(compareCodeUnits)
+            .map(key => JSON.stringify(key) + ':' + canonicalJson(value[key])).join(',') + '}';
+    }
+    return JSON.stringify(value);
 }
 /** This envelope identity is separate from Core source/definition digests and Studio packaging. */
 export function recipePreflightDigest(value: unknown): string {
     if (!jsonValue(value))
         throw new TypeError('Digest input must be finite JSON data');
-    return 'sha256:' + sha256Hex(typeof value === 'string' ? value : JSON.stringify(canonical(value)));
+    return 'sha256:' + sha256Hex(typeof value === 'string' ? value : canonicalJson(value));
 }
 function record(value: unknown): value is Record<string, any> { return value !== null && typeof value === 'object' && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null); }
 function jsonValue(value: unknown, seen = new Set<object>()): boolean {

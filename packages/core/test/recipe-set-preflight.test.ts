@@ -175,3 +175,19 @@ test('qualified source links remain unsupported while local sources can target q
  assert.ok(changed.issues.some(i=>i.code==='SOURCE_QUALIFIED_LINKS_UNSUPPORTED'));
  assert.ok(!changed.issues.some(i=>i.code==='LINK_TARGET_MISMATCH'));
 });
+
+test('integer-like and nested object keys retain advertised code-unit canonical order',()=>{
+ const pin=(text:string)=>'sha256:'+createHash('sha256').update(text).digest('hex');
+ assert.equal(recipePreflightDigest({'2':'two','10':'ten'}),pin('{"10":"ten","2":"two"}'));
+ assert.equal(recipePreflightDigest({nested:{'2':'two','10':'ten'},files:[{path:'ä.md',bytes:'ä'},{path:'z.md',bytes:'z'}]}),pin('{"files":[{"bytes":"z","path":"z.md"},{"bytes":"ä","path":"ä.md"}],"nested":{"10":"ten","2":"two"}}'));
+ // Existing ordinary-key envelope pin is independent of the production helper.
+ assert.equal(recipePreflightDigest({z:1,'ä':2,files:[{path:'ä.md',bytes:'ä'},{path:'z.md',bytes:'z'}]}),'sha256:'+createHash('sha256').update('{"files":[{"bytes":"z","path":"z.md"},{"bytes":"ä","path":"ä.md"}],"z":1,"ä":2}').digest('hex'));
+});
+test('synthetic artifact golden pins stay stable across canonical object serialization',()=>{
+ assert.deepEqual(base().selected.map(s=>s.artifactDigest),[
+  'sha256:aad8162d7207b15eed0d22b854ecd00bd345e704bdde0b7b66ab6c9372f7315e',
+  'sha256:2c31bd59aff73be50c259f366e4e4efec4fa1c7f04963e3460d55872de12e483',
+  'sha256:e8da79ef7bb07a1547eb0ddca9e91352b787cf680f78292ef84392147065e071',
+ ]);
+ assert.equal(base(true).selected[2].artifactDigest,'sha256:4479f0b3d899097ca43d51434654d546c59ec6f01b924f405ad59bb0974b3120');
+});
