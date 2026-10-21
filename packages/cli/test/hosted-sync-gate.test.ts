@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
-import { mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdtemp, open, readFile, realpath, writeFile, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -251,35 +251,97 @@ test("a gate's writes inside a repository's own .git are not changes to the chec
 });
 
 test("an interrupted sync takes the gate's whole process group down with it", async () => {
+  await interruptGate("from outside, once the gate is running");
+});
+
+test("a signal that lands as the gate is spawned still takes its whole process group down", async () => {
+  await interruptGate("from inside the spawn, before it returns");
+});
+
+/**
+ * Run a hosted gate in a child sync process, interrupt that process with SIGINT, and require
+ * that it still dies by the signal and that no member of the gate's group outlives it.
+ */
+async function interruptGate(when: "from outside, once the gate is running" | "from inside the spawn, before it returns"): Promise<void> {
   const work = await stateDir();
-  const pidFile = path.join(work, "gate.pid");
+  // Every member of the gate's group holds this FIFO open for writing, so its reader sees
+  // end-of-file exactly when the last member has exited. Probing pids with `kill(pid, 0)` would
+  // also count a killed member its new parent has not reaped yet.
+  const fifo = path.join(work, "group.fifo");
+  const spawned = path.join(work, "spawned.fifo");
+  execFileSync("mkfifo", [fifo, spawned]);
   const here = path.dirname(fileURLToPath(import.meta.url));
   const script = path.join(work, "interrupted.mjs");
   const gateModule = pathToFileURL(path.join(here, "..", "src", "commands", "sync", "gate.ts")).href;
+  const fromSpawn = when === "from inside the spawn, before it returns";
+  // The gate's leader and a background member both outlive the test unless the group is killed.
+  const gate = `exec 3>'${fifo}'; sleep 120 & echo "ready $$" >&3; ${fromSpawn ? `echo > '${spawned}'; ` : ""}exec sleep 120`;
+  // From inside the spawn: the sync blocks until the gate has started, then signals itself before
+  // `spawn` returns, so the signal is pending before the sync could take any later step.
+  const raiseInSpawn =
+    `import childProcess from "node:child_process";\n` +
+    `import { readFileSync } from "node:fs";\n` +
+    `import { syncBuiltinESMExports } from "node:module";\n` +
+    `const spawn = childProcess.spawn;\n` +
+    `childProcess.spawn = (...args) => { const child = spawn(...args); readFileSync(${JSON.stringify(spawned)}); process.kill(process.pid, "SIGINT"); return child; };\n` +
+    `syncBuiltinESMExports();\n`;
   await writeFile(
     script,
-    `import { runHostedSyncGate } from ${JSON.stringify(gateModule)};\n` +
-      `await runHostedSyncGate({ folder: ${JSON.stringify(work)}, origin: "https://hosted.example", bundleId: "b" }, { command: ${JSON.stringify(`echo $$ > '${pidFile}'; exec sleep 30`)}, timeoutSeconds: 60 });\n`,
+    (fromSpawn ? raiseInSpawn : "") +
+      `const { runHostedSyncGate } = await import(${JSON.stringify(gateModule)});\n` +
+      `await runHostedSyncGate({ folder: ${JSON.stringify(work)}, origin: "https://hosted.example", bundleId: "b" }, { command: ${JSON.stringify(gate)}, timeoutSeconds: 300 });\n`,
   );
+  // Open both ends here first, so the gate's open never blocks and the reader cannot see
+  // end-of-file before the gate has joined: the test's own writer closes once it has.
+  const [readEnd, writeEnd] = await Promise.all([open(fifo, "r"), open(fifo, "w")]);
+  let ownWriter: FileHandle | undefined = writeEnd;
+  const reader = readEnd.createReadStream();
+  let received = "";
+  const ready = new Promise<number>((resolve, reject) => {
+    reader.on("data", (chunk) => {
+      received += chunk.toString("utf8");
+      const match = /ready (\d+)/.exec(received);
+      if (match) resolve(Number(match[1]));
+    });
+    reader.on("error", reject);
+  });
+  const groupGone = new Promise<void>((resolve) => reader.on("end", resolve));
   const child = spawn(process.execPath, ["--import", pathToFileURL(path.join(here, "ts-loader.mjs")).href, script], { stdio: "ignore" });
   const exited = new Promise<NodeJS.Signals | null>((resolve) => child.on("exit", (_code, signal) => resolve(signal)));
-  const deadline = Date.now() + 20_000;
-  while (!existsSync(pidFile) || (await readFile(pidFile, "utf8")).trim() === "") {
-    assert.ok(Date.now() < deadline, "the gate started");
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  const gatePid = Number((await readFile(pidFile, "utf8")).trim());
-  child.kill("SIGINT");
-  assert.equal(await exited, "SIGINT", "the signal still ends the process");
-  const alive = () => {
-    try {
-      process.kill(gatePid, 0);
-      return true;
-    } catch {
-      return false;
+  let group: number | undefined;
+  try {
+    // From inside the spawn, the sync may already be gone by the time the gate reports in.
+    const started = fromSpawn ? ready : Promise.race([ready, exited.then(() => Promise.reject(new Error("the sync exited before its gate started")))]);
+    group = await within(20_000, started, "the gate started");
+    await ownWriter.close();
+    ownWriter = undefined;
+    if (!fromSpawn) child.kill("SIGINT");
+    assert.equal(await within(20_000, exited, "the sync ended"), "SIGINT", "the signal still ends the process");
+    // The members are SIGKILLed, so their exit is prompt; the bound sits far inside their sleeps.
+    await within(10_000, groupGone, "the gate's group did not outlive the sync");
+  } finally {
+    child.kill("SIGKILL");
+    if (group !== undefined) {
+      try {
+        process.kill(-group, "SIGKILL");
+      } catch {
+        /* the group is gone */
+      }
     }
-  };
-  const gone = Date.now() + 5_000;
-  while (alive() && Date.now() < gone) await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(alive(), false, "the gate did not outlive the sync");
-});
+    await ownWriter?.close();
+    reader.destroy();
+  }
+}
+
+/** `promise`, or a failure naming `what` once `ms` pass first. */
+async function within<T>(ms: number, promise: Promise<T>, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new assert.AssertionError({ message: `${what} (no outcome within ${ms} ms)` })), ms);
+  });
+  try {
+    return await Promise.race([promise, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}

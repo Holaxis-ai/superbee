@@ -6,7 +6,7 @@
 // syncing machine executes, just as it cannot install a Git hook. (A command that runs a script
 // stored in the board still runs that script's current, pulled content; the docs say so.)
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { countUncommitted, isBoardGitError, currentHead, resolveOriginRef, runGit } from "@superbee/board-git";
@@ -245,7 +245,26 @@ function runInOwnGroup(command: string, cwd: string, timeoutMs: number, env: Nod
     let output = "";
     let timedOut = false;
     let settled = false;
-    const child = spawn(command, { cwd, env, shell: true, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    // The gate leads its own group, so a Ctrl-C at the terminal reaches only this process: take
+    // the group down with it, then let the signal do what it would have done.
+    function onSignal(signal: NodeJS.Signals): void {
+      killGroup();
+      stopListening();
+      process.kill(process.pid, signal);
+    }
+    function stopListening(): void {
+      for (const signal of GATE_FORWARDED_SIGNALS) process.removeListener(signal, onSignal);
+    }
+    // Listen before spawning: a signal that lands between the spawn and the listeners would end
+    // this process by its default action and leave the gate's group running unowned.
+    for (const signal of GATE_FORWARDED_SIGNALS) process.on(signal, onSignal);
+    let child: ChildProcess;
+    try {
+      child = spawn(command, { cwd, env, shell: true, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    } catch (error) {
+      stopListening();
+      throw error;
+    }
     const killGroup = (): void => {
       if (child.pid === undefined) return;
       try {
@@ -264,17 +283,6 @@ function runInOwnGroup(command: string, cwd: string, timeoutMs: number, env: Nod
       timedOut = true;
       killGroup();
     }, timeoutMs);
-    // The gate leads its own group, so a Ctrl-C at the terminal reaches only this process: take
-    // the group down with it, then let the signal do what it would have done.
-    const onSignal = (signal: NodeJS.Signals): void => {
-      killGroup();
-      stopListening();
-      process.kill(process.pid, signal);
-    };
-    const stopListening = (): void => {
-      for (const signal of GATE_FORWARDED_SIGNALS) process.removeListener(signal, onSignal);
-    };
-    for (const signal of GATE_FORWARDED_SIGNALS) process.on(signal, onSignal);
     const finish = (run: Omit<GroupRun, "output" | "timedOut">): void => {
       if (settled) return;
       settled = true;
