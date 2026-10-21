@@ -206,6 +206,25 @@ manual dispatch. It is not a required lane and is outside the lane projection ab
 [`specs/tla/README.md`](specs/tla/README.md) owns how to run the models, what each config checks,
 and which fixed configs model changes that have not merged.
 
+The `OKF upstream watch` workflow in `.github/workflows/okf-upstream-watch.yml` reports drift in
+the OKF specification; it is not a PR gate and never commits. Weekly, it compares the latest
+`SPEC.md` commit in the canonical OKF repository with the reviewed pin and reads every upstream
+sample bundle with the built CLI's `status --json`; a nonzero exit, a malformed document, an
+invalid timestamp, a symbolic link, or an empty bundle is a conformance failure. A check job with
+no write permission and no npm cache hands a JSON result to a report job that holds
+`issues: write`, reads no upstream content, and re-validates the result before writing anything.
+Drift opens at most one `upstream-drift` issue per drift, identified by a hidden body marker; an
+open or closed issue with that marker suppresses a repeat. Network or API failures open a separate
+`Upstream watch failing` issue instead. Manual dispatch defaults to a dry run. The reviewed pin
+lives in `scripts/okf-upstream-watch.json`. To resolve an issue, review the linked upstream change,
+adapt Superbee if needed, and bump the pin in the same PR. Locally,
+`node scripts/okf-upstream-watch.mjs --dry-run` (after `npm run build`) prints the report without
+filing anything.
+
+MCP SDK drift arrives as a Dependabot PR instead: `.github/dependabot.yml` checks
+`@modelcontextprotocol/*` daily, including major versions, and groups them into one PR. That PR's
+CI is the compatibility check. A failing one is the drift signal; adapt Superbee in that PR.
+
 ### GitHub Action pin renewal
 
 Every remote action reference uses a full lowercase commit SHA plus its exact `vX.Y.Z` release
@@ -247,6 +266,7 @@ CI coverage and broader local reproduction commands by reach (not the default bu
 | Host-class-dependent tests (case or normalization fixtures, the identity lock) | `npm run ci:aliasing-host` |
 | `.github/workflows/release*.yml` | `npm run ci:scripts` (workflow invariant test), then one rehearsal against a disposable package before first live use |
 | `specs/tla` or `.github/workflows/tla-specs.yml` | `specs/tla/run-tlc.sh` on the touched area's configs |
+| `scripts/okf-upstream-watch.*` or `.github/workflows/okf-upstream-watch.yml` | `npm run ci:scripts`; a live `node scripts/okf-upstream-watch.mjs --dry-run` |
 
 A CI topology change must update `scripts/ci-lanes.json` and this table in the same unit; never
 add path skipping without a separately reviewed fail-closed classifier. Automatic CI runs on Linux
