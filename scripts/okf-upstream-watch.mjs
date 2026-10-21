@@ -19,7 +19,7 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +29,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 export const PIN_PATH = path.join(repoRoot, "scripts", "okf-upstream-watch.json");
 export const CLI_PATH = path.join(repoRoot, "packages", "superbee", "dist", "superbee.mjs");
 export const LABEL = "upstream-drift";
+const GITHUB_API = "https://api.github.com";
 export const ISSUE_AUTHOR = "github-actions[bot]";
 export const RESULT_SCHEMA = "superbee.okf-upstream-watch.result.v1";
 export const LIMITS = Object.freeze({
@@ -336,7 +337,9 @@ async function readBounded(response, max) {
 
 export function createGitHub({ token, repo, fetchImpl = globalThis.fetch } = {}) {
   const request = async (route, { method = "GET", body, allow404 = false } = {}) => {
-    const response = await fetchImpl(`https://api.github.com${route}`, {
+    const url = new URL(route, GITHUB_API);
+    if (url.origin !== GITHUB_API || !route.startsWith("/")) throw new Error("GitHub route must be a path on the GitHub API");
+    const response = await fetchImpl(url.href, {
       method,
       signal: AbortSignal.timeout(30000),
       headers: {
@@ -390,30 +393,32 @@ export function childEnv(env = process.env) {
   return Object.fromEntries(Object.entries(env).filter(([name]) => !/TOKEN|SECRET|PASSWORD|CREDENTIAL|GITHUB_STEP_SUMMARY|GITHUB_OUTPUT|GITHUB_ENV|GITHUB_PATH/i.test(name)));
 }
 
-function run(file, argv, { timeout = 120000, cwd = repoRoot } = {}) {
+function run(file, argv, { timeout = 120000, cwd = repoRoot, input } = {}) {
   return new Promise((resolve) => {
-    execFile(file, argv, { cwd, env: childEnv(), timeout, maxBuffer: 64 * 1024 * 1024, shell: false }, (error, stdout, stderr) => {
+    const child = execFile(file, argv, { cwd, env: childEnv(), timeout, maxBuffer: 64 * 1024 * 1024, shell: false }, (error, stdout, stderr) => {
       // A spawn failure or timeout has no numeric exit code; report it as exit 1 with its message.
       const spawnFailure = error && typeof error.code !== "number";
       const code = error ? (spawnFailure ? 1 : error.code) : 0;
       resolve({ code: Math.min(Math.max(code, 0), 255), stdout: String(stdout ?? ""), stderr: `${stderr ?? ""}${spawnFailure ? String(error.message) : ""}` });
     });
+    child.stdin?.on("error", () => {});
+    child.stdin?.end(input);
   });
 }
 
-// Downloads the upstream tree at an exact SHA into a fresh temporary directory. tar keeps its
-// default refusal of absolute and `..` member names; symlinks are counted by the caller.
+// Downloads the upstream tree at an exact SHA and extracts it into a fresh temporary directory
+// from memory; the archive itself never touches disk. tar keeps its default refusal of absolute
+// and `..` member names; symlinks are counted by the caller.
 async function fetchTree(repo, sha, fetchImpl = globalThis.fetch) {
   const dir = mkdtempSync(path.join(tmpdir(), "upstream-okf-"));
   const cleanup = () => rmSync(dir, { recursive: true, force: true });
   try {
     const response = await fetchImpl(`https://codeload.github.com/${repo}/tar.gz/${sha}`, { signal: AbortSignal.timeout(120000) });
     if (!response.ok) throw new Error(`tarball download failed with HTTP ${response.status}`);
-    const archive = path.join(dir, "upstream.tgz");
-    writeFileSync(archive, await readBounded(response, LIMITS.tarballBytes));
+    const archive = await readBounded(response, LIMITS.tarballBytes);
     const extract = path.join(dir, "tree");
     mkdirSync(extract);
-    const result = await run("tar", ["-xzf", archive, "-C", extract]);
+    const result = await run("tar", ["-xzf", "-", "-C", extract], { input: archive });
     if (result.code !== 0) throw new Error(`tar exited ${result.code}`);
     const tops = readdirSync(extract);
     if (tops.length !== 1 || !lstatSync(path.join(extract, tops[0])).isDirectory()) throw new Error("unexpected tarball layout");
@@ -466,12 +471,19 @@ export async function report(raw, pin, env, deps, { dryRun }) {
   return { rendered, outcome };
 }
 
+// Size and type are checked on the open descriptor that is then read, so the file cannot change
+// between the check and the read.
 function readResultFile(file) {
   const failed = (error) => ({ schema: RESULT_SCHEMA, status: "error", error });
-  if (!existsSync(file)) return failed("the check job wrote no result");
-  const stat = statSync(file);
-  if (!stat.isFile() || stat.size > LIMITS.resultBytes) return failed("the result file is too large");
-  try { return JSON.parse(readFileSync(file, "utf8")); } catch { return failed("the result file is not JSON"); }
+  let fd;
+  try { fd = openSync(file, "r"); } catch { return failed("the check job wrote no result"); }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > LIMITS.resultBytes) return failed("the result file is too large");
+    try { return JSON.parse(readFileSync(fd, "utf8")); } catch { return failed("the result file is not JSON"); }
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export async function main(argv, env = process.env, deps = {}) {
