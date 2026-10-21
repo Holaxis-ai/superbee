@@ -180,7 +180,25 @@ test("finalize holds no npm credential, verifies provider state, and creates the
   assert.match(job, /--generate-notes \$\{START:\+--notes-start-tag "\$START"\}/, "generated notes start at the tag the script chose, never GitHub's guess");
   assert.match(job, /node source\/scripts\/release-notes-start-tag\.mjs "\$V"/, "the start tag comes from the shared semver selection");
   assert.match(job, /persist-credentials: false\n {10}sparse-checkout: scripts\n {10}path: source\n/, "the scripts-only checkout carries no push credential");
-  assert.doesNotMatch(job, /\bnpm ci\b|\bcd source\b|node source\/(?!scripts\/release-notes-start-tag\.mjs)/, "nothing from the checkout is installed or run except the selection script");
+  const notesStep = [
+    "      - name: Choose where the generated release notes start",
+    "        id: notes",
+    "        env:",
+    "          V: ${{ inputs.version }}",
+    "          GH_TOKEN: ${{ github.token }}",
+    "        run: |",
+    "          set -euo pipefail",
+    "          START=\"$(gh api --paginate \"repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v\" --jq '.[].ref | ltrimstr(\"refs/tags/\")' \\",
+    "            | node source/scripts/release-notes-start-tag.mjs \"$V\")\"",
+    "          [ -n \"$START\" ] || echo \"::warning::no earlier release tag below v$V; GitHub chooses the notes start\"",
+    "          echo \"start=$START\" >> \"$GITHUB_OUTPUT\"",
+    "      - name: Create the GitHub release",
+  ].join("\n");
+  assert.ok(job.includes(notesStep), "the start tag is exactly the selection script's output, with no fallback or override");
+  assert.match(job, /START: \$\{\{ steps\.notes\.outputs\.start \}\}\n/, "the create step uses the selection step's output");
+  // The checkout is used twice: its path, and the one selection script. Any other use runs checkout code.
+  const uses = [...job.matchAll(/(?<![-\w])source(?![-\w])/g)].map((m) => job.slice(m.index - 6, m.index + 40));
+  assert.equal(uses.length, 2, `the checkout is used only by the selection script: ${JSON.stringify(uses)}`);
   assert.match(job, /gh release download "\$TAG"[\s\S]*differs from the bytes npm serves/, "every finalize path verifies the release asset against the npm bytes");
 });
 
