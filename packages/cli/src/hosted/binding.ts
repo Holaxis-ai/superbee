@@ -285,8 +285,12 @@ export async function discardCheckoutState(home: string, checkoutId: string): Pr
   await rm(checkoutDir(home, checkoutId), { recursive: true, force: true });
 }
 
-/** Every ready binding in private state, in no particular order. Unreadable records are skipped. */
-export async function listReadyBindings(home: string): Promise<CheckoutBinding[]> {
+/**
+ * Every ready binding in private state, in no particular order. Unreadable records are skipped,
+ * unless `strict`: then a binding record that exists but cannot be read throws (a checkout with no
+ * record yet is still skipped).
+ */
+export async function listReadyBindings(home: string, strict = false): Promise<CheckoutBinding[]> {
   let names: string[];
   try {
     names = await readdir(hostedCheckoutsRoot(home));
@@ -297,7 +301,16 @@ export async function listReadyBindings(home: string): Promise<CheckoutBinding[]
   const out: CheckoutBinding[] = [];
   for (const name of names) {
     if (!/^[0-9a-f-]{36}$/.test(name)) continue;
-    const binding = await readBinding(home, name).catch(() => null);
+    const record = join(checkoutDir(home, name), "binding.json");
+    const binding = strict
+      ? await (async () => {
+          try {
+            return (await readJson(home, record, true)) === null ? null : await readBinding(home, name, true);
+          } catch (error) {
+            throw new Error(`unreadable hosted checkout record ${record} (${error instanceof Error ? error.message : String(error)})`);
+          }
+        })()
+      : await readBinding(home, name).catch(() => null);
     if (binding && binding.state === "ready") out.push(binding);
   }
   return out;

@@ -305,10 +305,11 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("catalogAdd", "catalog add", one, 2, DIR_SURFACE),
           publicLeaf("catalogList", "catalog list", zero, undefined, DIR_REJECTED_SURFACE),
           publicLeaf("catalogResolve", "catalog resolve", one, undefined, DIR_REJECTED_SURFACE),
+          publicLeaf("catalogRemove", "catalog remove", one, undefined, DIR_REJECTED_SURFACE),
         ],
-        usage: "catalog (add <label> [--dir <path>] | list [--local | --hosted [--host <url>]] | resolve <label-or-id> [--field path])",
+        usage: "catalog (add <label> [--dir <path>] | list [--local | --hosted [--host <url>]] | resolve <label-or-id> [--field path] | remove <label-or-id>)",
         summary:
-          "Register and deterministically resolve this user's explicitly named local workspaces; while signed in, list also names the hosted bundles you can reach with no folder here (--local skips that); list --hosted signs in if needed and lists every hosted bundle you can reach (live, never cached), with the folder of any checkout of each here",
+          "Register, deterministically resolve and forget this user's explicitly named local workspaces (remove refuses a hosted checkout's label while it holds unsent changes); while signed in, list also names the hosted bundles you can reach with no folder here (--local skips that); list --hosted signs in if needed and lists every hosted bundle you can reach (live, never cached), with the folder of any checkout of each here",
       },
       {
         id: "init",

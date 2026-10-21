@@ -75,6 +75,7 @@ export const BEHAVIOR_ASSIGNMENTS = [
   selector("catalogAdd", "leading-navigation", 1),
   selector("catalogList", "leading-navigation", 0),
   selector("catalogResolve", "leading-navigation", 1, { errorChannel: "stderr" }),
+  selector("catalogRemove", "leading-navigation", 1),
   ordinary("init", 0),
   selector("indexGenerate", "leading-navigation", 0),
   ordinary("status", 0),

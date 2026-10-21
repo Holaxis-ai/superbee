@@ -14,6 +14,7 @@ import {
   listCatalogEntries,
   loadCatalog,
   parseCatalog,
+  removeCatalogEntry,
   resolveCatalogEntry,
 } from "../src/catalog.js";
 import { CliError } from "../src/errors.js";
@@ -290,6 +291,51 @@ test("a failed decision releases its lock for the next writer", async () => {
     );
     await addCatalogEntry("one", f.first, { home: f.home, createId: () => id("1") });
     await assert.rejects(() => stat(catalogLockPath(f.home)), (err: unknown) => (err as NodeJS.ErrnoException).code === "ENOENT");
+  } finally {
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test("remove forgets only the entry it inspected, is idempotent, and never touches the folder", async () => {
+  const f = await fixture();
+  try {
+    const { entry } = await addCatalogEntry("one", f.first, { home: f.home, createId: () => id("1") });
+    await addCatalogEntry("two", f.second, { home: f.home, createId: () => id("2") });
+    const before = await readdir(f.first, { recursive: true });
+    assert.deepEqual(await removeCatalogEntry(entry, { home: f.home }), { changed: true });
+    assert.deepEqual(await removeCatalogEntry(entry, { home: f.home }), { changed: false, reason: "not_registered" });
+    assert.deepEqual((await loadCatalog(f.home)).entries.map((item) => item.label), ["two"]);
+    assert.deepEqual(await readdir(f.first, { recursive: true }), before);
+
+    // An entry that changed since it was inspected (same id, other label) is kept.
+    const raw = await readFile(catalogPath(f.home), "utf8");
+    const stale = { ...(await loadCatalog(f.home)).entries[0]!, label: "renamed" };
+    assert.deepEqual(await removeCatalogEntry(stale, { home: f.home }), { changed: false, reason: "entry_changed" });
+    assert.equal(await readFile(catalogPath(f.home), "utf8"), raw, "an unchanged decision writes nothing");
+  } finally {
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test("concurrent in-process removals and additions serialize without a lost update", async () => {
+  const f = await fixture();
+  try {
+    const entries = [];
+    for (let index = 0; index < 6; index += 1) {
+      const bundle = path.join(f.root, `b-${index}`);
+      await initBundle(bundle);
+      entries.push((await addCatalogEntry(`keep-${index}`, bundle, { home: f.home, createId: () => id(String(index + 1)) })).entry);
+    }
+    const drop = entries.slice(0, 3);
+    const results = await Promise.all([
+      ...drop.map((entry) => removeCatalogEntry(entry, { home: f.home })),
+      ...drop.map((entry) => removeCatalogEntry(entry, { home: f.home })),
+      addCatalogEntry("new-one", f.first, { home: f.home, createId: () => id("a") }),
+      addCatalogEntry("new-two", f.second, { home: f.home, createId: () => id("b") }),
+    ]);
+    // Each removed entry is removed exactly once; the second attempt finds it gone.
+    assert.equal(results.slice(0, 6).filter((result) => (result as { changed: boolean }).changed).length, 3);
+    assert.deepEqual((await loadCatalog(f.home)).entries.map((entry) => entry.label), ["keep-3", "keep-4", "keep-5", "new-one", "new-two"]);
   } finally {
     await rm(f.root, { recursive: true, force: true });
   }

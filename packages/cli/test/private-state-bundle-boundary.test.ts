@@ -772,6 +772,12 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
     argv: (t) => ["catalog", "resolve", "probe-label", "--dir", t, "--json"],
     expect: "usage-rejected",
   },
+  {
+    leaf: "catalogRemove",
+    surface: "--dir",
+    argv: (t) => ["catalog", "remove", "probe-label", "--dir", t, "--json"],
+    expect: "usage-rejected",
+  },
 
   // ── Ingress: the target's BYTES are read. ───────────────────────────────────
   { leaf: "docWrite", surface: "--body-file", argv: (t) => ["doc", "write", "probe/bf", "--type", "Note", "--body-file", t, "--dir", ".superbee", "--json"] },

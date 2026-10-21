@@ -26,6 +26,8 @@ import { filesystemPushRoleLocks } from "@superbee/core/filesystem-push-role";
 
 import { CliError } from "../src/errors.js";
 import { checkout } from "../src/commands/checkout.js";
+import { catalog } from "../src/commands/catalog.js";
+import { loadCatalog } from "../src/catalog.js";
 import { sync } from "../src/commands/sync.js";
 import { promote } from "../src/commands/promote.js";
 import { deleteCommand } from "../src/commands/delete.js";
@@ -2462,4 +2464,32 @@ test("Artifact final session cleanup failure retains committed receipt and origi
   assert.equal(h.host.writes.length, 0);
   await artifact(args, commandDeps(h, wire, out)); const replay = JSON.parse(out.at(-1)!);
   assert.equal(replay.record_request_id, receipt.record_request_id); assert.equal(replay.blob_request_id, receipt.blob_request_id); assert.equal(wire.calls.length, 1);
+});
+
+test("catalog remove refuses a journaled unsent change in the checkout's folder, and reports it stranded once the folder is gone or replaced", async () => {
+  const h = await harness();
+  await edit(h, "notes/alpha", (doc) => void (doc.body = "Unsent.\n"));
+  h.host.hook = (call) => (call.route !== "outcome" ? { kind: "respond", status: 429, body: { error: { code: "request_capacity", scope: "principal", message: "q", retryable: false, writeState: "not_applied" } } } : undefined);
+  await failingSync(h);
+  const remove = async () => {
+    const out: string[] = [];
+    await catalog(["remove", BUNDLE, "--json"], { stdout: (text) => void out.push(text), home: () => h.home, cwd: () => h.cwd });
+    return JSON.parse(out.join("")) as Record<string, unknown>;
+  };
+  const refused = await remove().then(() => assert.fail("expected a refusal"), (error: unknown) => error as CliError);
+  assert.equal(refused.code, "CONFLICT");
+  assert.equal(refused.details?.reason, "unsent_changes");
+  assert.equal(refused.details?.unsent, 1);
+
+  // Replaced by another folder: nothing of the checkout's to scan; the journaled change is reported.
+  const canonical = await realpath(h.folder);
+  await rm(h.folder, { recursive: true });
+  await mkdir(h.folder);
+  const removed = await remove();
+  assert.equal(removed.removed, true);
+  assert.deepEqual(removed.checkout, { bundle_id: BUNDLE, host: HOST, folder: "replaced" });
+  assert.equal(removed.stranded_unsent, 1);
+  assert.ok((removed.help as string[]).some((line) => line.endsWith(`checkout --release ${canonical}`)), JSON.stringify(removed.help));
+  assert.deepEqual((await loadCatalog(h.home)).entries, []);
+  assert.ok((await stat(checkoutStoreDir(h.home, (await import("../src/hosted/binding.js").then((m) => m.indexedBindingForPath(h.home, canonical)))!.checkout_id))).isDirectory(), "the store is kept");
 });

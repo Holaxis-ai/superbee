@@ -25,7 +25,7 @@ import { CREDENTIAL_STORE_ENV } from "../src/hosted-auth/secret-store.js";
 import { bindingForPath, checkoutLockName, checkoutStoreDir, folderIdentity, hostedCheckoutsRoot, sameFolder, writeBinding } from "../src/hosted/binding.js";
 import { bundleHomeAt, homeDetail } from "../src/bundle-home.js";
 import { sync } from "../src/commands/sync.js";
-import { loadCatalog } from "../src/catalog.js";
+import { catalogPath, loadCatalog } from "../src/catalog.js";
 import { readCheckoutMarker } from "../src/hosted/marker.js";
 import { folderConflicts, readProjection } from "../src/hosted/sync-scan.js";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
@@ -1252,4 +1252,171 @@ test("unexpected blob seed failure preserves placed files and ready binding with
   assert.equal((await bindingForPath(h.home, await realpath(folder)))?.state, "ready");
   assert.deepEqual(await readFile(path.join(folder, "data/opaque.bin")), Buffer.from([0, 255]));
   assert.deepEqual((await blobBaseline(h, folder)).entries, []);
+});
+
+// ------------------------------------------------------------------------ catalog remove and release labels
+
+async function catalogRun(h: Harness, argv: string[]): Promise<Record<string, unknown>> {
+  const out: string[] = [];
+  await catalog([...argv, "--json"], { stdout: (text) => out.push(text), home: () => h.home, cwd: () => h.cwd });
+  return JSON.parse(out.join("")) as Record<string, unknown>;
+}
+
+/** Every file under a folder with its digest: the bytes a command must leave alone. */
+async function digests(root: string): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const file of await filesUnder(root)) out[file] = digestOf(await readFile(path.join(root, file)));
+  return out;
+}
+
+test("catalog remove refuses a checkout label while its folder holds an unsent edit, and never touches the checkout", async () => {
+  const h = await harness();
+  const receipt = await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
+  const label = String((receipt.catalog as Record<string, unknown>).label);
+  assert.equal(label, BUNDLE);
+  const folder = await realpath(path.join(h.cwd, "team"));
+  const binding = (await bindingForPath(h.home, folder))!;
+  const alpha = path.join(folder, "notes/alpha.md");
+  const original = await readFile(alpha, "utf8");
+  await writeFile(alpha, `${original}An edit sync has not sent.\n`);
+
+  const folderBefore = await digests(folder);
+  const storeBefore = await digests(checkoutStoreDir(h.home, binding.checkout_id));
+  const catalogBefore = await readFile(catalogPath(h.home), "utf8");
+  const refused = await rejects(catalogRun(h, ["remove", label]));
+  assert.equal(refused.code, "CONFLICT");
+  assert.equal(refused.details?.reason, "unsent_changes");
+  assert.equal(refused.details?.unsent, 1);
+  assert.match(refused.help ?? "", /sync --dir /);
+  assert.equal(await readFile(catalogPath(h.home), "utf8"), catalogBefore, "the catalog is unchanged");
+
+  // Sent (here: the edit undone), the label goes; the folder, store and binding stay exactly as they were.
+  await writeFile(alpha, original);
+  const folderClean = await digests(folder);
+  const removed = await catalogRun(h, ["remove", label]);
+  assert.equal(removed.catalog, "removed");
+  assert.deepEqual(removed.checkout, { bundle_id: BUNDLE, host: HOST, folder: "present" });
+  assert.deepEqual((await loadCatalog(h.home)).entries, []);
+  assert.deepEqual(await digests(folder), folderClean);
+  assert.deepEqual(Object.keys(await digests(folder)).sort(), Object.keys(folderBefore).sort());
+  assert.deepEqual(await digests(checkoutStoreDir(h.home, binding.checkout_id)), storeBefore);
+  assert.ok(await bindingForPath(h.home, folder), "the checkout itself is still bound");
+  assert.equal((await catalogRun(h, ["remove", label])).reason, "not_registered");
+});
+
+test("catalog remove refuses a checkout another command holds, and removes the label of a deleted checkout folder", async () => {
+  const h = await harness();
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
+  const folder = await realpath(path.join(h.cwd, "team"));
+  const locks = filesystemPushRoleLocks();
+  let letGo!: () => void;
+  const held = new Promise<void>((resolve) => (letGo = resolve));
+  let acquired!: () => void;
+  const ready = new Promise<void>((resolve) => (acquired = resolve));
+  const holder = locks.request(checkoutLockName(folder), { ifAvailable: true }, async (lock) => {
+    assert.ok(lock);
+    acquired();
+    await held;
+  });
+  await ready;
+  try {
+    const busy = await rejects(catalogRun(h, ["remove", BUNDLE]));
+    assert.equal(busy.code, "CONFLICT");
+    assert.equal(busy.details?.reason, "checkout_busy");
+    assert.equal((await loadCatalog(h.home)).entries.length, 1);
+  } finally {
+    letGo();
+    await holder;
+  }
+
+  // The folder is gone: nothing there to scan, so the label goes, and the binding is left for release.
+  await rm(folder, { recursive: true });
+  const listed = await catalogRun(h, ["list", "--local"]);
+  assert.equal(listed.unavailable, 1);
+  const removed = await catalogRun(h, ["remove", BUNDLE]);
+  assert.equal(removed.removed, true);
+  assert.deepEqual(removed.checkout, { bundle_id: BUNDLE, host: HOST, folder: "missing" });
+  assert.equal(removed.stranded_unsent, undefined);
+  assert.equal((await readdir(hostedCheckoutsRoot(h.home))).filter((name) => name !== "paths").length, 1, "the private checkout state is kept");
+});
+
+test("checkout --release drops the label checkout gave the folder and keeps one chosen by hand", async () => {
+  const h = await harness();
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
+  const team = await realpath(path.join(h.cwd, "team"));
+  const filesBefore = await digests(team);
+  const released = await run(h, ["--release", team]);
+  const dropped = released.catalog as Record<string, unknown>;
+  assert.equal(dropped.removed, true);
+  assert.equal(dropped.label, BUNDLE);
+  assert.match(String(dropped.help), new RegExp(`catalog add ${BUNDLE.replace(".", "\\.")} --dir ${team}$`));
+  assert.deepEqual((await loadCatalog(h.home)).entries, []);
+  const { [path.join(".superbee", "checkout.json")]: _marker, ...kept } = filesBefore;
+  assert.deepEqual(await digests(team), kept, "only the marker went");
+
+  const second = await run(h, [BUNDLE, "--host", HOST, "--dir", "other"]);
+  const other = await realpath(path.join(h.cwd, "other"));
+  await catalogRun(h, ["remove", String((second.catalog as Record<string, unknown>).label)]);
+  await catalogRun(h, ["add", "mine", "--dir", other]);
+  const keeps = await run(h, ["--release", other]);
+  assert.deepEqual(keeps.catalog, { removed: false, label: "mine", reason: "chosen_label" });
+  assert.deepEqual((await loadCatalog(h.home)).entries.map((entry) => entry.label), ["mine"]);
+});
+
+test("a checkout replacing one whose folder was deleted keeps that folder's catalog entry", async () => {
+  const h = await harness();
+  const first = await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
+  await rm(path.join(h.cwd, "team"), { recursive: true });
+  const again = await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
+  assert.ok(again.replaced_stale_checkout);
+  assert.deepEqual(again.catalog, { ...(first.catalog as Record<string, unknown>), existing: true });
+  assert.equal((await loadCatalog(h.home)).entries.length, 1);
+});
+
+test("catalog remove guards a checkout whose entry spells its folder in another case, and refuses an unreadable path index", async () => {
+  const h = await harness();
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
+  const folder = await realpath(path.join(h.cwd, "team"));
+  await writeFile(path.join(folder, "notes/alpha.md"), `${await readFile(path.join(folder, "notes/alpha.md"), "utf8")}Unsent.\n`);
+  const caseInsensitive = (await stat(path.join(path.dirname(folder), "TEAM")).catch(() => null)) !== null;
+  if (caseInsensitive) {
+    // A hand-written entry naming the same folder in another case still reaches the checkout's guard.
+    const catalogFile = catalogPath(h.home);
+    const raw = await readFile(catalogFile, "utf8");
+    await writeUserStateFileAtomic0600(h.home, path.dirname(catalogFile), "catalog.json", raw.replace(JSON.stringify(folder), JSON.stringify(path.join(path.dirname(folder), "TEAM"))));
+    const refused = await rejects(catalogRun(h, ["remove", BUNDLE]));
+    assert.equal(refused.details?.reason, "unsent_changes");
+    await writeUserStateFileAtomic0600(h.home, path.dirname(catalogFile), "catalog.json", raw);
+  }
+  // An unreadable path index never falls through to an unguarded removal.
+  const index = path.join(hostedCheckoutsRoot(h.home), "paths");
+  for (const name of await readdir(index)) await writeFile(path.join(index, name), "{not json");
+  const unverifiable = await rejects(catalogRun(h, ["remove", BUNDLE]));
+  assert.equal(unverifiable.code, "CONFLICT");
+  assert.equal(unverifiable.details?.reason, "checkout_unverifiable");
+  assert.equal((await loadCatalog(h.home)).entries.length, 1);
+});
+
+test("catalog remove refuses the label of a moved checkout folder until it is adopted, and an unreadable binding found by identity", async () => {
+  const h = await harness();
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
+  const team = await realpath(path.join(h.cwd, "team"));
+  const binding = (await bindingForPath(h.home, team))!;
+  const moved = path.join(path.dirname(team), "team2");
+  await rename(team, moved);
+  await writeFile(path.join(moved, "notes/alpha.md"), `${await readFile(path.join(moved, "notes/alpha.md"), "utf8")}Unsent.\n`);
+  await catalogRun(h, ["add", "mine", "--dir", moved]);
+  const refused = await rejects(catalogRun(h, ["remove", "mine"]));
+  assert.equal(refused.code, "CONFLICT");
+  assert.equal(refused.details?.reason, "moved_checkout");
+  assert.match(refused.help ?? "", /checkout --adopt /);
+  assert.ok((await loadCatalog(h.home)).entries.some((entry) => entry.label === "mine"));
+
+  // The fallback lookup reads every binding strictly: a corrupt record refuses rather than skipping.
+  const record = path.join(hostedCheckoutsRoot(h.home), binding.checkout_id, "binding.json");
+  await writeFile(record, "{not json");
+  const unverifiable = await rejects(catalogRun(h, ["remove", "mine"]));
+  assert.equal(unverifiable.details?.reason, "checkout_unverifiable");
+  assert.ok(unverifiable.message.includes(record), "the refusal names the record to repair");
+  assert.ok((await loadCatalog(h.home)).entries.some((entry) => entry.label === "mine"));
 });
