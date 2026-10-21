@@ -84,12 +84,14 @@ test("a create that sets a described value echoes its description", async () => 
 test("an overwrite compares against the stored document it replaces", async () => {
   const bundle = await v02Bundle();
   await seedTask(bundle, "in_progress");
-  const overwrite = (status: string) => mutateDocument({
+  const overwrite = (title: string, status: string) => mutateDocument({
     bundle, id: "tasks/a", mode: "overwrite", registry: REGISTRY, strict: false,
-    buildCandidate: () => ({ frontmatter: { type: "Task", title: "A2", superbee_progress_status: status }, body: "" }),
+    buildCandidate: () => ({ frontmatter: { type: "Task", title, superbee_progress_status: status }, body: "" }),
   });
-  assert.deepEqual((await overwrite("done")).guidance, [{ field: "progress_status", value: "done", description: DONE }]);
-  assert.deepEqual((await overwrite("done")).guidance, []);
+  assert.deepEqual((await overwrite("A2", "done")).guidance, [{ field: "progress_status", value: "done", description: DONE }]);
+  const retitled = await overwrite("A3", "done");
+  assert.equal(retitled.changed, true);
+  assert.deepEqual(retitled.guidance, []);
 });
 
 test("a document without a governing Kind produces no guidance", async () => {

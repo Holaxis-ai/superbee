@@ -115,6 +115,16 @@ ratchet refuses a new violation. Exit codes are unchanged. `recipe evolve` is ex
 guarantee; see the next section. Evidence: `packages/cli/test/kind-field-types-golden.test.ts` and
 `packages/cli/test/kind-field-types.test.ts`.
 
+## Value descriptions are echoed on write
+
+`new`, `doc update`, `doc write` and `doc field set` add a `guidance` table
+`{field,value,description}` only when a write newly sets an enum value whose governing Kind
+declares a `fields.value_descriptions` entry for it. `field` is the logical authoring name, so
+workflow state is `progress_status` whatever coordinate stores it. The key is omitted when empty,
+so a write that changes no described value renders a byte-identical receipt; an unchanged value, a
+no-op and a refused write never carry it. Guidance is advisory and never refuses or alters a
+write. Exit codes are unchanged. Evidence: `packages/cli/test/value-guidance.test.ts`.
+
 ## Recipe evolve may add field types and enums
 
 This is an intentional behavior change for every bundle, typed or not. `recipe evolve` may add a

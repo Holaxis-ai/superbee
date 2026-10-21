@@ -57,6 +57,11 @@ test("writes echo the governing Kind's value description when they set a describ
     await run(doc, ["update", "tasks/a", "--progress_status", "todo", "--dir", dir]);
     const json = JSON.parse(await run(doc, ["update", "tasks/a", "--progress_status", "done", "--dir", dir, "--json"]));
     assert.deepEqual(json.guidance, [{ field: "progress_status", value: "done", description: DONE }]);
+
+    await run(doc, ["update", "tasks/a", "--progress_status", "todo", "--dir", dir]);
+    const field = JSON.parse(await run(doc, ["field", "set", "tasks/a", "progress_status", "done", "--dir", dir, "--json"]));
+    assert.equal(field.changed, true);
+    assert.deepEqual(field.guidance, [{ field: "progress_status", value: "done", description: DONE }]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
