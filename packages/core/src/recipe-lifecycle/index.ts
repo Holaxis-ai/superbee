@@ -78,3 +78,9 @@ export type {
   RecipeStamp,
   RecipeStampState,
 } from "./stamp.js";
+
+export { planRecipeDeclarationRetirement } from "./retirement.js";
+export type { RecipeDeclarationRetirementPlan, RetirementDeclaration, RetirementIssue } from "./retirement.js";
+
+export { planRecipeDeclarationRetirementApply, applyRecipeDeclarationRetirement, RecipeRetirementApplyError } from "./retirement-apply.js";
+export type { RecipeRetirementApplyOptions, RecipeDeclarationRetirementApplyPlan, RecipeDeclarationRetirementApplyResult } from "./retirement-apply.js";

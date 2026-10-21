@@ -8,7 +8,7 @@
  * rename). It is the DEGENERATE case of the seam's hard contract: `version` is the
  * SHA of the on-disk bytes, and `versions()` reports only the single current
  * revision because a plain filesystem keeps no history. Compare-and-swap is
- * serialized per logical identity across processes by a private runtime lock directory;
+ * serialized per exact-root domain, then per logical identity, across processes by private runtime locks;
  * a process-local promise queue avoids filesystem polling among callers in one process.
  * `MemoryBackend`
  * (`memory-backend.ts`) implements the SAME contract for the hard case; a remote
@@ -25,6 +25,7 @@
  */
 
 import path from "node:path";
+import { assertInventoryGuardBound, bindInventoryGuard, captureInventoryGuardRequest, compareInventoryPremises, guardEdition, inventoryDigest, INVENTORY_GUARD_DOMAIN, InventoryGuardUnsupported, InventoryGuardConflict, type InventoryGuard, type InventoryGuardTarget } from "./inventory-guard.js";
 
 import { MalformedDocumentError, parseMarkdown, stringifyDoc } from "./frontmatter.js";
 import { readBundleOkfVersion } from "./engine.js";
@@ -43,6 +44,10 @@ import {
 import { InvalidInputError } from "./errors.js";
 import {
   mutateExact,
+  createFilesystemMutationCoordinator,
+  filesystemRootMutationKey,
+  filesystemRootWitness,
+  type MutationContext,
   createNodeFilesystemIdentityPort,
   type FilesystemIdentityPort,
   observeExact,
@@ -143,6 +148,71 @@ function reservedPath(dir: string, name: ReservedFilename): string {
 export class FilesystemBackend implements StorageBackend {
   readonly #root: string;
   readonly #port: FilesystemIdentityPort;
+  readonly #coordinator: ReturnType<typeof createFilesystemMutationCoordinator>;
+
+  /** The coordinator is private: no transaction callback or held-root capability escapes. */
+  #withRootMutation<T>(body: () => Promise<T>): Promise<T> {
+    return this.#coordinator.run(body);
+  }
+
+  #mutateExact<T>(rel: string, body: (context: MutationContext) => Promise<T>): Promise<T> {
+    return this.#withRootMutation(() => mutateExact(this.#port, this.#root, rel, body));
+  }
+
+  #assertInventoryGuard(): void {
+    if (Object.getPrototypeOf(this) !== FilesystemBackend.prototype || ["read", "readMany", "list", "write", "delete", "writeReserved", "writeBlob", "deleteBlob", "readReserved"].some(name => this[name as keyof FilesystemBackend] !== FilesystemBackend.prototype[name as keyof FilesystemBackend])) {
+      throw new InventoryGuardUnsupported("unqualified_filesystem_override");
+    }
+  }
+
+  get inventoryGuard(): InventoryGuard {
+    this.#assertInventoryGuard();
+    return bindInventoryGuard(this, {
+      observeTarget: () => this.#withRootMutation(() => { this.#assertInventoryGuard(); return this.#guardTarget(); }),
+      compareInventoryAndWrite: async input => {
+        const request = captureInventoryGuardRequest(input);
+        const raw = stringifyDoc(request.doc.frontmatter, request.doc.body);
+        return this.#withRootMutation(async () => {
+          this.#assertInventoryGuard();
+          const target = await this.#guardTarget();
+          const inventory: import("./inventory-guard.js").InventoryEntry[] = [];
+          const ids = await this.list();
+          assertInventoryGuardBound(ids.length);
+          const deadline = performance.now() + 5_000;
+          for (const id of ids) {
+            if (performance.now() > deadline) throw new InventoryGuardUnsupported("inventory_scan_time_bound");
+            // Parse as well as retaining exact raw bytes: malformed/undecodable input is unknown.
+            const raw = await readRawFilesystemDocument(this, id);
+            parseMarkdown(new TextDecoder("utf-8", { fatal: true }).decode(raw.bytes), pathFromConceptId(id), { okfVersion: target.edition });
+            inventory.push({ id, version: raw.version });
+          }
+          if (performance.now() > deadline) throw new InventoryGuardUnsupported("inventory_scan_time_bound");
+          compareInventoryPremises(request, target, inventory);
+          // The private already-held path cannot reacquire root or invoke a public override.
+          const version = await mutateExact(this.#port, this.#root, pathFromConceptId(request.id), async leaf => {
+            compareInventoryPremises(request, await this.#guardTarget(), inventory);
+            const bytes = await leaf.current();
+            if (bytes === null || versionOfBytes(bytes.toString("utf8")) !== request.expectedVersion) throw new InventoryGuardConflict("target_version");
+            await leaf.replace(Buffer.from(raw, "utf8"));
+            return versionOfBytes(raw);
+          });
+          return { version, target, inventory_digest: inventoryDigest(inventory) };
+        });
+      },
+    });
+  }
+
+  async #guardTarget(): Promise<InventoryGuardTarget> {
+    const witness = await filesystemRootWitness(this.#port, this.#root);
+    const metadata = await readRawFilesystemReserved(this, "", "index.md");
+    // A lossy replacement character cannot stand in for an exact root-metadata premise.
+    const content = metadata === null ? null : new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(metadata.bytes);
+    const edition = guardEdition(content);
+    const after = await filesystemRootWitness(this.#port, this.#root);
+    if (witness !== after) throw new InventoryGuardConflict("identity");
+    const store = versionOfBytes(`${await filesystemRootMutationKey(this.#root)}:${this.#coordinator.namespace()}:${witness}`);
+    return { contract: "inventory-guard/v1", domain: INVENTORY_GUARD_DOMAIN, adapter: "filesystem", store, edition, root_version: blobVersion(metadata!.bytes) };
+  }
 
   /**
    * The root is resolved once here: a relative root would otherwise re-resolve against the
@@ -152,6 +222,7 @@ export class FilesystemBackend implements StorageBackend {
   constructor(root: string, options: FilesystemBackendOptions = {}) {
     this.#port = createNodeFilesystemIdentityPort(options.hostPolicy);
     this.#root = path.resolve(root);
+    this.#coordinator = createFilesystemMutationCoordinator(this.#port, this.#root, options.hostPolicy);
     publicationContexts.set(this, { root: this.#root, port: this.#port });
   }
 
@@ -215,7 +286,7 @@ export class FilesystemBackend implements StorageBackend {
     // The whole check-then-write section runs inside one identity-keyed critical section, local
     // and same-user cross-process; an unconditional writer holds it too so it cannot move the
     // target between another process's version check and write.
-    return mutateExact(this.#port, this.#root, rel, async (target) => {
+    return this.#mutateExact(rel, async (target) => {
       if (options.expectedVersion !== undefined) {
         const bytes = await target.current();
         const current = bytes === null ? null : versionOfBytes(bytes.toString("utf8"));
@@ -236,7 +307,7 @@ export class FilesystemBackend implements StorageBackend {
 
   async delete(id: ConceptId, options: DeleteOptions = {}): Promise<boolean> {
     assertSafeConceptId(id);
-    return mutateExact(this.#port, this.#root, pathFromConceptId(id), async (target) => {
+    return this.#mutateExact(pathFromConceptId(id), async (target) => {
       const bytes = await target.current();
       if (bytes === null) return false; // absent ⇒ idempotent no-op, EVEN under CAS
       const current = versionOfBytes(bytes.toString("utf8"));
@@ -326,7 +397,7 @@ export class FilesystemBackend implements StorageBackend {
     const rel = reservedPath(dir, name);
     // Same identity-keyed critical section as `write()`. A reserved-file read-modify-write
     // depends on a genuine `VersionConflict` under contention.
-    return mutateExact(this.#port, this.#root, rel, async (target) => {
+    return this.#mutateExact(rel, async (target) => {
       if (options.expectedVersion !== undefined) {
         const bytes = await target.current();
         const current = bytes === null ? null : versionOfBytes(bytes.toString("utf8"));
@@ -364,7 +435,7 @@ export class FilesystemBackend implements StorageBackend {
     // The WHOLE check-then-write section runs inside the identity lock, exactly like write(),
     // so N concurrent CAS writers to the SAME blob key queue instead of racing the version
     // check (B3). Raw-bytes versioning: hashing through a UTF-8 decode would corrupt binary (B1).
-    return mutateExact(this.#port, this.#root, key, async (target) => {
+    return this.#mutateExact(key, async (target) => {
       if (options.expectedVersion !== undefined) {
         const existing = await target.current();
         const current = existing === null ? null : blobVersion(existing);
@@ -384,7 +455,7 @@ export class FilesystemBackend implements StorageBackend {
 
   async deleteBlob(key: BlobKey, options: DeleteOptions = {}): Promise<boolean> {
     assertSafeBlobKey(key);
-    return mutateExact(this.#port, this.#root, key, async (target) => {
+    return this.#mutateExact(key, async (target) => {
       const existing = await target.current();
       if (existing === null) return false; // absent (or a directory-shaped path) ⇒ idempotent no-op
       const current = blobVersion(existing);

@@ -1,3 +1,5 @@
+import { admitRecipeRetirementRoute } from "../recipe-retirement-route.js";
+import { readExternalTextFile } from "../external-file.js";
 import { renderUsage } from "../output.js";
 import { recipeValidate } from "./recipe-validate.js";
 // `superbee recipe add <name-or-path>` installs definitions create-only; `recipe evolve` is the
@@ -22,7 +24,7 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation, exactCliInvocation } from "../invocation.js";
-import { applyRecipeEvolution, installRecipe, planRecipeEvolution } from "@superbee/core/recipe-lifecycle";
+import { applyRecipeEvolution, installRecipe, planRecipeEvolution, planRecipeDeclarationRetirement, planRecipeDeclarationRetirementApply, applyRecipeDeclarationRetirement, RecipeRetirementApplyError } from "@superbee/core/recipe-lifecycle";
 import { resolveRecipe } from "../recipe-source.js";
 import { assertRecipeAllowedInHostedCheckout } from "../hosted/refusals.js";
 import { commandFragment, commandLiteral, commandQuoted, commandToken, type CommandText } from "../command-text.js";
@@ -33,6 +35,8 @@ Usage:
   superbee recipe validate <path> [--readme] [--json]
   superbee recipe add <name-or-path> [--actor <name>] [--dir <path>] [--remote <url>]
   superbee recipe evolve <name-or-path> [--apply <plan-token>] [--actor <name>] [options]
+  superbee recipe evolve <name-or-path> --retirement-scan [--retirement-evidence <json>] [options]
+  superbee recipe evolve <name-or-path> --remove-deprecated --retirement-scope cooperating-local-writers-v1 [--retirement-definition <id>] [--apply <token>] [options]
 
 'recipe validate' reads a local recipe folder without installation or executable profile loading.
 It reports declaration/mapping/profile errors, secret-shaped package text and source metadata.
@@ -54,6 +58,12 @@ receipt names that drift and the explicit 'recipe evolve' plan; the command neve
 recipe is fully applied or clobbers a bundle author's own hand-edit. See 'superbee recipes' to
 list built-ins and which are already applied, and 'superbee kinds' for the resulting live
 per-bundle registry.
+
+Valid deprecated fields/values/links metadata can be added only with an unchanged same-recipe
+ownership baseline. Existing records stay readable; admitted-registry writes preserve/remove
+legacy usage but refuse new deprecated usage. Explicit --remove-deprecated plans/applies one unused
+deprecated definition stage under the exact-root cooperating writer guard. No ecosystem-wide
+non-use or future-writer closure is claimed. Recipe asset writes keep their import-like posture.
 
 'recipe evolve' is the explicit installed-convention upgrade path. Without --apply it is READ-ONLY:
 it compares definitions, permits additive declarations only, revalidates existing instances, and
@@ -80,6 +90,20 @@ Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
   --remote <url>        Talk to a wire-protocol server instead of a local bundle
                          (mutually exclusive with --dir; remote access is always explicit)
+  --retirement-scan   Read-only local declaration retirement evidence. Reports observed concepts,
+                      exact versions, known supplied structural consumers and unknown external use.
+                      No removal token or apply authority in this inspection mode.
+  --remove-deprecated  Plan one eligible definition retirement; apply only with its exact token.
+  --retirement-scope <scope>
+                      Required for removal: cooperating-local-writers-v1. Plain local filesystem
+                      only; unknown/overlapping/board/hosted authorities refuse. Raw editors, old
+                      binaries, other hosts and unregistered overlapping roots are outside scope.
+  --retirement-definition <id>
+                      Select one definition stage. Each success requires a fresh plan for the next.
+  --retirement-evidence <json>
+                      Explicit recipe-set-preflight/v1 JSON. Bind it to this candidate source,
+                      hypothetical definitions and the report's exact local observation digest.
+                      Missing evidence means unassessed consumers, never ecosystem clearance.
   --apply <plan-token>  Apply the exact ready token returned by 'recipe evolve' (evolve only)
   --actor <name>        Attribute installed or evolved document writes. Add resolves --actor over
                         SUPERBEE_ACTOR, legacy AGENTSTATE_LITE_ACTOR, then absent; conflicting
@@ -120,6 +144,11 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
           dir: { type: "string" },
           remote: { type: "string" },
           apply: { type: "string" },
+          "retirement-scan": { type: "boolean" },
+          "remove-deprecated": { type: "boolean" },
+          "retirement-scope": { type: "string" },
+          "retirement-definition": { type: "string" },
+          "retirement-evidence": { type: "string" },
           actor: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
@@ -133,6 +162,16 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
     return;
   }
 
+  const removal = values["remove-deprecated"] === true;
+  if (values["retirement-scan"] && (values.apply !== undefined || removal)) throw new CliError("USAGE", "--retirement-scan cannot be combined with --apply or --remove-deprecated");
+  if (values["retirement-evidence"] !== undefined && !values["retirement-scan"] && !removal) throw new CliError("USAGE", "--retirement-evidence requires --retirement-scan or --remove-deprecated");
+  if (values["retirement-evidence"] !== undefined && !values["retirement-evidence"].trim()) throw new CliError("USAGE", "--retirement-evidence requires a nonempty JSON file path");
+  if (!removal && (values["retirement-scope"] !== undefined || values["retirement-definition"] !== undefined)) throw new CliError("USAGE", "retirement scope/definition require --remove-deprecated");
+  if (removal && values["retirement-scope"] !== "cooperating-local-writers-v1") throw new CliError("USAGE", "--remove-deprecated requires --retirement-scope cooperating-local-writers-v1");
+  if (values["retirement-definition"] !== undefined && !values["retirement-definition"].trim()) throw new CliError("USAGE", "--retirement-definition requires a nonempty definition ID");
+  if (removal && values.remote !== undefined) throw new CliError("USAGE", "declaration retirement apply supports plain local filesystem routes only");
+  if (values.apply?.startsWith("retirement-apply/") && !removal) throw new CliError("USAGE", "a retirement apply token requires --remove-deprecated and explicit retirement scope");
+  if (removal && values.apply !== undefined && !/^retirement-apply\/v1:sha256:[0-9a-f]{64}$/.test(values.apply)) throw new CliError("USAGE", "--apply requires the exact retirement-apply/v1 token from a ready retirement stage");
   const ref = positionals[0]?.trim();
   if (!ref) {
     throw new CliError("USAGE", "recipe evolve requires a <name-or-path> positional", {
@@ -154,9 +193,9 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
     });
   }
   // Before anything reads the bundle: in a hosted checkout, the recipe decides which refusal applies.
-  if (values.remote === undefined) await assertRecipeAllowedInHostedCheckout("recipe evolve", values.dir, loaded.recipe);
+  if (!removal && values.remote === undefined) await assertRecipeAllowedInHostedCheckout("recipe evolve", values.dir, loaded.recipe);
   const remote = await resolveRemoteFlag(values.remote, values.dir);
-  const bundle = await openBundle(values.dir, remote);
+  const bundle = removal ? await admitRecipeRetirementRoute(values.dir) : await openBundle(values.dir, remote);
   const target: CommandText = values.dir !== undefined
     ? commandFragment` --dir ${commandQuoted(values.dir)}`
     : remote !== undefined
@@ -164,6 +203,42 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
       : commandLiteral("");
   const planCommand = `${cliInvocation()} recipe evolve ${commandQuoted(ref)}${target}`;
   const exactPlanCommand = `${exactCliInvocation()} recipe evolve ${commandQuoted(ref)}${target}`;
+
+  if (values["retirement-scan"] || removal) {
+    let consumerEvidence: unknown;
+    const path = values["retirement-evidence"];
+    if (path !== undefined) {
+      try { consumerEvidence = JSON.parse(await readExternalTextFile(path)); }
+      catch (error) {
+        if (error instanceof CliError) throw error;
+        throw new CliError("USAGE", `--retirement-evidence must name readable JSON: ${error instanceof SyntaxError ? "invalid JSON" : error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    const evidence = path === undefined ? {} : { consumerEvidence };
+    if (removal) {
+      const options = { scope: "cooperating-local-writers-v1" as const, ...(values["retirement-definition"] === undefined ? {} : { definitionId: values["retirement-definition"] }), ...evidence };
+      const retirementCommand = (exact: boolean, definition?: string): string => `${exact ? exactCliInvocation() : cliInvocation()} recipe evolve ${commandQuoted(ref)}${target} --remove-deprecated --retirement-scope cooperating-local-writers-v1${definition ? commandFragment` --retirement-definition ${commandQuoted(definition)}` : commandLiteral("")}${path === undefined ? commandLiteral("") : commandFragment` --retirement-evidence ${commandQuoted(path)}`}`;
+      if (values.apply !== undefined) {
+        await assertActorAcceptedByBundle(bundle, values.actor?.trim());
+        // Re-resolve strict authority immediately before Core independently replans and guards.
+        const fresh = await admitRecipeRetirementRoute(values.dir);
+        try {
+          const result = await applyRecipeDeclarationRetirement(fresh, loaded.recipe, values.apply, { ...options, actor: values.actor?.trim() });
+          stdout(render({ ...result, ...(result.refresh_needed ? { commands: { inspect_next_stage: retirementCommand(false) } } : {}), writer_scope: RETIREMENT_WRITER_SCOPE }, resolveMode(values)));
+        } catch (error) {
+          if (error instanceof RecipeRetirementApplyError) throw new CliError("CONFLICT", error.message, { details: { reason: error.reason, plan: error.plan, completed: error.completed, failed: error.failed, pending_definitions: error.pending_definitions, writer_scope: RETIREMENT_WRITER_SCOPE }, help: retirementCommand(false) });
+          throw classifyBundleError(error);
+        }
+        return;
+      }
+      const plan = await planRecipeDeclarationRetirementApply(bundle, loaded.recipe, options);
+      stdout(render({ ...plan, ...(plan.ready_for_next_stage && plan.next_definition && plan.plan_token ? { commands: { apply: `${retirementCommand(true, plan.next_definition)} --apply ${commandToken(plan.plan_token)}${values.actor ? ` --actor ${commandQuoted(values.actor.trim())}` : ""}` } } : {}), writer_scope: RETIREMENT_WRITER_SCOPE }, resolveMode(values)));
+      return;
+    }
+    const inspection = await planRecipeDeclarationRetirement(bundle, loaded.recipe, evidence);
+    stdout(render(inspection, resolveMode(values)));
+    return;
+  }
 
   if (values.apply !== undefined) {
     // Before apply: the evolution's own error wrapping would present a write-policy refusal as
@@ -202,6 +277,8 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
   receipt.help = [planCommand, `${cliInvocation()} kinds`];
   stdout(render(receipt, resolveMode(values)));
 }
+
+const RETIREMENT_WRITER_SCOPE = "Exact-root cooperating local writers only; raw editors, old binaries, other hosts and unregistered overlapping roots remain outside this domain. Omitted consumer evidence means consumer-unassessed local-only retirement; external use remains unknown.";
 
 const ORPHANED_HELP = "orphaned_definitions are retained documents stamped by this recipe that the selected source no longer declares; evolve never changes or removes them, and a zero-write plan does not resolve them; inspect them before deciding whether to keep or remove them";
 

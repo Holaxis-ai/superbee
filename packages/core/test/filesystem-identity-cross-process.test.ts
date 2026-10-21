@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { identityKey } from "../src/filesystem-identity.js";
+import { identityKey, filesystemRootMutationKey } from "../src/filesystem-identity.js";
 import { acquireFilesystemIdentityLock, filesystemIdentityLockPath } from "../src/filesystem-lock.js";
 import { detectHostAliasing, hostAliasesPair } from "./host-class.js";
 
@@ -159,14 +159,17 @@ test("AC-10: witnessed first-creation exclusion across processes on the same lea
   const children: Mailbox[] = [];
   let release: (() => Promise<void>) | undefined;
   try {
-    const key = await identityKey(a.root, REL);
-    assert.equal(await identityKey(a.symlinkedRoot, REL), key, "the symlinked ancestor derives the same key");
+    const key = await filesystemRootMutationKey(a.root);
+    assert.equal(await filesystemRootMutationKey(a.symlinkedRoot), key, "the symlinked ancestor derives the same root key");
+    assert.equal(await identityKey(a.symlinkedRoot, REL), await identityKey(a.root, REL), "the leaf identity remains shared");
     release = await acquireFilesystemIdentityLock(key, "parent-hold", { portableRoot: a.root });
     const token = await ownerToken(filesystemIdentityLockPath(key, a.root));
 
     children.push(spawnWriter("child-A", a.root, "concepts/first-name", a.tmpA));
     children.push(spawnWriter("child-B", a.symlinkedRoot, "concepts/FIRST-NAME", a.tmpB));
 
+    // Adapter writes now acquire root before leaf; holding root lets both writers witness
+    // the same owner without one writer monopolizing root while waiting for the held leaf.
     // (i) both children witness the parent's token; any result before that fails immediately.
     for (const child of children) {
       const blocked = await child.next((m) => m.type === "blocked", WITNESS_BOUND_MS, "blocked witness");
@@ -211,7 +214,7 @@ test("AC-12b: a child killed after its witness leaves no residue; the other comp
   const children: Mailbox[] = [];
   let release: (() => Promise<void>) | undefined;
   try {
-    const key = await identityKey(a.root, REL);
+    const key = await filesystemRootMutationKey(a.root);
     release = await acquireFilesystemIdentityLock(key, "parent-hold", { portableRoot: a.root });
     const token = await ownerToken(filesystemIdentityLockPath(key, a.root));
     const childA = spawnWriter("child-A", a.root, "concepts/first-name", a.tmpA);

@@ -25,6 +25,7 @@
  * the dual-backend / wire-protocol contract tests diverge.
  */
 
+import { assertInventoryGuardBound, bindInventoryGuard, captureInventoryGuardRequest, compareInventoryPremises, guardEdition, inventoryDigest, INVENTORY_GUARD_DOMAIN, InventoryGuardUnsupported, type InventoryGuard, type InventoryGuardTarget } from "./inventory-guard.js";
 import { resolveContentType } from "./content-type.js";
 import { readBundleOkfVersion } from "./engine.js";
 import { MalformedDocumentError, normalizeDocumentBodyForStorage, parseFrontmatter, stringifyFrontmatter, stringifyWithSerializedFrontmatter } from "./frontmatter.js";
@@ -88,6 +89,41 @@ function reservedKey(dir: string, name: ReservedFilename): string {
  * to back tests, not to be a shipping store.
  */
 export class MemoryBackend implements StorageBackend {
+  #inventoryIdentity: string | undefined;
+
+  #assertInventoryGuard(): void {
+    if (Object.getPrototypeOf(this) !== MemoryBackend.prototype || ["read", "readMany", "list", "write", "delete", "writeReserved"].some(name => this[name as keyof MemoryBackend] !== MemoryBackend.prototype[name as keyof MemoryBackend])) {
+      throw new InventoryGuardUnsupported("unqualified_memory_override");
+    }
+  }
+
+  get inventoryGuard(): InventoryGuard {
+    this.#assertInventoryGuard();
+    return bindInventoryGuard(this, {
+      observeTarget: async () => { this.#assertInventoryGuard(); return this.#guardTarget(); },
+      compareInventoryAndWrite: async input => {
+        this.#assertInventoryGuard();
+        const request = captureInventoryGuardRequest(input);
+        const target = this.#guardTarget();
+        const inventory = [...this.chains].map(([id, chain]) => ({ id, version: chain[0]!.version })).sort((a, b) => compareStorageKeys(a.id, b.id));
+        assertInventoryGuardBound(inventory.length);
+        compareInventoryPremises(request, target, inventory);
+        const version = this.#write(request.id, request.doc, { ...request.options, expectedVersion: request.expectedVersion });
+        return { version, target, inventory_digest: inventoryDigest(inventory) };
+      },
+    });
+  }
+
+  #guardTarget(): InventoryGuardTarget {
+    if (!this.#inventoryIdentity) {
+      if (typeof globalThis.crypto?.randomUUID !== "function") throw new InventoryGuardUnsupported("memory_identity_entropy_unavailable");
+      this.#inventoryIdentity = globalThis.crypto.randomUUID();
+    }
+    const content = this.reserved.get("index.md") ?? null;
+    const edition = guardEdition(content);
+    return { contract: "inventory-guard/v1", domain: INVENTORY_GUARD_DOMAIN, adapter: "memory", store: this.#inventoryIdentity, edition, root_version: versionOfBytes(content!) };
+  }
+
   /** Concept id → revision chain, newest-first (index 0 is the head). */
   private readonly chains = new Map<ConceptId, Revision[]>();
   /** Reserved-file path → raw content. */
@@ -121,6 +157,10 @@ export class MemoryBackend implements StorageBackend {
   }
 
   async write(id: ConceptId, doc: OkfDocument, options: WriteOptions = {}): Promise<Version> {
+    return this.#write(id, doc, options);
+  }
+
+  #write(id: ConceptId, doc: OkfDocument, options: WriteOptions): Version {
     assertSafeConceptId(id);
     const chain = this.chains.get(id);
     const current = chain?.[0]?.version ?? null;

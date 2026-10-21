@@ -42,6 +42,7 @@ import { heldPathMessage, heldPathReason, unsendable, type HeldFile } from "./sy
 
 /** Every storage backend method, as the guard treats it. The compiler keeps the table complete. */
 const ACCESS = {
+  inventoryGuard: "unsupported",
   read: "read",
   readMany: "read",
   exists: "read",
@@ -58,7 +59,7 @@ const ACCESS = {
   writeReserved: "write",
   writeBlob: "write",
   deleteBlob: "write",
-} as const satisfies Record<keyof StorageBackend, "read" | "write" | "meta">;
+} as const satisfies Record<keyof StorageBackend, "read" | "write" | "meta" | "unsupported">;
 
 type Method = keyof typeof ACCESS;
 
@@ -106,6 +107,8 @@ export async function servedBundle(bundle: Bundle, options: ServedBundleOptions 
 function guardedBundle(bundle: Bundle, backend: StorageBackend, guard: CheckoutGuard): Bundle {
   const guarded = new Proxy(backend, {
     get(target, property, receiver) {
+      // A local filesystem guard cannot certify hosted projection or admission.
+      if (isMethod(property) && ACCESS[property] === "unsupported") return undefined;
       const value = Reflect.get(target, property, receiver) as unknown;
       if (typeof value !== "function") return value;
       // The backend keeps private fields, so its methods run against the backend itself.

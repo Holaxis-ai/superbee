@@ -1,3 +1,4 @@
+import { readRegularFileNoFollowSync } from "./nofollow-read.js";
 import { captureRuntimeCallback } from "./runtime-context.js";
 import { configuredBundle } from "./filesystem-runtime.js";
 import { withCliFilesystemMutationLock as withFilesystemMutationLock } from "./filesystem-runtime.js";
@@ -71,6 +72,7 @@ import {
 import { closeSync, constants, fstatSync, openSync, promises as fs, readSync, type Dir, type Stats } from "node:fs";
 import path from "node:path";
 import {
+  parseMarkdown,
   FilesystemMutationLockError,
   RemoteBackend,
   RemoteError,
@@ -118,13 +120,25 @@ export function looksLikeBundle(dir: string): boolean {
     if (!fstatSync(fd).isFile()) return false;
     const buffer = Buffer.alloc(16 * 1024);
     const text = buffer.subarray(0, readSync(fd, buffer, 0, buffer.length, 0)).toString("utf8");
-    const block = /^---\r?\n([\s\S]*?)\r?\n---\r?(?:\n|$)/.exec(text);
-    return block !== null && /^okf_version\s*:/m.test(block[1]!);
+    return rootIndexDeclaresEdition(text);
   } catch {
     return false;
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+function rootIndexDeclaresEdition(text: string): boolean {
+  return Object.hasOwn(parseMarkdown(text, "index.md", { okfVersion: "0.2" }).frontmatter, "okf_version");
+}
+
+/** Strict projection of the same root-index recognizer: unavailable bytes are not absence. */
+export function inspectBundleRootIndex(dir: string): { state: "known"; independent: boolean } | { state: "unknown" } {
+  const read = readRegularFileNoFollowSync(path.join(dir, "index.md"), { maximumBytes: 16 * 1024 });
+  if (read.state === "unsafe") return { state: "unknown" };
+  try {
+    return { state: "known", independent: read.state === "present" && rootIndexDeclaresEdition(new TextDecoder("utf-8", { fatal: true }).decode(read.bytes)) };
+  } catch { return { state: "unknown" }; }
 }
 
 /** What to do with a bundle made at a Git work tree's top, which establish cannot share. */

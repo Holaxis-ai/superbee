@@ -269,6 +269,8 @@ export interface StorageCapabilities {
  * identity of the returned document even when the input document carries a different `id`.
  */
 export interface StorageBackend {
+  /** Optional exact-store cooperating-writer inventory comparison plus one concept write. */
+  readonly inventoryGuard?: import("./inventory-guard.js").InventoryGuard;
   /** Read + parse the concept document at `id`, with its version token. Rejects (ENOENT-shaped) if absent. */
   read(id: ConceptId): Promise<ReadResult>;
   /**

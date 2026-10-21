@@ -1,3 +1,4 @@
+import { captureInventoryGuardRequest, type InventoryGuardRequest } from "./inventory-guard.js";
 import { assertTypedListPatch, guardBodyReplace, type BodyReplacePosture } from "./body-replace-guards.js";
 /**
  * CLI-neutral document mutation policy.
@@ -14,6 +15,7 @@ import { prepareKindFieldMutation, type KindFieldMutation } from "./kind-field-m
 import { appendVerificationEvent, type AppendVerificationOptions } from "./verification.js";
 import { okfValuesEqual } from "./okf-authored-values.js";
 import { InvalidInputError } from "./errors.js";
+import { kindDeprecationTransition } from "./kind-deprecation.js";
 import { KindConformanceError } from "./kind-conformance-error.js";
 import { assertAuthoredOkfStandardFields } from "./okf-standard-fields.js";
 import { applyV02MutationMetadata } from "./document-write-policy.js";
@@ -29,6 +31,7 @@ import {
 import { versionedMutation } from "./mutation.js";
 import { VersionConflict } from "./versioning.js";
 import {
+  backendFor,
   readBundleOkfVersion,
   readDocVersioned,
   writeDocVersionedForEdition,
@@ -87,6 +90,8 @@ export type DocumentMutationInput =
   | { kind: "kind-field"; mutation: KindFieldMutation };
 
 export interface MutateDocumentOptions {
+  /** Fixed data-only persistence premise; only hard-CAS existing replacement is supported. */
+  inventoryGuard?: Pick<InventoryGuardRequest, "target" | "domain" | "inventory">;
   bundle: Bundle;
   id: ConceptId;
   mode: DocumentMutationMode;
@@ -245,6 +250,11 @@ function attributeCandidate(
  * timestamp first. Returns the kind alongside the warnings so overwrite's ratchet (below) can
  * reuse this ONE validation pass instead of re-deriving the candidate's kind separately.
  */
+function assertDeprecation(id: ConceptId, candidate: DocumentMutationCandidate, registry: KindRegistry, existing?: OkfDocument): void {
+  const violations = kindDeprecationTransition(existing, { id, ...candidate }, registry);
+  if (violations.length) throw new KindConformanceError(id, String(candidate.frontmatter.type), violations);
+}
+
 function validateCandidate(
   id: ConceptId,
   candidate: DocumentMutationCandidate,
@@ -254,6 +264,7 @@ function validateCandidate(
   now: () => string,
   existing?: OkfDocument,
 ): RegistryValidationResult {
+  assertDeprecation(id, candidate, registry, existing);
   const result = defaultTimestampAndValidateAgainstRegistry(
     { id, ...candidate },
     registry,
@@ -273,6 +284,7 @@ function validateUnchangedDocument(
   strict: boolean,
   okfVersion: "0.1" | "0.2",
 ): ValidationWarning[] {
+  assertDeprecation(existing.id, existing, registry, existing);
   const kind = registry.kinds.get(String(existing.frontmatter.type));
   const warnings = kind ? validateAgainstKind(existing, kind) : [];
   if (strict && kind && warnings.length > 0) {
@@ -348,6 +360,7 @@ export function prepareDocumentMutationCandidate(
   const decisionNow = onceNow(opts.now ?? (() => new Date().toISOString()));
   const comparison = withV02Metadata(structuredClone(rawCandidate), existing, opts.okfVersion, opts.registry,
     decisionNow, opts.seedGenerationClock ?? true, opts.actor, opts.compareTimestamp ?? false, opts.producer);
+  assertDeprecation(opts.id, comparison, opts.registry, existing);
   if (existing && isNoopMutation(existing, comparison, opts.compareTimestamp ?? false, opts.okfVersion,
     opts.okfVersion === "0.2" && persistActor && opts.actor !== undefined,
     opts.registry.kinds.get(String(comparison.frontmatter.type))?.fields.required.includes("actor") ?? false)) {
@@ -378,6 +391,16 @@ function resolvePersistActor(opts: { actor?: string; persistActor?: boolean }): 
 }
 
 export async function mutateDocument(opts: MutateDocumentOptions): Promise<DocumentMutationResult> {
+  opts = { ...opts, bundle: { ...opts.bundle, backend: backendFor(opts.bundle) } };
+  if (opts.inventoryGuard !== undefined) {
+    if (opts.mode !== "replace-document" || opts.onAbsent !== "fail" || typeof opts.expectedVersion !== "string" || (opts.maxAttempts !== undefined && opts.maxAttempts !== 1)) {
+      throw new InvalidInputError("Inventory guard requires existing replace-document, exact target version and one attempt.");
+    }
+    const captured = captureInventoryGuardRequest({ ...opts.inventoryGuard, id: opts.id, expectedVersion: opts.expectedVersion,
+      doc: { id: opts.id, frontmatter: { type: "Concept" }, body: "" } });
+    opts.inventoryGuard = { target: captured.target, domain: captured.domain, inventory: captured.inventory };
+  }
+
   const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const onAbsent = opts.onAbsent ?? "fail";
   const compareTimestamp = opts.compareTimestamp ?? false;
@@ -528,6 +551,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
           okfVersion,
           opts.registry,
         );
+        assertDeprecation(opts.id, candidate, opts.registry, existing);
         if (existing && isNoopMutation(
           existing, candidate, compareTimestamp, okfVersion,
           persistActor && opts.actor !== undefined,
@@ -602,6 +626,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         id: opts.id, registry: opts.registry, strict: opts.strict, okfVersion, now: decisionNow,
         actor: opts.actor, producer: opts.producer, persistActor, compareTimestamp, seedGenerationClock: seedClock,
       });
+      if (!changed && opts.inventoryGuard) throw new InvalidInputError("Inventory-guarded replacement requires a meaningful change.");
       if (!changed) return { action: "done", result: { doc: existing, warnings } };
       return { action: "write", next: { id: opts.id, ...candidate }, result: { warnings } };
     },
@@ -610,7 +635,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         expectedVersion: hardCas ? opts.expectedVersion! : expectedVersion,
         actor: opts.actor,
         bodyReplace: opts.bodyReplace,
-      });
+      }, opts.inventoryGuard);
       savedDoc = written.doc;
       return written.version;
     },

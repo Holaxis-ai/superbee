@@ -16,7 +16,7 @@
 // changes the home; only `checkout --adopt` binds the folder again. A local one is refused by
 // `sync` and by the local MCP app's writes (`unboundLocalCopyAt`), since nothing done there
 // reaches the host.
-import { realpath, stat } from "node:fs/promises";
+import { lstat, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -65,12 +65,14 @@ export type BundleHomeFacts =
   | { readonly home: "git"; readonly board: GitBoardFacts; readonly copy?: UnboundCopy }
   | { readonly home: "hosted"; readonly binding: CheckoutBinding };
 
-function gitText(dir: string, args: string[]): string | null {
+function gitText(dir: string, args: string[], strict = false): string | null {
   try {
     const result = runGit(dir, args);
+    if (strict && result.status !== 0 && result.status !== 1) throw new Error("Git evidence could not be resolved");
     const text = result.stdout.trim();
     return result.status === 0 && text.length > 0 ? text : null;
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     // No git binary, or a timed-out spawn: no Git evidence.
     return null;
   }
@@ -85,36 +87,53 @@ async function canonical(dir: string): Promise<string | null> {
 }
 
 /** The Git board this canonical bundle root is, from local Git only, or null. */
-export async function gitBoardAt(canonicalRoot: string): Promise<GitBoardFacts | null> {
-  const topText = gitText(canonicalRoot, ["rev-parse", "--show-toplevel"]);
+export async function gitBoardAt(canonicalRoot: string, strict = false): Promise<GitBoardFacts | null> {
+  if (strict) {
+    let dir = canonicalRoot, found = false;
+    for (let depth = 0; ; depth++) {
+      if (depth > 128) throw new Error("Git evidence walk limit exceeded");
+      try { await lstat(path.join(dir, ".git")); found = true; break; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      const parent = path.dirname(dir); if (parent === dir) break; dir = parent;
+    }
+    if (!found) return null;
+  }
+  const topText = gitText(canonicalRoot, ["rev-parse", "--show-toplevel"], strict);
   if (topText === null) return null;
   const top = await canonical(topText);
-  if (top === null) return null;
+  if (top === null) { if (strict) throw new Error("Git root unavailable"); return null; }
 
+  if (strict) gitText(top, ["rev-parse", "--verify", "HEAD"], true);
   if (top === canonicalRoot) {
     // The bundle is a working tree's root: a board only when a board branch (`board`, or a declared
     // named `board-<name>`) is checked out there.
-    const branch = gitText(top, ["symbolic-ref", "-q", "--short", "HEAD"]);
+    const branch = gitText(top, ["symbolic-ref", "-q", "--short", "HEAD"], strict);
     if (branch === null || !isDeclaredBoardBranch(top, branch)) return null;
     // Sync compares the board with `origin/<branch>` whether or not the branch tracks it.
     const boardRef = `${BOARD_REMOTE}/${branch}`;
     const upstream =
-      gitText(top, ["for-each-ref", "--format=%(upstream:short)", `refs/heads/${branch}`]) ??
-      (gitText(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${boardRef}`]) === null ? null : boardRef);
+      gitText(top, ["for-each-ref", "--format=%(upstream:short)", `refs/heads/${branch}`], strict) ??
+      (gitText(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${boardRef}`], strict) === null ? null : boardRef);
     return { channel: "branch", branch, upstream, shared: upstream !== null, top, prefix: "" };
   }
 
   let committed;
   try {
     committed = committedBundleAtHead(top);
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     return null;
+  }
+  if (strict && !committed) {
+    // The committed selector intentionally treats missing refs and failed probes alike. Until
+    // it exposes strict absence, a nested Git route cannot authorize destructive retirement.
+    throw new Error("nested Git route has no strict committed-bundle absence evidence");
   }
   if (!committed || path.join(top, committed.bundleDir) !== canonicalRoot) return null;
   if (hasWorktreeSignature(canonicalRoot)) return null;
   const resolved = resolveInTreeUpstream(top);
   const upstream = resolved.state === "ok" ? resolved.config.ref : null;
-  const branch = resolved.state === "ok" ? resolved.config.branch : gitText(top, ["symbolic-ref", "-q", "--short", "HEAD"]);
+  const branch = resolved.state === "ok" ? resolved.config.branch : gitText(top, ["symbolic-ref", "-q", "--short", "HEAD"], strict);
   return { channel: "in-tree", branch, upstream, shared: upstream !== null, top, prefix: committed.bundleDir };
 }
 
@@ -122,14 +141,25 @@ export async function gitBoardAt(canonicalRoot: string): Promise<GitBoardFacts |
  * The home of the bundle at this canonical root. `home` is the directory whose private state holds
  * hosted checkout bindings (default: the OS home). Never throws: unreadable evidence reads as local.
  */
-export async function bundleHomeAt(canonicalRoot: string, options: { home?: string } = {}): Promise<BundleHomeFacts> {
-  const binding = await bindingForPath(options.home ?? homedir(), canonicalRoot).catch(() => null);
+async function deriveBundleHomeAt(canonicalRoot: string, options: { home?: string }, strict: boolean): Promise<BundleHomeFacts> {
+  const binding = await bindingForPath(options.home ?? homedir(), canonicalRoot, strict).catch(error => { if (strict) throw error; return null; });
   if (binding) return { home: "hosted", binding };
-  const marker = readCheckoutMarker(canonicalRoot);
+  const marker = readCheckoutMarker(canonicalRoot, strict);
   const copy = marker ? { copy: { folder: canonicalRoot, marker } } : {};
-  const board = await gitBoardAt(canonicalRoot).catch(() => null);
-  if (board) return { home: "git", board, ...copy };
-  return { home: "local", ...copy };
+  const board = await gitBoardAt(canonicalRoot, strict).catch(error => { if (strict) throw error; return null; });
+  return board ? { home: "git", board, ...copy } : { home: "local", ...copy };
+}
+
+export async function bundleHomeAt(canonicalRoot: string, options: { home?: string } = {}): Promise<BundleHomeFacts> {
+  return deriveBundleHomeAt(canonicalRoot, options, false);
+}
+
+/** Strict destructive admission keeps unknown evidence separate from known absence. */
+export async function inspectBundleHomeAt(canonicalRoot: string, options: { home?: string } = {}): Promise<
+  { state: "known"; facts: BundleHomeFacts } | { state: "unknown"; reason: string }
+> {
+  try { return { state: "known", facts: await deriveBundleHomeAt(canonicalRoot, options, true) }; }
+  catch (error) { return { state: "unknown", reason: error instanceof Error ? error.message : String(error) }; }
 }
 
 /**

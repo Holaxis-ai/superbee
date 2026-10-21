@@ -62,6 +62,8 @@ Category semantics (one line each):
   malformed          A document whose YAML frontmatter cannot be parsed at all — it is skipped by
                       every scan (so it never blinds this report) and named here with the parser
                       error; fix its YAML or remove the file. This is the headline finding.
+  deprecated_usage   Stored deprecated field/value/link occurrences (informational, not Kind
+                      conformance debt or a retirement/non-use certificate). Reads remain valid.
   kind_warnings      Frontmatter/section violations against a doc's OWN declared kind (a per-doc
                       lint; see 'kinds').
   conformance_debt   Count of GOVERNED DOCS carrying at least one FRONTMATTER-level kind violation
@@ -255,6 +257,7 @@ function statusRecord(
   const { limit } = options;
   const malformed = cap(report.malformed, limit);
   const lint = cap(report.kindLint, limit);
+  const deprecatedUsage = cap(report.deprecatedUsage ?? [], limit);
   const unresolved = cap(report.unresolvedLinks, limit);
   const orphans = cap(report.orphans, limit);
   const stale = cap(report.stale, limit);
@@ -337,6 +340,7 @@ function statusRecord(
   }
   // Row-list blocks are omitted when empty (matching `kinds`/`doc write`'s existing omit-if-empty
   // convention) so a clean bundle's report stays a short summary, not nine empty categories.
+  if (deprecatedUsage.total > 0) { out.deprecated_usage = deprecatedUsage.total; out.deprecated_usage_rows = deprecatedUsage; }
   if (malformed.total > 0) out.malformed_docs = malformed;
   if (lint.total > 0) out.kind_lint = lint;
   if (conformanceDebt.total > 0) {

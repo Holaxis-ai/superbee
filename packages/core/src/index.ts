@@ -442,3 +442,8 @@ export {
   guardDroppedLinks, guardBodyReplace, TypedListPatchError, assertTypedListPatch,
 } from "./body-replace-guards.js";
 export type { BodyPreviewFinding, BodyReplaceFinding, BodyReplacePosture } from "./body-replace-guards.js";
+
+export { inspectKindDeprecatedUsage, kindDeprecationTransition, kindDeprecationProblems } from "./kind-deprecation.js";
+export type { KindDeprecation, DeprecatedUsage } from "./kind-deprecation.js";
+export { INVENTORY_GUARD_DOMAIN, InventoryGuardConflict, InventoryGuardUnsupported, inventoryGuardFor } from "./inventory-guard.js";
+export type { InventoryEntry, InventoryGuard, InventoryGuardTarget, InventoryGuardRequest, InventoryGuardResult } from "./inventory-guard.js";

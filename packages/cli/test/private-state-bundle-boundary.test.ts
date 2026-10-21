@@ -662,6 +662,15 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
   { leaf: "recipeAdd", surface: "--dir", argv: (t) => ["recipe", "add", "work-tracking", "--dir", t, "--json"] },
   { leaf: "recipeEvolve", surface: "--dir", argv: (t) => ["recipe", "evolve", "work-tracking", "--dir", t, "--json"] },
   {
+    leaf: "recipeEvolve", surface: "--retirement-evidence",
+    argv: (target) => ["recipe", "evolve", "work-tracking", "--retirement-scan", "--retirement-evidence", target, "--dir", ".superbee", "--json"],
+    control: (fixture) => {
+      const file = path.join(fixture.outside, "retirement-evidence.json");
+      writeFileSync(file, "null");
+      return file;
+    },
+  },
+  {
     leaf: "serve",
     surface: "--dir",
     argv: (t) => ["serve", "--dir", t, "--port", "0"],

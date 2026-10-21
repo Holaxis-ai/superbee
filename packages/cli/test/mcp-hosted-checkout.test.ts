@@ -11,7 +11,7 @@ import { access, cp, mkdtemp, readFile, realpath, rm, unlink, writeFile } from "
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { deleteDoc, queryHeads, readDoc, writeBlob, writeDoc, type Bundle } from "@superbee/core";
+import { inventoryGuardFor, InventoryGuardUnsupported, deleteDoc, queryHeads, readDoc, writeBlob, writeDoc, type Bundle } from "@superbee/core";
 import { CURRENT_HOST_DOCUMENT_INPUT_BYTES } from "@superbee/core/hosted-transport";
 import { createMcpAppServer, type McpWorkspaceResolver } from "@superbee/mcp-app";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -701,5 +701,20 @@ test("a hosted workspace with no session answers the one sign-in link to relay, 
     }
   } finally {
     await issuer.stop();
+  }
+});
+
+
+test("hosted served wrapper explicitly omits the local inventory guard", async () => {
+  const c = await hostedCheckout();
+  try {
+    const raw = await openBundle(c.folder);
+    assert.ok(inventoryGuardFor(raw.backend!));
+    const served = await servedBundle(raw, { home: c.home });
+    assert.equal(served.backend!.inventoryGuard, undefined);
+    assert.throws(() => inventoryGuardFor(served.backend!), InventoryGuardUnsupported);
+  } finally {
+    await rm(c.home, { recursive: true, force: true });
+    await rm(c.cwd, { recursive: true, force: true });
   }
 });
