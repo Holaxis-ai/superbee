@@ -148,6 +148,7 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
     stdout(render({ doc: "field", id: result.doc.id, field, operation: action, changed: result.changed, version: result.version,
       scope: { ...boundedScope, ...(affectedSourceIds === undefined ? {} : { affectedSourceIds: affectedSourceIds.slice(0, 20), affectedSourceIdCount: affectedSourceIds.length }) },
       ...(result.warnings.length ? { warnings: result.warnings } : {}),
+      ...(result.guidance.length ? { guidance: result.guidance } : {}),
       help: [`${cliInvocation()} doc read ${commandToken(result.doc.id)}${routeFlag}`],
     }, resolveMode(values)));
   } catch (error) {

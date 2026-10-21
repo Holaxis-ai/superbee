@@ -54,6 +54,9 @@ Use `--body-file` for multiline Markdown. Use `superbee new "<Kind>" --help` for
 of an installed Kind. Prefer semantic no-ops, actor attribution, and version-aware updates when the
 CLI exposes them.
 
+Put write-time guidance in a Kind's field or value descriptions, never its body: a write that
+sets a described value returns that description as `guidance`.
+
 ## Evolve from use
 
 Refine fields or relationships only after actual instances expose a recurring need. Package a

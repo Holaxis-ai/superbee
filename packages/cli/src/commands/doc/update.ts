@@ -465,6 +465,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     version: result.version,
   };
   if (result.warnings.length > 0) receipt.warnings = result.warnings;
+  if (result.guidance.length > 0) receipt.guidance = result.guidance;
   // Legacy-naming nudge (legacy-page.ts): fires on the RESULT doc's type at an authoring moment
   // only — never blocks, never on reads.
   if (isLegacyPageDoc(result.doc.frontmatter)) receipt.hint = LEGACY_PAGE_TYPE_HINT;
