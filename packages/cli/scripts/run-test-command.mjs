@@ -12,6 +12,15 @@ const env = {
   GIT_COMMITTER_EMAIL: "test-suite@example.invalid",
 };
 
+// `git commit` and friends start a detached `git maintenance run --auto`. Under git's default
+// geometric strategy it can repack a fixture's loose objects after the command has returned, so a
+// test's recursive cleanup of the fixture races it and fails with ENOTEMPTY. Command-scope config
+// reaches every git child, including tests that point GIT_CONFIG_GLOBAL at /dev/null.
+const configIndex = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? "0", 10) || 0;
+env.GIT_CONFIG_COUNT = String(configIndex + 1);
+env[`GIT_CONFIG_KEY_${configIndex}`] = "maintenance.auto";
+env[`GIT_CONFIG_VALUE_${configIndex}`] = "false";
+
 
 let command;
 let commandArgs;
