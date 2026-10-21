@@ -212,9 +212,13 @@ latest `SPEC.md` commit in the canonical OKF repository with the reviewed pin an
 upstream sample bundle with the built CLI's `status --json`; a nonzero exit, a malformed document,
 an invalid timestamp, or an empty bundle is a conformance failure. Daily, it compares npm `latest`
 for the MCP SDK packages with their pins and, when one is newer, installs it into the mcp-app
-workspace without committing and runs build, typecheck, and the mcp-app tests. Drift opens at most
-one `upstream-drift` issue per title, and an open or closed issue with that title suppresses a
-repeat. Manual dispatch defaults to a dry run. The reviewed pins live in `scripts/upstream-watch.json`.
+workspace without committing and runs build, typecheck, and the mcp-app tests. Each target runs in
+a check job with no write permission and no npm cache, which hands a JSON result to a report job
+that holds `issues: write`, runs no upstream code, and re-validates the result before writing
+anything. Drift opens at most one `upstream-drift` issue per drift, identified by a hidden body
+marker; an open or closed issue with that marker suppresses a repeat. Network, registry, or API
+failures open a separate `Upstream watch failing` issue instead. Manual dispatch defaults to a dry
+run. The reviewed pins live in `scripts/upstream-watch.json`.
 To resolve an issue, review the linked upstream change, adapt Superbee if needed, and bump the pin
 in the same PR. Locally, `node scripts/upstream-watch.mjs okf --dry-run` (after `npm run build`)
 or `node scripts/upstream-watch.mjs mcp --dry-run` prints the report without filing anything.

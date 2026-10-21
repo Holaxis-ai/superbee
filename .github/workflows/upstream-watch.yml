@@ -7,13 +7,17 @@ name: Upstream watch
 # pins and, when one is newer, installs it into the mcp-app workspace (never committed) and runs
 # build, typecheck and the mcp-app tests against it.
 #
-# DELIBERATELY NOT A PR GATE: this workflow only reports. Each run writes a job summary; drift or a
-# conformance failure opens at most one `upstream-drift` issue per deterministic title, and an
-# open or closed issue with that title suppresses a repeat. It never commits, pushes or opens PRs.
-# A human reviews the issue, adapts Superbee if needed, and bumps the pin in the same PR.
+# DELIBERATELY NOT A PR GATE: this workflow only reports. It never commits, pushes or opens PRs.
+# Drift opens at most one `upstream-drift` issue per drift key (a hidden marker in the body); an
+# open or closed issue with that marker suppresses a repeat. A human reviews the issue, adapts
+# Superbee if needed, and bumps the pin in the same PR. Watcher failures (network, registry, API)
+# open a separate "Upstream watch failing" issue instead of reporting drift.
 #
-# Upstream content is untrusted: it reaches the script only as data, never through `${{ }}` into a
-# shell, and the script passes argv arrays to child processes and the issue body as JSON.
+# Each target is split in two. The `*-check` job reads upstream content or runs upstream code with
+# no write permission and no npm cache (a scheduled main run must not save a poisoned ~/.npm that
+# other workflows restore); it only uploads a small JSON result. The `*-report` job holds
+# `issues: write`, checks out this repository only, runs no npm install and no upstream code,
+# re-validates the JSON strictly, and is the only writer of the job summary and issues.
 # Manual dispatch defaults to dry run, which prints the would-be issue in the summary instead.
 on:
   schedule:
@@ -39,13 +43,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  okf:
+  okf-check:
     if: ${{ (github.event_name == 'schedule' && github.event.schedule == '41 6 * * 1') || (github.event_name == 'workflow_dispatch' && inputs.target != 'mcp') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
-      issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -54,27 +57,29 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.21.0
-          cache: npm
 
       - run: npm ci
 
       - run: npm run build
 
-      - name: Check OKF upstream
+      - name: Collect OKF result
+        # The read-only token only raises the GitHub API rate limit for public commit lookups.
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
-        run: |
-          if [ "$DRY_RUN" = "true" ]; then
-            node scripts/upstream-watch.mjs okf --dry-run
-          else
-            node scripts/upstream-watch.mjs okf
-          fi
+        run: node scripts/upstream-watch.mjs okf --collect "$RUNNER_TEMP/upstream-watch/result.json"
 
-  mcp:
-    if: ${{ (github.event_name == 'schedule' && github.event.schedule == '29 6 * * *') || (github.event_name == 'workflow_dispatch' && inputs.target != 'okf') }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upstream-watch-okf-${{ github.run_id }}
+          path: ${{ runner.temp }}/upstream-watch/result.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  okf-report:
+    needs: okf-check
+    if: ${{ always() && needs.okf-check.result != 'skipped' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: write
@@ -86,17 +91,83 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.21.0
-          cache: npm
 
-      - run: npm ci
+      - name: Download OKF result
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: upstream-watch-okf-${{ github.run_id }}
+          path: ${{ runner.temp }}/upstream-watch
 
-      - name: Check MCP upstream
+      - name: Report OKF result
         env:
           GITHUB_TOKEN: ${{ github.token }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: |
           if [ "$DRY_RUN" = "true" ]; then
-            node scripts/upstream-watch.mjs mcp --verify --dry-run
+            node scripts/upstream-watch.mjs report okf --input "$RUNNER_TEMP/upstream-watch/result.json" --dry-run
           else
-            node scripts/upstream-watch.mjs mcp --verify
+            node scripts/upstream-watch.mjs report okf --input "$RUNNER_TEMP/upstream-watch/result.json"
+          fi
+
+  mcp-check:
+    if: ${{ (github.event_name == 'schedule' && github.event.schedule == '29 6 * * *') || (github.event_name == 'workflow_dispatch' && inputs.target != 'okf') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.21.0
+
+      - run: npm ci
+
+      - name: Collect MCP result
+        run: node scripts/upstream-watch.mjs mcp --verify --collect "$RUNNER_TEMP/upstream-watch/result.json"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upstream-watch-mcp-${{ github.run_id }}
+          path: ${{ runner.temp }}/upstream-watch/result.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  mcp-report:
+    needs: mcp-check
+    if: ${{ always() && needs.mcp-check.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.21.0
+
+      - name: Download MCP result
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: upstream-watch-mcp-${{ github.run_id }}
+          path: ${{ runner.temp }}/upstream-watch
+
+      - name: Report MCP result
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            node scripts/upstream-watch.mjs report mcp --input "$RUNNER_TEMP/upstream-watch/result.json" --dry-run
+          else
+            node scripts/upstream-watch.mjs report mcp --input "$RUNNER_TEMP/upstream-watch/result.json"
           fi
