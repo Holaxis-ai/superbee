@@ -1,8 +1,8 @@
 import { versionOfBytes } from "@superbee/core";
 import { backendFor } from "@superbee/core/bundle-ops";
 import { SEARCH_MAX_OUTPUT_BYTES, searchSourceFromBackend, searchDocuments, validateSearchRequest, SearchInputError, SearchLimitError } from "@superbee/core/search";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { McpServer } from "@modelcontextprotocol/server";
+import type { CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { McpBundleContext, McpWorkspaceResolver } from "./workspace.js";
 

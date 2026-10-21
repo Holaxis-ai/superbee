@@ -7,9 +7,9 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { initBundle, writeBlob, writeDoc } from "@superbee/core";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import type { Tool } from "@modelcontextprotocol/client";
 import { readFileSync } from "node:fs";
 const distributionVersion = JSON.parse(readFileSync(new URL("../../superbee/package.json", import.meta.url), "utf8")).version;
 import { addCatalogEntry } from "../src/catalog.js";
