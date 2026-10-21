@@ -48,6 +48,12 @@ test("no release workflow restores a dependency cache", () => {
     const text = read(name);
     assert.doesNotMatch(text, /^\s+cache(-dependency-path)?:/m, `${name} setup-node must not restore a package-manager cache`);
     assert.doesNotMatch(text, /actions\/cache(\/restore)?@/, `${name} must not restore an Actions cache`);
+    // setup-node also caches on its own when package.json declares an npm packageManager.
+    const setups = text.match(/- uses: actions\/setup-node@[^\n]*\n {8}with:\n(?: {10}[^\n]*\n)*/g) ?? [];
+    assert.ok(setups.length > 0, `${name} declares setup-node`);
+    for (const setup of setups) {
+      assert.match(setup, /^ {10}package-manager-cache: false$/m, `${name} setup-node must disable automatic package-manager caching`);
+    }
   }
 });
 

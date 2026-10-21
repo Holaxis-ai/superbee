@@ -382,6 +382,7 @@ test("release build jobs have one closed checkout, runtime, and policy trust pre
       ["setup-node version label", workflow.replace(`${setupNode.uses} # v`, `${setupNode.uses} # invalid-v`)],
       ["changed setup-node version", workflow.replace("          node-version: 24.21.0", "          node-version: 24.20.0")],
       ["restored dependency cache", workflow.replace("          node-version: 24.21.0", "          node-version: 24.21.0\n          cache: npm")],
+      ["automatic package-manager cache", workflow.replace("          package-manager-cache: false", "          package-manager-cache: true")],
       ["unknown setup-node input", workflow.replace("          node-version: 24.21.0", "          node-version: 24.21.0\n          registry-url: https://registry.npmjs.org")],
       ["setup-node condition", workflow.replace(`      - uses: ${setupNode.uses}`, `      - uses: ${setupNode.uses}\n        if: true`)],
       ["commented preflight", workflow.replace(preflight, preflight.split("\n").map((line) => `${line.slice(0, 6)}# ${line.slice(6)}`).join("\n"))],
