@@ -15,6 +15,18 @@ Browser and Worker consumers can compose existing operation helpers through
 version, and resolver; the Node root retains the same exports. Supply an explicit backend to
 bundle-shaped operations in browser hosts.
 
+## Stored document decoding
+
+`@superbee/core/document-codec` exports `parseMarkdown(raw, context, options)` and
+`parseFrontmatter(yaml, context, options)` with the shared `ParseDocumentOptions` type.
+Use `{ preserveTimestamp: true }` when reading stored values: the legacy top-level `timestamp`
+keeps its parsed number or original string, independently of the bundle edition. The default
+and explicit v0.1 behavior still normalize that field; v0.2 preserves it as before. Neither
+option changes body splitting or attributed `MalformedDocumentError` identity.
+
+This preserves parsed values, not YAML formatting or original document bytes after serialization.
+Backends remain responsible for retaining raw bytes and deriving their revision tokens.
+
 ## Document presentation values
 
 The additive `@superbee/core/artifact-contract` subpath provides pure v1 document target,

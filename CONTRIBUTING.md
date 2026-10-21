@@ -279,6 +279,9 @@ shape.
 Run `npm run check:package-versions` before installing or building after a runtime-library
 version edit. This dependency-free source check validates the synchronized core/server pair,
 their exact dependency, and core/server/markdown-renderer/cli workspace lock metadata and links.
+It also checks browser-local's exact source Core dependency and its lock projection: the CLI and
+browser-local exchange typed Core errors and must resolve one source cohort. This source check
+does not alter independently published browser-local versions.
 It also checks their existing publish access and registry policy without publishing anything.
 The cli version is independent of the core/server version.
 Manifests own versions and dependency declarations; the lockfile is their checked projection.
@@ -518,7 +521,10 @@ Across both editions:
   instant, or remove an optional value; no offset is inferred and no migration runs automatically.
   v0.2 freshness does not interpret a zone-less meaningful-change clock as a host-local instant.
   UI dates use the browser/system time zone to display explicit instants; ambiguous imported
-  strings remain literal. There is no bundle time-zone setting.
+  strings remain literal. Hosts may retain their legacy `timestamp` display compatibility for
+  finite epoch-millisecond numbers and YAML offset-less timestamps interpreted as UTC, while
+  preserving the stored values. This does not change authoring validation, `generated.at`,
+  freshness, query ordering, or the local UI policy. There is no bundle time-zone setting.
 
 The external specification is supporting evidence, not the only discovery route. The committed
 section and core edition tests are the offline fallback. The fixture at
