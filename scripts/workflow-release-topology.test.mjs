@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -36,6 +36,24 @@ test("release workflows hold no ambient permissions and pin every action by comm
       assert.match(use[1], /@[0-9a-f]{40} # v\d/, `${name} action ${use[1]} must be pinned to a full SHA with its version comment`);
     }
     assert.doesNotMatch(text, /\bnpm (publish|dist-tag)\b|\bnpx\b[^\n]*\bnpm\b/, `${name} must never publish or move a dist-tag directly`);
+  }
+});
+
+// Any job on main can write the Actions cache, so a release that restores one would trust bytes
+// no reviewed commit produced. Releases are rare enough to pay for a cold install.
+test("no release workflow restores a dependency cache", () => {
+  const names = readdirSync(path.join(root, ".github", "workflows")).filter((name) => /^release.*\.ya?ml$/.test(name));
+  assert.ok(names.length >= 6, `expected every release workflow, found ${names.join(", ")}`);
+  for (const name of names) {
+    const text = read(name);
+    assert.doesNotMatch(text, /^\s+cache(-dependency-path)?:/m, `${name} setup-node must not restore a package-manager cache`);
+    assert.doesNotMatch(text, /actions\/cache(\/restore)?@/, `${name} must not restore an Actions cache`);
+    // setup-node also caches on its own when package.json declares an npm packageManager.
+    const setups = text.match(/- uses: actions\/setup-node@[^\n]*\n {8}with:\n(?: {10}[^\n]*\n)*/g) ?? [];
+    assert.equal(setups.length, (text.match(/actions\/setup-node@/g) ?? []).length, `${name} must write every setup-node step in the checked shape`);
+    for (const setup of setups) {
+      assert.match(setup, /^ {10}package-manager-cache: false$/m, `${name} setup-node must disable automatic package-manager caching`);
+    }
   }
 });
 

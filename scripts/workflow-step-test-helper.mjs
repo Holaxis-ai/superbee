@@ -124,7 +124,7 @@ export function requiredTrustedReleasePrefix(text, {
     : { uses: checkoutAction };
   const expectedPrefix = [
     checkout,
-    { uses: setupNodeAction, with: { "node-version": nodeVersion, cache: "npm" } },
+    { uses: setupNodeAction, with: { "node-version": nodeVersion, "package-manager-cache": false } },
     { name: preflightName, run: preflightRun },
   ];
   assert.deepEqual(
