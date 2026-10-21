@@ -177,6 +177,10 @@ test("finalize holds no npm credential, verifies provider state, and creates the
   assert.match(job, /gh attestation verify "out\/superbee-\$V\.tgz"[\s\S]*--source-ref "refs\/tags\/v\$V"/, "published bytes are bound to the build attestation and the tag ref");
   assert.match(job, /gh release view "\$TAG"[\s\S]*gh release create "\$TAG"/, "look before create so re-runs are idempotent");
   assert.match(job, /--verify-tag/, "the release must be created against the existing tag");
+  assert.match(job, /--generate-notes \$\{START:\+--notes-start-tag "\$START"\}/, "generated notes start at the tag the script chose, never GitHub's guess");
+  assert.match(job, /node source\/scripts\/release-notes-start-tag\.mjs "\$V"/, "the start tag comes from the shared semver selection");
+  assert.match(job, /persist-credentials: false\n {10}sparse-checkout: scripts\n {10}path: source\n/, "the scripts-only checkout carries no push credential");
+  assert.doesNotMatch(job, /\bnpm ci\b|\bcd source\b|node source\/(?!scripts\/release-notes-start-tag\.mjs)/, "nothing from the checkout is installed or run except the selection script");
   assert.match(job, /gh release download "\$TAG"[\s\S]*differs from the bytes npm serves/, "every finalize path verifies the release asset against the npm bytes");
 });
 

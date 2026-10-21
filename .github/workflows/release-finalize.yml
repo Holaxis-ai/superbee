@@ -108,10 +108,28 @@ jobs:
             assert.doesNotMatch(readme, /npm install -g superbee@next/);
           }
           NODE
+      # Only the tag-selection script is needed; nothing from the checkout is built or installed.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+          path: source
+      - name: Choose where the generated release notes start
+        id: notes
+        env:
+          V: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          START="$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --jq '.[].ref | ltrimstr("refs/tags/")' \
+            | node source/scripts/release-notes-start-tag.mjs "$V")"
+          [ -n "$START" ] || echo "::warning::no earlier release tag below v$V; GitHub chooses the notes start"
+          echo "start=$START" >> "$GITHUB_OUTPUT"
       - name: Create the GitHub release (published, once) with the npm tarball attached
         env:
           V: ${{ inputs.version }}
           T: ${{ steps.registry.outputs.dist_tag }}
+          START: ${{ steps.notes.outputs.start }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -126,7 +144,7 @@ jobs:
               gh release upload "$TAG" "out/superbee-$V.tgz" -R "$GITHUB_REPOSITORY" --clobber
               gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false "$FLAG" ;;
             *)
-              gh release create "$TAG" "out/superbee-$V.tgz" -R "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes "$FLAG" ;;
+              gh release create "$TAG" "out/superbee-$V.tgz" -R "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes ${START:+--notes-start-tag "$START"} "$FLAG" ;;
           esac
           # Every path ends here: the published release must carry exactly the bytes npm serves.
           mkdir -p check
