@@ -43,7 +43,7 @@ async function bindingAt(home: string, folder: string): Promise<CheckoutBinding 
   const indexed = await indexedBindingForPath(home, folder, true);
   if (indexed) return indexed;
   const identity = await folderIdentity(folder);
-  return (await listReadyBindings(home)).find((binding) => samePhysicalPath(binding.path, folder) || (identity !== null && sameFolder(identity, binding.folder_identity))) ?? null;
+  return (await listReadyBindings(home, true)).find((binding) => samePhysicalPath(binding.path, folder) || (identity !== null && sameFolder(identity, binding.folder_identity))) ?? null;
 }
 
 /**
@@ -62,12 +62,23 @@ export async function guardLabelRemoval(home: string, folder: string, label: str
   const found = binding;
 
   let identity;
+  let atEntry;
   try {
     identity = await folderIdentity(found.path);
+    atEntry = samePhysicalPath(found.path, folder) ? identity : await folderIdentity(folder);
   } catch (error) {
     throw unverifiable(folder, error);
   }
-  if (!identity || !sameFolder(identity, found.folder_identity)) {
+  // The checkout's own folder, moved to the entry's path: its work is there, not at the binding's
+  // path. (The same folder at both paths is one folder spelled two ways, and is scanned below.)
+  const ownAtBinding = identity !== null && sameFolder(identity, found.folder_identity);
+  if (atEntry && sameFolder(atEntry, found.folder_identity) && !ownAtBinding) {
+    throw new CliError("CONFLICT", `workspace "${label}" names the checkout of '${found.bundle_id}' moved from ${found.path}; bind it again before forgetting its label`, {
+      details: { reason: "moved_checkout", label, folder, bound_folder: found.path, bundle_id: found.bundle_id, host: found.origin },
+      help: commandFragment`${cliInvocation()} checkout --adopt ${commandToken(folder)}`,
+    });
+  }
+  if (!ownAtBinding) {
     let stranded: number | null;
     try {
       stranded = await withIdleCheckoutStore(found, home, async (store) => (await store.listIntents(UNSETTLED_STATES)).length);

@@ -80,7 +80,9 @@ host's list stopped at its cap.
 checkout's binding and store stay as they are, and the checkout still works with --dir. A label on
 a hosted checkout whose folder holds changes sync has not sent (an unsent document, a conflict, a
 held file or deletion) is refused (CONFLICT, exit 5, reason unsent_changes) until a sync sends
-them; a checkout another command holds is refused as checkout_busy. A label whose folder is gone
+them; a checkout another command holds is refused as checkout_busy, a checkout folder moved to
+the entry's path as moved_checkout (adopt it first), and unreadable checkout state as
+checkout_unverifiable. A label whose folder is gone
 is removed; any change the checkout's store still journals is reported as stranded_unsent, which
 'checkout --release <folder>' discards. Removing a label that is not registered is a no-op.
 'catalog list' reports unavailable: <n> for entries whose folder is gone, and never removes one.

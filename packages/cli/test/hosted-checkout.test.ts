@@ -1396,3 +1396,25 @@ test("catalog remove guards a checkout whose entry spells its folder in another 
   assert.equal(unverifiable.details?.reason, "checkout_unverifiable");
   assert.equal((await loadCatalog(h.home)).entries.length, 1);
 });
+
+test("catalog remove refuses the label of a moved checkout folder until it is adopted, and an unreadable binding found by identity", async () => {
+  const h = await harness();
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
+  const team = await realpath(path.join(h.cwd, "team"));
+  const binding = (await bindingForPath(h.home, team))!;
+  const moved = path.join(path.dirname(team), "team2");
+  await rename(team, moved);
+  await writeFile(path.join(moved, "notes/alpha.md"), `${await readFile(path.join(moved, "notes/alpha.md"), "utf8")}Unsent.\n`);
+  await catalogRun(h, ["add", "mine", "--dir", moved]);
+  const refused = await rejects(catalogRun(h, ["remove", "mine"]));
+  assert.equal(refused.code, "CONFLICT");
+  assert.equal(refused.details?.reason, "moved_checkout");
+  assert.match(refused.help ?? "", /checkout --adopt /);
+  assert.ok((await loadCatalog(h.home)).entries.some((entry) => entry.label === "mine"));
+
+  // The fallback lookup reads every binding strictly: a corrupt record refuses rather than skipping.
+  await writeFile(path.join(hostedCheckoutsRoot(h.home), binding.checkout_id, "binding.json"), "{not json");
+  const unverifiable = await rejects(catalogRun(h, ["remove", "mine"]));
+  assert.equal(unverifiable.details?.reason, "checkout_unverifiable");
+  assert.ok((await loadCatalog(h.home)).entries.some((entry) => entry.label === "mine"));
+});
