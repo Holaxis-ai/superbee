@@ -80,6 +80,9 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "source-harness/index.js", symbol: "runTransportConformance" },
   { module: "source-profiles/index.js", symbol: "rest-json" },
   { module: "kinds-load.js", symbol: "loadKinds" },
+  { module: "document-field-actions.js", symbol: "prepareDocumentFieldAction" },
+  { module: "okf-actor.js", symbol: "OkfActorError" },
+  { module: "okf-authoring.js", symbol: "resolveOkfAuthoringVersion" },
   { module: "bundle-health/index.js", symbol: "bundleHealth" },
   // The one search engine: the working copy's page tool and a site Worker run it in process.
   { module: "search/index.js", symbol: "searchDocuments" },

@@ -96,3 +96,5 @@ export function suggestOkfActor(value: string): OkfActorSuggestion {
   if (!id) return { primary: "process:<id>", alternatives: ["human:<id>", "<producer>/<version>"], placeholder: true };
   return { primary: `process:${id}`, alternatives: [`human:${id}`], placeholder: false };
 }
+
+export { OkfActorError } from "./errors.js";

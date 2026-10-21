@@ -13,7 +13,8 @@ import path from "node:path";
 import { FilesystemBackend } from "./backend.js";
 import type { FilesystemBackendOptions } from "./filesystem-host.js";
 import { setDefaultBackendFactory } from "./bundle-ops.js";
-import { InvalidInputError } from "./errors.js";
+import { resolveOkfAuthoringVersion } from "./okf-authoring.js";
+export { SUPPORTED_OKF_AUTHORING_VERSIONS, DEFAULT_OKF_AUTHORING_VERSION, resolveOkfAuthoringVersion } from "./okf-authoring.js";
 import { stringifyWithData } from "./frontmatter.js";
 import { GENERATED_INDEX_MARKER } from "./index-marker.js";
 import { VersionConflict } from "./versioning.js";
@@ -46,20 +47,6 @@ export {
 } from "./bundle-ops.js";
 
 setDefaultBackendFactory((root) => new FilesystemBackend(root));
-
-export const SUPPORTED_OKF_AUTHORING_VERSIONS = ["0.1", "0.2"] as const;
-export const DEFAULT_OKF_AUTHORING_VERSION = "0.2";
-
-export function resolveOkfAuthoringVersion(requested?: string): string {
-  const version = requested ?? DEFAULT_OKF_AUTHORING_VERSION;
-  if (!(SUPPORTED_OKF_AUTHORING_VERSIONS as readonly string[]).includes(version)) {
-    throw new InvalidInputError(
-      `Unsupported OKF authoring version '${version}'. This build can author ${SUPPORTED_OKF_AUTHORING_VERSIONS.join(" and ")}; ` +
-        "bundles declaring other versions can still be read or transported.",
-    );
-  }
-  return version;
-}
 
 /** Initialize or open a filesystem-backed bundle. */
 export async function initBundle(root: string, options: InitBundleOptions = {}, filesystemOptions: FilesystemBackendOptions = {}): Promise<Bundle> {

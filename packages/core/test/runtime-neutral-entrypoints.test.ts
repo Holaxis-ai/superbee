@@ -89,3 +89,30 @@ test("portable root parsing preserves its historical non-mapping validation", ()
   assert.deepEqual(parseLeadingFrontmatter("---\nnull\n---\nbody", "index.md"), {});
   assert.deepEqual(parseLeadingFrontmatter("---\n---\nbody", "index.md"), {});
 });
+
+
+test("portable operation leaves preserve legacy identity and authoring version validation", async () => {
+  const portable = await import("../src/okf-authoring.js");
+  const legacy = await import("../src/index.js");
+  const { InvalidInputError } = await import("../src/errors.js");
+  const actor = await import("../src/okf-actor.js");
+  const fields = await import("../src/document-field-actions.js");
+  const { loadKinds } = await import("../src/kinds-load.js");
+  assert.equal(portable.resolveOkfAuthoringVersion, legacy.resolveOkfAuthoringVersion);
+  assert.equal(portable.SUPPORTED_OKF_AUTHORING_VERSIONS, legacy.SUPPORTED_OKF_AUTHORING_VERSIONS);
+  assert.equal(actor.OkfActorError, legacy.OkfActorError);
+  assert.equal(actor.isOkfActor, legacy.isOkfActor);
+  assert.equal(fields.prepareDocumentFieldAction, legacy.prepareDocumentFieldAction);
+  assert.equal(fields.FieldActionError, legacy.FieldActionError);
+  assert.equal(loadKinds, legacy.loadKinds);
+  assert.equal(portable.DEFAULT_OKF_AUTHORING_VERSION, "0.2");
+  assert.equal(portable.resolveOkfAuthoringVersion(), "0.2");
+  for (const version of ["0.1", "0.2"]) assert.equal(portable.resolveOkfAuthoringVersion(version), version);
+  for (const version of ["", "0.3", " 0.2", "0.2 "]) {
+    assert.throws(() => portable.resolveOkfAuthoringVersion(version), (error: unknown) => {
+      assert.ok(error instanceof InvalidInputError);
+      assert.equal(error.message, `Unsupported OKF authoring version '${version}'. This build can author 0.1 and 0.2; bundles declaring other versions can still be read or transported.`);
+      return true;
+    });
+  }
+});

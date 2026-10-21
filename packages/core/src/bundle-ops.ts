@@ -27,6 +27,8 @@ import type {
   WriteOptions,
 } from "./types.js";
 
+export type { Bundle } from "./types.js";
+
 export type { QueryOptions, SkippedDoc, WriteResult } from "./engine.js";
 
 /** Builds the backend a bare `{ root }` bundle resolves to in this runtime. */
