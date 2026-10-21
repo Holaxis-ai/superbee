@@ -6,7 +6,7 @@ import type { BodyReplacePosture } from "./body-replace-guards.js";
  * here so the implementation modules can import them without a cycle, and are
  * re-exported verbatim from `index.ts` to keep the public contract stable.
  *
- * @see OKF spec — GoogleCloudPlatform/knowledge-catalog, `okf/SPEC.md`
+ * @see OKF spec — GoogleCloudPlatform/open-knowledge-format, `SPEC.md`
  * @packageDocumentation
  */
 
