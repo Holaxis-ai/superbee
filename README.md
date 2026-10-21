@@ -238,7 +238,7 @@ no access or authority; see
   `examples/recipes/review-workflow` is a complete content-free cognitive ecosystem: a
   self-describing Review Request kind plus a generic live View, with no review instances.
 
-Bundles use [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
+Bundles use [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format)
 v0.2 by default - plain markdown any tool conforming to that edition can read. Existing OKF v0.1
 bundles remain supported without rewriting their declared edition.
 

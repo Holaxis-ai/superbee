@@ -18,7 +18,7 @@
  * "extensions" line is additive (pure helpers, reserved-file accessors, and the
  * ported content_type utilities).
  *
- * @see OKF spec — GoogleCloudPlatform/knowledge-catalog, `okf/SPEC.md`
+ * @see OKF spec — GoogleCloudPlatform/open-knowledge-format, `SPEC.md`
  * @packageDocumentation
  */
 
