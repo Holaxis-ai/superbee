@@ -7,6 +7,14 @@ writes, cross-links and storage backends. It is a library; installing it does no
 Core and `@superbee/server` are released together, independently of the `superbee` CLI. A CLI
 release bundles the engine source selected at build time; it does not load `@superbee/core@latest`.
 
+Browser and Worker consumers can compose existing operation helpers through
+`@superbee/core/bundle-ops` (including the `Bundle` type), `@superbee/core/kinds`
+(including `ValidationWarning`), `@superbee/core/kinds-load`,
+`@superbee/core/document-field-actions`, and `@superbee/core/okf-actor` (including the shared
+`OkfActorError`). `@superbee/core/okf-authoring` owns the supported authoring versions, default
+version, and resolver; the Node root retains the same exports. Supply an explicit backend to
+bundle-shaped operations in browser hosts.
+
 ## Document presentation values
 
 The additive `@superbee/core/artifact-contract` subpath provides pure v1 document target,

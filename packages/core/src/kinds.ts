@@ -31,6 +31,7 @@ import { isOkfLifecycleStatus, OKF_LIFECYCLE_STATUSES } from "./okf-lifecycle.js
 import { isUsableTimestamp } from "./frontmatter.js";
 import { parseIsoInstant } from "./verification.js";
 import type { ValidationWarning } from "./validation.js";
+export type { ValidationWarning } from "./validation.js";
 import type { ConceptId, Frontmatter, OkfDocument } from "./types.js";
 
 /** The bundle-relative prefix a kind convention doc MUST live under to be discovered. */

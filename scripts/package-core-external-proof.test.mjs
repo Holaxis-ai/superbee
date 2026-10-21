@@ -382,6 +382,36 @@ export function exerciseViewAdmission() {
     assert.equal(runInNewContext(viewBundle.outputFiles[0].text + '\nViewProof.exerciseViewAdmission()',
       { TextEncoder, TextDecoder }, { timeout: 5000 }), "text/html; charset=utf-8");
 
+    // Resolve retained packed public leaves together; no root import or Node polyfill is admitted.
+    await writeFile(path.join(scratch, "operation-leaves.mjs"), `
+export { loadKinds } from "@superbee/core/kinds-load";
+export { MemoryBackend } from "@superbee/core/memory-backend";
+export { prepareDocumentFieldAction, FieldActionError } from "@superbee/core/document-field-actions";
+export { isOkfActor, OkfActorError } from "@superbee/core/okf-actor";
+export { SUPPORTED_OKF_AUTHORING_VERSIONS, DEFAULT_OKF_AUTHORING_VERSION, resolveOkfAuthoringVersion } from "@superbee/core/okf-authoring";
+`);
+    const operationBundle = await build({ absWorkingDir: scratch, entryPoints: ["operation-leaves.mjs"], bundle: true,
+      platform: "browser", format: "iife", globalName: "Operations", write: false, logLevel: "silent", metafile: true });
+    assert.ok(Object.values(operationBundle.metafile.outputs).every(output => output.imports.length === 0));
+    assert.equal(await runInNewContext(operationBundle.outputFiles[0].text + `
+(async () => {
+  const backend = new Operations.MemoryBackend();
+  await backend.writeReserved("", "index.md", "---\\nokf_version: '0.2'\\n---\\n");
+  const registry = await Operations.loadKinds({ root: "browser", backend });
+  const result = Operations.prepareDocumentFieldAction({ id: "notes/a", frontmatter: { type: "Note", title: "Before" }, body: "Body" },
+    { action: "set", field: "title", value: "After" }, { registry, okfVersion: "0.2" });
+  let refused = false;
+  try { Operations.resolveOkfAuthoringVersion("0.3"); } catch (error) { refused = error.name === "InvalidInputError"; }
+  return refused && result.candidate.frontmatter.title === "After" && registry.kinds.size === 0 &&
+    Operations.resolveOkfAuthoringVersion() === "0.2" && Operations.isOkfActor("openai/codex") &&
+    Operations.OkfActorError.prototype instanceof Error && Operations.FieldActionError.prototype instanceof Error;
+})()`, { TextEncoder, TextDecoder, structuredClone }, { timeout: 5000 }), true);
+    await run(process.execPath, ["--input-type=module", "-e", `
+import * as root from "@superbee/core";
+import * as leaves from "./operation-leaves.mjs";
+for (const name of Object.keys(leaves)) if (leaves[name] !== root[name]) throw new Error(name + " identity drift");
+`], scratch);
+
     await writeFile(path.join(scratch, "artifact-consumer.mjs"), `
 import { decodeDocumentTargetV1, decodePresentDocumentRequestV1, decodePresentDocumentReceiptV1 } from "@superbee/core/artifact-contract";
 export function exerciseArtifacts() {
@@ -637,7 +667,18 @@ import { memorySearchSource, searchDocuments, searchRowText, SearchInputError, t
 import { parseRecipeFiles, recipeConnectors, type RecipeConnector, type RecipeFile, type LoadResult } from "@superbee/core/recipes";
 import { builtinNames, loadBuiltinRecipe } from "@superbee/core/builtin-recipes";
 import { prepareKindDraft, applyKindDraft, dismissKind, kindInstanceCandidate, type KindDraftPlan } from "@superbee/core/kind-authoring";
-import { buildKindRegistry, validateAgainstKind } from "@superbee/core/kinds";
+import { buildKindRegistry, validateAgainstKind, type ValidationWarning } from "@superbee/core/kinds";
+import { loadKinds } from "@superbee/core/kinds-load";
+import { prepareDocumentFieldAction, FieldActionError, type FieldAction, type FieldActionScope } from "@superbee/core/document-field-actions";
+import { isOkfActor, OkfActorError } from "@superbee/core/okf-actor";
+import { resolveOkfAuthoringVersion } from "@superbee/core/okf-authoring";
+import type { Bundle } from "@superbee/core/bundle-ops";
+export async function operationLeafTypes(bundle: Bundle, doc: OkfDocument, action: FieldAction): Promise<FieldActionScope> {
+  const registry = await loadKinds(bundle);
+  const warnings: ValidationWarning[] = registry.warnings;
+  void [warnings, FieldActionError, OkfActorError, isOkfActor("openai/codex"), resolveOkfAuthoringVersion()];
+  return prepareDocumentFieldAction(doc, action, { registry, okfVersion: "0.2" }).scope;
+}
 import { ConnectorTargetUnsatisfied, installRecipe, prepareRecipeInstall, inspectRecipeInstallTarget, installedConnectorDocs, installedRecipes, planRecipeEvolution, RecipeLifecycleError, type RecipeInstallState, type PreparedRecipeInstall, type RecipeInstallTargetInspection, type RecipeStampIdentity } from "@superbee/core/recipe-lifecycle";
 import { applyRecordOverlay, buildSourceIndex, OverlayRefusal, planRecordOverlay, type OverlayBundle, type OverlayPolicy, type OverlayReceipt, type RecordChange } from "@superbee/core/record-overlay";
 import { bundleHealth, bundleKindFindings, type BindDependencies, type BundleHealthReport } from "@superbee/core/bundle-health";

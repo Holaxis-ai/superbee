@@ -138,6 +138,9 @@ export async function buildPublicationBundle(outfile, surface = "full") {
     format: "esm",
     target: "node22",
     alias: {
+      "@superbee/core/document-field-actions": r("../core/src/document-field-actions.ts"),
+      "@superbee/core/document-mutation": r("../core/src/document-mutation.ts"),
+      "@superbee/core/kinds": r("../core/src/kinds.ts"),
       "@superbee/core/page": r("../core/src/page.ts"),
       "@superbee/core/view-admission": r("../core/src/view-admission.ts"),
       "@superbee/core/links": r("../core/src/links.ts"),

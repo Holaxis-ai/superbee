@@ -30,6 +30,7 @@ export const workspaceAliases = {
       // The hosted checkout (`src/hosted/**`) runs the shared working-copy engine
       // (`@superbee/browser-local`) over core's Node log store, push role and hosted transport.
       // These are that closure's core subpaths, source-aliased like the ones above.
+      "@superbee/core/document-field-actions": r("../core/src/document-field-actions.ts"),
       "@superbee/core/document-mutation": r("../core/src/document-mutation.ts"),
       "@superbee/core/file-journaled-backend": r("../core/src/file-journaled-backend.ts"),
       "@superbee/core/filesystem-push-role": r("../core/src/filesystem-push-role.ts"),

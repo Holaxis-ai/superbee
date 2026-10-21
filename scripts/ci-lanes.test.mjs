@@ -31,7 +31,7 @@ const rootReadme = readFileSync(path.join(root, "README.md"), "utf8");
 const npmReadme = readFileSync(path.join(root, "packages", "superbee", "README.md"), "utf8");
 const cliLibraryPkg = JSON.parse(readFileSync(path.join(root, "packages", "cli", "package.json"), "utf8"));
 const packageLock = JSON.parse(readFileSync(path.join(root, "package-lock.json"), "utf8"));
-const okfBundleSource = readFileSync(path.join(root, "packages", "core", "src", "bundle.ts"), "utf8");
+const okfAuthoringSource = readFileSync(path.join(root, "packages", "core", "src", "okf-authoring.ts"), "utf8");
 const linkSource = readFileSync(path.join(root, "packages", "core", "src", "links.ts"), "utf8");
 const sampleOkfReference = readFileSync(
   path.join(root, "examples", "sample-bundle", "references", "okf-spec.md"),
@@ -518,7 +518,7 @@ function validateContributorAuthority(
   text,
   candidateManifest = manifest,
   packageJson = pkg,
-  sources = { okfBundleSource, linkSource, sampleOkfReference },
+  sources = { okfAuthoringSource, linkSource, sampleOkfReference },
 ) {
   for (const heading of ["## OKF compatibility", "## Findings and commitments", "## Assurance evolution"]) {
     assert.match(text, new RegExp(`^${heading}$`, "m"), `missing exact contributor anchor ${heading}`);
@@ -558,8 +558,8 @@ function validateContributorAuthority(
       "this section plus core edition tests",
     ],
   ]);
-  assert.match(sources.okfBundleSource, /SUPPORTED_OKF_AUTHORING_VERSIONS = \["0\.1", "0\.2"\]/);
-  assert.match(sources.okfBundleSource, /DEFAULT_OKF_AUTHORING_VERSION = "0\.2"/);
+  assert.match(sources.okfAuthoringSource, /SUPPORTED_OKF_AUTHORING_VERSIONS = \["0\.1", "0\.2"\]/);
+  assert.match(sources.okfAuthoringSource, /DEFAULT_OKF_AUTHORING_VERSION = "0\.2"/);
   for (const [generated, expected] of [
     [{ at: "standard" }, "standard"],
     [{ at: null }, null],
@@ -652,6 +652,15 @@ test("the contributor authority agrees with CI topology and both OKF editions", 
 });
 
 test("contributor projections fail red on lane, edition, pointer, and assurance drift", () => {
+  for (const source of [
+    okfAuthoringSource.replace('["0.1", "0.2"]', '["0.2"]'),
+    okfAuthoringSource.replace('DEFAULT_OKF_AUTHORING_VERSION = "0.2"', 'DEFAULT_OKF_AUTHORING_VERSION = "0.1"'),
+  ]) {
+    assert.throws(() => validateContributorAuthority(contributing, manifest, pkg, {
+      okfAuthoringSource: source, linkSource, sampleOkfReference,
+    }));
+  }
+
   const renamedLane = structuredClone(manifest);
   renamedLane.lanes.runtime.script = "ci:runtime-renamed";
   assert.throws(

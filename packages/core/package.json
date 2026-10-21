@@ -27,6 +27,22 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./kinds-load": {
+      "types": "./dist/kinds-load.d.ts",
+      "default": "./dist/kinds-load.js"
+    },
+    "./document-field-actions": {
+      "types": "./dist/document-field-actions.d.ts",
+      "default": "./dist/document-field-actions.js"
+    },
+    "./okf-actor": {
+      "types": "./dist/okf-actor.d.ts",
+      "default": "./dist/okf-actor.js"
+    },
+    "./okf-authoring": {
+      "types": "./dist/okf-authoring.d.ts",
+      "default": "./dist/okf-authoring.js"
+    },
     "./bundle-ops": {
       "types": "./dist/bundle-ops.d.ts",
       "default": "./dist/bundle-ops.js"
