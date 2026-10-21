@@ -8,7 +8,7 @@ import test from 'node:test';
 
 const entry = fileURLToPath(new URL('./install.mjs', import.meta.url));
 const npmToken = 'fixture_npm_reader_123456';
-const githubToken = 'fixture_github_reader_123456';
+const githubToken = `ghs_123456_${'a'.repeat(700)}.${'b'.repeat(100)}.fixture_signature`;
 const options = { skip: process.platform === 'win32', timeout: 60_000 };
 
 async function fixture(t, { failPreflight = false, invalidLock = false } = {}) {
@@ -94,6 +94,9 @@ test('missing readers and malformed options fail before npm executes', options, 
   const f = await fixture(t);
   for (const [overrides, message] of [
     [{ NPM_CI_TOKEN: '' }, /npm-token is missing/],
+    [{ NPM_CI_TOKEN: 'fixture_reader\nregistry=other' }, /npm-token is missing/],
+    [{ NPM_CI_GITHUB_TOKEN: 'fixture reader' }, /requires both/],
+    [{ NPM_CI_GITHUB_TOKEN: 'fixture_reader\r\nother=value' }, /requires both/],
     [{ NPM_CI_GITHUB_TOKEN: '' }, /requires both/],
     [{ NPM_CI_IGNORE_SCRIPTS: 'sometimes' }, /must be true or false/],
     [{ NPM_CI_PREFLIGHT_SCRIPT: '--help' }, /must name one npm script/],

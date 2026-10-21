@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const TOKEN = /^[A-Za-z0-9_-]{8,512}$/;
+// Treat registry bearer values as opaque; GitHub installation tokens can contain JWT dots.
+const TOKEN = /^[A-Za-z0-9._~+/-]+=*$/;
 
 export async function installDependencies(env = process.env) {
   if (process.platform === 'win32') throw new Error('This action requires a Linux or macOS runner.');

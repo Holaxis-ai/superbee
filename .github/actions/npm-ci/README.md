@@ -16,7 +16,8 @@ to later workflow steps. Build and test commands remain owned by the caller.
 
 For a second private scope on GitHub Packages, add `github-scope: '@example-org'` and
 `github-token: ${{ github.token }}`. The caller must declare `packages: read`, and each package
-must grant that repository access. GitHub's token does not grant access to private npmjs packages.
+must grant that repository access. GitHub's token does not grant access to private npmjs packages. Bearer values remain opaque: the
+action accepts JWT-format GitHub installation tokens without assuming a fixed token length.
 Existing project `.npmrc` files still participate in npm's normal precedence; legacy references to
 `NPM_READ_TOKEN` and `NODE_AUTH_TOKEN` receive the npm reader and GitHub reader respectively when
 the second registry is enabled. With npmjs only, both receive the npm reader.
