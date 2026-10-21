@@ -214,6 +214,27 @@ async function callWorkspaceList(
   }
 }
 
+test("a call to an unregistered tool is a JSON-RPC invalid-params error, not a tool result", async () => {
+  const server = createMcpAppServer({ workspaceResolver: { list: async () => [], open: async () => { throw new Error("not used"); } } });
+  const client = new Client({ name: "unknown-tool-test", version: "test" }, { capabilities: {} });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    await assert.rejects(
+      client.callTool({ name: "no_such_tool", arguments: {} }),
+      (error: unknown) => {
+        assert.equal((error as { code?: unknown }).code, -32602);
+        assert.match((error as Error).message, /Tool no_such_tool not found/);
+        return true;
+      },
+    );
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test("list_workspaces names reachable workspaces with no folder here: host text stripped, malformed ones dropped, capped, and never hiding the folders", async () => {
   const folder = { id: `bnd_${"0".repeat(32)}`, label: "planning", available: true };
   const call = async (reachable: McpWorkspaceResolver["reachable"]) => {
