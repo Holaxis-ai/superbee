@@ -126,7 +126,7 @@ function validateNodePolicyAgreement({
   assert.equal(count(ci, new RegExp(`node-version: ${policy.default_runtime.replaceAll(".", "\\.")}`, "g")), 9);
   assert.equal(count(ci, new RegExp(`node-version: ${policy.compatibility_floor.replaceAll(".", "\\.")}`, "g")), 1);
   assert.equal(count(read(".github/workflows/mutation-tests.yml"), new RegExp(`node-version: ${policy.default_runtime.replaceAll(".", "\\.")}`, "g")), 1);
-  assert.equal(count(read(".github/workflows/upstream-watch.yml"), new RegExp(`node-version: ${policy.default_runtime.replaceAll(".", "\\.")}`, "g")), 4);
+  assert.equal(count(read(".github/workflows/okf-upstream-watch.yml"), new RegExp(`node-version: ${policy.default_runtime.replaceAll(".", "\\.")}`, "g")), 2);
 
   const releaseWorkflows = {
     ".github/workflows/release.yml": 2,

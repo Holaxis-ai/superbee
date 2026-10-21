@@ -8,3 +8,17 @@ updates:
       codeql:
         patterns:
           - "github/codeql-action*"
+  # MCP SDK drift: one grouped PR per run, majors included, so its PR CI is the compatibility check.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: daily
+    allow:
+      - dependency-name: "@modelcontextprotocol/*"
+    groups:
+      mcp-sdk:
+        patterns:
+          - "@modelcontextprotocol/*"
+    labels:
+      - dependencies
+      - javascript

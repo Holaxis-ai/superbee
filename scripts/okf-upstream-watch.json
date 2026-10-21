@@ -1,0 +1,6 @@
+{
+  "schema": "superbee.okf-upstream-watch.v1",
+  "repo": "GoogleCloudPlatform/open-knowledge-format",
+  "path": "SPEC.md",
+  "commit": "0b87c52c6ef999286c745e19998fdfcd03d5dbee"
+}

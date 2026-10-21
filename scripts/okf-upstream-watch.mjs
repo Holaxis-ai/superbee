@@ -1,23 +1,21 @@
-// Report drift in the upstream specifications Superbee depends on: the OKF spec (SPEC.md in its
-// canonical repository, plus its sample bundles read through the built CLI) and the MCP SDK
-// packages used by @superbee/mcp-app.
+// Report drift in the upstream OKF specification: SPEC.md in its canonical repository, plus its
+// sample bundles read through the built CLI. (MCP SDK drift arrives as Dependabot PRs instead.)
 //
 // Usage:
-//   node scripts/upstream-watch.mjs okf [--collect FILE | --dry-run]
-//   node scripts/upstream-watch.mjs mcp [--verify] [--collect FILE | --dry-run]
-//   node scripts/upstream-watch.mjs report <okf|mcp> --input FILE [--dry-run]
+//   node scripts/okf-upstream-watch.mjs [--collect FILE | --dry-run]
+//   node scripts/okf-upstream-watch.mjs report --input FILE [--dry-run]
 //
-// Two phases, so untrusted work never shares a job with the issue-writing token:
-//   collect   (okf, mcp with --collect) reads upstream data and, for mcp --verify, installs and
-//             tests newer packages. It only writes a small JSON result file.
-//   report    re-validates that JSON strictly against the reviewed pins, renders the Markdown
-//             summary, and opens at most one deduplicated `upstream-drift` issue. It never reads
-//             upstream content directly or runs upstream code.
-// Without --collect, okf and mcp run both phases in one process for local use (pair with
+// Two phases, so reading upstream content never shares a job with the issue-writing token:
+//   collect   compares the latest SPEC.md commit with the reviewed pin and runs
+//             `superbee status --json` on every upstream sample bundle. It only writes a small
+//             JSON result file.
+//   report    re-validates that JSON strictly, renders the Markdown summary, and opens at most one
+//             deduplicated `upstream-drift` issue. It never reads upstream content directly.
+// Without --collect or report, both phases run in one process for local use (pair with
 // --dry-run, which prints the would-be issue instead of touching the tracker).
 //
-// Pins in scripts/upstream-watch.json are bumped by humans after review; this script never
-// writes them. Child processes take argv arrays (never a shell) and no credential variables.
+// The pin in scripts/okf-upstream-watch.json is bumped by humans after review; this script never
+// writes it. Child processes take argv arrays (never a shell) and no credential variables.
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -26,15 +24,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./is-main-module.mjs";
-import { compareStrictSemver, parseStrictSemver } from "./strict-semver.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-export const PINS_PATH = path.join(repoRoot, "scripts", "upstream-watch.json");
+export const PIN_PATH = path.join(repoRoot, "scripts", "okf-upstream-watch.json");
 export const CLI_PATH = path.join(repoRoot, "packages", "superbee", "dist", "superbee.mjs");
 export const LABEL = "upstream-drift";
-export const RESULT_SCHEMA = "superbee.upstream-watch.result.v1";
-export const MCP_WORKSPACE = "@superbee/mcp-app";
-export const INSTALL_LABEL = "npm install (mcp-app, --ignore-scripts)";
+export const RESULT_SCHEMA = "superbee.okf-upstream-watch.result.v1";
 export const LIMITS = Object.freeze({
   body: 60000, // GitHub rejects issue bodies above 65536 characters.
   inline: 200,
@@ -49,7 +44,6 @@ export const LIMITS = Object.freeze({
 });
 const SHA = /^[0-9a-f]{40}$/;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-const PACKAGE = /^@[a-z0-9-]+\/[a-z0-9.-]+$/;
 const ZWJ = String.fromCharCode(0x200d);
 
 // ---------- untrusted text ----------
@@ -60,7 +54,7 @@ export function truncate(text, max) {
 }
 
 // Safe inside a code span in a GFM table cell: one line, no backticks, escaped pipes, no live
-// mentions (a zero-width joiner follows each @), and no link or image brackets.
+// mentions (a zero-width joiner follows each @), and no link, image, or HTML brackets.
 export function sanitizeInline(text, max = LIMITS.inline) {
   return truncate(String(text ?? "").replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, " "), max)
     .replaceAll("`", "'")
@@ -89,25 +83,19 @@ export function capBody(body, max = LIMITS.body) {
 
 const shortHash = (text) => createHash("sha256").update(text).digest("hex").slice(0, 10);
 
-// ---------- pins ----------
+// ---------- pin ----------
 
-export function parsePins(text) {
-  const pins = JSON.parse(text);
-  const fail = (message) => { throw new Error(`scripts/upstream-watch.json: ${message}`); };
-  if (pins?.schema !== "superbee.upstream-watch.v1") fail("unexpected schema");
-  const { okf, mcp } = pins;
-  if (!REPO.test(okf?.repo ?? "")) fail("okf.repo must be owner/name");
-  if (okf.path !== "SPEC.md") fail("okf.path must be SPEC.md");
-  if (!SHA.test(okf.commit ?? "")) fail("okf.commit must be a full lowercase commit SHA");
-  if (!mcp || typeof mcp !== "object" || Object.keys(mcp).length === 0) fail("mcp must name at least one package");
-  for (const [name, version] of Object.entries(mcp)) {
-    if (!PACKAGE.test(name)) fail(`invalid package name ${name}`);
-    if (!parseStrictSemver(version)) fail(`invalid pinned version for ${name}`);
-  }
-  return pins;
+export function parsePin(text) {
+  const pin = JSON.parse(text);
+  const fail = (message) => { throw new Error(`scripts/okf-upstream-watch.json: ${message}`); };
+  if (pin?.schema !== "superbee.okf-upstream-watch.v1") fail("unexpected schema");
+  if (!REPO.test(pin.repo ?? "")) fail("repo must be owner/name");
+  if (pin.path !== "SPEC.md") fail("path must be SPEC.md");
+  if (!SHA.test(pin.commit ?? "")) fail("commit must be a full lowercase commit SHA");
+  return pin;
 }
 
-// ---------- collect: OKF ----------
+// ---------- collect ----------
 
 export function readStatusCounts(stdout) {
   let json;
@@ -136,15 +124,10 @@ export function countSymlinks(dir) {
   return count;
 }
 
-const errorResult = (target, error) => ({
-  schema: RESULT_SCHEMA,
-  target,
-  status: "error",
-  error: truncate(error instanceof Error ? error.message : String(error), LIMITS.error),
-});
+const lexists = (file) => { try { lstatSync(file); return true; } catch { return false; } };
 
-export async function collectOkf({ pins, github, fetchTree, runStatus }) {
-  const { repo, path: specPath } = pins.okf;
+export async function collectOkf({ pin, github, fetchTree, runStatus }) {
+  const { repo, path: specPath } = pin;
   let tree;
   try {
     const sha = (rows, what) => {
@@ -155,14 +138,13 @@ export async function collectOkf({ pins, github, fetchTree, runStatus }) {
     const latestSpec = sha(await github(`/repos/${repo}/commits?path=${specPath}&per_page=1`), specPath);
     const head = sha(await github(`/repos/${repo}/commits?per_page=1`), "the default branch");
     let files = [];
-    if (latestSpec !== pins.okf.commit) {
-      const compare = await github(`/repos/${repo}/compare/${pins.okf.commit}...${latestSpec}`);
+    if (latestSpec !== pin.commit) {
+      const compare = await github(`/repos/${repo}/compare/${pin.commit}...${latestSpec}`);
       files = (Array.isArray(compare?.files) ? compare.files : []).slice(0, LIMITS.storedFiles)
         .map((file) => truncate(String(file?.filename ?? ""), LIMITS.inline));
     }
     tree = await fetchTree(repo, head);
     const bundlesDir = path.join(tree.root, "bundles");
-    const lexists = (file) => { try { lstatSync(file); return true; } catch { return false; } };
     const bundlesLinked = lexists(bundlesDir) && lstatSync(bundlesDir).isSymbolicLink();
     const names = lexists(bundlesDir) && !bundlesLinked
       ? readdirSync(bundlesDir).filter((name) => {
@@ -180,67 +162,19 @@ export async function collectOkf({ pins, github, fetchTree, runStatus }) {
         continue;
       }
       const { code, stdout, stderr } = await runStatus(dir);
-      const counts = readStatusCounts(stdout);
-      bundles.push({ ...base, code, ...counts, stderr: truncate(stderr, LIMITS.log) });
+      bundles.push({ ...base, code, ...readStatusCounts(stdout), stderr: truncate(stderr, LIMITS.log) });
     }
-    return { schema: RESULT_SCHEMA, target: "okf", status: "ok", latestSpec, head, files, bundlesLinked, bundles };
+    return { schema: RESULT_SCHEMA, status: "ok", latestSpec, head, files, bundlesLinked, bundles };
   } catch (error) {
-    return errorResult("okf", error);
+    return { schema: RESULT_SCHEMA, status: "error", error: truncate(error instanceof Error ? error.message : String(error), LIMITS.error) };
   } finally {
     tree?.cleanup();
   }
 }
 
-// ---------- collect: MCP ----------
-
-// Only a strictly greater stable release counts; prereleases and equal versions never do.
-export function isNewerStable(candidate, pinned) {
-  const parsed = parseStrictSemver(candidate);
-  if (!parsed || parsed.prerelease !== null) return false;
-  return compareStrictSemver(candidate, pinned) === 1;
-}
-
-export function newerPackages(pins, latest) {
-  return Object.entries(pins.mcp)
-    .filter(([name, pinned]) => isNewerStable(latest[name], pinned))
-    .map(([name]) => ({ name, version: latest[name] }));
-}
-
-export function verificationSteps(updates) {
-  return [
-    { label: INSTALL_LABEL, argv: ["install", "--no-audit", "--no-fund", "--ignore-scripts", "-w", MCP_WORKSPACE, ...updates.map((u) => `${u.name}@${u.version}`)] },
-    { label: "npm run build", argv: ["run", "build"] },
-    { label: "npm run typecheck", argv: ["run", "typecheck"] },
-    { label: `npm test -w ${MCP_WORKSPACE}`, argv: ["test", "-w", MCP_WORKSPACE] },
-  ];
-}
-const STEP_LABELS = new Set(verificationSteps([]).map((step) => step.label));
-
-export async function collectMcp({ pins, npmView, runNpm, verify }) {
-  try {
-    const latest = {};
-    for (const name of Object.keys(pins.mcp)) latest[name] = truncate(String(await npmView(name)).trim(), 64);
-    const packages = Object.keys(pins.mcp).map((name) => ({ name, latest: latest[name] }));
-    const updates = newerPackages(pins, latest);
-    let verification = null;
-    if (verify && updates.length > 0) {
-      verification = [];
-      // Versions reaching argv passed isNewerStable, so they are strict semver.
-      for (const step of verificationSteps(updates)) {
-        const result = await runNpm(step.argv);
-        verification.push({ label: step.label, code: result.code, output: truncate(`${result.stdout}\n${result.stderr}`.slice(-LIMITS.log), LIMITS.log) });
-        if (result.code !== 0) break;
-      }
-    }
-    return { schema: RESULT_SCHEMA, target: "mcp", status: "ok", packages, verification };
-  } catch (error) {
-    return errorResult("mcp", error);
-  }
-}
-
 // ---------- report: strict validation of the collected result ----------
 
-export function validateResult(raw, pins, target) {
+export function validateResult(raw) {
   const fail = (message) => { throw new Error(`result rejected: ${message}`); };
   const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
   const keys = (value, allowed, label) => {
@@ -254,64 +188,41 @@ export function validateResult(raw, pins, target) {
   const bool = (value, label) => { if (typeof value !== "boolean") fail(`${label} must be a boolean`); return value; };
 
   if (!isRecord(raw) || raw.schema !== RESULT_SCHEMA) fail("unknown schema");
-  if (raw.target !== target) fail("target mismatch");
   if (raw.status === "error") {
-    keys(raw, ["schema", "target", "status", "error"], "result");
-    return { target, status: "error", error: str(raw.error, LIMITS.error + 60, "error") };
+    keys(raw, ["schema", "status", "error"], "result");
+    return { status: "error", error: str(raw.error, LIMITS.error + 60, "error") };
   }
   if (raw.status !== "ok") fail("unknown status");
-  if (target === "okf") {
-    keys(raw, ["schema", "target", "status", "latestSpec", "head", "files", "bundlesLinked", "bundles"], "result");
-    if (!SHA.test(raw.latestSpec) || !SHA.test(raw.head)) fail("commit SHAs must be 40 lowercase hex characters");
-    if (!Array.isArray(raw.files) || raw.files.length > LIMITS.storedFiles) fail("files must be a bounded array");
-    if (!Array.isArray(raw.bundles) || raw.bundles.length > LIMITS.bundles) fail("bundles must be a bounded array");
-    return {
-      target, status: "ok", latestSpec: raw.latestSpec, head: raw.head,
-      files: raw.files.map((file, i) => str(file, LIMITS.inline + 60, `files[${i}]`)),
-      bundlesLinked: bool(raw.bundlesLinked, "bundlesLinked"),
-      bundles: raw.bundles.map((bundle, i) => {
-        const label = `bundles[${i}]`;
-        keys(bundle, ["name", "symlinks", "code", "parsed", "docs", "malformed", "invalidTimestamps", "stderr"], label);
-        return {
-          name: str(bundle.name, LIMITS.inline + 60, `${label}.name`),
-          symlinks: count(bundle.symlinks, `${label}.symlinks`) ?? fail(`${label}.symlinks must be an integer`),
-          code: exit(bundle.code, `${label}.code`),
-          parsed: bool(bundle.parsed, `${label}.parsed`),
-          docs: count(bundle.docs, `${label}.docs`),
-          malformed: count(bundle.malformed, `${label}.malformed`),
-          invalidTimestamps: count(bundle.invalidTimestamps, `${label}.invalidTimestamps`),
-          stderr: str(bundle.stderr, LIMITS.log + 60, `${label}.stderr`),
-        };
-      }),
-    };
-  }
-  keys(raw, ["schema", "target", "status", "packages", "verification"], "result");
-  const expected = Object.keys(pins.mcp);
-  if (!Array.isArray(raw.packages) || raw.packages.length !== expected.length) fail("packages must list every pinned package");
-  const packages = raw.packages.map((row, i) => {
-    keys(row, ["name", "latest"], `packages[${i}]`);
-    if (row.name !== expected[i]) fail(`packages[${i}] is not the pinned package in pin order`);
-    return { name: row.name, latest: str(row.latest, 64 + 60, `packages[${i}].latest`) };
-  });
-  let verification = null;
-  if (raw.verification !== null) {
-    if (!Array.isArray(raw.verification) || raw.verification.length === 0 || raw.verification.length > STEP_LABELS.size) fail("verification must be null or a bounded array");
-    verification = raw.verification.map((step, i) => {
-      keys(step, ["label", "code", "output"], `verification[${i}]`);
-      if (!STEP_LABELS.has(step.label)) fail(`verification[${i}] has an unknown step`);
-      const code = exit(step.code, `verification[${i}].code`);
-      if (code === null) fail(`verification[${i}].code must be an integer`);
-      return { label: step.label, code, output: str(step.output, LIMITS.log + 60, `verification[${i}].output`) };
-    });
-  }
-  return { target, status: "ok", packages, verification };
+  keys(raw, ["schema", "status", "latestSpec", "head", "files", "bundlesLinked", "bundles"], "result");
+  if (!SHA.test(raw.latestSpec) || !SHA.test(raw.head)) fail("commit SHAs must be 40 lowercase hex characters");
+  if (!Array.isArray(raw.files) || raw.files.length > LIMITS.storedFiles) fail("files must be a bounded array");
+  if (!Array.isArray(raw.bundles) || raw.bundles.length > LIMITS.bundles) fail("bundles must be a bounded array");
+  return {
+    status: "ok", latestSpec: raw.latestSpec, head: raw.head,
+    files: raw.files.map((file, i) => str(file, LIMITS.inline + 60, `files[${i}]`)),
+    bundlesLinked: bool(raw.bundlesLinked, "bundlesLinked"),
+    bundles: raw.bundles.map((bundle, i) => {
+      const label = `bundles[${i}]`;
+      keys(bundle, ["name", "symlinks", "code", "parsed", "docs", "malformed", "invalidTimestamps", "stderr"], label);
+      return {
+        name: str(bundle.name, LIMITS.inline + 60, `${label}.name`),
+        symlinks: count(bundle.symlinks, `${label}.symlinks`) ?? fail(`${label}.symlinks must be an integer`),
+        code: exit(bundle.code, `${label}.code`),
+        parsed: bool(bundle.parsed, `${label}.parsed`),
+        docs: count(bundle.docs, `${label}.docs`),
+        malformed: count(bundle.malformed, `${label}.malformed`),
+        invalidTimestamps: count(bundle.invalidTimestamps, `${label}.invalidTimestamps`),
+        stderr: str(bundle.stderr, LIMITS.log + 60, `${label}.stderr`),
+      };
+    }),
+  };
 }
 
 // ---------- report: rendering ----------
 
 export function bundleReasons(bundle) {
-  const reasons = [];
   if (bundle.symlinks > 0) return [`contains ${bundle.symlinks} symbolic link(s); not read`];
+  const reasons = [];
   if (bundle.code !== 0) reasons.push(`exit ${bundle.code ?? "unknown"}`);
   if (!bundle.parsed) reasons.push("status output is not a JSON object");
   else {
@@ -329,19 +240,17 @@ export function conformanceKey(pinned, failures) {
   return `okf-conformance:${pinned}:${shortHash(lines.join("\n"))}`;
 }
 
-function watcherError(target, message) {
-  return {
-    kind: "error",
-    summary: [`## ${target.toUpperCase()} upstream watch`, "", "**The watcher itself failed; this is not upstream drift.**", "", fence(message, LIMITS.error)].join("\n"),
-    title: `Upstream watch failing: ${target}`,
-    key: `failing:${target}`,
-    openOnly: true,
-  };
-}
-
-export function renderOkf(result, pins) {
-  if (result.status === "error") return watcherError("okf", result.error);
-  const { repo, commit: pinned } = pins.okf;
+export function renderOkf(result, pin) {
+  if (result.status === "error") {
+    return {
+      kind: "error",
+      summary: ["## OKF upstream watch", "", "**The watcher itself failed; this is not upstream drift.**", "", fence(result.error, LIMITS.error)].join("\n"),
+      title: "Upstream watch failing: okf",
+      key: "failing:okf",
+      openOnly: true,
+    };
+  }
+  const { repo, commit: pinned } = pin;
   const { latestSpec, head, files, bundles } = result;
   const specChanged = latestSpec !== pinned;
   const rows = bundles.map((bundle) => ({ ...bundle, reasons: bundleReasons(bundle) }));
@@ -373,55 +282,13 @@ export function renderOkf(result, pins) {
       lines.push("", `stderr from \`${sanitizeInline(row.name, 80)}\`:`, "", fence(row.stderr));
     }
   }
-  const failed = failures.length > 0 || noBundles;
   const summary = lines.join("\n");
   if (specChanged) return { kind: "drift", summary, title: `Upstream drift: OKF SPEC.md at ${latestSpec.slice(0, 7)}`, key: `okf-spec:${latestSpec}` };
-  if (failed) {
+  if (failures.length > 0 || noBundles) {
     const key = conformanceKey(pinned, noBundles ? [{ name: "(none)", reasons: ["no sample bundles"] }] : failures);
     return { kind: "drift", summary, title: `Upstream drift: OKF sample bundle conformance (${key.slice(-10)})`, key };
   }
   return { kind: "ok", summary, title: null, key: null };
-}
-
-// Registry, network, and API failures say nothing about compatibility.
-const INFRASTRUCTURE = /\b(E(?:AI_AGAIN|CONNRESET|CONNREFUSED|TIMEDOUT|NOTFOUND|NETUNREACH|TARGET|404|403|429|5\d\d)|ETIMEDOUT|socket hang up|fetch failed|network (?:request|error)|registry\.npmjs\.org.*\b(?:5\d\d|429)\b)/;
-export function isInfrastructureFailure(step) {
-  return step.label === INSTALL_LABEL && step.code !== 0 && INFRASTRUCTURE.test(step.output);
-}
-
-export function renderMcp(result, pins) {
-  if (result.status === "error") return watcherError("mcp", result.error);
-  const latest = Object.fromEntries(result.packages.map((row) => [row.name, row.latest]));
-  const updates = newerPackages(pins, latest);
-  const lines = ["## MCP upstream watch", "", "| Package | Reviewed pin | npm latest | Status |", "| --- | --- | --- | --- |"];
-  for (const [name, pinned] of Object.entries(pins.mcp)) {
-    const value = latest[name];
-    const valid = parseStrictSemver(value) !== undefined;
-    const status = !valid ? "unreadable version" : isNewerStable(value, pinned) ? "**newer**" : "current";
-    lines.push(`| \`${name}\` | ${pinned} | ${valid ? value : `\`${sanitizeInline(value, 60)}\``} | ${status} |`);
-  }
-  if (updates.length === 0) return { kind: "ok", summary: lines.join("\n"), title: null, key: null };
-  const verification = result.verification;
-  const failing = verification?.find((step) => step.code !== 0);
-  if (failing && isInfrastructureFailure(failing)) {
-    return watcherError("mcp", `${failing.label} failed for a registry or network reason:\n${failing.output.slice(-LIMITS.error)}`);
-  }
-  lines.push("");
-  if (!verification) lines.push("Verification against the newer versions was skipped (run with `--verify`).");
-  else {
-    lines.push(`Verification with ${updates.map((u) => `\`${u.name}@${u.version}\``).join(", ")} installed into \`${MCP_WORKSPACE}\` (not committed):`, "");
-    lines.push("| Step | Exit |", "| --- | --- |");
-    for (const step of verification) lines.push(`| \`${step.label}\` | ${step.code} |`);
-    if (failing) lines.push("", `Output tail from \`${failing.label}\`:`, "", fence(failing.output.slice(-LIMITS.log)));
-    else lines.push("", "All verification steps passed.");
-  }
-  const names = updates.map((u) => `${u.name}@${u.version}`).join(",");
-  return {
-    kind: "drift",
-    summary: lines.join("\n"),
-    title: `Upstream drift: ${updates.map((u) => `${u.name} ${u.version}`).join(", ")}`,
-    key: `mcp:${names}`,
-  };
 }
 
 // ---------- issues ----------
@@ -431,11 +298,11 @@ export const marker = (key) => `<!-- upstream-watch:${key} -->`;
 export function issueBody(report, { runUrl } = {}) {
   const footer = ["", "---"];
   if (report.kind === "error") {
-    footer.push("Opened by `.github/workflows/upstream-watch.yml` because the watcher could not complete. Fix the", "watcher or its environment; close this issue once a run succeeds.");
+    footer.push("Opened by `.github/workflows/okf-upstream-watch.yml` because the watcher could not complete. Fix the", "watcher or its environment; close this issue once a run succeeds.");
   } else {
     footer.push(
-      "Opened by `.github/workflows/upstream-watch.yml`. Review the upstream change, adapt Superbee if needed,",
-      "and bump the reviewed pin in `scripts/upstream-watch.json` in the same PR. Closing this issue",
+      "Opened by `.github/workflows/okf-upstream-watch.yml`. Review the upstream change, adapt Superbee if needed,",
+      "and bump the reviewed pin in `scripts/okf-upstream-watch.json` in the same PR. Closing this issue",
       "suppresses a repeat of this exact drift.",
     );
   }
@@ -488,7 +355,7 @@ export function createGitHub({ token, repo, fetchImpl = globalThis.fetch } = {})
     async ensureLabel(label) {
       needRepo();
       if (await request(`/repos/${repo}/labels/${encodeURIComponent(label)}`, { allow404: true })) return;
-      await request(`/repos/${repo}/labels`, { method: "POST", body: { name: label, color: "c5def5", description: "An upstream spec or dependency changed; see scripts/upstream-watch.json" } });
+      await request(`/repos/${repo}/labels`, { method: "POST", body: { name: label, color: "c5def5", description: "The upstream OKF spec or its sample bundles changed; see scripts/okf-upstream-watch.json" } });
     },
     // Search finds the marker regardless of label; the labelled listing covers search-index lag.
     async hasMarker(key, { openOnly = false } = {}) {
@@ -512,14 +379,13 @@ export function createGitHub({ token, repo, fetchImpl = globalThis.fetch } = {})
   };
 }
 
-// Children run upstream code (a newer SDK under test) or read upstream files, so they never
-// inherit credential-shaped variables. This is defense in depth: the job running them also holds
-// no write permission.
+// Children read upstream files, so they never inherit credential-shaped variables or workflow
+// command files. This is defense in depth: the job running them also holds no write permission.
 export function childEnv(env = process.env) {
   return Object.fromEntries(Object.entries(env).filter(([name]) => !/TOKEN|SECRET|PASSWORD|CREDENTIAL|GITHUB_STEP_SUMMARY|GITHUB_OUTPUT|GITHUB_ENV|GITHUB_PATH/i.test(name)));
 }
 
-function run(file, argv, { timeout = 30 * 60 * 1000, cwd = repoRoot } = {}) {
+function run(file, argv, { timeout = 120000, cwd = repoRoot } = {}) {
   return new Promise((resolve) => {
     execFile(file, argv, { cwd, env: childEnv(), timeout, maxBuffer: 64 * 1024 * 1024, shell: false }, (error, stdout, stderr) => {
       // A spawn failure or timeout has no numeric exit code; report it as exit 1 with its message.
@@ -542,7 +408,7 @@ async function fetchTree(repo, sha, fetchImpl = globalThis.fetch) {
     writeFileSync(archive, await readBounded(response, LIMITS.tarballBytes));
     const extract = path.join(dir, "tree");
     mkdirSync(extract);
-    const result = await run("tar", ["-xzf", archive, "-C", extract], { timeout: 120000 });
+    const result = await run("tar", ["-xzf", archive, "-C", extract]);
     if (result.code !== 0) throw new Error(`tar exited ${result.code}`);
     const tops = readdirSync(extract);
     if (tops.length !== 1 || !lstatSync(path.join(extract, tops[0])).isDirectory()) throw new Error("unexpected tarball layout");
@@ -556,53 +422,26 @@ async function fetchTree(repo, sha, fetchImpl = globalThis.fetch) {
 // ---------- CLI ----------
 
 export function parseArgs(argv) {
-  const usage = "usage: upstream-watch.mjs okf|mcp [--verify] [--collect FILE | --dry-run] | report okf|mcp --input FILE [--dry-run]";
-  const [command, ...rest] = argv;
-  const options = { command, target: command, dryRun: false, verify: false, collect: null, input: null };
-  if (command === "report") {
-    options.target = rest.shift();
-    if (options.target !== "okf" && options.target !== "mcp") throw new Error(usage);
-  } else if (command !== "okf" && command !== "mcp") throw new Error(usage);
+  const usage = "usage: okf-upstream-watch.mjs [--collect FILE | --dry-run] | report --input FILE [--dry-run]";
+  const rest = [...argv];
+  const options = { command: "collect", dryRun: false, collect: null, input: null };
+  if (rest[0] === "report") { options.command = "report"; rest.shift(); }
   while (rest.length) {
     const flag = rest.shift();
     if (flag === "--dry-run") options.dryRun = true;
-    else if (flag === "--verify" && command === "mcp") options.verify = true;
-    else if (flag === "--collect" && command !== "report" && rest[0]) options.collect = rest.shift();
-    else if (flag === "--input" && command === "report" && rest[0]) options.input = rest.shift();
+    else if (flag === "--collect" && options.command === "collect" && rest[0]) options.collect = rest.shift();
+    else if (flag === "--input" && options.command === "report" && rest[0]) options.input = rest.shift();
     else throw new Error(`unknown option ${flag}; ${usage}`);
   }
-  if (command === "report" && !options.input) throw new Error(usage);
+  if (options.command === "report" && !options.input) throw new Error(usage);
   if (options.collect && options.dryRun) throw new Error("--collect writes a result only; --dry-run applies to report");
   return options;
 }
 
-async function collect(options, pins, env, deps) {
-  if (options.target === "okf") {
-    if (!deps.runStatus && !existsSync(CLI_PATH)) throw new Error("built CLI is missing; run npm run build first");
-    const github = deps.github ?? createGitHub({ token: env.GITHUB_TOKEN });
-    return collectOkf({
-      pins,
-      github: github.get,
-      fetchTree: deps.fetchTree ?? ((repo, sha) => fetchTree(repo, sha)),
-      runStatus: deps.runStatus ?? ((dir) => run(process.execPath, [CLI_PATH, "status", "--json", "--dir", dir], { timeout: 120000, cwd: tmpdir() })),
-    });
-  }
-  return collectMcp({
-    pins,
-    npmView: deps.npmView ?? (async (name) => {
-      const result = await run("npm", ["view", name, "version"], { timeout: 60000 });
-      if (result.code !== 0) throw new Error(`npm view ${name} exited ${result.code}`);
-      return result.stdout;
-    }),
-    runNpm: deps.runNpm ?? ((args) => run("npm", args)),
-    verify: options.verify,
-  });
-}
-
-export async function report(target, raw, pins, env, deps, { dryRun }) {
+export async function report(raw, pin, env, deps, { dryRun }) {
   let result;
-  try { result = validateResult(raw, pins, target); } catch (error) { result = { status: "error", error: error.message }; }
-  const rendered = target === "okf" ? renderOkf(result, pins) : renderMcp(result, pins);
+  try { result = validateResult(raw); } catch (error) { result = { status: "error", error: error.message }; }
+  const rendered = renderOkf(result, pin);
   const runUrl = env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY && env.GITHUB_RUN_ID
     ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`
     : undefined;
@@ -623,34 +462,36 @@ export async function report(target, raw, pins, env, deps, { dryRun }) {
 }
 
 function readResultFile(file) {
-  if (!existsSync(file)) return { schema: RESULT_SCHEMA, status: "missing" };
+  const failed = (error) => ({ schema: RESULT_SCHEMA, status: "error", error });
+  if (!existsSync(file)) return failed("the check job wrote no result");
   const stat = statSync(file);
-  if (!stat.isFile() || stat.size > LIMITS.resultBytes) return { schema: RESULT_SCHEMA, status: "oversize" };
-  try { return JSON.parse(readFileSync(file, "utf8")); } catch { return { schema: RESULT_SCHEMA, status: "unparseable" }; }
+  if (!stat.isFile() || stat.size > LIMITS.resultBytes) return failed("the result file is too large");
+  try { return JSON.parse(readFileSync(file, "utf8")); } catch { return failed("the result file is not JSON"); }
 }
 
 export async function main(argv, env = process.env, deps = {}) {
   const options = parseArgs(argv);
-  const pins = parsePins(readFileSync(PINS_PATH, "utf8"));
-  if (options.command === "report") {
-    const raw = readResultFile(options.input);
-    const missing = { missing: "the check job wrote no result", oversize: "the result file is too large", unparseable: "the result file is not JSON" }[raw.status];
-    const input = missing ? { schema: RESULT_SCHEMA, target: options.target, status: "error", error: missing } : raw;
-    return report(options.target, input, pins, env, deps, { dryRun: options.dryRun });
-  }
-  const result = await collect(options, pins, env, deps);
+  const pin = parsePin(readFileSync(PIN_PATH, "utf8"));
+  if (options.command === "report") return report(readResultFile(options.input), pin, env, deps, { dryRun: options.dryRun });
+  if (!deps.runStatus && !existsSync(CLI_PATH)) throw new Error("built CLI is missing; run npm run build first");
+  const result = await collectOkf({
+    pin,
+    github: (deps.github ?? createGitHub({ token: env.GITHUB_TOKEN })).get,
+    fetchTree: deps.fetchTree ?? ((repo, sha) => fetchTree(repo, sha)),
+    runStatus: deps.runStatus ?? ((dir) => run(process.execPath, [CLI_PATH, "status", "--json", "--dir", dir], { cwd: tmpdir() })),
+  });
   if (options.collect) {
     mkdirSync(path.dirname(path.resolve(options.collect)), { recursive: true });
     writeFileSync(options.collect, `${JSON.stringify(result)}\n`);
     return { result };
   }
   // Local single-process mode still round-trips through JSON and the report-side validator.
-  return report(options.target, JSON.parse(JSON.stringify(result)), pins, env, deps, { dryRun: options.dryRun });
+  return report(JSON.parse(JSON.stringify(result)), pin, env, deps, { dryRun: options.dryRun });
 }
 
 if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2)).catch((error) => {
-    process.stderr.write(`upstream-watch: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`okf-upstream-watch: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
   });
 }

