@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import yaml from 'js-yaml';
 
 const entry = fileURLToPath(new URL('./install.mjs', import.meta.url));
 const npmToken = 'fixture_npm_reader_123456';
@@ -106,4 +107,29 @@ test('missing readers and malformed options fail before npm executes', options, 
     await assertCleanup(f);
   }
   await assert.rejects(readFile(path.join(f.root, 'preflight.json')), { code: 'ENOENT' });
+});
+
+// The runner owns directory selection before this literal run step starts.
+test('action routes directory selection to the runner and runs its literal step from a consumer checkout', options, async t => {
+  const action = yaml.safeLoad(await readFile(new URL('./action.yml', import.meta.url), 'utf8'));
+  assert.equal(action.inputs['working-directory'].default, '.');
+  const step = action.runs.steps[0];
+  assert.equal(step['working-directory'], '${{ inputs.working-directory }}');
+  const f = await fixture(t);
+  const foreign = await mkdtemp(path.join(tmpdir(), 'npm-action-foreign-'));
+  t.after(() => rm(foreign, { recursive: true, force: true }));
+  await writeFile(path.join(foreign, 'package.json'), '{"name":"foreign-checkout","scripts":{"ci:dependencies":"exit 91"}}');
+  const run = cwd => spawnSync('bash', ['-c', step.run], { cwd,
+    env: { ...f.env, NPM_CI_ACTION_PATH: path.dirname(entry) }, encoding: 'utf8' });
+  const result = run(f.root);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(JSON.parse(await readFile(path.join(f.root, 'preflight.json'), 'utf8')).npmReader);
+  assert.equal((await readdir(foreign)).includes('node_modules'), false);
+  await assertCleanup(f);
+  for (const directory of [path.join(foreign, 'missing'), path.join(foreign, 'package.json')]) {
+    const refused = run(directory);
+    assert.equal(refused.status, null);
+    assert.ok(['ENOENT', 'ENOTDIR'].includes(refused.error?.code));
+    await assertCleanup(f);
+  }
 });
