@@ -1,0 +1,12 @@
+{
+  "schema": "superbee.upstream-watch.v1",
+  "okf": {
+    "repo": "GoogleCloudPlatform/open-knowledge-format",
+    "path": "SPEC.md",
+    "commit": "0b87c52c6ef999286c745e19998fdfcd03d5dbee"
+  },
+  "mcp": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/ext-apps": "1.7.5"
+  }
+}

@@ -206,6 +206,19 @@ manual dispatch. It is not a required lane and is outside the lane projection ab
 [`specs/tla/README.md`](specs/tla/README.md) owns how to run the models, what each config checks,
 and which fixed configs model changes that have not merged.
 
+The `Upstream watch` workflow in `.github/workflows/upstream-watch.yml` reports drift in the
+specifications Superbee depends on; it is not a PR gate and never commits. Weekly, it compares the
+latest `SPEC.md` commit in the canonical OKF repository with the reviewed pin and reads every
+upstream sample bundle with the built CLI's `status --json`; a nonzero exit, a malformed document,
+an invalid timestamp, or an empty bundle is a conformance failure. Daily, it compares npm `latest`
+for the MCP SDK packages with their pins and, when one is newer, installs it into the mcp-app
+workspace without committing and runs build, typecheck, and the mcp-app tests. Drift opens at most
+one `upstream-drift` issue per title, and an open or closed issue with that title suppresses a
+repeat. Manual dispatch defaults to a dry run. The reviewed pins live in `scripts/upstream-watch.json`.
+To resolve an issue, review the linked upstream change, adapt Superbee if needed, and bump the pin
+in the same PR. Locally, `node scripts/upstream-watch.mjs okf --dry-run` (after `npm run build`)
+or `node scripts/upstream-watch.mjs mcp --dry-run` prints the report without filing anything.
+
 ### GitHub Action pin renewal
 
 Every remote action reference uses a full lowercase commit SHA plus its exact `vX.Y.Z` release
@@ -247,6 +260,7 @@ CI coverage and broader local reproduction commands by reach (not the default bu
 | Host-class-dependent tests (case or normalization fixtures, the identity lock) | `npm run ci:aliasing-host` |
 | `.github/workflows/release*.yml` | `npm run ci:scripts` (workflow invariant test), then one rehearsal against a disposable package before first live use |
 | `specs/tla` or `.github/workflows/tla-specs.yml` | `specs/tla/run-tlc.sh` on the touched area's configs |
+| `scripts/upstream-watch.*` or `.github/workflows/upstream-watch.yml` | `npm run ci:scripts`; a live `node scripts/upstream-watch.mjs <okf\|mcp> --dry-run` |
 
 A CI topology change must update `scripts/ci-lanes.json` and this table in the same unit; never
 add path skipping without a separately reviewed fail-closed classifier. Automatic CI runs on Linux
