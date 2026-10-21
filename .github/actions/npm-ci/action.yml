@@ -1,0 +1,31 @@
+name: Install npm dependencies with scoped registry access
+description: Run an optional dependency preflight and npm ci with temporary registry configuration
+inputs:
+  npm-token:
+    description: Read-only npmjs package token, supplied by the caller's secret policy
+    required: true
+  github-token:
+    description: Optional GitHub Packages reader; requires github-scope
+    default: ''
+  github-scope:
+    description: Optional GitHub Packages scope, including the @ prefix
+    default: ''
+  ignore-scripts:
+    description: Disable install lifecycle scripts; explicitly set false when the consumer requires them
+    default: 'true'
+  preflight-script:
+    description: Optional dependency-free npm script to run before installation
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Install locked dependencies
+      shell: bash
+      env:
+        NPM_CI_ACTION_PATH: ${{ github.action_path }}
+        NPM_CI_TOKEN: ${{ inputs.npm-token }}
+        NPM_CI_GITHUB_TOKEN: ${{ inputs.github-token }}
+        NPM_CI_GITHUB_SCOPE: ${{ inputs.github-scope }}
+        NPM_CI_IGNORE_SCRIPTS: ${{ inputs.ignore-scripts }}
+        NPM_CI_PREFLIGHT_SCRIPT: ${{ inputs.preflight-script }}
+      run: node "$NPM_CI_ACTION_PATH/install.mjs"
