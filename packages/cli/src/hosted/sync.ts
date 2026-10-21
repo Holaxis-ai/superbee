@@ -110,6 +110,7 @@ export const HOSTED_SYNC_USAGE = `In a hosted checkout (made by 'superbee checko
 
 Usage:
   superbee sync [--dir <folder>] [--limit <n>] [--json]
+  superbee sync --replace-links <id> [--dir <folder>] [--json]
   superbee sync --inspect --doc <id> [--out <file>] [--dir <folder>] [--json]
   superbee sync --resolve keep|take|revise --doc <id> [--dir <folder>] [--json]
   superbee sync --restore-deletes | --accept-deletes <token> [--dir <folder>] [--json]
@@ -118,6 +119,10 @@ Usage:
 Edited documents are sent whole under your own access. Tracked ordinary files send frozen
 opaque bytes with exact version and MIME pins, up to 16 MiB or a smaller advertised host bound;
 new local files require explicit promote. Documents changed on the host are refreshed in the folder.
+An edit that removes an outbound link a document had is held (dropped_links) and never sent
+by a plain sync. --replace-links <id> sends that one document's edit with its links removed, in
+this run only: every other document, and any later edit of the same one, is held again if it
+drops a link. It never admits a body carrying a truncated-preview notice.
 Conflict inspection and resolution: A change to one document and a
 change on the host to another both land. A document changed on both sides is never merged: it
 comes back as a conflict row, and nothing is sent for it until you resolve it:
@@ -271,13 +276,14 @@ export async function hostedCheckoutFor(argv: readonly string[], home: string = 
 
 /** True when raw argv asks for a hosted-only verb. */
 export function requestsHostedVerb(argv: readonly string[]): boolean {
-  return argv.some((token) => ["--inspect", "--resolve", "--doc", "--accept-deletes", "--restore-deletes", "--take-host-deletions"].some((flag) => token === flag || token.startsWith(`${flag}=`)));
+  return argv.some((token) => ["--inspect", "--resolve", "--doc", "--accept-deletes", "--restore-deletes", "--take-host-deletions", "--replace-links"].some((flag) => token === flag || token.startsWith(`${flag}=`)));
 }
 
 const GIT_ONLY_FLAGS = ["establish", "pull-only", "show-incoming", "yes", "body-out", "migrate"] as const;
 
 interface HostedValues {
   "accept-deletes"?: string;
+  "replace-links"?: string;
   "restore-deletes"?: boolean;
   "take-host-deletions"?: string;
   inspect?: string;
@@ -333,6 +339,13 @@ function parseHosted(argv: string[]): HostedValues {
   if (take !== undefined) {
     if (!/^(?:blobs:)?[1-9][0-9]{0,6}:[0-9a-f]{12}$/.test(take)) throw new CliError("USAGE", `--take-host-deletions takes the token printed with the refused deletions (<count>:<digest>), not '${take}'`, { help: `${inv} sync (the receipt's pulled.refused_deletions names the token)` });
     if (values.inspect !== undefined || values.resolve !== undefined || values["restore-deletes"]) throw new CliError("USAGE", "--take-host-deletions goes with a plain sync", { help: `${inv} sync --take-host-deletions ${commandToken(take)}` });
+  }
+  const replaceLinks = values["replace-links"];
+  if (replaceLinks !== undefined) {
+    if (values.inspect !== undefined || values.resolve !== undefined || values["restore-deletes"] || values["take-host-deletions"] !== undefined || values["accept-deletes"]?.startsWith("blobs:")) {
+      throw new CliError("USAGE", "--replace-links goes with a plain sync", { help: `${inv} sync --replace-links <id>` });
+    }
+    values["replace-links"] = documentId(replaceLinks);
   }
   return values;
 }
@@ -937,6 +950,8 @@ function rowHelp(rows: readonly SyncRow[], binding: CheckoutBinding): string[] {
   const firstConflict = rows.find((row) => row.state === "conflict");
   if (firstConflict) help.push(`${cliInvocation()} sync --inspect --doc ${commandToken(firstConflict.id)} --dir ${commandToken(binding.path)}`);
   if (rows.some((row) => row.state === "paused" || row.state === "unknown")) help.push(syncCommand(binding));
+  const droppedLinks = rows.find((row) => row.state === "held" && row.reason === "dropped_links");
+  if (droppedLinks) help.push(`only if removing the links is intended: ${syncCommand(binding, commandFragment` --replace-links ${commandToken(droppedLinks.id)}`)}`);
   if (rows.some((row) => row.state === "held" || (row.state === "refused" && row.reason !== "read_only"))) {
     help.push(`edit or restore the files named in the held and refused rows, then: ${syncCommand(binding)}`);
   }
@@ -1347,6 +1362,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       rootWrites: session.capabilities.rootWrites,
       documentInputBytes: session.capabilities.documentInputBytes,
       ...(acceptDeletes !== undefined ? { acceptDeletes, confirmAccept: confirmAtTerminal(binding, terminal) } : {}),
+      ...(values["replace-links"] !== undefined ? { replaceLinks: values["replace-links"] } : {}),
     });
     await session.persist();
     const unsent = async () => (await store.listIntents(UNSETTLED_STATES)).length;
@@ -1477,6 +1493,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
           }
         : {}),
       ...(scan.accepted !== undefined ? { deletions_accepted: scan.accepted } : {}),
+      ...(values["replace-links"] !== undefined ? { replace_links: { doc: values["replace-links"], applied: scan.replaceLinksApplied === true } } : {}),
       ...(outcome.via?.ignored !== undefined ? { via_ignored: outcome.via.ignored } : {}),
       ...(scan.deleted.length > 0
         ? { deletions: scan.deleted.map((row) => ({ id: row.id, ...(row.inbound.length > 0 ? { still_linked_from: row.inbound.slice(0, 20), warning: `${row.inbound.length} document(s) still link to '${row.id}'; the links are left as they are` } : {}) })) }
@@ -2086,7 +2103,15 @@ async function resolveFolder(session: Session, id: string, choice: "keep" | "tak
   const parsed = parseMarkdown(conflict.bytes.toString("utf8"), id, { okfVersion: session.okfVersion });
   let committed;
   try {
-    committed = await commitLocal(local, id, { mode: "replace-document", onAbsent: "create", buildCandidate: () => ({ frontmatter: parsed.frontmatter, body: parsed.body }) });
+    // keep and revise follow an --inspect that showed both sides, links included: the reviewed
+    // file may drop links the host's version has, as a journal conflict's resolution may.
+    const reviewed = (await store.readWithJournal(id)).document;
+    committed = await commitLocal(local, id, {
+      mode: "replace-document",
+      onAbsent: "create",
+      ...(reviewed ? { bodyReplace: { replaceLinks: true }, expectedVersion: reviewed.version } : {}),
+      buildCandidate: () => ({ frontmatter: parsed.frontmatter, body: parsed.body }),
+    });
   } catch (error) {
     if (error instanceof InvalidInputError) throw new CliError("CONFLICT", `${file} is not a valid document: ${error.message}`, { details: { reason: "not_sendable", id, file }, help: `edit ${file}, then re-run: ${resumeCommand}` });
     throw error;

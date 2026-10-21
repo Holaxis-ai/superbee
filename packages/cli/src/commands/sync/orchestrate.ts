@@ -497,6 +497,7 @@ export function parseSyncArgs(argv: string[]) {
           "accept-deletes": { type: "string" },
           "restore-deletes": { type: "boolean" },
           "take-host-deletions": { type: "string" },
+          "replace-links": { type: "string" },
         },
         allowPositionals: true,
       }),
@@ -508,10 +509,10 @@ export function parseSyncArgs(argv: string[]) {
 async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<SyncDispatch> {
   const { values } = parseSyncArgs(argv);
   if (values.help) return { kind: "help" };
-  if (values.inspect !== undefined || values.resolve !== undefined || values.doc !== undefined || values["accept-deletes"] !== undefined || values["restore-deletes"] !== undefined || values["take-host-deletions"] !== undefined) {
+  if (values.inspect !== undefined || values.resolve !== undefined || values.doc !== undefined || values["accept-deletes"] !== undefined || values["restore-deletes"] !== undefined || values["take-host-deletions"] !== undefined || values["replace-links"] !== undefined) {
     // `superbee sync` routes the conflict verbs (both homes) and the hosted-only verbs before the
     // Git sync runs; only a caller that invokes the Git sync directly reaches this.
-    throw new CliError("USAGE", `--inspect, --resolve and --doc are handled by '${inv} sync' (the one conflict grammar for Git boards and hosted checkouts); --accept-deletes, --restore-deletes and --take-host-deletions apply to a hosted checkout only`, {
+    throw new CliError("USAGE", `--inspect, --resolve and --doc are handled by '${inv} sync' (the one conflict grammar for Git boards and hosted checkouts); --accept-deletes, --restore-deletes, --take-host-deletions and --replace-links apply to a hosted checkout only`, {
       help: `${inv} sync --inspect --doc <id>`,
     });
   }
