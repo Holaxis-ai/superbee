@@ -1,11 +1,8 @@
-import {
-  parseLinksFromDoc,
-  prepareDocumentFieldAction,
-  prepareDocumentMutationCandidate,
-  resolveKindFieldCoordinate,
-  type KindRegistry,
-  type OkfDocument,
-} from "@superbee/core";
+import { parseLinksFromDoc } from "@superbee/core/links";
+import { prepareDocumentFieldAction } from "@superbee/core/document-field-actions";
+import { prepareDocumentMutationCandidate } from "@superbee/core/document-mutation";
+import { resolveKindFieldCoordinate, type KindRegistry } from "@superbee/core/kinds";
+import type { OkfDocument } from "@superbee/core/storage";
 import { parseDocumentAction, MAX_ACTION_BODY_BYTES, type ActionScalar } from "./action-bridge.js";
 
 export interface ViewActionPreparationContext {

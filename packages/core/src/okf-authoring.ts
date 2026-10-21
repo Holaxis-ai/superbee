@@ -13,4 +13,3 @@ export function resolveOkfAuthoringVersion(requested?: string): string {
   }
   return version;
 }
-
