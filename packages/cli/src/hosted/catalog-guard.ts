@@ -34,11 +34,16 @@ function busy(folder: string): CliError {
   });
 }
 
-/** The ready binding at this path: the path index first, then any binding naming the same folder. */
+/**
+ * The ready binding at this path: the path index first, then any binding naming the same folder by
+ * path or, for a folder that is there, by identity (an entry can spell the folder in another case
+ * on a case-insensitive volume, and the index is keyed by the exact spelling).
+ */
 async function bindingAt(home: string, folder: string): Promise<CheckoutBinding | null> {
   const indexed = await indexedBindingForPath(home, folder, true);
   if (indexed) return indexed;
-  return (await listReadyBindings(home)).find((binding) => samePhysicalPath(binding.path, folder)) ?? null;
+  const identity = await folderIdentity(folder);
+  return (await listReadyBindings(home)).find((binding) => samePhysicalPath(binding.path, folder) || (identity !== null && sameFolder(identity, binding.folder_identity))) ?? null;
 }
 
 /**

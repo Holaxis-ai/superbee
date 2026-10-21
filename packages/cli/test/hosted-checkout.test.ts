@@ -1369,6 +1369,30 @@ test("a checkout replacing one whose folder was deleted keeps that folder's cata
   await rm(path.join(h.cwd, "team"), { recursive: true });
   const again = await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
   assert.ok(again.replaced_stale_checkout);
-  assert.deepEqual(again.catalog, first.catalog);
+  assert.deepEqual(again.catalog, { ...(first.catalog as Record<string, unknown>), existing: true });
+  assert.equal((await loadCatalog(h.home)).entries.length, 1);
+});
+
+test("catalog remove guards a checkout whose entry spells its folder in another case, and refuses an unreadable path index", async () => {
+  const h = await harness();
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
+  const folder = await realpath(path.join(h.cwd, "team"));
+  await writeFile(path.join(folder, "notes/alpha.md"), `${await readFile(path.join(folder, "notes/alpha.md"), "utf8")}Unsent.\n`);
+  const caseInsensitive = (await stat(path.join(path.dirname(folder), "TEAM")).catch(() => null)) !== null;
+  if (caseInsensitive) {
+    // A hand-written entry naming the same folder in another case still reaches the checkout's guard.
+    const catalogFile = catalogPath(h.home);
+    const raw = await readFile(catalogFile, "utf8");
+    await writeUserStateFileAtomic0600(h.home, path.dirname(catalogFile), "catalog.json", raw.replace(JSON.stringify(folder), JSON.stringify(path.join(path.dirname(folder), "TEAM"))));
+    const refused = await rejects(catalogRun(h, ["remove", BUNDLE]));
+    assert.equal(refused.details?.reason, "unsent_changes");
+    await writeUserStateFileAtomic0600(h.home, path.dirname(catalogFile), "catalog.json", raw);
+  }
+  // An unreadable path index never falls through to an unguarded removal.
+  const index = path.join(hostedCheckoutsRoot(h.home), "paths");
+  for (const name of await readdir(index)) await writeFile(path.join(index, name), "{not json");
+  const unverifiable = await rejects(catalogRun(h, ["remove", BUNDLE]));
+  assert.equal(unverifiable.code, "CONFLICT");
+  assert.equal(unverifiable.details?.reason, "checkout_unverifiable");
   assert.equal((await loadCatalog(h.home)).entries.length, 1);
 });

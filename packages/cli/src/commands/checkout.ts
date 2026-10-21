@@ -882,7 +882,7 @@ export async function registerInCatalog(home: string, binding: CheckoutBinding):
     const entries = (await loadCatalog(home)).entries;
     // A checkout replacing one whose folder was deleted finds that folder's entry still there.
     const existing = entries.find((entry) => samePhysicalPath(entry.locator.path, binding.path));
-    if (existing) return { registered: true, label: existing.label, id: existing.id, home: "hosted" };
+    if (existing) return { registered: true, existing: true, label: existing.label, id: existing.id, home: "hosted" };
     const taken = new Set(entries.map((entry) => entry.label));
     const label = catalogLabels(binding.bundle_id).find((candidate) => !taken.has(candidate));
     if (label === undefined) return { registered: false, note: "every catalog label for this bundle id is taken", help: byHand };

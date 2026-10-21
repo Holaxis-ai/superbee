@@ -326,6 +326,7 @@ async function remove(
     }
   }
   if (result.changed) help.push(`${cliInvocation()} catalog add ${commandToken(entry.label)} --dir ${commandToken(entry.locator.path)}`);
+  if (result.reason === "entry_changed") help.push(`${cliInvocation()} catalog remove ${commandToken(selector)}`);
   help.push(`${cliInvocation()} catalog list`);
   stdout(render({ ...receipt, help }, mode));
 }
