@@ -310,8 +310,10 @@ Superbee app, by the person.
 An edit that removes an outbound link the document had is held as `dropped_links`, and the row
 names the links it removes. Usually the removal is a mistake (a rewrite from a partial read):
 restore the links. When removing them is intended, `superbee sync --replace-links <id>` sends that
-one document's edit in that run, against the version it was checked against. It covers no other
-document and no later edit, and it never admits a body carrying a truncated-preview notice.
+one document's edit as the file stands in that run, against the version it was checked against;
+once admitted it is sent like any other change, retried by a later sync if the host was busy. It
+covers no other document and no later edit, and it never admits a body carrying a
+truncated-preview notice.
 `superbee status` shows the same hold before you sync.
 
 ## The bundle's front page (the root `index.md`)

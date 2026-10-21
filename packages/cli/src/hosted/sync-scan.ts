@@ -30,6 +30,7 @@ import { DELETIONS_HELD_REFUSAL_CODE, MAXIMUM_ACCEPTED_DELETIONS, type HostedDef
 import { mintRequestId } from "@superbee/core/uncertain-write";
 import type { IntentRecord, NewIntentRecord } from "@superbee/core/journaled-backend";
 
+import { commandToken } from "../command-text.js";
 import { readUserStateFile, writeUserStateFileAtomic0600 } from "../user-state.js";
 import { checkoutDir } from "./binding.js";
 import { digestOf, ensureParentInside, fold, parentUnsafe, placeNew, PLACEMENT_TEMP, replaceGuarded, ROOT_INDEX, UnsafePlacementError } from "./projection.js";
@@ -662,7 +663,7 @@ function held(id: string, rel: string, reason: HeldReason, message: string): Hel
 function droppedLinksRow(id: string, rel: string, links: readonly { to: string }[]): HeldFile {
   const targets = [...new Set(links.map((link) => link.to))];
   const named = `${targets.slice(0, 10).join(", ")}${targets.length > 10 ? ", ..." : ""}`;
-  return held(id, rel, "dropped_links", `'${id}' removes ${targets.length === 1 ? "a link" : `${targets.length} links`} (to ${named}); restore the link, or send the removal deliberately with sync --replace-links ${id}`);
+  return held(id, rel, "dropped_links", `'${id}' removes ${targets.length === 1 ? "a link" : `${targets.length} links`} (to ${named}); restore the link, or send the removal deliberately with sync --replace-links ${commandToken(id)}`);
 }
 
 /** In a preview: the hold a sync without `--replace-links` would record for this edit, or null. */
@@ -847,7 +848,7 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
       // The stored version moved after the guard judged the removal: nothing is journaled, and
       // the next scan judges the file against the new version.
       if (accepting && error instanceof VersionConflict) {
-        report.held.push(held(id, rel, "dropped_links", `'${id}' changed in the checkout while sync checked its link removal; nothing was sent, run sync --replace-links ${id} again`));
+        report.held.push(held(id, rel, "dropped_links", `'${id}' changed in the checkout while sync checked its link removal; nothing was sent, run sync --replace-links ${commandToken(id)} again`));
         continue;
       }
       // The document breaks a rule of its OKF edition: the file stays as it is, for the person to fix.

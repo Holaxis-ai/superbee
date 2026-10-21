@@ -120,9 +120,10 @@ Edited documents are sent whole under your own access. Tracked ordinary files se
 opaque bytes with exact version and MIME pins, up to 16 MiB or a smaller advertised host bound;
 new local files require explicit promote. Documents changed on the host are refreshed in the folder.
 An edit that removes an outbound link a document had is held (dropped_links) and never sent
-by a plain sync. --replace-links <id> sends that one document's edit with its links removed, in
-this run only: every other document, and any later edit of the same one, is held again if it
-drops a link. It never admits a body carrying a truncated-preview notice.
+by a plain sync. --replace-links <id> admits that one document's edit as the file stands in that
+run; once admitted it is sent like any other change (a later sync retries it if the host was
+busy). Every other document, and any later edit of the same one, is held again if it drops a
+link. It never admits a body carrying a truncated-preview notice.
 Conflict inspection and resolution: A change to one document and a
 change on the host to another both land. A document changed on both sides is never merged: it
 comes back as a conflict row, and nothing is sent for it until you resolve it:
@@ -342,6 +343,9 @@ function parseHosted(argv: string[]): HostedValues {
   }
   const replaceLinks = values["replace-links"];
   if (replaceLinks !== undefined) {
+    if (argv.filter((token) => token === "--replace-links" || token.startsWith("--replace-links=")).length > 1) {
+      throw new CliError("USAGE", "--replace-links names one document per sync", { help: `${inv} sync --replace-links <id>` });
+    }
     if (values.inspect !== undefined || values.resolve !== undefined || values["restore-deletes"] || values["take-host-deletions"] !== undefined || values["accept-deletes"]?.startsWith("blobs:")) {
       throw new CliError("USAGE", "--replace-links goes with a plain sync", { help: `${inv} sync --replace-links <id>` });
     }

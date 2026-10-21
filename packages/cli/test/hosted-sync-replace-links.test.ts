@@ -160,6 +160,8 @@ test("--replace-links goes with a plain sync only, names one valid document id, 
     await assert.rejects(sync(["--dir", h.folder, "--replace-links", "notes/alpha", ...extra], syncDeps(h)), (error: unknown) => error instanceof CliError && error.code === "USAGE", extra.join(" "));
   }
   await assert.rejects(sync(["--dir", h.folder, "--replace-links", "../outside"], syncDeps(h)), (error: unknown) => error instanceof CliError && error.code === "USAGE");
+  // One document per run: a second flag is refused rather than silently replacing the first.
+  await assert.rejects(sync(["--dir", h.folder, "--replace-links", "notes/alpha", "--replace-links=notes/delta"], syncDeps(h)), (error: unknown) => error instanceof CliError && error.code === "USAGE" && /one document/.test(error.message));
   assert.equal(h.host.writes.length, 0);
 
   const plain = await realpath(await mkdtemp(path.join(tmpdir(), "sb-replace-links-plain-")));
