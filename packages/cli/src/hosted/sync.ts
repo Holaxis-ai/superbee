@@ -2103,8 +2103,9 @@ async function resolveFolder(session: Session, id: string, choice: "keep" | "tak
   const parsed = parseMarkdown(conflict.bytes.toString("utf8"), id, { okfVersion: session.okfVersion });
   let committed;
   try {
-    // keep and revise follow an --inspect that showed both sides, links included: the reviewed
-    // file may drop links the host's version has, as a journal conflict's resolution may.
+    // keep and revise are the person's decision to send this file over the host's version they
+    // inspected (assertInspectedCurrent), so it may drop links that version has, as a journal
+    // conflict's resolution may.
     const reviewed = (await store.readWithJournal(id)).document;
     committed = await commitLocal(local, id, {
       mode: "replace-document",

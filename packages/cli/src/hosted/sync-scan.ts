@@ -25,7 +25,7 @@ import path from "node:path";
 
 import { commitLocal, deleteLocal, UNSETTLED_STATES, type LocalBundle } from "@superbee/browser-local";
 import { DOCUMENT_DELETE_KIND, equalJournalValue } from "@superbee/core/journaled-backend";
-import { assertSafeConceptId, BodyReplaceError, conceptIdFromPath, guardDroppedLinks, CONVENTION_TYPE, InvalidInputError, isConventionId, isReservedFile, MalformedDocumentError, parseLinksFromDoc, parseMarkdown, type Frontmatter, type JournaledBackend, type OkfDocument } from "@superbee/core";
+import { assertSafeConceptId, BodyReplaceError, conceptIdFromPath, guardDroppedLinks, CONVENTION_TYPE, InvalidInputError, isConventionId, isReservedFile, MalformedDocumentError, parseLinksFromDoc, parseMarkdown, VersionConflict, type Frontmatter, type JournaledBackend, type OkfDocument } from "@superbee/core";
 import { DELETIONS_HELD_REFUSAL_CODE, MAXIMUM_ACCEPTED_DELETIONS, type HostedDefinitionWrites, type HostedRootWrites, FRONTMATTER_KEY_LIMIT, HOSTED_MANAGED_FIELDS, WHOLE_DOCUMENT_BOUNDS, wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
 import { mintRequestId } from "@superbee/core/uncertain-write";
 import type { IntentRecord, NewIntentRecord } from "@superbee/core/journaled-backend";
@@ -842,6 +842,12 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     } catch (error) {
       if (error instanceof BodyReplaceError && error.finding.reason === "dropped_links") {
         report.held.push(droppedLinksRow(id, rel, error.finding.dropped_links));
+        continue;
+      }
+      // The stored version moved after the guard judged the removal: nothing is journaled, and
+      // the next scan judges the file against the new version.
+      if (accepting && error instanceof VersionConflict) {
+        report.held.push(held(id, rel, "dropped_links", `'${id}' changed in the checkout while sync checked its link removal; nothing was sent, run sync --replace-links ${id} again`));
         continue;
       }
       // The document breaks a rule of its OKF edition: the file stays as it is, for the person to fix.

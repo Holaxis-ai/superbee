@@ -15,7 +15,10 @@ import { checkout } from "../src/commands/checkout.js";
 import { sync } from "../src/commands/sync.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { BODY_PREVIEW_TRUNCATION_MARKER } from "../src/body-replace-guards.js";
-import { bindingForPath } from "../src/hosted/binding.js";
+import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
+import { commitLocal, openLocalBundle } from "@superbee/browser-local";
+import { bindingForPath, checkoutStoreDir } from "../src/hosted/binding.js";
+import { readProjection, scanCheckout } from "../src/hosted/sync-scan.js";
 import { hostedStatus } from "../src/hosted/status.js";
 import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
 
@@ -191,4 +194,43 @@ test("--resolve keep after --inspect sends a file that lacks a link the host add
   assert.equal(rowFor(after.receipt, "notes/alpha")?.state, "committed");
   assert.equal(h.host.docs.get("notes/alpha")!.body, `${LINKED}Local text.\n`);
   assert.equal(replaces(h, "notes/alpha").at(-1)!.body.expectedVersion, remote);
+});
+
+test("an acceptance is pinned to the version it judged: a store that moves mid-write journals nothing for the removal", async () => {
+  const h = await harness();
+  await setBody(h, "notes/alpha", "Alpha links to [Beta](beta.md) only.\n");
+  const binding = (await bindingForPath(h.home, h.folder))!;
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  try {
+    const projection = await readProjection(h.home, binding.checkout_id, store);
+    const real = openLocalBundle(binding.checkout_id, { backend: store });
+    let moved = false;
+    // The scan's read of the stored document returns, and only then another writer moves the head.
+    const racing = new Proxy(store, {
+      get(inner, key) {
+        if (key === "readWithJournal") {
+          return async (id: string, options?: { meta?: readonly string[] }) => {
+            const result = await inner.readWithJournal(id, options);
+            if (id === "notes/alpha" && !moved) {
+              moved = true;
+              await commitLocal(real, "notes/alpha", { mode: "replace-document", onAbsent: "fail", buildCandidate: () => ({ frontmatter: result.document!.doc.frontmatter, body: `${LINKED}Moved.\n` }) });
+            }
+            return result;
+          };
+        }
+        const value = Reflect.get(inner, key, inner);
+        return typeof value === "function" ? value.bind(inner) : value;
+      },
+    });
+    const report = await scanCheckout({ folder: h.folder, bundleId: binding.bundle_id, okfVersion: undefined, local: openLocalBundle(binding.checkout_id, { backend: racing as FileJournaledBackend }), projection, replaceLinks: "notes/alpha" });
+    assert.ok(moved, "the race ran");
+    assert.deepEqual(report.held.map((row) => [row.id, row.reason]), [["notes/alpha", "dropped_links"]]);
+    assert.equal(report.replaceLinksApplied, undefined);
+    assert.ok(!report.committed.includes("notes/alpha"));
+    const stored = await store.readWithJournal("notes/alpha");
+    assert.equal(stored.document!.doc.body, `${LINKED}Moved.\n`, "the store holds the other writer's version, never the removal");
+    assert.ok(stored.intents.every((row) => !String(row.content ?? "").includes("only.")), "no intent carries the link removal");
+  } finally {
+    await store.close();
+  }
 });
