@@ -276,14 +276,14 @@ async function interruptGate(when: "from outside, once the gate is running" | "f
   const fromSpawn = when === "from inside the spawn, before it returns";
   // The gate's leader and a background member both outlive the test unless the group is killed.
   const gate = `exec 3>'${fifo}'; sleep 120 & echo "ready $$" >&3; ${fromSpawn ? `echo > '${spawned}'; ` : ""}exec sleep 120`;
-  // From inside the spawn: the sync blocks until the gate has started, then signals itself before
-  // `spawn` returns, so the signal is pending before the sync could take any later step.
+  // From inside the spawn: the sync blocks until the gate (its one detached spawn) has started,
+  // then signals itself before `spawn` returns, so the signal is pending before any later step.
   const raiseInSpawn =
     `import childProcess from "node:child_process";\n` +
     `import { readFileSync } from "node:fs";\n` +
     `import { syncBuiltinESMExports } from "node:module";\n` +
     `const spawn = childProcess.spawn;\n` +
-    `childProcess.spawn = (...args) => { const child = spawn(...args); readFileSync(${JSON.stringify(spawned)}); process.kill(process.pid, "SIGINT"); return child; };\n` +
+    `childProcess.spawn = (...args) => { const child = spawn(...args); if (args.some((arg) => arg?.detached === true)) { readFileSync(${JSON.stringify(spawned)}); process.kill(process.pid, "SIGINT"); } return child; };\n` +
     `syncBuiltinESMExports();\n`;
   await writeFile(
     script,
@@ -318,7 +318,7 @@ async function interruptGate(when: "from outside, once the gate is running" | "f
     if (!fromSpawn) child.kill("SIGINT");
     assert.equal(await within(20_000, exited, "the sync ended"), "SIGINT", "the signal still ends the process");
     // The members are SIGKILLed, so their exit is prompt; the bound sits far inside their sleeps.
-    await within(10_000, groupGone, "the gate's group did not outlive the sync");
+    await within(10_000, groupGone, "the gate's whole group exited with the sync");
   } finally {
     child.kill("SIGKILL");
     if (group !== undefined) {
