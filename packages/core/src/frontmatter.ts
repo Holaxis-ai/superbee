@@ -56,6 +56,13 @@ const yamlEngine = {
   },
 };
 
+/** Options shared by full-document and standalone YAML decoding. */
+export interface ParseDocumentOptions {
+  okfVersion?: string;
+  /** Preserve the stored legacy timestamp value instead of applying v0.1 normalization. */
+  preserveTimestamp?: boolean;
+}
+
 /**
  * Normalize the legacy top-level `timestamp` field to an ISO-8601 string.
  *
@@ -64,11 +71,12 @@ const yamlEngine = {
  * default schema. The parser above now retains all YAML timestamp scalars as strings so
  * date-only values remain distinguishable at any depth. This legacy field still keeps its
  * established canonical ISO behavior, including epoch-millisecond input, for default/v0.1
- * decoding. v0.2 preserves its value so consumers can distinguish ambiguous legacy clocks.
+ * decoding. v0.2 and explicit stored decoding preserve its value so consumers can distinguish
+ * ambiguous legacy clocks.
  */
-function normalizeFrontmatter(data: Record<string, unknown>, okfVersion?: string): Frontmatter {
+function normalizeFrontmatter(data: Record<string, unknown>, options: ParseDocumentOptions): Frontmatter {
   const out: Record<string, unknown> = { ...data };
-  if (okfVersion === "0.2") return out as Frontmatter;
+  if (options.preserveTimestamp || options.okfVersion === "0.2") return out as Frontmatter;
   const value = out.timestamp;
   if (value instanceof Date) {
     out.timestamp = value.toISOString();
@@ -91,7 +99,7 @@ function normalizeFrontmatter(data: Record<string, unknown>, okfVersion?: string
 export function parseMarkdown(
   raw: string,
   context?: string,
-  options: { okfVersion?: string } = {},
+  options: ParseDocumentOptions = {},
 ): { frontmatter: Frontmatter; body: string } {
   const split = splitLeadingFrontmatter(raw, context);
   if (!("yamlSource" in split)) return { frontmatter: {} as Frontmatter, body: split.body };
@@ -103,7 +111,7 @@ export function parseMarkdown(
 export function parseFrontmatter(
   source: string,
   context?: string,
-  options: { okfVersion?: string } = {},
+  options: ParseDocumentOptions = {},
 ): Frontmatter {
   let parsed;
   try {
@@ -111,7 +119,7 @@ export function parseFrontmatter(
   } catch (err) {
     throw new MalformedDocumentError(context, err);
   }
-  return normalizeFrontmatter(parsed as Record<string, unknown>, options.okfVersion);
+  return normalizeFrontmatter(parsed as Record<string, unknown>, options);
 }
 
 /** The metadata bytes shared by document serialization and parsed-object stores. */

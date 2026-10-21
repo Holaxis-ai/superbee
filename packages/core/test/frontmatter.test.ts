@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import matter from "gray-matter";
 
 import { parseMarkdown, stringifyDoc, stringifyWithData } from "../src/frontmatter.js";
+import { parseFrontmatter as parseCodecFrontmatter, parseMarkdown as parseCodecMarkdown, MalformedDocumentError } from "../src/document-codec.js";
+import type { ParseDocumentOptions } from "../src/document-codec.js";
 import { contentVersion, versionOfBytes } from "../src/versioning.js";
 import type { Frontmatter, OkfDocument } from "../src/types.js";
 
@@ -122,4 +124,50 @@ test("parseMarkdown preserves its historical non-mapping YAML outcomes", () => {
   });
   assert.deepEqual(parseMarkdown("---\nnull\n---\nbody"), { frontmatter: {}, body: "body" });
   assert.deepEqual(parseMarkdown("---\n---\nbody"), { frontmatter: {}, body: "body" });
+});
+
+// Both public decoders use the same normalization policy; editions and storage intent are distinct.
+test("stored decoding preserves timestamp values while edition defaults remain unchanged", () => {
+  const rows = [
+    { yaml: "1720915200000", value: 1720915200000, normalized: "2024-07-14T00:00:00.000Z" },
+    { yaml: "2026-07-16 12:34:56", value: "2026-07-16 12:34:56", normalized: "2026-07-16T12:34:56.000Z" },
+    { yaml: "2026-01-02", value: "2026-01-02", normalized: "2026-01-02T00:00:00.000Z" },
+    { yaml: "2026-07-16T12:34:56.123456+05:30", value: "2026-07-16T12:34:56.123456+05:30", normalized: "2026-07-16T07:04:56.123Z" },
+  ];
+  const modes: Array<{ options: ParseDocumentOptions; stored: boolean }> = [
+    { options: {}, stored: false },
+    { options: { okfVersion: "0.1" }, stored: false },
+    { options: { preserveTimestamp: false }, stored: false },
+    { options: { okfVersion: "0.2" }, stored: true },
+    { options: { okfVersion: "0.2", preserveTimestamp: false }, stored: true },
+    { options: { preserveTimestamp: true }, stored: true },
+    { options: { okfVersion: "0.1", preserveTimestamp: true }, stored: true },
+    { options: { okfVersion: "0.2", preserveTimestamp: true }, stored: true },
+  ];
+  for (const row of rows) {
+    const source = `type: Note\ntimestamp: ${row.yaml}\nnested:\n  at: ${row.yaml}\n`;
+    for (const { options, stored } of modes) {
+      const direct = parseCodecFrontmatter(source, "notes/stored", options);
+      const document = parseCodecMarkdown(`\uFEFF---\r\n${source}---\r\n\nbody\r\n`, "notes/stored", options);
+      assert.deepEqual(document.frontmatter, direct);
+      assert.equal(direct.timestamp, stored ? row.value : row.normalized, JSON.stringify({ row, options }));
+      assert.deepEqual(direct.nested, { at: row.value });
+      assert.equal(document.body, "\nbody\r\n");
+    }
+  }
+});
+
+test("stored decoding retains shared malformed-document error identity and context", () => {
+  for (const decode of [
+    () => parseCodecFrontmatter("broken: [", "notes/broken", { preserveTimestamp: true }),
+    () => parseCodecMarkdown("---\nbroken: [\n---\nbody", "notes/broken", { preserveTimestamp: true }),
+    () => parseCodecMarkdown("---\ntimestamp: 123\n", "notes/broken", { preserveTimestamp: true }),
+  ]) {
+    assert.throws(decode, (error: unknown) => {
+      assert.ok(error instanceof MalformedDocumentError);
+      assert.equal(error.context, "notes/broken");
+      assert.ok(error.cause);
+      return true;
+    });
+  }
 });

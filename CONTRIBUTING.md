@@ -518,7 +518,10 @@ Across both editions:
   instant, or remove an optional value; no offset is inferred and no migration runs automatically.
   v0.2 freshness does not interpret a zone-less meaningful-change clock as a host-local instant.
   UI dates use the browser/system time zone to display explicit instants; ambiguous imported
-  strings remain literal. There is no bundle time-zone setting.
+  strings remain literal. Hosts may retain their legacy `timestamp` display compatibility for
+  finite epoch-millisecond numbers and YAML offset-less timestamps interpreted as UTC, while
+  preserving the stored values. This does not change authoring validation, `generated.at`,
+  freshness, query ordering, or the local UI policy. There is no bundle time-zone setting.
 
 The external specification is supporting evidence, not the only discovery route. The committed
 section and core edition tests are the offline fallback. The fixture at
