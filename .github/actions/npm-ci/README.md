@@ -14,6 +14,23 @@ to later workflow steps. Build and test commands remain owned by the caller.
     preflight-script: ci:dependencies
 ```
 
+The default `working-directory: '.'` installs from the workspace root. If checkout uses a
+subdirectory, select that same path; the runner applies it to both preflight and installation:
+
+```yaml
+- uses: actions/checkout@REVIEWED_CHECKOUT_SHA
+  with:
+    path: code
+- uses: Holaxis-ai/superbee/.github/actions/npm-ci@REVIEWED_FULL_COMMIT_SHA
+  with:
+    npm-token: ${{ secrets.NPM_READ_TOKEN }}
+    working-directory: code
+```
+
+The directory must already exist. The runner refuses a missing directory or a file path before
+starting the install step. Paths are passed as native step configuration, never interpolated into
+a shell command. Node setup and cache paths remain the caller's responsibility.
+
 For a second private scope on GitHub Packages, add `github-scope: '@example-org'` and
 `github-token: ${{ github.token }}`. The caller must declare `packages: read`, and each package
 must grant that repository access. GitHub's token does not grant access to private npmjs packages. Bearer values remain opaque: the

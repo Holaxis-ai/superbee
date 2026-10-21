@@ -1,6 +1,9 @@
 name: Install npm dependencies with scoped registry access
 description: Run an optional dependency preflight and npm ci with temporary registry configuration
 inputs:
+  working-directory:
+    description: Consumer checkout directory, relative to the workspace or absolute
+    default: '.'
   npm-token:
     description: Read-only npmjs package token, supplied by the caller's secret policy
     required: true
@@ -21,6 +24,7 @@ runs:
   steps:
     - name: Install locked dependencies
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       env:
         NPM_CI_ACTION_PATH: ${{ github.action_path }}
         NPM_CI_TOKEN: ${{ inputs.npm-token }}
