@@ -301,8 +301,15 @@ export async function listReadyBindings(home: string, strict = false): Promise<C
   const out: CheckoutBinding[] = [];
   for (const name of names) {
     if (!/^[0-9a-f-]{36}$/.test(name)) continue;
+    const record = join(checkoutDir(home, name), "binding.json");
     const binding = strict
-      ? (await readJson(home, join(checkoutDir(home, name), "binding.json"), true)) === null ? null : await readBinding(home, name, true)
+      ? await (async () => {
+          try {
+            return (await readJson(home, record, true)) === null ? null : await readBinding(home, name, true);
+          } catch (error) {
+            throw new Error(`unreadable hosted checkout record ${record} (${error instanceof Error ? error.message : String(error)})`);
+          }
+        })()
       : await readBinding(home, name).catch(() => null);
     if (binding && binding.state === "ready") out.push(binding);
   }

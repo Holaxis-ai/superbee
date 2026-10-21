@@ -1413,8 +1413,10 @@ test("catalog remove refuses the label of a moved checkout folder until it is ad
   assert.ok((await loadCatalog(h.home)).entries.some((entry) => entry.label === "mine"));
 
   // The fallback lookup reads every binding strictly: a corrupt record refuses rather than skipping.
-  await writeFile(path.join(hostedCheckoutsRoot(h.home), binding.checkout_id, "binding.json"), "{not json");
+  const record = path.join(hostedCheckoutsRoot(h.home), binding.checkout_id, "binding.json");
+  await writeFile(record, "{not json");
   const unverifiable = await rejects(catalogRun(h, ["remove", "mine"]));
   assert.equal(unverifiable.details?.reason, "checkout_unverifiable");
+  assert.ok(unverifiable.message.includes(record), "the refusal names the record to repair");
   assert.ok((await loadCatalog(h.home)).entries.some((entry) => entry.label === "mine"));
 });
