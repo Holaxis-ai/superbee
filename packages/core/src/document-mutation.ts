@@ -26,6 +26,7 @@ import { meaningfulChangeTimeValue } from "./meaningful-change-time.js";
 import { persistMutationActor, SUPERBEE_UPDATED_BY_FIELD } from "./mutation-attribution.js";
 import {
   defaultTimestampAndValidateAgainstRegistry,
+  kindValueGuidance,
   validateAgainstKind,
 } from "./kinds.js";
 import { versionedMutation } from "./mutation.js";
@@ -37,7 +38,7 @@ import {
   writeDocVersionedForEdition,
 } from "./bundle-ops.js";
 import type { FieldPrecondition } from "./document-precondition.js";
-import type { KindRegistry, RegistryValidationResult } from "./kinds.js";
+import type { KindRegistry, KindValueGuidance, RegistryValidationResult } from "./kinds.js";
 import type { ValidationWarning } from "./content-type.js";
 import type {
   Bundle,
@@ -153,6 +154,19 @@ export interface DocumentMutationResult {
   changed: boolean;
   version: Version;
   warnings: ValidationWarning[];
+  /** Advisory value descriptions for enum values this write set; empty when nothing changed. */
+  guidance: KindValueGuidance[];
+}
+
+/** Guidance for a write that persists `after` over `before`; never consulted for a refused write. */
+function writeGuidance(
+  registry: KindRegistry,
+  okfVersion: "0.1" | "0.2",
+  before: OkfDocument | undefined,
+  after: { frontmatter: Frontmatter },
+): KindValueGuidance[] {
+  const kind = registry.kinds.get(String(after.frontmatter.type));
+  return kindValueGuidance(okfVersion, kind, before?.frontmatter, after.frontmatter);
 }
 
 function withoutAutomaticMutationActor(
@@ -355,7 +369,7 @@ export function prepareDocumentMutationCandidate(
   existing: OkfDocument | undefined,
   rawCandidate: DocumentMutationCandidate,
   opts: PrepareDocumentMutationOptions,
-): { candidate: DocumentMutationCandidate; changed: boolean; warnings: ValidationWarning[] } {
+): { candidate: DocumentMutationCandidate; changed: boolean; warnings: ValidationWarning[]; guidance: KindValueGuidance[] } {
   const persistActor = resolvePersistActor(opts);
   const decisionNow = onceNow(opts.now ?? (() => new Date().toISOString()));
   const comparison = withV02Metadata(structuredClone(rawCandidate), existing, opts.okfVersion, opts.registry,
@@ -364,11 +378,11 @@ export function prepareDocumentMutationCandidate(
   if (existing && isNoopMutation(existing, comparison, opts.compareTimestamp ?? false, opts.okfVersion,
     opts.okfVersion === "0.2" && persistActor && opts.actor !== undefined,
     opts.registry.kinds.get(String(comparison.frontmatter.type))?.fields.required.includes("actor") ?? false)) {
-    return { candidate: { frontmatter: structuredClone(existing.frontmatter), body: existing.body }, changed: false, warnings: validateUnchangedDocument(existing, opts.registry, opts.strict, opts.okfVersion) };
+    return { candidate: { frontmatter: structuredClone(existing.frontmatter), body: existing.body }, changed: false, warnings: validateUnchangedDocument(existing, opts.registry, opts.strict, opts.okfVersion), guidance: [] };
   }
   const candidate = attributeCandidate(comparison, opts.actor, persistActor, opts.okfVersion, opts.registry);
   const { warnings } = validateCandidate(opts.id, candidate, opts.registry, opts.strict, opts.okfVersion, decisionNow, existing);
-  return { candidate, changed: true, warnings };
+  return { candidate, changed: true, warnings, guidance: writeGuidance(opts.registry, opts.okfVersion, existing, candidate) };
 }
 
 /**
@@ -503,7 +517,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       actor: opts.actor,
       bodyReplace: opts.bodyReplace,
     });
-    return { doc, changed: true, version, warnings };
+    return { doc, changed: true, version, warnings, guidance: writeGuidance(opts.registry, okfVersion, undefined, doc) };
   }
 
   // The version of the read the CURRENT attempt is deciding over. `versionedMutation` withholds
@@ -527,11 +541,13 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
 
   if (opts.mode === "overwrite") {
     let savedDoc: OkfDocument | undefined;
+    let decidedExisting: OkfDocument | undefined;
     let warnings: ValidationWarning[] = [];
     const outcome = await versionedMutation<OkfDocument, { doc?: OkfDocument }>({
       read: readExisting,
       decide: async (existing) => {
         const decisionNow = onceNow(now);
+        decidedExisting = existing;
         assertFieldPreconditions(opts.id, existing?.frontmatter, opts.preconditions, lastReadVersion);
         const withMetadata = withV02Metadata(
           await build(existing, decisionNow),
@@ -598,13 +614,13 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       maxAttempts,
     });
     return outcome.wrote
-      ? { doc: savedDoc!, changed: true, version: outcome.version!, warnings }
-      : { doc: outcome.result.doc!, changed: false, version: outcome.version!, warnings };
+      ? { doc: savedDoc!, changed: true, version: outcome.version!, warnings, guidance: writeGuidance(opts.registry, okfVersion, decidedExisting, savedDoc!) }
+      : { doc: outcome.result.doc!, changed: false, version: outcome.version!, warnings, guidance: [] };
   }
 
   let savedDoc: OkfDocument | undefined;
   const hardCas = opts.expectedVersion !== undefined;
-  const outcome = await versionedMutation<OkfDocument, { doc?: OkfDocument; warnings: ValidationWarning[] }>({
+  const outcome = await versionedMutation<OkfDocument, { doc?: OkfDocument; warnings: ValidationWarning[]; guidance: KindValueGuidance[] }>({
     read: async () => {
       const read = await readExisting();
       if (read.state === undefined && onAbsent === "fail") throw new DocumentNotFoundError(opts.id);
@@ -622,13 +638,13 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       }
 
       const rawCandidate = await build(existing, decisionNow);
-      const { candidate, changed, warnings } = prepareDocumentMutationCandidate(existing, rawCandidate, {
+      const { candidate, changed, warnings, guidance } = prepareDocumentMutationCandidate(existing, rawCandidate, {
         id: opts.id, registry: opts.registry, strict: opts.strict, okfVersion, now: decisionNow,
         actor: opts.actor, producer: opts.producer, persistActor, compareTimestamp, seedGenerationClock: seedClock,
       });
       if (!changed && opts.inventoryGuard) throw new InvalidInputError("Inventory-guarded replacement requires a meaningful change.");
-      if (!changed) return { action: "done", result: { doc: existing, warnings } };
-      return { action: "write", next: { id: opts.id, ...candidate }, result: { warnings } };
+      if (!changed) return { action: "done", result: { doc: existing, warnings, guidance } };
+      return { action: "write", next: { id: opts.id, ...candidate }, result: { warnings, guidance } };
     },
     write: async (next, expectedVersion) => {
       const written = await writeDocVersionedForEdition(opts.bundle, next, okfVersion, {
@@ -644,8 +660,8 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
 
   const scoped = { ...(scope ? { scope } : {}), ...(scopes ? { scopes } : {}) };
   return outcome.wrote
-    ? { doc: savedDoc!, changed: true, version: outcome.version!, warnings: outcome.result.warnings, ...scoped }
-    : { doc: outcome.result.doc!, changed: false, version: outcome.version!, warnings: outcome.result.warnings, ...scoped };
+    ? { doc: savedDoc!, changed: true, version: outcome.version!, warnings: outcome.result.warnings, guidance: outcome.result.guidance, ...scoped }
+    : { doc: outcome.result.doc!, changed: false, version: outcome.version!, warnings: outcome.result.warnings, guidance: [], ...scoped };
 }
 
 export { TypedListPatchError, assertTypedListPatch, BodyReplaceError, bodyPreviewFinding, computeDroppedLinks, guardBodyReplace, guardTruncatedBodyPreview, guardDroppedLinks, droppedLinks } from "./body-replace-guards.js";

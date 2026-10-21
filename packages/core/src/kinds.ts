@@ -497,6 +497,49 @@ export function projectKindValidationWarnings(
   });
 }
 
+/** One declared value description that applies because a write just set that value. */
+export interface KindValueGuidance {
+  /** Logical authoring field name (for example `progress_status`, never its storage coordinate). */
+  field: string;
+  value: string;
+  description: string;
+}
+
+/**
+ * Advisory write-time guidance: for each enum field whose governing Kind declares
+ * `fields.value_descriptions`, return the description of every value `after` carries that
+ * `before` did not. A create passes `before: undefined`, so every described value it sets applies.
+ * Unchanged values, undescribed values and ungoverned documents yield nothing. Field names are
+ * projected through the same progress coordinate as {@link projectKindValidationWarnings}.
+ */
+export function kindValueGuidance(
+  okfVersion: string | undefined,
+  kind: KindConvention | undefined,
+  before: Frontmatter | undefined,
+  after: Frontmatter,
+): KindValueGuidance[] {
+  const described = kind?.fields.valueDescriptions;
+  if (!kind || !described) return [];
+  const progress = progressStatusCoordinate(okfVersion, kind);
+  const valuesOf = (frontmatter: Frontmatter | undefined, field: string): string[] => {
+    const fm = frontmatter as Record<string, unknown> | undefined;
+    if (!fm || !hasOwn(fm, field)) return [];
+    const raw = fm[field];
+    if (raw === undefined || raw === null) return [];
+    return (Array.isArray(raw) ? raw : [raw]).map((value) => String(value));
+  };
+  const guidance: KindValueGuidance[] = [];
+  for (const [storageField, descriptions] of Object.entries(described)) {
+    const previous = new Set(valuesOf(before, storageField));
+    const field = progress && storageField === progress.storageField ? progress.logicalField : storageField;
+    for (const value of new Set(valuesOf(after, storageField))) {
+      if (previous.has(value) || !hasOwn(descriptions, value)) continue;
+      guidance.push({ field, value, description: descriptions[value]! });
+    }
+  }
+  return guidance;
+}
+
 /** True for a plain YAML/JSON map (excludes arrays, `null`, dates, and other object instances). */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;

@@ -271,6 +271,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     receipt.note = receipt.note ? `${receipt.note}\n${STDIN_SILENT_NOTE}` : STDIN_SILENT_NOTE;
   }
   if (result.warnings.length > 0) receipt.warnings = result.warnings;
+  if (result.guidance.length > 0) receipt.guidance = result.guidance;
   // Legacy-naming nudge (legacy-page.ts): authoring-moment only — never blocks, never on reads.
   if (isLegacyPageDoc(saved.frontmatter)) receipt.hint = LEGACY_PAGE_TYPE_HINT;
   receipt.help = [`${cliInvocation()} doc read ${commandToken(saved.id)}`];

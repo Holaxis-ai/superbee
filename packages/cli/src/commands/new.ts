@@ -693,6 +693,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     warning.message.startsWith(conventionWarningPrefix),
   );
   if (conventionWarnings.length > 0) receipt.warnings = conventionWarnings;
+  if (result.guidance.length > 0) receipt.guidance = result.guidance;
   // Surface the path-prefixing so it isn't silent: an agent that passed a bare id (or a
   // differently-prefixed one) sees the final id it actually got (cold-start study: C4 nearly
   // committed a wrong id because the prefix was auto-applied without any indication).

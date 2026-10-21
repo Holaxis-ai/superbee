@@ -369,6 +369,7 @@ export {
   projectLogicalKindFields,
   projectKindForAuthoring,
   projectKindValidationWarnings,
+  kindValueGuidance,
   isKindFieldValidationWarning,
   validateAgainstKind,
   isPresent,
@@ -397,6 +398,7 @@ export type {
   KindFields,
   KindFieldType,
   KindRegistry,
+  KindValueGuidance,
   RegistryValidationResult,
 } from "./kinds.js";
 

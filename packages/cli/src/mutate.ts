@@ -27,6 +27,7 @@ import {
   type FieldActionScope,
   type Frontmatter,
   type KindRegistry,
+  type KindValueGuidance,
   type OkfDocument,
   type ValidationWarning,
   type Version,
@@ -95,6 +96,7 @@ export interface MutateResult {
   changed: boolean;
   version: Version;
   warnings: ValidationWarning[];
+  guidance: KindValueGuidance[];
 }
 
 async function firePostPersist(hook: (() => void | Promise<void>) | undefined): Promise<void> {
