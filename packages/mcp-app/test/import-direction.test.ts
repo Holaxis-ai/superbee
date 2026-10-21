@@ -12,7 +12,8 @@ const sourceRoot = path.join(packageRoot, "src");
 
 const allowedPackageRoots = [
   "@modelcontextprotocol/ext-apps",
-  "@modelcontextprotocol/sdk",
+  "@modelcontextprotocol/server",
+  "@modelcontextprotocol/client",
   "@superbee/core",
   "@superbee/markdown-renderer",
   "@superbee/view-runtime",

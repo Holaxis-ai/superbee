@@ -14,8 +14,8 @@ import path from "node:path";
 import { inventoryGuardFor, InventoryGuardUnsupported, deleteDoc, queryHeads, readDoc, writeBlob, writeDoc, type Bundle } from "@superbee/core";
 import { CURRENT_HOST_DOCUMENT_INPUT_BYTES } from "@superbee/core/hosted-transport";
 import { createMcpAppServer, type McpWorkspaceResolver } from "@superbee/mcp-app";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client } from "@modelcontextprotocol/client";
+import { InMemoryTransport } from "@modelcontextprotocol/client";
 import { decode } from "@toon-format/toon";
 
 import { addCatalogEntry, listCatalogEntries } from "../src/catalog.js";

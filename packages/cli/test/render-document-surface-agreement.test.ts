@@ -19,8 +19,8 @@ import {
 import { createRouter } from "@superbee/server";
 import { bootUiServer } from "@superbee/ui-server";
 import { SessionViewAuthorizationStore } from "@superbee/view-runtime";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client } from "@modelcontextprotocol/client";
+import { InMemoryTransport } from "@modelcontextprotocol/client";
 
 const T = "2026-08-02T00:00:00.000Z";
 const SECRET = "render-document-agreement-secret";

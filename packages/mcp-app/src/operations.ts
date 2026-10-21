@@ -10,8 +10,8 @@
 import { stripHostData, stripHostText } from "@superbee/core";
 import { HOSTED_READ_BOUNDS, isOperationId, type HostedOperation, type HostedOperationRefusal, type JsonObject } from "@superbee/core/hosted-transport";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { McpServer } from "@modelcontextprotocol/server";
+import type { CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
 import type { McpOperationsStop, McpWorkspaceResolver } from "./workspace.js";

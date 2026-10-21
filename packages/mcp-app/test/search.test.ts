@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { MemoryBackend, versionOfBytes, type Bundle } from "@superbee/core";
 import { searchSourceFromBackend, searchDocuments } from "@superbee/core/search";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { createMcpAppServer } from "../src/index.js";
 
 async function bundle(root: string, word: string): Promise<Bundle> {

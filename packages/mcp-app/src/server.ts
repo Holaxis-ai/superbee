@@ -10,9 +10,8 @@ import {
   registerAppTool,
   RESOURCE_MIME_TYPE,
 } from "@modelcontextprotocol/ext-apps/server";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type { CallToolResult, ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
+import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
+import type { CallToolResult, ReadResourceResult } from "@modelcontextprotocol/server";
 import {
   BRIDGE_HOST_CAPABILITIES,
   BRIDGE_SERVICE_CAPABILITIES,
@@ -65,7 +64,7 @@ import {
   type McpWorkspaceResolver,
   type McpWorkspaceSummary,
 } from "./workspace.js";
-import { McpServer202012 } from "./mcp-server-2020-12.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { registerSearchTool } from "./search.js";
 import { registerOperationTools } from "./operations.js";
 
@@ -814,7 +813,7 @@ function resolveDocumentClaim(
 }
 
 export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServer {
-  const server = new McpServer202012({
+  const server = new McpServer({
     name: "Superbee Conversational Views",
     version: options.version ?? "0.0.1",
   });
@@ -1553,11 +1552,11 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     {
       title: "Finish Superbee View action",
       description: "Commit or cancel an action after the trusted MCP App shell collects the human decision.",
-      inputSchema: {
+      inputSchema: z.object({
         launchId: z.string().min(1).max(256),
         approvalToken: z.string().min(1).max(256),
         decision: z.enum(["commit", "cancel"]),
-      },
+      }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -1664,7 +1663,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       title: "Resolve undelivered Superbee document",
       description:
         "Redeem the exact one-shot claim marker from a show_document result whose structured payload the host stripped.",
-      inputSchema: { claim: z.string().min(8).max(256) },
+      inputSchema: z.object({ claim: z.string().min(8).max(256) }),
       outputSchema: showDocumentOutputSchema,
       annotations: {
         readOnlyHint: true,
@@ -1685,7 +1684,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       title: "Resolve undelivered Superbee View launch",
       description:
         "Redeem the exact one-shot claim marker from a show_view result whose structured payload the host stripped. Returns the already-minted payload; unknown or reused claims fail closed.",
-      inputSchema: { claim: z.string().min(8).max(256) },
+      inputSchema: z.object({ claim: z.string().min(8).max(256) }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
