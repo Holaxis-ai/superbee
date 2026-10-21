@@ -70,6 +70,10 @@ export function checkPackageVersions(directory = root) {
     equal('package-lock.json', `node_modules/@superbee/${name}.resolved`, link?.resolved, `packages/${name}`, file);
   }
   const core = manifests.core.version;
+  // The CLI and browser-local exchange typed Core errors in this source graph.
+  const browserLocal = read('packages/browser-local/package.json');
+  equal('packages/browser-local/package.json', 'dependencies.@superbee/core', browserLocal.dependencies?.['@superbee/core'], core, 'packages/core/package.json version (exact source cohort dependency)');
+  equal('package-lock.json', 'packages/browser-local.dependencies.@superbee/core', lock.packages?.['packages/browser-local']?.dependencies?.['@superbee/core'], browserLocal.dependencies?.['@superbee/core'], 'packages/browser-local/package.json');
   equal('packages/server/package.json', 'version', manifests.server.version, core, 'packages/core/package.json version');
   equal('packages/server/package.json', 'dependencies.@superbee/core', manifests.server.dependencies?.['@superbee/core'], core, 'packages/core/package.json version (exact synchronized dependency)');
   const peer = manifests['markdown-renderer'].peerDependencies?.['@superbee/core'];

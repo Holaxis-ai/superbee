@@ -279,6 +279,9 @@ shape.
 Run `npm run check:package-versions` before installing or building after a runtime-library
 version edit. This dependency-free source check validates the synchronized core/server pair,
 their exact dependency, and core/server/markdown-renderer/cli workspace lock metadata and links.
+It also checks browser-local's exact source Core dependency and its lock projection: the CLI and
+browser-local exchange typed Core errors and must resolve one source cohort. This source check
+does not alter independently published browser-local versions.
 It also checks their existing publish access and registry policy without publishing anything.
 The cli version is independent of the core/server version.
 Manifests own versions and dependency declarations; the lockfile is their checked projection.
