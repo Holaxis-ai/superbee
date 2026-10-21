@@ -2,12 +2,14 @@
  * Internal adapter contract kit. Base persistence guarantees are mandatory; stronger
  * guarantees are registered explicitly so a new backend cannot pass through hidden
  * capability skips. Engine validation, wire mechanics, and adapter internals stay in
- * their dedicated suites.
+ * their dedicated suites. Remote registrations are end-to-end compositions; see
+ * `storage-backend-remote-ownership.md` for each row's adapter/server/engine obligations.
  *
  * One row is deliberately an ENGINE-over-adapter row rather than a seam row:
  * {@link registerClaimPreconditionContract} drives `mutateDocument`'s field precondition, whose
- * whole claim is that it needs no backend participation. Stating it once per adapter is what
- * proves the guard behaves identically on all three; a seam-only row could not observe it at all.
+ * field predicate needs no backend participation. Stating it once per adapter is what
+ * proves the guard behaves identically across adapters with conforming CAS; a seam-only row
+ * could not observe it at all. The server must enforce CAS for remote contenders.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -218,6 +220,52 @@ export function registerFrontmatterReadContract(
   });
 }
 
+/** Shared by conforming fixtures and deliberately nonconforming remote-server controls. */
+export async function assertSerializedBodyContract(backend: StorageBackend): Promise<void> {
+  const submissions = [
+    "no trailing newline",
+    "already normalized\n",
+    "blank tail preserved\n\n\n",
+    "",
+    "carriage-return ending\r\n",
+    "lone carriage return\r",
+  ];
+  for (const [index, submitted] of submissions.entries()) {
+    const id = `concepts/body-shape-${index}`;
+    const written = await backend.write(id, doc(id, submitted), { expectedVersion: null });
+    const read = await backend.read(id);
+    const serializedBody = normalizeDocumentBodyForStorage(submitted);
+    assert.equal(read.doc.body, serializedBody, "read must expose the serialized body");
+    assert.equal(read.version, written);
+    const many = await backend.readMany([id]);
+    assert.equal(many[0]!.doc.body, serializedBody, "readMany must expose the serialized body");
+    assert.equal(many[0]!.version, written);
+
+    const bundle: Bundle = { root: "mem://body-shape", backend };
+    const appended = `${serializedBody}appended`;
+    const mutated = await mutateDocument({
+      bundle,
+      id,
+      mode: "patch",
+      registry: EMPTY_REGISTRY,
+      strict: false,
+      buildCandidate: (existing) => ({
+        frontmatter: { ...existing!.frontmatter, touched: true },
+        body: `${existing!.body}appended`,
+      }),
+    });
+    assert.equal(mutated.changed, true);
+
+    const reread = await backend.read(id);
+    assert.equal(reread.doc.body, normalizeDocumentBodyForStorage(appended));
+    assert.equal(reread.version, mutated.version);
+    assert.equal(
+      mutated.version,
+      contentVersion({ id, frontmatter: reread.doc.frontmatter, body: reread.doc.body }),
+    );
+  }
+}
+
 export function registerStorageBackendBaseContract(options: BackendContractOptions): void {
   const { name, create } = options;
 
@@ -260,48 +308,7 @@ export function registerStorageBackendBaseContract(options: BackendContractOptio
   // one-byte serialized divergence and a different version token on the next write.
   test(`${name} contract: reads return the serialized body and read-built mutations keep one token`, async () => {
     await withFixture(create, async (backend) => {
-      const submissions = [
-        "no trailing newline",
-        "already normalized\n",
-        "blank tail preserved\n\n\n",
-        "",
-        "carriage-return ending\r\n",
-        "lone carriage return\r",
-      ];
-      for (const [index, submitted] of submissions.entries()) {
-        const id = `concepts/body-shape-${index}`;
-        const written = await backend.write(id, doc(id, submitted), { expectedVersion: null });
-        const read = await backend.read(id);
-        const serializedBody = normalizeDocumentBodyForStorage(submitted);
-        assert.equal(read.doc.body, serializedBody);
-        assert.equal(read.version, written);
-        const many = await backend.readMany([id]);
-        assert.equal(many[0]!.doc.body, serializedBody);
-        assert.equal(many[0]!.version, written);
-
-        const bundle: Bundle = { root: "mem://body-shape", backend };
-        const appended = `${serializedBody}appended`;
-        const mutated = await mutateDocument({
-          bundle,
-          id,
-          mode: "patch",
-          registry: EMPTY_REGISTRY,
-          strict: false,
-          buildCandidate: (existing) => ({
-            frontmatter: { ...existing!.frontmatter, touched: true },
-            body: `${existing!.body}appended`,
-          }),
-        });
-        assert.equal(mutated.changed, true);
-
-        const reread = await backend.read(id);
-        assert.equal(reread.doc.body, normalizeDocumentBodyForStorage(appended));
-        assert.equal(reread.version, mutated.version);
-        assert.equal(
-          mutated.version,
-          contentVersion({ id, frontmatter: reread.doc.frontmatter, body: reread.doc.body }),
-        );
-      }
+      await assertSerializedBodyContract(backend);
     });
   });
 
@@ -633,41 +640,46 @@ export function registerStorageBackendHistoryContract(
   });
 }
 
+/** The one-winner assertion must also reject a server that accepts every stale write. */
+export async function assertAtomicCasContract(createPeers: AtomicBackendContractOptions["createPeers"]): Promise<void> {
+  const fixture = await createPeers();
+  try {
+    assert.ok(fixture.peers.length > 0);
+    const id = "concepts/race";
+    const initial = await fixture.backend.write(id, doc(id, "initial"));
+    const results = await Promise.allSettled(
+      Array.from({ length: 8 }, (_, index) =>
+        fixture.peers[index % fixture.peers.length]!.write(id, doc(id, `writer-${index}`), {
+          expectedVersion: initial,
+        }),
+      ),
+    );
+    const fulfilled = results.filter(
+      (result): result is PromiseFulfilledResult<Version> => result.status === "fulfilled",
+    );
+    const rejected = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+
+    assert.equal(fulfilled.length, 1, "CAS must admit exactly one concurrent writer");
+    assert.equal(rejected.length, results.length - 1);
+    for (const result of rejected) {
+      assert.ok(result.reason instanceof VersionConflict);
+      assert.equal(result.reason.expected, initial);
+    }
+    assert.equal((await fixture.backend.read(id)).version, fulfilled[0]!.value);
+  } finally {
+    await fixture.cleanup();
+  }
+}
+
 export function registerStorageBackendAtomicCasContract(
   options: AtomicBackendContractOptions,
 ): void {
   const { name, createPeers } = options;
 
   test(`${name} atomic CAS contract: concurrent writers produce one winner`, async () => {
-    const fixture = await createPeers();
-    try {
-      assert.ok(fixture.peers.length > 0);
-      const id = "concepts/race";
-      const initial = await fixture.backend.write(id, doc(id, "initial"));
-      const results = await Promise.allSettled(
-        Array.from({ length: 8 }, (_, index) =>
-          fixture.peers[index % fixture.peers.length]!.write(id, doc(id, `writer-${index}`), {
-            expectedVersion: initial,
-          }),
-        ),
-      );
-      const fulfilled = results.filter(
-        (result): result is PromiseFulfilledResult<Version> => result.status === "fulfilled",
-      );
-      const rejected = results.filter(
-        (result): result is PromiseRejectedResult => result.status === "rejected",
-      );
-
-      assert.equal(fulfilled.length, 1);
-      assert.equal(rejected.length, results.length - 1);
-      for (const result of rejected) {
-        assert.ok(result.reason instanceof VersionConflict);
-        assert.equal(result.reason.expected, initial);
-      }
-      assert.equal((await fixture.backend.read(id)).version, fulfilled[0]!.value);
-    } finally {
-      await fixture.cleanup();
-    }
+    await assertAtomicCasContract(createPeers);
   });
 }
 
