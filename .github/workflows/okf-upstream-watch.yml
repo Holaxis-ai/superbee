@@ -31,7 +31,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: okf-upstream-watch-${{ github.event_name }}
+  group: okf-upstream-watch
   cancel-in-progress: false
 
 jobs:
@@ -68,7 +68,7 @@ jobs:
 
   report:
     needs: check
-    if: ${{ always() && needs.check.result != 'skipped' }}
+    if: ${{ !cancelled() && needs.check.result != 'skipped' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

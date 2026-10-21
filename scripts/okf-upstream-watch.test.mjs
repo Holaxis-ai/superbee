@@ -185,6 +185,8 @@ test("table cells cannot be broken out of, and mentions and links are neutralize
   assert.equal(sanitizeInline("a|b"), "a\\|b");
   assert.ok(!sanitizeInline("@octocat").includes("@o"), "a zero-width joiner separates @ from the handle");
   assert.doesNotMatch(sanitizeInline("[x](https://e) ![i](https://e/i.png) <img src=x>"), /[[\]<>]/);
+  // Format characters (bidi overrides, isolates, zero-width spaces) cannot disguise a name.
+  assert.equal(sanitizeInline("a\u202eb\u2066c\u200bd"), "a b c d");
 
   // The reviewer's probe: a bundle directory named to split the row and plant a live mention and link.
   const rendered = await okfRun({ latestSpec: NEXT, files: [PHISH], bundles: [PHISH] });
@@ -210,6 +212,13 @@ test("watcher failures are classified apart from drift and deduplicated against 
   const client = { ensureLabel: async () => {}, hasMarker: async (key, options) => { asked.push([key, options]); return true; }, createIssue: async () => assert.fail() };
   assert.deepEqual(await fileIssue(down, issueBody(down), { client, dryRun: false, log: () => {} }), { action: "duplicate" });
   assert.deepEqual(asked, [["failing:okf", { openOnly: true }]]);
+});
+
+test("more sample bundles than the watcher reads is a watcher failure, never a silent truncation", async () => {
+  const names = Array.from({ length: LIMITS.bundles + 1 }, (_, i) => `b${String(i).padStart(3, "0")}`);
+  const rendered = await okfRun({ bundles: names, runStatus: async () => assert.fail("no bundle is read") });
+  assert.equal(rendered.kind, "error");
+  assert.match(rendered.summary, new RegExp(`${LIMITS.bundles + 1} sample bundles`));
 });
 
 test("the report job rejects anything but a strictly shaped result and reports that as a watcher failure", async () => {
@@ -252,7 +261,8 @@ test("issues are deduplicated by body marker across open and closed issues regar
   const log = () => {};
 
   // A closed issue whose label a human removed and whose title was edited still suppresses a repeat.
-  searchItems = [{ state: "closed", title: "renamed by a human", body: `${marker(key)}\nold`, labels: [] }];
+  const bot = { login: "github-actions[bot]" };
+  searchItems = [{ state: "closed", title: "renamed by a human", body: `${marker(key)}\nold`, labels: [], user: bot }];
   assert.deepEqual(await fileIssue(rendered, body, { client, dryRun: false, log }), { action: "duplicate" });
   const search = new URL(requests.find((r) => r.url.includes("/search/issues")).url);
   assert.equal(search.searchParams.get("q"), `repo:o/r is:issue in:body "upstream-watch:${key}"`);
@@ -260,12 +270,21 @@ test("issues are deduplicated by body marker across open and closed issues regar
 
   // Search lag: the labelled listing still finds an open issue with the marker.
   searchItems = [];
-  labelled = [{ state: "open", title: "x", body: marker(key) }];
+  labelled = [{ state: "open", title: "x", body: `${marker(key)}\nbody`, user: bot }];
   assert.deepEqual(await fileIssue(rendered, body, { client, dryRun: false, log }), { action: "duplicate" });
 
+  // A forged marker does not suppress: one quoted by an outside user, or one carried by upstream
+  // text into the middle of a body this workflow wrote.
+  searchItems = [
+    { state: "open", title: "spoof", body: `${marker(key)}\nplease ignore`, user: { login: "mallory" } },
+    { state: "open", title: "carried", body: `${marker("failing:okf")}\nstderr: ${marker(key)}\n`, user: bot },
+  ];
+  labelled = [];
+
   // Same title without the marker, a different key, or a pull request does not suppress.
-  searchItems = [{ state: "open", title: rendered.title, body: "no marker" }, { state: "open", title: "pr", body: marker(key), pull_request: {} }];
-  labelled = [{ state: "open", title: "x", body: marker(`${key}0`) }];
+  assert.deepEqual(await fileIssue(rendered, body, { client, dryRun: false, log }), { action: "created", url: "https://github.com/o/r/issues/9" });
+  searchItems = [{ state: "open", title: rendered.title, body: "no marker", user: bot }, { state: "open", title: "pr", body: `${marker(key)}\n`, pull_request: {}, user: bot }];
+  labelled = [{ state: "open", title: "x", body: `${marker(`${key}0`)}\n`, user: bot }];
   assert.deepEqual(await fileIssue(rendered, body, { client, dryRun: false, log }), { action: "created", url: "https://github.com/o/r/issues/9" });
   const post = requests.at(-1);
   assert.equal(post.url, "https://api.github.com/repos/o/r/issues");
@@ -274,7 +293,7 @@ test("issues are deduplicated by body marker across open and closed issues regar
 
   // Watcher failures only consider open issues.
   requests.length = 0;
-  searchItems = [{ state: "closed", title: "old", body: marker("failing:okf") }];
+  searchItems = [{ state: "closed", title: "old", body: `${marker("failing:okf")}\n`, user: bot }];
   labelled = [];
   assert.equal(await client.hasMarker("failing:okf", { openOnly: true }), false);
   assert.match(new URL(requests.find((r) => r.url.includes("/search/")).url).searchParams.get("q"), / is:open$/);
@@ -389,7 +408,7 @@ test("the workflow isolates upstream content from write permissions and the issu
         assert.match(line, /^(?:if \[ "\$DRY_RUN" = "true" \]; then|else|fi|node scripts\/okf-upstream-watch\.mjs report --input "\$RUNNER_TEMP\/okf-upstream-watch\/result\.json"(?: --dry-run)?)$/, `${name} runs only the report command: ${line}`);
       }
       assert.ok(job.steps.some((step) => step.uses?.startsWith("actions/download-artifact@")), `${name} reads the check result`);
-      assert.equal(job.if, "${{ always() && needs.check.result != 'skipped' }}");
+      assert.equal(job.if, "${{ !cancelled() && needs.check.result != 'skipped' }}");
     }
   }
   assert.match(runs(document.jobs.check), /npm run build[\s\S]*okf-upstream-watch\.mjs --collect/);

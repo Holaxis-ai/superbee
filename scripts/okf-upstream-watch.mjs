@@ -29,6 +29,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 export const PIN_PATH = path.join(repoRoot, "scripts", "okf-upstream-watch.json");
 export const CLI_PATH = path.join(repoRoot, "packages", "superbee", "dist", "superbee.mjs");
 export const LABEL = "upstream-drift";
+export const ISSUE_AUTHOR = "github-actions[bot]";
 export const RESULT_SCHEMA = "superbee.okf-upstream-watch.result.v1";
 export const LIMITS = Object.freeze({
   body: 60000, // GitHub rejects issue bodies above 65536 characters.
@@ -56,7 +57,7 @@ export function truncate(text, max) {
 // Safe inside a code span in a GFM table cell: one line, no backticks, escaped pipes, no live
 // mentions (a zero-width joiner follows each @), and no link, image, or HTML brackets.
 export function sanitizeInline(text, max = LIMITS.inline) {
-  return truncate(String(text ?? "").replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, " "), max)
+  return truncate(String(text ?? "").replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " "), max)
     .replaceAll("`", "'")
     .replaceAll("\\", "/")
     .replaceAll("|", "\\|")
@@ -150,8 +151,9 @@ export async function collectOkf({ pin, github, fetchTree, runStatus }) {
       ? readdirSync(bundlesDir).filter((name) => {
         const stat = lstatSync(path.join(bundlesDir, name));
         return stat.isDirectory() || stat.isSymbolicLink();
-      }).sort().slice(0, LIMITS.bundles)
+      }).sort()
       : [];
+    if (names.length > LIMITS.bundles) throw new Error(`upstream has ${names.length} sample bundles; the watcher reads at most ${LIMITS.bundles}`);
     const bundles = [];
     for (const name of names) {
       const dir = path.join(bundlesDir, name);
@@ -358,10 +360,13 @@ export function createGitHub({ token, repo, fetchImpl = globalThis.fetch } = {})
       await request(`/repos/${repo}/labels`, { method: "POST", body: { name: label, color: "c5def5", description: "The upstream OKF spec or its sample bundles changed; see scripts/okf-upstream-watch.json" } });
     },
     // Search finds the marker regardless of label; the labelled listing covers search-index lag.
+    // Only an issue this workflow opened counts, and only with the marker as its first line: anyone
+    // can quote a marker in their own issue, and upstream text can carry one into a body.
     async hasMarker(key, { openOnly = false } = {}) {
       needRepo();
-      const needle = marker(key);
-      const matches = (row) => !row.pull_request && typeof row.body === "string" && row.body.includes(needle) && (!openOnly || row.state === "open");
+      const needle = `${marker(key)}\n`;
+      const matches = (row) => !row.pull_request && row.user?.login === ISSUE_AUTHOR && typeof row.body === "string"
+        && row.body.startsWith(needle) && (!openOnly || row.state === "open");
       const query = `repo:${repo} is:issue in:body "upstream-watch:${key}"${openOnly ? " is:open" : ""}`;
       const search = await request(`/search/issues?q=${encodeURIComponent(query)}&per_page=100`);
       if ((search?.items ?? []).some(matches)) return true;
@@ -490,7 +495,10 @@ export async function main(argv, env = process.env, deps = {}) {
 }
 
 if (isMainModule(import.meta.url)) {
-  main(process.argv.slice(2)).catch((error) => {
+  // A watcher failure files its own issue and still fails the run, so it is never a silent green.
+  main(process.argv.slice(2)).then((outcome) => {
+    if (outcome?.rendered?.kind === "error") process.exitCode = 1;
+  }, (error) => {
     process.stderr.write(`okf-upstream-watch: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
   });
