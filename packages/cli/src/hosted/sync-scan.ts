@@ -25,11 +25,12 @@ import path from "node:path";
 
 import { commitLocal, deleteLocal, UNSETTLED_STATES, type LocalBundle } from "@superbee/browser-local";
 import { DOCUMENT_DELETE_KIND, equalJournalValue } from "@superbee/core/journaled-backend";
-import { assertSafeConceptId, conceptIdFromPath, CONVENTION_TYPE, InvalidInputError, isConventionId, isReservedFile, MalformedDocumentError, parseLinksFromDoc, parseMarkdown, type Frontmatter, type JournaledBackend } from "@superbee/core";
+import { assertSafeConceptId, BodyReplaceError, conceptIdFromPath, guardDroppedLinks, CONVENTION_TYPE, InvalidInputError, isConventionId, isReservedFile, MalformedDocumentError, parseLinksFromDoc, parseMarkdown, VersionConflict, type Frontmatter, type JournaledBackend, type OkfDocument } from "@superbee/core";
 import { DELETIONS_HELD_REFUSAL_CODE, MAXIMUM_ACCEPTED_DELETIONS, type HostedDefinitionWrites, type HostedRootWrites, FRONTMATTER_KEY_LIMIT, HOSTED_MANAGED_FIELDS, WHOLE_DOCUMENT_BOUNDS, wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
 import { mintRequestId } from "@superbee/core/uncertain-write";
 import type { IntentRecord, NewIntentRecord } from "@superbee/core/journaled-backend";
 
+import { commandToken } from "../command-text.js";
 import { readUserStateFile, writeUserStateFileAtomic0600 } from "../user-state.js";
 import { checkoutDir } from "./binding.js";
 import { digestOf, ensureParentInside, fold, parentUnsafe, placeNew, PLACEMENT_TEMP, replaceGuarded, ROOT_INDEX, UnsafePlacementError } from "./projection.js";
@@ -170,7 +171,8 @@ export type HeldReason =
   | "too_large"
   | "not_sendable"
   | "case_collision"
-  | "unsafe_id";
+  | "unsafe_id"
+  | "dropped_links";
 
 export interface HeldFile {
   /** The document id, or the folder-relative path when the file is not a document. */
@@ -424,6 +426,8 @@ export interface ScanReport {
   readonly conflicted: string[];
   /** In a preview: the edits and deletions the scan would journal (nothing is journaled). */
   readonly pending: string[];
+  /** Set with {@link ScanContext.replaceLinks}: true only when this scan journaled that document's write with the posture. */
+  replaceLinksApplied?: boolean;
 }
 
 async function readProjectionJson(home: string, checkoutId: string): Promise<unknown> {
@@ -624,6 +628,12 @@ export interface ScanContext {
    * it) states it. Absent or null: the host states none, and 65,536 applies.
    */
   readonly documentInputBytes?: number | null;
+  /**
+   * The person's `--replace-links <id>`: this one document's write in this scan may drop
+   * outbound links. Every other document, and any later scan, keeps the default refusal; the
+   * truncated-body guard applies regardless.
+   */
+  readonly replaceLinks?: string;
 }
 
 /** The most a host that states its bound stores of one document (frontmatter and body serialized). */
@@ -648,6 +658,30 @@ export const ROOT_HELD_MESSAGE = "the bundle's root index is edited in the Super
 
 function held(id: string, rel: string, reason: HeldReason, message: string): HeldFile {
   return { id, path: rel, reason, message };
+}
+
+function droppedLinksRow(id: string, rel: string, links: readonly { to: string }[]): HeldFile {
+  const targets = [...new Set(links.map((link) => link.to))];
+  const named = `${targets.slice(0, 10).join(", ")}${targets.length > 10 ? ", ..." : ""}`;
+  return held(id, rel, "dropped_links", `'${id}' removes ${targets.length === 1 ? "a link" : `${targets.length} links`} (to ${named}); restore the link, or send the removal deliberately with sync --replace-links ${commandToken(id)}`);
+}
+
+/** In a preview: the hold a sync without `--replace-links` would record for this edit, or null. */
+function droppedLinksHeld(id: string, rel: string, stored: OkfDocument, bytes: Buffer, okfVersion: "0.1" | "0.2" | undefined): HeldFile | null {
+  let body: string;
+  try {
+    body = parseMarkdown(utf8(bytes)!, id, { okfVersion }).body;
+  } catch {
+    return null;
+  }
+  try {
+    // The guard reads only the two documents; the bundle argument is unused by it.
+    guardDroppedLinks({ root: "", backend: undefined as never }, stored, body, false);
+  } catch (error) {
+    if (error instanceof BodyReplaceError && error.finding.reason === "dropped_links") return droppedLinksRow(id, rel, error.finding.dropped_links);
+    throw error;
+  }
+  return null;
 }
 
 /**
@@ -789,18 +823,34 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
       continue;
     }
     if (context.preview) {
-      report.pending.push(id);
+      const dropped = stored.document ? droppedLinksHeld(id, rel, stored.document.doc, bytes, context.okfVersion) : null;
+      if (dropped) report.held.push(dropped);
+      else report.pending.push(id);
       continue;
     }
     const parsed = parseMarkdown(utf8(bytes)!, id, { okfVersion: context.okfVersion });
+    // The host admits a checkout's link removals outright (it holds the whole base), so this local
+    // guard is the only one. An acceptance is pinned to the stored version it was judged against.
+    const accepting = context.replaceLinks === id && stored.document !== undefined && stored.document !== null;
     let committed;
     try {
       committed = await commitLocal(local, id, {
         mode: "replace-document",
         onAbsent: "create",
+        ...(accepting ? { bodyReplace: { replaceLinks: true }, expectedVersion: stored.document!.version } : {}),
         buildCandidate: () => ({ frontmatter: parsed.frontmatter, body: parsed.body }),
       });
     } catch (error) {
+      if (error instanceof BodyReplaceError && error.finding.reason === "dropped_links") {
+        report.held.push(droppedLinksRow(id, rel, error.finding.dropped_links));
+        continue;
+      }
+      // The stored version moved after the guard judged the removal: nothing is journaled, and
+      // the next scan judges the file against the new version.
+      if (accepting && error instanceof VersionConflict) {
+        report.held.push(held(id, rel, "dropped_links", `'${id}' changed in the checkout while sync checked its link removal; nothing was sent, run sync --replace-links ${commandToken(id)} again`));
+        continue;
+      }
       // The document breaks a rule of its OKF edition: the file stays as it is, for the person to fix.
       if (error instanceof InvalidInputError || error instanceof MalformedDocumentError) {
         report.held.push(held(id, rel, "not_sendable", `'${id}' is not a valid document: ${error.message}`));
@@ -810,6 +860,7 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     }
     projection.files[id] = { digest, version: committed.version };
     if (committed.intent) report.committed.push(id);
+    if (context.replaceLinks === id) report.replaceLinksApplied = committed.intent !== null;
   }
   // A recorded document whose file is gone is a local deletion: a delete of exactly the version
   // the file held, compare-and-swap on the host.

@@ -307,6 +307,15 @@ with a `held` row, reason `unsafe_id`, and the rest of the bundle syncs. A host 
 differs only in letter case from another is held as `case_collision`. Both are renamed in the
 Superbee app, by the person.
 
+An edit that removes an outbound link the document had is held as `dropped_links`, and the row
+names the links it removes. Usually the removal is a mistake (a rewrite from a partial read):
+restore the links. When removing them is intended, `superbee sync --replace-links <id>` sends that
+one document's edit as the file stands in that run, against the version it was checked against;
+once admitted it is sent like any other change, retried by a later sync if the host was busy. It
+covers no other document and no later edit, and it never admits a body carrying a
+truncated-preview notice.
+`superbee status` shows the same hold before you sync.
+
 ## The bundle's front page (the root `index.md`)
 
 The root `index.md` syncs as one file of its own when the host lets you change the bundle's front

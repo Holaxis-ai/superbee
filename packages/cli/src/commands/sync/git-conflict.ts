@@ -29,8 +29,8 @@ import { syncVerbNotApplicable } from "../../sync-outcomes.js";
 
 /** The raw flags that ask for a conflict verb (as opposed to a hosted-only deletion verb). */
 const CONFLICT_FLAGS = ["--inspect", "--resolve", "--doc"] as const;
-/** Hosted-only verbs: a Git board has no held or refused deletions. */
-const HOSTED_ONLY_FLAGS = ["--accept-deletes", "--restore-deletes", "--take-host-deletions"] as const;
+/** Hosted-only verbs: a Git board has no held or refused deletions, and no held link removals. */
+const HOSTED_ONLY_FLAGS = ["--accept-deletes", "--restore-deletes", "--take-host-deletions", "--replace-links"] as const;
 /** Flags of the Git sync run that have no meaning for a conflict verb. */
 const RUN_ONLY_FLAGS = ["establish", "pull-only", "show-incoming", "yes", "body-out", "migrate", "limit"] as const;
 /** Content shown per side by --inspect; --out writes the teammate's version whole. */
@@ -57,7 +57,7 @@ export function requestsHostedOnlyVerb(argv: readonly string[]): boolean {
 /** The refusal for a hosted-only verb on any other target (a Git board, or a local bundle), naming the ones passed. */
 export function hostedOnlyVerbError(home: "local" | "git" = "git", argv: readonly string[] = []): CliError {
   const passed = HOSTED_ONLY_FLAGS.filter((flag) => hasFlag(argv, [flag]));
-  const flags = passed.length > 0 ? passed.map((flag) => flag.replace(/^--/, "")) : ["accept-deletes", "restore-deletes", "take-host-deletions"];
+  const flags = passed.length > 0 ? passed.map((flag) => flag.replace(/^--/, "")) : ["accept-deletes", "restore-deletes", "take-host-deletions", "replace-links"];
   return syncVerbNotApplicable(flags, home, "only a hosted checkout has them", `${cliInvocation()} sync --help`);
 }
 
@@ -83,7 +83,7 @@ function parseConflictArgs(argv: string[]): ConflictArgs {
       throw new CliError("USAGE", `--${flag} is not part of --inspect or --resolve; each is a step of its own`, { help: `${inv} sync --help` });
     }
   }
-  if (values["accept-deletes"] !== undefined || values["restore-deletes"] !== undefined || values["take-host-deletions"] !== undefined) {
+  if (values["accept-deletes"] !== undefined || values["restore-deletes"] !== undefined || values["take-host-deletions"] !== undefined || values["replace-links"] !== undefined) {
     throw hostedOnlyVerbError();
   }
   if (values.inspect !== undefined && values.resolve !== undefined) {
