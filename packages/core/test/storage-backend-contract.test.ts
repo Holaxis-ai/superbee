@@ -4,8 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { MemoryBackend as ServerMemoryBackend } from "@superbee/core";
-import { createRouter } from "@superbee/server";
+import { remoteFixture, remotePeerFixture, REMOTE_CONTRACT_SUBJECT } from "./storage-backend-remote-fixture.js";
 import { IDBFactory } from "fake-indexeddb";
 
 import { FilesystemBackend } from "../src/backend.js";
@@ -57,19 +56,7 @@ function indexedDbFixture(): BackendFixture {
   return { backend, cleanup: async () => backend.close() };
 }
 
-function remoteFixture(): BackendFixture {
-  const serverBackend = new ServerMemoryBackend();
-  const router = createRouter({ root: "mem://storage-contract", backend: serverBackend });
-  return {
-    backend: new RemoteBackend({
-      baseUrl: "http://wire.local",
-      bundle: "contract",
-      fetchImpl: router,
-      maxRetries: 0,
-    }),
-    cleanup: async () => undefined,
-  };
-}
+// Remote ownership, by row: see storage-backend-remote-ownership.md.
 
 const CONTRACTS = [
   { name: "FilesystemBackend", create: filesystemFixture, retention: "current-only" as const, localYamlValues: true },
@@ -81,7 +68,7 @@ const CONTRACTS = [
     localYamlValues: true,
   },
   // The authenticated hosted worker, not RemoteBackend clients, manufactures X-Agent.
-  { name: "RemoteBackend", create: remoteFixture, retention: "retained" as const, localYamlValues: false },
+  { name: REMOTE_CONTRACT_SUBJECT, create: remoteFixture, retention: "retained" as const, localYamlValues: false },
   { name: "IndexedDbBackend", create: indexedDbFixture, retention: "current-only" as const, localYamlValues: true },
 ];
 
@@ -171,26 +158,8 @@ const PEER_CONTRACTS: AtomicBackendContractOptions[] = [
     },
   },
   {
-    name: "RemoteBackend",
-    createPeers() {
-      const serverBackend = new ServerMemoryBackend();
-      const router = createRouter({ root: "mem://storage-cas-contract", backend: serverBackend });
-      const peers: StorageBackend[] = [
-        new RemoteBackend({
-          baseUrl: "http://wire.local",
-          bundle: "contract",
-          fetchImpl: router,
-          maxRetries: 0,
-        }),
-        new RemoteBackend({
-          baseUrl: "http://wire.local",
-          bundle: "contract",
-          fetchImpl: router,
-          maxRetries: 0,
-        }),
-      ];
-      return { backend: peers[0]!, peers, cleanup: async () => undefined };
-    },
+    name: REMOTE_CONTRACT_SUBJECT,
+    createPeers: remotePeerFixture,
   },
   {
     // Two adapter instances over one database name and one factory: the concurrent-tabs topology.
@@ -218,7 +187,7 @@ for (const contract of PEER_CONTRACTS) {
 }
 
 registerStorageBackendQueryHeadsContract({
-  name: "RemoteBackend",
+  name: REMOTE_CONTRACT_SUBJECT,
   create: remoteFixture,
 });
 
@@ -244,7 +213,7 @@ registerStorageBackendIdentityContract({
 });
 
 registerStorageBackendIdentityContract({
-  name: "RemoteBackend",
+  name: REMOTE_CONTRACT_SUBJECT,
   create: () => ({ ...remoteFixture(), host: EXACT_HOST }),
 });
 
