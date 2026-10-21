@@ -400,6 +400,34 @@ export async function relocateCatalogEntry(oldPath: string, newPath: string, opt
   return result.value;
 }
 
+/**
+ * Forget one entry, only while the catalog still holds it with the same id, label and path: a
+ * caller that inspected the entry first (a guard, a release) never removes an entry that changed
+ * since. The entry's folder is never read or touched.
+ */
+export async function removeCatalogEntry(
+  expected: CatalogEntry,
+  options: CatalogOptions = {},
+): Promise<{ changed: boolean; reason?: "not_registered" | "entry_changed" }> {
+  const result = await mutateCatalog<"not_registered" | "entry_changed" | null>(async (current) => {
+    const entry = current.entries.find((item) => item.id === expected.id);
+    if (!entry) return { value: "not_registered", changed: false };
+    if (entry.label !== expected.label || entry.locator.path !== expected.locator.path) return { value: "entry_changed", changed: false };
+    return {
+      value: null,
+      changed: true,
+      next: { schema_version: CATALOG_SCHEMA_VERSION, entries: current.entries.filter((item) => item.id !== entry.id) },
+    };
+  }, options);
+  return result.value === null ? { changed: result.changed } : { changed: result.changed, reason: result.value };
+}
+
+/** The registered entry a label or id names, or null; availability is not checked. */
+export async function findCatalogEntry(selector: string, home: string = homedir()): Promise<CatalogEntry | null> {
+  const kind = classifySelector(selector);
+  return (await loadCatalog(home)).entries.find((item) => item[kind] === selector) ?? null;
+}
+
 async function entryAvailable(entry: CatalogEntry): Promise<boolean> {
   try {
     const target = await resolveLocalBundleTarget(entry.locator.path);

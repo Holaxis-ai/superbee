@@ -126,6 +126,7 @@ project before retrying.
   superbee catalog add personal --dir ~/superbee-workspaces/personal
   superbee catalog list
   superbee catalog resolve personal --field path
+  superbee catalog remove personal   # forgets the label; the folder is never touched
   ```
 
 Then, day to day:

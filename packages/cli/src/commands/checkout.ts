@@ -23,7 +23,7 @@ import { filesystemPushRoleLocks, PushRoleStaleOwnerError } from "@superbee/core
 import type { HostedCapabilities } from "@superbee/core/hosted-transport";
 
 import { parseLeafOrUsage } from "../args.js";
-import { findBundleRoot, resolveProjectBinding } from "../bundle.js";
+import { findBundleRoot, resolveProjectBinding, samePhysicalPath } from "../bundle.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
@@ -67,7 +67,7 @@ import { ambiguousBundle, HOSTED_CHECKOUT_REFUSALS, unboundCopyRefusal } from ".
 import { digestOf, ensureParentInside, exportFresh, findPathCollision, parentUnsafe, placeNew, ROOT_INDEX, UnsafePlacementError } from "../hosted/projection.js";
 import { seedInitialBlobBaselines } from "../hosted/blob-sync.js";
 import { writeProjection } from "../hosted/sync-scan.js";
-import { addCatalogEntry, assertCatalogLabel, loadCatalog } from "../catalog.js";
+import { addCatalogEntry, assertCatalogLabel, loadCatalog, removeCatalogEntry } from "../catalog.js";
 import { checkoutMarkerBytes, readCheckoutMarker, removeCheckoutMarker, writeCheckoutMarker } from "../hosted/marker.js";
 import { adopt } from "./checkout-adopt.js";
 import { EXPORT_DEADLINE_MS, fetchExportThrough, type ExportRequest } from "./export.js";
@@ -124,8 +124,10 @@ and never overwrites a file. A file that differs from the host's version becomes
 'sync --inspect/--resolve'; a document only in the folder is sent as new by the next sync.
 
 --release <folder> forgets the checkout at that folder: its private binding and store are removed,
-its marker is removed, and the folder's other files are left as they are. Releasing a folder that
-is not a checkout is a no-op.
+its marker is removed, and the folder's other files are left as they are. The catalog label
+checkout gave the folder (the bundle id, or the id with -2 to -9) is forgotten too, and the
+receipt names the 'catalog add' that restores it; a label you chose yourself is kept. Releasing a
+folder that is not a checkout is a no-op.
 
 'superbee sync --dir <folder>' sends your edits and brings in the host's. Commands whose effect
 sync cannot send (doc verify, kind, recipe add/evolve, artifact, index generate, serve, ui) are
@@ -373,6 +375,8 @@ async function release(folderArg: string, deps: CheckoutDeps, mode: ReturnType<t
     .catch((error: unknown) => {
       throw lockFailure(error, canonical);
     });
+  // After the checkout lock is let go: no path takes the catalog lock inside a checkout lock.
+  const cataloged = await dropCheckoutLabel(deps.auth.home, binding);
   deps.stdout(
     render(
       {
@@ -380,6 +384,7 @@ async function release(folderArg: string, deps: CheckoutDeps, mode: ReturnType<t
         ...bindingView(binding),
         files: "kept (the folder is now an ordinary local folder)",
         marker: markerRemoved ? "removed" : "none",
+        catalog: cataloged,
         help: [`${cliInvocation()} checkout ${commandToken(hostedBundleReferenceText(bindingReference(binding)))} --host ${commandToken(binding.origin)} --dir <new folder>`],
       },
       mode,
@@ -874,13 +879,36 @@ function catalogLabels(bundleId: string): string[] {
 export async function registerInCatalog(home: string, binding: CheckoutBinding): Promise<Record<string, unknown>> {
   const byHand = `${cliInvocation()} catalog add <label> --dir ${commandToken(binding.path)}`;
   try {
-    const taken = new Set((await loadCatalog(home)).entries.map((entry) => entry.label));
+    const entries = (await loadCatalog(home)).entries;
+    // A checkout replacing one whose folder was deleted finds that folder's entry still there.
+    const existing = entries.find((entry) => samePhysicalPath(entry.locator.path, binding.path));
+    if (existing) return { registered: true, label: existing.label, id: existing.id, home: "hosted" };
+    const taken = new Set(entries.map((entry) => entry.label));
     const label = catalogLabels(binding.bundle_id).find((candidate) => !taken.has(candidate));
     if (label === undefined) return { registered: false, note: "every catalog label for this bundle id is taken", help: byHand };
     const { entry } = await addCatalogEntry(label, binding.path, { home });
     return { registered: true, label: entry.label, id: entry.id, home: "hosted" };
   } catch (error) {
     return { registered: false, note: error instanceof Error ? error.message : String(error), help: byHand };
+  }
+}
+
+/**
+ * Forget the catalog entry a released checkout's folder holds when its label is one checkout
+ * generates for the bundle id; a label chosen by hand is kept. A label equal to a generated one
+ * cannot be told apart and is dropped, so the receipt names the command that restores it. Never
+ * fails the release.
+ */
+export async function dropCheckoutLabel(home: string, binding: CheckoutBinding): Promise<Record<string, unknown>> {
+  try {
+    const entry = (await loadCatalog(home)).entries.find((item) => samePhysicalPath(item.locator.path, binding.path));
+    if (!entry) return { removed: false, reason: "not_registered" };
+    if (!catalogLabels(binding.bundle_id).includes(entry.label)) return { removed: false, label: entry.label, reason: "chosen_label" };
+    const result = await removeCatalogEntry(entry, { home });
+    if (!result.changed) return { removed: false, label: entry.label, reason: result.reason };
+    return { removed: true, label: entry.label, help: `${cliInvocation()} catalog add ${commandToken(entry.label)} --dir ${commandToken(entry.locator.path)}` };
+  } catch (error) {
+    return { removed: false, note: error instanceof Error ? error.message : String(error), help: `${cliInvocation()} catalog list` };
   }
 }
 

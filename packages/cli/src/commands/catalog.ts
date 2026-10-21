@@ -6,7 +6,9 @@ import { parseSelectorOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import {
   addCatalogEntry,
+  findCatalogEntry,
   listCatalogEntries,
+  removeCatalogEntry,
   resolveCatalogEntry,
   type CatalogEntryView,
   type CatalogOptions,
@@ -19,6 +21,7 @@ import { commandFragment, commandToken } from "../command-text.js";
 import { defaultHostedAuthDeps, hostArgument, requireHostedBundleHost, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { connectHostedAccount, workspaceNames } from "../hosted/account.js";
 import { hostedBundleRows, reachableHostedBundles } from "../hosted/reachable.js";
+import { guardLabelRemoval } from "../hosted/catalog-guard.js";
 
 export const CATALOG_USAGE = `superbee catalog — register and resolve this user's workspaces
 
@@ -27,6 +30,7 @@ Usage:
   superbee catalog list [--local] [--json]
   superbee catalog list --hosted [--host <url>] [--json]
   superbee catalog resolve <label-or-id> [--field path | --json]
+  superbee catalog remove <label-or-id> [--json]
 
 Labels are user-defined or agent-defined on the user's behalf. They use 1-64 lowercase letters,
 numbers, dots, dashes, or underscores, beginning and ending with a letter or number. Registration
@@ -38,6 +42,7 @@ Commands:
             and, while you are signed in, the hosted bundles you can reach that have no folder
             here; --hosted lists every hosted bundle you can reach instead (see below)
   resolve   Revalidate and return exactly one registered workspace
+  remove    Forget one registered workspace (idempotent); its folder and files are never touched
 
 Options:
   --dir <path>   add: bundle root or project directory with a direct .superbee (or legacy .agentstate-lite) bundle
@@ -70,6 +75,16 @@ workspaces lists such an id once per workspace by reference instead). workspaces
 workspaces by name (what --workspace and a reference take), or by id for one the host names none for. It lists hosted bundles only, never
 your local entries, and caches nothing: the catalog file is unchanged. complete: false means the
 host's list stopped at its cap.
+
+'catalog remove' forgets only the catalog entry: the folder, its bundle files, and a hosted
+checkout's binding and store stay as they are, and the checkout still works with --dir. A label on
+a hosted checkout whose folder holds changes sync has not sent (an unsent document, a conflict, a
+held file or deletion) is refused (CONFLICT, exit 5, reason unsent_changes) until a sync sends
+them; a checkout another command holds is refused as checkout_busy. A label whose folder is gone
+is removed; any change the checkout's store still journals is reported as stranded_unsent, which
+'checkout --release <folder>' discards. Removing a label that is not registered is a no-op.
+'catalog list' reports unavailable: <n> for entries whose folder is gone, and never removes one.
+'checkout --release' forgets the label checkout gave the folder by itself.
 
 The catalog only selects a target. Pass a resolved path explicitly to ordinary commands with
 --dir; there is no process-global active workspace and no implicit cross-bundle operation.
@@ -147,7 +162,7 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
     (positionals) => {
       const [subcommand, ...data] = positionals;
       if (subcommand === undefined) return { kind: "navigation" } as const;
-      if (subcommand !== "add" && subcommand !== "list" && subcommand !== "resolve") {
+      if (subcommand !== "add" && subcommand !== "list" && subcommand !== "resolve" && subcommand !== "remove") {
         return { kind: "unknown", token: subcommand } as const;
       }
       return {
@@ -156,7 +171,9 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
           ? CLI_LEAVES.catalogAdd
           : subcommand === "list"
             ? CLI_LEAVES.catalogList
-            : CLI_LEAVES.catalogResolve,
+            : subcommand === "resolve"
+              ? CLI_LEAVES.catalogResolve
+              : CLI_LEAVES.catalogRemove,
         data,
         payload: { subcommand, operand: data[0] },
       } as const;
@@ -202,6 +219,7 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
       return;
     }
     const entries = await listCatalogEntries(home());
+    const unavailable = entries.filter((entry) => !entry.available);
     // With a live sign-in, the hosted bundles with no folder here are listed too; signed out (or
     // with --local) nothing is asked, and the listing is the folders alone.
     const reachable = parsed.values.local
@@ -213,6 +231,7 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
         {
           schema_version: 1,
           count: entries.length,
+          ...(unavailable.length > 0 ? { unavailable: unavailable.length } : {}),
           entries,
           ...(reachable
             ? {
@@ -223,11 +242,22 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
           help:
             entries.length === 0
               ? [`${cliInvocation()} catalog add <label> [--dir <path>]`, ...(firstCheckout ? [firstCheckout] : [])]
-              : [`${cliInvocation()} catalog resolve <label-or-id> --field path`, ...(firstCheckout ? [firstCheckout] : [])],
+              : [
+                  `${cliInvocation()} catalog resolve <label-or-id> --field path`,
+                  ...(unavailable[0] ? [`${cliInvocation()} catalog remove ${commandToken(unavailable[0].label)}`] : []),
+                  ...(firstCheckout ? [firstCheckout] : []),
+                ],
         },
         resolveMode(parsed.values),
       ),
     );
+    return;
+  }
+
+  if (subcommand === "remove") {
+    if (parsed.values.dir !== undefined) usage("--dir is only valid with catalog add");
+    if (parsed.values.field !== undefined) usage("--field is only valid with catalog resolve");
+    await remove(operand!, deps, home(), stdout, resolveMode(parsed.values));
     return;
   }
 
@@ -255,6 +285,49 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
     );
     return;
   }
+}
+
+/**
+ * `catalog remove`: guard the entry (outside the catalog lock, since the scan of a checkout folder
+ * can outlast the catalog lock's wait), then forget it only while it is still the entry guarded.
+ */
+async function remove(
+  selector: string,
+  deps: Partial<CatalogCliDeps>,
+  home: string,
+  stdout: (s: string) => void,
+  mode: ReturnType<typeof resolveMode>,
+): Promise<void> {
+  const entry = await findCatalogEntry(selector, home);
+  if (!entry) {
+    stdout(render({ schema_version: 1, catalog: "unchanged", changed: false, removed: false, selector, reason: "not_registered", help: [`${cliInvocation()} catalog list`] }, mode));
+    return;
+  }
+  const guard = await guardLabelRemoval(home, entry.locator.path, entry.label);
+  const result = await removeCatalogEntry(entry, { ...(deps.catalogOptions ?? {}), home });
+  const help: string[] = [];
+  const receipt: Record<string, unknown> = {
+    schema_version: 1,
+    catalog: result.changed ? "removed" : "unchanged",
+    changed: result.changed,
+    removed: result.changed,
+    id: entry.id,
+    label: entry.label,
+    locator: entry.locator,
+    ...(result.reason ? { reason: result.reason } : {}),
+  };
+  if (guard.checkout) {
+    receipt.checkout = { bundle_id: guard.checkout.bundle_id, host: guard.checkout.origin, folder: guard.folder };
+    if (guard.folder === "present") {
+      receipt.note = "the checkout still works without a label: pass its folder with --dir";
+    } else if (guard.strandedUnsent > 0) {
+      receipt.stranded_unsent = guard.strandedUnsent;
+      help.push(`${cliInvocation()} checkout --release ${commandToken(guard.checkout.path)}`);
+    }
+  }
+  if (result.changed) help.push(`${cliInvocation()} catalog add ${commandToken(entry.label)} --dir ${commandToken(entry.locator.path)}`);
+  help.push(`${cliInvocation()} catalog list`);
+  stdout(render({ ...receipt, help }, mode));
 }
 
 /**

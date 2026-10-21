@@ -111,3 +111,38 @@ test("built CLI: racing labels for one path produces one winner and one stable c
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("built CLI: concurrent catalog removes and adds lose no update and remove each entry once", async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "agentstate-lite-catalog-remove-process-")));
+  try {
+    const home = path.join(root, "home");
+    await mkdir(home);
+    const bundles = await Promise.all(
+      Array.from({ length: 8 }, async (_, index) => {
+        const bundle = path.join(root, `bundle-${index}`);
+        await initBundle(bundle);
+        return bundle;
+      }),
+    );
+    for (const [index, bundle] of bundles.slice(0, 4).entries()) {
+      const added = await run(home, ["catalog", "add", `old-${index}`, "--dir", bundle, "--json"]);
+      assert.equal(added.status, 0, childDiagnostics([added]));
+    }
+    const results = await Promise.all([
+      ...Array.from({ length: 4 }, (_, index) => run(home, ["catalog", "remove", `old-${index}`, "--json"])),
+      ...Array.from({ length: 4 }, (_, index) => run(home, ["catalog", "remove", `old-${index}`, "--json"])),
+      ...bundles.slice(4).map((bundle, index) => run(home, ["catalog", "add", `new-${index}`, "--dir", bundle, "--json"])),
+    ]);
+    assert.deepEqual(results.map((result) => result.status), Array(12).fill(0), childDiagnostics(results));
+    const removals = results.slice(0, 8).map((result) => JSON.parse(result.stdout) as { removed: boolean });
+    assert.equal(removals.filter((receipt) => receipt.removed).length, 4, childDiagnostics(results));
+
+    const listed = await run(home, ["catalog", "list", "--local", "--json"]);
+    assert.equal(listed.status, 0, childDiagnostics([listed]));
+    const receipt = JSON.parse(listed.stdout) as { entries: Array<{ label: string }> };
+    assert.deepEqual(receipt.entries.map((entry) => entry.label), ["new-0", "new-1", "new-2", "new-3"]);
+    for (const bundle of bundles) assert.ok(existsSync(path.join(bundle, "index.md")), "no bundle file is touched");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

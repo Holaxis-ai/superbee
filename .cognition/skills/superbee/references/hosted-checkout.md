@@ -415,7 +415,11 @@ somewhere else. Taking a bundle out of hosted is `superbee export` (below), and 
 person asks for it.
 
 `checkout` adds the folder to the workspace catalog, where `catalog list` shows it with
-`home: hosted`. The local MCP app (`superbee mcp`) serves it through the folder, by that label or
+`home: hosted`. `checkout --release` forgets the label checkout gave it; a label you chose is
+kept. `superbee catalog remove <label>` forgets any other entry, such as one `catalog list`
+reports `available: false` (its folder is gone); it never touches the folder or the checkout. It
+refuses (`unsent_changes`, exit 5) a checkout whose folder holds changes sync has not sent: run
+`superbee sync --dir <folder>` first. The local MCP app (`superbee mcp`) serves it through the folder, by that label or
 with the session opened in it: a document written through a View lands in the folder and reaches
 the host at the next `superbee sync`. A write sync could not send (a View save, a convention, a
 retype, a document over the size limit, a change to `verified`) is refused before the file
