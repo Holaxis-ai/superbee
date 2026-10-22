@@ -234,9 +234,16 @@ export function createLocalResolver(options: LocalResolverOptions): BundleResolv
         const binding = bindings.get(alias)!;
         const ids = [...new Set(indexes.map((i) => refs[i]!.id))];
         const malformed = new Map<ConceptId, string>();
+        const aliased = new Map<ConceptId, string>();
         let found: Map<ConceptId, ReadResult>;
         try {
-          const results = await readManyExisting(binding.backend, ids, (skip) => malformed.set(skip.id, skip.reason));
+          // One id spelled differently on disk names no document; it must not fail the batch.
+          const results = await readManyExisting(
+            binding.backend,
+            ids,
+            (skip) => malformed.set(skip.id, skip.reason),
+            (skip) => aliased.set(skip.id, skip.reason),
+          );
           found = new Map(results.map((result) => [result.doc.id, result]));
         } catch (error) {
           const detail = `${binding.label} could not be read: ${errorDetail(error)}`;
@@ -250,9 +257,12 @@ export function createLocalResolver(options: LocalResolverOptions): BundleResolv
             out[i] = { state: "resolved", ref, bundle_id: entry.bundle_id, document: hit.doc, version: hit.version };
           } else {
             const why = malformed.get(ref.id);
-            const detail = why === undefined
-              ? `'${ref.id}' is not in ${binding.label}`
-              : `'${ref.id}' in ${binding.label} is malformed: ${why}`;
+            const alias = aliased.get(ref.id);
+            const detail = alias !== undefined
+              ? `'${ref.id}' in ${binding.label} is not an exact id: ${alias}`
+              : why === undefined
+                ? `'${ref.id}' is not in ${binding.label}`
+                : `'${ref.id}' in ${binding.label} is malformed: ${why}`;
             unresolved(i, ref, hrefs[i]!, "target_missing", detail, entry.bundle_id);
           }
         }

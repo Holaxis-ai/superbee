@@ -48,7 +48,7 @@ import {
   parseQualifiedHref,
   parseQualifiedKindTarget,
   parseQualifiedLinks,
-  qualifiedHref,
+  emitLinkHref,
   resolveQualifiedLinks,
   type QualifiedLink,
   type Bundle,
@@ -636,7 +636,7 @@ export async function addQualifiedLink(
   }
   let href: string;
   try {
-    href = qualifiedHref({ alias, id }, fragment);
+    href = emitLinkHref({ kind: "qualified", alias, id, ...(fragment === undefined ? {} : { fragment }) });
   } catch (err) {
     if (!(err instanceof InvalidInputError)) throw err;
     throw new CliError("USAGE", `'${to}' in bundle '${alias}' is not a valid cross-bundle target: ${err.message}`, {

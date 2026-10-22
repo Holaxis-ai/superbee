@@ -49,7 +49,7 @@ import { MalformedDocumentError } from "./frontmatter-contract.js";
 import { encodeRemoteDocument } from "./remote-document-codec.js";
 import { RemoteError, malformed } from "./remote-error.js";
 import { SNAPSHOT_TRUNCATED, parseHeadsAnswer, readSnapshotStream, type HeadsResult, type RemoteSnapshot } from "./remote-parsers.js";
-import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, assertSafeReservedFilename, compareStorageKeys } from "./paths.js";
+import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, assertSafeReservedFilename, compareStorageKeys, trimTrailingSlashes } from "./paths.js";
 import { isRequestIdentity, mintRequestId, type Outcome } from "./uncertain-write.js";
 import { VersionConflict, isContentVersion, stripETagWrapper } from "./version-transport.js";
 import type {
@@ -279,13 +279,6 @@ function retryDelayMs(attempt: number): number {
 /** Resolve after `ms` milliseconds. */
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Scanned rather than `/\/+$/`-replaced, whose unanchored start backtracks quadratically. */
-function trimTrailingSlashes(value: string): string {
-  let end = value.length;
-  while (end > 0 && value[end - 1] === "/") end -= 1;
-  return value.slice(0, end);
 }
 
 /** URL-encode a concept id's path segments individually, preserving `/` as the separator. */

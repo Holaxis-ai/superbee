@@ -188,3 +188,10 @@ export function assertSafeReservedDir(dir: string): void {
   }
   if (dir !== "") assertPortablePath(dir, "Reserved-file directory");
 }
+
+/** Drops every trailing `/`. Scanned rather than `/\/+$/`-replaced, whose unanchored start backtracks quadratically on long slash runs. */
+export function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === "/") end -= 1;
+  return value.slice(0, end);
+}

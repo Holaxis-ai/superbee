@@ -260,12 +260,46 @@ export type { NonCanonicalDocumentId } from "./paths.js";
 
 export {
   extractMarkdownLinks,
+  extractMarkdownLinkSpans,
+  rewriteMarkdownLinks,
   resolveConceptId,
   relativeHref,
   parseLinksFromDoc,
   isExternalHref,
 } from "./links.js";
-export type { RawLink } from "./links.js";
+export type { RawLink, MarkdownLinkSpan } from "./links.js";
+export { emitLinkHref } from "./link-emit.js";
+export type { LinkHrefTarget } from "./link-emit.js";
+
+// Document transfer: plan, apply and resume an import of chosen documents from a bound bundle.
+export {
+  DOCUMENT_TRANSFER_CONTRACT,
+  PROMOTION_TYPE,
+  PROMOTIONS_PREFIX,
+  planDocumentTransfer,
+  applyDocumentTransfer,
+  resumeDocumentTransfer,
+  TransferConflictError,
+  TransferPlanChanged,
+  TransferInterrupted,
+  TransferResumeConflict,
+} from "./document-transfer.js";
+export type {
+  TransferSelection,
+  TransferSource,
+  TransferRequest,
+  TransferConflictCode,
+  TransferConflict,
+  LinkRewriteKind,
+  LinkUntouchedReason,
+  LinkRewrite,
+  TransferKindState,
+  TransferEntry,
+  TransferCounts,
+  TransferPlan,
+  TransferWritten,
+  TransferResult,
+} from "./document-transfer.js";
 
 // Cross-bundle links (`okf://<alias>/<path>.md`): the qualified-href grammar, the
 // `docs/dependencies` declaration with bundle identity, and the resolver interface.

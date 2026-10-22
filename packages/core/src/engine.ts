@@ -12,7 +12,7 @@ import {
   normalizeV01DocumentForWrite,
   normalizeV02DocumentForWrite,
 } from "./document-write-policy.js";
-import { InvalidInputError } from "./errors.js";
+import { FilesystemIdentityAliasError, InvalidInputError } from "./errors.js";
 import { isUsableTimestamp, MalformedDocumentError } from "./frontmatter-contract.js";
 import { parseLinksFromDoc } from "./links.js";
 import { assertSafeConceptId, isReservedFile, pathFromConceptId } from "./paths.js";
@@ -189,20 +189,24 @@ function isEnoent(err: unknown): boolean {
 
 /**
  * Delete-tolerant batch read: one `readMany`, falling back to per-id reads only when the batch
- * fails because an id vanished (or, with `onMalformed`, because one document is malformed).
- * Absent ids are simply missing from the result. Shared by the scan path and the cross-bundle
- * resolver, which issues one call per bound alias.
+ * fails because an id vanished (or, with `onMalformed`, because one document is malformed, or,
+ * with `onAliased`, because one id is spelled differently on disk). Absent ids are simply missing
+ * from the result; a malformed or aliased id is reported through its hook and skipped. Any other
+ * failure still throws. Shared by the scan path and the cross-bundle resolver, which issues one
+ * call per bound alias.
  */
 export async function readManyExisting(
   backend: StorageBackend,
   ids: ConceptId[],
   onMalformed?: (skip: SkippedDoc) => void,
+  onAliased?: (skip: SkippedDoc) => void,
 ): Promise<ReadResult[]> {
   try {
     return await backend.readMany(ids);
   } catch (err) {
-    const malformed = err instanceof MalformedDocumentError;
-    if (!isEnoent(err) && !(malformed && onMalformed)) throw err;
+    const malformed = err instanceof MalformedDocumentError && onMalformed !== undefined;
+    const aliased = err instanceof FilesystemIdentityAliasError && onAliased !== undefined;
+    if (!isEnoent(err) && !malformed && !aliased) throw err;
     const out: ReadResult[] = [];
     for (const id of ids) {
       try {
@@ -211,6 +215,10 @@ export async function readManyExisting(
         if (isEnoent(candidate)) continue;
         if (candidate instanceof MalformedDocumentError && onMalformed) {
           onMalformed({ id, reason: candidate.detail });
+          continue;
+        }
+        if (candidate instanceof FilesystemIdentityAliasError && onAliased) {
+          onAliased({ id, reason: candidate.message });
           continue;
         }
         throw candidate;

@@ -8,7 +8,18 @@
 // reach a command catch-all or fall all the way to `toExit`.
 //
 // The 0/1/2/4/5/6 exit taxonomy is PRESERVED intact from holaxis-agentstate.
-import { FieldActionError, InvalidInputError, MalformedDocumentError, OkfActorError, RemoteError, VersionConflict } from "@superbee/core";
+import {
+  FieldActionError,
+  InvalidInputError,
+  MalformedDocumentError,
+  OkfActorError,
+  RemoteError,
+  TransferConflictError,
+  TransferInterrupted,
+  TransferPlanChanged,
+  TransferResumeConflict,
+  VersionConflict,
+} from "@superbee/core";
 import { isBoardGitError, type BoardGitError } from "@superbee/board-git";
 import {
   ConnectorTargetUnsatisfied,
@@ -86,7 +97,21 @@ export type CliErrorCode =
    * SUPERBEE_CREDENTIAL_STORE=file opt-in), never re-authenticating, and never a silent plaintext
    * fallback.
    */
-  | "CREDENTIAL_STORE_UNAVAILABLE";
+  | "CREDENTIAL_STORE_UNAVAILABLE"
+  /**
+   * `doc import --apply` against a plan that has conflicts (`details.conflicts`). Nothing was
+   * written. Exit 5, the precondition bucket.
+   */
+  | "TRANSFER_CONFLICT"
+  /** `doc import --apply` with a token the recomputed plan no longer matches. Nothing was written. Exit 5. */
+  | "TRANSFER_PLAN_CHANGED"
+  /**
+   * A document create failed mid-import because another writer created that id. The Promotion
+   * record stays `applying`; `details` names what was written and what was not. Exit 5.
+   */
+  | "TRANSFER_INTERRUPTED"
+  /** `doc import --resume` met a changed source or a document it did not write. Exit 5. */
+  | "TRANSFER_RESUME_CONFLICT";
 
 /** The capped exit-code taxonomy (§6). More codes become brittle; refine via `code` instead. */
 export const EXIT = {
@@ -125,6 +150,10 @@ const CODE_EXIT: Record<CliErrorCode, number> = {
   CONFLICT: EXIT.CONFLICT,
   GATE_FAILED: EXIT.CONFLICT,
   CREDENTIAL_STORE_UNAVAILABLE: EXIT.RUNTIME,
+  TRANSFER_CONFLICT: EXIT.CONFLICT,
+  TRANSFER_PLAN_CHANGED: EXIT.CONFLICT,
+  TRANSFER_INTERRUPTED: EXIT.CONFLICT,
+  TRANSFER_RESUME_CONFLICT: EXIT.CONFLICT,
 };
 
 export interface CliErrorOptions {
@@ -227,6 +256,8 @@ export function classifyBundleError(err: unknown, remoteUrl?: string): CliError 
   if (err instanceof CliError) return err;
   if (isBoardGitError(err)) return cliErrorFromBoardGit(err);
   if (err instanceof RecipeLifecycleError) return cliErrorFromRecipeLifecycle(err);
+  const transfer = cliErrorFromTransfer(err);
+  if (transfer) return transfer;
   if (err instanceof OkfActorError) {
     // Self-correcting: the refusal names the conforming spelling and the once-only env fix, so an
     // agent on any machine repairs its own next command without a project instruction file.
@@ -270,6 +301,45 @@ export function classifyBundleError(err: unknown, remoteUrl?: string): CliError 
     return new CliError("USAGE", err.message);
   }
   return new CliError("RUNTIME", err instanceof Error ? err.message : String(err));
+}
+
+/** Transfer rows shown in an error envelope; the count carries the rest. */
+const TRANSFER_ERROR_ROW_CAP = 20;
+
+/**
+ * THE one document-transfer failure mapping (core `document-transfer.ts`), or null for any other
+ * value. Conflicts, a changed plan and a resume conflict are exit 5. An interrupted import is
+ * exit 5 when another writer created a target id (`TRANSFER_INTERRUPTED`); any other cause is
+ * classified as itself (an I/O failure stays RUNTIME), and both carry the record id and progress.
+ */
+export function cliErrorFromTransfer(err: unknown): CliError | null {
+  if (err instanceof TransferConflictError) {
+    return new CliError("TRANSFER_CONFLICT", err.message, {
+      details: { conflict_count: err.conflicts.length, conflicts: err.conflicts.slice(0, TRANSFER_ERROR_ROW_CAP) },
+    });
+  }
+  if (err instanceof TransferPlanChanged) {
+    return new CliError("TRANSFER_PLAN_CHANGED", err.message, { details: { expected_plan: err.expected, current_plan: err.current } });
+  }
+  if (err instanceof TransferResumeConflict) {
+    return new CliError("TRANSFER_RESUME_CONFLICT", err.message, {
+      details: { record: err.recordId, ...(err.id === undefined ? {} : { id: err.id }), written: err.written.length },
+    });
+  }
+  if (err instanceof TransferInterrupted) {
+    const progress = {
+      record: err.recordId,
+      record_state: "applying",
+      written_count: err.written.length,
+      pending_count: err.pending.length,
+      written: err.written.slice(0, TRANSFER_ERROR_ROW_CAP).map((w) => ({ source: w.source, target: w.target })),
+      pending: err.pending.slice(0, TRANSFER_ERROR_ROW_CAP),
+    };
+    if (err.cause instanceof VersionConflict) return new CliError("TRANSFER_INTERRUPTED", err.message, { details: progress });
+    const classified = classifyBundleError(err.cause);
+    return new CliError(classified.code, err.message, { details: { ...(classified.details ?? {}), ...progress } });
+  }
+  return null;
 }
 
 /**

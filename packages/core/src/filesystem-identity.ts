@@ -61,6 +61,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { ConcurrentReplacementError, FilesystemIdentityAliasError, InvalidInputError } from "./errors.js";
 import { acquireFilesystemIdentityLock, filesystemMutationLockRoot } from "./filesystem-lock.js";
 import { captureFilesystemHostPolicy, type FilesystemHostPolicy } from "./filesystem-host.js";
+import { foldSegment } from "./identity-fold.js";
+
+export { foldSegment };
 
 export type EntryKind = "file" | "directory" | "symlink" | "other";
 
@@ -223,19 +226,6 @@ function relSegments(rel: string): string[] {
 }
 
 // ── identity key ──────────────────────────────────────────────────────────────
-
-/**
- * NFKD, then Unicode FULL case folding applied as lower-upper-lower (locale-independent). A plain
- * lower-case fold misses the pairs a case-insensitive host equates through full case mapping
- * (ß/ss, ẞ/SS, final sigma ς/σ, iota-subscript ᾈ/ἀι and its family): two such spellings would get
- * different keys, both first-creation writers would realize ABSENT, and the second rename would
- * silently replace the first document. The round trip through upper case expands every such
- * pair to a common form, so the fold is a superset of every supported host's equivalence;
- * over-folding (dotless ı with i) only adds serialization, never removes exclusion.
- */
-export function foldSegment(segment: string): string {
-  return segment.normalize("NFKD").toLowerCase().toUpperCase().toLowerCase();
-}
 
 /** The physical path of the longest existing ancestor of `resolved`, plus the absent remainder. */
 async function existingAnchor(resolved: string): Promise<{ anchor: string; tail: string[] }> {
