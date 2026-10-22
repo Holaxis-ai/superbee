@@ -12,6 +12,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { foldPath } from "./path-fold.js";
 
 import {
   assertSafeBlobKey,
@@ -200,9 +201,6 @@ export function readStoredZip(archive: Uint8Array): RawEntry[] {
 
 const WINDOWS_DEVICE_NAMES = new Set(["CON", "PRN", "AUX", "NUL", ...Array.from({ length: 9 }, (_, i) => `COM${i + 1}`), ...Array.from({ length: 9 }, (_, i) => `LPT${i + 1}`)]);
 
-/** One spelling per path under NFC and case folding: two entries that fold together would overwrite one another. */
-const fold = (segment: string) => segment.normalize("NFC").toLowerCase();
-
 /** What an archive path is in a bundle, or an `unsafe_path` refusal. The core guards decide. */
 export function classifyEntryPath(entryPath: string): EntryKind {
   const unsafe = (why: string) => new ExportArchiveError("unsafe_path", `the archive holds a path a bundle cannot keep (${why}): ${JSON.stringify(entryPath.slice(0, 200))}`);
@@ -245,13 +243,14 @@ export function findEntryCollision(paths: readonly string[]): readonly [string, 
   const dirs = new Map<string, { spelling: string; by: string }>();
   for (const entryPath of paths) {
     const segments = entryPath.split("/");
-    const key = segments.map(fold).join("/");
+    // One spelling per path under `foldPath`: two entries that fold together would overwrite one another.
+    const key = segments.map(foldPath).join("/");
     const file = files.get(key) ?? dirs.get(key)?.by;
     if (file !== undefined) return [file, entryPath];
     files.set(key, entryPath);
     for (let depth = 1; depth < segments.length; depth += 1) {
       const spelling = segments.slice(0, depth).join("/");
-      const dirKey = segments.slice(0, depth).map(fold).join("/");
+      const dirKey = segments.slice(0, depth).map(foldPath).join("/");
       const asFile = files.get(dirKey);
       if (asFile !== undefined) return [asFile, entryPath];
       const seen = dirs.get(dirKey);

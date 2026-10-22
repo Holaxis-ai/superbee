@@ -131,6 +131,18 @@
       "types": "./dist/query-order.d.ts",
       "default": "./dist/query-order.js"
     },
+    "./path-fold": {
+      "types": "./dist/path-fold.d.ts",
+      "default": "./dist/path-fold.js"
+    },
+    "./code-unit-order": {
+      "types": "./dist/code-unit-order.d.ts",
+      "default": "./dist/code-unit-order.js"
+    },
+    "./string-identity-agreement": {
+      "types": "./dist/string-identity-agreement.d.ts",
+      "default": "./dist/string-identity-agreement.js"
+    },
     "./query-filter": {
       "types": "./dist/query-filter.d.ts",
       "default": "./dist/query-filter.js"

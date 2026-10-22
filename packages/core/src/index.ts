@@ -392,6 +392,8 @@ export {
 } from "./kinds.js";
 export { loadKinds } from "./kinds-load.js";
 export { compareCodePoints } from "./code-point-order.js";
+export { compareCodeUnits } from "./code-unit-order.js";
+export { foldPath } from "./path-fold.js";
 export type {
   KindClaimCoordinates,
   KindClaimPolicy,

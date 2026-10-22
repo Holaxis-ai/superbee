@@ -131,3 +131,21 @@ test("page-chain aggregate ZIP budget includes manifests and refuses before reta
   }
   assert.fail("the aggregate fixture must exceed the budget while every individual ZIP is valid");
 });
+
+/** A whole (unpaged) export of `docs` for `notes.a`, with a manifest that names every entry. */
+function wholeArchive(docs: readonly string[]): Uint8Array {
+  const entries = docs.map((name) => ({ name, bytes: Buffer.from(`---\ntitle: ${name}\n---\n`) }));
+  const manifest = { format: "superbee-export/1", source: { tenantId: "tenant:a", bundleId: "notes.a", revision: 2, okfEdition: null }, exportedAt: "2030-01-01T00:00:00.000Z",
+    counts: { documents: entries.length, reserved: 0, blobs: 0 }, entries: entries.map((entry) => ({ path: entry.name, bytes: entry.bytes.length, sha256: sha(entry.bytes) })) };
+  return zip([...entries, { name: "superbee-export.json", bytes: Buffer.from(JSON.stringify(manifest)) }]);
+}
+
+test("the verifier refuses two entries that meet only under the full path fold", () => {
+  // Control: entries that stay apart on every disk verify, so the refusals below are the fold's.
+  assert.equal(verifyExport(wholeArchive(["notes/a-b.md", "notes/a_b.md"]), "notes.a").entries.length, 2);
+  // Long s (U+017F) uppercases to S, so NTFS holds `referenceſ.md` and `references.md` as one file.
+  const pairs = [["notes/references.md", "notes/reference\u017F.md"], ["notes/k.md", "notes/\u212A.md"], ["notes/i.md", "notes/\u0131.md"], ["notes/references/a.md", "notes/reference\u017F/b.md"]] as const;
+  for (const [first, second] of pairs) {
+    assert.throws(() => verifyExport(wholeArchive([first, second]), "notes.a"), (error: unknown) => error instanceof ExportArchiveError && error.problem === "unsafe_path" && error.message.includes("cannot keep apart"), `${first} and ${second}`);
+  }
+});
