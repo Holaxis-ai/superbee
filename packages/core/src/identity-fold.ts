@@ -18,6 +18,6 @@ export function foldSegment(segment: string): string {
 }
 
 /** {@link foldSegment} applied to every `/`-separated segment of a bundle-relative path. */
-export function foldPath(rel: string): string {
+export function foldIdentityPath(rel: string): string {
   return rel.split("/").map(foldSegment).join("/");
 }

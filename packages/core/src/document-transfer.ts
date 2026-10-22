@@ -14,6 +14,10 @@
  * {@link resumeDocumentTransfer} is the one recovery path. Nothing here deletes or overwrites a
  * document.
  *
+ * v1 caveats: resume writes the remaining documents even if the target has since dropped a Kind
+ * that governed them. Reference-style link definitions (`[x]: ../f.md`) are copied unchanged and
+ * reported as `reference_definition`, so the caller sees links that may not resolve in the target.
+ *
  * Storage-neutral: the source is a {@link BundleBinding} (any backend), the target is written
  * through the shared document mutation policy, and no Node module is imported.
  */
@@ -30,11 +34,11 @@ import {
 import { DocumentNotFoundError, mutateDocument, prepareDocumentMutationCandidate, type DocumentMutationCandidate } from "./document-mutation.js";
 import { readManyExisting } from "./engine.js";
 import { InvalidInputError, OkfActorError } from "./errors.js";
-import { foldPath } from "./identity-fold.js";
+import { foldIdentityPath } from "./identity-fold.js";
 import { loadKinds } from "./kinds-load.js";
 import type { KindRegistry } from "./kinds.js";
 import { emitLinkHref } from "./link-emit.js";
-import { extractMarkdownLinkSpans, normalizeSegments, resolveConceptId, rewriteMarkdownLinks, type MarkdownLinkSpan } from "./links.js";
+import { extractMarkdownLinkSpans, maskMarkdownCode, normalizeSegments, resolveConceptId, rewriteMarkdownLinks, type MarkdownLinkSpan } from "./links.js";
 import { isOkfActor } from "./okf-actor.js";
 import { assertSafeConceptId, compareStorageKeys, isReservedFile, pathFromConceptId } from "./paths.js";
 import { isQualifiedHref, parseQualifiedHref, qualifiedHref } from "./qualified-links.js";
@@ -108,10 +112,11 @@ export type LinkUntouchedReason =
   | "image"
   | "escapes_source_root"
   | "has_query"
-  | "fragment_not_qualifiable"
   | "not_qualifiable"
   | "invalid_qualified"
-  | "already_qualified";
+  | "already_qualified"
+  /** A reference-style definition (`[x]: ../f.md`): copied as written, so it may not resolve in the target. */
+  | "reference_definition";
 
 export interface LinkRewrite {
   /** The href's start offset in the source body. */
@@ -363,7 +368,7 @@ function planLink(
         return { ...base, to_href: to, kind: "dequalified" };
       } catch (error) {
         if (!(error instanceof InvalidInputError)) throw error;
-        return keep(parsed.fragment === undefined ? "not_qualifiable" : "fragment_not_qualifiable");
+        return keep("not_qualifiable");
       }
     }
     const alias = targetAliasFor(ctx.target.dependencies, declared.bundle_id);
@@ -403,7 +408,7 @@ function planLink(
       return { ...base, to_href: to, kind: "local", source_target: resolved, target_present_in_source: true };
     } catch (error) {
       if (!(error instanceof InvalidInputError)) throw error;
-      return keep(fragment === undefined ? "not_qualifiable" : "fragment_not_qualifiable", { source_target: resolved, target_present_in_source: true });
+      return keep("not_qualifiable", { source_target: resolved, target_present_in_source: true });
     }
   }
   try {
@@ -411,8 +416,22 @@ function planLink(
     return { ...base, to_href: to, kind: "qualified", source_target: resolved, target_present_in_source: present };
   } catch (error) {
     if (!(error instanceof InvalidInputError)) throw error;
-    return keep(fragment === undefined ? "not_qualifiable" : "fragment_not_qualifiable", { source_target: resolved, target_present_in_source: present });
+    return keep("not_qualifiable", { source_target: resolved, target_present_in_source: present });
   }
+}
+
+const REFERENCE_DEFINITION = /^ {0,3}\[[^\]\n]+\]:[ \t]*<?([^\s>]+)/gm;
+
+/** Reference-style link definitions outside code, which v1 copies unchanged and only reports. */
+function referenceDefinitions(body: string): Array<{ offset: number; href: string }> {
+  const masked = maskMarkdownCode(body);
+  const out: Array<{ offset: number; href: string }> = [];
+  for (const match of masked.matchAll(REFERENCE_DEFINITION)) {
+    const href = match[1]!;
+    const offset = match.index! + match[0].length - href.length;
+    out.push({ offset, href: body.slice(offset, offset + href.length) });
+  }
+  return out;
 }
 
 /** Rewrite every link of one body. Links inside code are reported as `in_code` and left alone. */
@@ -436,6 +455,9 @@ function rewriteTransferBody(
     const rewrite = planLink(ctx, sourceId, targetId, span, conflicts);
     byOffset.set(span.hrefStart, rewrite);
     rewrites.push(rewrite);
+  }
+  for (const definition of referenceDefinitions(body)) {
+    rewrites.push({ offset: definition.offset, from_href: definition.href, to_href: definition.href, kind: "unchanged", reason: "reference_definition" });
   }
   rewrites.sort((a, b) => a.offset - b.offset);
   const next = rewriteMarkdownLinks(body, spans, (span) => {
@@ -493,11 +515,11 @@ function checkTargetIds(
 ): void {
   const folds = new Map<string, string>();
   const remember = (id: ConceptId): Array<[string, string]> => {
-    const keys: Array<[string, string]> = [[`${foldPath(id)}.md`, `${id}.md`]];
+    const keys: Array<[string, string]> = [[`${foldIdentityPath(id)}.md`, `${id}.md`]];
     const segments = id.split("/");
     for (let i = 1; i < segments.length; i++) {
       const dir = segments.slice(0, i).join("/");
-      keys.push([`${foldPath(dir)}/`, `${dir}/`]);
+      keys.push([`${foldIdentityPath(dir)}/`, `${dir}/`]);
     }
     return keys;
   };

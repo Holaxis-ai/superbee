@@ -55,6 +55,9 @@ okf://<alias>/<id>.md. The Promotion record is written first with promotion_stat
 becomes applied when every document is written; if a write fails, the record stays applying and
 --resume <record-id> finishes it.
 
+Caveats: resume writes the remaining documents even if this bundle has since dropped their Kind.
+Reference-style definitions ([x]: ../f.md) are copied unchanged and listed as reference_definition.
+
 The source alias must be declared in this bundle's docs/dependencies ('superbee deps add') and
 the copy must declare the same bundle_id ('superbee bundle id set').
 

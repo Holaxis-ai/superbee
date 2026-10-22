@@ -190,6 +190,7 @@ const RULES: RuleRow[] = [
   { name: "10 undeclared in source", body: "[t](okf://nobody/x.md)", kind: "unchanged", reason: "already_qualified", conflict: "qualified_alias_mismatch" },
   { name: "10 dequalify to the target's own id", body: "[t](okf://home/notes/n.md#f)", kind: "dequalified", to: "../../notes/n.md#f" },
   { name: "10 malformed", body: "[t](okf://Bad/x.md)", kind: "unchanged", reason: "invalid_qualified" },
+  { name: "reference definition is reported, not rewritten", body: "See [x].\n\n[x]: ../findings/f1.md", kind: "unchanged", reason: "reference_definition" },
 ];
 
 for (const row of RULES) {

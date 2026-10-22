@@ -14,6 +14,7 @@ import { initBundle, readDoc, TransferInterrupted, VersionConflict, writeDoc, ty
 
 import { doc } from "../src/commands/doc.js";
 import { CliError, cliErrorFromTransfer, EXIT } from "../src/errors.js";
+import { folderIdentity, indexCheckoutPath, writeBinding } from "../src/hosted/binding.js";
 import { BUILT_COMMAND, commandEnv } from "./support/command-batch.js";
 
 interface Fixture {
@@ -142,6 +143,35 @@ test("usage refusals: --remote, missing --from, undeclared or unbound alias, bad
       assert.equal(error.exitCode, EXIT.USAGE, `${argv.join(" ")}: ${error.message}`);
       assert.match(error.message, pattern);
     }
+  } finally { await fx.cleanup(); }
+});
+
+test("a hosted checkout target is refused with USAGE before any dependency read", async () => {
+  const fx = await makeFixture();
+  try {
+    const canonical = await realpath(fx.target.root);
+    const binding = {
+      schema: 1 as const,
+      checkout_id: "22222222-2222-2222-2222-222222222222",
+      path: canonical,
+      origin: "https://example.invalid",
+      audience: "https://example.invalid/mcp",
+      routes: "/sync/v1",
+      workspace: null,
+      workspaces: [],
+      bundle_id: "board-bundle",
+      principal_id: "fixture",
+      created_at: "2026-10-20T00:00:00Z",
+      state: "ready" as const,
+      folder_identity: (await folderIdentity(fx.target.root))!,
+    };
+    await writeBinding(fx.home, binding);
+    await indexCheckoutPath(fx.home, binding);
+    const error = await refusal(fx, baseArgs(fx));
+    assert.equal(error.code, "USAGE");
+    assert.equal(error.exitCode, EXIT.USAGE);
+    assert.match(error.message, /this folder is a hosted checkout/);
+    assert.equal(existsSync(path.join(fx.target.root, "imp")), false);
   } finally { await fx.cleanup(); }
 });
 
