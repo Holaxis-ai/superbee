@@ -8,13 +8,15 @@ import path from "node:path";
 import { withIsolatedUserEnv } from "./support/user-env.js";
 import { fileURLToPath } from "node:url";
 
-import { CONVENTION_TYPE, initBundle, writeDoc } from "@superbee/core";
+import { CONVENTION_TYPE, FilesystemBackend, initBundle, readDocVersioned, writeDoc } from "@superbee/core";
 import { maybeAutoPull } from "../src/autopull.js";
 import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, resolveLocalBundleRoute } from "../src/bundle.js";
 import { boardPostPersistHook } from "../src/board-attribution.js";
 import { readCache, readMarker, readSyncState } from "../src/cursor.js";
 import { docRead } from "../src/commands/doc/read.js";
 import { docWrite } from "../src/commands/doc/write.js";
+import { docDelete } from "../src/commands/doc/delete.js";
+import { deleteCommand } from "../src/commands/delete.js";
 import { init } from "../src/commands/init.js";
 import { home } from "../src/commands/home.js";
 import { list } from "../src/commands/list.js";
@@ -309,6 +311,89 @@ test("a bound-local route fails closed when its lexical symlink is swapped after
     await rm(temp, { recursive: true, force: true });
   }
 });
+
+for (const surface of ["doc delete", "delete --doc-key"] as const) {
+  test(`${surface}: bound-local route swap during the actual edition read preserves both directories`, async t => {
+    const temp = await mkdtemp(path.join(tmpdir(), "superbee-delete-route-swap-"));
+    try {
+      const project = path.join(temp, "project"), first = path.join(temp, "first"), second = path.join(temp, "second"), alias = path.join(temp, "alias");
+      await mkdir(project);
+      for (const root of [first, second]) {
+        await mkdir(root);
+        await initBundle(root);
+        await writeDoc({ root }, { id: "notes/keep", frontmatter: { type: "Note" }, body: `original bytes at ${root}` });
+      }
+      const files = [first, second].map(root => path.join(root, "notes/keep.md"));
+      const before = await Promise.all(files.map(file => readFile(file)));
+      await symlink(first, alias, "dir");
+      await writeFile(path.join(project, ".superbee.json"), JSON.stringify({ bundle: alias }));
+      let swapped = false;
+      const original = FilesystemBackend.prototype.readReserved;
+      t.mock.method(FilesystemBackend.prototype, "readReserved", async function(this: FilesystemBackend, ...args: Parameters<typeof original>) {
+        const result = await original.apply(this, args);
+        assert.deepEqual(args, ["", "index.md"]);
+        assert.equal(swapped, false, "one post-classification edition read");
+        swapped = true;
+        await rm(alias);
+        await symlink(second, alias, "dir");
+        return result;
+      });
+      await assert.rejects(() => inDir(project, () => surface === "doc delete"
+        ? docDelete(["notes/keep", "--actor", "process:deleter", "--json"], { stdout: () => assert.fail("refusal must not emit success") })
+        : deleteCommand(["--doc-key", "notes/keep.md", "--actor", "process:deleter", "--json"], { stdout: () => assert.fail("refusal must not emit success") })),
+      /selected target changed after classification/);
+      assert.equal(swapped, true, "the command reached its post-classification read");
+      assert.deepEqual(await Promise.all(files.map(file => readFile(file))), before, "neither old nor replacement directory loses bytes");
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const posture of ["ready board", "recovery-pending board", "bound-local"] as const) {
+  test(`document deletion attribution: both commands use only the frozen ${posture} decision`, async () => {
+    const topo = await makeTwoCloneTopology();
+    const temp = await mkdtemp(path.join(tmpdir(), "superbee-delete-attribution-"));
+    try {
+      if (posture === "recovery-pending board") await wedgeMidRebase(topo);
+      const target = posture === "bound-local" ? path.join(temp, ".superbee") : topo.b.board;
+      if (posture === "bound-local") { await mkdir(target); await initBundle(target); }
+      await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: target }));
+      const selected = await inDir(topo.a.root, () => resolveLocalBundleRoute(undefined));
+      assert.equal(selected.kind, posture === "bound-local" ? "bound-local" : "bound-board");
+      if (selected.kind === "bound-board") assert.equal(selected.readiness, posture === "ready board" ? "ready" : "recovery-pending");
+      const attribution = boardAttributionForRoute(selected);
+      assert.equal(attribution.kind, posture === "ready board" ? "board" : "none");
+      const home = path.join(temp, "home");
+      await mkdir(home);
+      await withHome(home, async () => {
+        const key = selected.kind === "bound-board" ? selected.owner.stateKey : resolveBundleKey(topo.a.board);
+        const expected: string[] = [];
+        for (const surface of ["doc delete", "delete --doc-key"] as const) {
+          await writeDoc({ root: target }, { id: "notes/delete-me", frontmatter: { type: "Note" }, body: "base" });
+          const stale = (await readDocVersioned({ root: target }, "notes/delete-me")).version;
+          await writeDoc({ root: target }, { id: "notes/delete-me", frontmatter: { type: "Note" }, body: "newer" });
+          const run = (actor: string, version?: string) => inDir(topo.a.root, () => surface === "doc delete"
+            ? docDelete(["notes/delete-me", "--actor", actor, "--json", ...(version ? ["--expected-version", version] : [])], { stdout: () => {} })
+            : deleteCommand(["--doc-key", "notes/delete-me.md", "--actor", actor, "--json", ...(version ? ["--expected-version", version] : [])], { stdout: () => {} }));
+          await assert.rejects(() => run("human:stale", stale), (error: unknown) => (error as { code?: string }).code === "STALE_HEAD");
+          assert.deepEqual((await readSyncState(key)).selfActors ?? [], expected);
+          const actor = surface === "doc delete" ? "human:doc-deleter" : "human:key-deleter";
+          await run(actor);
+          if (posture === "ready board") expected.push(actor);
+          assert.deepEqual((await readSyncState(key)).selfActors ?? [], expected);
+          await run("human:absent", stale);
+          assert.deepEqual((await readSyncState(key)).selfActors ?? [], expected, "absent-with-token never records an actor");
+        }
+        if (posture !== "ready board") assert.equal(existsSync(canonicalUserStateDir(home)), false, "ineligible routes do not create private board state");
+      });
+      if (posture === "recovery-pending board") assert.equal(isMidRebase(topo.b), true, "deletion never recovers or retargets the board");
+    } finally {
+      await topo.cleanup();
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+}
 
 test("a binding symlink to private state rejects from its canonical target", async () => {
   const temp = await mkdtemp(path.join(tmpdir(), "superbee-bound-private-symlink-"));

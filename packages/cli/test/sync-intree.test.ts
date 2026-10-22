@@ -33,6 +33,7 @@ import {
 import { sessionStart } from "../src/commands/session-start.js";
 import { home, BOARD_IN_TREE_LINE, inTreeUncommittedLine, inTreeUnpushedLine } from "../src/commands/home.js";
 import { doc } from "../src/commands/doc.js";
+import { deleteCommand } from "../src/commands/delete.js";
 import { maybeAutoPull } from "../src/autopull.js";
 import { boardPostPersistHook } from "../src/board-attribution.js";
 import { mutateDoc } from "../src/mutate.js";
@@ -40,7 +41,7 @@ import { CliError } from "../src/errors.js";
 import { cliInvocation } from "../src/invocation.js";
 import { readSyncState } from "../src/cursor.js";
 import { resolveBundleKey, IN_TREE_CURSOR_TIER } from "@superbee/board-git";
-import type { KindRegistry } from "@superbee/core";
+import { writeDoc, type KindRegistry } from "@superbee/core";
 
 import {
   BUNDLE_DIR,
@@ -532,6 +533,46 @@ test("hook: a substantive doc write records the actor (in-tree AND branch mode);
       "a refused write records nothing",
     );
   } finally {
+    await cleanup();
+    await intree.cleanup();
+    await branch.cleanup();
+  }
+});
+
+test("delete hook: both commands retain unbound conventional board attribution without synthesizing actors", async () => {
+  const intree = await makeCommittedFolderTopology();
+  const branch = await makeTwoCloneTopology();
+  const { home: h, cleanup } = await tempHome();
+  const previousActors = [process.env.SUPERBEE_ACTOR, process.env.AGENTSTATE_LITE_ACTOR];
+  delete process.env.SUPERBEE_ACTOR;
+  delete process.env.AGENTSTATE_LITE_ACTOR;
+  try {
+    await withHome(h, async () => {
+      for (const board of [intree.a.board, branch.a.board]) {
+        const key = resolveBundleKey(board);
+        const expected: string[] = [];
+        for (const surface of ["doc delete", "delete --doc-key"] as const) {
+          const run = (actor?: string) => surface === "doc delete"
+            ? doc(["delete", "notes/remove", "--dir", board, "--json", ...(actor ? ["--actor", actor] : [])], { stdout: () => {} })
+            : deleteCommand(["--doc-key", "notes/remove.md", "--dir", board, "--json", ...(actor ? ["--actor", actor] : [])], { stdout: () => {} });
+          await writeDoc({ root: board }, { id: "notes/remove", frontmatter: { type: "Note" }, body: "no synthetic identity" });
+          await run();
+          assert.deepEqual((await readSyncState(key)).selfActors ?? [], expected);
+          await writeDoc({ root: board }, { id: "notes/remove", frontmatter: { type: "Note" }, body: "attributed deletion" });
+          const actor = surface === "doc delete" ? "human:doc-deleter" : "human:key-deleter";
+          await run(actor);
+          expected.push(actor);
+          assert.deepEqual((await readSyncState(key)).selfActors, expected);
+          await run("human:absent");
+          assert.deepEqual((await readSyncState(key)).selfActors, expected);
+        }
+      }
+    });
+  } finally {
+    if (previousActors[0] === undefined) delete process.env.SUPERBEE_ACTOR;
+    else process.env.SUPERBEE_ACTOR = previousActors[0];
+    if (previousActors[1] === undefined) delete process.env.AGENTSTATE_LITE_ACTOR;
+    else process.env.AGENTSTATE_LITE_ACTOR = previousActors[1];
     await cleanup();
     await intree.cleanup();
     await branch.cleanup();

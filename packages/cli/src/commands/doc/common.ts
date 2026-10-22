@@ -393,6 +393,8 @@ stops resolving on the next graph walk) and does NOT append a log.md entry.
 Options:
   --expected-version <v>  Compare-and-swap token from a prior read/write receipt (a stale token is a
                           CONFLICT, exit 5; omit for an unconditional delete)
+  --actor <name>          Advisory board attribution (flag > actor environment). v0.2 requires an
+                          OKF actor; invalid configured attribution refuses before deletion.
 ${COMMON_OPTIONS}
 
 Examples:

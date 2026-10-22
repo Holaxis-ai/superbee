@@ -392,7 +392,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "docDelete",
         leaves: [publicLeaf("docDelete", "doc delete", one, undefined, DIR_SURFACE)],
-        usage: "doc delete <id> [--expected-version <v>] [--dir <path>] [--remote <url>]",
+        usage: "doc delete <id> [--expected-version <v>] [--actor <name>] [--dir <path>] [--remote <url>]",
         summary: "Hard-delete a doc (idempotent: absent -> deleted:false, exit 0)",
       },
       {
@@ -452,7 +452,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "delete",
         leaves: [publicLeaf("delete", "delete", zero, 8, DIR_SURFACE)],
-        usage: "delete --doc-key <key> [--expected-version <v>] [--dir <path>] [--remote <url>]",
+        usage: "delete --doc-key <key> [--expected-version <v>] [--actor <name>] [--dir <path>] [--remote <url>]",
         summary: "Hard-delete a doc or blob by key (outside a hosted checkout, idempotent: absent -> deleted:false, exit 0). Hosted ordinary files require clean preserved version+MIME pins and frozen exact-request delivery; they may remain incomplete",
       },
     ],

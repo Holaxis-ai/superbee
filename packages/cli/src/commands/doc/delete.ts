@@ -1,9 +1,12 @@
 import { renderUsage } from "../../output.js";
 // `doc delete <id>` — see `../doc.ts`'s header comment; hard-delete, idempotent, non-cascading.
 import { parseArgs } from "node:util";
-import { deleteDoc, pathFromConceptId, isReservedFile, VersionConflict } from "@superbee/core";
-import { openBundle, resolveRemoteFlag } from "../../bundle.js";
+import { pathFromConceptId, isReservedFile } from "@superbee/core";
+import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag } from "../../bundle.js";
 import { CliError, classifyBundleError } from "../../errors.js";
+import { assertActorAcceptedByBundle, resolveActor } from "../../actor.js";
+import { boardPostPersistHook } from "../../board-attribution.js";
+import { deleteMutatedDoc } from "../../mutate.js";
 import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
 import { render, resolveMode } from "../../output.js";
@@ -21,6 +24,7 @@ export async function docDelete(argv: string[], deps: Partial<DocCliDeps>): Prom
         args: argv,
         options: {
           "expected-version": { type: "string" },
+          actor: { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
           json: { type: "boolean" },
@@ -68,7 +72,10 @@ export async function docDelete(argv: string[], deps: Partial<DocCliDeps>): Prom
     );
   }
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const remote = await resolveRemoteFlag(values.remote, values.dir);
+  const route = remote === undefined ? await resolveLocalBundleRoute(values.dir) : undefined;
+  const bundle = route?.bundle ?? await openBundle(values.dir, remote);
+  if (route) await assertResolvedLocalRouteIdentity(route);
   id = await resolveConceptIdCliArgument(bundle, rawId);
 
   // Belt-and-suspenders after `.md` ambiguity resolution and any future resolver changes.
@@ -81,24 +88,27 @@ export async function docDelete(argv: string[], deps: Partial<DocCliDeps>): Prom
   }
   const mode = resolveMode(values);
   const expectedVersion = rawExpected?.trim();
-
-  let deleted: boolean;
+  const actor = resolveActor(values.actor, { help: `${cliInvocation()} doc delete ${commandToken(id)} --actor <name>` });
   try {
-    deleted = await deleteDoc(bundle, id, expectedVersion ? { expectedVersion } : undefined);
-  } catch (err) {
-    if (err instanceof VersionConflict) {
-      throw new CliError(
-        "STALE_HEAD",
-        `'${id}' has moved since --expected-version ${commandToken(String(err.expected))} was read (current: ` +
-          `${err.actual ?? "absent"}) — re-read and retry with the current version.`,
-        {
-          help: `${cliInvocation()} doc read ${commandToken(id)}`,
-          details: { expected: err.expected, actual: err.actual },
-        },
-      );
-    }
-    throw classifyBundleError(err, values.remote);
+    await assertActorAcceptedByBundle(bundle, actor);
+  } catch (error) {
+    throw classifyBundleError(error, values.remote);
   }
+  const onPersisted = boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor);
+
+  if (route) await assertResolvedLocalRouteIdentity(route);
+  const deleted = await deleteMutatedDoc({
+    bundle, id, expectedVersion, remoteUrl: values.remote, onPersisted,
+    staleHead: (err) => new CliError(
+      "STALE_HEAD",
+      `'${id}' has moved since --expected-version ${commandToken(String(err.expected))} was read (current: ` +
+        `${err.actual ?? "absent"}) — re-read and retry with the current version.`,
+      {
+        help: `${cliInvocation()} doc read ${commandToken(id)}`,
+        details: { expected: err.expected, actual: err.actual },
+      },
+    ),
+  });
 
   // AXI P6: deleting an ABSENT id is SUCCESS (deleted:false), never NOT_FOUND — exit 0 either way.
   const receipt: Record<string, unknown> = { doc: "deleted", id, deleted };
