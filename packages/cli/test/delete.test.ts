@@ -10,7 +10,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -18,12 +18,103 @@ import { initBundle, readDoc, readBlob, writeDoc, writeBlob, readDocVersioned } 
 import { serve, type ServerHandle } from "@superbee/server";
 
 import { deleteCommand, type DeleteCliDeps } from "../src/commands/delete.js";
+import { docDelete } from "../src/commands/doc/delete.js";
 import { CliError } from "../src/errors.js";
 import { KNOWN_COMMANDS } from "../src/cli.js";
 import { commandReference } from "../src/reference.js";
 import { testInvocation } from "./support/command-prefix.js";
 
 const OLD_TS = "2020-01-01T00:00:00.000Z";
+
+async function withDeleteActorEnv<T>(env: NodeJS.ProcessEnv, run: () => Promise<T>): Promise<T> {
+  const keys = ["SUPERBEE_ACTOR", "AGENTSTATE_LITE_ACTOR"] as const;
+  const before = keys.map(key => process.env[key]);
+  for (const key of keys) {
+    if (env[key] === undefined) delete process.env[key];
+    else process.env[key] = env[key];
+  }
+  try { return await run(); }
+  finally {
+    for (const [i, key] of keys.entries()) {
+      if (before[i] === undefined) delete process.env[key];
+      else process.env[key] = before[i];
+    }
+  }
+}
+
+const DOCUMENT_DELETE_SURFACES = [
+  { name: "doc delete", run: (root: string, flags: string[]) => docDelete(["notes/a", "--dir", root, "--json", ...flags], { stdout: () => {} }) },
+  { name: "delete --doc-key", run: (root: string, flags: string[]) => deleteCommand(["--doc-key", "notes/a.md", "--dir", root, "--json", ...flags], { stdout: () => {} }) },
+];
+for (const surface of DOCUMENT_DELETE_SURFACES) {
+  for (const row of [
+    { name: "v0.1 free-form configured actor", edition: "0.1", env: { SUPERBEE_ACTOR: "legacy name" }, flags: [], refused: false },
+    { name: "v0.2 canonical environment actor", edition: "0.2", env: { SUPERBEE_ACTOR: "human:canonical" }, flags: [], refused: false },
+    { name: "v0.2 legacy environment actor", edition: "0.2", env: { AGENTSTATE_LITE_ACTOR: "human:legacy" }, flags: [], refused: false },
+    { name: "explicit actor overrides environment", edition: "0.2", env: { SUPERBEE_ACTOR: "invalid", AGENTSTATE_LITE_ACTOR: "also invalid" }, flags: ["--actor", "human:explicit"], refused: false },
+    { name: "missing actor is allowed", edition: "0.2", env: {}, flags: [], refused: false },
+    { name: "invalid configured actor", edition: "0.2", env: { SUPERBEE_ACTOR: "invalid" }, flags: [], refused: true },
+    { name: "blank configured actor", edition: "0.2", env: { SUPERBEE_ACTOR: " " }, flags: [], refused: true },
+    { name: "conflicting configured actors", edition: "0.2", env: { SUPERBEE_ACTOR: "human:one", AGENTSTATE_LITE_ACTOR: "human:two" }, flags: [], refused: true },
+    { name: "blank explicit actor", edition: "0.2", env: {}, flags: ["--actor", " "], refused: true },
+    { name: "invalid configured actor still refuses absence", edition: "0.2", env: { SUPERBEE_ACTOR: "invalid" }, flags: [], refused: true, absent: true },
+  ] as const) {
+    test(`${surface.name} actor policy: ${row.name}`, async () => {
+      const root = await tempDir();
+      try {
+        await initBundle(root, { okfVersion: row.edition });
+        const absent = "absent" in row && row.absent;
+        if (!absent) await writeDoc({ root }, { id: "notes/a", frontmatter: { type: "Note" }, body: "keep until accepted" });
+        const file = path.join(root, "notes/a.md");
+        const before = absent ? undefined : await readFile(file);
+        await withDeleteActorEnv(row.env, async () => {
+          if (row.refused) await assert.rejects(() => surface.run(root, [...row.flags]), (error: unknown) => error instanceof CliError && error.code === "USAGE");
+          else await surface.run(root, [...row.flags]);
+        });
+        if (row.refused && !absent) assert.deepEqual(await readFile(file), before);
+        else await assert.rejects(() => readFile(file), { code: "ENOENT" });
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+  }
+  test(`${surface.name}: absent document remains success with an explicit stale token`, async () => {
+    const { dir, cleanup } = await makeBundle();
+    try {
+      await withDeleteActorEnv({}, () => surface.run(dir, ["--expected-version", "old-version"]));
+    } finally { await cleanup(); }
+  });
+  test(`${surface.name}: a literal .md-suffixed concept is deleted without touching reserved bytes`, async () => {
+    const { dir, cleanup } = await makeBundle();
+    try {
+      await writeDoc({ root: dir }, { id: "index.md", frontmatter: { type: "Note" }, body: "ordinary concept" });
+      const index = await readFile(path.join(dir, "index.md"));
+      await withDeleteActorEnv({}, () => surface.name === "doc delete"
+        ? docDelete(["index.md.md", "--dir", dir], { stdout: () => {} })
+        : deleteCommand(["--doc-key", "index.md.md", "--dir", dir], { stdout: () => {} }));
+      await assert.rejects(() => readFile(path.join(dir, "index.md.md")), { code: "ENOENT" });
+      assert.deepEqual(await readFile(path.join(dir, "index.md")), index);
+    } finally { await cleanup(); }
+  });
+}
+
+test("delete blob route ignores invalid, blank and conflicting document attribution", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    for (const env of [{ SUPERBEE_ACTOR: "invalid" }, { SUPERBEE_ACTOR: " " }, { SUPERBEE_ACTOR: "human:one", AGENTSTATE_LITE_ACTOR: "human:two" }]) {
+      await writeBlob({ root: dir }, "keep.bin", new Uint8Array([1, 2, 3]));
+      const receipt = await withDeleteActorEnv(env, () => runDelete(["--doc-key", "keep.bin", "--dir", dir, "--actor", " "]));
+      assert.equal(receipt.route, "blob");
+      assert.equal(receipt.deleted, true);
+    }
+  } finally { await cleanup(); }
+});
+
+test("document deletion preserves the callers' different reserved-file refusal boundaries", async () => {
+  const missing = path.join(tmpdir(), "superbee-delete-target-that-does-not-exist", "missing");
+  await assert.rejects(() => docDelete(["index.md", "--dir", missing], {}),
+    (error: unknown) => error instanceof CliError && error.code === "USAGE" && /reserved file/.test(error.message));
+  await assert.rejects(() => deleteCommand(["--doc-key", "index.md", "--dir", missing]),
+    (error: unknown) => error instanceof CliError && error.code === "NOT_FOUND");
+});
 
 async function tempDir(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "agentstate-lite-delete-test-"));

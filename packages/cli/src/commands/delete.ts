@@ -24,8 +24,11 @@ import { renderUsage } from "../output.js";
 // resolving on the next graph walk), and does NOT append a `log.md` entry (no other engine write
 // path self-logs either — D8).
 import { parseArgs } from "node:util";
-import { deleteDoc, deleteBlob, conceptIdFromPath, VersionConflict } from "@superbee/core";
-import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { deleteBlob, conceptIdFromPath, VersionConflict } from "@superbee/core";
+import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag } from "../bundle.js";
+import { assertActorAcceptedByBundle, resolveActor } from "../actor.js";
+import { boardPostPersistHook } from "../board-attribution.js";
+import { deleteMutatedDoc } from "../mutate.js";
 import { CliError, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -64,6 +67,8 @@ Options:
   --expected-version <v>   Compare-and-swap token from a prior read/write/pull receipt (a stale
                             token is a CONFLICT, exit 5; outside a hosted checkout omit for an
                             unconditional delete; hosted blobs always use preserved version+MIME pins)
+  --actor <name>            Document route only: advisory board attribution (flag > actor environment).
+                            v0.2 requires an OKF actor; blob deletion ignores this option/environment.
   --dir <path>              Bundle directory (default: discovered from the cwd)
   --remote <url>            Talk to a wire-protocol server instead of a local bundle (mutually
                             exclusive with --dir; remote access is always explicit)
@@ -93,6 +98,7 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
         options: {
           "doc-key": { type: "string" },
           "expected-version": { type: "string" },
+          actor: { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
           json: { type: "boolean" },
@@ -139,10 +145,12 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
       return;
     }
   }
-  const bundle = await openBundle(values.dir, remote);
+  const docRoute = isDocRouteKey(key);
+  const route = docRoute && remote === undefined ? await resolveLocalBundleRoute(values.dir) : undefined;
+  const bundle = route?.bundle ?? await openBundle(values.dir, remote);
+  if (route) await assertResolvedLocalRouteIdentity(route);
   const mode: OutputMode = resolveMode(values);
   const expectedVersion = rawExpected?.trim();
-  const docRoute = isDocRouteKey(key);
 
   let deleted: boolean;
   try {
@@ -152,7 +160,12 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
       // identical canonicalization step exactly.
       const canonicalPath = key.slice(0, -3) + ".md";
       const id = conceptIdFromPath(canonicalPath);
-      deleted = await deleteDoc(bundle, id, expectedVersion ? { expectedVersion } : undefined);
+      const actor = resolveActor(values.actor, { help: `${cliInvocation()} delete --doc-key ${commandToken(key)} --actor <name>` });
+      await assertActorAcceptedByBundle(bundle, actor);
+      const onPersisted = boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor);
+      if (route) await assertResolvedLocalRouteIdentity(route);
+      deleted = await deleteMutatedDoc({ bundle, id, expectedVersion, remoteUrl: values.remote, onPersisted,
+        staleHead: (error) => deleteErrorToCliError(error, key, values.remote) });
     } else {
       deleted = await deleteBlob(bundle, key, expectedVersion ? { expectedVersion } : undefined);
     }

@@ -1469,6 +1469,15 @@ test("host-classified stale-lock quarantine retries transient sharing errors and
           target: harness.target,
         }),
       );
+      const clock = virtualClock(Date.now());
+      const originalMkdir = fs.mkdir;
+      let claimAttempts = 0;
+      const restoreMkdir = replaceFsMethod("mkdir", (...args) => {
+        if (path.resolve(String(args[0])) === path.resolve(lockPath)) {
+          assert.ok(++claimAttempts <= 3, "quarantine acquisition exceeded three claims");
+        }
+        return Reflect.apply(originalMkdir, fs, args);
+      });
       let renameAttempts = 0;
       const sharingError = Object.assign(new Error("transient rename contention"), { code: "TEST_CONTENTION" });
       const restore = replaceFsMethod("rename", (...args) => {
@@ -1485,9 +1494,14 @@ test("host-classified stale-lock quarantine retries transient sharing errors and
           pollMs: 0,
         });
         assert.equal(renameAttempts, 2);
+        restoreMkdir();
+        restore();
+        clock.restore();
         await release();
       } finally {
+        restoreMkdir();
         restore();
+        clock.restore();
         await fs.rm(harness.root, { recursive: true, force: true });
       }
     });

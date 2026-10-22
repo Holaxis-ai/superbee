@@ -1,10 +1,9 @@
 /**
- * Mutation-seam boundary: core owns the body-replace guards. CLI writes use `mutateDoc`
- * (mutate.ts) for their presentation contract. The unconditional `writeDoc` family bypasses
- * mutation policy, while direct `mutateDocument` calls bypass CLI error translation. Every such bypass must be listed here with the reason it cannot
- * lose a body byte; a new one fails this test until it is either routed through `mutateDoc` or
- * recorded with its own reason. Same shape as the quoting checker's UNSCANNABLE map: explicit, one
- * reason per entry, growth fails. A text tripwire cannot see an aliased import or an indirect
+ * Mutation-seam boundary: CLI document writes use `mutateDoc` and deletions use `deleteMutatedDoc`
+ * in mutate.ts for error translation and true-only post-persist hooks. Core owns body-replace
+ * guards for candidate writes. Bypasses must carry an explicit invariant; a new one fails this
+ * test until routed through the seam or recorded with its own reason.
+ * A text tripwire cannot see an aliased import or an indirect
  * reference to the backend; that is its limit.
  *
  * Recipe install and evolution write conventions through core (`@superbee/core/recipe-lifecycle`),
@@ -36,18 +35,18 @@ function typeScriptFiles(dir: string): string[] {
 }
 
 /**
- * Core's direct document-write entry points — the mutation service, the unconditional writers, and
- * the raw backend seam that needs no import at all (`backend` is a public field on `Bundle`).
+ * Core's direct document-mutation entry points, including delete, and the raw backend seam that
+ * needs no import at all (`backend` is a public field on `Bundle`).
  */
-const DIRECT_WRITE_CALL = /\b(mutateDocument|writeDoc|writeDocVersioned|writeDocVersionedForEdition)\s*\(|\bbackend\.write\s*\(/;
+const DIRECT_WRITE_CALL = /\b(mutateDocument|writeDoc|writeDocVersioned|writeDocVersionedForEdition|deleteDoc)\s*\(|\bbackend\.(write|delete)\s*\(/;
 
-test("every CLI writer reaches core's document store through mutateDoc, or is a recorded body-preserving exemption", () => {
+test("every CLI document mutation reaches core through the presentation seam, or is a recorded exemption", () => {
   const direct = typeScriptFiles(SRC).filter((file) => DIRECT_WRITE_CALL.test(readFileSync(join(SRC, file), "utf8")));
   assert.deepEqual(
     direct,
     Object.keys(DIRECT_MUTATION_WRITERS).sort(),
-    "the set of files writing documents without mutateDoc changed. Route the new writer through "
-      + "mutateDoc so the body-replace guards apply, or add it to DIRECT_MUTATION_WRITERS with the "
+    "the set of files mutating documents without the CLI seam changed. Route writes through "
+      + "mutateDoc and deletions through deleteMutatedDoc, or add it to DIRECT_MUTATION_WRITERS with the "
       + "invariant that makes the bypass safe.",
   );
   for (const [file, reason] of Object.entries(DIRECT_MUTATION_WRITERS)) {

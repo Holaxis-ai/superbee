@@ -11,6 +11,7 @@
  */
 import {
   BodyReplaceError,
+  deleteDoc,
   DocumentNotFoundError,
   KindConformanceError,
   KindFieldMutationConflict,
@@ -105,6 +106,26 @@ async function firePostPersist(hook: (() => void | Promise<void>) | undefined): 
     await hook();
   } catch {
     // Best-effort by contract: orchestration cannot turn a successful write into a failure.
+  }
+}
+
+/** CLI deletion uses Core's idempotent delete directly; it has no candidate or read/retry phase. */
+export async function deleteMutatedDoc(opts: {
+  bundle: Bundle;
+  id: ConceptId;
+  expectedVersion?: Version;
+  remoteUrl?: string;
+  staleHead: (error: VersionConflict) => CliError;
+  onPersisted?: () => void | Promise<void>;
+}): Promise<boolean> {
+  try {
+    const deleted = await deleteDoc(opts.bundle, opts.id,
+      opts.expectedVersion === undefined ? undefined : { expectedVersion: opts.expectedVersion });
+    if (deleted) await firePostPersist(opts.onPersisted);
+    return deleted;
+  } catch (error) {
+    if (error instanceof VersionConflict) throw opts.staleHead(error);
+    throw classifyBundleError(error, opts.remoteUrl);
   }
 }
 
