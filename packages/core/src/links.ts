@@ -75,14 +75,71 @@ export function isExternalHref(href: string): boolean {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(h) || h.startsWith("mailto:") || h.startsWith("#");
 }
 
+/** One markdown link or image as written in a body, with the offsets of its parts in that body. */
+export interface MarkdownLinkSpan {
+  text: string;
+  href: string;
+  /** Offset of the opening `[` (of the `!` for an image). */
+  start: number;
+  /** Offset just past the closing `)`. */
+  end: number;
+  /** Offset of the href's first character. */
+  hrefStart: number;
+  /** Offset just past the href's last character. */
+  hrefEnd: number;
+  /** True for `![text](href)`. */
+  image: boolean;
+}
+
 /**
  * Extract every non-image markdown link from a body, in document order. With `skipCode`, a link
  * written inside an inline code span or a fenced or indented code block ({@link maskMarkdownCode})
- * is not a link; the returned text and href are still sliced from the original body.
+ * is not a link; the returned text and href are still sliced from the original body. This is
+ * {@link extractMarkdownLinkSpans} without images, so the link graph and a span-driven body
+ * rewrite always agree about what a link is.
  */
 export function extractMarkdownLinks(source: string, options: { skipCode?: boolean } = {}): RawLink[] {
-  const body = options.skipCode ? maskMarkdownCode(source) : source;
   const out: RawLink[] = [];
+  for (const span of extractMarkdownLinkSpans(source, options)) {
+    if (!span.image) out.push({ text: span.text, href: span.href });
+  }
+  return out;
+}
+
+/**
+ * Replace hrefs by offset. `replace` returns the new href for a span, or undefined to keep it.
+ * Spans are applied from the end of the body backwards, so earlier offsets stay valid; link text
+ * and everything outside the hrefs never changes. A span that overlaps another or does not match
+ * the body is refused.
+ */
+export function rewriteMarkdownLinks(
+  body: string,
+  spans: readonly MarkdownLinkSpan[],
+  replace: (span: MarkdownLinkSpan) => string | undefined,
+): string {
+  const ordered = [...spans].sort((a, b) => b.hrefStart - a.hrefStart);
+  let out = body;
+  let floor = Number.POSITIVE_INFINITY;
+  for (const span of ordered) {
+    if (span.hrefEnd > floor) throw new InvalidInputError("link spans overlap; refusing to rewrite the body");
+    floor = span.hrefStart;
+    if (body.slice(span.hrefStart, span.hrefEnd) !== span.href) {
+      throw new InvalidInputError("a link span does not match the body it was extracted from");
+    }
+    const next = replace(span);
+    if (next === undefined || next === span.href) continue;
+    out = out.slice(0, span.hrefStart) + next + out.slice(span.hrefEnd);
+  }
+  return out;
+}
+
+/**
+ * Extract every markdown link AND image from a body, in document order, with offsets: the one
+ * link scanner. With `skipCode`, a link inside code is not a link (see {@link extractMarkdownLinks}).
+ */
+export function extractMarkdownLinkSpans(source: string, options: { skipCode?: boolean } = {}): MarkdownLinkSpan[] {
+  const body = options.skipCode ? maskMarkdownCode(source) : source;
+  const out: MarkdownLinkSpan[] = [];
   let textOpen = -1;
   let afterClose: { open: number; close: number } | undefined;
   let hrefFirst: { open: number; close: number; hrefStart: number } | undefined;
@@ -97,12 +154,16 @@ export function extractMarkdownLinks(source: string, options: { skipCode?: boole
     // without backtracking over hostile input.
     if (hrefRest) {
       if (char === ")") {
-        if (hrefRest.open === 0 || body[hrefRest.open - 1] !== "!") {
-          out.push({
-            text: source.slice(hrefRest.open + 1, hrefRest.close),
-            href: source.slice(hrefRest.hrefStart, cursor),
-          });
-        }
+        const image = hrefRest.open > 0 && body[hrefRest.open - 1] === "!";
+        out.push({
+          text: source.slice(hrefRest.open + 1, hrefRest.close),
+          href: source.slice(hrefRest.hrefStart, cursor),
+          start: image ? hrefRest.open - 1 : hrefRest.open,
+          end: cursor + 1,
+          hrefStart: hrefRest.hrefStart,
+          hrefEnd: cursor,
+          image,
+        });
         textOpen = -1;
         afterClose = undefined;
         hrefFirst = undefined;

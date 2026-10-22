@@ -633,6 +633,7 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
     controlSkip: "signed out, notify and inbox answer AUTH_REQUIRED (exit 4); hosted-notify.test.ts covers the signed-in runs",
   })),
   { leaf: "docDelete", surface: "--dir", argv: (t) => ["doc", "delete", "probe/absent", "--dir", t, "--json"] },
+  { leaf: "docImport", controlSkip: "A complete control needs a declared, bound source bundle; doc-import.test.ts runs that flow. This row proves the path guard before any dependency read.", surface: "--dir", argv: (t) => ["doc", "import", "--from", "probe", "--dir", t, "--json"] },
   { leaf: "search", surface: "--dir", argv: (t) => ["search", "probe", "--dir", t, "--json"] },
   { leaf: "list", surface: "--dir", argv: (t) => ["list", "--dir", t, "--json"] },
   { leaf: "query", surface: "--dir", argv: (t) => ["query", "--dir", t, "--json"] },

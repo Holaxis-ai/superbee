@@ -104,6 +104,7 @@ export const BEHAVIOR_ASSIGNMENTS = [
   ordinary("docOpen", 1),
   ordinary("docHistory", 1),
   ordinary("docDelete", 1),
+  ordinary("docImport", 0),
   ordinary("list", 0),
   ordinary("search", 1),
   ordinary("query", 0, { canonicalIdentity: "alias" }),

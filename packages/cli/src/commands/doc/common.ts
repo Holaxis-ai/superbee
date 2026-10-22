@@ -31,6 +31,7 @@ Usage:
   superbee doc open    <id>                             Open the rendered doc in a browser
   superbee doc history <id>                             Show versions (local: current only)
   superbee doc delete  <id> [--expected-version <v>]    Hard-delete a doc (idempotent)
+  superbee doc import  --from <alias> --select ...      Copy documents from another bundle
 
 Authoring paths:
   superbee doc write <id> --type <Type> ...             Generic document creation or full replacement

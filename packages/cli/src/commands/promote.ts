@@ -67,6 +67,8 @@ export const PROMOTE_USAGE = `superbee promote — move a local file's bytes int
 Usage:
   superbee promote <file> --doc-key <key> [options]
 
+Not 'superbee doc import', which copies many documents from another bundle with rewritten links.
+
 Routes by the --doc-key's target (checked case-insensitively):
   A key ending '.md' is a DOC: the file is parsed as an OKF concept (YAML frontmatter + markdown
   body) and written through the engine — doc id = the key minus '.md'. The file's OWN frontmatter

@@ -78,6 +78,7 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
     docOpen: simple(CLI_LEAVES.docOpen, ["doc", "open"], ["existing"], dir),
     docHistory: simple(CLI_LEAVES.docHistory, ["doc", "history"], ["existing"], dir),
     docDelete: simple(CLI_LEAVES.docDelete, ["doc", "delete"], ["victim"], dir),
+    docImport: simple(CLI_LEAVES.docImport, ["doc", "import"], [], ["--from", "arity", ...dir]),
     list: simple(CLI_LEAVES.list, ["list"], [], dir),
     query: simple(CLI_LEAVES.query, ["query"], [], dir),
     linkAdd: simple(CLI_LEAVES.linkAdd, ["link", "add"], ["from", "to"], dir),

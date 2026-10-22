@@ -37,6 +37,7 @@ import { docRead } from "./doc/read.js";
 import { docHistory } from "./doc/history.js";
 import { docDelete } from "./doc/delete.js";
 import { docOpen } from "./doc/open.js";
+import { docImport } from "./doc/import.js";
 
 export { DOC_USAGE, type DocCliDeps, readErrorToCliError } from "./doc/common.js";
 export { inBundlePollutionWarning } from "./egress.js";
@@ -54,6 +55,7 @@ export async function doc(argv: string[], deps: Partial<DocCliDeps & UiCliDeps> 
   if (sub === "open") return docOpen(rest, deps);
   if (sub === "history") return docHistory(rest, deps);
   if (sub === "delete") return docDelete(rest, deps);
+  if (sub === "import") return docImport(rest, deps);
   if (sub === "-h" || sub === "--help" || sub === undefined) {
     stdout(renderUsage(DOC_USAGE));
     return;
@@ -68,7 +70,7 @@ export async function doc(argv: string[], deps: Partial<DocCliDeps & UiCliDeps> 
       { help: `${invocation} doc --help` },
     );
   }
-  throw new CliError("USAGE", `unknown doc subcommand: ${sub} (expected write|update|field|verify|read|open|history|delete)`, {
+  throw new CliError("USAGE", `unknown doc subcommand: ${sub} (expected write|update|field|verify|read|open|history|delete|import)`, {
     help: `${cliInvocation()} doc --help`,
   });
 }
