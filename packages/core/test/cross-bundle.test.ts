@@ -115,6 +115,41 @@ test("local resolver: one aliased id is target_missing for that link only, never
   assert.match(miss.detail, /exact spelling/);
 });
 
+/** A copy whose disk fails reading `beers/broken` (EIO), alongside the alias of `beers/a`. */
+class FailingBackend extends AliasingBackend {
+  #fail(id: ConceptId): void {
+    if (id === "beers/broken") throw Object.assign(new Error("EIO: i/o error, read"), { code: "EIO" });
+  }
+  // The alias refusal (super) comes first, so a batch holding both falls back per id and then
+  // meets the EIO there: the case where a fallback could mask a real failure.
+  override async readMany(ids: ConceptId[]): Promise<ReadResult[]> {
+    const results = await super.readMany(ids);
+    for (const id of ids) this.#fail(id);
+    return results;
+  }
+  override async read(id: ConceptId): Promise<ReadResult> {
+    this.#fail(id);
+    return super.read(id);
+  }
+}
+
+test("local resolver: a real read failure is never masked by the alias fallback", async () => {
+  const beers = new FailingBackend();
+  for (const id of ["beers/a", "beers/broken"]) await beers.write(id, { id, frontmatter: { type: "Beer", title: id }, body: "" });
+  const resolver = createLocalResolver({
+    dependencies: deps({ beers: { bundle_id: "hm-beer-catalog" } }),
+    bindings: new Map([["beers", { backend: beers, label: "catalogs/beer", identity: "hm-beer-catalog" }]]),
+  });
+  for (const refs of [[ref("beers", "beers/broken"), ref("beers", "beers/a")], [ref("beers", "beers/A"), ref("beers", "beers/broken"), ref("beers", "beers/a")]]) {
+    const results = await resolver.resolve(refs);
+    for (const result of results) {
+      const row = unresolved(result);
+      assert.equal(row.reason, "bundle_unavailable", JSON.stringify(refs));
+      assert.match(row.detail, /EIO/);
+    }
+  }
+});
+
 test("local resolver: bundle_unavailable when unbound, unidentified or a different bundle", async () => {
   const beers = await catalog(["beers/a"]);
   const dependencies = deps({ beers: { bundle_id: "hm-beer-catalog" } });

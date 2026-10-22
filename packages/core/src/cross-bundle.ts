@@ -9,8 +9,7 @@
 
 import type { DependencyEntry, DependencyMap, DependencyProblemCode } from "./dependencies.js";
 import { readManyExisting } from "./engine.js";
-import { FilesystemIdentityAliasError, InvalidInputError } from "./errors.js";
-import { MalformedDocumentError } from "./frontmatter-contract.js";
+import { InvalidInputError } from "./errors.js";
 import { qualifiedHref, type QualifiedLink, type QualifiedRef } from "./qualified-links.js";
 import type { ConceptId, OkfDocument, ReadResult, StorageBackend, Version } from "./types.js";
 
@@ -235,14 +234,16 @@ export function createLocalResolver(options: LocalResolverOptions): BundleResolv
         const binding = bindings.get(alias)!;
         const ids = [...new Set(indexes.map((i) => refs[i]!.id))];
         const malformed = new Map<ConceptId, string>();
+        const aliased = new Map<ConceptId, string>();
         let found: Map<ConceptId, ReadResult>;
         try {
-          const results = await readManyExisting(binding.backend, ids, (skip) => malformed.set(skip.id, skip.reason))
-            .catch((error: unknown) => {
-              // One id spelled differently on disk names no document; it must not fail the batch.
-              if (!(error instanceof FilesystemIdentityAliasError)) throw error;
-              return readEachExisting(binding.backend, ids, malformed);
-            });
+          // One id spelled differently on disk names no document; it must not fail the batch.
+          const results = await readManyExisting(
+            binding.backend,
+            ids,
+            (skip) => malformed.set(skip.id, skip.reason),
+            (skip) => aliased.set(skip.id, skip.reason),
+          );
           found = new Map(results.map((result) => [result.doc.id, result]));
         } catch (error) {
           const detail = `${binding.label} could not be read: ${errorDetail(error)}`;
@@ -256,9 +257,12 @@ export function createLocalResolver(options: LocalResolverOptions): BundleResolv
             out[i] = { state: "resolved", ref, bundle_id: entry.bundle_id, document: hit.doc, version: hit.version };
           } else {
             const why = malformed.get(ref.id);
-            const detail = why === undefined
-              ? `'${ref.id}' is not in ${binding.label}`
-              : `'${ref.id}' in ${binding.label} is malformed: ${why}`;
+            const alias = aliased.get(ref.id);
+            const detail = alias !== undefined
+              ? `'${ref.id}' in ${binding.label} is not an exact id: ${alias}`
+              : why === undefined
+                ? `'${ref.id}' is not in ${binding.label}`
+                : `'${ref.id}' in ${binding.label} is malformed: ${why}`;
             unresolved(i, ref, hrefs[i]!, "target_missing", detail, entry.bundle_id);
           }
         }
@@ -269,27 +273,6 @@ export function createLocalResolver(options: LocalResolverOptions): BundleResolv
       return [];
     },
   };
-}
-
-/**
- * Per-id fallback when a batch read fails on an identity alias: an aliased id is recorded in
- * `skipped` (and so reads as `target_missing`) and every other id is still read.
- */
-async function readEachExisting(backend: StorageBackend, ids: readonly ConceptId[], skipped: Map<ConceptId, string>): Promise<ReadResult[]> {
-  const out: ReadResult[] = [];
-  for (const id of ids) {
-    try {
-      out.push(await backend.read(id));
-    } catch (error) {
-      if ((error as { code?: unknown })?.code === "ENOENT") continue;
-      if (error instanceof FilesystemIdentityAliasError || error instanceof MalformedDocumentError) {
-        skipped.set(id, error.message);
-        continue;
-      }
-      throw error;
-    }
-  }
-  return out;
 }
 
 export interface QualifiedLinkResolution {
