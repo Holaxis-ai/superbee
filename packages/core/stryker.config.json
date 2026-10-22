@@ -3,7 +3,7 @@
   "packageManager": "npm",
   "testRunner": "tap",
   "tap": {
-    "testFiles": ["test/*.test.ts"],
+    "testFiles": ["test/!(source-egress).test.ts"],
     "nodeArgs": ["--import", "./test/ts-loader.mjs", "--test-reporter=tap", "-r", "../../scripts/stryker-cwd-pin.cjs", "-r", "{{hookFile}}", "{{testFile}}"],
     "forceBail": true
   },

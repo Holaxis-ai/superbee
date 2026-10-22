@@ -1,15 +1,57 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import yaml from "js-yaml";
 import { actionIdentity, parseActionDocument, validateIdentities } from "./workflow-actions.mjs";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
 
 import { expectedQueueJobs } from "./ci-queue-proof.mjs";
 import { extractJobs, requiredUnconditionalStep, stepsOf } from "./workflow-step-test-helper.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+test("mutation workflow selects the package that owns each mutation script", (t) => {
+  const outputDir = mkdtempSync(path.join(tmpdir(), "superbee-mutation-matrix-"));
+  t.after(() => rmSync(outputDir, { recursive: true, force: true }));
+  const mutationWorkflow = yaml.safeLoad(readFileSync(path.join(root, ".github/workflows/mutation-tests.yml"), "utf8"));
+  const select = mutationWorkflow.jobs.plan.steps.find((step) => step.id === "pick").run;
+  for (const target of ["both", "core", "cli", "board-git", ""]) {
+    const outputFile = path.join(outputDir, `${target || "default"}.output`);
+    const result = spawnSync("bash", ["-c", select], {
+      env: { ...process.env, TARGET: target, GITHUB_OUTPUT: outputFile },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const matrix = JSON.parse(readFileSync(outputFile, "utf8").trim().replace(/^matrix=/, "")).include;
+    assert.deepEqual(matrix.map((row) => row.package), target === "both" || !target ? ["core", "cli", "board-git"] : [target]);
+    for (const row of matrix) {
+      const owner = JSON.parse(readFileSync(path.join(root, "packages", row.package, "package.json"), "utf8"));
+      assert.equal(row.workspace, owner.name);
+      assert.equal(typeof owner.scripts.mutation, "string", `${row.workspace} must own a mutation script`);
+    }
+  }
+  assert.match(mutationWorkflow.jobs.mutate.steps.find((step) => step.name === "Run Stryker").run,
+    /^npm run mutation -w /, "the workflow must invoke the owning prerequisite chain");
+});
+
+test("Core mutation checks pristine egress before running all behavioral TAP tests", async () => {
+  const core = JSON.parse(readFileSync(path.join(root, "packages/core/package.json"), "utf8"));
+  assert.equal(core.scripts.mutation, "node --test --import ./test/ts-loader.mjs ./test/source-egress.test.ts && stryker run");
+  assert.equal(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).scripts["mutation:core"], "npm run mutation -w @superbee/core");
+  assert.match(core.scripts.test, /\.\/test\/\*\.test\.ts$/, "ordinary tests still include the pristine fence");
+  const config = JSON.parse(readFileSync(path.join(root, "packages/core/stryker.config.json"), "utf8"));
+  // Use the installed TAP runner's own glob dependency, including its extglob semantics.
+  const { glob } = createRequire(import.meta.resolve("@stryker-mutator/tap-runner"))("glob");
+  const cwd = path.join(root, "packages/core");
+  const all = await glob("test/*.test.ts", { cwd });
+  const instrumented = await glob(config.tap.testFiles, { cwd });
+  assert.deepEqual(all.filter((file) => !instrumented.includes(file)), ["test/source-egress.test.ts"]);
+  assert.deepEqual(instrumented.filter((file) => !all.includes(file)), []);
+});
 const workflow = readFileSync(path.join(root, ".github", "workflows", "ci-tests.yml"), "utf8");
 const packageLock = JSON.parse(readFileSync(path.join(root, "package-lock.json"), "utf8"));
 const rootPackage = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));

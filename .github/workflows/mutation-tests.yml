@@ -108,6 +108,8 @@ jobs:
             stryker-incremental-${{ matrix.package }}-
 
       - name: Run Stryker
+        # Core's mutation script first checks pristine source egress, before instrumentation
+        # adds its own globals. Behavioral tests still execute against the instrumented source.
         # -w runs the package's own `mutation` script with cwd = the package dir (what each
         # stryker.config.json expects); ONE npm layer, so `--`-forwarded flags reach stryker.
         # The dispatch input rides an env var, quoted in shell — never templated into the

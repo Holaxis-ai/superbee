@@ -263,7 +263,7 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "node --test --import ./test/ts-loader.mjs ./test/*.test.ts",
-    "mutation": "stryker run",
+    "mutation": "node --test --import ./test/ts-loader.mjs ./test/source-egress.test.ts && stryker run",
     "prepublishOnly": "node -e \"console.error('@superbee/core is released by .github/workflows/release-libraries.yml; do not run npm publish here'); process.exit(1)\""
   },
   "dependencies": {
