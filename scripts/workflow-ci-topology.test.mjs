@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import yaml from "js-yaml";
 import { actionIdentity, parseActionDocument, validateIdentities } from "./workflow-actions.mjs";
@@ -13,16 +14,19 @@ import { extractJobs, requiredUnconditionalStep, stepsOf } from "./workflow-step
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-test("mutation workflow selects the package that owns each mutation script", () => {
+test("mutation workflow selects the package that owns each mutation script", (t) => {
+  const outputDir = mkdtempSync(path.join(tmpdir(), "superbee-mutation-matrix-"));
+  t.after(() => rmSync(outputDir, { recursive: true, force: true }));
   const mutationWorkflow = yaml.safeLoad(readFileSync(path.join(root, ".github/workflows/mutation-tests.yml"), "utf8"));
   const select = mutationWorkflow.jobs.plan.steps.find((step) => step.id === "pick").run;
   for (const target of ["both", "core", "cli", "board-git", ""]) {
+    const outputFile = path.join(outputDir, `${target || "default"}.output`);
     const result = spawnSync("bash", ["-c", select], {
-      env: { ...process.env, TARGET: target, GITHUB_OUTPUT: "/dev/stdout" },
+      env: { ...process.env, TARGET: target, GITHUB_OUTPUT: outputFile },
       encoding: "utf8",
     });
     assert.equal(result.status, 0, result.stderr);
-    const matrix = JSON.parse(result.stdout.trim().replace(/^matrix=/, "")).include;
+    const matrix = JSON.parse(readFileSync(outputFile, "utf8").trim().replace(/^matrix=/, "")).include;
     assert.deepEqual(matrix.map((row) => row.package), target === "both" || !target ? ["core", "cli", "board-git"] : [target]);
     for (const row of matrix) {
       const owner = JSON.parse(readFileSync(path.join(root, "packages", row.package, "package.json"), "utf8"));
