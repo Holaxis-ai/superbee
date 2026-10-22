@@ -10,12 +10,14 @@ import {
   DocumentNotFoundError,
   KindConformanceError,
   mutateDocument,
+  prepareDocumentMutationCandidate,
 } from "../src/document-mutation.js";
+import { InvalidInputError } from "../src/errors.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { validateAgainstKind } from "../src/kinds.js";
 import { defaultActor, VersionConflict } from "../src/versioning.js";
 import type { KindConvention, KindRegistry } from "../src/kinds.js";
-import type { MutateDocumentOptions } from "../src/document-mutation.js";
+import type { DocumentMutationMode, MutateDocumentOptions } from "../src/document-mutation.js";
 import type { Bundle, ConceptId, OkfDocument, Version, WriteOptions } from "../src/types.js";
 
 const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
@@ -98,6 +100,135 @@ class ReadFailureBackend extends MemoryBackend {
 
   override async read(_id: ConceptId): Promise<never> {
     throw this.failure;
+  }
+}
+
+for (const mode of ["create-only", "overwrite"] as const) {
+  test(`${mode} refuses unsupported expectedVersion before any backend or candidate work`, async () => {
+    class UnobservedBackend extends MemoryBackend {
+      override async read(): Promise<never> { assert.fail("target must not be read"); }
+      override async readReserved(): Promise<never> { assert.fail("edition must not be read"); }
+      override async write(): Promise<never> { assert.fail("target must not be written"); }
+    }
+    await assert.rejects(() => mutateDocument({
+      bundle: bundleFor(new UnobservedBackend()), id: "notes/a", mode,
+      registry: EMPTY_REGISTRY, strict: false, expectedVersion: "observed-head",
+      buildCandidate: () => assert.fail("candidate must not be built"),
+    }), (error: unknown) => error instanceof InvalidInputError
+      && error.message === "expectedVersion requires patch or replace-document mode.");
+  });
+}
+
+const PREPARATION_MODES: readonly DocumentMutationMode[] = ["create-only", "overwrite", "patch", "replace-document"];
+for (const mode of PREPARATION_MODES) {
+  test(`preparation agreement: ${mode} preserves attribution order for an explicitly supplied lifecycle registry`, async () => {
+    // Mutation accepts a caller-supplied registry; it does not rediscover or reparse conventions.
+    const kind: KindConvention = {
+      ...FRESH_KIND, fields: { ...FRESH_KIND.fields, optional: ["actor"] },
+      deprecated: { fields: [], values: { actor: ["legacy"] }, links: [] },
+    };
+    const registry: KindRegistry = { kinds: new Map([[kind.governs, kind]]), warnings: [] };
+    const raw = { frontmatter: { type: kind.governs, title: "A", actor: "legacy" }, body: "same" };
+    const at = "2026-10-22T12:00:00.000Z";
+    const prepare = () => prepareDocumentMutationCandidate(undefined, raw, {
+      mode, id: "notes/a", registry, strict: false, okfVersion: "0.1", actor: "current", now: () => at,
+    });
+    const backend = new MemoryBackend();
+    const mutate = () => mutateDocument({
+      bundle: bundleFor(backend), mode, id: "notes/a", registry, strict: false, onAbsent: "create",
+      actor: "current", now: () => at, buildCandidate: () => raw,
+    });
+    if (mode === "patch" || mode === "replace-document") {
+      const refusesDeprecatedActor = (error: unknown) => error instanceof KindConformanceError
+        && error.violations.some(warning => warning.code === "KIND_DEPRECATED_VALUE" && warning.field === "actor");
+      assert.throws(prepare, refusesDeprecatedActor);
+      await assert.rejects(mutate, refusesDeprecatedActor);
+      assert.equal((await backend.versions("notes/a")).length, 0);
+    } else {
+      assert.equal(prepare().candidate.frontmatter.actor, "current");
+      const result = await mutate();
+      assert.equal(result.changed, true);
+      assert.deepEqual(result.doc.frontmatter, { type: kind.governs, title: "A", actor: "current", timestamp: at });
+      assert.equal((await backend.versions("notes/a")).length, 1);
+    }
+  });
+}
+for (const okfVersion of ["0.1", "0.2"] as const) {
+  for (const mode of PREPARATION_MODES) {
+    test(`preparation agreement: ${okfVersion} ${mode} creates with one clock and edition attribution`, async () => {
+      class NoTargetReadBackend extends MemoryBackend {
+        override async read(id: ConceptId) {
+          assert.notEqual(mode, "create-only", "create-only must keep its expect-absent basis without a target read");
+          return super.read(id);
+        }
+      }
+      const backend = new NoTargetReadBackend();
+      const bundle = okfVersion === "0.2" ? await v02BundleFor(backend) : bundleFor(backend);
+      const raw = { frontmatter: { type: "Note", title: "New" }, body: "new" };
+      const before = structuredClone(raw);
+      const at = "2026-10-22T12:00:00.000Z";
+      const expectedFrontmatter = okfVersion === "0.1"
+        ? { type: "Note", title: "New", actor: "human:writer", timestamp: at }
+        : { type: "Note", title: "New", generated: { by: "human:writer", at }, superbee_updated_by: "human:writer" };
+      let clocks = 0;
+      const prepared = prepareDocumentMutationCandidate(undefined, raw, {
+        mode, id: "notes/a", registry: EMPTY_REGISTRY, strict: false, okfVersion,
+        actor: "human:writer", now: () => { clocks++; return at; },
+      });
+      assert.equal(clocks, 1);
+      assert.equal(prepared.changed, true);
+      assert.deepEqual(prepared.candidate.frontmatter, expectedFrontmatter);
+      assert.deepEqual(prepared.warnings, []);
+      assert.deepEqual(raw, before, "pure preparation must detach the caller's candidate");
+
+      clocks = 0;
+      const result = await mutateDocument({
+        bundle, id: "notes/a", mode, onAbsent: "create", registry: EMPTY_REGISTRY, strict: false,
+        actor: "human:writer", now: () => { clocks++; return at; }, buildCandidate: () => raw,
+      });
+      assert.equal(clocks, 1);
+      assert.equal(result.changed, true);
+      assert.deepEqual(result.doc, { id: "notes/a", frontmatter: expectedFrontmatter, body: "new\n" });
+      assert.deepEqual(result.warnings, []);
+      assert.equal((await backend.versions("notes/a")).length, 1);
+      assert.deepEqual(raw, before, "persistence must not default metadata into caller input");
+    });
+  }
+
+  for (const mode of ["overwrite", "patch", "replace-document"] as const) {
+    test(`preparation agreement: ${okfVersion} ${mode} preserves its legacy actor no-op policy`, async () => {
+      const backend = new MemoryBackend();
+      const bundle = okfVersion === "0.2" ? await v02BundleFor(backend) : bundleFor(backend);
+      const initial = await mutateDocument({
+        bundle, id: "notes/a", mode: "create-only", registry: EMPTY_REGISTRY, strict: false,
+        actor: "human:alice", now: () => "2026-10-21T12:00:00.000Z",
+        buildCandidate: () => ({ frontmatter: { type: "Note", title: "A" }, body: "same" }),
+      });
+      const raw = { frontmatter: structuredClone(initial.doc.frontmatter), body: "same" };
+      if (okfVersion === "0.1") delete raw.frontmatter.actor;
+      else delete raw.frontmatter.superbee_updated_by;
+      const snapshots = structuredClone({ raw, existing: initial.doc });
+      const expectedChanged = okfVersion === "0.1" && mode !== "overwrite";
+      const prepared = prepareDocumentMutationCandidate(initial.doc, raw, {
+        mode, id: "notes/a", registry: EMPTY_REGISTRY, strict: false, okfVersion,
+        actor: "human:bob", now: () => "2026-10-22T12:00:00.000Z",
+      });
+      assert.equal(prepared.changed, expectedChanged);
+      assert.deepEqual({ raw, existing: initial.doc }, snapshots);
+      const expectedFrontmatter = expectedChanged
+        ? { ...initial.doc.frontmatter, actor: "human:bob" }
+        : initial.doc.frontmatter;
+      assert.deepEqual(prepared.candidate.frontmatter, expectedFrontmatter);
+
+      const result = await mutateDocument({
+        bundle, id: "notes/a", mode, registry: EMPTY_REGISTRY, strict: false,
+        actor: "human:bob", now: () => "2026-10-22T12:00:00.000Z", buildCandidate: () => raw,
+      });
+      assert.equal(result.changed, expectedChanged);
+      assert.deepEqual(result.doc.frontmatter, expectedFrontmatter);
+      assert.equal((await backend.versions("notes/a")).length, expectedChanged ? 2 : 1);
+      if (!expectedChanged) assert.equal(result.version, initial.version);
+    });
   }
 }
 
@@ -1759,9 +1890,8 @@ test("pin: the strict kind gate only throws for strict AND governed AND violatin
 // OVERWRITE branch's `decide`, when NOT strict AND an existing doc is present AND that
 // existing doc already conforms to ITS OWN governing kind (zero warnings), a candidate that
 // violates ITS OWN — possibly retyped — kind throws `KindConformanceError` instead of writing
-// with warnings. A never-conformed existing keeps today's lenient staging behavior. `promote`'s
-// CAS-overwrite path (direct `writeDocVersioned`, gated by its own `--expected-version`/
-// `--strict`) is a documented escape and stays out of this rule — see `promote.ts`'s own comment.
+// with warnings. An existing document with conformance debt keeps lenient staging behavior.
+// `promote` uses replace-document with hard CAS, so its strict flag controls Kind rejection.
 
 const TASK_KIND: KindConvention = {
   id: "conventions/task",
@@ -1788,10 +1918,42 @@ const TASK_NOTE_REGISTRY: KindRegistry = {
   warnings: [],
 };
 
+for (const mode of ["overwrite", "patch", "replace-document"] as const) {
+  test(`preparation agreement: only overwrite ratchets a conforming document (${mode})`, async () => {
+    const existing: OkfDocument = {
+      id: "tasks/prepared", frontmatter: { type: "Task", title: "T", status: "todo", timestamp: "2026-07-16T00:00:00.000Z" }, body: "same\n",
+    };
+    const raw = { frontmatter: { type: "Task", title: "T", timestamp: "2026-07-16T00:00:00.000Z" }, body: "same" };
+    const prepare = () => prepareDocumentMutationCandidate(existing, raw, {
+      mode, id: existing.id, registry: TASK_NOTE_REGISTRY, strict: false, okfVersion: "0.1",
+    });
+    const backend = new MemoryBackend();
+    const bundle = bundleFor(backend);
+    const initial = await writeDocVersioned(bundle, existing);
+    const mutate = () => mutateDocument({
+      bundle, mode, id: existing.id, registry: TASK_NOTE_REGISTRY, strict: false, buildCandidate: () => raw,
+    });
+    if (mode === "overwrite") {
+      const refusesMissingStatus = (error: unknown) => error instanceof KindConformanceError
+        && error.violations.some(warning => warning.field === "status");
+      assert.throws(prepare, refusesMissingStatus);
+      await assert.rejects(mutate, refusesMissingStatus);
+      assert.equal((await backend.read(existing.id)).version, initial.version);
+    } else {
+      const prepared = prepare();
+      assert.equal(prepared.changed, true);
+      assert.equal(prepared.candidate.frontmatter.status, undefined);
+      assert.ok(prepared.warnings.some(warning => warning.field === "status"));
+      const result = await mutate();
+      assert.equal(result.changed, true);
+      assert.equal(result.doc.frontmatter.status, undefined);
+      assert.ok(result.warnings.some(warning => warning.field === "status"));
+      assert.notEqual(result.version, initial.version);
+    }
+  });
+}
+
 // (a) conforming existing + regressing candidate → KindConformanceError.
-// RED-PROOF: commenting out the ratchet's `if (!opts.strict && existing && warnings.length > 0
-// && conforms(existing, opts.registry))` throw in document-mutation.ts's overwrite `decide` makes
-// this test fail (the write would silently succeed with a warning instead of throwing).
 test("overwrite ratchet: a candidate that drops a REQUIRED field off an already-conforming existing Task is REFUSED, not warned", async () => {
   const backend = new MemoryBackend();
   const bundle = bundleFor(backend);
