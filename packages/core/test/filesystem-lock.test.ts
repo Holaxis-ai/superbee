@@ -1495,6 +1495,8 @@ test("host-classified stale-lock quarantine retries transient sharing errors and
         });
         assert.equal(renameAttempts, 2);
         restoreMkdir();
+        restore();
+        clock.restore();
         await release();
       } finally {
         restoreMkdir();
