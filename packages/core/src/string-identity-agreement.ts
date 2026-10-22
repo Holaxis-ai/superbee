@@ -45,7 +45,11 @@ export const PATH_FOLD_ROWS: readonly PathFoldRow[] = Object.freeze([
   { note: "slash is untouched across segments", input: "Notes/Reference\u017F/A-B", fold: "notes/references/a-b" },
 ]);
 
-/** Pairs a case-insensitive, normalizing disk would hold as one file (same fold) or as two. */
+/**
+ * Pairs the fold treats as one file (same fold) or as two. The fold is deliberately wider than any
+ * one disk: it also joins pairs some filesystems keep apart (NTFS holds `ß` and `ss` as two names),
+ * so a refusal under it means "may merge somewhere", not "merges everywhere".
+ */
 export interface PathCollisionRow {
   readonly a: string;
   readonly b: string;

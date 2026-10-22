@@ -10,7 +10,7 @@
  * - The uppercase step: case-insensitive filesystems compare through an uppercase table (NTFS's
  *   `$UpCase`), so any character whose uppercase is an ASCII letter meets that letter. `ſ` (U+017F,
  *   long s) uppercases to `S`, so `referenceſ` is `REFERENCES` to Windows; `toLowerCase()` alone
- *   leaves it distinct. The Kelvin sign (U+212A) and `ı` (U+0131, dotless i) meet `k` and `i`.
+ *   leaves it distinct. `ı` (U+0131, dotless i) likewise meets `i` only through the uppercase step.
  * - The leading lowercase step: a capital with no single-character uppercase partner must reach
  *   the same form as its lowercase. `ẞ` (U+1E9E, capital sharp s) is its own uppercase and
  *   lowercases to `ß`, whose uppercase is `SS`; uppercasing first would stop at `ß` while `ß`
