@@ -508,3 +508,14 @@ test("freshness: sub-millisecond deadlines do not expire a millisecond early", (
     assert.equal(freshness(doc, { okfVersion: "0.2", now: new Date("2026-07-01T12:34:56.790Z") }).verdict, "stale");
   }
 });
+
+test("trimTrailingSlashes strips only trailing slashes and stays linear on long slash runs", async () => {
+  const { trimTrailingSlashes } = await import("../src/paths.js");
+  assert.equal(trimTrailingSlashes("a/b///"), "a/b");
+  assert.equal(trimTrailingSlashes("///"), "");
+  assert.equal(trimTrailingSlashes("a//b"), "a//b");
+  const hostile = `${"/".repeat(200_000)}a`;
+  const started = performance.now();
+  assert.equal(trimTrailingSlashes(hostile), hostile);
+  assert.ok(performance.now() - started < 1000, "must not backtrack on a long slash run");
+});

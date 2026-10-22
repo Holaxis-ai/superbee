@@ -40,7 +40,7 @@ import { CONVENTIONS_PREFIX, type KindRegistry } from "./kinds.js";
 import { emitLinkHref } from "./link-emit.js";
 import { extractMarkdownLinkSpans, maskMarkdownCode, normalizeSegments, resolveConceptId, rewriteMarkdownLinks, type MarkdownLinkSpan } from "./links.js";
 import { isOkfActor } from "./okf-actor.js";
-import { assertSafeConceptId, compareStorageKeys, isReservedFile, pathFromConceptId } from "./paths.js";
+import { assertSafeConceptId, compareStorageKeys, isReservedFile, pathFromConceptId, trimTrailingSlashes } from "./paths.js";
 import { isQualifiedHref, parseQualifiedHref, qualifiedHref } from "./qualified-links.js";
 import { sha256HexOfUtf8 } from "./sha256.js";
 import type { ValidationWarning } from "./validation.js";
@@ -511,7 +511,7 @@ function defaultRecordId(alias: string, bundleId: string, prefix: string | undef
 
 function normalizePrefix(prefix: string | undefined): string | undefined {
   if (prefix === undefined) return undefined;
-  const trimmed = prefix.trim().replace(/\/+$/, "");
+  const trimmed = trimTrailingSlashes(prefix.trim());
   return trimmed === "" ? undefined : trimmed;
 }
 
@@ -782,7 +782,7 @@ async function computeTransfer(request: TransferRequest): Promise<Computed> {
     }
   }
   const types = new Set(request.select.types ?? []);
-  const prefixes = (request.select.prefixes ?? []).map((p) => p.trim().replace(/\/+$/, "")).filter((p) => p !== "");
+  const prefixes = (request.select.prefixes ?? []).map((p) => trimTrailingSlashes(p.trim())).filter((p) => p !== "");
   const underPrefix = (id: ConceptId): boolean => prefixes.some((p) => id === p || id.startsWith(`${p}/`));
   for (const [id, { doc }] of source.docs) {
     if (SOURCE_SELF_DOCS.has(id)) continue;
