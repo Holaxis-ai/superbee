@@ -1970,3 +1970,47 @@ test("inbound evolution: identical legacy content can adopt a stamp without addi
     assert.equal((await planRecipeEvolution(bundle, desired)).writes, 0);
   }
 });
+
+test("recipe enum restrictions: literal prototype field names still require conforming instances", async (t) => {
+  for (const field of ["constructor", "toString"]) for (const invalid of [false, true]) {
+    await t.test(`${field}: ${invalid ? "forbidden" : "allowed"} populated value`, async () => {
+      const before = kindDoc("Widget", { required: ["title"], optional: [field] });
+      const after = kindDoc("Widget", { required: ["title"], optional: [field], values: { [field]: ["allowed"] } });
+      for (const doc of [before, after]) {
+        const parsed = parseConventionDoc(doc, { okfVersion: "0.2" });
+        assert.ok(parsed.ok);
+        assert.deepEqual(parsed.warnings, []);
+      }
+      const backend = new DescriptionProbeBackend();
+      await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n");
+      const bundle: Bundle = { root: "mem://literal-enum-fields", backend };
+      await installRecipe(bundle, kindRecipe("literal-enum-fields", "1", [before]));
+      await writeDoc(bundle, {
+        id: "widgets/one", body: "Unchanged instance.\n",
+        frontmatter: { type: "Widget", title: "One", [field]: invalid ? "forbidden" : "allowed" },
+      });
+      const definition = await backend.read(before.id);
+      const instance = await backend.read("widgets/one");
+      backend.writes = 0;
+      const desired = kindRecipe("literal-enum-fields", "2", [after]);
+      const plan = await planRecipeEvolution(bundle, desired);
+      assert.equal(plan.ready, !invalid, JSON.stringify(plan.blockers));
+      assert.equal(backend.writes, 0, "planning cannot persist a definition or instance");
+      assert.deepEqual(await backend.read(before.id), definition);
+      assert.deepEqual(await backend.read("widgets/one"), instance);
+      if (invalid) {
+        assert.ok(plan.blockers.some(row => row.code === "RECIPE_EVOLUTION_RESTRICTION_VIOLATED"));
+        await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), RecipeEvolutionBlocked);
+        assert.equal(backend.writes, 0, "a failed instance proof cannot persist either document");
+        assert.deepEqual(await backend.read(before.id), definition);
+      } else {
+        await applyRecipeEvolution(bundle, desired, plan.plan_token);
+        const installed = parseConventionDoc((await backend.read(before.id)).doc, { okfVersion: "0.2" });
+        assert.ok(installed.ok);
+        assert.deepEqual(installed.kind.fields.values[field], ["allowed"]);
+        assert.equal(backend.writes, 1, "only the convention is evolved");
+      }
+      assert.deepEqual(await backend.read("widgets/one"), instance);
+    });
+  }
+});
