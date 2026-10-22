@@ -74,7 +74,7 @@ test("plan output: keys in order, counts, untouched links and an exact apply com
     assert.deepEqual(plan.from, { alias: "wave", bundle_id: "wave-bundle", label: fx.source.root });
     assert.equal(plan.documents, 2);
     assert.deepEqual(plan.links, { local: 2, qualified: 1, dequalified: 0, unchanged: 1, dangling_in_source: 0 });
-    assert.deepEqual(plan.left_behind, { "Bundle Name": 1, Finding: 1 });
+    assert.deepEqual(plan.left_behind, { Finding: 1 });
     assert.deepEqual(plan.untouched_links, { shown: 1, total: 1, rows: [{ source: "themes/a", href: "https://example.com", reason: "external" }] });
     assert.equal(plan.ready, true);
     const help = plan.help as string[];

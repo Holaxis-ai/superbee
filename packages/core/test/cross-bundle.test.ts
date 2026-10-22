@@ -16,6 +16,7 @@ import {
 } from "../src/cross-bundle.js";
 import { parseDependencies, type DependencyMap } from "../src/dependencies.js";
 import { MemoryBackend } from "../src/memory-backend.js";
+import { FilesystemIdentityAliasError } from "../src/errors.js";
 import { parseQualifiedLinks, qualifiedHref, type QualifiedRef } from "../src/qualified-links.js";
 import type { ConceptId, ReadResult } from "../src/types.js";
 
@@ -82,6 +83,36 @@ test("local resolver: resolved, target_missing and unknown_alias", async () => {
   const u = unresolved(unknown!);
   assert.equal(u.reason, "unknown_alias");
   assert.equal(u.bundle_id, undefined);
+});
+
+/** A copy on a case-insensitive host: `beers/A` is an alias of the stored `beers/a`. */
+class AliasingBackend extends CountingBackend {
+  #refuse(id: ConceptId): void {
+    if (id === "beers/A") throw new FilesystemIdentityAliasError("beers/A.md", "A.md");
+  }
+  override async readMany(ids: ConceptId[]): Promise<ReadResult[]> {
+    for (const id of ids) this.#refuse(id);
+    return super.readMany(ids);
+  }
+  override async read(id: ConceptId): Promise<ReadResult> {
+    this.#refuse(id);
+    return super.read(id);
+  }
+}
+
+test("local resolver: one aliased id is target_missing for that link only, never the whole batch", async () => {
+  const beers = new AliasingBackend();
+  for (const id of ["beers/a", "beers/b"]) await beers.write(id, { id, frontmatter: { type: "Beer", title: id }, body: "" });
+  const resolver = createLocalResolver({
+    dependencies: deps({ beers: { bundle_id: "hm-beer-catalog" } }),
+    bindings: new Map([["beers", { backend: beers, label: "catalogs/beer", identity: "hm-beer-catalog" }]]),
+  });
+  const [a, aliased, b] = await resolver.resolve([ref("beers", "beers/a"), ref("beers", "beers/A"), ref("beers", "beers/b")]);
+  assert.equal(a!.state, "resolved");
+  assert.equal(b!.state, "resolved");
+  const miss = unresolved(aliased!);
+  assert.equal(miss.reason, "target_missing");
+  assert.match(miss.detail, /exact spelling/);
 });
 
 test("local resolver: bundle_unavailable when unbound, unidentified or a different bundle", async () => {

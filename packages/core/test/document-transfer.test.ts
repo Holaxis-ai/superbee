@@ -190,6 +190,8 @@ const RULES: RuleRow[] = [
   { name: "10 undeclared in source", body: "[t](okf://nobody/x.md)", kind: "unchanged", reason: "already_qualified", conflict: "qualified_alias_mismatch" },
   { name: "10 dequalify to the target's own id", body: "[t](okf://home/notes/n.md#f)", kind: "dequalified", to: "../../notes/n.md#f" },
   { name: "10 malformed", body: "[t](okf://Bad/x.md)", kind: "unchanged", reason: "invalid_qualified" },
+  { name: "9 case variant of a source id stays unchanged", body: "[t](A.md)", kind: "unchanged", reason: "case_variant" },
+  { name: "9 case variant of an unselected source id stays unchanged", body: "[t](../Findings/f1.md)", kind: "unchanged", reason: "case_variant" },
   { name: "reference definition is reported, not rewritten", body: "See [x].\n\n[x]: ../findings/f1.md", kind: "unchanged", reason: "reference_definition" },
 ];
 
@@ -241,7 +243,7 @@ test("plan maps ids under the prefix, reports left-behind types, mentions and th
     ["themes/a", "imp/themes/a"],
     ["themes/b", "imp/themes/b"],
   ]);
-  assert.deepEqual(plan.left_behind, { "Bundle Name": 1, "Bundle Dependencies": 1, Convention: 1, Finding: 2 });
+  assert.deepEqual(plan.left_behind, { Convention: 1, Finding: 2 }, "the source's own identity and dependency docs are not counted");
   assert.deepEqual(plan.entries.find((e) => e.source === "themes/a")!.frontmatter_id_mentions, ["themes/b"]);
   assert.equal(plan.entries[0]!.kind_state, "ungoverned_both");
   assert.equal(plan.entries[1]!.kind_state, "allowed_ungoverned");
@@ -331,6 +333,21 @@ test("conflict duplicate_target and unsafe_target_id", async () => {
   assert.ok((await conflictsOf(fx, { recordId: "imp/themes/b" })).includes("duplicate_target"));
   assert.ok((await conflictsOf(fx, { recordId: "promotions/index" })).includes("unsafe_target_id"));
   assert.ok((await conflictsOf(fx, { prefix: "a//b" })).includes("unsafe_target_id"));
+});
+
+test("an import never writes the target's identity, dependencies or a Kind convention", async () => {
+  const fx = await fixture();
+  await put(fx.source, "bundle", { type: "Bundle Name", title: "evil", bundle_id: "evil-id" });
+  await put(fx.source, "dependencies", { type: "Bundle Dependencies", title: "evil" });
+  await put(fx.source, "theme2", { type: "Convention", governs: "Theme", fields: { required: ["nothing"] } });
+  for (const [ids, prefix] of [[["bundle"], "docs"], [["dependencies"], "docs"], [["bundle"], "DOCS"], [["theme2"], "conventions"], [["theme2"], "Conventions"]] as const) {
+    const plan = await planDocumentTransfer(fx.request({ select: { ids: [...ids] }, prefix }));
+    assert.equal(plan.ready, false, `${prefix}/${ids[0]}`);
+    assert.ok(plan.conflicts.some((c) => c.code === "unsafe_target_id"), JSON.stringify(plan.conflicts));
+  }
+  assert.ok((await conflictsOf(fx, { recordId: "conventions/promotion" })).includes("unsafe_target_id"));
+  assert.ok((await conflictsOf(fx, { recordId: "docs/bundle" })).includes("unsafe_target_id"));
+  assert.equal(await fx.target.exists("conventions/theme2"), false);
 });
 
 test("conflict case_collision under the filesystem identity fold", async () => {
@@ -515,6 +532,50 @@ test("resume refuses a changed source, an unknown record and a foreign binding",
     error instanceof TransferResumeConflict && /changed/.test(error.message));
   assert.equal(await fx.target.exists("imp/themes/b"), false);
   assert.equal(fx.target.deletes, 0);
+});
+
+/** An import interrupted before any document, whose record is then edited by `forge`. */
+async function forgedRecord(forge: (fm: Frontmatter, fx: Fixture) => void | Promise<void>) {
+  const fx = await fixture({ target: new CrashingBackend("imp/memo") });
+  const plan = await planDocumentTransfer(fx.request());
+  await assert.rejects(applyDocumentTransfer(fx.request(), plan.plan_token!), TransferInterrupted);
+  const record = (await fx.target.read(plan.record.id)).doc;
+  const frontmatter = structuredClone(record.frontmatter);
+  await forge(frontmatter, fx);
+  await fx.target.write(plan.record.id, { ...record, frontmatter });
+  const resume = () => resumeDocumentTransfer({ root: "/t", backend: fx.target }, plan.record.id, { alias: "wave", binding: fx.binding }, { actor: "process:importer" });
+  return { fx, plan, resume };
+}
+
+test("resume recomputes each target from the record's prefix and refuses a forged one", async () => {
+  const { fx, resume } = await forgedRecord((fm) => {
+    (fm.entries as Array<Record<string, string>>)[0]!.target = "elsewhere/stolen";
+  });
+  await assert.rejects(resume(), (error: unknown) => error instanceof TransferResumeConflict && /elsewhere\/stolen/.test(error.message));
+  assert.equal(await fx.target.exists("elsewhere/stolen"), false);
+  assert.equal(await fx.target.exists("imp/themes/a"), false, "nothing was written");
+});
+
+test("resume refuses a forged record that would install a convention or the target's identity", async () => {
+  for (const [source, target] of [["conventions/theme", "conventions/theme"], ["docs/bundle", "docs/bundle"]] as const) {
+    const { fx, resume } = await forgedRecord(async (fm, at) => {
+      delete fm.target_prefix;
+      const rows = fm.entries as Array<Record<string, string>>;
+      // The forged entry carries the source's real version, so only the target rule can refuse it.
+      rows[0] = { source, source_version: (await at.source.read(source)).version, target };
+      for (const row of rows.slice(1)) row.target = row.source!;
+    });
+    await assert.rejects(resume(), (error: unknown) => error instanceof TransferResumeConflict && /may write|describes the source/.test(error.message), target);
+    assert.equal((await fx.target.read("docs/bundle")).doc.frontmatter.bundle_id, TARGET_ID);
+    assert.equal(await fx.target.exists("conventions/theme"), false);
+  }
+});
+
+test("resume refuses when the target's alias now names another bundle", async () => {
+  const { fx, resume } = await forgedRecord(() => undefined);
+  await put(fx.target, "docs/dependencies", { type: "Bundle Dependencies", dependencies: { wave: { bundle_id: "impostor" } } });
+  await assert.rejects(resume(), (error: unknown) => error instanceof TransferResumeConflict && /alias_identity/.test(error.message));
+  assert.equal(await fx.target.exists("imp/memo"), false);
 });
 
 test("an invalid OKF actor is refused before anything is read or written", async () => {

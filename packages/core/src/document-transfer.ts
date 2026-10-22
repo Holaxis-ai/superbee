@@ -33,10 +33,10 @@ import {
 } from "./dependencies.js";
 import { DocumentNotFoundError, mutateDocument, prepareDocumentMutationCandidate, type DocumentMutationCandidate } from "./document-mutation.js";
 import { readManyExisting } from "./engine.js";
-import { InvalidInputError, OkfActorError } from "./errors.js";
+import { FilesystemIdentityAliasError, InvalidInputError, OkfActorError } from "./errors.js";
 import { foldIdentityPath } from "./identity-fold.js";
 import { loadKinds } from "./kinds-load.js";
-import type { KindRegistry } from "./kinds.js";
+import { CONVENTIONS_PREFIX, type KindRegistry } from "./kinds.js";
 import { emitLinkHref } from "./link-emit.js";
 import { extractMarkdownLinkSpans, maskMarkdownCode, normalizeSegments, resolveConceptId, rewriteMarkdownLinks, type MarkdownLinkSpan } from "./links.js";
 import { isOkfActor } from "./okf-actor.js";
@@ -116,7 +116,9 @@ export type LinkUntouchedReason =
   | "invalid_qualified"
   | "already_qualified"
   /** A reference-style definition (`[x]: ../f.md`): copied as written, so it may not resolve in the target. */
-  | "reference_definition";
+  | "reference_definition"
+  /** Names a source id only under case or Unicode normalization folding, so no exact document. */
+  | "case_variant";
 
 export interface LinkRewrite {
   /** The href's start offset in the source body. */
@@ -258,6 +260,8 @@ const SOURCE_SELF_DOCS = new Set<ConceptId>([BUNDLE_NAME_DOC_ID, DEPENDENCIES_DO
 
 interface SourceSnapshot {
   ids: Set<ConceptId>;
+  /** Identity fold of every source id, to spot links that only a case- or normalization-insensitive host resolves. */
+  folds: Set<string>;
   docs: Map<ConceptId, ReadResult>;
   malformed: Map<ConceptId, string>;
   dependencies: ParsedDependencies;
@@ -295,7 +299,8 @@ async function readSource(binding: BundleBinding): Promise<SourceSnapshot> {
   const docs = new Map(results.map((result) => [result.doc.id, result]));
   const ids = new Set<ConceptId>([...docs.keys(), ...malformed.keys()]);
   const dependencies = parseDependencies(docs.get(DEPENDENCIES_DOC_ID)?.doc ?? null, { selfBundleId: binding.identity });
-  return { ids, docs, malformed, dependencies, registry: await loadKinds(bundle), bundle };
+  const folds = new Set([...ids].map(foldIdentityPath));
+  return { ids, folds, docs, malformed, dependencies, registry: await loadKinds(bundle), bundle };
 }
 
 async function readTarget(target: Bundle): Promise<TargetSnapshot> {
@@ -400,6 +405,9 @@ function planLink(
   if (resolved === null) return keep("non_document");
 
   const present = ctx.source.ids.has(resolved);
+  // A spelling variant of a source id names no document under the exact-identity rule; qualifying
+  // it would send a reader to an id the source bundle refuses to serve.
+  if (!present && ctx.source.folds.has(foldIdentityPath(resolved))) return keep("case_variant", { source_target: resolved });
   const withFragment = fragment === undefined ? {} : { fragment };
   const mapped = ctx.mapping.get(resolved);
   if (mapped !== undefined) {
@@ -508,6 +516,23 @@ function normalizePrefix(prefix: string | undefined): string | undefined {
 }
 
 /** Every planned id must be safe, absent, unique and distinct under the filesystem identity fold. */
+const PROTECTED_TARGET_FOLDS = new Set([BUNDLE_NAME_DOC_ID, DEPENDENCIES_DOC_ID].map(foldIdentityPath));
+const CONVENTIONS_FOLD = `${foldIdentityPath(CONVENTIONS_PREFIX.replace(/\/$/, ""))}/`;
+
+/**
+ * Throw {@link InvalidInputError} unless an import may create `id`: a safe, unreserved concept id
+ * that is not the target's own identity or dependency declaration and not a Kind convention
+ * (installing Kinds is not part of v1). Compared under the identity fold, so a case or
+ * normalization variant of a protected id is refused too.
+ */
+function assertImportableTargetId(id: ConceptId): void {
+  assertSafeConceptId(id);
+  if (isReservedFile(pathFromConceptId(id))) throw new InvalidInputError("index.md and log.md are reserved files, not documents");
+  const fold = foldIdentityPath(id);
+  if (PROTECTED_TARGET_FOLDS.has(fold)) throw new InvalidInputError("it is the bundle's own identity or dependency declaration");
+  if (fold.startsWith(CONVENTIONS_FOLD)) throw new InvalidInputError("an import never installs a Kind convention");
+}
+
 function checkTargetIds(
   planned: ReadonlyArray<{ source?: ConceptId; target: ConceptId; record?: true }>,
   existing: ReadonlySet<ConceptId>,
@@ -528,8 +553,7 @@ function checkTargetIds(
   for (const row of planned) {
     const where = { ...(row.source === undefined ? {} : { source: row.source }), target: row.target };
     try {
-      assertSafeConceptId(row.target);
-      if (isReservedFile(pathFromConceptId(row.target))) throw new InvalidInputError("index.md and log.md are reserved files, not documents");
+      assertImportableTargetId(row.target);
     } catch (error) {
       if (!(error instanceof InvalidInputError)) throw error;
       conflicts.push({ code: "unsafe_target_id", ...where, detail: `'${row.target}' is not a usable document id: ${error.message}` });
@@ -694,11 +718,11 @@ function buildEntry(
 }
 
 async function sourceIdentity(
-  request: TransferRequest,
+  from: TransferSource,
   target: TargetSnapshot,
   conflicts: TransferConflict[],
 ): Promise<{ bundleId: string; pin?: CommitPin }> {
-  const { alias, binding } = request.from;
+  const { alias, binding } = from;
   const declared = target.dependencies.dependencies.get(alias);
   const bundleId = declared?.bundle_id ?? binding.identity ?? "";
   if (!declared) {
@@ -740,7 +764,7 @@ async function computeTransfer(request: TransferRequest): Promise<Computed> {
   const now = request.now ?? (() => new Date().toISOString());
   const target = await readTarget(request.target);
   assertActor(request.actor, target.okfVersion);
-  const { bundleId, pin } = await sourceIdentity(request, target, conflicts);
+  const { bundleId, pin } = await sourceIdentity(request.from, target, conflicts);
   const source = await readSource(request.from.binding);
   const prefix = normalizePrefix(request.prefix);
 
@@ -797,7 +821,7 @@ async function computeTransfer(request: TransferRequest): Promise<Computed> {
 
   const leftBehind: Record<string, number> = {};
   for (const [id, { doc }] of [...source.docs].sort(([a], [b]) => compareStorageKeys(a, b))) {
-    if (selected.has(id)) continue;
+    if (selected.has(id) || SOURCE_SELF_DOCS.has(id)) continue;
     const type = String(doc.frontmatter.type);
     leftBehind[type] = (leftBehind[type] ?? 0) + 1;
   }
@@ -939,7 +963,7 @@ export async function applyDocumentTransfer(request: TransferRequest, planToken:
     })).version;
   } catch (error) {
     if (error instanceof VersionConflict) {
-      throw new TransferConflictError([{ code: "record_exists", target: recordId, detail: `the Promotion record '${recordId}' was created by another writer; nothing was written` }]);
+      throw new TransferConflictError([{ code: "record_exists", target: recordId, detail: `the Promotion record '${recordId}' was created by another writer` }]);
     }
     throw error;
   }
@@ -983,7 +1007,7 @@ interface RecordEntry {
   target_version?: Version;
 }
 
-function parseRecord(recordId: ConceptId, doc: OkfDocument): { state: "applying" | "applied"; alias: string; bundleId: string; entries: RecordEntry[] } {
+function parseRecord(recordId: ConceptId, doc: OkfDocument): { state: "applying" | "applied"; alias: string; bundleId: string; prefix?: string; entries: RecordEntry[] } {
   const fm = doc.frontmatter;
   const refuse = (detail: string): never => { throw new TransferResumeConflict(recordId, detail); };
   if (String(fm.type).trim() !== PROMOTION_TYPE) refuse(`it is not a ${PROMOTION_TYPE} record (type '${String(fm.type)}')`);
@@ -991,6 +1015,8 @@ function parseRecord(recordId: ConceptId, doc: OkfDocument): { state: "applying"
   if (state !== "applying" && state !== "applied") refuse("promotion_state must be applying or applied");
   if (typeof fm.from_alias !== "string" || typeof fm.from_bundle_id !== "string") refuse("from_alias and from_bundle_id are required");
   if (!Array.isArray(fm.entries)) refuse("entries must be a list");
+  if (fm.target_prefix !== undefined && typeof fm.target_prefix !== "string") refuse("target_prefix must be a string");
+  const prefix = normalizePrefix(fm.target_prefix as string | undefined);
   const entries: RecordEntry[] = [];
   for (const row of fm.entries as unknown[]) {
     const r = row as Record<string, unknown> | null;
@@ -999,9 +1025,21 @@ function parseRecord(recordId: ConceptId, doc: OkfDocument): { state: "applying"
     }
     const entry: RecordEntry = { source: r!.source as string, source_version: r!.source_version as string, target: r!.target as string };
     if (typeof r!.target_version === "string") entry.target_version = r!.target_version;
+    // The record is a document anyone can edit: every target is recomputed from its source and
+    // the record's prefix, and must pass the same rule a plan applies, before resume trusts it.
+    if (SOURCE_SELF_DOCS.has(entry.source)) refuse(`'${entry.source}' describes the source bundle itself and never transfers`);
+    const expected = prefix === undefined ? entry.source : `${prefix}/${entry.source}`;
+    if (entry.target !== expected) refuse(`entry '${entry.source}' targets '${entry.target}', not '${expected}' as the record's prefix requires`);
+    try {
+      assertSafeConceptId(entry.source);
+      assertImportableTargetId(entry.target);
+    } catch (error) {
+      if (!(error instanceof InvalidInputError)) throw error;
+      refuse(`'${entry.target}' is not a target an import may write: ${error.message}`);
+    }
     entries.push(entry);
   }
-  return { state: state as "applying" | "applied", alias: fm.from_alias as string, bundleId: fm.from_bundle_id as string, entries };
+  return { state: state as "applying" | "applied", alias: fm.from_alias as string, bundleId: fm.from_bundle_id as string, ...(prefix === undefined ? {} : { prefix }), entries };
 }
 
 /** The result an already-applied record stands for: nothing is written again. */
@@ -1042,6 +1080,10 @@ export async function resumeDocumentTransfer(
 
   const snapshot = await readTarget(target);
   assertActor(options.actor, snapshot.okfVersion);
+  // The same alias and identity check a plan runs: the target's declaration may have moved since.
+  const identity: TransferConflict[] = [];
+  await sourceIdentity(from, snapshot, identity);
+  if (identity.length > 0) throw new TransferResumeConflict(recordId, `${identity[0]!.code}: ${identity[0]!.detail}`);
   const source = await readSource(from.binding);
   const mapping = new Map(record.entries.map((e) => [e.source, e.target]));
   const selected = new Set(mapping.keys());
@@ -1052,7 +1094,15 @@ export async function resumeDocumentTransfer(
   const written: TransferWritten[] = [];
   const versions = new Map<ConceptId, Version>();
   for (const entry of record.entries) {
-    const existing = await readOptional(target, entry.target);
+    let existing: ReadResult | null;
+    try {
+      existing = await readOptional(target, entry.target);
+    } catch (error) {
+      if (error instanceof FilesystemIdentityAliasError) {
+        throw new TransferResumeConflict(recordId, `'${entry.target}' is spelled differently on disk: ${error.message}`, { id: entry.target, written });
+      }
+      throw error;
+    }
     if (existing) {
       if (!hasProvenance(existing.doc, recordId)) {
         throw new TransferResumeConflict(recordId, `'${entry.target}' exists and was not written by this import`, { id: entry.target, written });
@@ -1085,6 +1135,9 @@ export async function resumeDocumentTransfer(
     } catch (error) {
       if (error instanceof VersionConflict) {
         throw new TransferResumeConflict(recordId, `'${entry.target}' was created by another writer during the resume`, { id: entry.target, written });
+      }
+      if (error instanceof FilesystemIdentityAliasError) {
+        throw new TransferResumeConflict(recordId, `'${entry.target}' is spelled differently on disk: ${error.message}`, { id: entry.target, written });
       }
       throw error;
     }
