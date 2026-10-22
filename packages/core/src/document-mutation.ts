@@ -127,7 +127,8 @@ export interface MutateDocumentOptions {
    * Defaults to true when actor is supplied. Explicit false leaves candidate attribution alone.
    * Supplying actor alone never turns an otherwise unchanged candidate into a write. */
   persistActor?: boolean;
-  /** Patch only: a caller-supplied token makes the operation a single-shot hard CAS. */
+  /** Patch or replace-document only: a caller-supplied token makes a single-shot hard CAS.
+   * Create-only and overwrite reject this option rather than silently ignoring it. */
   expectedVersion?: Version;
   /**
    * Read-based modes only: asserted facts about the observed document, ANDed and re-evaluated
@@ -350,6 +351,9 @@ function onceNow(now: () => string): () => string {
 }
 
 export interface PrepareDocumentMutationOptions {
+  /** Defaults to patch for existing preview callers. Overwrite retains its conformance ratchet
+   * and compares after automatic attribution; create-only has no unchanged-document path. */
+  mode?: DocumentMutationMode;
   id: ConceptId;
   registry: KindRegistry;
   strict: boolean;
@@ -364,24 +368,38 @@ export interface PrepareDocumentMutationOptions {
   seedGenerationClock?: boolean;
 }
 
-/** The pure patch preparation shared by mutation commits and governed previews. */
+/** Pure candidate preparation shared by every mutation mode and governed previews. */
 export function prepareDocumentMutationCandidate(
   existing: OkfDocument | undefined,
   rawCandidate: DocumentMutationCandidate,
   opts: PrepareDocumentMutationOptions,
 ): { candidate: DocumentMutationCandidate; changed: boolean; warnings: ValidationWarning[]; guidance: KindValueGuidance[] } {
   const persistActor = resolvePersistActor(opts);
+  const mode = opts.mode ?? "patch";
   const decisionNow = onceNow(opts.now ?? (() => new Date().toISOString()));
-  const comparison = withV02Metadata(structuredClone(rawCandidate), existing, opts.okfVersion, opts.registry,
+  const withMetadata = withV02Metadata(structuredClone(rawCandidate), existing, opts.okfVersion, opts.registry,
     decisionNow, opts.seedGenerationClock ?? true, opts.actor, opts.compareTimestamp ?? false, opts.producer);
-  assertDeprecation(opts.id, comparison, opts.registry, existing);
-  if (existing && isNoopMutation(existing, comparison, opts.compareTimestamp ?? false, opts.okfVersion,
-    opts.okfVersion === "0.2" && persistActor && opts.actor !== undefined,
+  // Legacy patch actor edits are authored content. Overwrite compares its automatically
+  // attributed replacement, while patch compares the caller's candidate before attribution.
+  const comparison = mode === "overwrite"
+    ? attributeCandidate(withMetadata, opts.actor, persistActor, opts.okfVersion, opts.registry)
+    : withMetadata;
+  if (mode !== "create-only") assertDeprecation(opts.id, comparison, opts.registry, existing);
+  if (mode !== "create-only" && existing && isNoopMutation(existing, comparison, opts.compareTimestamp ?? false, opts.okfVersion,
+    (mode === "overwrite" || opts.okfVersion === "0.2") && persistActor && opts.actor !== undefined,
     opts.registry.kinds.get(String(comparison.frontmatter.type))?.fields.required.includes("actor") ?? false)) {
     return { candidate: { frontmatter: structuredClone(existing.frontmatter), body: existing.body }, changed: false, warnings: validateUnchangedDocument(existing, opts.registry, opts.strict, opts.okfVersion), guidance: [] };
   }
-  const candidate = attributeCandidate(comparison, opts.actor, persistActor, opts.okfVersion, opts.registry);
-  const { warnings } = validateCandidate(opts.id, candidate, opts.registry, opts.strict, opts.okfVersion, decisionNow, existing);
+  const candidate = mode === "overwrite"
+    ? comparison
+    : attributeCandidate(comparison, opts.actor, persistActor, opts.okfVersion, opts.registry);
+  const { warnings, kind } = validateCandidate(opts.id, candidate, opts.registry, opts.strict, opts.okfVersion, decisionNow, existing);
+  // Once a stored document conforms to its own Kind, a lenient overwrite cannot regress it.
+  // Raw existing values decide eligibility; existing debt remains editable and an ungoverned
+  // replacement carries no warnings, preserving the explicit retyping escape.
+  if (mode === "overwrite" && !opts.strict && existing && warnings.length > 0 && conforms(existing, opts.registry)) {
+    throw new KindConformanceError(opts.id, kind!.governs, warnings, opts.okfVersion);
+  }
   return { candidate, changed: true, warnings, guidance: writeGuidance(opts.registry, opts.okfVersion, existing, candidate) };
 }
 
@@ -405,6 +423,9 @@ function resolvePersistActor(opts: { actor?: string; persistActor?: boolean }): 
 }
 
 export async function mutateDocument(opts: MutateDocumentOptions): Promise<DocumentMutationResult> {
+  if (opts.expectedVersion !== undefined && opts.mode !== "patch" && opts.mode !== "replace-document") {
+    throw new InvalidInputError("expectedVersion requires patch or replace-document mode.");
+  }
   opts = { ...opts, bundle: { ...opts.bundle, backend: backendFor(opts.bundle) } };
   if (opts.inventoryGuard !== undefined) {
     if (opts.mode !== "replace-document" || opts.onAbsent !== "fail" || typeof opts.expectedVersion !== "string" || (opts.maxAttempts !== undefined && opts.maxAttempts !== 1)) {
@@ -481,6 +502,11 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
     await opts.assertCandidate?.(existing === undefined ? undefined : structuredClone(existing), structuredClone(candidate), context);
     return candidate;
   };
+  const prepare = async (existing: OkfDocument | undefined, decisionNow: () => string) =>
+    prepareDocumentMutationCandidate(existing, await build(existing, decisionNow), {
+      mode: opts.mode, id: opts.id, registry: opts.registry, strict: opts.strict, okfVersion, now: decisionNow,
+      actor: opts.actor, producer: opts.producer, persistActor, compareTimestamp, seedGenerationClock: seedClock,
+    });
 
   if (opts.mode === "create-only") {
     // Fail closed: create-only issues NO read — its CAS basis is expect-absent — so there is no
@@ -493,25 +519,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       );
     }
     const decisionNow = onceNow(now);
-    const withMetadata = withV02Metadata(
-      await build(undefined, decisionNow),
-      undefined,
-      okfVersion,
-      opts.registry,
-      decisionNow,
-      seedClock,
-      opts.actor,
-      compareTimestamp,
-      opts.producer,
-    );
-    const candidate = attributeCandidate(
-      withMetadata,
-      opts.actor,
-      persistActor,
-      okfVersion,
-      opts.registry,
-    );
-    const { warnings } = validateCandidate(opts.id, candidate, opts.registry, opts.strict, okfVersion, decisionNow);
+    const { candidate, warnings } = await prepare(undefined, decisionNow);
     const { doc, version } = await writeDocVersionedForEdition(opts.bundle, { id: opts.id, ...candidate }, okfVersion, {
       expectedVersion: null,
       actor: opts.actor,
@@ -549,55 +557,11 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         const decisionNow = onceNow(now);
         decidedExisting = existing;
         assertFieldPreconditions(opts.id, existing?.frontmatter, opts.preconditions, lastReadVersion);
-        const withMetadata = withV02Metadata(
-          await build(existing, decisionNow),
-          existing,
-          okfVersion,
-          opts.registry,
-          decisionNow,
-          seedClock,
-          opts.actor,
-          compareTimestamp,
-          opts.producer,
-        );
-        const candidate = attributeCandidate(
-          withMetadata,
-          opts.actor,
-          persistActor,
-          okfVersion,
-          opts.registry,
-        );
-        assertDeprecation(opts.id, candidate, opts.registry, existing);
-        if (existing && isNoopMutation(
-          existing, candidate, compareTimestamp, okfVersion,
-          persistActor && opts.actor !== undefined,
-          opts.registry.kinds.get(String(candidate.frontmatter.type))?.fields.required.includes("actor") ?? false,
-        )) {
-          warnings = validateUnchangedDocument(existing, opts.registry, opts.strict, okfVersion);
+        const prepared = await prepare(existing, decisionNow);
+        const { candidate, changed } = prepared;
+        warnings = prepared.warnings;
+        if (!changed) {
           return { action: "done", result: { doc: existing } };
-        }
-        const validated = validateCandidate(
-          opts.id,
-          candidate,
-          opts.registry,
-          opts.strict,
-          okfVersion,
-          decisionNow,
-          existing,
-        );
-        warnings = validated.warnings;
-
-        // Monotone conformance ratchet (probe: tasks/overwrite-ratchet-survey, productionized
-        // here): a doc that already satisfies its governing kind may not regress into
-        // non-conformance through a lenient (non-strict) overwrite — once clean, always clean.
-        // A doc that has NEVER conformed keeps today's lenient staging behavior (warn, don't
-        // block), and dropping only OPTIONAL fields can't trip this (validateAgainstKind never
-        // warns on those), so this only ever fires on a REAL regression. Retyping to an
-        // ungoverned type is a documented escape: an ungoverned candidate carries zero
-        // warnings by construction, so the `warnings.length > 0` guard below never sees it.
-        // Every overwrite caller, including `promote`, inherits this rule from this shared boundary.
-        if (!opts.strict && existing && warnings.length > 0 && conforms(existing, opts.registry)) {
-          throw new KindConformanceError(opts.id, validated.kind!.governs, warnings, okfVersion);
         }
 
         return { action: "write", next: { id: opts.id, ...candidate }, result: {} };
@@ -637,11 +601,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         throw new VersionConflict(opts.id, opts.expectedVersion!, lastReadVersion);
       }
 
-      const rawCandidate = await build(existing, decisionNow);
-      const { candidate, changed, warnings, guidance } = prepareDocumentMutationCandidate(existing, rawCandidate, {
-        id: opts.id, registry: opts.registry, strict: opts.strict, okfVersion, now: decisionNow,
-        actor: opts.actor, producer: opts.producer, persistActor, compareTimestamp, seedGenerationClock: seedClock,
-      });
+      const { candidate, changed, warnings, guidance } = await prepare(existing, decisionNow);
       if (!changed && opts.inventoryGuard) throw new InvalidInputError("Inventory-guarded replacement requires a meaningful change.");
       if (!changed) return { action: "done", result: { doc: existing, warnings, guidance } };
       return { action: "write", next: { id: opts.id, ...candidate }, result: { warnings, guidance } };
