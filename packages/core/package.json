@@ -1,6 +1,6 @@
 {
   "name": "@superbee/core",
-  "version": "0.2.0-pre.35",
+  "version": "0.2.0-pre.36",
   "type": "module",
   "description": "OKF store engine \u2014 bundle I/O, cross-links, derived backlinks, freshness, and versioned writes.",
   "license": "Apache-2.0",
@@ -234,6 +234,10 @@
     "./recipe-set-preflight": {
       "types": "./dist/recipe-set-preflight.d.ts",
       "default": "./dist/recipe-set-preflight.js"
+    },
+    "./kind-changes": {
+      "types": "./dist/kind-changes.d.ts",
+      "default": "./dist/kind-changes.js"
     }
   },
   "files": [

@@ -15,6 +15,15 @@ Browser and Worker consumers can compose existing operation helpers through
 version, and resolver; the Node root retains the same exports. Supply an explicit backend to
 bundle-shaped operations in browser hosts.
 
+## Kind declaration changes
+
+`@superbee/core/kind-changes` exports `classifyKindChanges(current, desired)` over parsed
+`KindConvention` values. It reports required/enum/section, relationship, field-type and terminal
+changes without deciding whether to approve them. Arrays preserve declaration occurrence order;
+terminal flags distinguish ordered values from occurrence counts. The helper never mutates inputs.
+Recipe ownership, additive merge, instance/edge proofs and host representation bounds remain the
+caller's policy. These facts do not establish general document equality or authorize a write.
+
 ## Stored document decoding
 
 `@superbee/core/document-codec` exports `parseMarkdown(raw, context, options)` and

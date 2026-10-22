@@ -588,6 +588,9 @@ import { mutateDocument } from "@superbee/core/document-mutation";
 import { buildKindRegistry } from "@superbee/core/kinds";
 import { loadBuiltinRecipe } from "@superbee/core/builtin-recipes";
 import { installRecipe, prepareRecipeInstall, inspectRecipeInstallTarget } from "@superbee/core/recipe-lifecycle";
+import { classifyKindChanges } from "@superbee/core/kind-changes";
+const unchangedKind = { id: "conventions/note", title: "Note", governs: "Note", fields: { required: [], optional: [], values: {}, terminal: {}, descriptions: {} } };
+if (JSON.stringify(classifyKindChanges(unchangedKind, { ...unchangedKind, fields: { ...unchangedKind.fields, required: ["title"] } }).requiredAdded) !== '["title"]') throw new Error("Kind change classification lost required field");
 import { prepareKindDraft, applyKindDraft, dismissKind, kindInstanceCandidate, KindAuthoringError } from "@superbee/core/kind-authoring";
 export async function exerciseKindAuthoring() {
   const backend = new MemoryBackend(), bundle = { root: "memory://consumer", backend };
