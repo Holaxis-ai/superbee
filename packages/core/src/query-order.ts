@@ -8,6 +8,7 @@
  *
  * Browser-safe and pure.
  */
+import { compareCodeUnits } from "./code-unit-order.js";
 import { parseTimestamp } from "./freshness.js";
 import { meaningfulChangeTimeValue } from "./meaningful-change-time.js";
 
@@ -41,7 +42,7 @@ export function compareByMeaningfulChange(a: MeaningfulChangeOrderKey, b: Meanin
   } else if (b.timestampMs !== null) {
     return 1;
   }
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  return compareCodeUnits(a.id, b.id);
 }
 
 /** Return a new array of `rows` in newest-first order; the input array is left untouched. */
