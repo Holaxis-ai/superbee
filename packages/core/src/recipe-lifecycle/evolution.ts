@@ -9,6 +9,7 @@
 // the whole document, and only one this recipe wrote that nobody changed since.
 import { query, readBlob, readBundleOkfVersion, readDocVersioned } from "../bundle-ops.js";
 import { checkConnectorAgainstKinds, CONNECTOR_TYPE, CONNECTORS_PREFIX } from "../connectors.js";
+import { classifyKindChanges } from "../kind-changes.js";
 import { resolveContentType } from "../content-type.js";
 import { DocumentNotFoundError, mutateDocument } from "../document-mutation.js";
 import { applyV02MutationMetadata } from "../document-write-policy.js";
@@ -454,115 +455,47 @@ function monotonicEvolutionBlockers(
   blockers: RecipeEvolutionBlocker[],
   hasUnchangedRecipeBaseline: boolean,
 ): void {
-  const currentRequired = new Set(current.fields.required);
-  for (const field of desired.fields.required) {
-    if (!currentRequired.has(field)) {
-      evolutionBlocker(
-        blockers,
-        "RECIPE_EVOLUTION_NON_MONOTONIC",
-        desired.id,
-        `automatic evolution cannot newly require '${field}' for '${desired.governs}'; migrate instances explicitly first`,
-        field,
-      );
+  const changes = classifyKindChanges(current, desired);
+  for (const field of changes.requiredAdded) {
+    evolutionBlocker(blockers, "RECIPE_EVOLUTION_NON_MONOTONIC", desired.id,
+      `automatic evolution cannot newly require '${field}' for '${desired.governs}'; migrate instances explicitly first`, field);
+  }
+  // Preserve desired enum order across added restrictions and removed allowed values.
+  const addedEnums = new Map(changes.enumsAdded.map(row => [row.field, row]));
+  const narrowedEnums = new Map(changes.enumsNarrowed.map(row => [row.field, row]));
+  for (const field of Object.keys(desired.fields.values)) {
+    const added = addedEnums.get(field);
+    if (added && !added.desiredDeclared) {
+      evolutionBlocker(blockers, "RECIPE_EVOLUTION_NON_MONOTONIC", desired.id,
+        `automatic evolution cannot add an enum restriction to '${field}' for '${desired.governs}'; declare '${field}' in fields.required or fields.optional first`, field);
+    }
+    const narrowed = narrowedEnums.get(field);
+    if (narrowed) {
+      evolutionBlocker(blockers, "RECIPE_EVOLUTION_NON_MONOTONIC", desired.id,
+        `automatic evolution cannot remove allowed '${field}' value(s) for '${desired.governs}': ${narrowed.removedValues.join(", ")}`, field);
     }
   }
-
-  // An enum on a declared field is admitted, installed or newly declared alike: the instance scan
-  // against the desired kind blocks the plan when any existing document carries a disallowed value.
-  // Adding a `fields.types` entry needs no rule here for the same reason; changing or removing one
-  // is refused by the additive merge before this classifier runs.
-  const desiredDeclared = new Set([...desired.fields.required, ...desired.fields.optional]);
-  for (const [field, desiredValues] of Object.entries(desired.fields.values)) {
-    const currentValues = current.fields.values[field];
-    if (!currentValues) {
-      if (desiredDeclared.has(field)) continue;
-      evolutionBlocker(
-        blockers,
-        "RECIPE_EVOLUTION_NON_MONOTONIC",
-        desired.id,
-        `automatic evolution cannot add an enum restriction to '${field}' for '${desired.governs}'; declare '${field}' in fields.required or fields.optional first`,
-        field,
-      );
-      continue;
-    }
-    const allowed = new Set(desiredValues);
-    const removed = currentValues.filter((value) => !allowed.has(value));
-    if (removed.length > 0) {
-      evolutionBlocker(
-        blockers,
-        "RECIPE_EVOLUTION_NON_MONOTONIC",
-        desired.id,
-        `automatic evolution cannot remove allowed '${field}' value(s) for '${desired.governs}': ${removed.join(", ")}`,
-        field,
-      );
-    }
+  for (const section of changes.sectionsAdded) {
+    evolutionBlocker(blockers, "RECIPE_EVOLUTION_NON_MONOTONIC", desired.id,
+      `automatic evolution cannot newly require the '# ${section}' section for '${desired.governs}'`, section);
   }
-
-  const currentSections = new Set(current.sections ?? []);
-  for (const section of desired.sections ?? []) {
-    if (!currentSections.has(section)) {
-      evolutionBlocker(
-        blockers,
-        "RECIPE_EVOLUTION_NON_MONOTONIC",
-        desired.id,
-        `automatic evolution cannot newly require the '# ${section}' section for '${desired.governs}'`,
-        section,
-      );
-    }
+  // New outbound labels keep the separate edge proof; installed labels cannot change.
+  for (const { field: linkType } of changes.outboundChanged) {
+    evolutionBlocker(blockers, "RECIPE_EVOLUTION_RELATIONSHIP_CHANGE", desired.id,
+      `automatic evolution does not remove or retarget the outbound link type '${linkType}' for '${desired.governs}'`, `links.${linkType}`);
   }
-
-  // A new outbound link type is additive (its existing edges are revalidated by
-  // linkTypeAdditionBlockers). Removing or retargeting an installed one is not. Compare the PARSED
-  // maps: the parser trims keys, so a raw key such as "at " can redefine "at" through the merge.
-  const desiredLinks = desired.links ?? {};
-  for (const [linkType, target] of Object.entries(current.links ?? {})) {
-    if (Object.hasOwn(desiredLinks, linkType) && desiredLinks[linkType] === target) continue;
-    evolutionBlocker(
-      blockers,
-      "RECIPE_EVOLUTION_RELATIONSHIP_CHANGE",
-      desired.id,
-      `automatic evolution does not remove or retarget the outbound link type '${linkType}' for '${desired.governs}'`,
-      `links.${linkType}`,
-    );
+  for (const { field: linkType } of changes.inboundChanged) {
+    evolutionBlocker(blockers, "RECIPE_EVOLUTION_RELATIONSHIP_CHANGE", desired.id,
+      `automatic evolution does not remove or retarget the inbound relationship expectation '${linkType}' for '${desired.governs}'`, `expects_inbound.${linkType}`);
   }
-  // Inbound expectations are graph-lint guidance, never write-time validation. New labels may
-  // expose missing expected links; preserve the parsed meaning of every installed label.
-  const desiredInbound = desired.expectsInbound ?? {};
-  for (const [linkType, source] of Object.entries(current.expectsInbound ?? {})) {
-    if (Object.hasOwn(desiredInbound, linkType) && desiredInbound[linkType] === source) continue;
-    evolutionBlocker(
-      blockers,
-      "RECIPE_EVOLUTION_RELATIONSHIP_CHANGE",
-      desired.id,
-      `automatic evolution does not remove or retarget the inbound relationship expectation '${linkType}' for '${desired.governs}'`,
-      `expects_inbound.${linkType}`,
-    );
+  // Only recipe ownership can prove a missing expectation was not deliberately removed locally.
+  if (!hasUnchangedRecipeBaseline) for (const linkType of changes.inboundAdded) {
+    evolutionBlocker(blockers, "RECIPE_EVOLUTION_RELATIONSHIP_CHANGE", desired.id,
+      `adding inbound relationship expectation '${linkType}' for '${desired.governs}' requires an unchanged recipe baseline; restore any locally removed expectations manually first`, `expects_inbound.${linkType}`);
   }
-  // Without an unchanged baseline a missing label could have been deliberately removed locally.
-  // The whole-definition stamp cannot prove field history, so do not restore that expectation.
-  if (!hasUnchangedRecipeBaseline) {
-    for (const linkType of Object.keys(desiredInbound)) {
-      if (Object.hasOwn(current.expectsInbound ?? {}, linkType)) continue;
-      evolutionBlocker(
-        blockers,
-        "RECIPE_EVOLUTION_RELATIONSHIP_CHANGE",
-        desired.id,
-        `adding inbound relationship expectation '${linkType}' for '${desired.governs}' requires an unchanged recipe baseline; restore any locally removed expectations manually first`,
-        `expects_inbound.${linkType}`,
-      );
-    }
-  }
-  const sameTerminalOccurrences = Object.keys(current.fields.terminal).length === Object.keys(desired.fields.terminal).length
-    && Object.entries(current.fields.terminal).every(([field, values]) => Object.hasOwn(desired.fields.terminal, field)
-      && okfValuesEqual([...values].sort(), [...desired.fields.terminal[field]!].sort()));
-  if (!sameTerminalOccurrences) {
-    evolutionBlocker(
-      blockers,
-      "RECIPE_EVOLUTION_TERMINAL_CHANGE",
-      desired.id,
-      `automatic evolution does not change terminal workflow values for '${desired.governs}' because open-work visibility can change`,
-      "fields.terminal",
-    );
+  if (changes.terminalOccurrencesChanged) {
+    evolutionBlocker(blockers, "RECIPE_EVOLUTION_TERMINAL_CHANGE", desired.id,
+      `automatic evolution does not change terminal workflow values for '${desired.governs}' because open-work visibility can change`, "fields.terminal");
   }
 }
 
