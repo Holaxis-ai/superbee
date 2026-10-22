@@ -26,6 +26,10 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
 const cliPkg = JSON.parse(readFileSync(path.join(root, "packages", "superbee", "package.json"), "utf8"));
 const manifest = JSON.parse(readFileSync(path.join(root, "scripts", "ci-lanes.json"), "utf8"));
+const DAY_MS = 24 * 60 * 60 * 1000;
+const pinDay = (offsetDays, from) => new Date(Date.parse(`${from}T00:00:00Z`) + offsetDays * DAY_MS).toISOString().slice(0, 10);
+const pinReviewed = new Date(`${manifest.node_policy.release_pin_reviewed_at}T00:00:00Z`);
+const pinExpiredOn = pinDay(1, manifest.node_policy.release_pin_refresh_by);
 const contributing = readFileSync(path.join(root, "CONTRIBUTING.md"), "utf8");
 const rootReadme = readFileSync(path.join(root, "README.md"), "utf8");
 const npmReadme = readFileSync(path.join(root, "packages", "superbee", "README.md"), "utf8");
@@ -70,7 +74,7 @@ function assertReleasePreflightOrder(text, relative) {
     checkoutAction: CHECKOUT_ACTION,
     setupNodeAction: SETUP_NODE_ACTION,
     actionIdentities: manifest.github_actions.identities,
-    nodeVersion: "24.21.0",
+    nodeVersion: "24.22.1",
     preflightName: RELEASE_PREFLIGHT_NAME,
     preflightRun: RELEASE_PREFLIGHT_RUN,
     runsOn: "ubuntu-latest",
@@ -161,6 +165,8 @@ test("the Node runtime policy agrees across every first-party projection", () =>
 
 test("Node runtime lifecycle boundaries fail closed", () => {
   const pending = structuredClone(manifest);
+  pending.node_policy.release_pin_reviewed_at = "2026-09-24";
+  pending.node_policy.release_pin_refresh_by = "2026-10-24";
   assert.doesNotThrow(() => validateNodeRuntimeManifest(pending, { now: new Date("2026-10-24T23:59:59Z") }));
   assert.throws(
     () => validateNodeRuntimeManifest(pending, { now: new Date("2026-10-25T00:00:00Z") }),
@@ -170,31 +176,31 @@ test("Node runtime lifecycle boundaries fail closed", () => {
   const futurePinReview = structuredClone(manifest.node_policy);
   futurePinReview.release_pin_reviewed_at = "2099-01-01";
   assert.throws(
-    () => validateNodeRuntimePolicy(futurePinReview, { now: new Date("2026-09-24T00:00:00Z") }),
+    () => validateNodeRuntimePolicy(futurePinReview, { now: pinReviewed }),
     /release pin review cannot be in the future/,
   );
   const longPinWindow = structuredClone(manifest.node_policy);
-  longPinWindow.release_pin_refresh_by = "2026-10-25";
+  longPinWindow.release_pin_refresh_by = pinDay(31, manifest.node_policy.release_pin_reviewed_at);
   assert.throws(
-    () => validateNodeRuntimePolicy(longPinWindow, { now: new Date("2026-09-24T00:00:00Z") }),
+    () => validateNodeRuntimePolicy(longPinWindow, { now: pinReviewed }),
     /within 30 days/,
   );
   longPinWindow.release_pin_refresh_by = "2099-12-31";
   assert.throws(
-    () => validateNodeRuntimePolicy(longPinWindow, { now: new Date("2026-09-24T00:00:00Z") }),
+    () => validateNodeRuntimePolicy(longPinWindow, { now: pinReviewed }),
     /within 30 days/,
   );
 
   const movableBoundaries = structuredClone(manifest.node_policy);
   movableBoundaries.forward_review.review_after = "2099-12-31";
   assert.throws(
-    () => validateNodeRuntimePolicy(movableBoundaries, { now: new Date("2026-09-24T00:00:00Z") }),
+    () => validateNodeRuntimePolicy(movableBoundaries, { now: pinReviewed }),
     /fixed at 2026-10-28/,
   );
   movableBoundaries.forward_review.review_after = "2026-10-28";
   movableBoundaries.floor_retirement.retire_by = "2099-12-31";
   assert.throws(
-    () => validateNodeRuntimePolicy(movableBoundaries, { now: new Date("2026-09-24T00:00:00Z") }),
+    () => validateNodeRuntimePolicy(movableBoundaries, { now: pinReviewed }),
     /fixed at 2027-04-30/,
   );
 
@@ -235,7 +241,7 @@ test("Node runtime lifecycle boundaries fail closed", () => {
   const pendingWithDecision = structuredClone(manifest.node_policy);
   pendingWithDecision.forward_review.decided_at = "2026-10-28";
   assert.throws(
-    () => validateNodeRuntimePolicy(pendingWithDecision, { now: new Date("2026-09-24T00:00:00Z") }),
+    () => validateNodeRuntimePolicy(pendingWithDecision, { now: pinReviewed }),
     /pending forward review cannot set a decision date/,
   );
 
@@ -292,7 +298,7 @@ test("Node runtime lifecycle boundaries fail closed", () => {
   const missingPendingProbe = structuredClone(manifest);
   missingPendingProbe.runtime_nodes = [22];
   assert.throws(
-    () => validateNodeRuntimeManifest(missingPendingProbe, { now: new Date("2026-09-24T00:00:00Z") }),
+    () => validateNodeRuntimeManifest(missingPendingProbe, { now: pinReviewed }),
     /pending runtime_nodes must equal \[22,26\]/,
   );
 
@@ -302,7 +308,7 @@ test("Node runtime lifecycle boundaries fail closed", () => {
   demotedPending.node_policy.engine_range = "^22.14.0 || ^26.0.0";
   demotedPending.singleton_node = "22.14.0";
   assert.throws(
-    () => validateNodeRuntimeManifest(demotedPending, { now: new Date("2026-09-24T00:00:00Z") }),
+    () => validateNodeRuntimeManifest(demotedPending, { now: pinReviewed }),
     /pending must use Node 24 as the default major/,
   );
 
@@ -312,7 +318,7 @@ test("Node runtime lifecycle boundaries fail closed", () => {
   leapfroggedPending.node_policy.engine_range = "^22.14.0 || ^26.0.0 || ^28.0.0";
   leapfroggedPending.singleton_node = "28.0.0";
   assert.throws(
-    () => validateNodeRuntimeManifest(leapfroggedPending, { now: new Date("2026-09-24T00:00:00Z") }),
+    () => validateNodeRuntimeManifest(leapfroggedPending, { now: pinReviewed }),
     /pending must use Node 24 as the default major/,
   );
 
@@ -320,14 +326,14 @@ test("Node runtime lifecycle boundaries fail closed", () => {
   expandedPending.node_policy.supported_majors = [22, 24, 26, 28];
   expandedPending.node_policy.engine_range = "^22.14.0 || ^24.0.0 || ^26.0.0 || ^28.0.0";
   assert.throws(
-    () => validateNodeRuntimeManifest(expandedPending, { now: new Date("2026-09-24T00:00:00Z") }),
+    () => validateNodeRuntimeManifest(expandedPending, { now: pinReviewed }),
     /pending supported_majors must equal \[22,24,26\]/,
   );
 
   const unexpectedPendingRuntime = structuredClone(manifest);
   unexpectedPendingRuntime.runtime_nodes = [22, 24, 26];
   assert.throws(
-    () => validateNodeRuntimeManifest(unexpectedPendingRuntime, { now: new Date("2026-09-24T00:00:00Z") }),
+    () => validateNodeRuntimeManifest(unexpectedPendingRuntime, { now: pinReviewed }),
     /pending runtime_nodes must equal \[22,26\]/,
   );
 
@@ -335,7 +341,7 @@ test("Node runtime lifecycle boundaries fail closed", () => {
   refreshedNode24.node_policy.default_runtime = "24.22.0";
   refreshedNode24.singleton_node = "24.22.0";
   assert.doesNotThrow(
-    () => validateNodeRuntimeManifest(refreshedNode24, { now: new Date("2026-09-24T00:00:00Z") }),
+    () => validateNodeRuntimeManifest(refreshedNode24, { now: pinReviewed }),
   );
 
   const floorDue = structuredClone(retired);
@@ -380,10 +386,10 @@ test("release build jobs have one closed checkout, runtime, and policy trust pre
       ["changed setup-node action", workflow.replace(setupNode.uses, "actions/setup-node@main")],
       ["wrong setup-node identity", workflow.replace(setupNode.uses, setupNode.uses.replace(SETUP_NODE_ACTION, CHECKOUT_ACTION))],
       ["setup-node version label", workflow.replace(`${setupNode.uses} # v`, `${setupNode.uses} # invalid-v`)],
-      ["changed setup-node version", workflow.replace("          node-version: 24.21.0", "          node-version: 24.20.0")],
-      ["restored dependency cache", workflow.replace("          node-version: 24.21.0", "          node-version: 24.21.0\n          cache: npm")],
+      ["changed setup-node version", workflow.replace("          node-version: 24.22.1", "          node-version: 24.20.0")],
+      ["restored dependency cache", workflow.replace("          node-version: 24.22.1", "          node-version: 24.22.1\n          cache: npm")],
       ["automatic package-manager cache", workflow.replace("          package-manager-cache: false", "          package-manager-cache: true")],
-      ["unknown setup-node input", workflow.replace("          node-version: 24.21.0", "          node-version: 24.21.0\n          registry-url: https://registry.npmjs.org")],
+      ["unknown setup-node input", workflow.replace("          node-version: 24.22.1", "          node-version: 24.22.1\n          registry-url: https://registry.npmjs.org")],
       ["setup-node condition", workflow.replace(`      - uses: ${setupNode.uses}`, `      - uses: ${setupNode.uses}\n        if: true`)],
       ["commented preflight", workflow.replace(preflight, preflight.split("\n").map((line) => `${line.slice(0, 6)}# ${line.slice(6)}`).join("\n"))],
       ["late preflight", workflow.replace(`${preflight}\n      - run: npm ci --ignore-scripts`, `      - run: npm ci --ignore-scripts\n${preflight}`)],
@@ -482,7 +488,7 @@ test("release trust validation follows resolved YAML mappings", () => {
 });
 
 test("the reviewed NODE_OPTIONS bypass is selective and must remain forbidden", () => {
-  const args = [path.join(root, "scripts", "node-runtime-policy.mjs"), "--date", "2026-10-25"];
+  const args = [path.join(root, "scripts", "node-runtime-policy.mjs"), "--date", pinExpiredOn];
   const expired = spawnSync(process.execPath, args, { cwd: root, encoding: "utf8" });
   assert.notEqual(expired.status, 0, "the expired-date policy baseline must fail");
   assert.match(expired.stderr, /release pin expired/);

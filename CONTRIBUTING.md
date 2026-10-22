@@ -17,7 +17,7 @@ answer.
    decision, make it explicit and order it first.
 4. Build from the repository root. Use the root `./superbee` shim when exercising the freshly built
    CLI.
-5. Develop with Node.js 24.21.0 by default on macOS or Linux. Published packages run on supported
+5. Develop with Node.js 24.22.1 by default on macOS or Linux. Published packages run on supported
    Node.js 22, 24, or 26 releases, with 22.14.0 as the minimum. Windows-specific adapters, installation,
    and native runtime checks belong to the separate Windows distribution repository. Shared
    engine and CLI protocols remain here; changing them does not promise Windows compatibility.
@@ -151,10 +151,10 @@ it uploads findings to GitHub code scanning and has a schedule independent of th
 | --- | --- | --- | --- |
 | runtime | `npm run ci:runtime-cli` | `runtime` | 22, 26 (4 shards each) |
 | runtime-common | `npm run ci:runtime-common` | `runtime-common` | 22, 26 |
-| aliasing-host | `npm run ci:aliasing-host` | `aliasing-host` | 24.21.0 |
-| distribution | `npm run ci:distribution` | `distribution` | 24.21.0 |
-| browser | `npm run ci:browser` | `browser` | 24.21.0 |
-| scripts | `npm run ci:scripts` | `scripts` | 24.21.0 |
+| aliasing-host | `npm run ci:aliasing-host` | `aliasing-host` | 24.22.1 |
+| distribution | `npm run ci:distribution` | `distribution` | 24.22.1 |
+| browser | `npm run ci:browser` | `browser` | 24.22.1 |
+| scripts | `npm run ci:scripts` | `scripts` | 24.22.1 |
 | smoke-node-22 | workflow only | `smoke-node-22` | 22.14.0 |
 <!-- contributing-ci-lanes:end -->
 

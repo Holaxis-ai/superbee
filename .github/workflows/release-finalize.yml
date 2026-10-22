@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.21.0
+          node-version: 24.22.1
           package-manager-cache: false
       - name: Prove npm serves this version on its dist-tag
         id: registry
