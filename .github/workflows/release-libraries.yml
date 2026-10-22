@@ -36,7 +36,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.21.0
+          node-version: 24.22.1
           package-manager-cache: false
       - name: Check Node runtime policy before installation
         run: node scripts/node-runtime-policy.mjs
@@ -225,7 +225,7 @@ jobs:
           test "$(sha256sum "out/${{ needs.build.outputs.core_tgz }}" | cut -d' ' -f1)" = "${{ needs.build.outputs.core_sha256 }}"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.21.0
+          node-version: 24.22.1
           package-manager-cache: false
           registry-url: "https://registry.npmjs.org"
       - run: npm install --global npm@11.15.0 --ignore-scripts --no-audit --no-fund
@@ -264,7 +264,7 @@ jobs:
           test "$(sha256sum "out/${{ needs.build.outputs.server_tgz }}" | cut -d' ' -f1)" = "${{ needs.build.outputs.server_sha256 }}"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.21.0
+          node-version: 24.22.1
           package-manager-cache: false
           registry-url: "https://registry.npmjs.org"
       - run: npm install --global npm@11.15.0 --ignore-scripts --no-audit --no-fund

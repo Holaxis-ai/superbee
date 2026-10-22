@@ -11,11 +11,11 @@
     ],
     "engine_range": "^22.14.0 || ^24.0.0 || ^26.0.0",
     "build_target": "node22",
-    "default_runtime": "24.21.0",
+    "default_runtime": "24.22.1",
     "forward_probe": 26,
     "release_pin_owner": "process:release-preflight",
-    "release_pin_reviewed_at": "2026-09-24",
-    "release_pin_refresh_by": "2026-10-24",
+    "release_pin_reviewed_at": "2026-10-22",
+    "release_pin_refresh_by": "2026-11-21",
     "forward_review": {
       "review_after": "2026-10-28",
       "disposition": "pending",
@@ -32,7 +32,7 @@
     22,
     26
   ],
-  "singleton_node": "24.21.0",
+  "singleton_node": "24.22.1",
   "host_expectation_variable": "SUPERBEE_TEST_EXPECT_ALIASING_HOST",
   "merge_queue": {
     "supported": true,
@@ -233,11 +233,11 @@
       "host_guard": "mkdir -p \"$RUNNER_TEMP/host-probe\" && touch \"$RUNNER_TEMP/host-probe/probe-name\" && test ! -e \"$RUNNER_TEMP/host-probe/PROBE-NAME\""
     },
     "aliasing-host": {
-      "display_name": "host-class proofs on an aliasing host (macos, node 24.21.0)",
+      "display_name": "host-class proofs on an aliasing host (macos, node 24.22.1)",
       "script": "ci:aliasing-host",
       "components": [],
       "nodes": [
-        "24.21.0"
+        "24.22.1"
       ],
       "runs_on": "macos-latest",
       "expect_aliasing_host": "1",
@@ -251,7 +251,7 @@
         "skill-drift-proof"
       ],
       "nodes": [
-        "24.21.0"
+        "24.22.1"
       ]
     },
     "browser": {
@@ -266,7 +266,7 @@
         "build"
       ],
       "nodes": [
-        "24.21.0"
+        "24.22.1"
       ]
     },
     "scripts": {
@@ -279,7 +279,7 @@
         "build"
       ],
       "nodes": [
-        "24.21.0"
+        "24.22.1"
       ]
     },
     "smoke-node-22": {
@@ -289,7 +289,7 @@
       "nodes": [
         "22.14.0"
       ],
-      "build_runtime": "24.21.0",
+      "build_runtime": "24.22.1",
       "runtime_setup_node": "22.14.0",
       "version_guard": "test \"$(node --version)\" = \"v22.14.0\"",
       "superbee_tarball": "out/node-floor/superbee.tgz",
