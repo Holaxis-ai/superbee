@@ -131,6 +131,23 @@ test("a refusal the host never records proves this attempt did not execute: refu
   await assert.rejects(performHostedBlobDelivery(stub({ send: unused, lookup: unused }), unclear, { start: "submit-claimed" }), /non-execution prefix/);
 });
 
+test("a create the host refuses as path_collision settles refused with its receipt, after one send and no lookup", async () => {
+  const { row, intent } = retained("blob-create-200-ok");
+  const body = { ok: false, operationId: "blobs.create.v1", error: { code: "path_collision", message: "Nothing was written; choose a distinct path.", retryable: false, writeState: "not_applied" } };
+  let sends = 0, lookups = 0;
+  // No settled marker, as hosted answers it: the refusal is not recorded under the identity.
+  const carrier: HostedCarrier = { json: async () => { lookups++; return { status: 200, body: { schemaVersion: 1, status: "absent" }, headers: new Headers() }; }, stream: unused, bytes: async () => { sends++; return { status: 200, body, headers: new Headers() }; } };
+  for (const proven of [row, { ...retained("blob-create-200-ok", 2).row, notAppliedThrough: 1, notDispatched: { code: "credentials_denied" as const } }]) {
+    sends = 0; lookups = 0;
+    const selected = await performHostedBlobDelivery(contextFor(carrier), proven, { start: "submit-claimed", maxLookups: 3, lookupDelayMs: 0 });
+    assert.equal(sends, 1); assert.equal(lookups, 0);
+    assert.equal(selected.state, "refused");
+    assert.equal(selected.outcome.kind === "refused" && selected.outcome.code, "path_collision");
+    assert.deepEqual(selected.patch.receipt, blobReceipt(proven.prepared, body));
+  }
+  assert.equal(intent.operationId, "blobs.create.v1");
+});
+
 test("lost ACK selects immutable lookup evidence; absent, failed or contradictory lookup never sends", async () => {
   const { row, exchange } = retained("blob-delete-200-ok");
   const original = JSON.parse(exchange.response.body);

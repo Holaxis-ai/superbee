@@ -1130,7 +1130,8 @@ async function driveBlobRequests(session: Session, deps: HostedSyncDeps, options
         saved = await settleBlobSyncReceipt(store, after, claimed, selectedResult.patch); expectedMap = projected;
       } else saved = await store.updateBlobIntent(claimed.requestId, claimed.state, selectedResult.patch, { guard: after.journal.guard });
       report(saved, blobRefusalNote(saved));
-      // Reported once: a settled refusal no longer holds its file, which the next sync captures anew.
+      // Reported once: a settled refusal no longer holds its file. The next sync captures a tracked
+      // file's change anew; a refused new file stays local until promote sends it again.
       if (retirableBlobRefusal(saved)) await retireBlobRefusals(store, scope, [saved.target]);
       if (saved.receipt?.result.ok && !await blobFrozenPhysicalMatches(session.binding.path, { ...after, map: expectedMap! }, saved)) (out.kept_local_edits ??= []).push(saved.target);
     } catch (error) {
@@ -1153,6 +1154,16 @@ async function driveBlobRequests(session: Session, deps: HostedSyncDeps, options
 }
 
 /** Blob ACK then local record admission. This command never pushes documents. */
+/**
+ * A blob_admitted publication whose blob request is gone from the journal and never landed: the
+ * request was retired after a terminal refusal (any code), and the checkout holds no host baseline
+ * for the entry and no unsettled request on it. Nothing can resume such a publication.
+ */
+async function orphanedArtifactPublication(store: FileJournaledBackend, p: Publication): Promise<boolean> {
+  if (p.state !== "blob_admitted" || await store.readBlobIntent(p.blobRequestId)) return false;
+  const snapshot = await readBlobSyncState(store, p.entry, p.scope);
+  return !snapshot.map.entries.find(entry => entry.key === p.entry)?.head && snapshot.journal.intents.every(row => row.receipt !== undefined);
+}
 export async function queueHostedArtifact(binding: CheckoutBinding, input: { file: string; title: string; description?: string; actor: string }, partial: Partial<HostedSyncDeps>, resume: CommandText): Promise<Record<string, unknown>> {
   const deps = hostedDeps(partial), signal = deps.write?.signal;
   signal?.throwIfAborted();
@@ -1163,11 +1174,20 @@ export async function queueHostedArtifact(binding: CheckoutBinding, input: { fil
     signal?.throwIfAborted();
     if (!session.capabilities.operations || session.capabilities.blobWrites !== "allowed") throw new CliError("CONFLICT", "host does not offer the identified blob/document writes Artifact needs");
     await assertActorAcceptedByBundle(local.bundle, input.actor);
-    const all = await publications(store);
+    let all = await publications(store);
     const source = path.resolve(deps.cwd, input.file), rel = path.relative(binding.path, source).split(path.sep).join("/");
     let publication = all.find(p => p.entry === rel);
     if (publication) {
       assertPublicationBinding(publication, binding);
+      if (await orphanedArtifactPublication(store, publication)) {
+        // Its blob request settled without landing and was retired (by a sync, or before this
+        // command released it): nothing can resume it, so release it and derive a fresh create.
+        await store.removeMeta(publicationKey(publication.id), { expected: { present: true, value: publication } });
+        all = all.filter(p => p.id !== publication!.id);
+        publication = undefined;
+      }
+    }
+    if (publication) {
       if (publication.title !== input.title || publication.actor !== input.actor || publication.description !== input.description) throw new CliError("CONFLICT", "Artifact arguments differ from the frozen publication; no new identity was selected");
     } else {
       const heads = await queryHeads(local.bundle, { prefix: "artifacts/" });
@@ -1195,7 +1215,12 @@ export async function queueHostedArtifact(binding: CheckoutBinding, input: { fil
     assertPublicationSource(publication, binding.path);
     if (publication.state === "blob_admitted") {
       const declared = declaredHostedSyncGate(binding.path);
-      await driveBlobRequests(session, deps, { requestIds: [publication.blobRequestId], gatePresent: declared.kind !== "none", gate: async (fresh, count) => { await judgeHostedWrites(session, declared, resume, fresh, count); } });
+      const delivered = await driveBlobRequests(session, deps, { requestIds: [publication.blobRequestId], gatePresent: declared.kind !== "none", gate: async (fresh, count) => { await judgeHostedWrites(session, declared, resume, fresh, count); } });
+      const collided = delivered.rows.find(row => blobRefusalCode(row) === "path_collision");
+      // Proven not written and retired with its refusal: release the publication, so a rerun derives
+      // its id again (the same title is refused again) instead of resuming a request that is gone.
+      if (collided) await store.removeMeta(publicationKey(publication.id), { expected: { present: true, value: publication } });
+      if (collided) throw new CliError("CONFLICT", blobPathCollisionMessage(collided.key, "give the Artifact a title whose path differs from existing documents and files by more than letter case or Unicode form"), { details: { reason: "path_collision", entry: collided.key, blob_request_id: collided.request_id } });
       const version = await acknowledgedArtifactBlob(store, publication);
       if (!version) return { artifact: "blob_pending", id: publication.id, entry: publication.entry, blob_request_id: publication.blobRequestId, status: "incomplete", help: String(resume) };
       assertPublicationSource(publication, binding.path);
@@ -1272,19 +1297,31 @@ function blobRefusalCode(row: BlobDriveRow): string | undefined {
 }
 /** Refusals of the host's own access (as a document write's PERMISSION_DENIED reads): the bundle is not writable to this person. */
 const BLOB_ACCESS_REFUSALS: ReadonlySet<string> = new Set(["insufficient_scope", "bundle_not_found"]);
-const BLOB_UNRECORDED: ReadonlySet<string> = new Set(BLOB_UNRECORDED_REFUSAL_CODES);
-/** What a refusal the host never recorded means for the person; the file is captured anew on the next sync. */
+/** Unrecorded refusals of access or quota, which say nothing about the file: a later send can succeed. */
+const BLOB_UNRECORDED: ReadonlySet<string> = new Set(BLOB_UNRECORDED_REFUSAL_CODES.filter(code => code !== "path_collision"));
+/** The person's next step after the host refused a create as `path_collision`. */
+export function blobPathCollisionMessage(key: string, next = "rename the file or its folder to a distinct path, then promote it again"): string {
+  return `${key} was not created: another file or document in this bundle differs from this path only by letter case or Unicode form, in its name or a folder, so the two would be one path on a case-insensitive filesystem. Nothing was written; ${next}.`;
+}
+/**
+ * What a refusal the host never recorded means for the person. A change to a tracked file is
+ * captured anew by the next sync; a new file (a create) has no host baseline to capture against,
+ * so only promote sends it again.
+ */
 function blobRefusalNote(row: BlobIntentRecord): string | undefined {
   const result = row.receipt?.result;
-  if (row.state !== "refused" || !result || result.ok || !BLOB_UNRECORDED.has(result.error.code)) return undefined;
+  if (row.state !== "refused" || !result || result.ok) return undefined;
+  if (result.error.code === "path_collision") return blobPathCollisionMessage(row.target);
+  if (!BLOB_UNRECORDED.has(result.error.code)) return undefined;
+  const again = result.operationId === "blobs.create.v1" ? "promote it again" : "sync sends it again";
   return result.error.code === "request_capacity"
-    ? `${row.target} was not sent: the sync quota is used up. Nothing was lost; run sync again later and it is sent again.`
-    : `${row.target} was not sent: the host refused writes to this bundle for this sign-in. Nothing was lost; it is sent again on a sync once access returns.`;
+    ? `${row.target} was not sent: the sync quota is used up. Nothing was lost; later, ${again}.`
+    : `${row.target} was not sent: the host refused writes to this bundle for this sign-in. Nothing was lost; once access returns, ${again}.`;
 }
 
 /**
  * The exit for a blob delivery, classed as document writes are: a held file, a conflict or a
- * content refusal needs the person (CONFLICT); a refusal of access to the bundle is FORBIDDEN, as
+ * content refusal (recorded, or a `path_collision`) needs the person (CONFLICT); a refusal of access to the bundle is FORBIDDEN, as
  * a document write's PERMISSION_DENIED is; the sync quota and lost answers are TRANSIENT.
  */
 export function blobDeliveryFailure(report: BlobDriveReport): { code: "CONFLICT" | "FORBIDDEN" | "TRANSIENT"; message: string } | null {

@@ -379,7 +379,10 @@ bundle for everyone.
   the `superbee sync --accept-deletes blobs:<count>:<digest>` command it names.
 - **Receipt:** `blobs.rows` has one row per request, keyed by file and request id: `committed`,
   `conflict`, `refused`, `unknown` or `held`. `blobs.counts` totals them. An `unknown` row is
-  looked up by the same request on the next sync; it is never sent twice.
+  looked up by the same request on the next sync; it is never sent twice. A `refused` row whose
+  `result.error.code` is `path_collision` is a new file whose path, or one of its folders, differs
+  from an existing document or file only by letter case or Unicode form; nothing was written, and
+  sync exits 5. Rename the file or folder to a distinct path, then promote it again.
 - **Conflicts:** after a `conflict` row (the host's version changed), the file is held until it is
   resolved. `superbee sync --inspect --doc <key>` shows the recorded versions and MIME types.
   `superbee sync --resolve keep --doc <key>` keeps your file: the next sync sends it as it is over

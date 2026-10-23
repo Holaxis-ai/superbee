@@ -612,7 +612,8 @@ export async function admitOfflineBlob(options: {
 /**
  * A host refusal settled with its receipt (anything but a version conflict, which waits for
  * --resolve): final for its identity, which is never sent again. Sync reports it once and then
- * retires it, so the file is captured anew on the next run, as an edited document would be.
+ * retires it. A tracked file's change is then captured anew on the next run, as an edited
+ * document would be; a new file has no host baseline, so it stays local until promote sends it.
  */
 export function retirableBlobRefusal(row: BlobIntentRecord): boolean {
   return row.state === "refused" && row.receipt !== undefined && !row.receipt.result.ok && !settledBlobConflict(row);

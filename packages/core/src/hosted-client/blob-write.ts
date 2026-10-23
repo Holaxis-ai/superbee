@@ -537,15 +537,17 @@ export type HostedBlobOperation = "create" | "replace" | "delete";
 
 /**
  * A refusal's code. The host's own: a recorded refusal (`backend_unavailable`, ...), or one it
- * answers before dispatch and never records (`insufficient_scope`, `bundle_not_found`,
- * `request_capacity`), which is final for the identity when every earlier attempt was proven not
- * applied; after an unclear attempt the write stays `unknown` instead. Or one the client names
- * before sending (`invalid_input`, `scope_mismatch`, `unsettled_write`).
+ * answers without writing and never records (`insufficient_scope`, `bundle_not_found`,
+ * `request_capacity`, and `path_collision` for a create whose path differs from an existing
+ * document or blob path only by letter case or Unicode form), which is final for the identity when
+ * every earlier attempt was proven not applied; after an unclear attempt the write stays `unknown`
+ * instead. Or one the client names before sending (`invalid_input`, `scope_mismatch`, `unsettled_write`).
  */
 export type HostedBlobRefusalCode =
   | "insufficient_scope"
   | "bundle_not_found"
   | "request_capacity"
+  | "path_collision"
   | "invalid_input"
   | "backend_unavailable"
   | "scope_mismatch"

@@ -1693,7 +1693,7 @@ test("offline opaque delete uses preserved clean pins; failed admission leaves t
 });
 
 /** Stateful read/write wire seam only; authority and journal selection remain the production owners. */
-function blobAuthority(h: Harness, options: { priorDeletes?: number; baseline?: number; beforeWrite?: (key: string) => Promise<void>; lostAck?: boolean; rehold?: boolean; slug?: string; holdDiagnostics?: Record<string, { deletions: number; baseline: number }> } = {}) {
+function blobAuthority(h: Harness, options: { priorDeletes?: number; baseline?: number; beforeWrite?: (key: string) => Promise<void>; lostAck?: boolean; rehold?: boolean; slug?: string; holdDiagnostics?: Record<string, { deletions: number; baseline: number }>; collides?: (key: string) => boolean; createRefusal?: string } = {}) {
   const objects = new Map<string, { bytes: Buffer; contentType: string }>(), outcomes = new Map<string, { binding: string; result: any }>();
   const calls: { key: string; requestId: string; operationId: string; allowance: number | null; bundle: string; via: string | null; expectedVersion?: string | null; expectedType?: string | null; contentType?: string | null }[] = [];
   let deletes = options.priorDeletes ?? 0, dropped = false;
@@ -1716,6 +1716,8 @@ function blobAuthority(h: Harness, options: { priorDeletes?: number; baseline?: 
       await options.beforeWrite?.(key);
       if (deletion && (options.rehold || (deletes + 1 > (options.baseline ?? 10) / 2 && (allowance === null || allowance < deletes + 1)))) return Response.json({ error: { code: "deletions_held", message: "person confirmation required", retryable: false, writeState: "not_applied", deletions: options.holdDiagnostics?.[key]?.deletions ?? deletes + 1, baseline: options.holdDiagnostics?.[key]?.baseline ?? options.baseline ?? 10 } }, { status: 428 });
       const existing = objects.get(key), actual = existing ? digestOf(existing.bytes) : null;
+      // As hosted answers a create refused before any write: a 200 with no settled marker, nothing recorded.
+      if (operationId === "blobs.create.v1" && !existing && options.collides?.(key)) return Response.json({ ok: false, operationId, error: { code: options.createRefusal ?? "path_collision", message: "Another file or document in this bundle differs from this path only by letter case or Unicode form. Nothing was written.", retryable: false, writeState: "not_applied" } });
       let result: any;
       if (expectedVersion !== actual || expectedType !== (existing?.contentType ?? null)) result = { ok: false, operationId, error: { code: "version_conflict", message: "head changed", retryable: false, writeState: "not_applied", expected: expectedVersion, actual, expectedContentType: expectedType, actualContentType: existing?.contentType ?? null } };
       else if (deletion) { deletes++; objects.delete(key); result = { ok: true, operationId, data: { key, version: actual, contentType: existing!.contentType, deleted: true } }; }
@@ -1933,6 +1935,115 @@ test("a multi-request blob batch reloads full guards and preserves every origina
   } finally { FileJournaledBackend.prototype.updateBlobIntent = original; }
   const after = await retainedBlobRows(h); assert.deepEqual(after.map(row => row.prepared), before.map(row => row.prepared)); assert.deepEqual(after.map(row => row.attempts), [1, 0, 0]); assert.ok(after.every(row => !row.receipt));
   const recovered = await deliverHostedBlobRequests(binding, ids, { auth: h.auth, fetch: wire.fetch }); assert.equal(recovered.counts.committed, 3); assert.equal(wire.calls.length, 3); assert.deepEqual((await retainedBlobRows(h)).map(row => row.attempts), [1, 1, 1]);
+});
+
+test("a create the host refuses as path_collision is a refused row naming the key, exit 5, never unknown and never resent", async () => {
+  // Through promote: the receipt names the key and the next step; nothing is left to look up.
+  const h = await harness(), key = "Images/chart.svg", file = path.join(h.folder, key); await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "<svg/>");
+  const wire = blobAuthority(h, { collides: candidate => candidate === key }), output: string[] = [];
+  await assert.rejects(promote([file, "--doc-key", key, "--dir", h.folder, "--json"], commandDeps(h, wire, output)), (error: unknown) => error instanceof CliError && error.code === "CONFLICT" && error.exitCode === 5);
+  const receipt = JSON.parse(output.at(-1)!), row = receipt.blobs.rows[0];
+  assert.equal(receipt.status, "incomplete"); assert.equal(receipt.blobs.counts.unknown, 0); assert.equal(receipt.blobs.counts.refused, 1);
+  assert.equal(row.state, "refused"); assert.equal(row.key, key); assert.equal(row.result.error.code, "path_collision");
+  assert.match(row.message, /^Images\/chart\.svg was not created: .*only by letter case or Unicode form.*Nothing was written; rename/);
+  assert.deepEqual(wire.calls.map(call => call.operationId), ["blobs.create.v1"]);
+  h.fetch = wire.fetch;
+  await failingSync(h).catch(() => undefined); assert.equal(wire.calls.length, 1, "the refused create is never sent again");
+
+  // Through sync: a create admitted offline and delivered by the normal run.
+  const s = await harness(), sKey = "notes/Diagram.png", sFile = path.join(s.folder, sKey); await mkdir(path.dirname(sFile), { recursive: true }); await writeFile(sFile, "png");
+  await admitOfflineBlob({ operation: "promote", key: sKey, source: sFile, dir: s.folder, home: s.home, cwd: s.cwd });
+  const sWire = blobAuthority(s, { collides: () => true }); s.fetch = sWire.fetch;
+  const { error, receipt: synced } = await failingSync(s);
+  assert.equal(error.code, "CONFLICT"); assert.equal(error.exitCode, 5);
+  const blobs = synced?.blobs as { counts: Record<string, number>; rows: { key: string; state: string; message: string }[] };
+  assert.equal(blobs.counts.unknown, 0); assert.equal(blobs.rows[0]!.state, "refused"); assert.equal(blobs.rows[0]!.key, sKey); assert.match(blobs.rows[0]!.message, /notes\/Diagram\.png was not created/);
+  assert.equal(sWire.calls.length, 1);
+  // A later sync does not resend it, and does not go quiet: the new file is held with the promote that sends it.
+  const later = await failingSync(s);
+  assert.equal(later.error.exitCode, 5); assert.equal(sWire.calls.length, 1);
+  assert.match(rowFor(later.receipt, sKey)?.message ?? "", /remains local \(re-create it on the host with promote .*--doc-key notes\/Diagram\.png\)/);
+  assert.ok((await retainedBlobRows(s)).every(retained => retained.state !== "unknown" && retained.state !== "in_flight"));
+});
+
+test("artifact create refused as path_collision releases its publication: a rerun is refused again, and proceeds once the path is free", async () => {
+  const h = await harness(), entry = "artifacts/result.html", file = path.join(h.folder, entry); await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "<p>result</p>");
+  let colliding = true;
+  const wire = blobAuthority(h, { collides: key => colliding && key === entry });
+  const { queueHostedArtifact } = await import("../src/hosted/sync.js"), { commandFragment } = await import("../src/command-text.js");
+  const binding = (await bindingForPath(h.home, h.folder))!, resume = commandFragment`sync`;
+  const deps = { auth: h.auth, cwd: h.cwd, fetch: wire.fetch, write: { sleep: instant, lookupDelayMs: 0, maxLookups: 1 }, sleep: instant };
+  const refused = (error: unknown) => error instanceof CliError && error.code === "CONFLICT" && (error.details as { reason?: unknown }).reason === "path_collision" && /^artifacts\/result\.html was not created: .*give the Artifact a title/.test(error.message);
+  await assert.rejects(queueHostedArtifact(binding, { file, title: "Result", actor: "process:test" }, deps, resume), refused);
+  assert.equal(wire.calls.length, 1);
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  try { assert.deepEqual(await store.listMeta("hosted.artifact.create.v1:"), []); } finally { await store.close(); }
+  // The same title derives the same path: a fresh create, refused again with the same advice, never a dead resume.
+  await assert.rejects(queueHostedArtifact(binding, { file, title: "Result", actor: "process:test" }, deps, resume), refused);
+  assert.equal(wire.calls.length, 2); assert.notEqual(wire.calls[1]!.requestId, wire.calls[0]!.requestId);
+  // Once the path is distinct on the host, the publication proceeds past the blob.
+  colliding = false;
+  const published = await queueHostedArtifact(binding, { file, title: "Result", actor: "process:test" }, deps, resume).catch((error: unknown) => error);
+  assert.equal(wire.objects.has(entry), true, `the blob landed: ${String((published as Error).message ?? "")}`);
+  assert.equal(wire.calls.length, 3);
+});
+
+async function artifactPublications(h: Harness) {
+  const binding = (await bindingForPath(h.home, h.folder))!, store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  try { return await store.listMeta("hosted.artifact.create.v1:"); } finally { await store.close(); }
+}
+async function artifactCase(h: Harness, wire: ReturnType<typeof blobAuthority>) {
+  const entry = "artifacts/result.html", file = path.join(h.folder, entry); await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "<p>result</p>");
+  const { queueHostedArtifact } = await import("../src/hosted/sync.js"), { commandFragment } = await import("../src/command-text.js");
+  const binding = (await bindingForPath(h.home, h.folder))!, resume = commandFragment`sync`;
+  const deps = { auth: h.auth, cwd: h.cwd, fetch: wire.fetch, write: { sleep: instant, lookupDelayMs: 0, maxLookups: 1 }, sleep: instant };
+  return { entry, create: () => queueHostedArtifact(binding, { file, title: "Result", actor: "process:test" }, deps, resume) };
+}
+
+test("an artifact publication whose create a plain sync refused and retired is released by the next artifact create", async () => {
+  const h = await harness();
+  let colliding = true;
+  const wire = blobAuthority(h, { collides: key => colliding && key === "artifacts/result.html" }), a = await artifactCase(h, wire);
+  // The publication is admitted but nothing is sent: a sync gate refuses.
+  const { execFileSync } = await import("node:child_process"); execFileSync("git", ["init", "-q", h.folder]); execFileSync("git", ["-C", h.folder, "config", "superbee.syncGate", "exit 3"]);
+  await assert.rejects(a.create(), (error: unknown) => error instanceof CliError && error.code === "GATE_FAILED");
+  assert.equal(wire.calls.length, 0); assert.equal((await artifactPublications(h)).length, 1);
+  execFileSync("git", ["-C", h.folder, "config", "--unset", "superbee.syncGate"]);
+  // A plain sync sends the admitted create, meets path_collision, settles and retires the request.
+  h.fetch = wire.fetch; await failingSync(h);
+  assert.equal(wire.calls.length, 1); assert.equal((await retainedBlobRows(h)).length, 0); assert.equal((await artifactPublications(h)).length, 1);
+  // The orphan is released and the same title is refused again under a fresh request, never a dead resume.
+  await assert.rejects(a.create(), (error: unknown) => error instanceof CliError && (error.details as { reason?: unknown }).reason === "path_collision");
+  assert.equal(wire.calls.length, 2); assert.notEqual(wire.calls[1]!.requestId, wire.calls[0]!.requestId);
+  colliding = false;
+  await a.create().catch(() => undefined);
+  assert.equal(wire.objects.has(a.entry), true); assert.equal(wire.calls.length, 3);
+});
+
+test("a crash after the refused request was retired but before the publication was released heals on the next artifact create", async () => {
+  const h = await harness();
+  let colliding = true;
+  const wire = blobAuthority(h, { collides: key => colliding && key === "artifacts/result.html" }), a = await artifactCase(h, wire);
+  const original = FileJournaledBackend.prototype.removeMeta;
+  FileJournaledBackend.prototype.removeMeta = async function () { throw new Error("killed before the publication was released"); };
+  try { await assert.rejects(a.create(), /killed before the publication was released/); } finally { FileJournaledBackend.prototype.removeMeta = original; }
+  // The crash-window state: publication present, its request retired.
+  assert.equal((await retainedBlobRows(h)).length, 0); assert.equal((await artifactPublications(h)).length, 1); assert.equal(wire.calls.length, 1);
+  colliding = false;
+  await a.create().catch(() => undefined);
+  assert.equal(wire.objects.has(a.entry), true); assert.equal(wire.calls.length, 2);
+  assert.notEqual(wire.calls[1]!.requestId, wire.calls[0]!.requestId);
+});
+
+test("a blob refusal code the client does not know still stays unknown and is never resent", async () => {
+  const h = await harness(), key = "odd.bin", file = path.join(h.folder, key); await writeFile(file, "bytes");
+  await admitOfflineBlob({ operation: "promote", key, source: file, dir: h.folder, home: h.home, cwd: h.cwd });
+  const wire = blobAuthority(h, { collides: () => true, createRefusal: "path_collision_v2" }); h.fetch = wire.fetch;
+  const { error, receipt } = await failingSync(h);
+  assert.equal(error.code, "TRANSIENT");
+  const blobs = receipt?.blobs as { counts: Record<string, number>; rows: { state: string }[] };
+  assert.equal(blobs.counts.unknown, 1); assert.equal(blobs.rows[0]!.state, "unknown"); assert.equal(wire.calls.length, 1);
+  await failingSync(h); assert.equal(wire.calls.length, 1);
 });
 
 test("native spelling aliases refuse ordinary-file admission before journal/map mutation", async t => {

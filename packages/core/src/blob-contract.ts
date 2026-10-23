@@ -15,7 +15,9 @@ export type BlobWriteExpected =
 export type BlobWriteSuccess =
   | { ok: true; operationId: "blobs.create.v1" | "blobs.replace.v1"; data: { key: string; version: Version; contentType: string; changed: boolean } }
   | { ok: true; operationId: "blobs.delete.v1"; data: { key: string; version: Version; contentType: string; deleted: true } };
-export type BlobWriteErrorCode = "version_conflict" | "insufficient_scope" | "bundle_not_found" | "concurrent_change" | "backend_unavailable" | "request_capacity" | "deletions_held" | "write_outcome_unknown";
+/** `path_collision`: a create whose key, or one of its folders, folds under `foldPath` onto an
+ * existing document or blob path (the per-folder rule portable export applies). Create only, not applied. */
+export type BlobWriteErrorCode = "version_conflict" | "insufficient_scope" | "bundle_not_found" | "concurrent_change" | "backend_unavailable" | "request_capacity" | "deletions_held" | "path_collision" | "write_outcome_unknown";
 export type BlobWriteFailure = {
   ok: false;
   operationId: BlobOperationId;
@@ -27,7 +29,7 @@ export type BlobWriteFailure = {
   };
 };
 export type BlobWriteResult = BlobWriteSuccess | BlobWriteFailure;
-const BLOB_ERROR_CODES: readonly BlobWriteErrorCode[] = ["version_conflict", "insufficient_scope", "bundle_not_found", "concurrent_change", "backend_unavailable", "request_capacity", "deletions_held", "write_outcome_unknown"];
+const BLOB_ERROR_CODES: readonly BlobWriteErrorCode[] = ["version_conflict", "insufficient_scope", "bundle_not_found", "concurrent_change", "backend_unavailable", "request_capacity", "deletions_held", "path_collision", "write_outcome_unknown"];
 const BLOB_ERROR_KEYS = ["code", "message", "retryable", "writeState", "expected", "actual", "expectedContentType", "actualContentType", "scope", "resetAt", "deletions", "baseline"];
 const BLOB_CONFLICT_KEYS = ["expected", "actual", "expectedContentType", "actualContentType"];
 export function isBlobContentType(value: unknown): value is string {
@@ -86,6 +88,8 @@ export function decodeBlobWriteResult(raw: unknown, expected: BlobWriteExpected)
   if (error.code === "deletions_held") {
     if (operationId !== "blobs.delete.v1" || !count(error.deletions) || !Number.isSafeInteger(error.baseline) || (error.baseline as number) < 0) throw refuse();
   } else if (error.deletions !== undefined || error.baseline !== undefined) throw refuse();
+  // Only a create can introduce a new path, so only a create can collide.
+  if (error.code === "path_collision" && operationId !== "blobs.create.v1") throw refuse();
   return { ok: false, operationId, error: { ...(error as BlobWriteFailure["error"]) } };
 }
 
