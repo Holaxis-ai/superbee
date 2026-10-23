@@ -32,6 +32,7 @@
   "inPlace": true,
   "disableTypeChecks": "**/*.{ts,tsx,cts,mts}",
   "coverageAnalysis": "perTest",
+  "dryRunTimeoutMinutes": 60,
   "reporters": [
     "html",
     "json",
