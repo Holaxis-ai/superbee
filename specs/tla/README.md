@@ -1,6 +1,6 @@
 # TLA+ specifications
 
-These TLA+ models describe three concurrency mechanisms whose correctness depends on how
+These TLA+ models describe concurrency mechanisms whose correctness depends on how
 separately committed steps interleave. The TLC model checker explores every interleaving within
 small bounds. The models are checked against their own invariants; they are not generated from or
 linked to the TypeScript source. Each spec's header maps its actions to the functions they model,
@@ -11,11 +11,12 @@ so a change to one of those functions should be mirrored in the spec.
 | `filesystem-lock/` | `FsLock.tla` | The cross-process mkdir lock (`packages/core/src/filesystem-lock.ts`) and the filesystem push role (`packages/core/src/filesystem-push-role.ts`) |
 | `intent-journal/` | `WorkingCopy.tla` | Browser-local sync data flow: push, pull by heads, digest recording and deletion reconciliation (`packages/browser-local/src/local-bundle.ts`) |
 | `intent-journal/` | `IntentLifecycle.tla` | The lifecycle of one document's intents: compose, claim, uncertain delivery, settle, reclaim, resume, resolve and retirement of acknowledged history |
+| `intent-journal/` | `Preservation.tla` | Accepted local payload conservation through authoring, claim, crash, reclaim, acknowledgement, explicit disposition and retirement; see [implementation correspondence](EDIT-PRESERVATION.md) |
 | `identified-write/` | `IdentifiedWrite.tla` | At-most-once delivery of an identified guarded write across lost answers, outcome expiry and store restarts (`packages/core/src/uncertain-write.ts`, `packages/server/src/router.ts`) |
 
 ## Status: fixes on `main` and design targets
 
-Each spec has one `*.fixed.cfg` whose invariants and properties must all hold, and a set of
+The original models each have one `*.fixed.cfg` whose invariants and properties must all hold, and a set of
 variant configs that must each produce one named counterexample. The fixed configs turn on knobs
 that model fixes. Some of those fixes are on `main`; the others are design targets that `main`
 does not implement:
@@ -180,3 +181,21 @@ proposed rule trusts absence only when the store provably saw the first send.
 Abstractions: time is a few coarse ticks with retention of two ticks; the server's claim, apply
 and record are one atomic step (faithful for the single-process memory store); there is one
 document and one client; deletes are not modeled.
+
+## accepted edit preservation
+
+`Preservation.tla` checks a focused safety abstraction with two logical edits, two request IDs,
+one crash and one worker. It separates accepted logical edits from delivery identities and counts
+only durable local payloads as recovery copies until valid acknowledgement or intentional
+supersession/recorded resolution. It assumes atomic persistence and valid correlated outcomes;
+it does not prove those mechanisms or the TypeScript implementation. The
+[correspondence and review contract](EDIT-PRESERVATION.md) maps transitions to source and tests,
+including differences between exact and body mode and conservative retirement abstraction.
+
+| Config | Checks | Expected |
+| --- | --- | --- |
+| `Preservation.correct.cfg` | `TypeOK` and `Preserved` under correct retirement | pass |
+| `Preservation.witness.cfg` | A real outstanding older payload is reachable after acceptance, claim, crash, reclaim and chaining; `Preserved` still holds | `NoRecoveryWitness` violated |
+| `Preservation.broken.cfg` | Artificial retirement of an older attempted, unacknowledged payload loses that edit | `Preserved` violated |
+
+The witness and broken configurations are controls, not claims of current production defects.
