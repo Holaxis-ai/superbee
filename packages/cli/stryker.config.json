@@ -4,7 +4,7 @@
   "testRunner": "tap",
   "tap": {
     "testFiles": [
-      "test/*.test.ts"
+      "test/!(arity-architecture|emitted-command-quoting|invocation-hints|mutation-seam-boundary|project-contract-docs).test.ts"
     ],
     "nodeArgs": [
       "--import",

@@ -52,6 +52,37 @@ test("Core mutation checks pristine egress before running all behavioral TAP tes
   assert.deepEqual(all.filter((file) => !instrumented.includes(file)), ["test/source-egress.test.ts"]);
   assert.deepEqual(instrumented.filter((file) => !all.includes(file)), []);
 });
+test("CLI mutation keeps source policies pristine and all runtime files instrumented", async () => {
+  const cli = JSON.parse(readFileSync(path.join(root, "packages/cli/package.json"), "utf8"));
+  const policies = [
+    "arity-architecture", "emitted-command-quoting", "invocation-hints",
+    "mutation-seam-boundary", "project-contract-docs",
+  ].map((name) => `test/${name}.test.ts`).sort();
+  const phases = cli.scripts.mutation.split(/\s*&&\s*/);
+  assert.equal(phases.length, 2, "every source policy must pass before the existing runner starts");
+  const prerequisite = phases[0].split(/\s+/);
+  assert.deepEqual(prerequisite.slice(0, 4), ["node", "--test", "--import", "./test/ts-loader.mjs"]);
+  assert.deepEqual(prerequisite.slice(4).map((file) => file.replace(/^\.\//, "")).sort(), policies);
+  assert.equal(phases[1], "node scripts/run-test-command.mjs npm-exec stryker run");
+  assert.equal(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).scripts["mutation:cli"], "npm run mutation -w @superbee/cli");
+  assert.match(cli.scripts.test, /\.\/test\/\*\.test\.ts$/, "ordinary tests retain all source policies");
+
+  // Resolve through TAP's installed dependency, so extglob behavior matches native discovery.
+  const { glob } = createRequire(import.meta.resolve("@stryker-mutator/tap-runner"))("glob");
+  const cwd = path.join(root, "packages/cli");
+  const config = JSON.parse(readFileSync(path.join(cwd, "stryker.config.json"), "utf8"));
+  const all = (await glob("test/*.test.ts", { cwd })).sort();
+  const instrumented = (await glob(config.tap.testFiles, { cwd })).sort();
+  assert.equal(new Set(instrumented).size, instrumented.length, "native selection has no duplicate files");
+  assert.deepEqual(all.filter((file) => !instrumented.includes(file)), policies);
+  assert.deepEqual(instrumented.filter((file) => !all.includes(file)), []);
+  assert.deepEqual([...policies, ...instrumented].sort(), all, "pristine and instrumented identities conserve ordinary coverage");
+  for (const name of [
+    "emitted-command-injection", "arity-built", "bound-owner-routing", "command-spec",
+    "hosted-auth", "init-create-only", "nofollow-read", "private-config-write",
+    "skill-distribution", "version",
+  ]) assert.ok(instrumented.includes(`test/${name}.test.ts`), `${name} retains its runtime behavior`);
+});
 const workflow = readFileSync(path.join(root, ".github", "workflows", "ci-tests.yml"), "utf8");
 const packageLock = JSON.parse(readFileSync(path.join(root, "package-lock.json"), "utf8"));
 const rootPackage = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
