@@ -704,8 +704,11 @@ Each call returns one of:
   past the host's own retries. Nothing was applied.
 - `{ status: "refused", code, message }`: the host's own refusal, or one the client names. The
   host's codes are those it records under the identity (`backend_unavailable`, ...) and those it
-  answers before dispatch and never records (`insufficient_scope` for a grant without blob writes,
-  `bundle_not_found`, and `request_capacity` in a `200` or a `429`). A refusal of the second kind
+  answers without writing and never records (`insufficient_scope` for a grant without blob writes,
+  `bundle_not_found`, `request_capacity` in a `200` or a `429`, and `path_collision` for a create
+  whose key, or one of its folders, differs from an existing document or blob path only by letter
+  case or Unicode form under `foldPath`, the per-folder rule portable export applies; a create
+  only, and it never resends: rename the key). A refusal of the second kind
   proves only that this attempt did not run, so it is final only when every earlier attempt of the
   write is proven not applied, which is always so for a write the client sends; a write whose
   earlier attempt was unclear is never sent again, only looked up, and stays `unknown`.

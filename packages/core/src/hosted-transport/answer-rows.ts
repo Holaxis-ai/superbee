@@ -98,6 +98,9 @@ export const UPDATE_ANSWER_ROWS: readonly UpdateAnswerRow[] = Object.freeze([
   { answer: "429 request_capacity", recorded: "no", outcome: "refused" },
   // The mass-delete hold, refused before dispatch on a delete; not pausing (see DELETIONS_HELD_REFUSAL_CODE).
   { answer: "428 deletions_held", recorded: "no", outcome: "refused" },
+  // A blob create whose path folds onto an existing document or blob path (blob writes only):
+  // refused before anything is written and not recorded under the identity, like the quota.
+  { answer: "200 path_collision", recorded: "no", outcome: "refused" },
   { answer: "200 write_outcome_unknown", recorded: "maybe", outcome: "unknown" },
   { answer: "200 other", recorded: "unknown", outcome: "unknown" },
   { answer: "400", recorded: "no", outcome: "unknown" },

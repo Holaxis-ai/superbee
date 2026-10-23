@@ -1195,7 +1195,9 @@ export async function queueHostedArtifact(binding: CheckoutBinding, input: { fil
     assertPublicationSource(publication, binding.path);
     if (publication.state === "blob_admitted") {
       const declared = declaredHostedSyncGate(binding.path);
-      await driveBlobRequests(session, deps, { requestIds: [publication.blobRequestId], gatePresent: declared.kind !== "none", gate: async (fresh, count) => { await judgeHostedWrites(session, declared, resume, fresh, count); } });
+      const delivered = await driveBlobRequests(session, deps, { requestIds: [publication.blobRequestId], gatePresent: declared.kind !== "none", gate: async (fresh, count) => { await judgeHostedWrites(session, declared, resume, fresh, count); } });
+      const collided = delivered.rows.find(row => blobRefusalCode(row) === "path_collision");
+      if (collided) throw new CliError("CONFLICT", blobPathCollisionMessage(collided.key, "give the Artifact a title whose path differs from existing documents and files by more than letter case or Unicode form"), { details: { reason: "path_collision", entry: collided.key, blob_request_id: collided.request_id } });
       const version = await acknowledgedArtifactBlob(store, publication);
       if (!version) return { artifact: "blob_pending", id: publication.id, entry: publication.entry, blob_request_id: publication.blobRequestId, status: "incomplete", help: String(resume) };
       assertPublicationSource(publication, binding.path);
@@ -1272,11 +1274,18 @@ function blobRefusalCode(row: BlobDriveRow): string | undefined {
 }
 /** Refusals of the host's own access (as a document write's PERMISSION_DENIED reads): the bundle is not writable to this person. */
 const BLOB_ACCESS_REFUSALS: ReadonlySet<string> = new Set(["insufficient_scope", "bundle_not_found"]);
-const BLOB_UNRECORDED: ReadonlySet<string> = new Set(BLOB_UNRECORDED_REFUSAL_CODES);
+/** Unrecorded refusals of access or quota, which say nothing about the file: a later send can succeed. */
+const BLOB_UNRECORDED: ReadonlySet<string> = new Set(BLOB_UNRECORDED_REFUSAL_CODES.filter(code => code !== "path_collision"));
+/** The person's next step after the host refused a create as `path_collision`. */
+export function blobPathCollisionMessage(key: string, next = "rename the file or its folder to a distinct path, then promote it again"): string {
+  return `${key} was not created: another file or document in this bundle differs from this path only by letter case or Unicode form, in its name or a folder, so the two would be one path on a case-insensitive filesystem. Nothing was written; ${next}.`;
+}
 /** What a refusal the host never recorded means for the person; the file is captured anew on the next sync. */
 function blobRefusalNote(row: BlobIntentRecord): string | undefined {
   const result = row.receipt?.result;
-  if (row.state !== "refused" || !result || result.ok || !BLOB_UNRECORDED.has(result.error.code)) return undefined;
+  if (row.state !== "refused" || !result || result.ok) return undefined;
+  if (result.error.code === "path_collision") return blobPathCollisionMessage(row.target);
+  if (!BLOB_UNRECORDED.has(result.error.code)) return undefined;
   return result.error.code === "request_capacity"
     ? `${row.target} was not sent: the sync quota is used up. Nothing was lost; run sync again later and it is sent again.`
     : `${row.target} was not sent: the host refused writes to this bundle for this sign-in. Nothing was lost; it is sent again on a sync once access returns.`;
@@ -1284,7 +1293,7 @@ function blobRefusalNote(row: BlobIntentRecord): string | undefined {
 
 /**
  * The exit for a blob delivery, classed as document writes are: a held file, a conflict or a
- * content refusal needs the person (CONFLICT); a refusal of access to the bundle is FORBIDDEN, as
+ * content refusal (recorded, or a `path_collision`) needs the person (CONFLICT); a refusal of access to the bundle is FORBIDDEN, as
  * a document write's PERMISSION_DENIED is; the sync quota and lost answers are TRANSIENT.
  */
 export function blobDeliveryFailure(report: BlobDriveReport): { code: "CONFLICT" | "FORBIDDEN" | "TRANSIENT"; message: string } | null {

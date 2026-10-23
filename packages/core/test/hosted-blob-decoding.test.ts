@@ -169,6 +169,33 @@ test("blob writes reuse common quota, hold and authority carrier rows without a 
   assert.equal(classifyBlobWriteAnswer({status: 200, headers: new Headers(), body: {ok: true}}, create).row.outcome, "unknown");
 });
 
+test("path_collision is a definite create refusal: decoded, classified refused and unrecorded; other shapes and unknown codes stay '200 other'", () => {
+  const create = expectedFor(fixture("blob-create-200-ok"));
+  const replace = expectedFor(fixture("blob-replace-200-type-only"));
+  const deletion = expectedFor(fixture("blob-delete-200-ok"));
+  // Byte for byte what hosted's blob-create route answers (src/sync-v1-blobs.ts, path_collision).
+  const refusal = (operationId: string, error: Record<string, unknown> = {}) => ({ ok: false, operationId, error: { code: "path_collision", message: "Another file or document in this bundle differs from this path only by letter case or Unicode form, in its name or a folder, so the two would be one file or folder on a case-insensitive filesystem. Nothing was written; choose a distinct path.", retryable: false, writeState: "not_applied", ...error } });
+  const answer = (body: unknown): HostedAnswer => ({ status: 200, headers: new Headers(), body });
+  const decoded = parseBlobWriteResult(refusal("blobs.create.v1"), create);
+  assert.deepEqual(decoded, refusal("blobs.create.v1"));
+  const classified = classifyBlobWriteAnswer(answer(refusal("blobs.create.v1")), create);
+  assert.deepEqual(classified.row, { answer: "200 path_collision", recorded: "no", outcome: "refused" });
+  assert.deepEqual(classified.result, decoded);
+  // Recorded by a later host, the outcome lookup returns it as refused evidence.
+  const looked = decodeBlobOutcomeAnswer({ schemaVersion: 1, requestId: "123e4567-e89b-42d3-a456-426614174000", binding: digest("b"), status: "refused", result: refusal("blobs.create.v1") }, { ...create, requestId: "123e4567-e89b-42d3-a456-426614174000", binding: digest("b") });
+  assert.equal(looked.status, "refused");
+  // Only a create can collide, nothing was applied, and it carries no conflict, quota or hold fields.
+  for (const [body, expected] of [
+    [refusal("blobs.replace.v1"), replace], [refusal("blobs.delete.v1"), deletion],
+    [refusal("blobs.create.v1", { writeState: "unknown" }), create], [refusal("blobs.create.v1", { retryable: true }), create],
+    [refusal("blobs.create.v1", { actual: digest("c") }), create], [refusal("blobs.create.v1", { scope: "bundle" }), create],
+    [refusal("blobs.create.v1", { deletions: 2, baseline: 3 }), create], [refusal("blobs.create.v1", { code: "path_collision_v2" }), create],
+  ] as const) {
+    assert.throws(() => parseBlobWriteResult(body, expected), HostedAnswerError);
+    assert.deepEqual(classifyBlobWriteAnswer(answer(body), expected).row, { answer: "200 other", recorded: "unknown", outcome: "unknown" });
+  }
+});
+
 test("blob capabilities fail closed on older flags and malformed independent byte bounds", () => {
   const current = JSON.parse(readFileSync(path.join(directory, "capabilities-200.json"), "utf8")).response.body;
   const body = JSON.parse(current);
