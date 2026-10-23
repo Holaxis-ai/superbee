@@ -24,17 +24,21 @@ does not implement:
   which are on `main` (#310).
 - `WorkingCopy.fixed.cfg` models pull consistency (#314) and one `sync()` at a time per runtime
   (#311), which are on `main`. It also turns on `AckInvalidates` (an acknowledgement drops the
-  recorded heads digest), a design target that `main` does not implement.
-- `IntentLifecycle.fixed.cfg` turns on `ReclaimBeforePush` and `AdmitRefused`, both design
-  targets. The CLI hosted sync already reclaims before every push; exact-mode `pushWithRole` does
-  not.
+  recorded heads digest), implemented by acknowledgement markers on `main` (#317).
+- `IntentLifecycle.fixed.cfg` turns on `ReclaimBeforePush` and `AdmitRefused`, which remain
+  broader design targets for exact mode. The CLI hosted sync and body-mode `pushWithRole` reclaim
+  before push; exact-mode `pushWithRole` does not. Exact mode now folds a never-sent successor
+  behind a content-refused head (#324), resolving that historical wedge through composition
+  rather than implementing the model's `AdmitRefused` resolution rule.
 - `IdentifiedWrite.fixed.cfg` models a proposed protocol (a client read-back rule plus a server
   stale-identity guard) that `main` does not implement. The documented at-most-once claims on
   `main` describe the current behavior instead (#312).
 
 A fixed config therefore describes `main` only where every knob it turns on is a fix on `main`.
 A variant config that turns off a fix on `main` reproduces the behavior before that fix, not the
-current code. A config marked "open" below describes a defect that is still present on `main`.
+current code. A config marked "open" below needs its stated caller and mode preconditions;
+model counterexamples are not implementation reproductions. A passing bounded model check is not
+a refinement proof of the TypeScript implementation.
 
 ## Running the models
 
@@ -125,8 +129,8 @@ authority state.
 
 | Config | Checks | Expected |
 | --- | --- | --- |
-| `WorkingCopy.fixed.cfg` | `TruthfulDigest` and `NoRegress` with two runs serialized (#311) and pull consistency (#314), both on `main`, and `AckInvalidates` (design target) | pass |
-| `WorkingCopy.bug-ack-keeps-digest.cfg` | Open: an acknowledgement keeps the recorded heads digest, so a later return to that digest answers 304 over a stale copy, in a single realm | `TruthfulDigest` violated |
+| `WorkingCopy.fixed.cfg` | `TruthfulDigest` and `NoRegress` with two runs serialized (#311) and pull consistency (#314), all on `main`, including `AckInvalidates` (#317) | pass |
+| `WorkingCopy.bug-ack-keeps-digest.cfg` | Before acknowledgement markers invalidated older digests (#317), an acknowledgement kept the recorded heads digest; historical negative control | `TruthfulDigest` violated |
 | `WorkingCopy.bug-pull-inconsistent-digest.cfg` | Before pull consistency was added (#314), pull records the listing's digest after a document changed between the heads answer and its fetch | `TruthfulDigest` violated |
 | `WorkingCopy.bug-overlapping-sync.cfg` | Two unserialized runs: a pull whose listing predates a push acknowledgement deletes the acknowledged create | `NoRegress` violated |
 
@@ -146,9 +150,9 @@ row naming a retired one) and its relaxed validation of the newest row are not m
 
 | Config | Checks | Expected |
 | --- | --- | --- |
-| `IntentLifecycle.fixed.cfg` | All invariants (including `PredecessorPresent` under retirement as `retireAcknowledgedBody` does it) and `EventuallyAllSettled` with `ReclaimBeforePush` and `AdmitRefused` (design targets), every fault kind | pass |
+| `IntentLifecycle.fixed.cfg` | All invariants (including `PredecessorPresent` under retirement as `retireAcknowledgedBody` does it) and `EventuallyAllSettled` with `ReclaimBeforePush` and `AdmitRefused` (broader exact-mode design targets), every fault kind | pass |
 | `IntentLifecycle.bug-never-reclaim.cfg` | Open: exact-mode `pushWithRole` never reclaims, so a crash after the claim leaves the intent in flight forever | `EventuallyAllSettled` violated |
-| `IntentLifecycle.bug-refused-head-wedge.cfg` | Open: a content-refused head with a chained successor has no exit in exact mode | `EventuallyAllSettled` violated |
+| `IntentLifecycle.bug-refused-head-wedge.cfg` | Historical exact-mode wedge: a content-refused head with a never-sent chained successor; #324 now folds that pair, which this model does not represent | `EventuallyAllSettled` violated |
 | `IntentLifecycle.bug-retire-newest.cfg` | Retirement allowed to remove the newest acknowledged row (`retireAcknowledgedBody` keeps it, `RetireKeepsNewest`) strands a live successor | `PredecessorPresent` violated |
 | `IntentLifecycle.bug-claim-aba.cfg` | Open: `push` called outside the push role; the claim compares state only, so an intent claimed before can skip its lookup | `NoBlindResubmit` violated |
 
