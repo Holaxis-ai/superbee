@@ -140,7 +140,7 @@ contracts; a package descriptor never automatically activates another capability
 
 Existing GitHub acceptance and feed consent remain valid for identical bytes. The first
 successful registration/removal converts the old single-GitHub pointer to a source collection
-at the same private state location. Reads never migrate state. After that conversion, older
+at the same private state location. Listing and selection leave the active pointer unchanged. After that conversion, older
 CLI list/select/remove paths refuse the new state; older registration writers are unsupported
 and can replace that collection. Do not use old CLI binaries as writers after upgrading.
 
