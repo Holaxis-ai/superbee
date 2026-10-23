@@ -1154,6 +1154,16 @@ async function driveBlobRequests(session: Session, deps: HostedSyncDeps, options
 }
 
 /** Blob ACK then local record admission. This command never pushes documents. */
+/**
+ * A blob_admitted publication whose blob request is gone from the journal and never landed: the
+ * request was retired after a terminal refusal (any code), and the checkout holds no host baseline
+ * for the entry and no unsettled request on it. Nothing can resume such a publication.
+ */
+async function orphanedArtifactPublication(store: FileJournaledBackend, p: Publication): Promise<boolean> {
+  if (p.state !== "blob_admitted" || await store.readBlobIntent(p.blobRequestId)) return false;
+  const snapshot = await readBlobSyncState(store, p.entry, p.scope);
+  return !snapshot.map.entries.find(entry => entry.key === p.entry)?.head && snapshot.journal.intents.every(row => row.receipt !== undefined);
+}
 export async function queueHostedArtifact(binding: CheckoutBinding, input: { file: string; title: string; description?: string; actor: string }, partial: Partial<HostedSyncDeps>, resume: CommandText): Promise<Record<string, unknown>> {
   const deps = hostedDeps(partial), signal = deps.write?.signal;
   signal?.throwIfAborted();
@@ -1164,11 +1174,20 @@ export async function queueHostedArtifact(binding: CheckoutBinding, input: { fil
     signal?.throwIfAborted();
     if (!session.capabilities.operations || session.capabilities.blobWrites !== "allowed") throw new CliError("CONFLICT", "host does not offer the identified blob/document writes Artifact needs");
     await assertActorAcceptedByBundle(local.bundle, input.actor);
-    const all = await publications(store);
+    let all = await publications(store);
     const source = path.resolve(deps.cwd, input.file), rel = path.relative(binding.path, source).split(path.sep).join("/");
     let publication = all.find(p => p.entry === rel);
     if (publication) {
       assertPublicationBinding(publication, binding);
+      if (await orphanedArtifactPublication(store, publication)) {
+        // Its blob request settled without landing and was retired (by a sync, or before this
+        // command released it): nothing can resume it, so release it and derive a fresh create.
+        await store.removeMeta(publicationKey(publication.id), { expected: { present: true, value: publication } });
+        all = all.filter(p => p.id !== publication!.id);
+        publication = undefined;
+      }
+    }
+    if (publication) {
       if (publication.title !== input.title || publication.actor !== input.actor || publication.description !== input.description) throw new CliError("CONFLICT", "Artifact arguments differ from the frozen publication; no new identity was selected");
     } else {
       const heads = await queryHeads(local.bundle, { prefix: "artifacts/" });

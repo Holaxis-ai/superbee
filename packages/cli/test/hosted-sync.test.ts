@@ -1988,6 +1988,53 @@ test("artifact create refused as path_collision releases its publication: a reru
   assert.equal(wire.calls.length, 3);
 });
 
+async function artifactPublications(h: Harness) {
+  const binding = (await bindingForPath(h.home, h.folder))!, store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  try { return await store.listMeta("hosted.artifact.create.v1:"); } finally { await store.close(); }
+}
+async function artifactCase(h: Harness, wire: ReturnType<typeof blobAuthority>) {
+  const entry = "artifacts/result.html", file = path.join(h.folder, entry); await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "<p>result</p>");
+  const { queueHostedArtifact } = await import("../src/hosted/sync.js"), { commandFragment } = await import("../src/command-text.js");
+  const binding = (await bindingForPath(h.home, h.folder))!, resume = commandFragment`sync`;
+  const deps = { auth: h.auth, cwd: h.cwd, fetch: wire.fetch, write: { sleep: instant, lookupDelayMs: 0, maxLookups: 1 }, sleep: instant };
+  return { entry, create: () => queueHostedArtifact(binding, { file, title: "Result", actor: "process:test" }, deps, resume) };
+}
+
+test("an artifact publication whose create a plain sync refused and retired is released by the next artifact create", async () => {
+  const h = await harness();
+  let colliding = true;
+  const wire = blobAuthority(h, { collides: key => colliding && key === "artifacts/result.html" }), a = await artifactCase(h, wire);
+  // The publication is admitted but nothing is sent: a sync gate refuses.
+  const { execFileSync } = await import("node:child_process"); execFileSync("git", ["init", "-q", h.folder]); execFileSync("git", ["-C", h.folder, "config", "superbee.syncGate", "exit 3"]);
+  await assert.rejects(a.create(), (error: unknown) => error instanceof CliError && error.code === "GATE_FAILED");
+  assert.equal(wire.calls.length, 0); assert.equal((await artifactPublications(h)).length, 1);
+  execFileSync("git", ["-C", h.folder, "config", "--unset", "superbee.syncGate"]);
+  // A plain sync sends the admitted create, meets path_collision, settles and retires the request.
+  h.fetch = wire.fetch; await failingSync(h);
+  assert.equal(wire.calls.length, 1); assert.equal((await retainedBlobRows(h)).length, 0); assert.equal((await artifactPublications(h)).length, 1);
+  // The orphan is released and the same title is refused again under a fresh request, never a dead resume.
+  await assert.rejects(a.create(), (error: unknown) => error instanceof CliError && (error.details as { reason?: unknown }).reason === "path_collision");
+  assert.equal(wire.calls.length, 2); assert.notEqual(wire.calls[1]!.requestId, wire.calls[0]!.requestId);
+  colliding = false;
+  await a.create().catch(() => undefined);
+  assert.equal(wire.objects.has(a.entry), true); assert.equal(wire.calls.length, 3);
+});
+
+test("a crash after the refused request was retired but before the publication was released heals on the next artifact create", async () => {
+  const h = await harness();
+  let colliding = true;
+  const wire = blobAuthority(h, { collides: key => colliding && key === "artifacts/result.html" }), a = await artifactCase(h, wire);
+  const original = FileJournaledBackend.prototype.removeMeta;
+  FileJournaledBackend.prototype.removeMeta = async function () { throw new Error("killed before the publication was released"); };
+  try { await assert.rejects(a.create(), /killed before the publication was released/); } finally { FileJournaledBackend.prototype.removeMeta = original; }
+  // The crash-window state: publication present, its request retired.
+  assert.equal((await retainedBlobRows(h)).length, 0); assert.equal((await artifactPublications(h)).length, 1); assert.equal(wire.calls.length, 1);
+  colliding = false;
+  await a.create().catch(() => undefined);
+  assert.equal(wire.objects.has(a.entry), true); assert.equal(wire.calls.length, 2);
+  assert.notEqual(wire.calls[1]!.requestId, wire.calls[0]!.requestId);
+});
+
 test("a blob refusal code the client does not know still stays unknown and is never resent", async () => {
   const h = await harness(), key = "odd.bin", file = path.join(h.folder, key); await writeFile(file, "bytes");
   await admitOfflineBlob({ operation: "promote", key, source: file, dir: h.folder, home: h.home, cwd: h.cwd });
