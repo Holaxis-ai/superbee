@@ -33,7 +33,7 @@ import { HostedClientJournalError } from "../src/hosted-client/node.js";
 import { checkBlobAdmission, isOrdinaryBlobKey, prepareBlobIntent, type BlobIntentRecord, type BlobTargetScope } from "../src/blob-journal.js";
 import { FILE_JOURNAL_LOG, FILE_JOURNAL_SNAPSHOT, FileJournaledBackend } from "../src/file-journaled-backend.js";
 import { OPEN_LOG, type FileJournalHandle } from "../src/file-journaled-backend-internal.js";
-import { JournalGuardConflict } from "../src/journaled-backend.js";
+import { IntentStateConflict, JournalGuardConflict } from "../src/journaled-backend.js";
 import { createFetchCarrier, decodeHostedCapabilities } from "../src/hosted-transport/index.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -836,6 +836,75 @@ test("concurrency: same-key writes in one bundle, across two bundles, and across
   assert.ok(absorbed > 0, "the shared journal's guard moved under a transaction at least once");
   assert.deepEqual(await blobJournal.listBlobIntents(), []);
 });
+
+for (const backend of ["memory", "file"] as const) {
+  test(`concurrency: two clients consume the same pending claim once (${backend})`, { timeout: 10_000 }, async () => {
+    const directory = backend === "file" ? await fs.mkdtemp(path.join(tmpdir(), "superbee-blob-claim-")) : undefined;
+    const journal = directory
+      ? await FileJournaledBackend.open({ directory, lock: { lockRoot: path.join(directory, "locks"), waitMs: 0 } })
+      : createMemoryBlobJournal();
+    const bothGuards = Promise.withResolvers<void>();
+    const sendStarted = Promise.withResolvers<void>();
+    const releaseSend = Promise.withResolvers<void>();
+    try {
+      const requestId = "4a2f9c1e-8b3d-4e6f-9a1b-0000000000e1";
+      const key = "claim.svg";
+      const bytes = text("one claim");
+      const prepared = prepareBlobIntent({ scope: scopeOf(), intent: { operationId: "blobs.create.v1", key, expectedVersion: null, expectedContentType: null, version: digest(bytes), contentType: SVG }, identity: { requestId, binding: FIXTURE_BINDING }, createdAt: "2026-10-17T03:20:00.000Z" }, bytes);
+      await journal.admitPreparedBlob(prepared, { guard: (await journal.readBlobWithJournal(key)).guard });
+      const read = journal.readBlobWithJournal.bind(journal);
+      let snapshots = 0;
+      journal.readBlobWithJournal = async (...args) => {
+        const snapshot = await read(...args);
+        // Both callers have selected pending/attempts=0 and captured the same real backend guard.
+        if (++snapshots <= 2) {
+          assert.equal(snapshot.intents[0]?.state, "pending");
+          assert.equal(snapshot.intents[0]?.attempts, 0);
+          if (snapshots === 2) bothGuards.resolve();
+          await bothGuards.promise;
+        }
+        return snapshot;
+      };
+      const host = fakeHost();
+      let uploads = 0;
+      const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        if (String(input).endsWith("/blob-create")) {
+          uploads += 1;
+          sendStarted.resolve();
+          await releaseSend.promise;
+        }
+        return host.fetch(input, init);
+      }) as typeof globalThis.fetch;
+      // Independent client chains share only the real journal, not an application-level mutex.
+      const clients = [clientOf(fetch, { blobJournal: journal }), clientOf(fetch, { blobJournal: journal })];
+      const settlements = clients.map(async client => {
+        try { return { ok: true as const, result: await client.settleBlobWrite(requestId) }; }
+        catch (error) { return { ok: false as const, error }; }
+      });
+      await sendStarted.promise;
+      // The winning send remains blocked, so the first finished call must be the losing claim.
+      const loser = await Promise.race(settlements);
+      assert.equal(loser.ok, false);
+      if (!loser.ok) assert.ok(loser.error instanceof IntentStateConflict, String(loser.error));
+      assert.equal(uploads, 1);
+      const claimed = await journal.readBlobIntent(requestId);
+      assert.deepEqual([claimed?.state, claimed?.attempts, claimed?.notAppliedThrough, claimed?.receipt], ["in_flight", 1, undefined, undefined]);
+      assert.deepEqual(blobRoutes(host.sent), [], "neither a second submission nor lookup reached the host");
+      releaseSend.resolve();
+      const answers = await Promise.all(settlements);
+      assert.equal(answers.filter(answer => answer.ok && answer.result.status === "committed").length, 1);
+      assert.equal(answers.filter(answer => !answer.ok).length, 1);
+      assert.equal(uploads, 1);
+      assert.deepEqual(blobRoutes(host.sent), ["blob-create"]);
+      assert.deepEqual(await journal.listBlobIntents(), []);
+    } finally {
+      bothGuards.resolve();
+      releaseSend.resolve();
+      if (journal instanceof FileJournaledBackend) await journal.close();
+      if (directory) await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+}
 
 test("concurrency: an unknown write holds its (bundle, key); a second write there is refused unsettled_write, other bundles are not", async () => {
   const host = fakeHost();

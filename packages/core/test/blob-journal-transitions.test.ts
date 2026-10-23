@@ -155,6 +155,22 @@ const ROWS: Row[] = [
     },
   },
   {
+    name: "a pending-state ABA cannot reuse eligibility from before a claim and rollback",
+    expect: ["ok", "ok", "ok", "JournalGuardConflict", "ok"],
+    async run(j, step) {
+      await step(admit(j, input(70, "create", K)));
+      const stale = await guard(j, K);
+      await step(claim(j, 70, K));
+      await step(update(j, 70, K, "in_flight", notDispatched("aborted")));
+      const before = await j.readBlobIntent(rid(70));
+      // State is pending again, but attempt/prefix ownership has changed since this snapshot.
+      await step(j.updateBlobIntent(rid(70), "pending", { state: "in_flight", attempts: 2 }, { guard: stale }));
+      assert.deepEqual(await j.readBlobIntent(rid(70)), before);
+      await step(claim(j, 70, K));
+      assert.equal((await j.readBlobIntent(rid(70)))?.attempts, 2);
+    },
+  },
+  {
     name: "wrong expected state, stale guard, unknown patch field, non-terminal retirement and mismatched guard key refuse",
     expect: ["ok", "IntentStateConflict", "JournalGuardConflict", "JournalGuardConflict", "JournalGuardConflict", "JournalGuardConflict", "IntentStateConflict"],
     async run(j, step) {

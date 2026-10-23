@@ -421,7 +421,8 @@ export function blobNonExecutionPatch(current: BlobIntentRecord, reason: BlobNon
   if (kind === "not_dispatched") return { ...base, notDispatched: captureBlobNotDispatched(evidence as BlobNotDispatched) };
   throw new TypeError("unknown blob non-execution kind");
 }
-/** Fresh submission is allowed only while every earlier attempt is proven not applied. */
+/** Checks retry eligibility for a validated journal record. A true result still requires admission
+ * checks and a successful guarded claim before submission; it does not validate non-execution evidence. */
 export function blobIntentResendable(row: BlobIntentRecord): boolean {
   return row.receipt === undefined && (row.state === "pending" || row.state === "unknown") && (row.notAppliedThrough ?? 0) === row.attempts;
 }
