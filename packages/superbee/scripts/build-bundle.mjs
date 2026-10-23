@@ -29,6 +29,8 @@ if (
   throw new Error("packages/superbee/package.json must contain a valid npm package name and non-empty version");
 }
 export const BUILD_ARTIFACT_CHANNELS = ["npm-package", "local-dev"];
+/** The directory every esbuild call here resolves metafile input paths against. */
+export const BUNDLE_WORKING_DIR = pkgRoot;
 
 export { currentSourceFacts };
 
@@ -127,9 +129,10 @@ export async function buildCliBundle(outfile, options) {
 }
 
 /** Bundle the stable `superbee/publication` subpath with zero runtime dependencies. */
-export async function buildPublicationBundle(outfile, surface = "full") {
+export async function buildPublicationBundle(outfile, surface = "full", options) {
   if (surface !== "full" && surface !== "bridge") throw new Error("unknown publication bundle surface");
-  await build({
+  return build({
+    metafile: options?.metafile ?? false,
     absWorkingDir: pkgRoot,
     entryPoints: [r(surface === "bridge" ? "../publication/src/bridge-entry.ts" : "../publication/src/index.ts")],
     outfile,
@@ -167,8 +170,9 @@ export async function buildPublicationBundle(outfile, surface = "full") {
 }
 
 /** Bundle the stable `superbee/bundle-descriptor` subpath with zero runtime dependencies. */
-export async function buildBundleDescriptorBundle(outfile) {
-  await build({
+export async function buildBundleDescriptorBundle(outfile, options) {
+  return build({
+    metafile: options?.metafile ?? false,
     absWorkingDir: pkgRoot,
     entryPoints: [r("../bundle-descriptor/src/index.ts")],
     outfile,
@@ -181,8 +185,9 @@ export async function buildBundleDescriptorBundle(outfile) {
 }
 
 /** Bundle the Node-only portable export verifier with no CLI or runtime dependencies. */
-export async function buildPortableExportBundle(outfile) {
-  await build({
+export async function buildPortableExportBundle(outfile, options) {
+  return build({
+    metafile: options?.metafile ?? false,
     absWorkingDir: pkgRoot,
     entryPoints: [r("../core/src/portable-export.ts")],
     outfile,
