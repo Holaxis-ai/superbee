@@ -30,7 +30,7 @@
     "src/commands/sync-establish.ts"
   ],
   "inPlace": true,
-  "disableTypeChecks": true,
+  "disableTypeChecks": "**/*.{ts,tsx,cts,mts}",
   "coverageAnalysis": "perTest",
   "reporters": [
     "html",
