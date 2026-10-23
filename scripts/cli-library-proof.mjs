@@ -43,8 +43,10 @@ function printed(node, source, names = new Map()) {
 
 const registeredProfileLoader = String.raw`async function loadRegisteredSourceProfile(selected, a, input) {
   try {
-    await verified(a, input);
-    const m = await import(fileURL(paths.join(selected.root, "dist/profile.mjs")).href);
+    const current = await lifecycle.verified(a, input);
+    const declaration = current.manifest.superbeeIntegration.profiles.find((profile) => profile.id === a.profile.id);
+    if (!declaration || declaration.entry !== selected.entry || declaration.version !== a.profile.version || current.root !== selected.root) throw pluginRefusal("plugin_changed");
+    const m = await import(fileURL(paths.join(current.root, declaration.entry)).href);
     if (typeof m.createSourceProfile !== "function") throw pluginRefusal("plugin_export_invalid");
     const p = m.createSourceProfile(Object.freeze({ restJsonProfile, nextLinkTarget, unsupportedContent }));
     if (!record(p) || p.id !== a.profile.id || p.version !== a.profile.version || p.kind !== "extension" || typeof p.validateSpec !== "function" || typeof p.hostsFor !== "function" || typeof p.observe !== "function") throw pluginRefusal("plugin_export_invalid");
@@ -73,10 +75,11 @@ function registeredProfileImports(source, external) {
   }
   const locals = [];
   function findLocals(node) {if (ts.isVariableDeclaration(node)) locals.push(node);ts.forEachChild(node,findLocals);}
-  findLocals(loader); assert.equal(locals.length,3);
-  for (const [index,name] of ['m','p','e'].entries()) {assert.ok(ts.isIdentifier(locals[index].name));names.set(locals[index].name.text,name);}
-  const stableNames = ['verified','pluginRefusal','record','restJsonProfile','nextLinkTarget','unsupportedContent','CliError'];
+  findLocals(loader); assert.equal(locals.length,5);
+  for (const [index,name] of ['current','declaration','m','p','e'].entries()) {assert.ok(ts.isIdentifier(locals[index].name));names.set(locals[index].name.text,name);}
+  const stableNames = ['lifecycle','profile','pluginRefusal','record','restJsonProfile','nextLinkTarget','unsupportedContent','CliError'];
   function canonical(node) {
+    if (ts.isIdentifier(node) && /^pluginRecord\d*$/.test(node.text)) names.set(node.text, "record");
     if (ts.isIdentifier(node)) for (const name of stableNames) if (new RegExp('^'+name+'\\d*$').test(node.text)) names.set(node.text,name);
     ts.forEachChild(node,canonical);
   }
@@ -605,6 +608,38 @@ export function createLocalCapabilities({invocation}) { return [{...${JSON.strin
         assert.equal(manifest.inputs[0].sha256,createHash("sha256").update("closed synthetic input").digest("hex").replace(/^/,"sha256:"));
         assert.ok(html.includes(Buffer.from(result.invocationId)));
         assert.equal(result.export.sha256,`sha256:${createHash("sha256").update(html).digest("hex")}`);
+      }
+      // The same retained host registers independently named sources without importing them.
+      const sourceCore = record.packages.find(row => row.name === "@superbee/core").version;
+      const sourceCommand = async args => JSON.parse((await run([entry, "source", "plugin", ...args, "--json"], cwd, env)).stdout);
+      const sourceFolder = async (id, version = "1.0.0") => {
+        const folder = path.join(scratch, `source-${id}-${version}`), recipe = path.join(folder, "recipes", "records");
+        await mkdir(path.join(recipe, "conventions"), { recursive: true }); await mkdir(path.join(folder, "entries"));
+        await writeFile(path.join(folder, "package.json"), JSON.stringify({ name: `fixture-source-${id}`, version, superbeeIntegration: { contract: 1, id, core: sourceCore, profiles: [{ id: `${id}-records`, version: 1, entry: "entries/records.mjs" }], recipes: { records: "recipes/records" } } }));
+        await writeFile(path.join(folder, "entries/records.mjs"), "throw Error('registration and recipes must stay inert');");
+        const markdown = value => `---\n${JSON.stringify(value)}\n---\nSynthetic installed lifecycle proof.\n`;
+        await writeFile(path.join(recipe, "recipe.md"), markdown({ type: "Recipe", id: `fixture-${id}`, title: "Installed source recipe", version: "1", summary: "Finite installed recipe", content_policy: "definitions-only" }));
+        await writeFile(path.join(recipe, "conventions", `${id}.md`), markdown({ type: "Convention", title: id, governs: `Fixture ${id}`, path: `fixture-${id}/`, fields: { required: ["title"] } }));
+        return folder;
+      };
+      const sources = [];
+      for (const id of ["first", "second"]) {
+        const folder = await sourceFolder(id), preview = await sourceCommand(["register", folder]);
+        assert.equal(preview.accepted, false); await sourceCommand(["register", folder, "--accept", preview.digest]);
+        await run([entry, "recipe", "add", `${id}:records`, "--dir", bundle, "--json"], cwd, env);
+        sources.push({ id, folder, digest: preview.digest });
+      }
+      const beforeSources = await sourceCommand(["list"]); assert.equal(beforeSources.plugins.length, 2);
+      const upgradedSource = await sourceFolder("second", "1.1.0"), upgradedPreview = await sourceCommand(["register", upgradedSource]);
+      await assert.rejects(sourceCommand(["register", upgradedSource, "--accept", sources[1].digest]), error => error.code === 2);
+      assert.deepEqual(await sourceCommand(["list"]), beforeSources);
+      await sourceCommand(["register", upgradedSource, "--accept", upgradedPreview.digest]);
+      assert.equal((await sourceCommand(["list"])).plugins.find(row => row.plugin === "second").digest, upgradedPreview.digest);
+      await sourceCommand(["remove", "second"]);
+      assert.deepEqual((await sourceCommand(["list"])).plugins.map(row => row.plugin), ["first"]);
+      if (process.platform === "darwin" || process.platform === "linux") {
+        const operations = JSON.parse((await run([entry, "op", "registered", "--local", "--dir", bundle, "--json"], cwd, env)).stdout);
+        assert.equal(operations.plugins.length, 1, "source mutations must not deactivate operation acceptance");
       }
       await assert.rejects(run([entry, "unknown-command"], cwd, env), error => error.code === 2);
       // superbee's private-state identity must not drift to the library package coordinate.

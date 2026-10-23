@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { parseMarkdown } from "@superbee/core";
 import { source } from "../src/commands/source.js";
 import { CliError } from "../src/errors.js";
+import { selectSourceProfile, removeSourcePlugin } from "../src/source-plugins.js";
 import { publicSourceReason, bindLocalSource, runLocalSource, type LocalSourceDeps } from "../src/source-local/run.js";
 import { readSourceEnvelope, sourceStateFile, sourceDigest, writeSourceEnvelope, withSourceState } from "../src/source-local/state.js";
 import { syntheticFeed,syntheticResource,syntheticRecords,syntheticFeedDoc,writeSyntheticRecipe,pluginFixture,registerFixture } from "./source-plugin-fixture.js";
@@ -36,6 +37,18 @@ test("anonymous observation then late adoption on304 uses cached provider fields
  const doc=parseMarkdown(await readFile(join(f.root,"tickets/one.md"),"utf8"));assert.equal(doc.frontmatter.title,f.issues[0]!.title);assert.equal(doc.frontmatter.key,"synthetic-key-42");assert.ok(doc.body.includes("Human notes"));
  const state=await readSourceEnvelope(sourceStateFile(await realpath(f.root),feed),f.home);assert.equal(state!.accepted.entries.length,1);
  assert.ok(!JSON.stringify(second).includes(f.issues[0]!.title as string));assert.ok(!("cursor" in second));
+}));
+test("a second registered source observes through existing transport policy alongside GitHub",()=>fixture(async f=>{
+ const second=await pluginFixture(dirname(f.root),{id:"example",profiles:[{id:"example-records",version:1,entry:"entries/records.mjs"},{id:"example-other",version:1,entry:"entries/other.mjs"}]});await registerFixture(second,f.home);
+ const connector=join(f.root,"connectors/github.md");await writeFile(connector,(await readFile(connector,"utf8")).replace("github-issues","example-records"));
+ await accept(f.root,f.deps);
+ const first=await runLocalSource(feed,{dir:f.root},{...f.deps,transport:{async request(){const body=JSON.stringify(f.issues);return {ok:true as const,status:200,headers:{etag:'"fixture"'},body,bytes:Buffer.byteLength(body)};}}});assert.equal(first.outcome,"observed");
+ await mkdir(join(f.root,"tickets"));await writeFile(join(f.root,"tickets/second.md"),`---\ntype: Ticket\ntitle: ${f.issues[0]!.title}\nsources:\n  - resource: ${resource}\n    id: ${f.issues[0]!.id}\n---\nHuman notes\n`);
+ await runLocalSource(feed,{dir:f.root},{...f.deps,transport:{async request(){return {ok:true as const,status:304,headers:{},body:"",bytes:0};}}});
+ const doc=parseMarkdown(await readFile(join(f.root,"tickets/second.md"),"utf8"));assert.equal(doc.frontmatter.key,"synthetic-key-42");assert.ok(doc.body.includes("Human notes"));
+ const upgrade=await pluginFixture(dirname(f.root),{id:"example",version:"1.1.0",prefix:"throw Error('new code must not execute with old consent');\n"});await registerFixture(upgrade,f.home);
+ let reads=0,sends=0;await assert.rejects(runLocalSource(feed,{dir:f.root},{...f.deps,env:new Proxy({},{get(){reads++;throw Error();}}),transport:{async request(){sends++;throw Error();}}}),e=>(e as {details?:{reason:string}}).details?.reason==="binding_changed");assert.equal(reads,0);assert.equal(sends,0);
+ assert.equal((await (await selectSourceProfile("github-issues",f.home))!.load()).id,"github-issues");await removeSourcePlugin("example",f.home);assert.ok(await selectSourceProfile("github-issues",f.home));
 }));
 test("missing credential and arbitrary runtime profile refuse without network",()=>fixture(async f=>{
  const p=await bindLocalSource(feed,{dir:f.root,credentialEnv:"TOKEN"},f.deps);await bindLocalSource(feed,{dir:f.root,credentialEnv:"TOKEN",accept:p.digest as string},f.deps);

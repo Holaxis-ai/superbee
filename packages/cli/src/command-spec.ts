@@ -525,8 +525,8 @@ export const CLI_COMMAND_GROUPS = [
       },
       {
         id:"sourcePluginRegister",leaves:[publicLeaf("sourcePluginRegister","source plugin register",one,undefined,{positionals:Object.freeze([Object.freeze({index:0,role:"ingress" as const})])})],
-        usage:"source plugin register <installed-package-directory> [--accept <digest>] [--json]",
-        summary:"Preview and explicitly trust installed GitHub plugin bytes without executing them",
+        usage:"source plugin register <built-folder> [--accept <digest>] [--json]",
+        summary:"Preview and explicitly trust finite local source plugin bytes without executing them",
       },
       {
         id:"sourcePluginList",leaves:[publicLeaf("sourcePluginList","source plugin list",zero)],
@@ -534,7 +534,7 @@ export const CLI_COMMAND_GROUPS = [
       },
       {
         id:"sourcePluginRemove",leaves:[publicLeaf("sourcePluginRemove","source plugin remove",one)],
-        usage:"source plugin remove github [--json]",summary:"Deactivate the GitHub plugin for future selections",
+        usage:"source plugin remove <plugin-id> [--json]",summary:"Deactivate a source plugin for future selections",
       },
       {
         id: "sourceBind", leaves: [publicLeaf("sourceBind", "source bind", one, undefined, DIR_SURFACE)],

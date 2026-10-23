@@ -54,13 +54,13 @@ test('closed artifact permits guarded author and registered profile loading', as
     const registered = `${imports}\n${registeredLoader.getText(ast)}\n${registeredSelector.getText(ast)}`;
     await assertClosedCliImports(registered);
     for (const [label,candidate] of [
-      ['no generation verification',registered.replace(/await verified\d*\(a, input\);/,'')],
-      ['different registered entry',registered.replace('dist/profile.mjs','other.mjs')],
+      ['no generation verification',registered.replace(/await lifecycle\d*\.verified\(a, input\)/, 'selected')],
+      ['different registered entry',registered.replace('declaration.entry)).href', 'selected.entry)).href')],
       ['unfrozen helpers',registered.replace('Object.freeze({','Object.assign({')],
       ['factory metadata unchecked',registered.replace(/\bp\d*\.kind !== "extension"/,'p.kind !== "generic"')],
       ['external registered loader reference',registered+'\nconst escape = loadRegisteredSourceProfile;'],
       ['registered loader outside selector',registered.replace('function selectSourceProfile(', 'function otherSelector(')],
-    ]) await assert.rejects(assertClosedCliImports(candidate),undefined,label);
+    ]) { assert.notEqual(candidate, registered, `red control did not alter loader: ${label}`); await assert.rejects(assertClosedCliImports(candidate),undefined,label); }
   }
   await assertClosedCliImports('import fs from "node:fs"; export { fs };');
   const rows = [
@@ -190,8 +190,10 @@ test('registered profile import is limited to its verified deferred generation l
   const registered = `import path from "node:path"; import {pathToFileURL} from "node:url";
 async function loadRegisteredSourceProfile(selected, a, input) {
   try {
-    await verified(a, input);
-    const m = await import(pathToFileURL(path.join(selected.root, "dist/profile.mjs")).href);
+    const current = await lifecycle.verified(a, input);
+    const declaration = current.manifest.superbeeIntegration.profiles.find((profile) => profile.id === a.profile.id);
+    if (!declaration || declaration.entry !== selected.entry || declaration.version !== a.profile.version || current.root !== selected.root) throw pluginRefusal("plugin_changed");
+    const m = await import(pathToFileURL(path.join(current.root, declaration.entry)).href);
     if (typeof m.createSourceProfile !== "function") throw pluginRefusal("plugin_export_invalid");
     const p = m.createSourceProfile(Object.freeze({ restJsonProfile, nextLinkTarget, unsupportedContent }));
     if (!record(p) || p.id !== a.profile.id || p.version !== a.profile.version || p.kind !== "extension" || typeof p.validateSpec !== "function" || typeof p.hostsFor !== "function" || typeof p.observe !== "function") throw pluginRefusal("plugin_export_invalid");
@@ -204,8 +206,9 @@ async function loadRegisteredSourceProfile(selected, a, input) {
 async function selectSourceProfile(selected,a,input) {return {load:()=>loadRegisteredSourceProfile(selected,a,input)};}`;
   await assertClosedCliImports(registered);
   for (const candidate of [
-    registered.replace('await verified(a, input);',''),
-    registered.replace('dist/profile.mjs','different.mjs'),
+    registered.replace('await lifecycle.verified(a, input)', 'selected'),
+    registered.replace('declaration.entry)).href', 'selected.entry)).href'),
+    registered.replace('declaration.entry !== selected.entry', 'false'),
     registered.replace('Object.freeze({','Object.assign({'),
     registered.replace(/\bp\d*\.kind !== "extension"/,'p.kind !== "generic"'),
     registered.replace('load:()=>','load:await '),

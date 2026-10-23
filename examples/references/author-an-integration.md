@@ -119,6 +119,31 @@ The public [superbee-plugins repository](https://github.com/Holaxis-ai/superbee-
 qualify mapping and observation behavior; live provider access and managed catalog admission remain
 separate evidence.
 
+## Register a trusted source implementation
+
+Source registration accepts a reviewed built folder containing `package.json` with a
+`superbeeIntegration` descriptor: contract 1, a slug `id`, exact compatible `core`, 1–32
+`profiles` (`id`, positive `version`, relative `.mjs` `entry`) and a `recipes` mapping of
+slug keys to inert Markdown recipe roots. Profile ids cannot shadow built-ins or another
+accepted plugin. Each entry exports `createSourceProfile(helpers)` and returns its declared
+extension profile, using the existing public Core helpers. Entries must be self-contained;
+registration hashes finite UTF-8 bytes, not a dependency graph, publisher identity or sandbox.
+Names and declared paths are bounded; traversal, links, overlapping roots and reserved object
+keys are refused. No provider-specific CLI change is needed for another compatible source.
+
+Register each source folder explicitly, review the proposal and accept its exact digest.
+Resolve its recipes as `<plugin-id>:<recipe-key>`; `source plugin remove <plugin-id>`
+deactivates its future selections. Registration does not grant credentials or alter Core's
+provider host, method or resource policy. A new authenticated provider needs a reviewed Core
+policy change. Source and operation registrations are independent grants with separate bind/run
+contracts; a package descriptor never automatically activates another capability.
+
+Existing GitHub acceptance and feed consent remain valid for identical bytes. The first
+successful registration/removal converts the old single-GitHub pointer to a source collection
+at the same private state location. Listing and selection leave the active pointer unchanged. After that conversion, older
+CLI list/select/remove paths refuse the new state; older registration writers are unsupported
+and can replace that collection. Do not use old CLI binaries as writers after upgrading.
+
 ## Register the GitHub integration from a source checkout
 
 The GitHub integration is distributed through the public Git repository; no integration npm

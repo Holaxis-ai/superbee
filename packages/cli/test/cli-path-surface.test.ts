@@ -186,17 +186,20 @@ test("registry path flags: every declared path flag is documented in its command
   assert.deepEqual(missing, []);
 });
 
-const PATH_POSITIONAL_USAGE = /<(?:file|name-or-path|path|recipe-path|installed-package-directory)>/;
+const PATH_POSITIONAL_USAGE = /<(?:file|name-or-path|path|recipe-path|installed-package-directory|built-folder)>/;
 
 test("path positional usage recognizes only the supported path placeholder tokens", () => {
   for (const [usage, expected] of [
     ["command <file>", true], ["command <name-or-path>", true],
     ["command <path>", true], ["command <recipe-path>", true],
     ["command <installed-package-directory>", true],
+    ["command <built-folder>", true],
     ["command <recipe>", false], ["command <recipe-path-extra>", false],
     ["command recipe-path", false], ["command <id>", false],
     ["command <installed-package-directory-extra>", false],
     ["command <installed-package-dir>", false], ["command installed-package-directory", false],
+    ["command <built-folder-extra>", false], ["command <built-dir>", false],
+    ["command built-folder", false],
   ] as const) assert.equal(PATH_POSITIONAL_USAGE.test(usage), expected, usage);
 });
 
