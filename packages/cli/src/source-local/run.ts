@@ -1,7 +1,7 @@
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { loadKinds, readBundleOkfVersion, readDoc } from "@superbee/core";
-import { AUTH_PROVIDER_REQUEST_RULES, bindSourceFeed, connectorPinDigest, credentialHosts, parseConnectorDoc, renderRequestValue } from "@superbee/core/connectors";
+import { AUTH_PROVIDER_REQUEST_RULES, bindSourceFeed, inspectSourceReadPolicy, connectorPinDigest, credentialHosts, parseConnectorDoc, renderRequestValue } from "@superbee/core/connectors";
 import { buildSourceIndex } from "@superbee/core/record-overlay";
 import { createSourceOverlayAdapter, DEFAULT_SOURCE_BUDGET, fetchIdentity, observeSource, type Transport } from "@superbee/core/source-engine";
 import { selectSourceProfile, pluginRefusal } from "../source-plugins.js";
@@ -22,7 +22,7 @@ const PUBLIC_SOURCE_REASONS = new Set([
   "address_refused", "host_refused", "redirect_refused", "bot_challenge", "robots_unavailable",
   "robots_disallowed", "header_refused", "run_ended", "url_invalid", "method_refused",
   "body_refused", "request_invalid", "url_refused", "timeout", "transport", "redirect_invalid",
-  "redirect_limit", "graphql_scope_unsupported",
+  "redirect_limit", "graphql_scope_unsupported", "read_policy_unapproved",
 ]);
 export function publicSourceReason(reason: unknown): string | undefined {
   return reason === undefined ? undefined : typeof reason === "string" && PUBLIC_SOURCE_REASONS.has(reason) ? reason : "unclassified";
@@ -50,8 +50,11 @@ async function qualify(c:Awaited<ReturnType<typeof context>>) {
   return {...c,profile,spec:spec.spec};
 }
 function binding(c:Awaited<ReturnType<typeof context>>,credential:SourceBinding["credential"]):SourceBinding {
+  const readPolicy = c.bound.source.request?.read_policy === undefined ? undefined : inspectSourceReadPolicy(c.connector, c.bound);
+  if (readPolicy && c.connector.auth.kind === "none" && credential.kind !== "none") throw sourceRefusal("credential_kind_unsupported");
   const consent = sourceCanonical({v:1,root:c.root,feed:c.bound.policy.feed,connector:c.connector.id,pin:connectorPinDigest(c.connector),resource:c.bound.resource,parameters:c.bound.parameters,
     policy:c.bound.policy,kind:c.bound.kind,profile:{id:c.selection.id,version:c.selection.version,implementation:c.selection.implementation},credential,budget:DEFAULT_SOURCE_BUDGET,
+    ...(readPolicy ? {readPolicy} : {}),
     providerRules:AUTH_PROVIDER_REQUEST_RULES[c.connector.auth.kind==="github-app"?"github":c.connector.auth.provider??""]??null}) as Record<string,unknown>;
   return {v:1,root:c.root,feed:c.bound.policy.feed,consent,digest:sourceDigest(consent),credential};
 }
@@ -61,10 +64,13 @@ export async function bindLocalSource(feed:string,options:LocalSourceOptions,dep
   const selected = await context(feed,options.dir,deps.stateInput);
   const existing = await readSourceEnvelope(sourceStateFile(selected.root,feed),deps.stateInput);
   if(existing && isSnapshotBinding(existing.binding)) throw sourceRefusal("acquisition_mismatch");
-  const c = await qualify(selected);
+  const qualified = selected.bound.source.request?.read_policy === undefined ? await qualify(selected) : undefined;
+  const c = qualified ?? selected;
   const b = binding(c,credential);
-  const preview = {operation:"source bind",feed,digest:b.digest,accepted:false,resource:c.bound.resource,profile:{id:c.profile.id,version:c.profile.version,implementation:c.selection.implementation},auth:credential,
-    method:c.bound.source.request?.method??"GET",path:c.bound.source.request?renderRequestValue(c.bound.source.request.path,c.bound.parameters,{}):null,hosts:c.profile.hostsFor(c.spec,c.bound),owned_fields:c.bound.policy.owned_fields,budget:DEFAULT_SOURCE_BUDGET};
+  const preview = {operation:"source bind",feed,digest:b.digest,accepted:false,resource:c.bound.resource,profile:{id:c.selection.id,version:c.selection.version,implementation:c.selection.implementation},auth:credential,
+    method:c.bound.source.request?.method??"GET",path:c.bound.source.request?renderRequestValue(c.bound.source.request.path,c.bound.parameters,{}):null,hosts:(qualified ? qualified.profile.hostsFor(qualified.spec,c.bound) : [c.bound.source.request!.host]),
+    ...(c.bound.source.request?.read_policy === undefined ? {} : {read_policy:inspectSourceReadPolicy(c.connector,c.bound),declared_permissions:c.connector.auth.permissions??{},
+      review:"Approval requires local operator review of the exact endpoint/query read semantics and provider documentation. GET alone is not a read-safety proof."}),owned_fields:c.bound.policy.owned_fields,budget:DEFAULT_SOURCE_BUDGET};
   if(!options.accept) return preview;
   return withSourceState(c.root,feed,async file=>{
     const fresh = binding(await context(feed,options.dir,deps.stateInput),credential);
@@ -102,6 +108,7 @@ export async function runLocalSource(feed:string,options:LocalSourceOptions,deps
     let persistFailed = false;
     const trackedState = {read:state.read, async write(...args:Parameters<typeof state.write>) {try{return await state.write(...args);}catch(e){persistFailed=true;throw e;}}};
     const receipt = await observeSource({connector:fresh.connector,bound:fresh.bound,profile:fresh.profile,spec:fresh.spec,state:trackedState,
+      ...(fresh.bound.source.request?.read_policy === undefined ? {} : {readPolicyApproval:{contract:1 as const,digest:inspectSourceReadPolicy(fresh.connector,fresh.bound).digest}}),
       transport:deps.transport??nodeSourceTransport({credential}),identity:fetchIdentity("Superbee/1 (+https://github.com/Holaxis-ai/superbee)")!,mode:options.complete?"complete":"incremental",
       commit:async page=>{const result=await adapter.commit(page);state.beginCommit();return result;},
     });

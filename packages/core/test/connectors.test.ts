@@ -534,6 +534,7 @@ const MUTATIONS: Partial<Record<ConnectorBlock, Record<string, (c: any) => void>
 };
 
 const REQUEST_FULL = {
+  read_policy: {contract: 1, kind: "bound-get", bindings: {owner: "segment", repo: "segment"}, required_permissions: {issues: "read"}, header_provider: "github"},
   host: "api.github.com", method: "GET", path: "/repos/{owner}/{repo}/issues", query: {state: "all"}, body: {x: "a"}, headers: {accept: "application/json"}, items: "items",
   fields: {field: {from: "title", type: "text", const: "one"}}, skip: [{path: "pull_request", present: true}],
   paging: {kind: "cursor", cursor_path: "cursor", next_path: "next", size_param: "size", size: 10, page_param: "page", offset_param: "offset"},
@@ -541,7 +542,7 @@ const REQUEST_FULL = {
   errors: {deferred: [429], credential_refused: [401], not_found: [404]}, rate: {requests: 10},
   graphql: {query: "query {x}", variables: {owner: "{owner}"}, items: "nodes", page_info: "pageInfo"},
 };
-const REQUEST_BLOCKS = ["request", "paging", "watermark", "errors", "rate", "graphql", "transform", "skip", "complete"] as const;
+const REQUEST_BLOCKS = ["request", "read_policy", "paging", "watermark", "errors", "rate", "graphql", "transform", "skip", "complete"] as const;
 for (const block of REQUEST_BLOCKS) {
   MUTATIONS[block] = Object.fromEntries(CONNECTOR_KEYS[block].map(key => [key, (c: any) => {
     const r = c.sources[0].request;

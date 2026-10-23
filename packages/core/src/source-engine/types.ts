@@ -269,6 +269,8 @@ export interface ObserveSourceOptions<Spec = unknown, Cursor = unknown> {
    */
   signal?: AbortSignal;
   now?: () => Date;
+  /** Explicit admission by the trusted embedding host for a new bound GET policy; absent denies. */
+  readPolicyApproval?: {contract: 1; digest: string};
   rules?: RequestRules;
   statuses?: Partial<StatusRules>;
   /** Write one page's changes; the cursor and record state are stored only after this resolves. */

@@ -9,7 +9,7 @@ import { validateConnectorRequest, declarationRequestRules, placeholders, provid
  * source is declared complete; only a complete observation counts a stored record as missing, and
  * a record is `disappeared` after `missing_threshold` of them.
  */
-import { findingsFor } from "../connectors.js";
+import { findingsFor, inspectSourceReadPolicy } from "../connectors.js";
 import type { Finding } from "../record-overlay/types.js";
 import { DEFAULT_SOURCE_BUDGET, DEFAULT_STATUS_RULES, guardTransport, raceAbort, sourceHostSet, type Stop } from "./guard.js";
 import { isSourceState, type SourceState } from "./machine-state.js";
@@ -106,7 +106,7 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
   const now = options.now ?? (() => new Date());
   const observedAt = now().toISOString();
   // Authority is private to this run: callback views cannot rewrite the checked declaration.
-  const { bound, connector } = structuredClone({bound: options.bound, connector: options.connector});
+  const { bound, connector, readPolicyApproval } = structuredClone({bound: options.bound, connector: options.connector, readPolicyApproval: options.readPolicyApproval});
   const profile = options.profile as SourceProfile<unknown, unknown>;
   const requestedMode = options.mode ?? "incremental";
   const receipt: SourceRunReceipt = {
@@ -152,6 +152,12 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
   };
   const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
+  if (bound.source.request?.read_policy !== undefined) {
+    try {
+      const inspected = inspectSourceReadPolicy(connector, bound);
+      if (readPolicyApproval?.contract !== 1 || readPolicyApproval.digest !== inspected.digest || Object.keys(readPolicyApproval).length !== 2) return refuse("read_policy_unapproved");
+    } catch { return refuse("binding_invalid"); }
+  }
   const problem = profileProblem(profile);
   if (problem) return refuse("profile_invalid", problem);
   if (profile.id !== bound.source.profile) return refuse("profile_mismatch", `the source names ${bound.source.profile}`);

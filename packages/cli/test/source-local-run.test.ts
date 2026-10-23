@@ -103,3 +103,38 @@ test("HTTP run and rebind explicitly reject snapshot consent before transport",(
  await registerFixture(await pluginFixture(dirname(f.root),{version:"1.1.0",prefix:`globalThis.${sentinel}++;\n`}),f.home);
  for(const accept of [undefined,"sha256:invalid"])await assert.rejects(bindLocalSource(feed,{dir:f.root,anonymous:true,accept},f.deps),error=>(error as {details?:{reason:string}}).details?.reason==="acquisition_mismatch");assert.equal(global[sentinel],0);delete global[sentinel];
 }));
+
+async function declareReadPolicy(root:string,anonymous=false) {
+ const file=join(root,"connectors/github.md"),doc=parseMarkdown(await readFile(file,"utf8"));
+ const fm=doc.frontmatter as Record<string,any>,s=fm.record_sources[0];
+ fm.auth=anonymous?{kind:"none"}:{kind:"token",provider:"github"};fm.domains=anonymous?["api.github.com"]:[];
+ s.request={host:"api.github.com",method:"GET",path:"/repos/{owner}/{repo}/pulls",items:"",headers:{accept:"application/vnd.github+json","x-github-api-version":"2026-03-10"},paging:{kind:"none"},complete:"always",
+   read_policy:{contract:1,kind:"bound-get",bindings:{owner:"segment",repo:"segment"},...(anonymous?{}:{required_permissions:{pull_requests:"read"}}),header_provider:"github"}};
+ await writeFile(file,`---\n${JSON.stringify(fm)}\n---\n`);return file;
+}
+test("explicit read policy preview and acceptance are inert; consent precedes code and secret access",()=>fixture(async f=>{
+ const file=await declareReadPolicy(f.root),sentinel="__readPolicyInert",global=globalThis as unknown as Record<string,unknown>;global[sentinel]=0;
+ await registerFixture(await pluginFixture(dirname(f.root),{version:"2.0.0",prefix:`globalThis.${sentinel}++;\n`}),f.home);
+ let reads=0,sends=0;const env=new Proxy({},{get(){reads++;throw Error("secret must not be read");}});
+ try {
+  const preview=await bindLocalSource(feed,{dir:f.root,credentialEnv:"TOKEN"},{...f.deps,env});assert.equal(global[sentinel],0);assert.equal(reads,0);assert.ok(preview.read_policy);assert.ok(String(preview.review).includes("GET alone"));
+  await bindLocalSource(feed,{dir:f.root,credentialEnv:"TOKEN",accept:preview.digest as string},f.deps);assert.equal(global[sentinel],0);
+  const first=await runLocalSource(feed,{dir:f.root},{...f.deps,env:{TOKEN:"synthetic-test-token"},transport:{async request(input){sends++;assert.equal(new URL(input.url).pathname,"/repos/example-org/widgets/pulls");assert.equal(input.headers["x-github-api-version"],"2026-03-10");const body=JSON.stringify(f.issues);return {ok:true as const,status:200,headers:{},body,bytes:Buffer.byteLength(body)};}}});assert.equal(first.outcome,"observed");assert.equal(global[sentinel],1);
+  const stateFile=sourceStateFile(await realpath(f.root),feed);assert.ok((await readSourceEnvelope(stateFile,f.home))!.observation);
+  await writeFile(file,(await readFile(file,"utf8")).replace("2026-03-10","2022-11-28"));
+  await registerFixture(await pluginFixture(dirname(f.root),{version:"3.0.0",prefix:`globalThis.${sentinel}++;\n`}),f.home);
+  await assert.rejects(runLocalSource(feed,{dir:f.root},{...f.deps,env,transport:{async request(){sends++;throw Error();}}}),error=>(error as {details?:{reason:string}}).details?.reason==="binding_changed");assert.equal(global[sentinel],1);assert.equal(reads,0);assert.equal(sends,1);
+  const rebind=await bindLocalSource(feed,{dir:f.root,credentialEnv:"TOKEN"},f.deps);await bindLocalSource(feed,{dir:f.root,credentialEnv:"TOKEN",accept:rebind.digest as string},f.deps);assert.equal(global[sentinel],1);
+  const reset=(await readSourceEnvelope(stateFile,f.home))!;assert.equal(reset.observation,null);assert.deepEqual(reset.accepted.entries,[]);assert.ok(reset.binding.consent.readPolicy);
+ }finally{delete global[sentinel];}
+}));
+test("anonymous provider header binds without acquiring credential authority",()=>fixture(async f=>{
+ await declareReadPolicy(f.root,true);await assert.rejects(bindLocalSource(feed,{dir:f.root,credentialEnv:"TOKEN"},f.deps),error=>(error as {details?:{reason:string}}).details?.reason==="credential_kind_unsupported");
+ const p=await bindLocalSource(feed,{dir:f.root,anonymous:true},f.deps);assert.deepEqual((p.read_policy as {credential_hosts:string[]}).credential_hosts,[]);await bindLocalSource(feed,{dir:f.root,anonymous:true,accept:p.digest as string},f.deps);
+ let reads=0,calls=0;const receipt=await runLocalSource(feed,{dir:f.root},{...f.deps,env:new Proxy({},{get(){reads++;throw Error();}}),transport:{async request(input){calls++;assert.equal(input.credentialHost,false);if(input.url.endsWith("/robots.txt"))return {ok:true as const,status:404,headers:{},body:"",bytes:0};assert.equal(input.headers["x-github-api-version"],"2026-03-10");return {ok:true as const,status:200,headers:{},body:"[]",bytes:2};}}});assert.equal(receipt.outcome,"observed");assert.equal(reads,0);assert.equal(calls,2);
+}));
+test("legacy issue consent keeps the historical projection and can run without new approval",()=>fixture(async f=>{
+ await accept(f.root,f.deps);const before=(await readSourceEnvelope(sourceStateFile(await realpath(f.root),feed),f.home))!;const bytes=JSON.stringify(before.binding);
+ assert.deepEqual(Object.keys(before.binding.consent).sort(),["v","root","feed","connector","pin","resource","parameters","policy","kind","profile","credential","budget","providerRules"].sort());assert.ok(!("readPolicy" in before.binding.consent));
+ await runLocalSource(feed,{dir:f.root},{...f.deps,transport:{async request(){return {ok:true as const,status:200,headers:{},body:"[]",bytes:2};}}});assert.equal(JSON.stringify((await readSourceEnvelope(sourceStateFile(await realpath(f.root),feed),f.home))!.binding),bytes);
+}));

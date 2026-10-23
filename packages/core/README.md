@@ -1079,7 +1079,7 @@ the run's status interpretation and request budget.
 Existing declaration pins without a request block remain unchanged. Credentialed engine consumers
 must now supply a request declaration: `declaration_required` refuses a missing one before any
 transport call. Parsing and installation remain inert. Provider read paths, read-shaped POST paths,
-headers and paging forms are core-owned, deeply frozen, and revalidated at every run; caller rules
+headers and paging forms default to the legacy Core-owned, deeply frozen table and are revalidated at every run; caller rules
 can only narrow them. Callback URL/response views are isolated from execution; changing a view
 cannot rewrite the request. Core rechecks its private run authority after narrowing callbacks.
 Keyless legacy profiles retain the declared-domain and robots rules.
@@ -1100,6 +1100,84 @@ and bound String/ID inputs. GraphQL execution is deferred to the later GraphQL p
 `graphql_scope_unsupported` refuses even a well-formed read body before transport. Syntax alone
 does not establish resource-scoped traversal. Mutations and malformed extension bodies are refused
 by the engine wrapper; caller hooks cannot enable them.
+
+## Explicit local bound GET policies
+
+An optional `request.read_policy` requests a new narrowly bound GET scope without adding a provider
+adapter or changing the legacy endpoint table. The local operator must review the exact endpoint,
+query and provider read semantics before accepting its feed binding. GET alone is not proof of
+absence of side effects. A package or policy declaration does not approve itself.
+
+For a repository pull list, the existing request is still the only endpoint/query/header declaration:
+
+```yaml
+host: api.github.com
+method: GET
+path: '/repos/{owner}/{repo}/pulls'
+items: ''
+query: {state: all}
+headers: {accept: application/vnd.github+json, x-github-api-version: '2026-03-10'}
+paging: {kind: page-number, page_param: page, size_param: per_page, size: 30}
+read_policy:
+  contract: 1
+  kind: bound-get
+  bindings: {owner: segment, repo: segment}
+  required_permissions: {pull_requests: read}
+  header_provider: github
+```
+
+Use identity resource `https://github.com/{owner}/{repo}/pulls`. For a separately bound detail
+source, use resource `https://github.com/{owner}/{repo}/pull/{number}`, request path
+`/repos/{owner}/{repo}/pulls/{number}`, `number: positive-integer`, no list query and
+`paging: {kind: none}`. Detail object normalization belongs in the integration; no Core PR adapter
+is added. GitHub documents both [GET endpoints and permission minima](https://docs.github.com/en/rest/pulls/pulls).
+`pull_requests: read` is a common minimum. GitHub App declarations must include the requested
+permissions at read or write; write grants are disclosed and do not authorize source writes.
+Opaque token grants cannot be inspected by Core: minima are declarations and the provider enforces
+actual credential access.
+
+Contract 1 permits one exact host/path, GET only, no body, GraphQL or watermark. Every identity
+parameter appears once as an entire request path segment. Binding keys equal the identity
+placeholder set; `segment` uses the existing safe resource grammar, while `positive-integer` is
+canonical decimal 1 through `Number.MAX_SAFE_INTEGER`. The public resolver validates the identity
+with the existing parser and requires parameters to render `bound.resource` byte for byte, even
+when a library caller constructs `BoundFeed` directly.
+
+Queries require every exact literal or whole bound-value placeholder once. Cursor, watermark and
+free page placeholders are refused. Paging supports only absent/none or page-number. Page/size
+names must be distinct and outside query; none permits no inactive fields, and page-number permits
+only kind/page_param/size_param/size. Every request requires one positive page and, when named,
+one exact pinned size. New policies inherit no provider numeric aliases or cursor forms.
+
+Declared headers are required once with exact values at every hop; omission, case duplicates and
+undeclared headers refuse. An absent header map selects the existing `accept: application/json`
+default; an explicit map is complete. Incremental engine validators are the only profile-header
+exception, and complete mode refuses them. Generated user-agent/accept-encoding remain engine/transport
+owned. Existing forbidden credential/override headers and transport stripping still apply.
+`PROVIDER_HEADER_RULES` is separate from `AUTH_PROVIDERS`: GitHub permits only an exact calendar-date
+`x-github-api-version` literal toward `api.github.com`. For anonymous sources use `auth: {kind: none}`,
+`domains: [api.github.com]`, and omit permission minima. Header-provider selection never creates a
+credential destination or bypasses keyless robots rules.
+
+`inspectSourceReadPolicy(connectorAuthAndDomains, bound)` from `@superbee/core/connectors` is inert
+and throws on an invalid declaration/binding. It returns normalized scope and a digest binding
+request, source, resource, parameters, auth, domains and resolved policy/header semantics. The trusted
+embedding host supplies `readPolicyApproval: {contract: 1, digest}` to `observeSource` only after its
+own exact admission. Missing/stale approval refuses before profile callbacks, state replay or transport.
+The digest is publicly computable: it is a host assertion, not an unforgeable capability or proof of a
+human click. Caller rules can only narrow Core authority.
+
+`SourceFixture.readPolicyApproval` forwards the same explicit assertion to the public recorded
+harness. It is fixture-only and grants no production consent. The CLI `source test` JSON schema does
+not carry that field and does not auto-approve new policies; use supported public Core/harness APIs
+for those recorded tests. Existing legacy fixtures require no new argument.
+
+The local CLI previews new-policy bindings without importing code or reading credentials and uses
+existing `source bind --accept` to record exact consent. Any change requires explicit rebind and
+resets acquired state. Unchanged legacy issue declarations retain their historical pin and consent
+projections. Managed consumers remain denied without separately deployed operator admission; this
+public API does not establish deployed managed-host adoption. Trusted plugin code still runs with
+ambient process authority; the guarded transport is not a sandbox.
 
 ## Declared Kind model
 
