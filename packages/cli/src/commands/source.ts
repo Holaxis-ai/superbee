@@ -13,9 +13,9 @@ import { assertPathOutsidePrivateState } from "../private-state-bundle-boundary.
 export const SOURCE_USAGE = `superbee source — test, bind and explicitly run a source
 
 Usage:
-  superbee source plugin register <installed-package-directory> [--accept <digest>] [--json]
+  superbee source plugin register <built-folder> [--accept <digest>] [--json]
   superbee source plugin list [--json]
-  superbee source plugin remove github [--json]
+  superbee source plugin remove <plugin-id> [--json]
   superbee source bind <feed-id> (--anonymous | --credential-env <NAME>) [--accept <digest>] [--dir <bundle>]
   superbee source run <feed-id> [--complete] [--actor <actor>] [--dir <bundle>]
   superbee source snapshot bind <source-doc> [--accept <digest>] [--dir <bundle>]
@@ -47,7 +47,7 @@ run permits built-in and explicitly registered profiles, refuses changed consent
 Plugin updates require re-registration and explicit feed rebind, which resets observation and accepted
 state for reacquisition. Removal deactivates future selections; already selected runs may finish.
 Register/list/remove and recipe install/validate never execute plugin code.
-Recipe add accepts github:source-feeds and github:work-items from accepted snapshot bytes.
+Recipe add accepts <plugin-id>:<recipe-key> from accepted snapshot bytes, including github:source-feeds and github:work-items.
 Use the external installed package recipe folders for recipe validate and source test.
 ${SOURCE_PLUGIN_TRUST}
 --anonymous never discovers credentials; --credential-env stores only the variable name.

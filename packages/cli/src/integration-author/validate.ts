@@ -79,7 +79,7 @@ export async function validateRecipeForAuthor(folder: string, options: { readme?
       const metadata = await selectSourceProfile(source.profile,options.stateInput);
       const profile = getSourceProfile(source.profile);
       if (!metadata) {
-        diagnostics.push(safeDiagnostic("PROFILE_NOT_AVAILABLE", file, `/record_sources/${index}/profile`, `Profile '${source.profile}' is unavailable. Register the installed GitHub plugin explicitly when needed; validation never executes extension modules.`));
+        diagnostics.push(safeDiagnostic("PROFILE_NOT_AVAILABLE", file, `/record_sources/${index}/profile`, `Profile '${source.profile}' is unavailable. Register its reviewed built source plugin folder explicitly when needed; validation never executes extension modules.`));
         continue;
       }
       if(!profile)continue; // Registered plugin spec qualification is deferred to source test/bind/run.

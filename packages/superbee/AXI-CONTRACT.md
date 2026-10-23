@@ -334,17 +334,17 @@ second output envelope. Deferred is not a completeness claim. Malformed input, c
 persistence errors remain CLI errors.
 
 Source plugins are prepared externally and registered explicitly with `source plugin register
-<installed-package-directory>`. Preview and `--accept <digest>` operate on a bounded manifest,
+<built-folder>`. Preview and `--accept <digest>` operate on a bounded manifest,
 standalone module and declared recipe bytes without importing code. Acceptance trusts local bytes;
 a supported package name and digest do not authenticate publisher origin or sandbox execution.
-`source plugin list` and `source plugin remove github` operate on inert private registration data.
+`source plugin list` and `source plugin remove <plugin-id>` operate on inert private registration data.
 Removal affects future selections; a run that already selected a generation may finish it.
 
 `source bind` consent includes the accepted implementation digest and package identity. `source run`
 compares that consent before module import, factory execution, spec qualification, credential lookup
 or transport. Compatible plugin updates require explicit re-registration and feed rebind. A changed
 binding resets observations and accepted tuples for reacquisition. Registration grants no feed
-binding or credential reference. Recipe installation accepts `github:source-feeds` and
+binding or credential reference. Recipe installation accepts `<plugin-id>:<recipe-key>`, including `github:source-feeds` and
 `github:work-items` from the accepted inert snapshot; author validation and fixture testing use the
 external source checkout's recipe folders. The author guide links the integration repository's
 pinned Git checkout and build setup. Recipe validation reports plugin-specific spec checks

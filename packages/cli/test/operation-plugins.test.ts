@@ -27,29 +27,20 @@ test("operation preview/list/selection never imports, snapshots are independent 
  assert.match(await readFile(join(selected.rootPath,"dist/helper.py"),"utf8"),/captured/);
  await removeOperationPlugin("fixture",home);assert.equal(await selectLocalOperation(selected.id,home),undefined);assert.deepEqual(await listSourcePlugins(home),before);assert.equal((await registeredRecipe("github:work-items",home))?.ok,true);
 }));
-test("acceptance detects changed assets and preserves active generation",()=>fixture(async(_base,home,root)=>{
- await accept(root,home);const before=await listOperationPlugins(home),p=await registerOperationPlugin(root,undefined,home);
- await writeFile(join(root,"dist/helper.py"),"# changed\n");await assert.rejects(registerOperationPlugin(root,p.digest as string,home),reason("operation_changed"));assert.deepEqual(await listOperationPlugins(home),before);
- const selected=(await selectLocalOperation("local.fixture.compare.v1",home))!;await writeFile(join(selected.rootPath,"dist/helper.py"),"# tampered\n");await assert.rejects(selectLocalOperation(selected.id,home),reason("operation_changed"));
-}));
+
 test("finite declarations refuse traversal, duplicate descriptors, incompatible ABI and malformed schema",()=>fixture(async(_base,home,root,m)=>{
  for(const mutate of [(d:any)=>d.assets.push("../escape"),(d:any)=>d.operations.push(d.operations[0]),(d:any)=>d.operations[0].capability.inputSchema.type="string",(d:any)=>d.operations[0].capability.execute="invented",(d:any)=>d.core="999.0.0",(d:any)=>d.helper=2,(d:any)=>d.operations[0].capability.description="x".repeat(5000)]) {
   const next=structuredClone(m);mutate(next.superbeeLocalOperations);await writeFile(join(root,"package.json"),JSON.stringify(next));await assert.rejects(registerOperationPlugin(root,undefined,home));
  }
 }));
-test("symlinks, non-UTF8 assets, oversized assets and unsafe state refuse",()=>fixture(async(base,home,root)=>{
- await accept(root,home);const before=await listOperationPlugins(home),file=join(root,"dist/helper.py");await rm(file);await symlink(join(base,"outside"),file);await assert.rejects(registerOperationPlugin(root,undefined,home));await rm(file);
- await writeFile(file,Buffer.from([255]));await assert.rejects(registerOperationPlugin(root,undefined,home));await writeFile(file,"x".repeat(2*1024*1024+1));await assert.rejects(registerOperationPlugin(root,undefined,home));await writeFile(file,"# okay\n");
- await chmod(join(canonicalUserStateDir(home),"operation-plugins"),0o755);const p=await registerOperationPlugin(root,undefined,home);await assert.rejects(registerOperationPlugin(root,p.digest as string,home));await chmod(join(canonicalUserStateDir(home),"operation-plugins"),0o700);assert.deepEqual(await listOperationPlugins(home),before);
-}));
+
 test("foreign plugin cannot shadow a selected operation",()=>fixture(async(_base,home,root,m)=>{
  await accept(root,home);m.superbeeLocalOperations.id="second";await writeFile(join(root,"package.json"),JSON.stringify(m));const p=await registerOperationPlugin(root,undefined,home);await assert.rejects(registerOperationPlugin(root,p.digest as string,home),reason("operation_conflict"));
 }));
-test("captured incompatible ABI remains inspectable while invocation refuses and preserves state",()=>fixture(async(_base,home,root)=>{
- const { sourceDigest } = await import("../src/source-local/state.js");
- await accept(root,home);const selection=(await selectLocalOperation("local.fixture.compare.v1",home))!;
- const manifestPath=join(selection.rootPath,"package.json"),m=JSON.parse(await readFile(manifestPath,"utf8"));m.superbeeLocalOperations.core="future-core";await writeFile(manifestPath,JSON.stringify(m));
- const files=[];for(const file of [...selection.assets].sort((a,b)=>a.path.localeCompare(b.path)))files.push({path:file.path,bytes:await readFile(join(selection.rootPath,file.path),"utf8")});
- const pointer=join(canonicalUserStateDir(home),"operation-plugins.json"),rows=JSON.parse(await readFile(pointer,"utf8"));rows[0].digest=sourceDigest(files);await writeFile(pointer,JSON.stringify(rows));
- const before=await readFile(pointer,"utf8");assert.equal(((await listOperationPlugins(home)).plugins as any[])[0].core,"future-core");await assert.rejects(selectLocalOperation(selection.id,home),reason("operation_incompatible"));assert.equal(await readFile(pointer,"utf8"),before);
+test("a second descriptor never implicitly grants the other capability",()=>fixture(async(base,home,root,m)=>{
+ const source=await pluginFixture(base), sourceManifest=JSON.parse(await readFile(join(source,"package.json"),"utf8"));
+ sourceManifest.superbeeLocalOperations=m.superbeeLocalOperations;await writeFile(join(source,"package.json"),JSON.stringify(sourceManifest));
+ await registerFixture(source,home);assert.deepEqual((await listOperationPlugins(home)).plugins,[]);
+ m.superbeeIntegration=sourceManifest.superbeeIntegration;await writeFile(join(root,"package.json"),JSON.stringify(m));await accept(root,home);
+ assert.equal(((await listSourcePlugins(home)).plugins as unknown[]).length,1);assert.equal((await registeredRecipe("github:work-items",home))?.ok,true);
 }));

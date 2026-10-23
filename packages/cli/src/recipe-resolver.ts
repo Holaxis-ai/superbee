@@ -19,7 +19,7 @@ export async function resolveRecipe(ref: string, sources: RecipeSource[] = DEFAU
     ok: false,
     error: {
       code: "RECIPE_NOT_FOUND",
-      message: `unknown recipe '${ref}' (built-ins: ${builtinNames().join(", ")}; registered GitHub: github:source-feeds, github:work-items; or a path to a recipe folder)`,
+      message: `unknown recipe '${ref}' (built-ins: ${builtinNames().join(", ")}; registered source plugins: <plugin-id>:<recipe-key>; or a path to a recipe folder)`,
     },
   };
 }
