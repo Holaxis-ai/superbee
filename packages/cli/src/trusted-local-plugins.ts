@@ -12,7 +12,7 @@ import { sourceDigest } from "./source-local/state.js";
 export const LOCAL_PLUGIN_LIMITS = Object.freeze({ manifest: 64 * 1024, file: 2 * 1024 * 1024, files: 256, depth: 8, total: 8 * 1024 * 1024 });
 export const pluginRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 export const pluginExact = (v: Record<string, unknown>, keys: string[]) => Object.keys(v).length === keys.length && keys.every(k => Object.hasOwn(v, k));
-export const pluginSlug = (v: unknown): v is string => typeof v === "string" && /^[a-z][a-z0-9-]{1,63}$/.test(v) && !["constructor", "prototype", "__proto__"].includes(v);
+export const pluginSlug = (v: unknown): v is string => typeof v === "string" && /^[a-z][a-z0-9-]{1,63}$/.test(v);
 export const pluginRelativePath = (v: unknown): v is string => typeof v === "string" && v.length <= 256 && v !== "package.json" && v.split("/").length <= LOCAL_PLUGIN_LIMITS.depth && v.split("/").every(p => /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(p));
 export function pluginPackage(m: unknown): m is { name: string; version: string } & Record<string, unknown> {
     return pluginRecord(m) && typeof m.name === "string" && !!m.name.trim() && m.name.length <= 256 && typeof m.version === "string" && m.version.length <= 128 && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(m.version);

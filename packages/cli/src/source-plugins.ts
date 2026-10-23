@@ -7,9 +7,10 @@ import { unsupportedContent, type SourceProfile } from "@superbee/core/source-en
 import { parseRecipeFiles, type LoadResult } from "@superbee/core/recipes";
 import { CliError } from "./errors.js";
 import type { UserStateInput } from "./user-state.js";
-import { trustedLocalPlugins, pluginRecord as record, pluginExact as exact, pluginSlug, pluginRelativePath, pluginPackage, pluginPointer, pluginFileRows, type PluginPointer, type PluginSnapshot } from "./trusted-local-plugins.js";
+import { trustedLocalPlugins, pluginRecord as record, pluginExact as exact, pluginSlug as lexicalPluginSlug, pluginRelativePath, pluginPackage, pluginPointer, pluginFileRows, type PluginPointer, type PluginSnapshot } from "./trusted-local-plugins.js";
 
 export const SOURCE_PLUGIN_TRUST = "Accepting trusts these reviewed local plugin bytes as code running in this process with ambient authority. The package name and digest do not authenticate publisher origin or provide a sandbox. Acquisition is external; registration grants no feed binding or credentials.";
+const pluginSlug = (v: unknown): v is string => lexicalPluginSlug(v) && !["constructor", "prototype", "__proto__"].includes(v);
 interface ProfileDeclaration { id: string; version: number; entry: string }
 interface Manifest { name: string; version: string; superbeeIntegration: { contract: 1; id: string; core: string; profiles: ProfileDeclaration[]; recipes: Record<string, string> } }
 interface LegacyActive extends PluginPointer { package: string; version: string; contract: 1; core: string; profile: { id: string; version: number } }
@@ -39,7 +40,7 @@ function decodeSourcePointers(raw: string): Active[] {
     const a: unknown = JSON.parse(raw);
     if (a === null) return [];
     if (record(a) && exact(a, ["v", "plugins"]) && a.v === 2 && Array.isArray(a.plugins)) {
-        if (a.plugins.some(p => !record(p) || !exact(p, ["v", "plugin", "generation", "digest"]) || !pluginPointer(p))) throw refusal("state_invalid");
+        if (a.plugins.some(p => !record(p) || !exact(p, ["v", "plugin", "generation", "digest"]) || !pluginPointer(p) || !pluginSlug(p.plugin))) throw refusal("state_invalid");
         return a.plugins as Active[];
     }
     if (!record(a) || !exact(a, ["v", "plugin", "generation", "digest", "package", "version", "contract", "core", "profile"]) || !pluginPointer(a) || a.plugin !== "github" || a.package !== "@superbee/integration-github" || typeof a.version !== "string" || a.contract !== 1 || typeof a.core !== "string" || !a.core || !record(a.profile) || !exact(a.profile, ["id", "version"]) || a.profile.id !== "github-issues" || !Number.isSafeInteger(a.profile.version) || (a.profile.version as number) < 1) throw refusal("state_invalid");
@@ -74,6 +75,7 @@ export async function listSourcePlugins(input: UserStateInput = homedir()): Prom
     return { operation: "source plugin list", plugins };
 }
 export async function removeSourcePlugin(id: string, input: UserStateInput = homedir()): Promise<Record<string, unknown>> {
+    if (!pluginSlug(id)) throw refusal("id_invalid");
     return { operation: "source plugin remove", plugin: id, removed: await lifecycle.remove(id, input) };
 }
 export interface SelectedSourceProfile {

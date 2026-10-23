@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { SOURCE_PLUGIN_CORE_VERSION } from "@superbee/core/source-profiles";
 import { registerOperationPlugin, listOperationPlugins, removeOperationPlugin, selectLocalOperation } from "../src/operation-plugins.js";
 import { listSourcePlugins, registeredRecipe } from "../src/source-plugins.js";
-import { canonicalUserStateDir } from "../src/user-state.js";
+import { canonicalUserStateDir, ensureUserStateRoot, writeReadyUserStateFileAtomic0600 } from "../src/user-state.js";
+import { sourceDigest } from "../src/source-local/state.js";
 import { pluginFixture, registerFixture } from "./source-plugin-fixture.js";
 const reason = (r:string) => (e:any) => e.details?.reason === r;
 async function fixture(body:(base:string,home:string,root:string,m:any)=>Promise<void>) {
@@ -43,4 +44,25 @@ test("a second descriptor never implicitly grants the other capability",()=>fixt
  await registerFixture(source,home);assert.deepEqual((await listOperationPlugins(home)).plugins,[]);
  m.superbeeIntegration=sourceManifest.superbeeIntegration;await writeFile(join(root,"package.json"),JSON.stringify(m));await accept(root,home);
  assert.equal(((await listSourcePlugins(home)).plugins as unknown[]).length,1);assert.equal((await registeredRecipe("github:work-items",home))?.ok,true);
+}));
+for(const id of ["constructor","prototype"])test(`historically accepted operation id ${id} remains visible, selectable and removable`,()=>fixture(async(_base,home,root,m)=>{
+ // Seed the exact historical v1 pointer and finite generation rather than re-registering it.
+ m.superbeeLocalOperations.id=id;await writeFile(join(root,"package.json"),JSON.stringify(m));
+ const files=[];for(const file of ["package.json","dist/entry.mjs","dist/helper.py"])files.push({path:file,bytes:await readFile(join(root,file),"utf8")});
+ files.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);const digest=sourceDigest(files),generation=`g-${digest.slice(7)}-${"a".repeat(16)}`,state=await ensureUserStateRoot(home);
+ const captured=join(state,"operation-plugins",generation);await mkdir(join(captured,"dist"),{recursive:true,mode:0o700});
+ for(const file of files)await writeFile(join(captured,file.path),file.bytes,{mode:0o600});
+ await writeReadyUserStateFileAtomic0600(home,"operation-plugins.json",JSON.stringify([{v:1,kind:"local-operation",plugin:id,generation,digest}])+"\n");
+ assert.equal(((await listOperationPlugins(home)).plugins as {plugin:string}[])[0]!.plugin,id);
+ assert.equal((await selectLocalOperation("local.fixture.compare.v1",home))!.plugin,id);
+ m.superbeeLocalOperations.id="unrelated";m.superbeeLocalOperations.operations[0].id="local.fixture.unrelated.v1";m.superbeeLocalOperations.operations[0].capability.name="fixture_unrelated";
+ await writeFile(join(root,"package.json"),JSON.stringify(m));await accept(root,home);
+ assert.deepEqual(((await listOperationPlugins(home)).plugins as {plugin:string}[]).map(row=>row.plugin),[id,"unrelated"]);
+ assert.equal((await selectLocalOperation("local.fixture.unrelated.v1",home))!.plugin,"unrelated");
+ assert.equal((await removeOperationPlugin(id,home)).removed,true);
+ assert.deepEqual(((await listOperationPlugins(home)).plugins as {plugin:string}[]).map(row=>row.plugin),["unrelated"]);
+ assert.equal((await selectLocalOperation("local.fixture.unrelated.v1",home))!.plugin,"unrelated");
+ // New explicit registration uses the same historical lexical operation-id contract.
+ m.superbeeLocalOperations.id=id;m.superbeeLocalOperations.operations[0].id="local.fixture.compare.v1";m.superbeeLocalOperations.operations[0].capability.name="fixture_compare";
+ await writeFile(join(root,"package.json"),JSON.stringify(m));await accept(root,home);assert.equal((await selectLocalOperation("local.fixture.compare.v1",home))!.plugin,id);
 }));

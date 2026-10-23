@@ -114,6 +114,10 @@ test("general source declarations reject collisions, reserved keys and overlappi
  }
  await writeFile(file,JSON.stringify(original));await writeFile(join(second,"recipes/work-items/execute.mjs"),"throw 1");await assert.rejects(registerFixture(second,home));
 }));
+test("reserved source pointer ids and source removal remain refused by the source policy",()=>fixture(async(_base,home,root)=>{
+ await registerFixture(root,home);const file=join(canonicalUserStateDir(home),"source-plugin-github.json"), rows=JSON.parse(await readFile(file,"utf8"));rows.plugins[0].plugin="constructor";await writeFile(file,JSON.stringify(rows));
+ await assert.rejects(listSourcePlugins(home),reason("plugin_state_invalid"));await assert.rejects(removeSourcePlugin("constructor",home),reason("plugin_id_invalid"));
+}));
 
 test("source test defaults to the same accepted synthetic profile through recorded data",()=>fixture(async(base,home,root)=>{
  await registerFixture(root,home);const folder=join(base,"recorded");await mkdir(folder);
