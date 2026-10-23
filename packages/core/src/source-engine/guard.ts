@@ -6,7 +6,7 @@
  * budget, honours the deadline and maps statuses to outcomes. Any refusal or error status stops
  * the run: the call throws and the stop is recorded here, so a profile cannot swallow it.
  */
-import { graphqlReadProblem } from "../connector-request.js";
+import { graphqlReadProblem, type DeclarationRequestRules } from "../connector-request.js";
 import { credentialHosts, type Connector } from "../connectors.js";
 import { redactUrl } from "../record-overlay/redact.js";
 import { challenged, refusedAddress, robotsDecision, type FetchIdentity } from "./robots.js";
@@ -116,7 +116,7 @@ export interface GuardContext {
   budget: SourceBudget;
   rules: RequestRules;
   /** Private core constraints rechecked after application callbacks. */
-  authority?: RequestRules;
+  authority?: RequestRules & Pick<DeclarationRequestRules, "headers">;
   /** Core-owned GraphQL read paths. Execution awaits reviewed resource-scope semantics. */
   graphqlPaths?: readonly string[];
   statuses: StatusRules;
@@ -328,6 +328,10 @@ export function guardTransport(ctx: GuardContext): GuardedTransport {
   const headersFor = (entries: ReadonlyArray<[string, unknown]> | null, url: URL, method: HttpMethod): Record<string, string> => {
     const out: Record<string, string> = {};
     if (entries === null || entries.length > MAX_HEADERS) halt({ outcome: "refused", reason: "header_refused", retry: false });
+    if (ctx.authority?.headers && !ctx.authority.headers(entries, ctx.conditional)) {
+      refuseRow(method, url, "page", "header_refused");
+      halt({outcome: "refused", reason: "header_refused", retry: false});
+    }
     for (const [rawName, value] of entries) {
       const name = rawName.toLowerCase();
       const admitted = HEADER_NAME.test(name) && !NEVER_SENT.has(name) && typeof value === "string" && HEADER_VALUE.test(value)
@@ -387,7 +391,7 @@ export function guardTransport(ctx: GuardContext): GuardedTransport {
       const headers = headersFor(headerEntries, url, method);
       // Callbacks receive disposable URL views. Check private authority again after every phase.
       const finalHop = hopRefusal(url, from);
-      if (finalHop || ctx.authority?.url?.(new URL(url.href), {method, redirect: hop > 0}) === false
+      if (finalHop || ctx.authority?.headers?.(Object.entries(headers), ctx.conditional) === false || ctx.authority?.url?.(new URL(url.href), {method, redirect: hop > 0}) === false
         || method === "POST" && ctx.authority?.post?.(new URL(url.href), body) === false
         || Object.keys(headers).some(name => !BASE_HEADERS.has(name) && !VALIDATOR_HEADERS.has(name) && ctx.authority?.header?.(name, new URL(url.href)) === false)) {
         const reason = finalHop?.reason ?? "url_refused";

@@ -1,10 +1,20 @@
 /** Closed declarative request grammar and provider-owned read scope. */
 import { parse, visit, Kind } from "graphql/language/index.js";
-import { CONNECTOR_KEYS, credentialHosts, type Connector, type ConnectorSource, type BoundFeed } from "./connectors.js";
+import { CONNECTOR_KEYS, credentialHosts, inspectSourceReadPolicy, containsCredentialText, type Connector, type ConnectorSource, type BoundFeed } from "./connectors.js";
 import type { RequestRules, ProfileResponse } from "./source-engine/types.js";
 
 export type Scalar = string | number | boolean | null;
+/** Requested local read scope; execution also requires the embedding host's exact approval. */
+export interface ConnectorReadPolicy {
+  contract: 1;
+  kind: "bound-get";
+  bindings: Record<string, "segment" | "positive-integer">;
+  required_permissions?: Record<string, "read">;
+  header_provider?: "github";
+}
+
 export interface ConnectorRequest {
+  read_policy?: ConnectorReadPolicy;
   host: string;
   method: "GET" | "POST";
   path: string;
@@ -42,6 +52,69 @@ const safeName = (s: string): boolean => /^[A-Za-z_][A-Za-z0-9_-]*$/.test(s) && 
 const dotted = (s: unknown): s is string => typeof s === "string" && s.length <= 512 && (s === "" || s.split(".").every(safeName));
 const scalar = (v: unknown): v is Scalar => v === null || typeof v === "string" || typeof v === "boolean" || typeof v === "number" && Number.isFinite(v);
 export const placeholders = (s: string): string[] => [...s.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/g)].map(m => m[1]!);
+
+/** Header constraints are independent of credential destinations and grant no credential authority. */
+export const PROVIDER_HEADER_RULES = Object.freeze({
+  github: Object.freeze({rules: 1, hosts: Object.freeze(["api.github.com"]), headers: Object.freeze({"x-github-api-version": "calendar-date"})}),
+});
+export function readPolicySemantics(policy: ConnectorReadPolicy): object {
+  return {rules: 1, contract: policy.contract, kind: policy.kind,
+    header_provider: policy.header_provider === "github" ? PROVIDER_HEADER_RULES.github : null};
+}
+/** @internal One canonical integer predicate for binding and paging authority. */
+export const readPolicyInteger = (value: string): boolean => /^[1-9][0-9]*$/.test(value) && Number.isSafeInteger(Number(value));
+const calendarDate = (value: unknown): boolean => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
+  && Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+
+function validateReadPolicy(source: Pick<ConnectorSource, "request" | "identity">, connector: Pick<Connector, "auth" | "domains"> | undefined,
+  fail: (path: string, message: string) => void): void {
+  const r = source.request!;
+  const p = r.read_policy;
+  if (!object(p)) {fail("/read_policy", "must be a mapping"); return;}
+  for (const key of Object.keys(p)) if (!(CONNECTOR_KEYS.read_policy as readonly string[]).includes(key)) fail(`/read_policy/${key}`, "unknown read_policy key");
+  if (p.contract !== 1 || p.kind !== "bound-get") fail("/read_policy", "requires contract 1 bound-get");
+  const params = placeholders(source.identity.resource);
+  if (!object(p.bindings) || Object.keys(p.bindings).length > 32) fail("/read_policy/bindings", "requires at most 32 typed bindings");
+  else {
+    if (Object.keys(p.bindings).length !== params.length || params.some(name => !Object.hasOwn(p.bindings, name))) fail("/read_policy/bindings", "keys must equal identity parameters");
+    for (const [name, type] of Object.entries(p.bindings)) if (!safeName(name) || !params.includes(name) || type !== "segment" && type !== "positive-integer") fail("/read_policy/bindings", "invalid binding type or name");
+  }
+  const paths = typeof r.path === "string" ? placeholders(r.path) : [];
+  if (paths.length !== params.length || params.some(name => paths.filter(path => path === name).length !== 1)) fail("/path", "bound-get path requires each identity parameter exactly once");
+  if (r.method !== "GET" || r.body !== undefined || r.graphql !== undefined || r.watermark !== undefined) fail("/read_policy", "bound-get permits only GET without body, GraphQL or watermark");
+  for (const value of Object.values(r.query ?? {})) if (typeof value === "string" && placeholders(value).some(name => !params.includes(name) || ["page", "cursor", "watermark"].includes(name))) fail("/query", "query placeholders must name only bound identity values");
+  const paging = r.paging;
+  if (paging) {
+    const keys = paging.kind === "none" ? ["kind"] : ["kind", "page_param", "size_param", "size"];
+    if (!["none", "page-number"].includes(paging.kind) || Object.keys(paging).some(key => !keys.includes(key))) fail("/paging", "bound-get supports only none or page-number fields");
+    if (paging.kind === "page-number") {
+      if (paging.page_param === paging.size_param || [paging.page_param, paging.size_param].some(name => name !== undefined && Object.hasOwn(r.query ?? {}, name))) fail("/paging", "paging names must be distinct and outside query");
+    }
+  }
+  if (p.required_permissions !== undefined && (!object(p.required_permissions) || Object.keys(p.required_permissions).length === 0 || Object.keys(p.required_permissions).length > 32
+    || Object.entries(p.required_permissions).some(([name, access]) => !/^[a-z][a-z0-9_]*$/.test(name) || !safeName(name) || access !== "read"))) fail("/read_policy/required_permissions", "requires 1 to 32 read permission minima");
+  if (p.header_provider !== undefined && p.header_provider !== "github") fail("/read_policy/header_provider", "unknown header provider");
+  const headerRules = p.header_provider === "github" ? PROVIDER_HEADER_RULES.github : undefined;
+  if (headerRules && !headerRules.hosts.includes(r.host)) fail("/host", "header provider requires its exact host");
+  for (const [name, value] of Object.entries(r.headers ?? {})) {
+    if (typeof value !== "string" || /[{}]/.test(value) || containsCredentialText(value) || /^bearer /i.test(value) || !/^[\t\x20-\x7e]{0,8192}$/.test(value)) fail(`/headers/${name}`, "requires a bounded literal header value");
+    if (name !== "accept" && !(headerRules && Object.hasOwn(headerRules.headers, name) && headerRules.headers[name as keyof typeof headerRules.headers] === "calendar-date" && calendarDate(value))) fail(`/headers/${name}`, "header is outside the provider name/value constraints");
+  }
+  if (connector) {
+    const auth = connector.auth;
+    const provider = auth.kind === "github-app" ? "github" : auth.provider;
+    if (auth.kind === "none") {
+      if (p.required_permissions !== undefined) fail("/read_policy/required_permissions", "anonymous sources have no credential permission minima");
+    } else {
+      if (auth.kind !== "github-app" && auth.kind !== "token" && auth.kind !== "oauth2" || !credentialHosts(auth).includes(r.host)) fail("/host", "bound-get credential must name its provider host");
+      if (!object(p.required_permissions) || Object.keys(p.required_permissions).length === 0) fail("/read_policy/required_permissions", "credentialed bound-get requires read permission minima");
+      if (auth.kind === "github-app" && object(p.required_permissions)) for (const name of Object.keys(p.required_permissions)) {
+        if (auth.permissions?.[name] !== "read" && auth.permissions?.[name] !== "write") fail("/read_policy/required_permissions", "required permission is not declared by auth");
+      }
+      if (p.header_provider !== undefined && p.header_provider !== provider) fail("/read_policy/header_provider", "header provider must agree with auth");
+    }
+  }
+}
 
 /** A parsed single query, with all string/id inputs supplied by bound variables. */
 export function graphqlReadProblem(query: unknown, variables: unknown, parameters?: Readonly<Record<string, string>> | null): string | undefined {
@@ -166,14 +239,15 @@ export function validateConnectorRequest(source: Pick<ConnectorSource, "request"
   }
   const mentions = JSON.stringify([r.path, r.query, r.body, r.graphql?.variables]);
   for (const p of params) if (!mentions.includes(`{${p}}`)) fail("", "every resource binding placeholder must appear in the request");
+  if (r.read_policy !== undefined) validateReadPolicy(source, connector, fail);
   if (connector) {
     const credential = credentialHosts(connector.auth).includes(r.host);
     const row = providerRequestRules(connector.auth);
     if (!credential && !connector.domains.includes(r.host)) fail("/host", "host is not declared");
-    if (credential && !row?.read_paths.includes(r.path)) fail("/path", "path is outside the provider read_paths");
+    if (r.read_policy === undefined && credential && !row?.read_paths.includes(r.path)) fail("/path", "path is outside the provider read_paths");
     if (r.method === "POST" && (!credential || !row?.read_posts.some(p => p.path === r.path))) fail("/method", "POST is outside provider read_posts");
     if (r.path === "/graphql" && !r.graphql) fail("/graphql", "GraphQL path requires a parsed query declaration");
-    for (const name of Object.keys(r.headers ?? {})) if (name !== name.toLowerCase() || name !== "accept" && !row?.headers.includes(name)) fail(`/headers/${name}`, "header is outside the provider allowlist");
+    for (const name of Object.keys(r.headers ?? {})) if (r.read_policy === undefined && (name !== name.toLowerCase() || name !== "accept" && !row?.headers.includes(name))) fail(`/headers/${name}`, "header is outside the provider allowlist");
   }
   return errors;
 }
@@ -195,9 +269,44 @@ export function renderRequestValue(value: Scalar, parameters: Readonly<Record<st
   }) : value;
 }
 
+/** Private authority, distinct from caller-supplied narrowing hooks. */
+export interface DeclarationRequestRules extends RequestRules {
+  response(response: ProfileResponse): void;
+  headers?(entries: ReadonlyArray<readonly [string, unknown]>, conditional: boolean): boolean;
+}
+
 /** Guard-owned rules. Caller hooks may narrow these rules but cannot widen them. */
-export function declarationRequestRules(connector: Pick<Connector, "auth" | "domains">, bound: BoundFeed): RequestRules & {response(response: ProfileResponse): void} {
+export function declarationRequestRules(connector: Pick<Connector, "auth" | "domains">, bound: BoundFeed): DeclarationRequestRules {
   const request = bound.source.request!;
+  if (request.read_policy !== undefined) {
+    const scope = inspectSourceReadPolicy(connector, bound);
+    return {
+      header: name => Object.hasOwn(scope.headers, name),
+      headers(entries, conditional) {
+        const actual = new Map<string, unknown>();
+        for (const [raw, value] of entries) {
+          const name = raw.toLowerCase();
+          if (actual.has(name)) return false;
+          actual.set(name, value);
+        }
+        for (const [name, value] of Object.entries(scope.headers)) if (actual.get(name) !== value) return false;
+        return [...actual.keys()].every(name => Object.hasOwn(scope.headers, name) || conditional && ["if-none-match", "if-modified-since"].includes(name));
+      },
+      url(url, hop) {
+        if (url.hostname !== scope.host || hop.method !== "GET" || url.pathname !== scope.path) return false;
+        const expected = new Map(Object.entries(scope.query));
+        if (scope.paging.kind === "page-number") {
+          const values = url.searchParams.getAll(scope.paging.page_param);
+          if (values.length !== 1 || !readPolicyInteger(values[0]!)) return false;
+          expected.set(scope.paging.page_param, values[0]!);
+          if (scope.paging.size_param) expected.set(scope.paging.size_param, String(scope.paging.size));
+        }
+        return [...url.searchParams].length === expected.size && [...expected].every(([name, value]) => url.searchParams.getAll(name).length === 1 && url.searchParams.get(name) === value);
+      },
+      post: () => false,
+      response() {},
+    };
+  }
   const row = providerRequestRules(connector.auth);
   const parameters = bound.parameters;
   const bindingsValid = placeholders(bound.source.identity.resource).every(name => typeof parameters[name] === "string" && parameters[name] !== "" && parameters[name] !== "." && parameters[name] !== "..");

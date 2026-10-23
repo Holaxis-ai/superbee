@@ -14,7 +14,7 @@ import type { OverlayBundle, OverlayReceipt, RecordChange } from "../record-over
 import { MemoryMachineState, type SourceState } from "../source-engine/machine-state.js";
 import { observeSource } from "../source-engine/observe.js";
 import { fetchIdentity, type FetchIdentity } from "../source-engine/robots.js";
-import type { SourceBudget, SourceProfile, SourceRunReceipt } from "../source-engine/types.js";
+import type { ObserveSourceOptions, SourceBudget, SourceProfile, SourceRunReceipt } from "../source-engine/types.js";
 import type { ConceptId, Frontmatter, OkfDocument } from "../types.js";
 import { ExchangePeer, peerTransport, type PeerRequest, type ScriptedExchange, type TransportCredential } from "./peer.js";
 
@@ -64,6 +64,8 @@ export interface SourceFixture {
   feed: ConceptId;
   identity?: FetchIdentity;
   credential?: TransportCredential;
+  /** Explicit fixture-only host assertion; never inferred from a declaration or used for live consent. */
+  readPolicyApproval?: ObserveSourceOptions["readPolicyApproval"];
 }
 
 export interface SourceRunScript {
@@ -117,6 +119,7 @@ const EDITOR = "human:fixture-editor";
 const START = Date.parse("2026-01-01T00:00:00.000Z");
 
 function declaredHosts(fixture: SourceFixture, spec: unknown, bound: BoundFeed): string[] {
+  if (bound.source.request?.read_policy !== undefined) return [bound.source.request.host];
   try {
     const checked = fixture.profile.validateSpec(spec);
     if (!checked.ok) return [];
@@ -179,6 +182,7 @@ export async function runSourceScenario(fixture: SourceFixture, scenario: Source
     const receipt = await observeSource({
       connector: fixture.connector, bound, profile: fixture.profile, spec, state: jointState, identity: fixture.identity ?? FIXTURE_IDENTITY,
       transport: peerTransport(peer, fixture.credential ? { credential: fixture.credential } : {}),
+      readPolicyApproval: fixture.readPolicyApproval,
       mode: script.mode ?? "incremental", signal: controller.signal, now: () => new Date(at),
       ...(script.budget ? { budget: script.budget } : {}),
       commit: async (page) => {

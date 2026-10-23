@@ -23,7 +23,7 @@ invent an official support commitment or managed admission.
 
 Validation reads the selected recipe directory and inert accepted plugin metadata. It never imports a module named by the recipe,
 discovers a bundle, writes a document or makes a provider request. Unknown profiles are explicit
-`PROFILE_NOT_AVAILABLE` refusals, not successful compatibility claims. Core supplies `rest-json`; `github-issues` requires explicit registration of the independently installed GitHub plugin. Registered plugin spec checks are deferred to source test/bind/run; validation never imports its module.
+`PROFILE_NOT_AVAILABLE` refusals, not successful compatibility claims. Core supplies `rest-json`; `github-issues` requires explicit registration of the independently installed GitHub plugin. Registered plugin spec checks are deferred to source test/bind/run (new bound-GET policies defer them to run); validation never imports its module.
 An explicitly selected test double does not establish compatibility for an unavailable profile.
 
 The complete package is checked for core's secret-shaped text, including README files; `.env` and
@@ -135,7 +135,8 @@ Register each source folder explicitly, review the proposal and accept its exact
 Resolve its recipes as `<plugin-id>:<recipe-key>`; `source plugin remove <plugin-id>`
 deactivates its future selections. Registration does not grant credentials or alter Core's
 provider host, method or resource policy. A new authenticated provider needs a reviewed Core
-policy change. Source and operation registrations are independent grants with separate bind/run
+credential-host policy change; additional local GET endpoints require the explicit bound policy and
+feed approval described below. Source and operation registrations are independent grants with separate bind/run
 contracts; a package descriptor never automatically activates another capability.
 
 Existing GitHub acceptance and feed consent remain valid for identical bytes. The first
@@ -178,6 +179,57 @@ compatible Core setup, then a new accepted registration and explicit feed rebind
 Rebinding changed consent resets observations and accepted tuples for reacquisition. Remove future
 availability with `superbee source plugin remove github`; already selected runs may finish their
 selected generation. Existing bundle content and retained generations are preserved.
+
+## Request a narrowly bound local GET policy
+
+A source may opt into a reviewed local endpoint through its existing Connector `request` block:
+
+```yaml
+host: api.github.com
+method: GET
+path: '/repos/{owner}/{repo}/pulls'
+items: ''
+query: {state: all}
+headers: {accept: application/vnd.github+json, x-github-api-version: '2026-03-10'}
+paging: {kind: page-number, page_param: page, size_param: per_page, size: 30}
+read_policy:
+  contract: 1
+  kind: bound-get
+  bindings: {owner: segment, repo: segment}
+  required_permissions: {pull_requests: read}
+  header_provider: github
+```
+
+Its identity resource can be `https://github.com/{owner}/{repo}/pulls`. For detail, declare a separate
+source with resource `https://github.com/{owner}/{repo}/pull/{number}`, path
+`/repos/{owner}/{repo}/pulls/{number}`, `number: positive-integer`, no list query and paging none.
+The integration owns object normalization. [GitHub's REST documentation](https://docs.github.com/en/rest/pulls/pulls)
+provides the endpoint and Pull requests read minimum; opaque token grants remain provider-enforced.
+
+Review the endpoint/query read semantics before accepting its binding: GET alone is not a safety
+proof. Core admits only the exact declared host/path and resource parameters. Contract 1 supports
+none/page-number paging with distinct page/size names outside query, required single page/size
+values, exact query literals or whole bound values, and no body, GraphQL, watermark or cursor form.
+Every declared header is required exactly once with its exact value on every hop. Case duplicates,
+omitted/changed headers, query/paging collisions and undeclared authority refuse. Credential and
+method-override headers remain forbidden. For anonymous version-header reads, use auth none,
+explicit `domains: [api.github.com]`, and omit permission minima. Header-provider constraints grant
+no credential host or environment lookup and preserve keyless robots checks.
+
+New-policy binding preview/acceptance is inert, using accepted profile metadata. Execution compares
+private consent before module import or credential lookup. Changing policy, binding, implementation
+or resolved semantics requires reapproval and resets observation/accepted state. Installing a plugin
+or recipe grants no network access. Managed execution still needs separately deployed operator
+admission, and local code remains trusted code with ambient process authority.
+
+Library hosts use inert `inspectSourceReadPolicy` from `@superbee/core/connectors` and pass its
+approved `{contract: 1, digest}` as `observeSource.readPolicyApproval`. Missing/stale approval denies
+before callbacks/replay. It is an explicit host assertion, not a review certificate. Public recorded
+`SourceFixture` accepts the same explicit `readPolicyApproval`; it is never production consent.
+CLI `source test` JSON remains unchanged and cannot approve these policies. Test them through the
+supported public Core/harness API; do not import private CLI runner/transport seams. Native installed
+registration/bind/refusal, installed public-Core observation, internal transport conformance and live
+provider execution are distinct evidence.
 
 ## Bind and run a local Source Feed
 

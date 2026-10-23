@@ -324,7 +324,7 @@ executes the shared engine/overlay adapter with DNS-pinned HTTPS and emits an al
 Local/Git bundles only; no mirror creation, hosted target, scheduling or implicit credential lookup.
 State is outside the bundle, private and atomically co-publishes observations and accepted tuples.
 Stable reason codes include binding_missing, binding_changed, credential_missing, state_invalid,
-state_persist_failed and source_busy within the existing exit taxonomy. Summary outcomes retain
+state_persist_failed, read_policy_unapproved and source_busy within the existing exit taxonomy. Summary outcomes retain
 engine retry semantics; no raw provider values, cursor or errors reach output. Normal provider
 outcomes are reported as summaries with fixed allowlisted reason codes (unknown codes become
 unclassified). After its one receipt, source run exits 0 for observed or deferred (retryable
@@ -349,3 +349,16 @@ binding or credential reference. Recipe installation accepts `<plugin-id>:<recip
 external source checkout's recipe folders. The author guide links the integration repository's
 pinned Git checkout and build setup. Recipe validation reports plugin-specific spec checks
 as deferred to source test/bind/run and never imports extensions.
+
+
+A Connector request may opt into `read_policy: {contract: 1, kind: bound-get, ...}`. Its exact
+endpoint/query read semantics require local operator review; GET alone does not establish them.
+New-policy source bind preview and acceptance use inert selection/inspection, with no module,
+factory or spec execution. Preview includes normalized read_policy scope/digest, declared permission
+minima and the endpoint review requirement. Existing --accept consent pins these constraints;
+any change requires rebind and acquired-state reset. Core defaults to read_policy_unapproved without
+a matching explicit host assertion before callbacks/replay. Its credential hosts, header-provider
+constraints, complete declared header set, resource bindings and query/paging rules remain enforced.
+Anonymous provider headers grant no credential authority. Managed admission is separate. The
+public recorded SourceFixture may forward explicit fixture-only approval; source test's JSON
+schema has no such field and never auto-approves these policies. See the owning author guide.

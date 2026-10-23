@@ -15,9 +15,9 @@
  * change; {@link findingsFor} turns diagnostics into findings for `planFindings`.
  * Storage-neutral: no Node globals or builtins.
  */
-import { validateConnectorRequest, type ConnectorRequest } from "./connector-request.js";
-export { AUTH_PROVIDER_REQUEST_RULES, validateConnectorRequest, readPath as readSourcePath, renderRequestValue } from "./connector-request.js";
-export type { ConnectorRequest } from "./connector-request.js";
+import { validateConnectorRequest, readPolicySemantics, readPolicyInteger, renderRequestValue, type ConnectorRequest } from "./connector-request.js";
+export { AUTH_PROVIDER_REQUEST_RULES, PROVIDER_HEADER_RULES, validateConnectorRequest, readPath as readSourcePath, renderRequestValue } from "./connector-request.js";
+export type { ConnectorRequest, ConnectorReadPolicy } from "./connector-request.js";
 import { compareCodePoints } from "./code-point-order.js";
 import { isStandardDocumentSetField } from "./document-field-actions.js";
 import { PROGRESS_STATUS_FIELD, isKindListField, isPresent, type KindConvention, type KindRegistry } from "./kinds.js";
@@ -52,7 +52,8 @@ const GITHUB_APP_HOSTS: readonly string[] = Object.freeze(["api.github.com"]);
 export const CONNECTOR_KEYS = Object.freeze({
   auth: Object.freeze(["kind", "provider", "permissions", "scheme"]),
   source: Object.freeze(["name", "profile", "target_kind", "mode", "identity", "fields", "completeness", "request"]),
-  request: Object.freeze(["host", "method", "path", "query", "body", "headers", "items", "skip", "fields", "paging", "watermark", "complete", "errors", "rate", "graphql"]),
+  request: Object.freeze(["host", "method", "path", "query", "body", "headers", "items", "skip", "fields", "paging", "watermark", "complete", "errors", "rate", "graphql", "read_policy"]),
+  read_policy: Object.freeze(["contract", "kind", "bindings", "required_permissions", "header_provider"]),
   paging: Object.freeze(["kind", "cursor_path", "next_path", "size_param", "size", "page_param", "offset_param"]),
   watermark: Object.freeze(["field", "param", "overlap_seconds"]),
   errors: Object.freeze(["deferred", "credential_refused", "not_found"]),
@@ -819,8 +820,10 @@ export function connectorPinDigest(connector: Connector): string {
     credential_hosts: [...credentialHosts(connector.auth)].sort(),
     domains: [...connector.domains].sort(),
     // The parsed sources, under the same label whichever document key they were read from.
+    ...(connector.sources.some(source => source.request?.read_policy !== undefined) ? {read_policy_semantics: byName(connector.sources).filter(source => source.request?.read_policy !== undefined).map(source => ({name: source.name, semantics: readPolicySemantics(source.request!.read_policy!)}))} : {}),
     sources: byName(connector.sources).map((source) => pinBlock("source", PIN_DEFAULTS.source(source), {
       request: (v) => pinBlock("request", v as object, {
+        read_policy: (x) => pinBlock("read_policy", x as object),
         paging: (x) => pinBlock("paging", x as object), watermark: (x) => pinBlock("watermark", x as object),
         errors: (x) => pinBlock("errors", x as object), rate: (x) => pinBlock("rate", x as object),
         graphql: (x) => pinBlock("graphql", x as object), fields: mapOf("transform"),
@@ -914,7 +917,53 @@ export function bindSourceFeed(
   if (ownedLists.length && edition !== "0.2") {
     refuse("owned_fields", `owned list fields need an OKF v0.2 bundle, and this bundle is v${edition}: ${ownedLists.join(", ")}`, { fields: ownedLists, okf_version: edition });
   }
-  return { policy: { ...policy, target_kind: bound.target_kind, completeness: bound.completeness }, source: bound, kind: kind!, parameters, resource };
+  const result = { policy: { ...policy, target_kind: bound.target_kind, completeness: bound.completeness }, source: bound, kind: kind!, parameters, resource };
+  if (bound.request?.read_policy !== undefined) {
+    try { inspectSourceReadPolicy(connector, result); } catch { refuse("url", "the bound read policy or resource is invalid"); }
+  }
+  return result;
+}
+
+/** Inert, normalized scope. A digest is a host approval assertion, never an unforgeable grant. */
+export interface SourceReadPolicyInspection {
+  contract: 1;
+  digest: string;
+  host: string;
+  path: string;
+  query: Record<string, string>;
+  headers: Record<string, string>;
+  paging: {kind: "none"} | {kind: "page-number"; page_param: string; size_param?: string; size: number};
+  resource: string;
+  parameters: Record<string, string>;
+  credential_hosts: readonly string[];
+  required_permissions: Record<string, "read">;
+  semantics: object;
+}
+
+/** Inspect a requested bound GET without executing code, consulting credentials or granting a run. */
+export function inspectSourceReadPolicy(connector: Pick<Connector, "auth" | "domains">, bound: BoundFeed): SourceReadPolicyInspection {
+  const request = bound.source.request;
+  if (request?.read_policy === undefined || validateConnectorRequest(bound.source, connector).length) throw new Error("invalid source read policy");
+  const template = parseResourceTemplate(bound.source.identity.resource);
+  if (!template.ok || !record(bound.parameters) || typeof bound.resource !== "string") throw new Error("invalid source resource binding");
+  const names = template.value.parts.flatMap(part => "name" in part ? [part.name] : []);
+  if (Object.keys(bound.parameters).length !== names.length || names.some(name => !Object.hasOwn(bound.parameters, name))) throw new Error("invalid source parameter keys");
+  for (const name of names) {
+    const value = bound.parameters[name];
+    if (typeof value !== "string" || !new RegExp(`^${PARAMETER}$`).test(value) || value === "." || value === "..") throw new Error("invalid source parameter");
+    if (request.read_policy.bindings[name] === "positive-integer" && !readPolicyInteger(value)) throw new Error("invalid integer binding");
+  }
+  const resource = template.value.parts.map(part => "name" in part ? bound.parameters[part.name] : part.literal).join("");
+  if (resource !== bound.resource || !template.value.matcher.test(resource)) throw new Error("inconsistent source resource binding");
+  const path = request.path.replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (_, name: string) => encodeURIComponent(bound.parameters[name]!));
+  const query = Object.fromEntries(Object.entries(request.query ?? {}).map(([name, value]) => [name, String(renderRequestValue(value, bound.parameters, {}))]));
+  const headers = Object.fromEntries(Object.entries(request.headers ?? {accept: "application/json"}).map(([name, value]) => [name, value]));
+  const paging: SourceReadPolicyInspection["paging"] = request.paging?.kind === "page-number" ? {kind: "page-number", page_param: request.paging.page_param!, size: request.paging.size!, ...(request.paging.size_param ? {size_param: request.paging.size_param} : {})} : {kind: "none"};
+  const semantics = readPolicySemantics(request.read_policy);
+  const scope = {contract: 1 as const, host: request.host, path, query, headers, paging, resource, parameters: {...bound.parameters},
+    credential_hosts: [...credentialHosts(connector.auth)].sort(), required_permissions: {...request.read_policy.required_permissions}, semantics};
+  const digest = `sha256:${sha256Hex(definitionCanonicalJson({scope, auth: connector.auth, domains: [...connector.domains].sort(), source: bound.source}))}`;
+  return {...scope, digest};
 }
 
 // ----------------------------------------------------------------------------------------- mapping
