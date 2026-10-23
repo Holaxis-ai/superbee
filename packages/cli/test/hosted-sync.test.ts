@@ -1959,8 +1959,33 @@ test("a create the host refuses as path_collision is a refused row naming the ke
   const blobs = synced?.blobs as { counts: Record<string, number>; rows: { key: string; state: string; message: string }[] };
   assert.equal(blobs.counts.unknown, 0); assert.equal(blobs.rows[0]!.state, "refused"); assert.equal(blobs.rows[0]!.key, sKey); assert.match(blobs.rows[0]!.message, /notes\/Diagram\.png was not created/);
   assert.equal(sWire.calls.length, 1);
-  await failingSync(s).catch(() => undefined); assert.equal(sWire.calls.length, 1, "a later sync does not resend it");
+  // A later sync does not resend it, and does not go quiet: the new file is held with the promote that sends it.
+  const later = await failingSync(s);
+  assert.equal(later.error.exitCode, 5); assert.equal(sWire.calls.length, 1);
+  assert.match(rowFor(later.receipt, sKey)?.message ?? "", /remains local \(re-create it on the host with promote .*--doc-key notes\/Diagram\.png\)/);
   assert.ok((await retainedBlobRows(s)).every(retained => retained.state !== "unknown" && retained.state !== "in_flight"));
+});
+
+test("artifact create refused as path_collision releases its publication: a rerun is refused again, and proceeds once the path is free", async () => {
+  const h = await harness(), entry = "artifacts/result.html", file = path.join(h.folder, entry); await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "<p>result</p>");
+  let colliding = true;
+  const wire = blobAuthority(h, { collides: key => colliding && key === entry });
+  const { queueHostedArtifact } = await import("../src/hosted/sync.js"), { commandFragment } = await import("../src/command-text.js");
+  const binding = (await bindingForPath(h.home, h.folder))!, resume = commandFragment`sync`;
+  const deps = { auth: h.auth, cwd: h.cwd, fetch: wire.fetch, write: { sleep: instant, lookupDelayMs: 0, maxLookups: 1 }, sleep: instant };
+  const refused = (error: unknown) => error instanceof CliError && error.code === "CONFLICT" && (error.details as { reason?: unknown }).reason === "path_collision" && /^artifacts\/result\.html was not created: .*give the Artifact a title/.test(error.message);
+  await assert.rejects(queueHostedArtifact(binding, { file, title: "Result", actor: "process:test" }, deps, resume), refused);
+  assert.equal(wire.calls.length, 1);
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  try { assert.deepEqual(await store.listMeta("hosted.artifact.create.v1:"), []); } finally { await store.close(); }
+  // The same title derives the same path: a fresh create, refused again with the same advice, never a dead resume.
+  await assert.rejects(queueHostedArtifact(binding, { file, title: "Result", actor: "process:test" }, deps, resume), refused);
+  assert.equal(wire.calls.length, 2); assert.notEqual(wire.calls[1]!.requestId, wire.calls[0]!.requestId);
+  // Once the path is distinct on the host, the publication proceeds past the blob.
+  colliding = false;
+  const published = await queueHostedArtifact(binding, { file, title: "Result", actor: "process:test" }, deps, resume).catch((error: unknown) => error);
+  assert.equal(wire.objects.has(entry), true, `the blob landed: ${String((published as Error).message ?? "")}`);
+  assert.equal(wire.calls.length, 3);
 });
 
 test("a blob refusal code the client does not know still stays unknown and is never resent", async () => {

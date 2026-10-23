@@ -1130,7 +1130,8 @@ async function driveBlobRequests(session: Session, deps: HostedSyncDeps, options
         saved = await settleBlobSyncReceipt(store, after, claimed, selectedResult.patch); expectedMap = projected;
       } else saved = await store.updateBlobIntent(claimed.requestId, claimed.state, selectedResult.patch, { guard: after.journal.guard });
       report(saved, blobRefusalNote(saved));
-      // Reported once: a settled refusal no longer holds its file, which the next sync captures anew.
+      // Reported once: a settled refusal no longer holds its file. The next sync captures a tracked
+      // file's change anew; a refused new file stays local until promote sends it again.
       if (retirableBlobRefusal(saved)) await retireBlobRefusals(store, scope, [saved.target]);
       if (saved.receipt?.result.ok && !await blobFrozenPhysicalMatches(session.binding.path, { ...after, map: expectedMap! }, saved)) (out.kept_local_edits ??= []).push(saved.target);
     } catch (error) {
@@ -1197,6 +1198,9 @@ export async function queueHostedArtifact(binding: CheckoutBinding, input: { fil
       const declared = declaredHostedSyncGate(binding.path);
       const delivered = await driveBlobRequests(session, deps, { requestIds: [publication.blobRequestId], gatePresent: declared.kind !== "none", gate: async (fresh, count) => { await judgeHostedWrites(session, declared, resume, fresh, count); } });
       const collided = delivered.rows.find(row => blobRefusalCode(row) === "path_collision");
+      // Proven not written and retired with its refusal: release the publication, so a rerun derives
+      // its id again (the same title is refused again) instead of resuming a request that is gone.
+      if (collided) await store.removeMeta(publicationKey(publication.id), { expected: { present: true, value: publication } });
       if (collided) throw new CliError("CONFLICT", blobPathCollisionMessage(collided.key, "give the Artifact a title whose path differs from existing documents and files by more than letter case or Unicode form"), { details: { reason: "path_collision", entry: collided.key, blob_request_id: collided.request_id } });
       const version = await acknowledgedArtifactBlob(store, publication);
       if (!version) return { artifact: "blob_pending", id: publication.id, entry: publication.entry, blob_request_id: publication.blobRequestId, status: "incomplete", help: String(resume) };
@@ -1280,15 +1284,20 @@ const BLOB_UNRECORDED: ReadonlySet<string> = new Set(BLOB_UNRECORDED_REFUSAL_COD
 export function blobPathCollisionMessage(key: string, next = "rename the file or its folder to a distinct path, then promote it again"): string {
   return `${key} was not created: another file or document in this bundle differs from this path only by letter case or Unicode form, in its name or a folder, so the two would be one path on a case-insensitive filesystem. Nothing was written; ${next}.`;
 }
-/** What a refusal the host never recorded means for the person; the file is captured anew on the next sync. */
+/**
+ * What a refusal the host never recorded means for the person. A change to a tracked file is
+ * captured anew by the next sync; a new file (a create) has no host baseline to capture against,
+ * so only promote sends it again.
+ */
 function blobRefusalNote(row: BlobIntentRecord): string | undefined {
   const result = row.receipt?.result;
   if (row.state !== "refused" || !result || result.ok) return undefined;
   if (result.error.code === "path_collision") return blobPathCollisionMessage(row.target);
   if (!BLOB_UNRECORDED.has(result.error.code)) return undefined;
+  const again = result.operationId === "blobs.create.v1" ? "promote it again" : "sync sends it again";
   return result.error.code === "request_capacity"
-    ? `${row.target} was not sent: the sync quota is used up. Nothing was lost; run sync again later and it is sent again.`
-    : `${row.target} was not sent: the host refused writes to this bundle for this sign-in. Nothing was lost; it is sent again on a sync once access returns.`;
+    ? `${row.target} was not sent: the sync quota is used up. Nothing was lost; later, ${again}.`
+    : `${row.target} was not sent: the host refused writes to this bundle for this sign-in. Nothing was lost; once access returns, ${again}.`;
 }
 
 /**
