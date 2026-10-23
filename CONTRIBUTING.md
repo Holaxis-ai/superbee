@@ -205,6 +205,10 @@ The `TLA+ specs` workflow in `.github/workflows/tla-specs.yml` model-checks the 
 manual dispatch. It is not a required lane and is outside the lane projection above.
 [`specs/tla/README.md`](specs/tla/README.md) owns how to run the models, what each config checks,
 and which fixed configs model changes that have not merged.
+Changes affecting accepted local edits, journal recovery, acknowledgement, explicit disposition,
+or history retirement must follow the [preservation correspondence review](specs/tla/EDIT-PRESERVATION.md#change-review):
+identify the affected model transition and regression rows, and explain any remaining correspondence
+gap. Passing a bounded model does not establish that the implementation refines it.
 
 The `OKF upstream watch` workflow in `.github/workflows/okf-upstream-watch.yml` reports drift in
 the OKF specification; it is not a PR gate and never commits. Weekly, it compares the latest

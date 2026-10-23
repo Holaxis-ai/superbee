@@ -964,8 +964,26 @@ test("crash between claim and settlement: the claim recorded the attempt, reclai
     assert.equal((await reopened.backend.readIntent(requestId))?.state, "pending");
     assert.equal((await reopened.backend.listIntents("pending")).length, 2);
 
+    // The latest working document cannot stand in for the older uncertain payload.
+    assert.equal((await reopened.backend.readIntent(requestId))?.content, committed.intent!.content);
+    assert.equal((await reopened.backend.readIntent(chained.intent!.requestId))?.content, chained.intent!.content);
+    assert.equal((await reopened.backend.read("notes/gamma")).version, chained.version);
+    let successorObserved = false;
+    const transport: OperationTransport = {
+      lookup: (id) => fixture.transport.lookup(id),
+      submit: async (intent, options) => {
+        assert.equal(intent.requestId, chained.intent!.requestId);
+        successorObserved = true;
+        // The first acknowledgement must not replace the newer working document or clear its row.
+        assert.equal((await reopened.backend.readIntent(requestId))?.state, "acknowledged");
+        assert.equal((await reopened.backend.readIntent(intent.requestId))?.content, chained.intent!.content);
+        assert.equal((await reopened.backend.read("notes/gamma")).version, chained.version);
+        return fixture.transport.submit(intent, options);
+      },
+    };
     const submissionsBefore = fixture.submissions.length;
-    const report = await push(reopened, fixture.transport, { write: immediate });
+    const report = await push(reopened, transport, { write: immediate });
+    assert.equal(successorObserved, true);
     assert.deepEqual(report.settled.map((row) => row.state), ["acknowledged", "acknowledged"]);
     // The original was looked up, not submitted again; only the chained edit was submitted.
     assert.deepEqual(fixture.lookups, [requestId]);

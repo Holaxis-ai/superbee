@@ -449,6 +449,36 @@ export function registerJournaledBackendContract(options: JournaledBackendContra
     });
   });
 
+  for (const state of ["in_flight", "pending"] as const) {
+    test(`${name} accepted payload preservation: ${state} attempted predecessor survives successor and refused retirement`, async () => {
+      await withFixture(create, async backend => {
+        const id = "guard/preservation";
+        const first = await backend.writeJournaled(id, doc(id, "accepted first"), { intent: newIntent("preserve-1", id, null) });
+        await backend.updateIntent("preserve-1", "pending", { state: "in_flight", attempts: 1 });
+        const second = await backend.writeJournaled(id, doc(id, "accepted successor"), { intent: newIntent("preserve-2", id, first.version, "preserve-1") });
+        // Reclaim changes scheduling state; it does not undo the possibly delivered attempt.
+        if (state === "pending") await backend.updateIntent("preserve-1", "in_flight", { state: "pending" });
+        const before = await snapshot(backend, id);
+        assert.equal(before.document!.version, second.version);
+        assert.equal(before.intents[0]!.content, first.intent!.content);
+        assert.equal(before.intents[0]!.local, first.version);
+        assert.equal(before.intents[0]!.attempts, 1);
+        assert.equal(before.intents[1]!.content, second.intent!.content);
+        assert.equal(before.intents[1]!.after, "preserve-1");
+        assert.notEqual(first.intent!.content, second.intent!.content);
+        // Even a current, complete guard cannot authorize retiring an unsettled payload.
+        await assert.rejects(backend.retireAcknowledged!(id, { guard: before, requestIds: ["preserve-1"] }), { name: "JournalGuardConflict" });
+        assert.deepEqual(await snapshot(backend, id), before);
+        // Acknowledgement discharges only its identity; the newer accepted work stays intact.
+        await backend.updateIntent("preserve-1", state, { state: "acknowledged", acknowledgedVersion: first.version }, { guard: before });
+        const after = await snapshot(backend, id);
+        assert.equal(after.intents[0]!.state, "acknowledged");
+        assert.deepEqual(after.intents[1], before.intents[1]);
+        assert.deepEqual(after.document, before.document);
+      });
+    });
+  }
+
   test(`${name} snapshot CAS: guarded metadata removal refuses overlap and rolls back with the write`, async () => {
     await withFixture(create, async backend => {
       const id = "guard/removal";
