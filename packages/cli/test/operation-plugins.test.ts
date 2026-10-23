@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { SOURCE_PLUGIN_CORE_VERSION } from "@superbee/core/source-profiles";
 import { registerOperationPlugin, listOperationPlugins, removeOperationPlugin, selectLocalOperation } from "../src/operation-plugins.js";
 import { listSourcePlugins, registeredRecipe } from "../src/source-plugins.js";
-import { canonicalUserStateDir, ensureUserStateRoot, writeReadyUserStateFileAtomic0600 } from "../src/user-state.js";
+import { ensureUserStateRoot, writeReadyUserStateFileAtomic0600 } from "../src/user-state.js";
 import { sourceDigest } from "../src/source-local/state.js";
 import { pluginFixture, registerFixture } from "./source-plugin-fixture.js";
 const reason = (r:string) => (e:any) => e.details?.reason === r;
