@@ -549,6 +549,48 @@ A document over 65,536 body terms is left out and counted: the result's `corpus`
 contributes to any index, and `textVersion()` names the algorithm, `SEARCH_TEXT_REVISION` and the
 runtime's normalizer fingerprint, so a stored index can tell when its rows need re-deriving.
 
+## Hosted document backend
+
+`createHostedDocumentBackend` from `@superbee/core/hosted-transport` composes the existing
+hosted read adapter and whole-document transport into a finite document `StorageBackend`. Supply
+`reader`, `carrier`, `scope`, `intents` and a positive `maximumDocuments`. The reader and carrier
+must address the same trusted scope: tenant, bundle, registration, checkout binding, workspace
+(`null` when unnamed), and OKF edition. Scope also pins `mode: "write"`,
+`bodyPolicy: "protected"` and `tombstonePolicy: "refuse"`. Credentials, authorization and effect
+fences belong to the host carrier and shared write entry.
+
+Reads and root metadata use the read adapter. `list(prefix)` admits the entire validated paged
+heads inventory before filtering, and refuses overflow. `exists` converts only ENOENT to false.
+Every write requires an explicit `expectedVersion` (`null` for create, a content version for
+replace) and a stable lowercase UUIDv4 `requestId`. The returned version is the host's version.
+A valid OKF `actor` is advisory input only; host-owned attribution and normal body protection
+remain in effect. Defined `agent`, `bodyReplace` and other unsupported options refuse. History,
+deletion, recreation, blobs and reserved-file writes refuse. This adapter exposes neither general
+wire capabilities nor an inventory guard.
+
+The injected `HostedDocumentIntentPort` must atomically prepare-or-read and exclusively claim a
+**new** descriptor, durably recording `in_flight` and attempt 1 before returning `fresh: true`
+to exactly one caller. Every existing descriptor returns `fresh: false`, including an unattempted
+pending record. Core validates the immutable scope/input digest and uses the original content and
+creation instant on lookup. A lost claim acknowledgement prevents submission. Every reopened
+record is lookup-only: absent, pending, expired or unavailable receipts never authorize another
+send or a replacement identity. The port is a trusted persistence contract; Core supplies no
+journal or storage implementation for it.
+
+`settle` must durably compare the original digest and retain its descriptor and exact outcome;
+a known outcome is immutable, and contradictory settlement must refuse. Keep both until the importing consumer acknowledges
+acceptance. Success is returned only after settlement completes. A settlement failure throws
+`HostedDocumentBackendError` with `code: "outcome_unknown"`, the original `requestId`, and the
+retained descriptor (including a known remote outcome). Unknown receipt results use the same error
+classification. A `HostedDocumentVersionConflict` extends `VersionConflict` and retains the original
+descriptor and any tombstone receipt. Deterministic refusals retain their existing transport code.
+No matching-content read is used to manufacture success.
+
+Callers above `StorageBackend` must forward the stable identity and immutable mutation input.
+`mutateDocument` does not yet forward request identity itself; a consumer needs an explicit bridge.
+This backend is browser/Worker safe and uses the same carrier and response grammar as hosted's
+other Core consumers.
+
 ## Hosted client
 
 `@superbee/core/hosted-client` is the headless client of a hosted Superbee's sync routes
