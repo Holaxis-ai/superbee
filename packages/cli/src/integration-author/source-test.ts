@@ -21,7 +21,7 @@ export const SOURCE_TEST_LIMITS = Object.freeze({ scenarios: 64, runs: 16, excha
 export interface SourceAuthorScenario extends SourceScenario { expect: SourceRunExpectation[] }
 export interface SourceAuthorFixture {
   version: 1; connector: string; source: string; feed: string;
-  documents: OkfDocument[]; spec?: unknown; scenarios: SourceAuthorScenario[];
+  documents: OkfDocument[]; spec?: unknown; readPolicyApproval?: SourceFixture["readPolicyApproval"]; scenarios: SourceAuthorScenario[];
 }
 export interface SourceAuthorTestReport {
   ok: boolean; execution: "recorded" | "explicit-local-profile";
@@ -36,7 +36,9 @@ const keysExactly = (value: Record<string, unknown>, required: readonly string[]
   required.every((key) => Object.hasOwn(value, key)) && Object.keys(value).every((key) => required.includes(key) || optional.includes(key));
 
 function parseFixture(value: unknown): SourceAuthorFixture | undefined {
-  if (!record(value) || !keysExactly(value, ["version", "connector", "source", "feed", "documents", "scenarios"], ["spec"]) || value.version !== 1) return undefined;
+  if (!record(value) || !keysExactly(value, ["version", "connector", "source", "feed", "documents", "scenarios"], ["spec", "readPolicyApproval"]) || value.version !== 1) return undefined;
+  const approval = value.readPolicyApproval;
+  if (approval !== undefined && (!record(approval) || !keysExactly(approval, ["contract", "digest"]) || approval.contract !== 1 || typeof approval.digest !== "string")) return undefined;
   if (![value.connector, value.source, value.feed].every((v) => typeof v === "string" && v.length > 0 && v.length <= 256)) return undefined;
   if (!Array.isArray(value.documents) || value.documents.length > 256 || !Array.isArray(value.scenarios) || value.scenarios.length === 0 || value.scenarios.length > SOURCE_TEST_LIMITS.scenarios) return undefined;
   const ids = new Set<string>();
@@ -115,7 +117,7 @@ export async function testSourceForAuthor(recipeFolder: string, fixtureFolder: s
   report.profile = { id: profile.id, version: profile.version, kind: profile.kind };
   const documents = [...loaded.recipe.docs, ...fixture.documents];
   if (new Set(documents.map((doc) => doc.id)).size !== documents.length) return fail("SOURCE_FIXTURE_DUPLICATE_DOCUMENT", "fixture.json", "Fixture documents cannot shadow recipe definitions or each other.");
-  const subject: SourceFixture = { connector: selected.connector, profile, spec: fixture.spec ?? source, documents, feed: fixture.feed };
+  const subject: SourceFixture = { connector: selected.connector, profile, spec: fixture.spec ?? source, documents, feed: fixture.feed, readPolicyApproval: fixture.readPolicyApproval };
   report.missing = missingScenarios(fixture.scenarios.map((scenario) => scenario.name));
   for (const scenario of fixture.scenarios) {
     const problems: string[] = [];

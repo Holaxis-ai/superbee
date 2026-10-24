@@ -961,3 +961,36 @@ for (const id of ["__proto__", "constructor", "toString"]) test(`ordinary pendin
   assert.equal(saved.pending, undefined); assert.ok(Object.hasOwn(saved.records, id)); assert.equal(saved.records[id]!.missing, 0);
   assert.equal(saved.records[id]!.after.title, "Special identity");
 });
+
+test("protected page marker validates exact bounded membership, time, version and scalar identities", async () => {
+  const ids = ["10", "2", "__proto__", "constructor", "toString", "é", "e\u0301"];
+  const pending = Object.fromEntries(ids.map(id => [id, { held_at: AT,
+    change: { external_id: id, change_kind: "changed", changed_fields: ["title"], before: { title: "A" }, after: { title: "B" }, content_digest: "digest" },
+    entry: { after: { title: "B" }, digest: "digest", missing: 0, seen_at: AT } }]));
+  const valid: SourceState = { v: 1, profile: { id: jsonPagesProfile.id, version: jsonPagesProfile.version }, cursor: "old", open: true, validators: { etag: "old" },
+    records: {}, complete_observations: 3, pending, pending_commit: { v: 1, order: ids, page: 1, baseline: false, complete: false } };
+  assert.equal(isSourceState(JSON.parse(JSON.stringify(valid))), true);
+  for (const marker of [null, {}, { ...valid.pending_commit, v: 2 }, { ...valid.pending_commit, extra: true },
+    { ...valid.pending_commit, order: [] }, { ...valid.pending_commit, order: [...ids, ids[0]] },
+    { ...valid.pending_commit, order: ids.slice(1) }, { ...valid.pending_commit, order: ["absent", ...ids.slice(1)] },
+    { ...valid.pending_commit, order: ["\ud800", ...ids.slice(1)] }, { ...valid.pending_commit, page: 0 },
+    { ...valid.pending_commit, page: Number.MAX_SAFE_INTEGER + 1 }, { ...valid.pending_commit, baseline: null }]) {
+    const bad = { ...valid, pending_commit: marker };
+    assert.equal(isSourceState(bad), false);
+    const state = { async read() { return { state: bad as SourceState, version: "original" }; }, async write() { assert.fail("must not rewrite malformed checkpoint"); } };
+    const h = harness(() => { assert.fail("must not acquire malformed checkpoint"); });
+    assert.equal((await h.run({ state, commit: async () => assert.fail("must not consume") })).reason, "state_invalid");
+    assert.equal(h.peer.received.length, 0);
+  }
+  for (const bad of [{ ...valid, pending: { ...pending, "10": { ...pending["10"]!, held_at: "invalid" } } },
+    { ...valid, pending: { ...pending, "10": { ...pending["10"]!, held_at: "2027-01-01T00:00:00Z" } } },
+    { ...valid, pending: { ...pending, "10": { ...pending["10"]!, held_at: "2026-02-30T12:00:00Z" } } },
+    { ...valid, cursor: "x".repeat(4194304) }]) assert.equal(isSourceState(bad), false);
+  const state = new MemoryMachineState(); await state.write(FEED_ID, valid, null);
+  const original = await state.read(FEED_ID), h = harness(() => { assert.fail("must not fetch protected work"); }, { state });
+  assert.equal((await h.run()).reason, "establishment_consumer_required");
+  assert.deepEqual(await state.read(FEED_ID), original);
+  const profile = { ...jsonPagesProfile, version: jsonPagesProfile.version + 1 };
+  assert.equal((await h.run({ profile })).reason, "establishment_scope_changed");
+  assert.deepEqual(await state.read(FEED_ID), original);
+});

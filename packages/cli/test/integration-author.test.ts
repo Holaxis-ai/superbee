@@ -2,12 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, cp } from "node:fs/promises";
 import { promises as fs } from "node:fs";
-import { containsCredentialText } from "@superbee/core/connectors";
+import { bindSourceFeed, containsCredentialText, inspectSourceReadPolicy, parseConnectorDoc } from "@superbee/core/connectors";
+import { buildKindRegistry } from "@superbee/core/kinds";
+import { restJsonProfile } from "@superbee/core/source-profiles";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { runSourceScenario } from "@superbee/core/source-harness";
+import { runSourceScenario, type SourceFixture } from "@superbee/core/source-harness";
 import { installRecipe } from "@superbee/core/recipe-lifecycle";
 import { MemoryBackend } from "@superbee/core/memory-backend";
 import { ticketFixture, SCENARIOS, CONNECTOR_MD } from "../../core/test/fixtures/source-engine/tickets.js";
@@ -148,6 +152,95 @@ test("recorded source test refuses missing scenarios and changed expected receip
       (error: unknown) => error instanceof CliError && error.exitCode === 2 && error.handled);
     assert.equal(JSON.parse(output).ok, false);
     assert.ok(JSON.parse(output).scenarios[0].problems.includes("Run 1: expected receipt differs."));
+  } finally { await rm(w.root, { recursive: true, force: true }); }
+});
+
+async function policyWorkspace() {
+  const w = await workspace();
+  const source = { ...w.base.connector.sources[0]!, profile: "rest-json", request: {
+    host: "tickets.example.org", method: "GET", path: "/boards/{board}/items", items: "items", complete: "always",
+    read_policy: { contract: 1, kind: "bound-get", bindings: { board: "segment" } },
+  } };
+  const frontmatter = { type: "Connector", title: "Recorded policy", auth: { kind: "none" }, domains: ["tickets.example.org"], record_sources: [source] };
+  await writeFile(path.join(w.recipe, "connectors/tickets.md"), markdown(frontmatter));
+  const parsed = parseConnectorDoc({ id: w.base.connector.id, body: "", frontmatter });
+  assert.ok(parsed.ok, JSON.stringify(parsed));
+  const kinds = buildKindRegistry(w.base.documents.filter(doc => doc.id.startsWith("conventions/")), [], { okfVersion: "0.2" });
+  const bound = bindSourceFeed(parsed.connector, w.base.documents.find(doc => doc.id === w.base.feed)!, kinds, { okfVersion: "0.2" });
+  // The fixture author, not the CLI, supplies the reviewed Core inspection result.
+  const readPolicyApproval = { contract: 1 as const, digest: inspectSourceReadPolicy(parsed.connector, bound).digest };
+  const subject: SourceFixture = { ...w.base, connector: parsed.connector, profile: restJsonProfile, spec: parsed.connector.sources[0], readPolicyApproval };
+  const scenario = { name: "policy.recorded", runs: [{ mode: "complete" as const, exchanges: [
+    { request: { url: "https://tickets.example.org/robots.txt" }, response: { status: 404 } },
+    { request: { url: "https://tickets.example.org/boards/main/items" }, response: { status: 200, body: JSON.stringify({ items: [{ id: "t1", title: "Recorded policy observation", status: "OPEN", priority: "low" }] }) } },
+  ] }] };
+  const result = await runSourceScenario(subject, scenario);
+  assert.equal(result.runs[0]!.receipt.outcome, "observed");
+  assert.equal(result.runs[0]!.received.length, 2);
+  const data: SourceAuthorFixture & { readPolicyApproval?: SourceFixture["readPolicyApproval"] } = {
+    version: 1, connector: parsed.connector.id, source: "tickets", feed: w.base.feed,
+    documents: w.base.documents.filter(doc => !doc.id.startsWith("conventions/")), readPolicyApproval,
+    scenarios: [{ ...scenario, expect: result.runs.map(sourceRunExpectation) }],
+  };
+  const save = (value: unknown = data) => writeFile(path.join(w.fixture, "fixture.json"), JSON.stringify(value));
+  await save();
+  return { ...w, data, subject, scenario, frontmatter, save };
+}
+
+test("recorded declared-policy approval reaches the actual harness and CLI without completing a partial suite", async () => {
+  const w = await policyWorkspace(), originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => { throw new Error("recorded policy must not fetch"); }) as typeof fetch;
+  try {
+    const run = await promisify(execFile)(process.execPath, [path.resolve(here, "../../superbee/dist/superbee.mjs"), "source", "test", w.recipe, "--fixture", w.fixture, "--json"])
+      .then(value => ({ ...value, code: 0 }), (error: { stdout: string; stderr: string; code: number }) => error);
+    assert.equal(run.code, 2, run.stderr);
+    assert.equal(JSON.parse(run.stdout).scenarios[0]?.ok, true, run.stdout);
+    assert.equal(JSON.parse(run.stdout).ok, false);
+    const report = await testSourceForAuthor(w.recipe, w.fixture);
+    assert.deepEqual(report.diagnostics, []);
+    assert.equal(report.scenarios[0]?.ok, true, JSON.stringify(report));
+    assert.ok(report.missing.length > 0); assert.equal(report.ok, false, "a positive case is not a complete required suite");
+    let output = "";
+    await assert.rejects(sourceCommand(["test", w.recipe, "--fixture", w.fixture, "--json"], { stdout: text => { output += text; } }),
+      (error: unknown) => error instanceof CliError && error.handled && error.exitCode === 2);
+    assert.equal(JSON.parse(output).scenarios[0].ok, true);
+
+  } finally { globalThis.fetch = originalFetch; await rm(w.root, { recursive: true, force: true }); }
+});
+
+test("recorded declared policies retain Core denial for missing, stale, malformed and changed approvals", async () => {
+  const w = await policyWorkspace();
+  try {
+    for (const approval of [undefined, { contract: 1, digest: `sha256:${"0".repeat(64)}` }, { contract: 1, digest: "not-a-policy-digest" }, { contract: 1, digest: secret }]) {
+      await w.save({ ...w.data, readPolicyApproval: approval });
+      const report = await testSourceForAuthor(w.recipe, w.fixture);
+      assert.deepEqual(report.diagnostics, []);
+      assert.equal(report.scenarios[0]?.ok, false);
+      assert.ok(report.scenarios[0]!.problems.includes("Run 1: expected receipt differs."));
+      assert.equal(JSON.stringify(report).includes(secret), false);
+      const denied = await runSourceScenario({ ...w.subject, readPolicyApproval: approval as SourceFixture["readPolicyApproval"] }, w.scenario);
+      assert.equal(denied.runs[0]!.receipt.reason, "read_policy_unapproved");
+      assert.equal(denied.runs[0]!.received.length, 0);
+    }
+    for (const approval of [null, [], {}, { contract: 2, digest: secret }, { contract: 1, digest: 3 }, { contract: 1, digest: w.data.readPolicyApproval!.digest, extra: secret }]) {
+      await w.save({ ...w.data, readPolicyApproval: approval });
+      const report = await testSourceForAuthor(w.recipe, w.fixture);
+      assert.equal(report.diagnostics[0]?.code, "SOURCE_FIXTURE_INVALID");
+      assert.equal(JSON.stringify(report).includes(secret), false);
+      for (const format of [[], ["--json"]]) {
+        let output = "";
+        await assert.rejects(sourceCommand(["test", w.recipe, "--fixture", w.fixture, ...format], { stdout: text => { output += text; } }),
+          (error: unknown) => error instanceof CliError && error.handled && error.exitCode === 2 && !error.message.includes(secret));
+        assert.equal(output.includes(secret), false);
+      }
+    }
+    const changed = structuredClone(w.frontmatter);
+    Object.assign(changed.record_sources[0]!.request, { query: { view: "changed" } });
+    await writeFile(path.join(w.recipe, "connectors/tickets.md"), markdown(changed));
+    await w.save();
+    const stale = await testSourceForAuthor(w.recipe, w.fixture);
+    assert.deepEqual(stale.diagnostics, []); assert.equal(stale.scenarios[0]?.ok, false);
+    assert.ok(stale.scenarios[0]!.problems.includes("Run 1: expected receipt differs."));
   } finally { await rm(w.root, { recursive: true, force: true }); }
 });
 

@@ -265,3 +265,14 @@ test("snapshot consumer cannot erase protected establishment replay through an o
   assert.equal(receipt.reason, "establishment_consumer_required"); assert.equal(commits, 0); assert.equal(writes, 0);
   assert.deepEqual(await state.read(bound.policy.feed), checkpoint);
 });
+
+test("snapshot admission cannot consume a protected qualified page checkpoint", async () => {
+  const b = bind(), state = new MemoryMachineState();
+  await run(b, input(), state, async () => ({ retry: ["stable-1"] }));
+  const before = (await state.read(b.policy.feed))!;
+  const protectedState = { ...before.state, pending_commit: { v: 1 as const, order: ["stable-1"], page: 1, baseline: true, complete: false } };
+  await state.write(b.policy.feed, protectedState, before.version);
+  const checkpoint = await state.read(b.policy.feed); let commits = 0;
+  await assert.rejects(run(b, input(2), state, async () => { commits++; }), code("SNAPSHOT_STATE_INVALID"));
+  assert.equal(commits, 0); assert.deepEqual(await state.read(b.policy.feed), checkpoint);
+});

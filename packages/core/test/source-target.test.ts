@@ -8,6 +8,7 @@ import { buildSourceIndex } from "../src/record-overlay/source-index.js";
 import { mutateDocument } from "../src/document-mutation.js";
 import { parseMarkdown } from "../src/document-codec.js";
 import { VersionConflict } from "../src/versioning.js";
+import { InvalidInputError } from "../src/errors.js";
 import { signalConvention, SOURCE_FEED_CONVENTION } from "./record-overlay-helpers.js";
 import { ticketConnector, TICKET_CONVENTION, FEED_FRONTMATTER, FEED_ID, FEED_URL, SPEC, ticket } from "./fixtures/source-engine/tickets.js";
 import { jsonPagesProfile } from "./fixtures/source-engine/json-pages-profile.js";
@@ -211,4 +212,243 @@ for (const externalId of ["__proto__", "constructor", "toString"]) test(`externa
   await w.backend.write("tickets/manual-duplicate", { ...row, id: "tickets/manual-duplicate" });
   const duplicate = await w.adapter();
   await assert.rejects(duplicate.prepareCommit({ ...page(after), changes: [{ ...page(after).changes[0]!, external_id: externalId }] }), /ambiguous identity/);
+});
+
+/** The actual paired consumer co-publishes its stage with the supplying state acknowledgment. */
+function targetState(state: MemoryMachineState, adapter: Awaited<ReturnType<Awaited<ReturnType<typeof world>>["adapter"]>>) {
+  return { read: state.read.bind(state), async write(...args: Parameters<MemoryMachineState["write"]>) {
+    const version = await state.write(...args);
+    if (!args[1].pending_commit) adapter.consume();
+    return version;
+  } };
+}
+function observeTargets(w: Awaited<ReturnType<typeof world>>, adapter: Awaited<ReturnType<typeof w.adapter>>, state: Parameters<typeof observeSource>[0]["state"], records: Record<string, unknown>[],
+  input: { at?: string; acquired?: () => void; signal?: AbortSignal; more?: boolean; mode?: "complete" | "incremental" } = {}) {
+  return observeSource({ connector: w.connector, bound: w.bound, profile: { ...jsonPagesProfile, async observe() {
+    input.acquired?.(); return { records, nextCursor: input.more ? "next" : null, more: input.more ?? false, complete: true, validators: { etag: "new" } };
+  } }, spec: SPEC, identity: fetchIdentity("Synthetic/1 (+https://example.org)"), state, now: () => new Date(input.at ?? AT),
+  transport: { async request() { throw new Error("profile must not use transport"); } }, signal: input.signal, mode: input.mode,
+  prepareCommit: adapter.prepareCommit, commit: adapter.commit });
+}
+
+test("qualified create, accepted replacement, Signal and no-op checkpoint every supplying group before effects", async () => {
+  const w = await world(), state = new MemoryMachineState(), first = await w.adapter();
+  let effects = 0;
+  const write = w.backend.write.bind(w.backend);
+  w.backend.write = async (...args) => {
+    const durable = (await state.read(FEED_ID))!.state;
+    assert.deepEqual(durable.pending_commit?.order, ["t1"]);
+    effects++; return write(...args);
+  };
+  assert.equal((await observeTargets(w, first, targetState(state, first), [ticket("t1", "A")])).outcome, "observed");
+  const accepted = first.snapshot(), target = accepted.entries[0]!.target;
+  const next = await w.adapter({ overlay: { content: { bundle: w.bundle, registry: w.registry, okfVersion: "0.2" }, policy: w.bound.policy,
+    actor: "process:synthetic", overlays: await buildSourceIndex(w.bundle), accepted } });
+  const before = effects;
+  const changed = await observeTargets(w, next, targetState(state, next), [ticket("t1", "B")]);
+  assert.equal(changed.outcome, "observed", changed.detail); assert.ok(effects > before);
+  assert.equal((await w.backend.read(target)).doc.frontmatter.title, "B");
+  assert.ok((await w.backend.list()).some(id => id.startsWith("signals/")), "actual Signal creation/update executes");
+  assert.equal((await state.read(FEED_ID))!.state.pending_commit, undefined);
+  assert.equal(next.snapshot().entries[0]!.after.title, "B");
+  const writesBeforeNoop = effects;
+  assert.equal((await observeTargets(w, next, targetState(state, next), [ticket("t1", "B")])).outcome, "observed");
+  assert.equal(effects, writesBeforeNoop);
+});
+
+for (const persists of [false, true]) test(`a failed qualified supplying checkpoint (${persists ? "lost acknowledgment" : "not stored"}) prevents accepted-target and Signal effects`, async () => {
+  const w = await world(), state = new MemoryMachineState(), first = await w.adapter();
+  await observeTargets(w, first, targetState(state, first), [ticket("t1", "A")]);
+  const original = await state.read(FEED_ID), accepted = first.snapshot();
+  const adapter = await w.adapter({ overlay: { content: { bundle: w.bundle, registry: w.registry, okfVersion: "0.2" }, policy: w.bound.policy,
+    actor: "process:synthetic", overlays: await buildSourceIndex(w.bundle), accepted } });
+  let effects = 0; const write = w.backend.write.bind(w.backend);
+  w.backend.write = async (...args) => { effects++; return write(...args); };
+  const receipt = await observeTargets(w, adapter, { read: state.read.bind(state), async write(...args) {
+    if (persists) await state.write(...args);
+    throw new Error("checkpoint acknowledgement lost");
+  } }, [ticket("t1", "B")]);
+  assert.equal(receipt.reason, "state_unwritable"); assert.equal(effects, 0);
+  const saved = await state.read(FEED_ID);
+  if (persists) { assert.ok(saved!.state.pending_commit); assert.deepEqual(saved!.state.records, original!.state.records); }
+  else assert.deepEqual(saved, original);
+  assert.deepEqual(adapter.snapshot(), accepted); assert.equal(adapter.stagedSnapshot(), null);
+});
+
+test("whole protected group retains old state and acceptance on retry, then replays original order/time", async () => {
+  const w = await world(), state = new MemoryMachineState();
+  const order = ["10", "2", "__proto__", "constructor", "toString", "é", "e\u0301"];
+  for (const id of order) {
+    const target = sourceTargetId({ ...idInput, externalId: id });
+    await w.backend.write(target, { id: target, frontmatter: { type: "Ticket", title: "A", state: "open", priority: "low", sources: [{ resource: FEED_URL, id }] }, body: "Editor notes" });
+  }
+  const initial = await w.adapter();
+  const adopted = await observeTargets(w, initial, targetState(state, initial), order.map(id => ticket(id, "A")));
+  assert.equal(adopted.outcome, "observed", adopted.detail);
+  const old = (await state.read(FEED_ID))!.state, accepted = initial.snapshot();
+  let failing = true, effects = 0;
+  const seen: string[] = [], planned: string[] = [];
+  const write = w.backend.write.bind(w.backend);
+  w.backend.write = async (...args) => {
+    effects++;
+    if (failing && args[0] === sourceTargetId({ ...idInput, externalId: "2" })) throw new VersionConflict(args[0], null, null);
+    return write(...args);
+  };
+  async function fresh() {
+    return w.adapter({ overlay: { content: { bundle: w.bundle, registry: w.registry, okfVersion: "0.2" }, policy: w.bound.policy,
+      actor: "process:synthetic", overlays: await buildSourceIndex(w.bundle), accepted,
+      hooks: { correlate: { kind: "Ticket", match(_fields, frontmatter, id) {
+        if ((frontmatter.sources as Array<{ id: string }>)[0]!.id === order[0]) planned.push(id);
+        return null;
+      } }, assertCandidate(_existing, candidate, context) {
+        const durable = state.read(FEED_ID);
+        if (context.bundle === "ops") seen.push(candidate.frontmatter.observed_at as string);
+        return durable.then(row => { assert.deepEqual(row!.state.pending_commit?.order, order); });
+      } } } });
+  }
+  let acquired = 0;
+  const originalAt = "2026-10-25T12:00:00.000Z", a = await fresh();
+  const held = await observeTargets(w, a, targetState(state, a), order.map(id => ticket(id, "B")), { at: originalAt, more: true, acquired: () => acquired++ });
+  assert.equal(held.reason, "establishment_pending", held.detail); assert.equal(acquired, 1);
+  const checkpoint = await state.read(FEED_ID), pending = checkpoint!.state;
+  assert.deepEqual(pending.pending_commit, { v: 1, order, page: 1, baseline: false, complete: false });
+  assert.deepEqual(pending.records, old.records); assert.deepEqual(pending.cursor, old.cursor);
+  assert.deepEqual(pending.validators, old.validators); assert.equal(pending.complete_observations, old.complete_observations);
+  assert.deepEqual(a.snapshot(), accepted); assert.equal(a.stagedSnapshot(), null);
+  assert.ok(effects >= 2, "a partial physical effect does not accept any record in the group");
+  assert.ok(seen.length > 0 && seen.every(at => at === originalAt), "actual Signal effects use supplying observation time");
+  for (let attempt = 0; attempt < 7; attempt++) {
+    const b = await fresh();
+    const receipt = await observeTargets(w, b, targetState(state, b), [], { at: "2027-01-01T00:00:00Z", acquired: () => assert.fail("unresolved group must not acquire") });
+    assert.equal(receipt.reason, "establishment_pending", receipt.detail);
+    assert.deepEqual(await state.read(FEED_ID), checkpoint); assert.deepEqual(b.snapshot(), accepted); assert.equal(b.stagedSnapshot(), null);
+  }
+  // Failures cannot advance the group or generate a newer observation. Actual document state
+  // is allowed to contain the earlier partial writes, which replay meets as converged/no-op.
+  failing = false; seen.length = 0; planned.length = 0;
+  const b = await fresh(), controller = new AbortController();
+  const recovered = await observeTargets(w, b, { read: state.read.bind(state), async write(...args) {
+    const version = await state.write(...args); b.consume(); controller.abort(); return version;
+  } }, [], { at: "2027-01-01T00:00:00Z", signal: controller.signal, acquired: () => assert.fail("recovery checkpoint aborts before acquisition") });
+  assert.equal(recovered.reason, "deadline"); assert.equal(recovered.pages, 0); assert.equal(recovered.pass.complete, false);
+  const after = (await state.read(FEED_ID))!.state;
+  assert.equal(after.pending_commit, undefined); assert.equal(after.pending, undefined);
+  assert.deepEqual(after.cursor, old.cursor); assert.deepEqual(after.validators, old.validators);
+  assert.equal(after.complete_observations, old.complete_observations);
+  assert.ok(seen.every(at => at === originalAt), "Signal replay cannot restamp a new observation time");
+  assert.deepEqual(planned, order, "actual overlay planning preserves original numeric, special and Unicode identity order");
+  assert.deepEqual(Object.keys(after.records).sort(), [...order].sort());
+});
+
+test("converged protected change acknowledges a real zero-effect stage", async () => {
+  const w = await world(), state = new MemoryMachineState(), initial = await w.adapter();
+  const record = (title: string) => { const { html_url: _url, ...row } = ticket("t1", title); return row; };
+  await observeTargets(w, initial, targetState(state, initial), [record("A")]);
+  const accepted = initial.snapshot(), id = accepted.entries[0]!.target, row = await w.backend.read(id);
+  await w.backend.write(id, { ...row.doc, frontmatter: { ...row.doc.frontmatter, title: "B" } }, { expectedVersion: row.version });
+  const adapter = await w.adapter({ overlay: { content: { bundle: w.bundle, registry: w.registry, okfVersion: "0.2" }, policy: w.bound.policy,
+    actor: "process:synthetic", overlays: await buildSourceIndex(w.bundle), accepted } });
+  let pending = 0, stages = 0, effects = 0;
+  const write = w.backend.write.bind(w.backend);
+  w.backend.write = async (...args) => { effects++; return write(...args); };
+  const receipt = await observeTargets(w, adapter, { read: state.read.bind(state), async write(...args) {
+    if (args[1].pending_commit) { pending++; assert.equal(adapter.stagedSnapshot(), null); }
+    else { assert.ok(adapter.stagedSnapshot()); stages++; }
+    const version = await state.write(...args); if (!args[1].pending_commit) adapter.consume(); return version;
+  } }, [record("B")]);
+  assert.equal(receipt.outcome, "observed", receipt.detail); assert.deepEqual({ pending, stages, effects }, { pending: 1, stages: 1, effects: 0 });
+  assert.equal(adapter.snapshot().entries[0]!.after.title, "B");
+});
+
+test("old establishment checkpoints retain protection without inventing mixed page context", async () => {
+  const w = await world(), state = new MemoryMachineState(), adapter = await w.adapter();
+  w.unknown(true);
+  assert.equal((await observeTargets(w, adapter, targetState(state, adapter), [ticket("t1", "A")])).reason, "commit_failed");
+  const original = (await state.read(FEED_ID))!;
+  const legacy = structuredClone(original.state); delete legacy.pending_commit;
+  await state.write(FEED_ID, legacy, original.version);
+  const checkpoint = await state.read(FEED_ID), recovered = await w.adapter();
+  const controller = new AbortController();
+  const result = await observeTargets(w, recovered, { read: state.read.bind(state), async write(...args) {
+    const version = await state.write(...args); recovered.consume(); controller.abort(); return version;
+  } }, [], { at: "2027-01-01T00:00:00Z", signal: controller.signal, acquired: () => assert.fail("must replay before provider") });
+  assert.equal(result.reason, "deadline"); assert.equal((await state.read(FEED_ID))!.state.pending, undefined);
+  for (const mix of ["group", "time", "ordinary"] as const) {
+    const bad = structuredClone(checkpoint!.state), extra = structuredClone(bad.pending!.t1!);
+    extra.change.external_id = "a";
+    if (mix === "group") extra.establishment!.group = "different";
+    if (mix === "time") extra.held_at = extra.establishment!.observed_at = extra.establishment!.intent!.createdAt = "2027-01-01T00:00:00Z";
+    if (mix === "ordinary") delete extra.establishment;
+    bad.pending!.a = extra;
+    const store = new MemoryMachineState(); await store.write(FEED_ID, bad, null);
+    const before = await store.read(FEED_ID), b = await w.adapter();
+    const refused = await observeTargets(w, b, targetState(store, b), [], { acquired: () => assert.fail("mixed contexts must hold") });
+    assert.equal(refused.reason, "establishment_scope_changed"); assert.deepEqual(await store.read(FEED_ID), before);
+  }
+});
+
+test("protected accepted-target work survives gone records and profile reset without provider replacement", async () => {
+  const w = await world(), state = new MemoryMachineState(), initial = await w.adapter();
+  await observeTargets(w, initial, targetState(state, initial), [ticket("t1", "A")]);
+  const accepted = initial.snapshot();
+  // Each actual paired adapter gets a current Core index; no synthetic consumer is registered.
+  const adapter = await w.adapter({ overlay: { content: { bundle: w.bundle, registry: w.registry, okfVersion: "0.2" }, policy: w.bound.policy,
+    actor: "process:synthetic", overlays: await buildSourceIndex(w.bundle), accepted } });
+  let effects = 0;
+  w.backend.write = async () => { effects++; throw new Error("outcome unknown"); };
+  const failed = await observeTargets(w, adapter, targetState(state, adapter), [ticket("t1", "B")]);
+  assert.equal(failed.reason, "commit_failed");
+  const checkpoint = (await state.read(FEED_ID))!, gone = structuredClone(checkpoint.state);
+  gone.records.t1!.gone = true;
+  await state.write(FEED_ID, gone, checkpoint.version);
+  const original = await state.read(FEED_ID);
+  const b = await w.adapter({ overlay: { content: { bundle: w.bundle, registry: w.registry, okfVersion: "0.2" }, policy: w.bound.policy,
+    actor: "process:synthetic", overlays: await buildSourceIndex(w.bundle), accepted } });
+  const before = effects;
+  assert.equal((await observeTargets(w, b, targetState(state, b), [], { acquired: () => assert.fail("must not acquire while unknown") })).reason, "establishment_pending");
+  assert.ok(effects > before, "protected changed work is not filtered by old gone state");
+  assert.deepEqual(await state.read(FEED_ID), original);
+  const count = effects;
+  const receipt = await observeSource({ connector: w.connector, bound: w.bound, profile: { ...jsonPagesProfile, version: jsonPagesProfile.version + 1,
+    async observe() { assert.fail("profile reset cannot replace protected work"); } }, spec: SPEC, identity: fetchIdentity("Synthetic/1 (+https://example.org)"),
+    state, transport: { async request() { assert.fail("must not acquire"); } }, prepareCommit: b.prepareCommit, commit: b.commit });
+  assert.equal(receipt.reason, "establishment_scope_changed"); assert.equal(effects, count); assert.deepEqual(await state.read(FEED_ID), original);
+});
+
+test("disappearance Signal keeps the complete supplying baseline protected until acknowledgment", async () => {
+  const w = await world(), state = new MemoryMachineState(), initial = await w.adapter();
+  await observeTargets(w, initial, targetState(state, initial), [ticket("t1", "A")], { mode: "complete" });
+  const accepted = initial.snapshot();
+  const adapter = await w.adapter({ overlay: { content: { bundle: w.bundle, registry: w.registry, okfVersion: "0.2" }, policy: w.bound.policy,
+    actor: "process:synthetic", overlays: await buildSourceIndex(w.bundle), accepted } });
+  await observeTargets(w, adapter, targetState(state, adapter), [], { mode: "complete" });
+  const old = (await state.read(FEED_ID))!.state;
+  let effects = 0;
+  w.backend.write = async () => {
+    const supplying = (await state.read(FEED_ID))!.state;
+    assert.equal(supplying.pending!.t1!.change.change_kind, "disappeared");
+    assert.equal(supplying.pending_commit!.complete, true);
+    assert.deepEqual(supplying.records, old.records); assert.equal(supplying.complete_observations, old.complete_observations);
+    effects++; throw new Error("Signal outcome unknown");
+  };
+  const receipt = await observeTargets(w, adapter, targetState(state, adapter), [], { mode: "complete" });
+  assert.equal(receipt.reason, "commit_failed"); assert.equal(effects, 1);
+  const saved = (await state.read(FEED_ID))!.state;
+  assert.equal(saved.records.t1!.gone, undefined); assert.equal(saved.pending!.t1!.entry.gone, true);
+  assert.equal(adapter.stagedSnapshot(), null); assert.deepEqual(adapter.snapshot(), accepted);
+});
+
+test("a permanent overlay hold retains the whole qualified group and discards its stage", async () => {
+  const w = await world(), state = new MemoryMachineState(), initial = await w.adapter();
+  await observeTargets(w, initial, targetState(state, initial), [ticket("t1", "A")]);
+  const old = (await state.read(FEED_ID))!.state, accepted = initial.snapshot();
+  const adapter = await w.adapter({ overlay: { content: { bundle: w.bundle, registry: w.registry, okfVersion: "0.2" }, policy: w.bound.policy,
+    actor: "process:synthetic", overlays: await buildSourceIndex(w.bundle), accepted } });
+  w.backend.write = async () => { throw new InvalidInputError("candidate refused"); };
+  let acquisitions = 0;
+  const receipt = await observeTargets(w, adapter, targetState(state, adapter), [ticket("t1", "B")], { more: true, acquired: () => acquisitions++ });
+  assert.equal(receipt.reason, "establishment_pending"); assert.equal(acquisitions, 1);
+  const saved = (await state.read(FEED_ID))!.state;
+  assert.ok(saved.pending_commit); assert.deepEqual(saved.records, old.records); assert.deepEqual(saved.cursor, old.cursor);
+  assert.deepEqual(adapter.snapshot(), accepted); assert.equal(adapter.stagedSnapshot(), null);
 });
