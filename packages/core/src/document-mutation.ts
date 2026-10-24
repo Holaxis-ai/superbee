@@ -14,6 +14,7 @@ import { assertOrdinaryPatch, prepareDocumentAssignments, prepareDocumentFieldAc
 import { prepareKindFieldMutation, type KindFieldMutation } from "./kind-field-mutation.js";
 import { appendVerificationEvent, type AppendVerificationOptions } from "./verification.js";
 import { okfValuesEqual } from "./okf-authored-values.js";
+import { isRequestIdentity } from "./uncertain-write.js";
 import { InvalidInputError } from "./errors.js";
 import { kindDeprecationTransition } from "./kind-deprecation.js";
 import { KindConformanceError } from "./kind-conformance-error.js";
@@ -91,6 +92,8 @@ export type DocumentMutationInput =
   | { kind: "kind-field"; mutation: KindFieldMutation };
 
 export interface MutateDocumentOptions {
+  /** Identified create-only write; allocated and durably owned by the caller. */
+  requestId?: string;
   /** Fixed data-only persistence premise; only hard-CAS existing replacement is supported. */
   inventoryGuard?: Pick<InventoryGuardRequest, "target" | "domain" | "inventory">;
   bundle: Bundle;
@@ -423,6 +426,9 @@ function resolvePersistActor(opts: { actor?: string; persistActor?: boolean }): 
 }
 
 export async function mutateDocument(opts: MutateDocumentOptions): Promise<DocumentMutationResult> {
+  if (opts.requestId !== undefined && (opts.mode !== "create-only" || typeof opts.requestId !== "string" || !isRequestIdentity(opts.requestId))) {
+    throw new InvalidInputError("requestId requires create-only mode and a valid request identity.");
+  }
   if (opts.expectedVersion !== undefined && opts.mode !== "patch" && opts.mode !== "replace-document") {
     throw new InvalidInputError("expectedVersion requires patch or replace-document mode.");
   }
@@ -522,6 +528,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
     const { candidate, warnings } = await prepare(undefined, decisionNow);
     const { doc, version } = await writeDocVersionedForEdition(opts.bundle, { id: opts.id, ...candidate }, okfVersion, {
       expectedVersion: null,
+      ...(opts.requestId !== undefined ? { requestId: opts.requestId } : {}),
       actor: opts.actor,
       bodyReplace: opts.bodyReplace,
     });

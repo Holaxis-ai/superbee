@@ -62,3 +62,6 @@ export type { BoundSnapshotSource, SnapshotDocument, DecodedSnapshot, SnapshotRe
   SnapshotAdmissionOptions, SnapshotAdmission, ObserveSnapshotOptions, SnapshotRunReceipt } from "./snapshot.js";
 export { SnapshotEvidenceRefusal, parseSnapshotEvidence, assessSnapshotFreshness } from "./evidence.js";
 export type { SnapshotEvidenceIdentity, SnapshotEvidence, SnapshotEvidenceObservation, SnapshotFreshnessRow, SnapshotFreshness } from "./evidence.js";
+
+export { sourceTargetId, createSourceTargetAdapter } from "./target.js";
+export type { SourceTargetNamespace, SourceTargetLimits, SourceTargetAdmission, SourceTargetDelivery, SourceTargetAdapterOptions, SourceEstablishment, SourceCommitPreparation } from "./target.js";

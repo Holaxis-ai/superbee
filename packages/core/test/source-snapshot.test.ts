@@ -248,3 +248,20 @@ test("snapshot publication failure discards staged tuples; the same generation c
   assert.equal(accepted.entries.length, 1); assert.deepEqual((await state.read(FEED))!.state.cursor, { v: 1, generation: 5, sha256: snapshot.sha256 });
   assert.equal((await w.read("events/one")).doc.frontmatter.venue_text, "Observed");
 });
+
+
+test("snapshot consumer cannot erase protected establishment replay through an ordinary commit", async () => {
+  const bound = bind(), state = new MemoryMachineState();
+  await run(bound, input(), state);
+  const stored = (await state.read(bound.policy.feed))!;
+  const entry = stored.state.records["stable-1"]!;
+  stored.state.pending = { "stable-1": { entry: structuredClone(entry), held_at: AT,
+    change: { external_id: "stable-1", change_kind: "changed", before: null, after: entry.after, changed_fields: Object.keys(entry.after), content_digest: entry.digest },
+    establishment: { contract: 1, generation: "original", group: "original-group", target: "results/one", kind: "adopt", expectedVersion: "approved", observed_at: AT } } };
+  await state.write(bound.policy.feed, stored.state, stored.version);
+  const checkpoint = await state.read(bound.policy.feed); let commits = 0, writes = 0;
+  const receipt = await observeSnapshot({ bound, snapshot: input(), previousBindingDigest: bound.bindingDigest, capacity: capacity(),
+    state: { read: state.read.bind(state), async write(...args) { writes++; return state.write(...args); } }, commit: async () => { commits++; } });
+  assert.equal(receipt.reason, "establishment_consumer_required"); assert.equal(commits, 0); assert.equal(writes, 0);
+  assert.deepEqual(await state.read(bound.policy.feed), checkpoint);
+});

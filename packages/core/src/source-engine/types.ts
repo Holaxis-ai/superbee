@@ -2,6 +2,7 @@
 import type { BoundFeed, Connector, MappingDiagnostic } from "../connectors.js";
 import type { Finding, RecordChange } from "../record-overlay/types.js";
 import type { ConceptId } from "../types.js";
+import type { SourceCommitPreparation, SourceEstablishment } from "./target.js";
 import type { MachineState } from "./machine-state.js";
 import type { FetchIdentity } from "./robots.js";
 
@@ -192,6 +193,7 @@ export interface SourceRequestRow {
 
 /** What the caller writes for one page: the record-overlay changes, and whether the pass ended complete. */
 export interface PageCommit {
+  establishments?: Readonly<Record<string, SourceEstablishment>>;
   feed: ConceptId;
   provider: string;
   observed_at: string;
@@ -274,5 +276,7 @@ export interface ObserveSourceOptions<Spec = unknown, Cursor = unknown> {
   rules?: RequestRules;
   statuses?: Partial<StatusRules>;
   /** Write one page's changes; the cursor and record state are stored only after this resolves. */
+  /** Establishment recovery requires the original paired callbacks from createSourceTargetAdapter. */
+  prepareCommit?(page: PageCommit): Promise<SourceCommitPreparation>;
   commit(page: PageCommit): Promise<CommitResult | void>;
 }

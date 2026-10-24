@@ -2,6 +2,10 @@
 import { changeBetween, mapRecord, type BoundFeed, type MappingDiagnostic } from "../connectors.js";
 import { overlayCanonicalJson } from "../record-overlay/canonical.js";
 import type { Finding, RecordChange } from "../record-overlay/types.js";
+import { parseMarkdown } from "../document-codec.js";
+import { isSourceTargetConsumer } from "./target-consumer.js";
+import { isSourceEstablishment } from "./target-descriptor.js";
+import type { SourceCommitPreparation, SourceEstablishment } from "./target.js";
 import { SourceStop, type Stop } from "./guard.js";
 import type { MachineState, PendingChange, RecordEntry, SourceState } from "./machine-state.js";
 import type { CommitResult, ObservePage, PageCommit, ProfileDiagnostic, SourceRunReceipt } from "./types.js";
@@ -14,6 +18,10 @@ const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
 const clip = (text: string, n: number): string => (text.length > n ? text.slice(0, n - 1) + "…" : text);
+
+/** External identities are arbitrary strings, including Object.prototype member names. */
+const idMap = <T>(entries?: Readonly<Record<string, T>>): Record<string, T> => Object.assign(Object.create(null) as Record<string, T>, entries);
+const ownEntry = <T>(entries: Readonly<Record<string, T>>, id: string): T | undefined => Object.hasOwn(entries, id) ? entries[id] : undefined;
 
 /** JSON data only: finite numbers, plain objects and arrays, no undefined members. */
 export function isJsonData(value: unknown, depth = 0): boolean {
@@ -73,7 +81,7 @@ function diffPage(state: SourceState, page: ObservePage<unknown>, bound: BoundFe
   const changes: RecordChange[] = [];
   const entries = new Map<string, RecordEntry>();
   for (const [id, mapped] of last) {
-    const stored = Object.hasOwn(state.records, id) ? state.records[id] : undefined;
+    const stored = ownEntry(state.records, id);
     if (mapped.kind === "refused") {
       // Refused but present: still observed, so never missing; its accepted values stay.
       if (stored) entries.set(id, { ...stored, missing: 0, seen_at: observedAt, first_missing_at: undefined });
@@ -141,6 +149,7 @@ interface DriverOptions {
   lastUrl?(): string | undefined;
   stop(stop: Stop, url?: string): void;
   extraFindings: Finding[];
+  prepareCommit?(page: PageCommit): Promise<SourceCommitPreparation>;
   commit(page: PageCommit): Promise<CommitResult | void>;
 }
 export async function driveObservation(options: DriverOptions): Promise<void> {
@@ -158,6 +167,9 @@ export async function driveObservation(options: DriverOptions): Promise<void> {
   /** Store `next` after a commit; false when the store refused it and the run has stopped. */
   const store = async (next: SourceState): Promise<boolean> => {
     try {
+      if ((options.prepareCommit || Object.values(state.pending ?? {}).some(p => p.establishment))
+        && (Object.values(next.pending ?? {}).filter(p => p.establishment).length > 100
+          || new TextEncoder().encode(JSON.stringify(next)).length > 4194304)) throw new Error("source establishment state limit");
       version = await options.state.write(key, next, version);
       state = next;
       receipt.pending = Object.keys(next.pending ?? {}).length;
@@ -173,26 +185,41 @@ export async function driveObservation(options: DriverOptions): Promise<void> {
     // Changes an earlier commit asked to retry are planned again before anything is fetched. A
     // record that has since disappeared has nothing left to write, unless the held change is the
     // record coming back.
+    const retained = Object.values(state.pending ?? {}).filter(p => p.establishment);
+    if (retained.length && !isSourceTargetConsumer(options.prepareCommit, options.commit)) {
+      stop = { outcome: "failed", reason: "establishment_consumer_required", retry: false }; return;
+    }
+    if (retained.length > 100 || (retained.length > 0 && new TextEncoder().encode(JSON.stringify(state)).length > 4194304)) {
+      stop = { outcome: "failed", reason: "establishment_state_limit", retry: false }; return;
+    }
     const pendingIds = signal.aborted ? [] : Object.keys(state.pending ?? {}).sort();
     if (pendingIds.length) {
       const pending = state.pending!;
-      const live = pendingIds.filter((id) => !state.records[id]?.gone || pending[id]!.change.change_kind === "new");
+      const live = pendingIds.filter((id) => pending[id]!.establishment !== undefined || !ownEntry(state.records, id)?.gone || pending[id]!.change.change_kind === "new");
+      const marked = live.filter(id => pending[id]!.establishment !== undefined);
+      const establishments = Object.fromEntries(marked.map(id => [id, pending[id]!.establishment!]));
       const changes = live.map((id) => pending[id]!.change);
-      const records: Record<string, { fields: Record<string, unknown> }> = {};
+      const records = idMap<{ fields: Record<string, unknown> }>();
       for (const change of changes) records[change.external_id] = { fields: { ...(change.after ?? change.before ?? {}) } };
       let result: { hold: Set<string>; retry: Set<string> } | undefined;
       let failure: string | undefined;
       if (live.length) {
         try {
-          result = commitResult(await options.commit({
+          result = commitResult(await options.commit(structuredClone({
             feed: key, provider: bound.policy.provider, observed_at: observedAt, page: 0, replay: true, changes, records, baseline: false, complete: false,
-          }));
+            ...(marked.length ? { establishments } : {}),
+          })));
         } catch (error) {
           failure = errorText(error);
         }
       }
-      const nextRecords = { ...state.records };
-      const nextPending: Record<string, PendingChange> = {};
+      if (marked.some(id => failure !== undefined || result!.retry.has(id) || result!.hold.has(id))) {
+        receipt.held += marked.length;
+        stop = { outcome: "failed", reason: "establishment_pending", retry: true, ...(failure ? { detail: failure } : {}) };
+        return;
+      }
+      const nextRecords = idMap(state.records);
+      const nextPending = idMap<PendingChange>();
       const dropped: string[] = [];
       for (const id of live) {
         const entry = pending[id]!;
@@ -207,7 +234,7 @@ export async function driveObservation(options: DriverOptions): Promise<void> {
         } else if (!result!.hold.has(id)) {
           // The record's absence since the hold is newer than the change, so its count stays; a
           // record that comes back starts afresh.
-          const current = state.records[id];
+          const current = ownEntry(state.records, id);
           nextRecords[id] = entryJson(current?.gone ? entry.entry : { ...entry.entry, missing: current?.missing ?? 0, first_missing_at: current?.first_missing_at });
         }
       }
@@ -287,7 +314,7 @@ export async function driveObservation(options: DriverOptions): Promise<void> {
       for (const id of diff.seen) seen.add(id);
       const ended = !page.more;
       const complete = ended && mode === "complete" && page.complete && sourceComplete;
-      const merged: Record<string, RecordEntry> = { ...state.records };
+      const merged = idMap(state.records);
       for (const [id, entry] of diff.entries) merged[id] = entry;
       const missing = complete ? missingAfterComplete(merged, seen, threshold, observedAt) : { changes: [], entries: new Map<string, RecordEntry>() };
       const changes = [...diff.changes, ...missing.changes];
@@ -299,22 +326,52 @@ export async function driveObservation(options: DriverOptions): Promise<void> {
       const unlisted = complete ? Object.keys(state.pending ?? {}).filter((id) => !seen.has(id)) : [];
       const superseded = [...new Set([...diff.seen, ...missing.entries.keys(), ...unlisted])].filter((id) => state.pending !== undefined && Object.hasOwn(state.pending, id));
       if (superseded.length) {
-        const remaining: Record<string, PendingChange> = { ...state.pending };
+        const remaining = idMap(state.pending);
         for (const id of superseded) delete remaining[id];
         const pre: SourceState = { ...state };
         if (Object.keys(remaining).length) pre.pending = remaining;
         else delete pre.pending;
         if (!(await store(pre))) break;
       }
-      const records: Record<string, { fields: Record<string, unknown> }> = {};
+      const records = idMap<{ fields: Record<string, unknown> }>();
       for (const change of changes) records[change.external_id] = { fields: { ...(change.after ?? change.before ?? {}) } };
 
       let result: { hold: Set<string>; retry: Set<string> };
       try {
-        result = commitResult(await options.commit({
+        const commitPage: PageCommit = JSON.parse(JSON.stringify({
           feed: key, provider: bound.policy.provider, observed_at: observedAt, page: receipt.pages + 1, replay: false,
           changes, records, baseline, complete,
         }));
+        if (options.prepareCommit) {
+          const prepared = await options.prepareCommit(structuredClone(commitPage));
+          if (!isJsonData(prepared) || !record(prepared.establishments)) throw new Error("invalid source preparation");
+          const descriptors: Record<string, SourceEstablishment> = JSON.parse(JSON.stringify(prepared.establishments));
+          const ids = Object.keys(descriptors);
+          if (ids.length > 100) throw new Error("source establishment page limit");
+          const pending = idMap(state.pending);
+          for (const id of ids) {
+            const change = byId.get(id), entry = diff.entries.get(id), e = descriptors[id]!;
+            if (!change?.after || !entry || !isSourceEstablishment(e) || e.observed_at !== observedAt) throw new Error("invalid source establishment");
+            if (e.intent) {
+              const fm = parseMarkdown(e.intent.content, e.target).frontmatter;
+              if (fm.type !== bound.kind.governs || !Array.isArray(fm.sources) || fm.sources.length !== 1
+                || fm.sources[0]?.resource !== bound.resource || fm.sources[0]?.id !== id) throw new Error("invalid source establishment identity");
+            }
+            pending[id] = { change: structuredClone(change), entry: entryJson(structuredClone(entry)), held_at: observedAt, establishment: e };
+          }
+          if (Object.values(pending).filter(p => p.establishment).length > 100) throw new Error("source establishment pending limit");
+          if (ids.length) {
+            const pre = { ...state, pending };
+            if (new TextEncoder().encode(JSON.stringify(pre)).length > 4194304) throw new Error("source establishment envelope limit");
+            if (!(await store(pre))) return;
+            commitPage.establishments = structuredClone(descriptors);
+          }
+        }
+        result = commitResult(await options.commit(commitPage));
+        if (Object.keys(commitPage.establishments ?? {}).some(id => result.hold.has(id) || result.retry.has(id))) {
+          stop = { outcome: "failed", reason: "establishment_pending", retry: true };
+          return;
+        }
       } catch (error) {
         stop = { outcome: "failed", reason: "commit_failed", retry: true, detail: errorText(error) };
         break;
@@ -322,11 +379,11 @@ export async function driveObservation(options: DriverOptions): Promise<void> {
       const notWritten = (id: string): boolean => byId.has(id) && (result.hold.has(id) || result.retry.has(id));
 
       // The page committed: now, and only now, its records and cursor are stored.
-      const nextRecords: Record<string, RecordEntry> = { ...state.records };
-      const nextPending: Record<string, PendingChange> = { ...state.pending };
+      const nextRecords = idMap(state.records);
+      const nextPending = idMap(state.pending);
       for (const [id, entry] of [...diff.entries, ...missing.entries]) {
         if (byId.has(id) && result.retry.has(id)) nextPending[id] = { change: byId.get(id)!, entry: entryJson(entry), held_at: observedAt };
-        else if (!notWritten(id)) nextRecords[id] = entryJson(entry);
+        else if (!notWritten(id)) { nextRecords[id] = entryJson(entry); delete nextPending[id]; }
       }
       const next: SourceState = {
         ...state,

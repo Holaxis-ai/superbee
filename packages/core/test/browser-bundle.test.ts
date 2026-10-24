@@ -740,3 +740,67 @@ test("artifact contract imports and decodes without storage, network or DOM glob
     bundleKey: "selected", documentId: "x.md",
   } }));
 });
+
+test("public source target preparation and identified delivery execute in a Worker sandbox", async () => {
+  const result = await build({ stdin: { contents: `
+    export { createSourceTargetAdapter, sourceTargetId, MemoryMachineState, observeSource, fetchIdentity } from "./source-engine/index.js";
+    export { MemoryBackend } from "./memory-backend.js";
+    export { mutateDocument } from "./document-mutation.js";
+    export { parseMarkdown } from "./document-codec.js";
+    export { buildKindRegistry } from "./kinds.js";
+    export { SourceIndex } from "./record-overlay/source-index.js";
+  `, resolveDir: path.resolve(here, "../src"), sourcefile: "source-target-consumer.ts", loader: "ts" }, bundle: true, platform: "browser", format: "iife", globalName: "SourceTargets", write: false });
+  const sandbox = { TextEncoder, URL, AbortController, setTimeout, clearTimeout };
+  runInNewContext(`globalThis.structuredClone = function clone(v) {
+    if (v instanceof Map) return new Map([...v].map(([k,x])=>[clone(k),clone(x)]));
+    if (v instanceof Set) return new Set([...v].map(clone));
+    if (Array.isArray(v)) return v.map(clone);
+    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k,x])=>[k,clone(x)]));
+    return v;
+  };`, sandbox);
+  for (const name of ["process", "Buffer", "require", "fetch"]) assert.equal(runInNewContext(`typeof ${name}`, sandbox), "undefined");
+  runInNewContext(result.outputFiles[0]!.text, sandbox);
+  const proof = JSON.parse(await runInNewContext(`(async () => {
+    const a = SourceTargets, at = "2026-10-24T12:00:00.000Z", provider = "https://synthetic.example/items";
+    const backend = new a.MemoryBackend(); await backend.writeReserved("", "index.md", "---\\nokf_version: '0.2'\\n---\\n");
+    const bundle = {root:"/synthetic", backend};
+    const registry = a.buildKindRegistry([{id:"conventions/item", body:"", frontmatter:{type:"Convention",title:"Item",governs:"Item",path:"items/",fields:{required:["title"],optional:[]}}},
+      {id:"conventions/signal",body:"",frontmatter:{type:"Convention",title:"Signal",governs:"Signal",path:"signals/",claim:{owner_field:"assignee",state_field:"progress_status"},fields:{required:["title","superbee_progress_status","change_kind","observed_at"],optional:["priority","assignee","provider","external_id","diff_summary","expires_at","content_digest","about_doc"],values:{superbee_progress_status:["todo","in_progress","done","dismissed"],priority:["low","normal","urgent"]}}} }],[],{okfVersion:"0.2"});
+    const kind = registry.kinds.get("Item");
+    const policy = {feed:"feeds/synthetic",provider,target_kind:"Item",owned_fields:["title"],auto_apply:["new","changed"],needs_review:[]};
+    const bound = {policy,kind,resource:provider,parameters:{},source:{name:"synthetic",target_kind:"Item",profile:"synthetic",mode:"overlay",identity:{resource:provider,id:"{id}"},fields:{title:{from:"title"}},completeness:"partial"}};
+    let mints=0,sends=0;
+    const ledger = new Map();
+    const delivery = {contract:1, acceptsRequestId:id=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id), async deliver(intent,{phase}) {
+      if (!Object.hasOwn((await state.read(policy.feed)).state.pending ?? {}, "__proto__")) throw new Error("missing durable own identity");
+      if(ledger.has(intent.requestId)) return ledger.get(intent.requestId);
+      if(phase==="recovery") return {kind:"unknown"};
+      ledger.set(intent.requestId,{kind:"unknown"}); sends++;
+      const parsed=a.parseMarkdown(intent.content);
+      const result=await a.mutateDocument({bundle,id:intent.target,mode:"create-only",requestId:intent.requestId,registry,strict:true,actor:"process:synthetic",now:()=>intent.createdAt,buildCandidate:()=>parsed});
+      const outcome={kind:"committed",version:result.version};ledger.set(intent.requestId,outcome);return outcome;
+    }};
+    const adapter=a.createSourceTargetAdapter({overlay:{content:{bundle,registry,okfVersion:"0.2"},policy,actor:"process:synthetic",overlays:a.SourceIndex.fromHeads([])},bound,
+      namespace:{contract:1,authority:"synthetic",bundle:"browser"},generation:"v1",intentScope:"browser-run",limits:{inventory:100,establishmentsPerPage:10,intentBytes:262144},creation:delivery,
+      mintRequestId:()=>{mints++;return "08b763aa-504a-4c60-895f-02c67fd93731"},admit:async()=>({kind:"admitted"})});
+    const state=new a.MemoryMachineState(); let pendingBeforeSend=false,writes=0,ordinaryCalls=0,providerCalls=0;
+    const base={connector:{auth:{kind:"none"},domains:["synthetic.example"]},bound,profile:{id:"synthetic",version:1,kind:"generic",validateSpec:()=>({ok:true,spec:{}}),hostsFor:()=>["synthetic.example"],observe:async()=>{providerCalls++;return {records:[{id:"__proto__",title:"Browser"}],nextCursor:null,more:false,complete:false}}},spec:{},
+      transport:{request:async()=>({ok:true,status:200,headers:{},body:"",bytes:0})},identity:a.fetchIdentity("Synthetic/1 (+https://example.org)"),now:()=>new Date(at)};
+    const first=await a.observeSource({...base,state:{read:key=>state.read(key),write:async(...args)=>{
+      writes++;if(writes===2){adapter.discard();throw new Error("checkpoint lost")}
+      const v=await state.write(...args);pendingBeforeSend=!!(await state.read(policy.feed)).state.pending;return v;
+    }},prepareCommit:adapter.prepareCommit,commit:adapter.commit});
+    const checkpoint=JSON.stringify(await state.read(policy.feed)),beforeProvider=providerCalls;
+    const ordinary=await a.observeSource({...base,state,commit:async()=>{ordinaryCalls++}});
+    const preserved=checkpoint===JSON.stringify(await state.read(policy.feed))&&providerCalls===beforeProvider;
+    const receipt=await a.observeSource({...base,state:{read:key=>state.read(key),write:async(...args)=>{const v=await state.write(...args);adapter.consume();return v}},prepareCommit:adapter.prepareCommit,commit:adapter.commit});
+    const saved=(await state.read(policy.feed)).state;
+    const target=a.sourceTargetId({namespace:{contract:1,authority:"synthetic",bundle:"browser"},targetKind:"Item",prefix:"items/",resource:provider,externalId:"__proto__"});
+    const row=await backend.read(target);
+    return JSON.stringify({mints,sends,title:row.doc.frontmatter.title,accepted:adapter.snapshot().entries.length,id:target,pendingBeforeSend,pages:receipt.pages,pending:saved.pending,receipt,first:first.reason,ordinary:ordinary.reason,ordinaryCalls,preserved});
+  })()`, sandbox)) as { mints: number; sends: number; title: string; accepted: number; id: string; pendingBeforeSend: boolean; pages: number; pending?: unknown; first: string; ordinary: string; ordinaryCalls: number; preserved: boolean };
+  assert.equal(proof.first, "state_unwritable"); assert.equal(proof.ordinary, "establishment_consumer_required");
+  assert.equal(proof.ordinaryCalls, 0); assert.equal(proof.preserved, true);
+  assert.equal(proof.pendingBeforeSend, true); assert.equal(proof.pages, 1, JSON.stringify(proof)); assert.equal(proof.pending, undefined);
+  assert.equal(proof.mints, 1); assert.equal(proof.sends, 1); assert.equal(proof.title, "Browser"); assert.equal(proof.accepted, 1); assert.equal(proof.id, "items/source-4b37e7aa9d8da74d645d93400a883398fc36e51d7194c5ee1be6a5596481466b");
+});

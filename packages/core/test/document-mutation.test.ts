@@ -2264,3 +2264,21 @@ test("cross-surface agreement: a fixture that counts as status's conformance_deb
   assert.equal(result.changed, true);
   assert.ok(result.warnings.some((warning) => warning.field === "title"));
 });
+
+test("identified create-only forwards the original request identity and rejects other modes before effects", async () => {
+  class Capturing extends MemoryBackend {
+    writes: WriteOptions[] = [];
+    override async write(id: ConceptId, doc: OkfDocument, opts?: WriteOptions) {
+      this.writes.push(structuredClone(opts ?? {})); return super.write(id, doc, opts);
+    }
+  }
+  const backend = new Capturing(), bundle = await v02BundleFor(backend);
+  const requestId = "08b763aa-504a-4c60-895f-02c67fd93731";
+  await mutateDocument({ bundle, id: "notes/identified", registry: EMPTY_REGISTRY, strict: true,
+    mode: "create-only", requestId, buildCandidate: () => candidate("Identified", "") });
+  assert.equal(backend.writes.length, 1); assert.equal(backend.writes[0]!.requestId, requestId);
+  assert.equal(backend.writes[0]!.expectedVersion, null);
+  for (const mode of ["patch", "overwrite", "replace-document"] as const) await assert.rejects(mutateDocument({ bundle, id: "notes/identified", registry: EMPTY_REGISTRY, strict: true, mode, requestId, buildCandidate: () => candidate("Bad", "") }), /requestId requires/);
+  await assert.rejects(mutateDocument({ bundle, id: "notes/bad", registry: EMPTY_REGISTRY, strict: true, mode: "create-only", requestId: "bad id", buildCandidate: () => candidate("Bad", "") }), /requestId requires/);
+  assert.equal(backend.writes.length, 1);
+});
