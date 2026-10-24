@@ -1134,3 +1134,240 @@ test("whole-document transport: a refusal that is not the identity's recorded an
   const unsent = await createWholeDocumentTransport({ carrier: { json: async () => { throw new HostedCarrierError("denied"); } } as never, bundleId: "team.knowledge", binding: BINDING, intentFor: async () => intent, remote: { read: async () => { throw new Error("unused"); }, operationsRetentionMs: async () => 0 } }).submit(intent);
   assert.equal(unsent.kind === "refused" && unsent.executed, false);
 });
+
+import { createHostedDocumentBackend, HostedDocumentBackendError, type HostedDocumentIntent, type HostedDocumentIntentPort, type HostedDocumentScope } from "../src/hosted-transport/index.js";
+import { VersionConflict } from "../src/version-transport.js";
+import { mutateDocument } from "../src/document-mutation.js";
+const documentScope: HostedDocumentScope = { tenant: "tenant", bundleId: "team.knowledge", registration: "registration", binding: `sha256:${"b".repeat(64)}`, workspace: "workspace", okfVersion: "0.2", mode: "write", bodyPolicy: "protected", tombstonePolicy: "refuse" };
+const documentRequest = "4a2f9c1e-8b3d-4e6f-9a1b-2c3d4e5f6a7b";
+const documentInput = { id: "notes/alpha", frontmatter: { type: "Note", title: "Alpha" }, body: "body\n" };
+function documentHost() {
+  const records = new Map<string, HostedDocumentIntent>();
+  const documents = new Map<string, { content: string; version: string; frontmatter: Record<string, unknown>; body: string }>();
+  const receipts = new Map<string, unknown>();
+  const calls: { route: string; payload: any; options?: HostedRequestOptions }[] = [];
+  let claimAckLost = false, settlementLost = false, responseLost = false;
+  let lookupStatus: "absent" | "pending" | undefined;
+  let denial: 401 | 403 | undefined;
+  const port: HostedDocumentIntentPort = {
+    async prepareOrReadAndClaim(candidate) {
+      const key = candidate.intent.requestId, known = records.get(key);
+      if (known) return { record: structuredClone(known), fresh: false };
+      records.set(key, structuredClone(candidate));
+      if (claimAckLost) throw new Error("claim acknowledgement lost");
+      return { record: structuredClone(candidate), fresh: true };
+    },
+    async settle(record, outcome) {
+      if (settlementLost) throw new Error("settlement store unavailable");
+      const current = records.get(record.intent.requestId)!;
+      assert.equal(current.digest, record.digest);
+      if (!current.outcome || current.outcome.kind === "unknown" || current.outcome.kind === "refused" && current.outcome.executed === "unknown") records.set(record.intent.requestId, { ...current, outcome: structuredClone(outcome) });
+    },
+  };
+  const carrier: HostedCarrier = {
+    async json(route, payload, _signal, opts) {
+      calls.push({ route, payload, options: opts });
+      if (denial) return { status: denial, headers: new Headers(), body: { error: { code: "insufficient_scope" } } };
+      if (route.endsWith("/capabilities")) return answerOf(fixture("capabilities-operations"));
+      if (route.endsWith("/read")) {
+        const found = documents.get((payload as any).documentId);
+        return { status: 200, headers: new Headers(), body: found ? { ok: true, operationId: "documents.read.v1", data: { version: found.version, document: { id: (payload as any).documentId, frontmatter: found.frontmatter, body: found.body } } } : { ok: false, operationId: "documents.read.v1", error: { code: "document_not_found", message: "absent" } } };
+      }
+      if (route.endsWith("/outcome")) return { status: 200, headers: new Headers(), body: lookupStatus ? { schemaVersion: 1, requestId: opts!.writeRequest, binding: opts!.binding, status: lookupStatus } : receipts.get(opts!.writeRequest!) ?? { schemaVersion: 1, requestId: opts!.writeRequest, binding: opts!.binding, status: "absent" } };
+      const p = payload as any;
+      assert.equal(records.get(opts!.writeRequest!)!.intent.state, "in_flight");
+      assert.equal(records.get(opts!.writeRequest!)!.intent.attempts, 1);
+      const operationId = route.endsWith("/create") ? "documents.create.v1" : "documents.replace.v1";
+      const current = documents.get(p.documentId);
+      if (p.expectAbsent ? current !== undefined : current?.version !== p.expectedVersion) return { status: 200, headers: new Headers(), body: { ok: false, operationId, error: { code: "version_conflict", message: "moved", retryable: false, writeState: "not_applied", currentVersion: current?.version ?? null } } };
+      const frontmatter = { ...p.frontmatter, superbee_updated_by: "human:host" };
+      const content = stringifyDoc(frontmatter, p.body), version = versionOfBytes(content);
+      const result = { ok: true, operationId, data: { bundleId: p.bundleId, documentId: p.documentId, version, changed: true } };
+      documents.set(p.documentId, { content, version, frontmatter, body: p.body });
+      receipts.set(opts!.writeRequest!, { schemaVersion: 1, requestId: opts!.writeRequest, binding: opts!.binding, status: "committed", result, content: { encoding: "base64", version, bytes: Buffer.from(content).toString("base64") } });
+      if (responseLost) throw new Error("response lost after commit");
+      return { status: 200, headers: new Headers(), body: result };
+    },
+    async stream() { throw new Error("not used"); },
+  };
+  const reader = createHostedReadAdapter({ carrier, bundleId: documentScope.bundleId });
+  const backend = (scope = documentScope, intentPort = port) => createHostedDocumentBackend({ reader, carrier, scope, intents: intentPort, maximumDocuments: 3, now: () => Date.parse("2026-10-24T00:00:00Z") });
+  return { records, documents, calls, reader, carrier, port, backend, setClaimAckLost: () => { claimAckLost = true; }, setSettlementLost: (v: boolean) => { settlementLost = v; }, setResponseLost: () => { responseLost = true; }, setLookup: (v: typeof lookupStatus) => { lookupStatus = v; }, setDenial: (v: typeof denial) => { denial = v; } };
+}
+const unknownDocumentOutcome = (e: unknown) => e instanceof HostedDocumentBackendError && e.code === "outcome_unknown" && e.requestId === documentRequest;
+
+test("document backend: complete golden paged inventory precedes prefix filtering and bound admission", async () => {
+  let page = 0; const h = documentHost();
+  const reader = createHostedReadAdapter({ bundleId: documentScope.bundleId, carrier: { ...h.carrier, async json() { return answerOf(fixture(page++ % 2 === 0 ? "heads-page-first" : "heads-page-last")); } } });
+  const build = (maximumDocuments: number) => createHostedDocumentBackend({ reader, carrier: h.carrier, scope: documentScope, intents: h.port, maximumDocuments });
+  assert.deepEqual(await build(3).list("projects/"), ["projects/2026/plan"]); assert.equal(page, 2);
+  await assert.rejects(build(2).list("projects/"), { code: "inventory_bound" }); assert.equal(page, 4);
+  assert.equal("wireCapabilities" in build(3), false); assert.equal("inventoryGuard" in build(3), false);
+  assert.deepEqual(build(3).capabilities!(), { enforced_cas: true, history: false, blobs: false });
+});
+test("document backend: ENOENT alone means exists false; root and read denial retain their owner", async () => {
+  const h = documentHost(), b = h.backend();
+  assert.equal(await b.exists("notes/absent"), false); assert.ok(await b.readReserved("", "index.md")); assert.equal(await b.readReserved("nested", "index.md"), null);
+  h.setDenial(403);
+  await assert.rejects(b.exists("notes/absent"), (e: any) => e instanceof RemoteError && e.status === 403);
+  await assert.rejects(b.readMany(["notes/absent"]), (e: any) => e instanceof RemoteError && e.status === 403);
+});
+test("document backend: create/replace CAS returns host version and retains the acknowledged descriptor", async () => {
+  const h = documentHost(), b = h.backend();
+  const created = await b.write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest, actor: "process:import", bodyReplace: undefined });
+  assert.notEqual(created, versionOfBytes(stringifyDoc(documentInput.frontmatter, documentInput.body))); assert.equal(h.records.get(documentRequest)!.outcome!.kind, "committed");
+  const replaced = await b.write(documentInput.id, { ...documentInput, body: "next\n" }, { expectedVersion: created, requestId: documentRequest.replace("4a2f", "5a2f") }); assert.notEqual(replaced, created);
+  await assert.rejects(b.write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest.replace("4a2f", "6a2f") }), VersionConflict);
+  await assert.rejects(b.write(documentInput.id, documentInput, { expectedVersion: created, requestId: documentRequest.replace("4a2f", "7a2f") }), VersionConflict);
+  assert.equal((await b.readMany([documentInput.id]))[0].version, replaced);
+});
+test("document backend: concurrent callers share one persisted-before-send fresh claim", async () => {
+  const h = documentHost();
+  const results = await Promise.allSettled([h.backend().write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest }), h.backend().write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest })]);
+  assert.ok(results.some((r) => r.status === "fulfilled")); assert.equal(h.calls.filter((c) => c.route.endsWith("/create")).length, 1); assert.equal(h.records.get(documentRequest)!.intent.attempts, 1);
+  assert.equal(await h.backend().write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest }), h.documents.get(documentInput.id)!.version);
+  assert.equal(h.calls.filter((c) => c.route.endsWith("/create")).length, 1);
+});
+test("document backend: lost claim acknowledgement and stored absent/pending claims never send", async () => {
+  for (const status of ["absent", "pending"] as const) {
+    const h = documentHost(); h.setClaimAckLost(); h.setLookup(status);
+    await assert.rejects(h.backend().write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest }), unknownDocumentOutcome); assert.equal(h.calls.length, 0);
+    if (status === "pending") { const r = h.records.get(documentRequest)!; h.records.set(documentRequest, { ...r, intent: { ...r.intent, attempts: 0, state: "pending" } }); }
+    await assert.rejects(h.backend().write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest }), unknownDocumentOutcome);
+    assert.equal(h.calls.filter((c) => /\/(create|replace)$/.test(c.route)).length, 0);
+  }
+});
+test("document backend: lost commit response resolves original receipt; settlement persistence loss stays unknown", async () => {
+  for (const responseLost of [false, true]) {
+    const h = documentHost(); if (responseLost) h.setResponseLost(); h.setSettlementLost(true); let failed: any;
+    try { await h.backend().write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest }); } catch (e) { failed = e; }
+    assert.ok(unknownDocumentOutcome(failed)); assert.equal(failed.record.outcome.kind, "committed"); h.setSettlementLost(false);
+    assert.equal(await h.backend().write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest }), h.documents.get(documentInput.id)!.version);
+    assert.equal(h.calls.filter((c) => c.route.endsWith("/create")).length, 1); assert.ok(h.calls.some((c) => c.route.endsWith("/outcome")));
+  }
+});
+test("document backend: changed durable scope, payload, premise or digest refuses before lookup/send", async () => {
+  const h = documentHost(); h.setClaimAckLost();
+  await assert.rejects(h.backend().write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest }), unknownDocumentOutcome);
+  for (const scope of [{ ...documentScope, tenant: "other" }, { ...documentScope, registration: "other" }, { ...documentScope, workspace: null }, { ...documentScope, binding: `sha256:${"c".repeat(64)}` }, { ...documentScope, okfVersion: "0.1" as const }])
+    await assert.rejects(h.backend(scope).write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest }), { code: "intent_conflict" });
+  await assert.rejects(h.backend().write(documentInput.id, { ...documentInput, body: "different" }, { expectedVersion: null, requestId: documentRequest }), { code: "intent_conflict" });
+  await assert.rejects(h.backend().write(documentInput.id, documentInput, { expectedVersion: `sha256:${"a".repeat(64)}`, requestId: documentRequest }), { code: "intent_conflict" });
+  const r = h.records.get(documentRequest)!; h.records.set(documentRequest, { ...r, intent: { ...r.intent, createdAt: "2026-10-23T00:00:00Z" } });
+  await assert.rejects(h.backend().write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest }), { code: "intent_conflict" }); assert.equal(h.calls.length, 0);
+});
+test("document backend: unsupported families/options and malformed identity/CAS have no effects", async () => {
+  const h = documentHost(), b = h.backend();
+  for (const opts of [undefined, { requestId: documentRequest }, { expectedVersion: null }, { expectedVersion: "", requestId: documentRequest }, { expectedVersion: null, requestId: "wrong" }, { expectedVersion: null, requestId: documentRequest, actor: "untrusted" }, { expectedVersion: null, requestId: documentRequest, agent: "agent" }, { expectedVersion: null, requestId: documentRequest, bodyReplace: {} }]) await assert.rejects(b.write(documentInput.id, documentInput, opts as any));
+  for (const id of ["../bad", "index", "nested/log", "a//b"]) await assert.rejects(b.write(id, documentInput, { expectedVersion: null, requestId: documentRequest }));
+  for (const call of [() => b.delete("a"), () => b.versions("a"), () => b.writeReserved("", "index.md", "x"), () => b.readBlob("x"), () => b.existsBlob("x"), () => b.listBlobs(), () => b.writeBlob("x", new Uint8Array()), () => b.deleteBlob("x")]) await assert.rejects(async () => call(), { code: "unsupported" });
+  assert.equal(h.records.size, 0); assert.equal(h.calls.length, 0);
+});
+test("document backend: host and local authorization refusals retain classification", async () => {
+  const h = documentHost(); h.setDenial(403);
+  await assert.rejects(h.backend().write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest }), (e: any) => e.code === "AUTH_REQUIRED");
+  const local = documentHost(); const carrier: HostedCarrier = { ...local.carrier, async json() { throw new HostedCarrierError("denied"); } };
+  const b = createHostedDocumentBackend({ carrier, reader: local.reader, scope: documentScope, intents: local.port, maximumDocuments: 3 });
+  await assert.rejects(b.write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest }), (e: any) => e.code === "AUTH_REQUIRED");
+  assert.equal(local.calls.filter((c) => c.route.endsWith("/outcome")).length, 0);
+  assert.equal(local.records.get(documentRequest)!.outcome!.kind, "refused");
+  assert.equal((local.records.get(documentRequest)!.outcome as any).executed, false);
+});
+test("document backend: actual mutateDocument create/replace consumer with a stable request identity bridge", async () => {
+  const h = documentHost(), backend = h.backend(); let requestId = documentRequest;
+  // A4 owns forwarding requestId from mutateDocument; this models only that narrow bridge.
+  const bound = { ...backend, write: (id: string, doc: any, opts: any) => backend.write(id, doc, { ...opts, requestId }) };
+  const common = { bundle: { root: "/unused", backend: bound }, id: documentInput.id, registry: { kinds: new Map(), warnings: [] }, strict: false, actor: "process:source-import" };
+  const created = await mutateDocument({ ...common, mode: "create-only", buildCandidate: () => documentInput }); requestId = documentRequest.replace("4a2f", "8a2f");
+  await mutateDocument({ ...common, mode: "replace-document", expectedVersion: created.version, onAbsent: "fail", maxAttempts: 1, buildCandidate: () => ({ ...documentInput, body: "replacement\n" }) });
+  assert.equal(h.calls.filter((c) => c.route.endsWith("/create")).length, 1); assert.equal(h.calls.filter((c) => c.route.endsWith("/replace")).length, 1);
+  assert.equal(h.documents.get(documentInput.id)!.frontmatter.superbee_updated_by, "human:host");
+});
+
+test("document backend: tombstoned create refuses without recreation or follow-up write", async () => {
+  const h = documentHost();
+  const source = JSON.parse(readFileSync(path.join(HERE, "fixtures/hosted-sync-v1/create-200-version-conflict-tombstone.json"), "utf8")) as Exchange;
+  const carrier: HostedCarrier = { ...h.carrier, async json(route, payload, signal, opts) {
+    if (!route.endsWith("/create")) return h.carrier.json(route, payload, signal, opts);
+    h.calls.push({ route, payload, options: opts });
+    assert.equal(opts?.recreate, undefined);
+    return answerOf(source);
+  } };
+  const b = createHostedDocumentBackend({ reader: h.reader, carrier, scope: documentScope, intents: h.port, maximumDocuments: 3 });
+  await assert.rejects(b.write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest }), (e: any) => e instanceof VersionConflict && e.actual === null);
+  assert.equal(h.calls.filter((c) => c.route.endsWith("/create")).length, 1);
+  assert.equal(h.records.get(documentRequest)!.outcome!.kind, "conflict");
+});
+
+test("document backend: public Worker bundle executes the synthetic carrier consumer without Node globals", async () => {
+  const { build } = await import("esbuild");
+  const { runInNewContext } = await import("node:vm");
+  const bundled = await build({ stdin: { contents: 'export { createHostedDocumentBackend, createHostedReadAdapter } from "@superbee/core/hosted-transport";', resolveDir: HERE }, platform: "browser", format: "iife", globalName: "hosted", bundle: true, write: false, metafile: true });
+  assert.ok(!Object.keys(bundled.metafile!.inputs).some((name) => name.startsWith("node:")));
+  const context = { TextEncoder, TextDecoder, Headers, AbortController, AbortSignal, setTimeout, clearTimeout, atob, btoa };
+  const api = runInNewContext(`${bundled.outputFiles[0].text}\nhosted`, context);
+  const h = documentHost(); h.setResponseLost();
+  const reader = api.createHostedReadAdapter({ carrier: h.carrier, bundleId: documentScope.bundleId });
+  const backend = api.createHostedDocumentBackend({ reader, carrier: h.carrier, scope: documentScope, intents: h.port, maximumDocuments: 3 });
+  const version = await backend.write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest });
+  assert.equal(version, h.documents.get(documentInput.id)!.version);
+  assert.ok(h.calls.some((c) => c.route.endsWith("/outcome")));
+  assert.equal((await backend.read(documentInput.id)).version, version);
+});
+
+test("document backend: unknown, expired and unavailable receipt lookups retain original intent without resending", async () => {
+  for (const response of ["absent", "pending", "malformed", "unavailable"] as const) {
+    const h = documentHost(); h.setClaimAckLost();
+    const old = createHostedDocumentBackend({ reader: h.reader, carrier: h.carrier, scope: documentScope, intents: h.port, maximumDocuments: 3, now: () => 0 });
+    await assert.rejects(old.write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest }), unknownDocumentOutcome);
+    const original = structuredClone(h.records.get(documentRequest));
+    const carrier: HostedCarrier = { ...h.carrier, async json(route, payload, signal, opts) {
+      if (!route.endsWith("/outcome")) return h.carrier.json(route, payload, signal, opts);
+      h.calls.push({ route, payload, options: opts });
+      if (response === "unavailable") throw new HostedCarrierError("unavailable");
+      return { status: 200, headers: new Headers(), body: response === "malformed" ? {} : { schemaVersion: 1, requestId: opts!.writeRequest, binding: opts!.binding, status: response } };
+    } };
+    const restarted = createHostedDocumentBackend({ reader: h.reader, carrier, scope: documentScope, intents: h.port, maximumDocuments: 3 });
+    await assert.rejects(restarted.write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest }), unknownDocumentOutcome);
+    assert.deepEqual(h.records.get(documentRequest)!.intent, original!.intent);
+    assert.equal(h.calls.filter((c) => /\/(create|replace)$/.test(c.route)).length, 0);
+  }
+});
+
+test("document backend: actual attempt-only execution-unknown refusal remains lookup-only until recorded truth", async () => {
+  for (const storedLegacy of [false, true]) for (const waiting of ["pending", "absent"] as const) for (const truth of ["committed", "refused"] as const) {
+    const h = documentHost(); h.setLookup(waiting);
+    const carrier: HostedCarrier = { ...h.carrier, async json(route, payload, signal, opts) {
+      const answer = await h.carrier.json(route, payload, signal, opts);
+      if (route.endsWith("/create")) return { status: 200, headers: new Headers(), body: { ok: false, operationId: "documents.create.v1",
+        error: { code: "invalid_input", message: "Attempt-only refusal", retryable: false, writeState: "not_applied" } } };
+      if (route.endsWith("/outcome") && truth === "refused" && (answer.body as any).status === "committed")
+        return { ...answer, body: { schemaVersion: 1, requestId: opts!.writeRequest, binding: opts!.binding, status: "refused",
+          result: { ok: false, operationId: "documents.create.v1", error: { code: "invalid_input", message: "Recorded refusal", retryable: false, writeState: "not_applied" } } } };
+      return answer;
+    } };
+    const backend = () => createHostedDocumentBackend({ reader: h.reader, carrier, scope: documentScope, intents: h.port, maximumDocuments: 3 });
+    const write = () => backend().write(documentInput.id, documentInput, { expectedVersion: null, requestId: documentRequest });
+    await assert.rejects(write(), unknownDocumentOutcome);
+    const original = structuredClone(h.records.get(documentRequest)!);
+    if (storedLegacy) h.records.set(documentRequest, { ...original, outcome: { kind: "refused", code: "invalid_input", message: "Earlier attempt-only refusal", executed: "unknown" } });
+    // Settlement loss must not turn an attempt refusal into a terminal answer either.
+    h.setSettlementLost(true);
+    await assert.rejects(write(), unknownDocumentOutcome);
+    h.setSettlementLost(false);
+    await assert.rejects(write(), unknownDocumentOutcome);
+    h.setLookup(undefined);
+    if (truth === "committed") assert.equal(await write(), h.documents.get(documentInput.id)!.version);
+    else await assert.rejects(write(), (error: any) => error.code === "invalid_input" && error.record.outcome.executed === undefined);
+    assert.deepEqual(h.records.get(documentRequest)!.intent, original.intent);
+    assert.deepEqual(h.records.get(documentRequest)!.scope, original.scope);
+    assert.equal(h.records.get(documentRequest)!.digest, original.digest);
+    assert.equal(h.records.get(documentRequest)!.outcome!.kind, truth);
+    const settledCalls = h.calls.length;
+    if (truth === "committed") assert.equal(await write(), h.documents.get(documentInput.id)!.version);
+    else await assert.rejects(write(), (error: any) => error.code === "invalid_input");
+    assert.equal(h.calls.length, settledCalls, "definitive recorded truth stays cached");
+    assert.equal(h.calls.filter((c) => c.route.endsWith("/create")).length, 1);
+    assert.ok(h.calls.filter((c) => c.route.endsWith("/outcome")).length >= 3);
+  }
+});
