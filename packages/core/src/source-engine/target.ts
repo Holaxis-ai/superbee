@@ -13,6 +13,7 @@ import { sha256Hex } from "../versioning.js";
 import { createSourceOverlayAdapter, type SourceOverlayOptions, type SourceOverlayResult } from "./overlay.js";
 import type { SourceState } from "./machine-state.js";
 import type { PageCommit } from "./types.js";
+import { registerSourceTargetConsumer } from "./target-consumer.js";
 import { isSourceEstablishment } from "./target-descriptor.js";
 
 export interface SourceTargetNamespace { contract: 1; authority: string; bundle: string }
@@ -160,6 +161,7 @@ export function createSourceTargetAdapter(input: SourceTargetAdapterOptions) {
     if (Object.keys(page.establishments ?? {}).some(id => result.hold?.includes(id) || result.retry?.includes(id))) { overlay.discard(); throw new Error("source target overlay held"); }
     return result;
   }
+  registerSourceTargetConsumer(prepareCommit, commit);
   return { prepareCommit, commit, snapshot: overlay.snapshot, stagedSnapshot: overlay.stagedSnapshot, consume: overlay.consume, discard: overlay.discard,
     async reconcile(state: SourceState, at: string): Promise<SourceOverlayResult> {
       for (const [id, entry] of Object.entries(state.records)) {

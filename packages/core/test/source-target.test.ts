@@ -46,7 +46,7 @@ async function world() {
     return createSourceTargetAdapter({ overlay: { content: { bundle, registry, okfVersion: "0.2" }, policy: bound.policy, actor: "process:synthetic", overlays: await buildSourceIndex(bundle) }, bound, namespace, generation: "v1", intentScope: "run1", limits, creation,
       mintRequestId: () => { minted++; return UUID; }, admit: async () => ({ kind: "admitted" }), ...overrides });
   }
-  return { backend, bundle, registry, connector, bound, adapter, ledger, counts: () => ({ minted, sends }), unknown: (v: boolean) => { unknown = v; } };
+  return { backend, bundle, registry, connector, bound, adapter, ledger, creation, counts: () => ({ minted, sends }), unknown: (v: boolean) => { unknown = v; } };
 }
 test("stable scalar byte identities agree across independent consumers and isolate tuple boundaries", async () => {
   const a = sourceTargetId(idInput), b = sourceTargetId(JSON.parse(JSON.stringify(idInput)));
@@ -98,6 +98,28 @@ test("committed B clearing X with failed checkpoint keeps old A skipped until ex
   const receipt = await run(a); assert.equal(receipt.reason, "state_unwritable");
   const saved = (await state.read(FEED_ID))!.state; assert.equal(saved.records.t1!.after.priority, "high"); assert.ok(saved.pending!.t1!.establishment);
   const target = saved.pending!.t1!.establishment!.target; assert.equal((await w.backend.read(target)).doc.frontmatter.priority, undefined);
+  const checkpoint = await state.read(FEED_ID);
+  let ordinaryCommits = 0, providerReads = 0, stateWrites = 0;
+  for (const prepareCommit of [undefined, a.prepareCommit]) {
+    const reopened = await observeSource({ connector: w.connector, bound: w.bound, profile: jsonPagesProfile, spec: SPEC,
+      identity: fetchIdentity("Synthetic/1 (+https://example.org)"), now: () => new Date(AT),
+      state: { read: state.read.bind(state), async write(...args) { stateWrites++; return state.write(...args); } },
+      transport: { async request() { providerReads++; throw new Error("must not fetch"); } },
+      prepareCommit, commit: async () => { ordinaryCommits++; } });
+    assert.equal(reopened.reason, "establishment_consumer_required");
+    assert.deepEqual(await state.read(FEED_ID), checkpoint);
+  }
+  assert.deepEqual({ ordinaryCommits, providerReads, stateWrites }, { ordinaryCommits: 0, providerReads: 0, stateWrites: 0 });
+  let recoveries = 0;
+  for (let i = 0; i < 7; i++) {
+    const unresolved = await w.adapter({ creation: { ...w.creation, async deliver(intent, input) {
+      recoveries++; assert.equal(input.phase, "recovery"); assert.deepEqual(intent, saved.pending!.t1!.establishment!.intent);
+      return { kind: "unknown" };
+    } } });
+    const receipt = await run(unresolved);
+    assert.equal(receipt.reason, "establishment_pending"); assert.deepEqual(await state.read(FEED_ID), checkpoint);
+  }
+  assert.equal(recoveries, 7); assert.equal(w.counts().sends, 1);
   const restarted = await w.adapter(); await restarted.reconcile(saved, AT); restarted.consume(); assert.equal((await w.backend.read(target)).doc.frontmatter.priority, undefined);
   const recoveredStore = { read: state.read.bind(state), async write(...args: Parameters<MemoryMachineState["write"]>) { const v = await state.write(...args); restarted.consume(); return v; } };
   await run(restarted, recoveredStore); const recovered = (await state.read(FEED_ID))!.state;

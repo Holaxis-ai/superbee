@@ -3,6 +3,7 @@ import { changeBetween, mapRecord, type BoundFeed, type MappingDiagnostic } from
 import { overlayCanonicalJson } from "../record-overlay/canonical.js";
 import type { Finding, RecordChange } from "../record-overlay/types.js";
 import { parseMarkdown } from "../document-codec.js";
+import { isSourceTargetConsumer } from "./target-consumer.js";
 import { isSourceEstablishment } from "./target-descriptor.js";
 import type { SourceCommitPreparation, SourceEstablishment } from "./target.js";
 import { SourceStop, type Stop } from "./guard.js";
@@ -181,6 +182,9 @@ export async function driveObservation(options: DriverOptions): Promise<void> {
     // record that has since disappeared has nothing left to write, unless the held change is the
     // record coming back.
     const retained = Object.values(state.pending ?? {}).filter(p => p.establishment);
+    if (retained.length && !isSourceTargetConsumer(options.prepareCommit, options.commit)) {
+      stop = { outcome: "failed", reason: "establishment_consumer_required", retry: false }; return;
+    }
     if (retained.length > 100 || (retained.length > 0 && new TextEncoder().encode(JSON.stringify(state)).length > 4194304)) {
       stop = { outcome: "failed", reason: "establishment_state_limit", retry: false }; return;
     }

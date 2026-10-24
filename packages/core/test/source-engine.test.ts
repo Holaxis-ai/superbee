@@ -918,7 +918,7 @@ test("establishment write-ahead CAS loss prevents effects and preserves old obse
     prepareCommit: async p => ({ establishments: { t1: establishmentFor(p) } }), commit: async () => { effects++; } });
   assert.equal(receipt.reason, "state_conflict"); assert.equal(effects, 0); assert.equal(await h.state.read(FEED_ID), null);
 });
-test("marked establishments remain literal and block acquisition beyond ordinary replay exhaustion", async () => {
+test("unqualified establishment replay preserves literal state and blocks callbacks and acquisition", async () => {
   const h = harness([page(ITEMS, [T1])]); let literal: PageCommit | undefined;
   const first = await h.run({ prepareCommit: async p => ({ establishments: { t1: establishmentFor(p) } }), commit: async p => { literal = structuredClone(p); throw new Error("unknown"); } });
   assert.equal(first.reason, "commit_failed"); const original = (await h.state.read(FEED_ID))!;
@@ -926,9 +926,9 @@ test("marked establishments remain literal and block acquisition beyond ordinary
   for (let i = 0; i < MAX_REPLAY_FAILURES + 2; i++) {
     const replay = harness(() => { throw new Error("provider must not be read"); }, { state: h.state });
     const receipt = await replay.run({ now: () => new Date("2026-10-24T19:00:00Z"), prepareCommit: async () => { throw new Error("must not prepare replay"); }, commit: async p => {
-      assert.deepEqual(p.establishments, literal!.establishments); assert.deepEqual(p.changes, literal!.changes); return { hold: ["t1"] };
+      assert.fail("unqualified replay callback must not run");
     } });
-    assert.equal(receipt.reason, "establishment_pending"); assert.equal(replay.peer.received.length, 0);
+    assert.equal(receipt.reason, "establishment_consumer_required"); assert.equal(replay.peer.received.length, 0);
     assert.deepEqual(await h.state.read(FEED_ID), original);
   }
 });

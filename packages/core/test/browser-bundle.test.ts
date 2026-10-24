@@ -782,16 +782,24 @@ test("public source target preparation and identified delivery execute in a Work
     const adapter=a.createSourceTargetAdapter({overlay:{content:{bundle,registry,okfVersion:"0.2"},policy,actor:"process:synthetic",overlays:a.SourceIndex.fromHeads([])},bound,
       namespace:{contract:1,authority:"synthetic",bundle:"browser"},generation:"v1",intentScope:"browser-run",limits:{inventory:100,establishmentsPerPage:10,intentBytes:262144},creation:delivery,
       mintRequestId:()=>{mints++;return "08b763aa-504a-4c60-895f-02c67fd93731"},admit:async()=>({kind:"admitted"})});
-    const state=new a.MemoryMachineState(); let pendingBeforeSend=false;
-    const receipt=await a.observeSource({connector:{auth:{kind:"none"},domains:["synthetic.example"]},bound,profile:{id:"synthetic",version:1,kind:"generic",validateSpec:()=>({ok:true,spec:{}}),hostsFor:()=>["synthetic.example"],observe:async()=>({records:[{id:"one",title:"Browser"}],nextCursor:null,more:false,complete:false})},spec:{},
-      transport:{request:async()=>({ok:true,status:200,headers:{},body:"",bytes:0})},identity:a.fetchIdentity("Synthetic/1 (+https://example.org)"),state,now:()=>new Date(at),
-      prepareCommit:adapter.prepareCommit,commit:async p=>{pendingBeforeSend=!!(await state.read(policy.feed)).state.pending;return adapter.commit(p)} });
-    adapter.consume();
+    const state=new a.MemoryMachineState(); let pendingBeforeSend=false,writes=0,ordinaryCalls=0,providerCalls=0;
+    const base={connector:{auth:{kind:"none"},domains:["synthetic.example"]},bound,profile:{id:"synthetic",version:1,kind:"generic",validateSpec:()=>({ok:true,spec:{}}),hostsFor:()=>["synthetic.example"],observe:async()=>{providerCalls++;return {records:[{id:"one",title:"Browser"}],nextCursor:null,more:false,complete:false}}},spec:{},
+      transport:{request:async()=>({ok:true,status:200,headers:{},body:"",bytes:0})},identity:a.fetchIdentity("Synthetic/1 (+https://example.org)"),now:()=>new Date(at)};
+    const first=await a.observeSource({...base,state:{read:key=>state.read(key),write:async(...args)=>{
+      writes++;if(writes===2){adapter.discard();throw new Error("checkpoint lost")}
+      const v=await state.write(...args);pendingBeforeSend=!!(await state.read(policy.feed)).state.pending;return v;
+    }},prepareCommit:adapter.prepareCommit,commit:adapter.commit});
+    const checkpoint=JSON.stringify(await state.read(policy.feed)),beforeProvider=providerCalls;
+    const ordinary=await a.observeSource({...base,state,commit:async()=>{ordinaryCalls++}});
+    const preserved=checkpoint===JSON.stringify(await state.read(policy.feed))&&providerCalls===beforeProvider;
+    const receipt=await a.observeSource({...base,state:{read:key=>state.read(key),write:async(...args)=>{const v=await state.write(...args);adapter.consume();return v}},prepareCommit:adapter.prepareCommit,commit:adapter.commit});
     const saved=(await state.read(policy.feed)).state;
     const target=a.sourceTargetId({namespace:{contract:1,authority:"synthetic",bundle:"browser"},targetKind:"Item",prefix:"items/",resource:provider,externalId:"one"});
     const row=await backend.read(target);
-    return JSON.stringify({mints,sends,title:row.doc.frontmatter.title,accepted:adapter.snapshot().entries.length,id:target,pendingBeforeSend,pages:receipt.pages,pending:saved.pending,receipt});
-  })()`, sandbox)) as { mints: number; sends: number; title: string; accepted: number; id: string; pendingBeforeSend: boolean; pages: number; pending?: unknown };
+    return JSON.stringify({mints,sends,title:row.doc.frontmatter.title,accepted:adapter.snapshot().entries.length,id:target,pendingBeforeSend,pages:receipt.pages,pending:saved.pending,receipt,first:first.reason,ordinary:ordinary.reason,ordinaryCalls,preserved});
+  })()`, sandbox)) as { mints: number; sends: number; title: string; accepted: number; id: string; pendingBeforeSend: boolean; pages: number; pending?: unknown; first: string; ordinary: string; ordinaryCalls: number; preserved: boolean };
+  assert.equal(proof.first, "state_unwritable"); assert.equal(proof.ordinary, "establishment_consumer_required");
+  assert.equal(proof.ordinaryCalls, 0); assert.equal(proof.preserved, true);
   assert.equal(proof.pendingBeforeSend, true); assert.equal(proof.pages, 1, JSON.stringify(proof)); assert.equal(proof.pending, undefined);
   assert.equal(proof.mints, 1); assert.equal(proof.sends, 1); assert.equal(proof.title, "Browser"); assert.equal(proof.accepted, 1); assert.equal(proof.id, "items/source-cc48f4b8eaa6b7e62bee1b62340726eef1f2764be7ad4a10e83471acfea2b7de");
 });

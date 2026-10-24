@@ -276,6 +276,7 @@ export interface ObserveSourceOptions<Spec = unknown, Cursor = unknown> {
   rules?: RequestRules;
   statuses?: Partial<StatusRules>;
   /** Write one page's changes; the cursor and record state are stored only after this resolves. */
+  /** Establishment recovery requires the original paired callbacks from createSourceTargetAdapter. */
   prepareCommit?(page: PageCommit): Promise<SourceCommitPreparation>;
   commit(page: PageCommit): Promise<CommitResult | void>;
 }
