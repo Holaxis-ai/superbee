@@ -1273,16 +1273,31 @@ test("document backend: host and local authorization refusals retain classificat
   assert.equal(local.records.get(documentRequest)!.outcome!.kind, "refused");
   assert.equal((local.records.get(documentRequest)!.outcome as any).executed, false);
 });
-test("document backend: actual mutateDocument create/replace consumer with a stable request identity bridge", async () => {
-  const h = documentHost(), backend = h.backend(); let requestId = documentRequest;
-  // A4 owns forwarding requestId from mutateDocument; this models only that narrow bridge.
-  const bound = { ...backend, write: (id: string, doc: any, opts: any) => backend.write(id, doc, { ...opts, requestId }) };
-  const common = { bundle: { root: "/unused", backend: bound }, id: documentInput.id, registry: { kinds: new Map(), warnings: [] }, strict: false, actor: "process:source-import" };
-  const created = await mutateDocument({ ...common, mode: "create-only", buildCandidate: () => documentInput }); requestId = documentRequest.replace("4a2f", "8a2f");
-  await mutateDocument({ ...common, mode: "replace-document", expectedVersion: created.version, onAbsent: "fail", maxAttempts: 1, buildCandidate: () => ({ ...documentInput, body: "replacement\n" }) });
-  assert.equal(h.calls.filter((c) => c.route.endsWith("/create")).length, 1); assert.equal(h.calls.filter((c) => c.route.endsWith("/replace")).length, 1);
-  assert.equal(h.documents.get(documentInput.id)!.frontmatter.superbee_updated_by, "human:host");
+test("document backend: actual mutateDocument identified create forwards its original identity through recovery", async () => {
+  for (const responseLost of [false, true]) {
+    const h = documentHost(), backend = h.backend();
+    if (responseLost) h.setResponseLost();
+    h.setSettlementLost(true);
+    const common = { bundle: { root: "/unused", backend }, id: documentInput.id, registry: { kinds: new Map(), warnings: [] }, strict: false,
+      actor: "process:source-import", now: () => "2026-10-24T00:00:00.000Z" };
+    const create = () => mutateDocument({ ...common, mode: "create-only", requestId: documentRequest, buildCandidate: () => documentInput });
+    await assert.rejects(create(), unknownDocumentOutcome);
+    const original = structuredClone(h.records.get(documentRequest)!);
+    assert.equal(original.intent.requestId, documentRequest); assert.equal(original.intent.base, null);
+    h.setSettlementLost(false);
+    const created = await create();
+    assert.deepEqual(h.records.get(documentRequest)!.intent, original.intent);
+    assert.equal(h.records.size, 1); assert.equal(h.calls.filter(c => c.route.endsWith("/create")).length, 1);
+    assert.ok(h.calls.some(c => c.route.endsWith("/outcome")));
+    assert.equal(h.calls.find(c => c.route.endsWith("/create"))!.options!.writeRequest, documentRequest);
+    const before = h.calls.length;
+    await assert.rejects(mutateDocument({ ...common, mode: "replace-document", requestId: documentRequest.replace("4a2f", "8a2f"), expectedVersion: created.version,
+      onAbsent: "fail", maxAttempts: 1, buildCandidate: () => ({ ...documentInput, body: "replacement\n" }) }), /requestId requires create-only/);
+    assert.equal(h.calls.length, before); assert.equal(h.calls.filter(c => c.route.endsWith("/replace")).length, 0);
+    assert.equal(h.documents.get(documentInput.id)!.frontmatter.superbee_updated_by, "human:host");
+  }
 });
+
 
 test("document backend: tombstoned create refuses without recreation or follow-up write", async () => {
   const h = documentHost();
@@ -1370,4 +1385,52 @@ test("document backend: actual attempt-only execution-unknown refusal remains lo
     assert.equal(h.calls.filter((c) => c.route.endsWith("/create")).length, 1);
     assert.ok(h.calls.filter((c) => c.route.endsWith("/outcome")).length >= 3);
   }
+});
+
+
+import { createSourceTargetAdapter, type SourceTargetDelivery } from "../src/source-engine/index.js";
+import { SourceIndex } from "../src/record-overlay/source-index.js";
+import { bindSourceFeed } from "../src/connectors.js";
+import { buildKindRegistry } from "../src/kinds.js";
+import { parseMarkdown } from "../src/document-codec.js";
+import { isWriteRequestId } from "../src/write-identity.js";
+import { FEED_FRONTMATTER, FEED_ID, TICKET_CONVENTION, ticketConnector } from "./fixtures/source-engine/tickets.js";
+
+test("document backend: SourceTargetDelivery preserves the prepared create through actual backend uncertainty", async () => {
+  const h = documentHost(), backend = h.backend(), bundle = { root: "/unused", backend };
+  const registry = buildKindRegistry([TICKET_CONVENTION], [], { okfVersion: "0.2" });
+  const bound = bindSourceFeed(ticketConnector(), { id: FEED_ID, frontmatter: FEED_FRONTMATTER }, registry, { okfVersion: "0.2" });
+  let mints = 0; const phases: string[] = [];
+  const creation: SourceTargetDelivery = { contract: 1, acceptsRequestId: isWriteRequestId,
+    async deliver(intent, input) {
+      phases.push(input.phase);
+      try {
+        const result = await mutateDocument({ bundle, id: intent.target, mode: "create-only", requestId: intent.requestId, registry, strict: true,
+          actor: "process:source-import", now: () => intent.createdAt, buildCandidate: () => parseMarkdown(intent.content) });
+        return { kind: "committed", version: result.version };
+      } catch (error) {
+        if (error instanceof HostedDocumentBackendError && error.code === "outcome_unknown") return { kind: "unknown" };
+        throw error;
+      }
+    } };
+  const targets = createSourceTargetAdapter({ overlay: { content: { bundle, registry, okfVersion: "0.2" }, policy: bound.policy, actor: "process:source-import", overlays: SourceIndex.fromHeads([]) },
+    bound, namespace: { contract: 1, authority: "interop", bundle: documentScope.bundleId }, generation: "interop-v1", intentScope: "original-interop-attempt",
+    limits: { inventory: 3, establishmentsPerPage: 1, intentBytes: 65536 }, creation,
+    mintRequestId: () => { mints++; return documentRequest; }, admit: async () => ({ kind: "admitted" }) });
+  const after = { title: "Interop", state: "open" };
+  const prepared = await targets.prepareCommit({ feed: FEED_ID, provider: bound.resource, observed_at: "2026-10-24T00:00:00.000Z", page: 1, replay: false, baseline: true, complete: false,
+    records: { one: { fields: after } }, changes: [{ external_id: "one", change_kind: "new", changed_fields: Object.keys(after), before: null, after, content_digest: "interop" }] });
+  const intent = prepared.establishments.one!.intent!;
+  h.setResponseLost(); h.setSettlementLost(true);
+  assert.equal((await creation.deliver(intent, { phase: "initial" })).kind, "unknown");
+  const original = structuredClone(h.records.get(documentRequest)!);
+  assert.equal(original.intent.content, intent.content); assert.equal(original.intent.local, intent.local);
+  assert.equal(original.intent.target, intent.target); assert.equal(original.intent.base, null); assert.equal(original.intent.requestId, intent.requestId);
+  assert.equal(original.intent.createdAt, intent.createdAt); assert.equal(original.advisoryActor, "process:source-import"); assert.deepEqual(original.scope, documentScope);
+  h.setSettlementLost(false);
+  const recovered = await creation.deliver(structuredClone(intent), { phase: "recovery" });
+  assert.equal(recovered.kind, "committed"); assert.deepEqual(h.records.get(documentRequest)!.intent, original.intent);
+  assert.equal((await backend.read(intent.target)).doc.frontmatter.title, "Interop");
+  assert.equal(h.calls.filter(c => c.route.endsWith("/create")).length, 1); assert.equal(h.calls.filter(c => c.route.endsWith("/replace")).length, 0);
+  assert.ok(h.calls.some(c => c.route.endsWith("/outcome"))); assert.deepEqual(phases, ["initial", "recovery"]); assert.equal(mints, 1);
 });

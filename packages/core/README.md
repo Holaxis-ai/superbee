@@ -590,7 +590,8 @@ descriptor and any tombstone receipt. Deterministic refusals retain their existi
 No matching-content read is used to manufacture success.
 
 Callers above `StorageBackend` must forward the stable identity and immutable mutation input.
-`mutateDocument` does not yet forward request identity itself; a consumer needs an explicit bridge.
+`mutateDocument` forwards `requestId` in `create-only` mode. Its other mutation modes reject that
+option; identified replacements remain explicit conditional backend writes.
 This backend is browser/Worker safe and uses the same carrier and response grammar as hosted's
 other Core consumers.
 
