@@ -81,6 +81,15 @@ and findings for every run. A recipe's definitions-only directory and recorded f
 separate. Expected values are compared exactly; missing expectation keys, changed receipts, unused
 recorded exchanges, unscripted requests and failed core invariants fail the command.
 
+For a source with an explicit `request.read_policy`, the fixture author may supply the optional
+top-level `readPolicyApproval` object: `{"contract":1,"digest":"sha256:<reviewed policy digest>"}`.
+Obtain that digest from Core's public `inspectSourceReadPolicy(connector, boundFeed)` for the exact
+reviewed declaration and bound Feed, then record it explicitly. The CLI forwards this fixture data
+to the public Core harness; it never calculates or grants approval automatically. Core refuses
+missing, stale or nonmatching approval before provider requests. The object permits only `contract`
+and `digest`; legacy fixtures without an explicit read policy need no approval. This assertion
+applies only to recorded testing: it grants no live feed binding consent, credential or transport.
+
 Each exchange records the method and URL expected by the public harness and a response (`status`,
 optional headers and body), `{ "fail": true }`, or `{ "hang": true }`. Runs may specify `mode`, `at`,
 `edits` and a bounded engine `budget`. Fixture records can include hostile URLs and other attack
