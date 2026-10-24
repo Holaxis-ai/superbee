@@ -694,7 +694,7 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
   },
   { leaf: "viewList", surface: "--dir", argv: (t) => ["view", "list", "--dir", t, "--json"] },
   { leaf: "viewOpen", surface: "--dir", argv: (t) => ["view", "open", "views-registry/missing", "--dir", t, "--no-open", "--json"],
-    controlExit: 1 },
+    controlExit: 6 },
   {
     // checkout's --dir is the folder a hosted checkout becomes; the guard runs before sign-in or any
     // request. The benign control target is the fixture's own bundle, so the run passes the guard

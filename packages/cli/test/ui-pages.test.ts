@@ -850,7 +850,7 @@ test("B1: the shell asset CSP explicitly confines framing to same-origin (frame-
   }
 });
 
-test("the View host is session-gated, opaque by its own response policy, and passes the View policy on to its blob child", async () => {
+test("the View host is session-gated, opaque by its own response policy, and passes the View policy on to its data child", async () => {
   const { origin, cleanup } = await bootPagesServer();
   try {
     assert.equal((await fetch(`${origin}${VIEW_HOST_PATH}`)).status, 403, "no session, no host");
@@ -863,17 +863,17 @@ test("the View host is session-gated, opaque by its own response policy, and pas
     assert.match(csp, /^sandbox allow-scripts;/);
     assert.doesNotMatch(csp, /allow-same-origin/);
     for (const directive of viewChildCsp().split("; ")) assert.ok(csp.includes(directive), `host policy keeps ${directive}`);
-    assert.match(csp, /worker-src 'none'/, "workers must not fall back to child-src blob:");
+    assert.match(csp, /worker-src 'none'/, "workers must not fall back to child-src data:");
     // The child inherits this policy; frame-ancestors would refuse it in WebKit. The host's own
     // framing guard is a header local-scheme children do not inherit.
     assert.doesNotMatch(csp, /frame-ancestors/);
     assert.equal(host.headers.get("x-frame-options"), "SAMEORIGIN");
-    assert.match(csp, /frame-src blob:/);
+    assert.match(csp, /frame-src data:/);
+    assert.match(csp, /child-src data:/);
     const body = await host.text();
     assert.ok(!body.includes(SECRET), "the host carries no session material");
     assert.ok(body.includes(JSON.stringify(viewChildCsp())), "the child frame is pinned to the View policy");
     assert.match(body, /setAttribute\("sandbox", "allow-scripts"\)/);
-    assert.match(body, /URL\.revokeObjectURL/);
   } finally {
     await cleanup();
   }

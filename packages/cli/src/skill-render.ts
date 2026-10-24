@@ -113,8 +113,7 @@ function renderSkill(input: {packageName:string;binName:string}, internal: boole
   lines.push("user or a later agent no longer needs to reconstruct. Show or offer the most useful authoritative");
   lines.push("document or View once. Never return only a Markdown link or local filesystem path. When the user");
   lines.push("asks to see it, invoke `show_document` or `show_view` in an MCP Apps host; otherwise invoke");
-  lines.push("`superbee doc open <id>` for a document or `superbee view open <viewId>` for an exact local registered View.");
-  lines.push("For a fresh embedded browser, use `view open --no-open --json` and navigate that selected browser to its exact private `browser_launch.url`. This one-use handoff expires; never share or log it, fabricate a bare URL, or copy a reusable session token. Opening still requires the View's normal executable-byte approval.");
+  lines.push("`superbee doc open <id>` for documents or `superbee view open <viewId>` for local registered Views; read `$REFS/views/references/view-authoring-v0.md` for private browser handoff guidance. Never share handoffs; opening never approves executable bytes.");
   lines.push("When the tone fits, a single 🐝 may mark a successful Superbee outcome.");
   lines.push("");
   lines.push("## Hosted checkouts");

@@ -34,7 +34,7 @@ async function fixture() {
       fetch: (async (target, init) => {
         if (!live) throw Object.assign(new Error("listener absent"), { code: "ECONNREFUSED" });
         const pathname = new URL(String(target)).pathname;
-        if (pathname.endsWith("/status")) return Response.json({ protocol: 1, mode: "dir", authority_key: worker!.authority.key, bundle_root: worker!.authority.bundle_root, launch_root: worker!.authority.launch_root, actor: worker!.authority.actor, launch_nonce: `launch-${spawns}`, state: "ready", active_clients: 0 });
+        if (pathname.endsWith("/status")) return Response.json({ protocol: worker!.authority.protocol, mode: "dir", authority_key: worker!.authority.key, bundle_root: worker!.authority.bundle_root, launch_root: worker!.authority.launch_root, actor: worker!.authority.actor, launch_nonce: `launch-${spawns}`, state: "ready", active_clients: 0 });
         assert.equal(init?.method, "POST");
         return Response.json({ adopted: true, launch_nonce: `launch-${spawns}` });
       }) as typeof fetch,
