@@ -15,6 +15,14 @@ Browser and Worker consumers can compose existing operation helpers through
 version, and resolver; the Node root retains the same exports. Supply an explicit backend to
 bundle-shaped operations in browser hosts.
 
+## Identity ordering
+
+Engine list/query/head and edge results, View identity lists, and new publication captures use
+Core's UTF-16 code-unit comparator. This corrects the earlier local locale-dependent order and
+can change capped query results and fresh publication snapshot digests. Existing publication
+snapshots retain their serialized bytes and identities. See the [ordering compatibility note](../publication/ORDERING.md)
+for cursor, envelope and snapshot-version compatibility.
+
 ## Kind declaration changes
 
 `@superbee/core/kind-changes` exports `classifyKindChanges(current, desired)` over parsed

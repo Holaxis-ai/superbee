@@ -1633,8 +1633,7 @@ test("wire: GET /heads lists every id and version under the documented digest; I
   assert.equal(empty.status, 200);
   assert.deepEqual(await empty.json(), { count: 0, digest: `sha256:${sha256HexOfUtf8("")}`, heads: [] });
 
-  // Insertion order differs from id order, and "B" versus "a" separates code-unit order (the
-  // wire's) from the localeCompare order the list route uses, which would put "B" after "b".
+  // Insertion order differs from id order; case also separates code-unit order from locale collation.
   await seedDocs(bundle, ["b", "B", "a/x", "c"]);
   const res = await router(new Request(HEADS_URL));
   assert.equal(res.status, 200);
@@ -1929,7 +1928,7 @@ test("wire: RemoteBackend.heads maps 304 to null and 200 to { digest, heads }; a
   await assert.rejects(gated.snapshot(), (err: unknown) => err instanceof RemoteError && err.code === "AUTH_REQUIRED" && err.status === 401);
 });
 
-test("wire: heads order is UTF-16 code unit order, independent of the host locale and of the list route's collation; the digest is the same for any input order", async () => {
+test("wire: document list, heads and snapshot agree on code-unit order; the heads digest is independent of input order", async () => {
   // en_US and sv_SE collate these five ids differently under localeCompare; code unit order is fixed.
   const ids = ["z", "ä", "a-b", "ab", "a/b"];
   const codeUnitSorted = ["a-b", "a/b", "ab", "z", "ä"];
@@ -1950,6 +1949,8 @@ test("wire: heads order is UTF-16 code unit order, independent of the host local
   assert.notDeepEqual(await serverBackend.list(), codeUnitSorted, "the fixture separates the list collation from code unit order");
   const body = (await (await router(new Request(HEADS_URL))).json()) as { digest: string; heads: Array<{ id: string; version: string }> };
   assert.deepEqual(body.heads.map((h) => h.id), codeUnitSorted);
+  const docs = (await (await router(new Request(DOCS_URL))).json()) as { docs: Array<{ id: string }> };
+  assert.deepEqual(docs.docs.map(row => row.id), codeUnitSorted);
   assert.equal(body.digest, documentedDigest(body.heads));
   const snapshotText = await (await router(new Request(SNAPSHOT_URL))).text();
   const docLines = snapshotText.slice(0, -1).split("\n").map((line) => JSON.parse(line) as { kind: string; id?: string });

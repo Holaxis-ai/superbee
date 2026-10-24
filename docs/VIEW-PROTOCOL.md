@@ -127,8 +127,10 @@ name the shell shows, never an internal identifier. `mode` is host-specific (`di
   no terminal set drops nothing. `open: false` is accepted and means absent.
 - `order` is `"id"` or `"newest"`; any other value answers `USAGE`. It decides the row order and
   therefore which rows a capped reply keeps:
-  - `"id"`, or absence, orders rows by canonical id with JavaScript `localeCompare`. This is the
-    order every host has always returned; it is now written down, not changed.
+  - `"id"`, or absence, orders rows by canonical id in UTF-16 code-unit order through
+    `compareCodeUnits` in `@superbee/core/code-unit-order`. This is independent of the host's locale
+    and ICU data. It changes the earlier local locale-based order for punctuation, case and some
+    non-ASCII IDs, including which rows a capped reply keeps. It does not normalize IDs.
   - `"newest"` is CLI `list` and `home` order. Rows sort by their meaningful-change time, newest
     first: `generated.at` when the frontmatter has it (even when it is invalid), else `timestamp`,
     parsed under the bundle's OKF edition (0.2 requires an ISO instant with an explicit offset; 0.1

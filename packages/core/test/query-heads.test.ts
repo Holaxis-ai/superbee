@@ -308,7 +308,7 @@ test("wire scan tolerates a doc deleted between server-side list and batch read"
 });
 
 test("vanished-cursor fallback uses the sort's comparator — no duplicate/skipped rows", async () => {
-  // Ids chosen so localeCompare order (a < B < c) diverges from code-unit order (B < a < c).
+  // Locale order (a < B < c) diverges from the engine's code-unit order (B < a < c).
   const { serverBackend, router } = recordingWireBundle();
   const serverBundle: Bundle = { root: "mem://cursor-fallback", backend: serverBackend };
   for (const id of ["a", "B", "c"]) {
@@ -324,13 +324,12 @@ test("vanished-cursor fallback uses the sort's comparator — no duplicate/skipp
     return (await res.json()) as { docs: Array<{ id: string }>; next_cursor: string | null };
   };
   const p1 = await page("limit=1");
-  assert.deepEqual(p1.docs.map((d) => d.id), ["a"]);
+  assert.deepEqual(p1.docs.map((d) => d.id), ["B"]);
   const p2 = await page(`limit=1&cursor=${encodeURIComponent(p1.next_cursor!)}`);
-  assert.deepEqual(p2.docs.map((d) => d.id), ["B"]);
-  // The cursor doc vanishes between pages — the fallback must resume in LOCALE order.
-  await serverBackend.delete("B");
-  const p3 = await page("limit=1&cursor=B");
-  // A code-unit `>` fallback would re-emit 'a' here ('a' > 'B' in UTF-16), duplicating a row.
+  assert.deepEqual(p2.docs.map((d) => d.id), ["a"]);
+  // The cursor doc vanishes between pages. Locale comparison would re-emit B after a.
+  await serverBackend.delete("a");
+  const p3 = await page("limit=1&cursor=a");
   assert.deepEqual(p3.docs.map((d) => d.id), ["c"]);
   assert.equal(p3.next_cursor, null);
 });

@@ -20,6 +20,7 @@ export type {
 } from "./types.js";
 
 export { InvalidInputError } from "./errors.js";
+export { compareCodeUnits } from "./code-unit-order.js";
 export { MalformedDocumentError } from "./frontmatter-contract.js";
 export {
   RESERVED_FILENAMES,

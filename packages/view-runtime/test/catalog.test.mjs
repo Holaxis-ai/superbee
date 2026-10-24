@@ -2,6 +2,31 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { MemoryBackend, writeBlob, writeDoc } from "@superbee/core";
 import { listViewCatalog, listViewCatalogPage, projectViewCatalog } from "../dist/index.js";
+import { CODE_UNIT_ORDER } from "@superbee/core/string-identity-agreement";
+
+test("catalog sort and cursor use the shared code-unit order, including absent cursors", async () => {
+  const bundle = { root: "mem://catalog-order", backend: new MemoryBackend() };
+  await writeBlob(bundle, "views/shared.html", new TextEncoder().encode("<!doctype html><title>Shared</title>"), "text/html");
+  const ids = CODE_UNIT_ORDER.filter(id => /^[A-Za-z0-9._-]+$/.test(id)).map(id => `views-registry/${id}`);
+  for (const id of [...ids].reverse()) {
+    await bundle.backend.write(id, { id, frontmatter: { type: "View", entry: "views/shared.html", access: "bundle-read" }, body: "" });
+  }
+  assert.deepEqual((await listViewCatalog(bundle)).entries.map(row => row.id), ids);
+  const seen = [];
+  let afterId;
+  let pages = 0;
+  do {
+    assert.ok(pages++ <= ids.length, "pagination must advance rather than cycle");
+    const page = await listViewCatalogPage(bundle, { afterId, limit: 3, scanLimit: 3, access: ["bundle-read"] });
+    seen.push(...page.entries.map(row => row.id));
+    afterId = page.nextAfterId;
+  } while (afterId);
+  assert.deepEqual(seen, ids, "no skipped or repeated IDs at page boundaries");
+  const afterMissing = await listViewCatalogPage(bundle, {
+    afterId: "views-registry/a/absent", limit: 2, scanLimit: 2, access: ["bundle-read"],
+  });
+  assert.deepEqual(afterMissing.entries.map(row => row.id), ["views-registry/a2", "views-registry/a_b"]);
+});
 
 class CountingMemoryBackend extends MemoryBackend {
   blobReads = 0;

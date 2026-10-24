@@ -4,6 +4,7 @@ import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 import {
+  compareCodeUnits,
   FilesystemBackend,
   parseLinksFromDoc,
   parseMarkdown,
@@ -409,10 +410,10 @@ function buildSnapshot(first: RawInventory): SnapshotHandle {
     });
     relationships.push(...parseLinksFromDoc(doc).map((link) => ({ ...link })));
   }
-  documents.sort((a, b) => a.id.localeCompare(b.id));
+  documents.sort((a, b) => compareCodeUnits(a.id, b.id));
   relationships.sort((a, b) =>
-    a.from.localeCompare(b.from) || a.to.localeCompare(b.to) ||
-    a.text.localeCompare(b.text) || a.href.localeCompare(b.href));
+    compareCodeUnits(a.from, b.from) || compareCodeUnits(a.to, b.to) ||
+    compareCodeUnits(a.text, b.text) || compareCodeUnits(a.href, b.href));
 
   const reserved: Array<PublicationSnapshotV1["reserved"][number]> = first.reserved.map((row) => ({
     dir: row.dir,
@@ -420,7 +421,7 @@ function buildSnapshot(first: RawInventory): SnapshotHandle {
     version: row.version,
     object: addObject(objects, row.bytes, "text/markdown; charset=utf-8", "exact"),
   }));
-  reserved.sort((a, b) => `${a.dir}/${a.name}`.localeCompare(`${b.dir}/${b.name}`));
+  reserved.sort((a, b) => compareCodeUnits(`${a.dir}/${a.name}`, `${b.dir}/${b.name}`));
 
   const blobs: Array<PublicationSnapshotV1["blobs"][number]> = first.blobs.map((row) => ({
     key: row.key,
@@ -428,7 +429,7 @@ function buildSnapshot(first: RawInventory): SnapshotHandle {
     contentType: row.contentType,
     object: addObject(objects, row.bytes, row.contentType, "exact"),
   }));
-  blobs.sort((a, b) => a.key.localeCompare(b.key));
+  blobs.sort((a, b) => compareCodeUnits(a.key, b.key));
   const blobsByKey = new Map(blobs.map((row) => [row.key, row]));
 
   const views: Array<PublicationSnapshotV1["views"][number]> = [];
@@ -475,7 +476,7 @@ function buildSnapshot(first: RawInventory): SnapshotHandle {
       entryObject: blob.object,
     });
   }
-  views.sort((a, b) => a.id.localeCompare(b.id));
+  views.sort((a, b) => compareCodeUnits(a.id, b.id));
 
   const withoutDigest = {
     schema: PUBLICATION_SNAPSHOT_V1,

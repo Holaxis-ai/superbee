@@ -1,4 +1,5 @@
 import {
+  compareCodeUnits,
   applyQuerySelectionFilters,
   loadKinds,
   projectLogicalKindFields,
@@ -191,7 +192,7 @@ interface HelloRequest extends BaseRequest {
   type: "hello";
 }
 
-/** Row order of a query reply: canonical ID (`localeCompare`, the default) or newest meaningful change first. */
+/** Row order of a query reply: canonical ID (UTF-16 code-unit order, the default) or newest meaningful change first. */
 export type BridgeQueryOrder = "id" | "newest";
 export const BRIDGE_QUERY_ORDERS: readonly BridgeQueryOrder[] = Object.freeze(["id", "newest"]);
 
@@ -492,7 +493,7 @@ interface SkippedDocument {
  */
 function skippedReply(skipped: SkippedDocument[]): { skipped?: SkippedDocument[] } {
   if (skipped.length === 0) return {};
-  return { skipped: [...skipped].sort((a, b) => a.id.localeCompare(b.id)).slice(0, MAX_QUERY_ROWS) };
+  return { skipped: [...skipped].sort((a, b) => compareCodeUnits(a.id, b.id)).slice(0, MAX_QUERY_ROWS) };
 }
 
 function boundedRows(rows: HeadResult[], params: BridgeQueryParams, kinds: KindConvention[]): {
@@ -663,7 +664,7 @@ export class BridgeService {
     for (const id of subscription.baseline.keys()) {
       if (!next.has(id)) removed.push(id);
     }
-    changes.sort((a, b) => a.id.localeCompare(b.id));
+    changes.sort((a, b) => compareCodeUnits(a.id, b.id));
     removed.sort();
     if (changes.length === 0 && removed.length === 0) return { status: "unchanged" };
     if (changes.length > MAX_CHANGE_ROWS || removed.length > MAX_CHANGE_ROWS) {
@@ -696,7 +697,7 @@ export class BridgeService {
     }
     return new Map(
       [...rows]
-        .sort((a, b) => a.id.localeCompare(b.id))
+        .sort((a, b) => compareCodeUnits(a.id, b.id))
         .map((row) => [row.id, row.version]),
     );
   }
