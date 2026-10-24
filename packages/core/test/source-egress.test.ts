@@ -43,13 +43,20 @@ test("the engine and harness reach no network global and import only core module
   };
   // Engine code owns its timers and checks plain objects across realms; profile code may do neither.
   assert.deepEqual(egressViolations(files, {
-    globals: ["AbortController", "structuredClone", "setTimeout", "clearTimeout", "queueMicrotask"],
+    globals: ["AbortController", "structuredClone", "setTimeout", "clearTimeout", "queueMicrotask", "WeakMap"],
     allowImport: insideSrc,
     allowKeys: ["getPrototypeOf", "assign"],
   }), []);
 });
 
 const check = (text: string, name = "planted.ts"): string[] => egressViolations([{ path: name, text }]);
+
+test("the engine's weak callback registry does not admit weak collections in profile scope", () => {
+  const text = "const callbacks = new WeakMap<object, object>(); export const read = (key: object) => callbacks.get(key);";
+  assert.deepEqual(egressViolations([{ path: "engine.ts", text }], { globals: ["WeakMap"] }), []);
+  assert.ok(check(text).some(v => /names the global WeakMap/.test(v)));
+});
+
 
 for (const [name, text, expected] of [
   ["an ambient fetch", `export const p = { observe: async () => fetch("https://collector.example.net") };`, /names the global fetch/],
