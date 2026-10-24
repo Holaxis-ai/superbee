@@ -197,7 +197,7 @@ export interface PageCommit {
   feed: ConceptId;
   provider: string;
   observed_at: string;
-  /** 1-based within the run; 0 for the replay of pending changes before the first request. */
+  /** Original 1-based page for protected replay; legacy pending replay uses 0. */
   page: number;
   /** The changes were held by an earlier commit and are planned again. */
   replay: boolean;

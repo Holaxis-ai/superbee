@@ -188,7 +188,7 @@ function capacityFacts(bound: BoundSnapshotSource, snapshot: DecodedSnapshot, st
 
 /** Snapshot history has one fixed state format; malformed retry data cannot reach a commit. */
 function snapshotStateValid(value: unknown): value is SourceState {
-  if (!isSourceState(value) || !isJsonData(value)) return false;
+  if (!isSourceState(value) || !isJsonData(value) || value.pending_commit !== undefined) return false;
   const count = (v: unknown): boolean => Number.isSafeInteger(v) && (v as number) >= 0;
   const idValid = (id: string): boolean => id.length > 0 && id.length <= 2048 && !isPrototypeKey(id) && !/[\x00-\x1f\x7f]/.test(id);
   const entryValid = (entry: unknown): boolean => object(entry) && object(entry.after) && typeof entry.digest === "string" && SNAPSHOT_SHA256.test(entry.digest)
