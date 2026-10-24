@@ -64,11 +64,11 @@ test("a directly opened data Page completes its startup bridge queries before if
 
     const iframe = page.locator("iframe.page-frame-iframe");
     await expect(iframe).toBeVisible();
-    // The View child: allow-scripts and NOTHING else (no allow-same-origin), loaded from a blob.
+    // The View child: allow-scripts and NOTHING else (no allow-same-origin), loaded from the admitted self-contained execution document.
     const viewElement = page.frameLocator("iframe.page-frame-iframe").locator("iframe");
     expect(await viewElement.getAttribute("sandbox")).toBe("allow-scripts");
     const view = await viewContentFrame(page);
-    expect(view.url()).toMatch(/^blob:/);
+    expect(view.url().startsWith("data:text/html;charset=utf-8;base64,")).toBe(true);
     expect(await view.evaluate(() => self.origin)).toBe("null");
     // The host is opaque too — by its response policy, not by a frame attribute.
     expect(await iframe.getAttribute("sandbox")).toBeNull();
@@ -333,10 +333,10 @@ test("the sandboxed page is structurally blocked from reaching the data API (con
   }
 });
 
-test("the sandboxed page cannot navigate its frame (or the top) to an external origin (host frame-src blob: + sandbox)", async ({ page }) => {
+test("the sandboxed page cannot navigate its frame (or the top) to an external origin (host frame-src data: + sandbox)", async ({ page }) => {
   const ui = await bootUiOverPagesBundle(TASKS);
   try {
-    // The View host's frame-src admits only blob: children, so it reports a CSP violation when the
+    // The View host's frame-src admits only data: children, so it reports a CSP violation when the
     // framed page tries to navigate anywhere off-origin — capture it as the definitive proof the
     // escape was BLOCKED (the request never leaves; the frame lands on a chrome-error page, NOT
     // example.com).
@@ -356,7 +356,7 @@ test("the sandboxed page cannot navigate its frame (or the top) to an external o
     });
 
     // From inside the page, attempt to escape to an external origin — self-nav (blocked by the
-    // host's frame-src blob:) and top-nav (blocked by the sandbox: no allow-top-navigation).
+    // host's frame-src data:) and top-nav (blocked by the sandbox: no allow-top-navigation).
     await frame.evaluate(() => {
       try {
         (window.top as Window).location.href = "https://example.com/";
