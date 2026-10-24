@@ -290,8 +290,8 @@ test("active View size reports are handled before the hidden-document bridge gat
   );
   assert.match(
     source.slice(handlerEnd),
-    /frameEpoch\+\+;\s+resetFrameSizing\(\);\s+stopPolling\(\);/,
-    "suspended durable mounts invalidate their sizing session with their bridge epoch",
+    /launchFence\.begin\(payload\.launch\.launchId\);\s+resetFrameSizing\(\);\s+stopPolling\(\);/,
+    "suspended durable mounts invalidate their sizing session with their bridge attempt",
   );
 });
 

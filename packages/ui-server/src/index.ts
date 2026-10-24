@@ -8,6 +8,7 @@ export {
   type UiAssetHandler,
 } from "./assets.js";
 export { SseHub } from "./events.js";
+export { browserLaunchDestination, type BrowserLaunchTarget } from "./browser-launch.js";
 export { hostnameOf, isAllowedHost } from "./host.js";
 export { PAGE_BLOB_PREFIXES, pageCsp, viewChildCsp } from "./pages.js";
 export {

@@ -1,9 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { runInNewContext } from "node:vm";
 
 import { MemoryBackend, type Bundle } from "@superbee/core";
 import { createRouter } from "@superbee/server";
 import { bootUiServer, type UiServerHandle } from "../src/server.js";
+import { BrowserLaunchTickets, parseBrowserLaunchTarget } from "../src/browser-launch.js";
 
 const SESSION = "browser-session-secret";
 const MANAGEMENT = "management-secret-separate-from-browser";
@@ -30,7 +33,7 @@ async function boot(managed = true): Promise<UiServerHandle> {
       management: {
         secret: MANAGEMENT,
         identity: {
-          protocol: 1,
+          protocol: 2,
           mode: "dir" as const,
           authority_key: "a".repeat(64),
           bundle_root: "/bundle",
@@ -90,7 +93,7 @@ test("authenticated status is exact, cacheless, and never returns either secret"
     assert.doesNotMatch(raw, new RegExp(SESSION));
     assert.doesNotMatch(raw, new RegExp(MANAGEMENT));
     assert.deepEqual(JSON.parse(raw), {
-      protocol: 1,
+      protocol: 2,
       mode: "dir",
       authority_key: "a".repeat(64),
       bundle_root: "/bundle",
@@ -202,4 +205,126 @@ test("lease expiry and stop-before-adopt atomically prevent a later successful a
   } finally {
     await stopped.close();
   }
+});
+
+const target = { kind: "registered-view", id: "views-registry/probe" };
+async function mintHandoff(server: UiServerHandle): Promise<{ destination: string; browser_launch: { path: string; expires_at: number } }> {
+  const response = await fetch(url(server, "/__manage/browser-launch"), {
+    method: "POST", headers: { ...managementHeaders, "content-type": "application/json" }, body: JSON.stringify(target),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("set-cookie"), null);
+  return response.json();
+}
+function redeem(server: UiServerHandle, ticket: string, headers: Record<string, string> = {}) {
+  return fetch(url(server, "/__ui/browser-launch"), {
+    method: "POST",
+    headers: { origin: url(server, ""), "x-requested-with": "superbee-browser-launch", "content-type": "application/json", ...headers },
+    body: JSON.stringify({ ticket }),
+  });
+}
+
+test("one-use handoff establishes the selected browser cookie, never View approval or management", async () => {
+  const server = await boot();
+  try {
+    assert.equal((await fetch(url(server, "/__manage/browser-launch"), {
+      method: "POST", headers: managementHeaders, body: JSON.stringify(target),
+    })).status, 409, "ready is not adopted");
+    await fetch(url(server, "/__manage/adopt"), { method: "POST", headers: managementHeaders });
+    const document = await fetch(url(server, "/__ui/browser-launch"));
+    assert.equal(document.status, 200);
+    assert.equal(document.headers.get("cache-control"), "no-store");
+    assert.equal(document.headers.get("referrer-policy"), "no-referrer");
+    assert.equal(document.headers.get("x-frame-options"), "DENY");
+    assert.match(document.headers.get("content-security-policy") ?? "", /script-src 'sha256-/);
+    const html = await document.text();
+    assert.ok(html.indexOf("history.replaceState") < html.indexOf("await fetch"));
+    assert.ok(!html.includes(SESSION) && !html.includes(MANAGEMENT) && !html.includes(target.id));
+    assert.equal((await fetch(url(server, "/"))).status, 403);
+    assert.equal((await fetch(url(server, "/__ui/config"))).status, 403);
+    assert.equal((await fetch(url(server, "/__manage/browser-launch"), { method: "POST", body: JSON.stringify(target) })).status, 403);
+    const handoff = await mintHandoff(server);
+    assert.equal(handoff.destination, "/?view=page&id=views-registry%2Fprobe");
+    assert.ok(!JSON.stringify(handoff).includes(SESSION) && !JSON.stringify(handoff).includes(MANAGEMENT));
+    const ticket = handoff.browser_launch.path.split("#")[1]!;
+    assert.equal((await redeem(server, ticket, { origin: "http://other.invalid" })).status, 403);
+    assert.equal((await redeem(server, ticket, { "x-requested-with": "" })).status, 403);
+    const responses = await Promise.all([redeem(server, ticket), redeem(server, ticket)]);
+    assert.deepEqual(responses.map((response) => response.status).sort(), [200, 403]);
+    const success = responses.find((response) => response.status === 200)!;
+    assert.deepEqual(await success.json(), { destination: handoff.destination });
+    assert.equal(responses.find((response) => response.status === 403)!.headers.get("set-cookie"), null);
+    const cookieHeader = success.headers.get("set-cookie") ?? "";
+    assert.match(cookieHeader, new RegExp(`^${COOKIE}=`));
+    assert.match(cookieHeader, /HttpOnly; SameSite=Strict/);
+    const cookie = cookieHeader.split(";")[0]!;
+    assert.equal((await fetch(url(server, "/"), { headers: { cookie } })).status, 200);
+    assert.equal((await fetch(url(server, "/__manage/status"), { headers: { cookie } })).status, 403);
+    assert.equal((await redeem(server, ticket)).status, 403);
+  } finally { await server.close(); }
+});
+
+test("handoff targets, bounds, stopping and process isolation fail closed", async () => {
+  const first = await boot();
+  const second = await boot();
+  try {
+    for (const server of [first, second]) await fetch(url(server, "/__manage/adopt"), { method: "POST", headers: managementHeaders });
+    for (const input of [{ ...target, url: "https://elsewhere.invalid" }, { kind: "registered-view", id: "../other" }, { kind: "uri", id: "/" }]) {
+      assert.equal((await fetch(url(first, "/__manage/browser-launch"), { method: "POST", headers: managementHeaders, body: JSON.stringify(input) })).status, 400);
+    }
+    assert.equal((await fetch(url(first, "/__manage/browser-launch"), { method: "POST", headers: managementHeaders, body: JSON.stringify({ ...target, extra: "x".repeat(5000) }) })).status, 413);
+    const handoff = await mintHandoff(first);
+    const ticket = handoff.browser_launch.path.split("#")[1]!;
+    assert.equal((await redeem(second, ticket)).status, 403);
+    for (let index = 1; index < 32; index++) await mintHandoff(first);
+    assert.equal((await fetch(url(first, "/__manage/browser-launch"), { method: "POST", headers: managementHeaders, body: JSON.stringify(target) })).status, 429);
+    await fetch(url(first, "/__manage/stop"), { method: "POST", headers: managementHeaders });
+    assert.equal((await redeem(first, ticket)).status, 403);
+    assert.equal((await fetch(url(first, "/__manage/browser-launch"), { method: "POST", headers: managementHeaders, body: JSON.stringify(target) })).status, 409);
+  } finally { await Promise.all([first.close(), second.close()]); }
+});
+
+test("expired tickets cannot enroll a browser and bounded capacity recovers after expiry", () => {
+  let now = 0;
+  const tickets = new BrowserLaunchTickets(() => now);
+  const parsed = parseBrowserLaunchTarget(target)!;
+  const first = tickets.mint(parsed)!;
+  for (let index = 1; index < 32; index++) assert.ok(tickets.mint(parsed));
+  assert.equal(tickets.mint(parsed), null);
+  now = first.expiresAt;
+  assert.equal(tickets.consume(first.ticket), null);
+  const fresh = tickets.mint(parsed)!;
+  assert.equal(tickets.consume(fresh.ticket), "/?view=page&id=views-registry%2Fprobe");
+  assert.equal(tickets.consume(fresh.ticket), null);
+});
+
+test("served bootstrap scrubs its private fragment before the exchange and navigates only its returned destination", async () => {
+  const server = await boot();
+  try {
+    await fetch(url(server, "/__manage/adopt"), { method: "POST", headers: managementHeaders });
+    const handoff = await mintHandoff(server);
+    const response = await fetch(url(server, "/__ui/browser-launch"));
+    const html = await response.text();
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1]!;
+    assert.ok(response.headers.get("content-security-policy")?.includes(`'sha256-${createHash("sha256").update(script).digest("base64")}'`));
+    const location = { hash: `#${handoff.browser_launch.path.split("#")[1]}`, pathname: "/__ui/browser-launch", replace: (destination: string) => { navigated = destination; } };
+    let scrubbed = false;
+    let navigated: string | undefined;
+    let calls = 0;
+    const window = {} as { top?: unknown };
+    window.top = window;
+    await runInNewContext(script, {
+      window, location, document: { getElementById: () => ({ textContent: "Opening" }) },
+      history: { replaceState: (_state: unknown, _title: string, path: string) => { assert.equal(path, location.pathname); location.hash = ""; scrubbed = true; } },
+      fetch: async (path: string, init: RequestInit) => {
+        assert.ok(scrubbed);
+        assert.equal(location.hash, "");
+        assert.equal(init.redirect, "error");
+        calls++;
+        return fetch(url(server, path), { ...init, headers: { ...init.headers, origin: url(server, "") } });
+      },
+    });
+    assert.equal(navigated, handoff.destination);
+    assert.equal(calls, 1);
+  } finally { await server.close(); }
 });

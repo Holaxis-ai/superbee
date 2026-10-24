@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { createViewLaunchFence } from "@superbee/core/view-launch-contract";
 import { mayForwardDurableActivity } from "../src/durable-activity.js";
 
 test("a delayed bridge response cannot forward after its View is hidden", () => {
-  const operationEpoch = 4;
+  const fence = createViewLaunchFence();
+  const attempt = fence.begin("launch-1");
+  fence.begin("launch-1");
 
   assert.equal(
     mayForwardDurableActivity({
-      operationEpoch,
-      currentEpoch: 5,
+      fence,
+      attempt,
       visibilityState: "hidden",
       suspendedLaunchId: "launch-1",
     }),
@@ -18,12 +21,14 @@ test("a delayed bridge response cannot forward after its View is hidden", () => 
 });
 
 test("a delayed poll cannot forward or restart while suspension awaits retirement", () => {
-  const operationEpoch = 4;
+  const fence = createViewLaunchFence();
+  const attempt = fence.begin("launch-1");
+  fence.begin("launch-1");
 
   assert.equal(
     mayForwardDurableActivity({
-      operationEpoch,
-      currentEpoch: 5,
+      fence,
+      attempt,
       visibilityState: "visible",
       suspendedLaunchId: "launch-1",
     }),
@@ -31,8 +36,8 @@ test("a delayed poll cannot forward or restart while suspension awaits retiremen
   );
   assert.equal(
     mayForwardDurableActivity({
-      operationEpoch,
-      currentEpoch: 5,
+      fence,
+      attempt,
       visibilityState: "visible",
       suspendedLaunchId: null,
     }),
@@ -42,10 +47,12 @@ test("a delayed poll cannot forward or restart while suspension awaits retiremen
 });
 
 test("only current visible unsuspended durable activity may forward", () => {
+  const fence = createViewLaunchFence();
+  const attempt = fence.begin("launch-1");
   assert.equal(
     mayForwardDurableActivity({
-      operationEpoch: 5,
-      currentEpoch: 5,
+      fence,
+      attempt,
       visibilityState: "visible",
       suspendedLaunchId: null,
     }),

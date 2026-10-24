@@ -9,7 +9,7 @@
 // Bundle Views add a second privilege tier alongside the data API: the session-authed shell
 // mints one immutable launch (`POST /__page/mint`), fetches that launch's exact HTML once through
 // its single-use nonce (`GET /__page/<nonce>`), and hands the bytes to the static View host
-// (`/__ui/view-host`), which mounts them in a sandboxed, opaque-origin `blob:` frame. The View
+// (`/__ui/view-host`), which mounts them in a sandboxed, opaque-origin self-contained frame. The View
 // frame makes no request of its own and never holds the session. Data-bearing active HTML also
 // requires an exact-byte local approval, and its bridge requests are resolved here against the
 // immutable launch before and after each read. Plus an SSE `/events` stream (shell-only) fed by a
@@ -25,6 +25,10 @@ import { assertSafeBlobKey, loadKinds, queryEdges, queryHeads, readBundleOkfVers
 import { parseRegistration } from "@superbee/core/page";
 import { isAllowedHost } from "./host.js";
 import { checkAuth, constantTimeEqual, mintSessionSecret, sessionCookieHeader } from "./session.js";
+import {
+  BROWSER_LAUNCH_MAX_BODY_BYTES, BROWSER_LAUNCH_PATH, BrowserLaunchTickets,
+  browserLaunchDocument, browserLaunchHeaders, parseBrowserLaunchTarget,
+} from "./browser-launch.js";
 import type { UiAssetHandler } from "./assets.js";
 import { proxyToRemote } from "./proxy.js";
 import { pageCsp, viewChildCsp } from "./pages.js";
@@ -197,6 +201,7 @@ export interface UiServerHandle {
 
 /** Per-run mutable state the request handler closes over: the page-nonce registry, the SSE fan-out, the change watcher, and the shutdown signal (aborts remote-mode upstream requests at close()). */
 interface UiRuntime {
+  browserLaunches: BrowserLaunchTickets;
   launches: PageLaunchRegistry;
   /** Launches whose single nonce response to the shell reached Node's completed-response boundary. */
   deliveredLaunches: WeakSet<PageLaunch>;
@@ -308,6 +313,42 @@ async function handleManagementRequest(
     }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }));
     return true;
   }
+  if (url.pathname === "/__manage/browser-launch" && req.method === "POST") {
+    if (options.management.identity.protocol < 2 || runtime.management.state !== "adopted") {
+      await writeResponseToServerResponse(res, jsonError(409, "CONFLICT", "managed UI does not support a browser handoff in its current state"));
+      return true;
+    }
+    let request: Request;
+    try {
+      request = await requestFromIncomingMessage(req, url.origin, { maxBodyBytes: BROWSER_LAUNCH_MAX_BODY_BYTES });
+    } catch (error) {
+      if (!(error instanceof RequestBodyTooLargeError)) throw error;
+      await writeResponseToServerResponse(res, jsonError(413, "USAGE", "browser launch request exceeds its byte limit"));
+      return true;
+    }
+    let target;
+    try { target = parseBrowserLaunchTarget(await request.json()); } catch { target = null; }
+    if (!target) {
+      await writeResponseToServerResponse(res, jsonError(400, "USAGE", "browser launch requires one supported exact target"));
+      return true;
+    }
+    // Parsing may await the body: stop can win while it is arriving.
+    if (runtime.management.state !== "adopted") {
+      await writeResponseToServerResponse(res, jsonError(409, "CONFLICT", "managed UI is stopping"));
+      return true;
+    }
+    const launch = runtime.browserLaunches.mint(target);
+    if (!launch) {
+      await writeResponseToServerResponse(res, jsonError(429, "BUSY", "too many outstanding browser handoffs; retry after their expiry"));
+      return true;
+    }
+    await writeResponseToServerResponse(res, new Response(JSON.stringify({
+      launch_nonce: options.management.identity.launch_nonce,
+      destination: launch.destination,
+      browser_launch: { path: `${BROWSER_LAUNCH_PATH}#${launch.ticket}`, expires_at: launch.expiresAt },
+    }), { headers: { ...browserLaunchHeaders(), "content-type": "application/json; charset=utf-8" } }));
+    return true;
+  }
   if (url.pathname === "/__manage/adopt" && req.method === "POST") {
     if (!runtime.management.reserveAdopt()) {
       await writeResponseToServerResponse(res, jsonError(409, "CONFLICT", "managed UI launch is already stopping"));
@@ -324,6 +365,7 @@ async function handleManagementRequest(
   }
   if (url.pathname === "/__manage/stop" && req.method === "POST") {
     runtime.management.reserveStop();
+    runtime.browserLaunches.clear();
     const finished = new Promise<void>((resolve) => res.once("finish", resolve));
     await writeResponseToServerResponse(res, new Response(JSON.stringify({
       stopping: true,
@@ -379,7 +421,7 @@ function viewHostResponse(): Response {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "content-security-policy": viewHostCsp(viewChildCsp()),
-      // The host's own framing guard. Unlike `frame-ancestors`, the blob child does not inherit it.
+      // The host's own framing guard. Unlike `frame-ancestors`, the local-scheme child does not inherit it.
       "x-frame-options": "SAMEORIGIN",
       "x-content-type-options": "nosniff",
       "cache-control": "no-store",
@@ -871,6 +913,52 @@ async function handleRequest(
   // management secret.
   if (await handleManagementRequest(req, res, options, runtime, url)) return;
 
+  // Only this secret-free document and its one-use exchange precede the ordinary session gate.
+  if (url.pathname === BROWSER_LAUNCH_PATH && options.management && runtime.management &&
+      options.management.identity.protocol >= 2) {
+    const reply = async (response: Response): Promise<void> => {
+      for (const [key, value] of Object.entries(browserLaunchHeaders())) response.headers.set(key, value);
+      await writeResponseToServerResponse(res, response);
+    };
+    if (req.method === "GET" && url.search === "") {
+      await reply(browserLaunchDocument());
+      return;
+    }
+    if (req.method !== "POST" || url.search !== "" || req.headers.origin !== url.origin ||
+        req.headers["x-requested-with"] !== "superbee-browser-launch" ||
+        req.headers["content-type"]?.split(";")[0]?.trim().toLowerCase() !== "application/json") {
+      await reply(jsonError(403, "FORBIDDEN", "invalid browser handoff exchange"));
+      return;
+    }
+    let request: Request;
+    try {
+      request = await requestFromIncomingMessage(req, origin, { maxBodyBytes: BROWSER_LAUNCH_MAX_BODY_BYTES });
+    } catch (error) {
+      if (!(error instanceof RequestBodyTooLargeError)) throw error;
+      await reply(jsonError(413, "USAGE", "browser handoff exceeds its byte limit"));
+      return;
+    }
+    let payload: unknown;
+    try { payload = await request.json(); } catch { payload = null; }
+    const data = payload as { ticket?: unknown } | null;
+    if (!data || typeof data !== "object" || Array.isArray(data) || Object.keys(data).length !== 1 ||
+        typeof data.ticket !== "string" || !/^[A-Za-z0-9_-]{43}$/u.test(data.ticket) ||
+        runtime.management.state !== "adopted") {
+      await reply(jsonError(403, "FORBIDDEN", "browser handoff is unavailable or expired"));
+      return;
+    }
+    const destination = runtime.browserLaunches.consume(data.ticket);
+    if (destination === null) {
+      await reply(jsonError(403, "FORBIDDEN", "browser handoff is unavailable or expired"));
+      return;
+    }
+    await reply(new Response(JSON.stringify({ destination }), { headers: {
+      "content-type": "application/json; charset=utf-8",
+      "set-cookie": sessionCookieHeader(sessionSecret, options.sessionCookieName),
+    } }));
+    return;
+  }
+
   // Authenticate from the raw request metadata before adapting/buffering any body. A caller with
   // no session must not be able to make the loopback process allocate an arbitrary request body
   // merely to discover that it is unauthorized.
@@ -1042,6 +1130,7 @@ export async function bootUiServer(options: UiServerOptions): Promise<UiServerHa
   const authorizations = options.viewAuthorization ?? new SessionViewAuthorizationStore();
   const bridgeAuthority = new PageBridgeLaunchAuthority(options.bundle, launches, authorizations);
   const runtime: UiRuntime = {
+    browserLaunches: new BrowserLaunchTickets(),
     launches,
     deliveredLaunches: new WeakSet(),
     authorizations,
@@ -1124,6 +1213,8 @@ export async function bootUiServer(options: UiServerOptions): Promise<UiServerHa
             }
           : {}),
         close: async () => {
+          runtime.management?.reserveStop();
+          runtime.browserLaunches.clear();
           void runtime.watcher?.stop();
           runtime.sse.close();
           const listenerClosed = new Promise<void>((resolveClose, rejectClose) =>

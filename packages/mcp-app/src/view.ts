@@ -1,3 +1,4 @@
+import { createViewLaunchFence, type ViewLaunchAttempt } from "@superbee/core/view-launch-contract";
 import {
   App,
   applyDocumentTheme,
@@ -62,12 +63,12 @@ const displayModeButton = document.getElementById("display-mode") as HTMLButtonE
 let app: App;
 let currentPayload: McpViewPayload | null = null;
 type PendingAction =
-  { launchId: string; approvalToken: string; requestId: string; epoch: number };
+  { launchId: string; approvalToken: string; requestId: string; attempt: ViewLaunchAttempt };
 
 let pending: PendingAction | null = null;
-let preparingActiveAction: { launchId: string; requestId: string; epoch: number } | null = null;
+let preparingActiveAction: { launchId: string; requestId: string; attempt: ViewLaunchAttempt } | null = null;
 let finishingAction: PendingAction | null = null;
-let frameEpoch = 0;
+const launchFence = createViewLaunchFence();
 let pollTimer: number | null = null;
 let pollAcknowledgement: string | undefined;
 let suspendedDurableLaunch: string | null = null;
@@ -78,7 +79,7 @@ let currentHostContext: HostContext | null = null;
 let displayModeContextRevision = 0;
 let resumingDurableLaunch: {
   launchId: string;
-  epoch: number;
+  attempt: ViewLaunchAttempt;
 } | null = null;
 const retiredDurableLaunchIds = new Set<string>();
 const MAX_RETIRED_DURABLE_LAUNCH_IDS = 256;
@@ -221,7 +222,8 @@ function clearFrameDocument(): void {
 
 function retirePayload(closeDurable = true): void {
   const previous = currentPayload;
-  frameEpoch++;
+  const current = launchFence.current();
+  if (current) launchFence.retire(current);
   stopPolling();
   closeAuthorization();
   abandonActionOperations();
@@ -255,7 +257,7 @@ function openConfirmation(
   confirmationBackdrop.hidden = false;
   syncDialogState();
   window.setTimeout(() => {
-    if (pending?.approvalToken === action.approvalToken) confirmationApply.disabled = false;
+    if (launchFence.isCurrent(action.attempt) && pending?.approvalToken === action.approvalToken) confirmationApply.disabled = false;
   }, 350);
 }
 
@@ -264,8 +266,8 @@ function renderDurablePayload(payload: ActiveViewLaunchPayload): void {
   const sameLaunch =
     isActiveViewPayload(previous) &&
     previous.launch.launchId === payload.launch.launchId;
+  const attempt = launchFence.begin(payload.launch.launchId);
   abandonActionOperations();
-  frameEpoch++;
   stopPolling();
   closeAuthorization();
   suspendedDurableLaunch = null;
@@ -304,6 +306,7 @@ function renderDurablePayload(payload: ActiveViewLaunchPayload): void {
     syncDialogState();
     window.setTimeout(() => {
       if (
+        launchFence.isCurrent(attempt) &&
         isActiveViewPayload(currentPayload) &&
         currentPayload.launch.launchId === payload.launch.launchId &&
         !currentPayload.launch.authorization.authorized
@@ -325,7 +328,7 @@ function renderDurablePayload(payload: ActiveViewLaunchPayload): void {
   }
   frame.setAttribute("sandbox", "allow-scripts");
   frame.setAttribute("csp", ACTIVE_VIEW_CHILD_CSP);
-  const sizing = createFrameSizingSession(payload.launch.launchId, frameEpoch);
+  const sizing = createFrameSizingSession(payload.launch.launchId, attempt.generation);
   setFrameDocument(
     appendFrameSizingScript(payload.source.html, sizing),
     sizing,
@@ -382,12 +385,13 @@ async function recoverPayload(result: CallToolResult): Promise<void> {
   }
   statusEl.dataset.kind = "ready";
   statusEl.textContent = "Recovering the View payload over the app channel…";
+  const attempt = launchFence.begin(claim);
   try {
     const response = await app.callServerTool({
       name: "resolve_launch",
       arguments: { claim },
     });
-    if (currentPayload) return;
+    if (!launchFence.isCurrent(attempt)) return;
     const payload = extractViewPayload(response);
     if (payload) {
       renderPayload(payload);
@@ -395,6 +399,7 @@ async function recoverPayload(result: CallToolResult): Promise<void> {
     }
     reportUndeliveredPayload(firstResultText(response));
   } catch (error) {
+    if (!launchFence.isCurrent(attempt)) return;
     reportUndeliveredPayload(error instanceof Error ? error.message : String(error));
   }
 }
@@ -410,13 +415,13 @@ function reportUndeliveredPayload(detail: string | null): void {
 
 function durablePayloadFor(
   launchId: string,
-  epoch: number,
+  attempt: ViewLaunchAttempt,
 ): ActiveViewLaunchPayload | null {
   const payload = currentPayload;
   return (
     mayForwardDurableActivity({
-      operationEpoch: epoch,
-      currentEpoch: frameEpoch,
+      fence: launchFence,
+      attempt,
       visibilityState: document.visibilityState,
       suspendedLaunchId: suspendedDurableLaunch,
     }) &&
@@ -428,16 +433,16 @@ function durablePayloadFor(
     : null;
 }
 
-function scheduleDurablePoll(launchId: string, epoch: number): void {
-  if (!durablePayloadFor(launchId, epoch) || pollTimer !== null) return;
+function scheduleDurablePoll(launchId: string, attempt: ViewLaunchAttempt): void {
+  if (!durablePayloadFor(launchId, attempt) || pollTimer !== null) return;
   pollTimer = window.setTimeout(() => {
     pollTimer = null;
-    void pollDurableView(launchId, epoch);
+    void pollDurableView(launchId, attempt);
   }, 1_000);
 }
 
-async function pollDurableView(launchId: string, epoch: number): Promise<void> {
-  if (!durablePayloadFor(launchId, epoch)) return;
+async function pollDurableView(launchId: string, attempt: ViewLaunchAttempt): Promise<void> {
+  if (!durablePayloadFor(launchId, attempt)) return;
   try {
     const response = await app.callServerTool({
       name: "poll_durable_view",
@@ -448,7 +453,7 @@ async function pollDurableView(launchId: string, epoch: number): Promise<void> {
           : {}),
       },
     });
-    if (!durablePayloadFor(launchId, epoch)) return;
+    if (!durablePayloadFor(launchId, attempt)) return;
     const poll = structuredResult(response)?.poll;
     if (!isRecord(poll) || typeof poll.status !== "string") {
       throw new Error("The durable View poll returned an invalid result.");
@@ -475,9 +480,9 @@ async function pollDurableView(launchId: string, epoch: number): Promise<void> {
     } else if (poll.status !== "unchanged") {
       throw new Error(`Unsupported durable View poll status '${poll.status}'.`);
     }
-    scheduleDurablePoll(launchId, epoch);
+    scheduleDurablePoll(launchId, attempt);
   } catch (error) {
-    if (!durablePayloadFor(launchId, epoch)) return;
+    if (!durablePayloadFor(launchId, attempt)) return;
     retirePayload();
     statusEl.dataset.kind = "error";
     statusEl.textContent = `Reopen this View: ${error instanceof Error ? error.message : String(error)}`;
@@ -496,7 +501,7 @@ function bridgeError(request: unknown, message: string): Record<string, unknown>
 
 async function forwardDurableBridgeMessage(
   launchId: string,
-  epoch: number,
+  attempt: ViewLaunchAttempt,
   request: unknown,
 ): Promise<void> {
   try {
@@ -512,7 +517,7 @@ async function forwardDurableBridgeMessage(
       const target = isRecord(navigation) && navigation.status === "opened"
         ? navigation.view
         : null;
-      if (!durablePayloadFor(launchId, epoch)) {
+      if (!durablePayloadFor(launchId, attempt)) {
         if (
           isActiveViewPayload(target) &&
           (!isActiveViewPayload(currentPayload) ||
@@ -539,13 +544,13 @@ async function forwardDurableBridgeMessage(
         }`;
       return;
     }
-    if (!durablePayloadFor(launchId, epoch)) return;
+    if (!durablePayloadFor(launchId, attempt)) return;
     if (isRecord(outcome.reply)) {
       frame.contentWindow?.postMessage(outcome.reply, "*");
     }
-    if (outcome.subscribed === true) scheduleDurablePoll(launchId, epoch);
+    if (outcome.subscribed === true) scheduleDurablePoll(launchId, attempt);
   } catch (error) {
-    if (!durablePayloadFor(launchId, epoch)) return;
+    if (!durablePayloadFor(launchId, attempt)) return;
     const reply = bridgeError(
       request,
       error instanceof Error ? error.message : String(error),
@@ -556,29 +561,29 @@ async function forwardDurableBridgeMessage(
 
 function postActiveActionResult(
   launchId: string,
-  epoch: number,
+  attempt: ViewLaunchAttempt,
   requestId: string,
   result: unknown,
 ): void {
-  if (!durablePayloadFor(launchId, epoch)) return;
+  if (!durablePayloadFor(launchId, attempt)) return;
   frame.contentWindow?.postMessage(actionReply(requestId, result), "*");
 }
 
 async function prepareActiveAction(
   launchId: string,
-  epoch: number,
+  attempt: ViewLaunchAttempt,
   requestId: string,
   action: DocumentSetFieldAction,
 ): Promise<void> {
   if (pending || preparingActiveAction || finishingAction) {
-    postActiveActionResult(launchId, epoch, requestId, {
+    postActiveActionResult(launchId, attempt, requestId, {
       status: "rejected",
       action: "document.set-field",
       message: "this View already has an action proposal in progress",
     });
     return;
   }
-  const reservation = { launchId, epoch, requestId };
+  const reservation = { launchId, attempt, requestId };
   preparingActiveAction = reservation;
   statusEl.dataset.kind = "working";
   statusEl.textContent = "Preparing the exact change for confirmation…";
@@ -588,7 +593,7 @@ async function prepareActiveAction(
       arguments: { launchId, requestId, action },
     });
     const result = structuredResult(response)?.result as PrepareResult | undefined;
-    if (!durablePayloadFor(launchId, epoch)) {
+    if (!durablePayloadFor(launchId, attempt)) {
       if (result?.status === "prepared") {
         void app.callServerTool({
           name: "finish_view_action",
@@ -607,7 +612,7 @@ async function prepareActiveAction(
           launchId,
           approvalToken: result.approvalToken,
           requestId,
-          epoch,
+          attempt,
         },
         result.confirmation,
       );
@@ -617,7 +622,7 @@ async function prepareActiveAction(
     }
     statusEl.dataset.kind = result?.status === "conflict" ? "error" : "ready";
     statusEl.textContent = resultMessage(result);
-    postActiveActionResult(launchId, epoch, requestId, result ?? {
+    postActiveActionResult(launchId, attempt, requestId, result ?? {
       status: "failed",
       action: "document.set-field",
       message: "the action service returned an invalid result",
@@ -628,10 +633,10 @@ async function prepareActiveAction(
       action: "document.set-field",
       message: error instanceof Error ? error.message : String(error),
     };
-    if (durablePayloadFor(launchId, epoch)) {
+    if (durablePayloadFor(launchId, attempt)) {
       statusEl.dataset.kind = "error";
       statusEl.textContent = result.message;
-      postActiveActionResult(launchId, epoch, requestId, result);
+      postActiveActionResult(launchId, attempt, requestId, result);
     }
   } finally {
     if (preparingActiveAction === reservation) preparingActiveAction = null;
@@ -648,6 +653,8 @@ async function authorizeDurableView(): Promise<void> {
     return;
   }
   const launchId = payload.launch.launchId;
+  const attempt = launchFence.current();
+  if (!attempt) return;
   authorizationApply.disabled = true;
   authorizationCancel.disabled = true;
   statusEl.dataset.kind = "working";
@@ -657,18 +664,20 @@ async function authorizeDurableView(): Promise<void> {
       name: "authorize_durable_view",
       arguments: { launchId },
     });
+    if (!launchFence.isCurrent(attempt)) return;
     const view = structuredResult(response)?.view;
     if (!isActiveViewPayload(view) || view.launch.launchId !== launchId) {
       throw new Error("The active View changed or returned an invalid approved launch.");
     }
     renderDurablePayload(view);
   } catch (error) {
+    if (!launchFence.isCurrent(attempt)) return;
     retirePayload();
     statusEl.dataset.kind = "error";
     statusEl.textContent =
       error instanceof Error ? error.message : String(error);
   } finally {
-    authorizationCancel.disabled = false;
+    if (launchFence.isCurrent(attempt)) authorizationCancel.disabled = false;
   }
 }
 
@@ -699,7 +708,7 @@ async function finishAction(decision: "commit" | "cancel"): Promise<void> {
     });
     const structured = structuredResult(response);
     const stillCurrent = finishingAction === selected &&
-      durablePayloadFor(selected.launchId, selected.epoch) !== null;
+      durablePayloadFor(selected.launchId, selected.attempt) !== null;
     if (stillCurrent) {
       statusEl.dataset.kind =
         isRecord(structured?.result) && structured.result.status === "conflict" ? "error" : "ready";
@@ -708,7 +717,7 @@ async function finishAction(decision: "commit" | "cancel"): Promise<void> {
     if (stillCurrent) {
       postActiveActionResult(
         selected.launchId,
-        selected.epoch,
+        selected.attempt,
         selected.requestId,
         structured?.result ?? {
           status: "failed",
@@ -719,21 +728,23 @@ async function finishAction(decision: "commit" | "cancel"): Promise<void> {
     }
   } catch (error) {
     const stillCurrent = finishingAction === selected &&
-      durablePayloadFor(selected.launchId, selected.epoch) !== null;
+      durablePayloadFor(selected.launchId, selected.attempt) !== null;
     if (stillCurrent) {
       statusEl.dataset.kind = "error";
       statusEl.textContent = error instanceof Error ? error.message : String(error);
     }
     if (stillCurrent) {
-      postActiveActionResult(selected.launchId, selected.epoch, selected.requestId, {
+      postActiveActionResult(selected.launchId, selected.attempt, selected.requestId, {
         status: "failed",
         action: "document.set-field",
         message: error instanceof Error ? error.message : String(error),
       });
     }
   } finally {
-    confirmationApply.disabled = false;
-    confirmationCancel.disabled = false;
+    if (launchFence.isCurrent(selected.attempt)) {
+      confirmationApply.disabled = false;
+      confirmationCancel.disabled = false;
+    }
     if (finishingAction === selected) {
       finishingAction = null;
       closeConfirmation();
@@ -846,12 +857,12 @@ async function changeDisplayMode(): Promise<void> {
 
 function currentSuspendedDurablePayload(
   launchId: string,
-  epoch: number,
+  attempt: ViewLaunchAttempt,
 ): ActiveViewLaunchPayload | null {
   const payload = currentPayload;
   return (
     document.visibilityState === "visible" &&
-    frameEpoch === epoch &&
+    launchFence.isCurrent(attempt) &&
     suspendedDurableLaunch === launchId &&
     isActiveViewPayload(payload) &&
     payload.launch.launchId === launchId &&
@@ -873,7 +884,9 @@ function resumeSuspendedDurableView(): void {
   ) {
     return;
   }
-  const operation = { launchId, epoch: frameEpoch };
+  const attempt = launchFence.current();
+  if (!attempt) return;
+  const operation = { launchId, attempt };
   resumingDurableLaunch = operation;
   void (async () => {
     try {
@@ -896,13 +909,13 @@ function resumeSuspendedDurableView(): void {
             "The durable View resume returned an invalid replacement.",
         );
       }
-      if (!currentSuspendedDurablePayload(launchId, operation.epoch)) {
+      if (!currentSuspendedDurablePayload(launchId, operation.attempt)) {
         closeDurableLaunchEventually(resumed.launch.launchId);
         return;
       }
       renderDurablePayload(resumed);
     } catch (error) {
-      if (currentSuspendedDurablePayload(launchId, operation.epoch)) {
+      if (currentSuspendedDurablePayload(launchId, operation.attempt)) {
         retirePayload();
         statusEl.dataset.kind = "error";
         statusEl.textContent = `Reopen this View: ${error instanceof Error ? error.message : String(error)}`;
@@ -945,14 +958,15 @@ frame.addEventListener("load", () => {
 
 window.addEventListener("message", (event) => {
   const payload = currentPayload;
-  if (!payload) return;
+  const attempt = launchFence.current();
+  if (!payload || !attempt) return;
   if (frameSizingSession) {
     const sizing = readFrameSizeEvent(
       event.data,
       event.source,
       frame.contentWindow,
       frameSizingSession,
-      frameEpoch,
+      attempt.generation,
     );
     if (sizing.kind !== "other") {
       if (sizing.kind === "accepted") {
@@ -975,7 +989,7 @@ window.addEventListener("message", (event) => {
     if (!actionMessage.ok) {
       const raw = event.data as { id?: unknown; requestId?: unknown };
       if (typeof raw.requestId === "string") {
-        postActiveActionResult(payload.launch.launchId, frameEpoch, raw.requestId, {
+        postActiveActionResult(payload.launch.launchId, attempt, raw.requestId, {
           status: "rejected",
           action: "document.set-field",
           message: actionMessage.message,
@@ -987,12 +1001,12 @@ window.addEventListener("message", (event) => {
     }
     if (actionMessage.message.type === "action.propose") {
       if (actionMessage.message.action.kind !== "document.set-field") {
-        postActiveActionResult(payload.launch.launchId, frameEpoch, actionMessage.message.requestId, { status: "rejected", action: actionMessage.message.action.kind, message: "this host supports scalar actions only" });
+        postActiveActionResult(payload.launch.launchId, attempt, actionMessage.message.requestId, { status: "rejected", action: actionMessage.message.action.kind, message: "this host supports scalar actions only" });
         return;
       }
       void prepareActiveAction(
         payload.launch.launchId,
-        frameEpoch,
+        attempt,
         actionMessage.message.requestId,
         actionMessage.message.action,
       );
@@ -1001,7 +1015,7 @@ window.addEventListener("message", (event) => {
   }
   void forwardDurableBridgeMessage(
     payload.launch.launchId,
-    frameEpoch,
+    attempt,
     event.data,
   );
 });
@@ -1015,7 +1029,7 @@ document.addEventListener("visibilitychange", () => {
   ) {
     abandonActionOperations();
     suspendedDurableLaunch = payload.launch.launchId;
-    frameEpoch++;
+    launchFence.begin(payload.launch.launchId);
     resetFrameSizing();
     stopPolling();
     return;

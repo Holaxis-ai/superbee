@@ -180,6 +180,7 @@ function actionPayload(authorized: boolean): TransientPayload {
 
 let displayMode: DisplayMode = "inline";
 let nextLaunch = 1;
+let releaseAuthorizationRequest: (() => void) | null = null;
 let releaseDisplayRequest: (() => void) | null = null;
 let releaseResumeRequest: (() => void) | null = null;
 let releaseCloseRequest: (() => void) | null = null;
@@ -194,6 +195,8 @@ window.__preparedActions = [];
 window.__finishedActions = [];
 window.__bridgeRequests = [];
 window.__authorizationRequests = [];
+window.__holdAuthorizationRequest = false;
+window.__authorizationRequestError = false;
 window.__holdDisplayRequest = false;
 window.__holdResumeRequest = false;
 window.__holdCloseRequest = false;
@@ -203,6 +206,10 @@ window.__displayResponseMode = null;
 window.__displayRequestError = null;
 window.__suppressDisplayContextOnResolve = false;
 window.__teardownSettled = false;
+window.__releaseAuthorizationRequest = () => {
+  releaseAuthorizationRequest?.();
+  releaseAuthorizationRequest = null;
+};
 window.__releaseDisplayRequest = () => {
   releaseDisplayRequest?.();
   releaseDisplayRequest = null;
@@ -276,6 +283,10 @@ bridge.oncalltool = async ({ name, arguments: args }) => {
     typeof args?.launchId === "string" ? args.launchId : "invalid-launch";
   if (name === "authorize_durable_view") {
     window.__authorizationRequests.push(launchId);
+    if (window.__holdAuthorizationRequest) {
+      await new Promise<void>(resolve => { releaseAuthorizationRequest = resolve; });
+    }
+    if (window.__authorizationRequestError) throw new Error("late approval rejection");
     if (launchId === "launch-navigation-target") {
       const view = navigationPayload();
       view.launch.authorization.authorized = true;
@@ -468,6 +479,9 @@ declare global {
     __holdCloseRequest: boolean;
     __holdFinishRequest: boolean;
     __holdNavigationRequest: boolean;
+    __holdAuthorizationRequest: boolean;
+    __authorizationRequestError: boolean;
+    __releaseAuthorizationRequest: () => void;
     __holdDisplayRequest: boolean;
     __holdResumeRequest: boolean;
     __hostInitialized?: boolean;

@@ -609,6 +609,12 @@ export const CLI_COMMAND_GROUPS = [
         summary: "List the bundle's registered durable Views from the same catalog used by the web launcher and MCP list_views",
       },
       {
+        id: "viewOpen",
+        leaves: [publicLeaf("viewOpen", "view open", one, undefined, DIR_SURFACE)],
+        usage: "view open <viewId> [--dir <path>] [--actor <name>] [--no-open --json]",
+        summary: "Open one exact local registered View through a private one-use browser handoff; --no-open --json prepares it for the selected browser",
+      },
+      {
         id: "sync",
         leaves: [publicLeaf("sync", "sync", zero, 22, DIR_SYNC_SURFACE)],
         usage: "sync [--establish [--yes] | --pull-only | --show-incoming <id> [--out <file> | --body-out <file>] | --inspect --doc <id> [--out <file>] | --resolve keep|take|revise --doc <id> | --restore-deletes | --accept-deletes <token> | --take-host-deletions <token> | --replace-links <id>] [--dir <path>] [--limit <n>]",

@@ -51,7 +51,7 @@ export async function openRegisteredView(page: Page, registryId: string): Promis
 
 /**
  * The View's own document. The shell frames the View host (`iframe.page-frame-iframe`), and the
- * host frames the View as its single sandboxed `blob:` child.
+ * host frames the View as its single sandboxed self-contained child.
  */
 export function viewFrame(page: Page): FrameLocator {
   return page.frameLocator("iframe.page-frame-iframe").frameLocator("iframe");

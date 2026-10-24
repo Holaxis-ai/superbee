@@ -501,6 +501,27 @@ test("authorization dialog reports registered and transient View provenance hone
   );
 });
 
+for (const rejected of [false, true]) {
+  test(`a late approval ${rejected ? "failure" : "success"} cannot replace a newer View`, async ({ page }) => {
+    const outer = await lifecycleHost(page);
+    await page.evaluate(() => { window.__holdAuthorizationRequest = true; });
+    await outer.locator("#authorization-apply").click();
+    await expect.poll(() => page.evaluate(() => window.__authorizationRequests)).toEqual(["launch-inline"]);
+    await page.evaluate(() => window.__showTransientResult());
+    await expect(outer.locator("#authorization-view")).toHaveText("Transient process-local View");
+    await page.evaluate(fail => {
+      window.__authorizationRequestError = fail;
+      window.__releaseAuthorizationRequest();
+    }, rejected);
+    // Give the already-released tool result its message turn before checking the replacement.
+    await outer.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(outer.locator("#authorization-view")).toHaveText("Transient process-local View");
+    await expect(outer.locator("#authorization-backdrop")).toBeVisible();
+    await expect(outer.locator("#status")).not.toContainText("late approval rejection");
+    await expect(outer.locator("#active-view")).not.toHaveAttribute("src", /^blob:/);
+  });
+}
+
 test("a bundleless access:none transient View renders without entering the approval lifecycle", async ({
   page,
 }) => {
@@ -823,6 +844,9 @@ declare global {
     __resumeRequests: string[];
     __holdCloseRequest: boolean;
     __holdNavigationRequest: boolean;
+    __holdAuthorizationRequest: boolean;
+    __authorizationRequestError: boolean;
+    __releaseAuthorizationRequest: () => void;
     __holdDisplayRequest: boolean;
     __holdResumeRequest: boolean;
     __hostInitialized?: boolean;

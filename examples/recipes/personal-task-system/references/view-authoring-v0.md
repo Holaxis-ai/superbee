@@ -34,6 +34,24 @@ only a View whose source or author you trust. A View that declares `bundle-propo
 trusted shell to prepare one v1 scalar-field action; only the human's shell-native Apply choice
 authorizes the write.
 
+## Opening a local View
+
+Use `superbee view open <viewId>` for an exact registered View in the selected local bundle;
+`--dir` and the resolved `--actor` select its managed UI authority. Use `show_view` in a supported
+MCP Apps host. These entry points establish their own host context; do not fabricate a bare View
+URL or copy a reusable session token into a link.
+
+For a fresh embedded browser, `superbee view open <viewId> --no-open --json` prepares a private
+`browser_launch.url`. Navigate the selected browser to that exact returned URL. The handoff is
+one-use and expires after 60 seconds: never share or log it. Its ordinary `url` field is a
+credential-free destination, useful only in a browser that already has the right local session.
+After expiry or ambiguous redemption, request a fresh handoff instead of replaying the old one.
+
+The handoff establishes the existing session for the entire selected local UI authority, not
+only this View. It does not approve execution, change the actor or bypass the normal approval of
+exact View bytes and access. `handoff_prepared` and `open_requested` do not prove rendering; verify
+the result in the receiving browser. Run `superbee view open --help` for current options.
+
 ## The requests
 
 Every request carries `bridge: "v0"` (or `"v1"` for `read-versioned` and `action.propose`), an

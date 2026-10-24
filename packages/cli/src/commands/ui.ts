@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import { sha256Hex } from "@superbee/core/versioning";
 import { decodePresentDocumentRequestV1, decodePresentDocumentReceiptV1, type DocumentObservationV1, type PresentDocumentReceiptV1 } from "@superbee/core/artifact-contract";
 import { readDocVersioned, type Bundle } from "@superbee/core";
+import { parseRegistration } from "@superbee/core/page";
 import { createRouter } from "@superbee/server";
 import type { UiManagementOptions } from "@superbee/ui-server";
 import {
@@ -306,6 +307,46 @@ export async function presentManagedLocalDocument(
   }, request);
   if (!presented.ok) throw new Error("Invalid managed local presentation evidence");
   return presented.value;
+}
+
+/** Exact local View entry; session enrollment never substitutes for the shell's View approval. */
+export async function presentManagedLocalView(
+  rawViewId: string,
+  values: { dir?: string; remote?: string; actor?: string; json?: boolean; "no-open"?: boolean },
+  deps: Partial<UiCliDeps>,
+): Promise<void> {
+  if (await resolveRemoteFlag(values.remote, values.dir) !== undefined) {
+    throw new CliError("USAGE", "view open supports only a selected local bundle", { help: `${cliInvocation()} view open --help` });
+  }
+  if (values["no-open"] && !values.json) throw new CliError("USAGE", "view open --no-open requires --json for its private one-use handoff");
+  const route = await resolveLocalBundleRoute(values.dir);
+  await assertResolvedLocalRouteIdentity(route);
+  const viewId = await resolveConceptIdCliArgument(route.bundle, rawViewId);
+  let read;
+  try { read = await readDocVersioned(route.bundle, viewId); }
+  catch (error) { throw readErrorToCliError(error, viewId, undefined); }
+  if (!parseRegistration(read.doc.id, read.doc.frontmatter)) {
+    throw new CliError("USAGE", `'${viewId}' is not a valid registered View`);
+  }
+  const actor = resolveActor(values.actor, { help: `${cliInvocation()} view open --actor <name>` });
+  const authority = managedUiAuthority(route.target.canonicalRoot, actor, route.bundle.root);
+  const receipt = await startOrReuseManagedUi(authority, { kind: "registered-view", id: viewId }, undefined, {
+    ...deps.managedController,
+    launchIdentity: deps.managedController?.launchIdentity ?? await captureManagedUiLaunchIdentity(authority),
+  });
+  if (!receipt.browser_launch) throw new CliError("RUNTIME", "managed UI did not prepare a one-use browser handoff");
+  if (!values["no-open"]) (deps.openBrowser ?? defaultOpenBrowser)(receipt.browser_launch.url);
+  (deps.stdout ?? ((text: string) => void process.stdout.write(text)))(render({
+    ui: "managed", state: receipt.state, url: receipt.url,
+    mode: "dir", root: route.target.canonicalRoot, view: viewId,
+    actor: authority.actor, actor_present: authority.actor !== null,
+    presentation: values["no-open"] ? "handoff_prepared" : "open_requested",
+    ...(values.json ? { browser_launch: receipt.browser_launch } : {}),
+    help: [
+      `${cliInvocation()} view open --dir ${commandToken(route.target.canonicalRoot)}${actor === undefined ? "" : commandFragment` --actor ${commandToken(actor)}`} -- ${commandToken(viewId)}`,
+      "The destination needs this browser's local session. Request a fresh private handoff to reopen it; opening does not approve executable View bytes.",
+    ],
+  }, resolveMode(values)));
 }
 
 async function runManagedUiControl(

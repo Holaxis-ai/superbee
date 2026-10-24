@@ -155,6 +155,7 @@ export const BEHAVIOR_ASSIGNMENTS = [
   ordinary("mcpStatus", 0),
   ordinary("mcpUninstall", 0),
   selector("viewList", "leading-navigation", 0),
+  selector("viewOpen", "leading-navigation", 1),
   ordinary("sync", 0),
   ordinary("version", 0),
   ordinary("sessionStart", 0),

@@ -1,13 +1,15 @@
+import type { ViewLaunchAttempt, ViewLaunchFence } from "@superbee/core/view-launch-contract";
+
 export interface DurableActivityState {
-  operationEpoch: number;
-  currentEpoch: number;
+  fence: ViewLaunchFence;
+  attempt: ViewLaunchAttempt;
   visibilityState: DocumentVisibilityState;
   suspendedLaunchId: string | null;
 }
 
 export function mayForwardDurableActivity(state: DurableActivityState): boolean {
   return (
-    state.operationEpoch === state.currentEpoch &&
+    state.fence.isCurrent(state.attempt) &&
     state.visibilityState === "visible" &&
     state.suspendedLaunchId === null
   );
