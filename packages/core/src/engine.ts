@@ -1,3 +1,4 @@
+import { compareCodeUnits } from "./code-unit-order.js";
 import { captureBodyReplacePosture, guardBodyReplace } from "./body-replace-guards.js";
 import { inventoryGuardFor, InventoryGuardConflict, type InventoryGuardRequest } from "./inventory-guard.js";
 import { VersionConflict } from "./version-transport.js";
@@ -238,7 +239,7 @@ async function scanMatching(
   for (const result of await readManyExisting(backend, ids, onSkip)) {
     if (matchesFilter(result.doc, filter)) results.push(result);
   }
-  results.sort((a, b) => a.doc.id.localeCompare(b.doc.id));
+  results.sort((a, b) => compareCodeUnits(a.doc.id, b.doc.id));
   return results;
 }
 
@@ -260,7 +261,7 @@ export async function queryHeads(
   if (backend.queryHeads) {
     const rows = (await backend.queryHeads(filter, options.onSkip ? { onSkip: options.onSkip } : undefined))
       .filter((row) => matchesFilter(row, filter));
-    rows.sort((a, b) => a.id.localeCompare(b.id));
+    rows.sort((a, b) => compareCodeUnits(a.id, b.id));
     return rows;
   }
   return (await scanMatching(backend, filter, options.onSkip)).map(({ doc, version }) => ({
@@ -312,7 +313,7 @@ export async function queryEdges(
       edges.push(link);
     }
   }
-  edges.sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to) || a.text.localeCompare(b.text));
+  edges.sort((a, b) => compareCodeUnits(a.from, b.from) || compareCodeUnits(a.to, b.to) || compareCodeUnits(a.text, b.text));
   return edges;
 }
 

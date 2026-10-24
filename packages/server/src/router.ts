@@ -18,6 +18,7 @@
  */
 
 import {
+  compareCodeUnits,
   InvalidInputError,
   MalformedDocumentError,
   VersionConflict,
@@ -1031,10 +1032,9 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
     if (cursor) {
       const idx = page.findIndex((r) => r.id === cursor);
       // Vanished-cursor fallback: MUST use the SAME comparator the sort above used
-      // (`localeCompare`) — a code-unit `>` here diverges from locale order for ids like
-      // `B` vs `a`, re-emitting or skipping rows when the cursor doc was deleted or
-      // edited out of the filter between pages.
-      page = idx >= 0 ? page.slice(idx + 1) : page.filter((r) => r.id.localeCompare(cursor) > 0);
+      // (code-unit order), including when the cursor doc was deleted or edited out of
+      // the filter between pages.
+      page = idx >= 0 ? page.slice(idx + 1) : page.filter((r) => compareCodeUnits(r.id, cursor) > 0);
     }
     const limited = page.slice(0, limit);
     const nextCursor = page.length > limit ? (limited[limited.length - 1]?.id ?? null) : null;

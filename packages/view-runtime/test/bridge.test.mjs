@@ -25,6 +25,28 @@ import {
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { CODE_UNIT_ORDER } from "@superbee/core/string-identity-agreement";
+
+test("bridge ID query and polling changes share code-unit order", async () => {
+  const bundle = { root: "mem://bridge-order", backend: new MemoryBackend() };
+  const bridge = new BridgeService({
+    bundle,
+    launches: { resolve: async () => ({ launchId: "launch", capability: "bundle-read" }), revoke() {} },
+    config: async () => ({ root: null, name: "Test", mode: "test" }),
+    renderDocument: ({ body }) => ({ html: body, bounded: false }),
+    host: TEST_HOST,
+    enablePolling: true,
+  });
+  await bridge.handle("launch", { bridge: "v0", type: "subscribe", id: "s" });
+  for (const id of [...CODE_UNIT_ORDER].reverse()) {
+    await bundle.backend.write(id, { id, frontmatter: { type: "Note" }, body: "" });
+  }
+  const query = await bridge.handle("launch", { bridge: "v0", type: "query", id: "q", params: {} });
+  assert.deepEqual(query.reply.result.rows.map(row => row.id), CODE_UNIT_ORDER);
+  const changed = await bridge.poll("launch");
+  assert.equal(changed.status, "change");
+  assert.deepEqual(changed.message.event.changes.map(row => row.id), CODE_UNIT_ORDER);
+});
 
 const TEST_HOST = {
   kind: "oss",
@@ -201,7 +223,7 @@ test("edge selectors preserve exact nonblank UTF-8 bytes and retain transport bo
   }
 });
 
-test("BridgeService query, edges, graph and subscribe skip one malformed document and name it instead of failing the View", async () => {
+test("BridgeService query, edges, graph and subscribe name malformed documents in code-unit order", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "bridge-malformed-"));
   try {
     const bundle = { root, backend: new FilesystemBackend(root) };
@@ -211,7 +233,10 @@ test("BridgeService query, edges, graph and subscribe skip one malformed documen
       body: "[other](/tasks/other.md)",
     });
     // An agent's raw edit: an unquoted ': ' makes the YAML invalid.
-    await writeFile(path.join(root, "tasks", "bad.md"), "---\ntype: Task\ntitle: Import: archive upload\n---\nbody\n");
+    const badIds = CODE_UNIT_ORDER.filter(id => ["a-b", "a.b", "a2", "a_b", "ab"].includes(id)).map(id => `tasks/${id}`);
+    for (const id of [...badIds].reverse()) {
+      await writeFile(path.join(root, `${id}.md`), "---\ntype: Task\ntitle: Import: archive upload\n---\nbody\n");
+    }
     const bridge = new BridgeService({
       bundle,
       launches: {
@@ -233,7 +258,7 @@ test("BridgeService query, edges, graph and subscribe skip one malformed documen
     for (const request of requests) {
       const outcome = await bridge.handle("launch", request);
       assert.equal(outcome.reply?.type, `${request.type}:result`, `${request.type}: ${JSON.stringify(outcome.reply?.error)}`);
-      assert.deepEqual(outcome.reply.result.skipped.map((row) => row.id), ["tasks/bad"], request.type);
+      assert.deepEqual(outcome.reply.result.skipped.map((row) => row.id), badIds, request.type);
       assert.match(outcome.reply.result.skipped[0].reason, /mapping/, request.type);
     }
     const query = await bridge.handle("launch", requests[0]);
@@ -1270,7 +1295,7 @@ for (const row of NEWEST_FIXTURE.cases) {
     const byId = await query({ order: "id" });
     const implicit = await query({});
     assert.deepEqual(byId, implicit, "order: \"id\" is exactly the default");
-    assert.deepEqual(implicit.rows.map((r) => r.id), [...row.expected].sort((a, b) => a.localeCompare(b)),
-      "the default order keeps localeCompare ID order");
+    assert.deepEqual(implicit.rows.map((r) => r.id), [...row.expected].sort(),
+      "the default order is UTF-16 code-unit ID order");
   });
 }

@@ -120,8 +120,8 @@ answers `500 RUNTIME` with `details.malformed: { id, reason }`, which `RemoteBac
 `MalformedDocumentError` without retrying.
 
 Blob list accepts `prefix`, `limit`, and `cursor` with the same page-size and envelope semantics.
-Both cursors are the last returned ID/key. If that cursor vanished, the next page resumes using the
-same `localeCompare` ordering as the backend scan.
+Both cursors are the last returned ID/key. Document lists and their vanished-cursor fallback use
+Core's UTF-16 code-unit ID order. Blob pagination retains its backend's locale-based key order.
 
 ## Whole-document replacement safety
 
@@ -210,9 +210,9 @@ read-only, additive, and reported by `GET /v0/capabilities` as `heads` and `snap
 
 `GET /v0/bundles/{bundle}/heads` answers `200 { count, digest, heads }` where `heads` is every
 document as `{ id, version }`, sorted by id in UTF-16 code unit order, and `count` equals the
-number of rows. Code unit order is independent of any locale and is not the `localeCompare`
-collation the list route uses; a host must not substitute the list order. There is no pagination
-and no filter: the whole listing is the point of the route. Reserved files are not heads.
+number of rows. Code unit order is independent of any locale and agrees with the document list
+route. There is no pagination and no filter: the whole listing is the point of the route. Reserved
+files are not heads.
 
 The digest is `sha256:<hex>` over the UTF-8 bytes of the sorted rows concatenated as
 `id`, `\n`, `version`, `\n` for each row, in order, with no other separator; an empty bundle

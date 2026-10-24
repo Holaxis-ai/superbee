@@ -1,4 +1,5 @@
 import {
+  compareCodeUnits,
   queryHeads,
   readBlob,
   type Bundle,
@@ -105,7 +106,7 @@ function projectCandidates(heads: readonly HeadResult[]): {
       },
     });
   }
-  candidates.sort((a, b) => a.row.id.localeCompare(b.row.id));
+  candidates.sort((a, b) => compareCodeUnits(a.row.id, b.row.id));
   return { candidates, invalidRegistrations };
 }
 
@@ -192,7 +193,7 @@ export async function listViewCatalogPage(
   const compatible = candidates.filter((candidate) => supported.has(candidate.row.access));
   const offset = options.afterId === undefined
     ? 0
-    : compatible.findIndex((candidate) => candidate.row.id.localeCompare(options.afterId!) > 0);
+    : compatible.findIndex((candidate) => compareCodeUnits(candidate.row.id, options.afterId!) > 0);
   let index = offset < 0 ? compatible.length : offset;
   let examined = 0;
   let unavailableEntries = 0;
