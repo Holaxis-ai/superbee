@@ -57,8 +57,28 @@ requires its supported package dependency and runtime import, with separate depl
 | Missing structured MCP result | Only the exact preserved claim can recover through the bounded existing App channel; no latest-launch guess or cookie recovery. | MCP `result-recovery`/pending-launch owners and supported `show_view` receiving proof. |
 | View403 versus missing/ended context | A View refusal stays local; only affirmative host/session evidence indicates context recovery. | UI PageFrame/client session and Hosted transport owners. |
 | Quiet View, blocked delivery or replaced frame | Keep source/origin/generation checks and each host's supported readiness evidence. A frame load is not proof of rendering. | UI PageFrame/view-delivery; MCP frame-load guard; Hosted registered entry owners. |
+| Local self-contained execution document | Verify original source bytes before trusted policy decoration; retain opaque isolation and deny nested frames, network and workers. Encoding or unsupported prolog ends only the current delivery. | view-runtime generated-host owner; UI view-delivery in Chromium/WebKit and actual embedded-browser receiving proof. |
 | Outage or hidden/resumed App | No fabricated revocation or automatic proposal/write replay; MCP resume revalidates into a new launch. | Existing UI/MCP/Hosted transport and durable activity/resume owners. |
 | Hosted revoked grant/pin/installation, including working-copy reads | Current Hosted authority ends the View; attempt continuity admits no operation. | Hosted registered transport/working-copy owners after actual component adoption. |
+
+## Local execution-document delivery
+
+The local shell verifies the admitted source before its opaque host adds a fixed early child-frame
+policy and encodes a self-contained data URL. Approval and content versions continue to identify
+the original source, not the host's execution decoration. The original 512 KiB UTF-8 source ceiling
+is unchanged; execution permits only the fixed policy overhead. Data URLs contain View content and
+must not enter receipts, logs or durable state. A failed delivery never retries through a weaker
+transport or sandbox.
+
+The policy precedes source activity while preserving an optional initial BOM, ASCII whitespace,
+complete strict leading comments and an ordinary HTML5 doctype. Documents without a doctype retain
+quirks mode. Ambiguous/malformed comments, processing instructions and legacy declarations refuse
+local delivery rather than scan through active markup for a later head. The source is never rewritten
+in the bundle. Child CSP, script-only sandboxing, exact message sources and host-origin checks stay
+independent of launch authorization. Quiet Views need no mandatory hello.
+
+MCP retains its blob transport and resource policy; Hosted retains its authenticated HTTP entry.
+Sharing the attempt fence does not require interchangeable transport or session credentials.
 
 ## Recovery meaning
 
