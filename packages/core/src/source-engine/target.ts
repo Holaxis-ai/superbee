@@ -100,7 +100,7 @@ export function createSourceTargetAdapter(input: SourceTargetAdapterOptions) {
     for (const change of page.changes) {
       if (!change.after || change.change_kind === "disappeared" || isExcludedRecord(cfg.policy, change.external_id, change.after.title)) continue;
       const id = change.external_id;
-      const matches = cfg.overlays.lookup(bound.resource, id);
+      const matches = cfg.overlays.lookup(bound.resource, id, { type: kind!.governs });
       if (matches.length > 1) throw new Error("source target ambiguous identity");
       let target = matches[0]?.id ?? canonical(id);
       let row = await read(target);
@@ -130,10 +130,10 @@ export function createSourceTargetAdapter(input: SourceTargetAdapterOptions) {
     if (page.feed !== cfg.policy.feed || page.provider !== bound.resource) throw new Error("source target commit scope");
     for (const change of page.changes) {
       if (!change.after || change.change_kind === "disappeared") continue;
-      const id = change.external_id, e = page.establishments?.[id];
+      const id = change.external_id, e = page.establishments && Object.hasOwn(page.establishments, id) ? page.establishments[id] : undefined;
       if (!e) {
         if (isExcludedRecord(cfg.policy, id, change.after.title)) continue;
-        const matches = cfg.overlays.lookup(bound.resource, id);
+        const matches = cfg.overlays.lookup(bound.resource, id, { type: kind!.governs });
         if (matches.length !== 1 || !accepted(id, matches[0]!.id)) throw new Error("source target establishment required");
         continue;
       }
@@ -166,7 +166,7 @@ export function createSourceTargetAdapter(input: SourceTargetAdapterOptions) {
     async reconcile(state: SourceState, at: string): Promise<SourceOverlayResult> {
       for (const [id, entry] of Object.entries(state.records)) {
         if (entry.gone || Object.hasOwn(state.pending ?? {}, id) || isExcludedRecord(cfg.policy, id, entry.after.title)) continue;
-        const matches = cfg.overlays.lookup(bound.resource, id);
+        const matches = cfg.overlays.lookup(bound.resource, id, { type: kind!.governs });
         if (matches.length > 1) throw new Error("source target ambiguous identity");
         if (matches.length === 1 && !accepted(id, matches[0]!.id)) { const row = await read(matches[0]!.id); if (!row) throw new Error("source target missing"); identity(row, id); await admit("adopt", id, row.doc.id, row.version); }
       }

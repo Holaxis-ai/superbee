@@ -159,3 +159,56 @@ test("stored creation bytes or generation drift is held before delivery", async 
   const changed = await w.adapter({ generation: "v2" }); await assert.rejects(changed.commit({ ...p, replay: true, establishments: prepared.establishments }), /scope_changed/);
   assert.equal(w.counts().sends, 0);
 });
+
+for (const externalId of ["__proto__", "constructor", "toString"]) test(`external identity ${externalId} survives durable pending and crash recovery`, async () => {
+  const w = await world(), state = new MemoryMachineState();
+  const originalCreation = w.creation;
+  let deliveryChecks = 0, writes = 0, acquired = 0;
+  const creation: typeof originalCreation = { ...originalCreation, async deliver(intent, input) {
+    const durable = (await state.read(FEED_ID))!.state;
+    assert.ok(Object.hasOwn(durable.pending!, externalId), "pending must survive JSON persistence before delivery");
+    assert.equal(durable.pending![externalId]!.establishment!.intent!.requestId, intent.requestId);
+    assert.equal(Object.hasOwn(durable.records, externalId), false);
+    deliveryChecks++; return originalCreation.deliver(intent, input);
+  } };
+  const a = await w.adapter({ creation });
+  const profile = { ...jsonPagesProfile, async observe() { acquired++; return { records: [ticket(externalId, "B")], nextCursor: null, more: false, complete: false }; } };
+  const base = { connector: w.connector, bound: w.bound, profile, spec: SPEC, identity: fetchIdentity("Synthetic/1 (+https://example.org)"), now: () => new Date(AT),
+    transport: { async request() { throw new Error("fixture must not use transport"); } } };
+  const receipt = await observeSource({ ...base, state: { read: state.read.bind(state), async write(...args) {
+    writes++; if (writes === 2) { a.discard(); throw new Error("checkpoint lost"); }
+    return state.write(...args);
+  } }, prepareCommit: a.prepareCommit, commit: a.commit });
+  assert.equal(receipt.reason, "state_unwritable", receipt.detail); assert.equal(deliveryChecks, 1);
+  const checkpoint = await state.read(FEED_ID);
+  assert.ok(Object.hasOwn(checkpoint!.state.pending!, externalId));
+  const original = checkpoint!.state.pending![externalId]!, target = original.establishment!.target;
+  assert.equal((await w.backend.read(target)).doc.frontmatter.title, "B");
+  const b = await w.adapter({ creation }), controller = new AbortController();
+  const recovered = await observeSource({ ...base, signal: controller.signal, state: { read: state.read.bind(state), async write(...args) {
+    const v = await state.write(...args); b.consume(); controller.abort(); return v;
+  } }, prepareCommit: b.prepareCommit, commit: b.commit });
+  assert.equal(recovered.reason, "deadline"); assert.equal(deliveryChecks, 2); assert.equal(acquired, 1);
+  const saved = (await state.read(FEED_ID))!.state;
+  assert.equal(saved.pending, undefined); assert.ok(Object.hasOwn(saved.records, externalId));
+  assert.deepEqual(saved.records[externalId]!.after, original.entry.after);
+  assert.equal(b.snapshot().entries[0]!.external_id, externalId);
+  assert.deepEqual(w.counts(), { minted: 1, sends: 1 });
+  const completeIndex = await buildSourceIndex(w.bundle);
+  const linked = completeIndex.lookup(w.bound.resource, externalId);
+  assert.ok(linked.some(head => head.frontmatter.type === "Ticket"));
+  assert.ok(linked.some(head => head.frontmatter.type === "Signal"), "actual generated Signal shares the source tuple");
+  const c = await w.adapter({ overlay: { content: { bundle: w.bundle, registry: w.registry, okfVersion: "0.2" }, policy: w.bound.policy, actor: "process:synthetic", overlays: completeIndex, accepted: b.snapshot() } });
+  await c.reconcile(saved, AT); c.consume();
+  const updated = await observeSource({ ...base, profile: { ...profile, async observe() { return { records: [ticket(externalId, "C")], nextCursor: null, more: false, complete: false }; } },
+    state: { read: state.read.bind(state), async write(...args) { const v = await state.write(...args); c.consume(); return v; } }, prepareCommit: c.prepareCommit, commit: c.commit });
+  assert.equal(updated.outcome, "observed", updated.detail); assert.equal((await w.backend.read(target)).doc.frontmatter.title, "C");
+  assert.ok(Object.hasOwn((await state.read(FEED_ID))!.state.records, externalId)); assert.deepEqual(w.counts(), { minted: 1, sends: 1 });
+  const after = (await state.read(FEED_ID))!.state.records[externalId]!.after;
+  await c.commit({ ...page(after), establishments: {}, changes: [{ ...page(after).changes[0]!, external_id: externalId }] }); c.consume();
+  assert.deepEqual(w.counts(), { minted: 1, sends: 1 });
+  const row = (await w.backend.read(target)).doc;
+  await w.backend.write("tickets/manual-duplicate", { ...row, id: "tickets/manual-duplicate" });
+  const duplicate = await w.adapter();
+  await assert.rejects(duplicate.prepareCommit({ ...page(after), changes: [{ ...page(after).changes[0]!, external_id: externalId }] }), /ambiguous identity/);
+});

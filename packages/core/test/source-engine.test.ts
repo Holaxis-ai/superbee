@@ -943,3 +943,21 @@ test("establishment bounds and malformed descriptors refuse before pending publi
     assert.equal(receipt.reason, "commit_failed"); assert.equal(effects, 0); assert.equal(await h.state.read(FEED_ID), null);
   }
 });
+
+for (const id of ["__proto__", "constructor", "toString"]) test(`ordinary pending and page records retain own identity ${id} across JSON replay`, async () => {
+  const h = harness([page(ITEMS, [ticket(id, "Special identity")])]);
+  const first = await h.run({ commit: async p => {
+    assert.ok(Object.hasOwn(p.records, id)); assert.equal(p.records[id]!.fields.title, "Special identity");
+    assert.ok(Object.hasOwn(JSON.parse(JSON.stringify(p.records)), id)); return { retry: [id] };
+  } });
+  assert.equal(first.pending, 1);
+  const pending = (await h.state.read(FEED_ID))!.state;
+  assert.ok(Object.hasOwn(pending.pending!, id)); assert.equal(Object.hasOwn(pending.records, id), false);
+  const reopened = harness([page(ITEMS, [])], { state: h.state }); let replays = 0;
+  await reopened.run({ commit: async p => {
+    if (p.replay) { replays++; assert.ok(Object.hasOwn(p.records, id)); assert.equal(p.records[id]!.fields.title, "Special identity"); }
+  } });
+  assert.equal(replays, 1); const saved = (await h.state.read(FEED_ID))!.state;
+  assert.equal(saved.pending, undefined); assert.ok(Object.hasOwn(saved.records, id)); assert.equal(saved.records[id]!.missing, 0);
+  assert.equal(saved.records[id]!.after.title, "Special identity");
+});
