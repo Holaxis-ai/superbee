@@ -214,6 +214,10 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
   receipt.pending = Object.keys(state.pending ?? {}).length;
   let mode = requestedMode;
   if (state.profile.id !== profile.id || state.profile.version !== profile.version) {
+    if (Object.values(state.pending ?? {}).some(p => p.establishment !== undefined)) {
+      stop = { outcome: "failed", reason: "establishment_scope_changed", retry: false };
+      return finish();
+    }
     // A cursor is the profile's own format, so another profile's is never handed back.
     if (!baseline) receipt.cursor_reset = "profile_version";
     state = { ...state, profile: { id: profile.id, version: profile.version }, cursor: null, open: false };
@@ -251,7 +255,7 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
         budget: { requests: guard.remaining(), maxBytes: budget.maxBytes }, now: now(), validators,
       }), signal),
       stopped: () => guard.stopped(), lastUrl: () => guard.requests.at(-1)?.url,
-      stop: (value, url) => { stop = value; stopUrl = url; }, extraFindings, commit: options.commit,
+      stop: (value, url) => { stop = value; stopUrl = url; }, extraFindings, prepareCommit: options.prepareCommit, commit: options.commit,
     });
     return finish();
   } finally {

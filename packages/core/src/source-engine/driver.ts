@@ -2,6 +2,9 @@
 import { changeBetween, mapRecord, type BoundFeed, type MappingDiagnostic } from "../connectors.js";
 import { overlayCanonicalJson } from "../record-overlay/canonical.js";
 import type { Finding, RecordChange } from "../record-overlay/types.js";
+import { parseMarkdown } from "../document-codec.js";
+import { isSourceEstablishment } from "./target-descriptor.js";
+import type { SourceCommitPreparation, SourceEstablishment } from "./target.js";
 import { SourceStop, type Stop } from "./guard.js";
 import type { MachineState, PendingChange, RecordEntry, SourceState } from "./machine-state.js";
 import type { CommitResult, ObservePage, PageCommit, ProfileDiagnostic, SourceRunReceipt } from "./types.js";
@@ -141,6 +144,7 @@ interface DriverOptions {
   lastUrl?(): string | undefined;
   stop(stop: Stop, url?: string): void;
   extraFindings: Finding[];
+  prepareCommit?(page: PageCommit): Promise<SourceCommitPreparation>;
   commit(page: PageCommit): Promise<CommitResult | void>;
 }
 export async function driveObservation(options: DriverOptions): Promise<void> {
@@ -158,6 +162,9 @@ export async function driveObservation(options: DriverOptions): Promise<void> {
   /** Store `next` after a commit; false when the store refused it and the run has stopped. */
   const store = async (next: SourceState): Promise<boolean> => {
     try {
+      if ((options.prepareCommit || Object.values(state.pending ?? {}).some(p => p.establishment))
+        && (Object.values(next.pending ?? {}).filter(p => p.establishment).length > 100
+          || new TextEncoder().encode(JSON.stringify(next)).length > 4194304)) throw new Error("source establishment state limit");
       version = await options.state.write(key, next, version);
       state = next;
       receipt.pending = Object.keys(next.pending ?? {}).length;
@@ -173,10 +180,16 @@ export async function driveObservation(options: DriverOptions): Promise<void> {
     // Changes an earlier commit asked to retry are planned again before anything is fetched. A
     // record that has since disappeared has nothing left to write, unless the held change is the
     // record coming back.
+    const retained = Object.values(state.pending ?? {}).filter(p => p.establishment);
+    if (retained.length > 100 || (retained.length > 0 && new TextEncoder().encode(JSON.stringify(state)).length > 4194304)) {
+      stop = { outcome: "failed", reason: "establishment_state_limit", retry: false }; return;
+    }
     const pendingIds = signal.aborted ? [] : Object.keys(state.pending ?? {}).sort();
     if (pendingIds.length) {
       const pending = state.pending!;
-      const live = pendingIds.filter((id) => !state.records[id]?.gone || pending[id]!.change.change_kind === "new");
+      const live = pendingIds.filter((id) => pending[id]!.establishment !== undefined || !state.records[id]?.gone || pending[id]!.change.change_kind === "new");
+      const marked = live.filter(id => pending[id]!.establishment !== undefined);
+      const establishments = Object.fromEntries(marked.map(id => [id, pending[id]!.establishment!]));
       const changes = live.map((id) => pending[id]!.change);
       const records: Record<string, { fields: Record<string, unknown> }> = {};
       for (const change of changes) records[change.external_id] = { fields: { ...(change.after ?? change.before ?? {}) } };
@@ -184,12 +197,18 @@ export async function driveObservation(options: DriverOptions): Promise<void> {
       let failure: string | undefined;
       if (live.length) {
         try {
-          result = commitResult(await options.commit({
+          result = commitResult(await options.commit(structuredClone({
             feed: key, provider: bound.policy.provider, observed_at: observedAt, page: 0, replay: true, changes, records, baseline: false, complete: false,
-          }));
+            ...(marked.length ? { establishments } : {}),
+          })));
         } catch (error) {
           failure = errorText(error);
         }
+      }
+      if (marked.some(id => failure !== undefined || result!.retry.has(id) || result!.hold.has(id))) {
+        receipt.held += marked.length;
+        stop = { outcome: "failed", reason: "establishment_pending", retry: true, ...(failure ? { detail: failure } : {}) };
+        return;
       }
       const nextRecords = { ...state.records };
       const nextPending: Record<string, PendingChange> = {};
@@ -311,10 +330,40 @@ export async function driveObservation(options: DriverOptions): Promise<void> {
 
       let result: { hold: Set<string>; retry: Set<string> };
       try {
-        result = commitResult(await options.commit({
+        const commitPage: PageCommit = JSON.parse(JSON.stringify({
           feed: key, provider: bound.policy.provider, observed_at: observedAt, page: receipt.pages + 1, replay: false,
           changes, records, baseline, complete,
         }));
+        if (options.prepareCommit) {
+          const prepared = await options.prepareCommit(structuredClone(commitPage));
+          if (!isJsonData(prepared) || !record(prepared.establishments)) throw new Error("invalid source preparation");
+          const descriptors: Record<string, SourceEstablishment> = JSON.parse(JSON.stringify(prepared.establishments));
+          const ids = Object.keys(descriptors);
+          if (ids.length > 100) throw new Error("source establishment page limit");
+          const pending = { ...state.pending };
+          for (const id of ids) {
+            const change = byId.get(id), entry = diff.entries.get(id), e = descriptors[id]!;
+            if (!change?.after || !entry || !isSourceEstablishment(e) || e.observed_at !== observedAt) throw new Error("invalid source establishment");
+            if (e.intent) {
+              const fm = parseMarkdown(e.intent.content, e.target).frontmatter;
+              if (fm.type !== bound.kind.governs || !Array.isArray(fm.sources) || fm.sources.length !== 1
+                || fm.sources[0]?.resource !== bound.resource || fm.sources[0]?.id !== id) throw new Error("invalid source establishment identity");
+            }
+            pending[id] = { change: structuredClone(change), entry: entryJson(structuredClone(entry)), held_at: observedAt, establishment: e };
+          }
+          if (Object.values(pending).filter(p => p.establishment).length > 100) throw new Error("source establishment pending limit");
+          if (ids.length) {
+            const pre = { ...state, pending };
+            if (new TextEncoder().encode(JSON.stringify(pre)).length > 4194304) throw new Error("source establishment envelope limit");
+            if (!(await store(pre))) return;
+            commitPage.establishments = structuredClone(descriptors);
+          }
+        }
+        result = commitResult(await options.commit(commitPage));
+        if (Object.keys(commitPage.establishments ?? {}).some(id => result.hold.has(id) || result.retry.has(id))) {
+          stop = { outcome: "failed", reason: "establishment_pending", retry: true };
+          return;
+        }
       } catch (error) {
         stop = { outcome: "failed", reason: "commit_failed", retry: true, detail: errorText(error) };
         break;
@@ -326,7 +375,7 @@ export async function driveObservation(options: DriverOptions): Promise<void> {
       const nextPending: Record<string, PendingChange> = { ...state.pending };
       for (const [id, entry] of [...diff.entries, ...missing.entries]) {
         if (byId.has(id) && result.retry.has(id)) nextPending[id] = { change: byId.get(id)!, entry: entryJson(entry), held_at: observedAt };
-        else if (!notWritten(id)) nextRecords[id] = entryJson(entry);
+        else if (!notWritten(id)) { nextRecords[id] = entryJson(entry); delete nextPending[id]; }
       }
       const next: SourceState = {
         ...state,

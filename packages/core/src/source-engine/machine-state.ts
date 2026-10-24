@@ -4,6 +4,8 @@
  * compare-and-swap on its version. The managed runner keeps it in its own store;
  * `MemoryMachineState` serves tests and local runs.
  */
+import { isSourceEstablishment } from "./target-descriptor.js";
+import type { SourceEstablishment } from "./target.js";
 import type { RecordChange } from "../record-overlay/types.js";
 
 /** One record's last accepted state. */
@@ -21,6 +23,7 @@ export interface RecordEntry {
 
 /** A change a commit asked to retry: planned again at the start of every run until written. */
 export interface PendingChange {
+  establishment?: SourceEstablishment;
   change: RecordChange;
   /** The record's entry once the change is written. */
   entry: RecordEntry;
@@ -99,6 +102,7 @@ export function isSourceState(value: unknown): value is SourceState {
   if (value.validators !== undefined && !record(value.validators)) return false;
   if (value.pending !== undefined && !(record(value.pending) && Object.entries(value.pending).every(([id, pending]) => record(pending)
     && isEntry(pending.entry) && typeof pending.held_at === "string" && record(pending.change) && pending.change.external_id === id
-    && typeof pending.change.change_kind === "string"))) return false;
+    && typeof pending.change.change_kind === "string"
+    && (pending.establishment === undefined || isSourceEstablishment(pending.establishment))))) return false;
   return Object.values(value.records).every(isEntry);
 }

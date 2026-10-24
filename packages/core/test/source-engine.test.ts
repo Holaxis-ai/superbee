@@ -910,3 +910,36 @@ test("a replay keeps the stored missing count and never replays a record that di
   assert.equal(after.records.t2!.gone, true);
   assert.equal(after.pending, undefined);
 });
+
+const establishmentFor = (p: PageCommit) => ({ contract: 1 as const, generation: "synthetic-v1", group: "original-group", target: "tickets/canonical", kind: "adopt" as const, expectedVersion: "approved-version", observed_at: p.observed_at });
+test("establishment write-ahead CAS loss prevents effects and preserves old observation", async () => {
+  const h = harness([page(ITEMS, [T1])]); let effects = 0;
+  const receipt = await h.run({ state: { read: h.state.read.bind(h.state), async write() { throw new MachineStateConflict(FEED_ID); } },
+    prepareCommit: async p => ({ establishments: { t1: establishmentFor(p) } }), commit: async () => { effects++; } });
+  assert.equal(receipt.reason, "state_conflict"); assert.equal(effects, 0); assert.equal(await h.state.read(FEED_ID), null);
+});
+test("marked establishments remain literal and block acquisition beyond ordinary replay exhaustion", async () => {
+  const h = harness([page(ITEMS, [T1])]); let literal: PageCommit | undefined;
+  const first = await h.run({ prepareCommit: async p => ({ establishments: { t1: establishmentFor(p) } }), commit: async p => { literal = structuredClone(p); throw new Error("unknown"); } });
+  assert.equal(first.reason, "commit_failed"); const original = (await h.state.read(FEED_ID))!;
+  assert.equal(original.state.records.t1, undefined); assert.equal(original.state.complete_observations, 0);
+  for (let i = 0; i < MAX_REPLAY_FAILURES + 2; i++) {
+    const replay = harness(() => { throw new Error("provider must not be read"); }, { state: h.state });
+    const receipt = await replay.run({ now: () => new Date("2026-10-24T19:00:00Z"), prepareCommit: async () => { throw new Error("must not prepare replay"); }, commit: async p => {
+      assert.deepEqual(p.establishments, literal!.establishments); assert.deepEqual(p.changes, literal!.changes); return { hold: ["t1"] };
+    } });
+    assert.equal(receipt.reason, "establishment_pending"); assert.equal(replay.peer.received.length, 0);
+    assert.deepEqual(await h.state.read(FEED_ID), original);
+  }
+});
+test("establishment bounds and malformed descriptors refuse before pending publication or effects", async () => {
+  for (const make of [
+    (p: PageCommit) => ({ unknown: establishmentFor(p) }),
+    (p: PageCommit) => ({ t1: { ...establishmentFor(p), target: "../escape" } }),
+    (p: PageCommit) => ({ t1: { ...establishmentFor(p), kind: "create", expectedVersion: null } }),
+  ]) {
+    const h = harness([page(ITEMS, [T1])]); let effects = 0;
+    const receipt = await h.run({ prepareCommit: async p => ({ establishments: make(p) as never }), commit: async () => { effects++; } });
+    assert.equal(receipt.reason, "commit_failed"); assert.equal(effects, 0); assert.equal(await h.state.read(FEED_ID), null);
+  }
+});
