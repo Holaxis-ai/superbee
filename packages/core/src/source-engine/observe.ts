@@ -3,8 +3,10 @@ import { validateConnectorRequest, declarationRequestRules, placeholders, provid
  * The observation loop: run a profile page by page behind the guarded transport, diff each page
  * against the stored records into record-overlay changes, hand them to the caller's commit, and
  * only then store the cursor and the records. A change the commit asks to retry stays pending in
- * the machine state and is planned again before the next run fetches anything, so the cursor
- * never waits on one record. A pass counts as a complete observation only when it ran in complete
+ * the machine state and is planned again before the next run fetches anything. Generic observers
+ * may advance past a held record. The registered target consumer instead checkpoints the whole
+ * supplying group before effects and cannot advance while any member remains unresolved.
+ * A pass counts as a complete observation only when it ran in complete
  * mode from no cursor to its last page within this run, the profile claimed it complete and the
  * source is declared complete; only a complete observation counts a stored record as missing, and
  * a record is `disappeared` after `missing_threshold` of them.
@@ -12,7 +14,7 @@ import { validateConnectorRequest, declarationRequestRules, placeholders, provid
 import { findingsFor, inspectSourceReadPolicy } from "../connectors.js";
 import type { Finding } from "../record-overlay/types.js";
 import { DEFAULT_SOURCE_BUDGET, DEFAULT_STATUS_RULES, guardTransport, raceAbort, sourceHostSet, type Stop } from "./guard.js";
-import { isSourceState, type SourceState } from "./machine-state.js";
+import { hasProtectedSourcePending, isSourceState, type SourceState } from "./machine-state.js";
 import type {
   ObserveSourceOptions,
   SourceBudget,
@@ -214,7 +216,7 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
   receipt.pending = Object.keys(state.pending ?? {}).length;
   let mode = requestedMode;
   if (state.profile.id !== profile.id || state.profile.version !== profile.version) {
-    if (Object.values(state.pending ?? {}).some(p => p.establishment !== undefined)) {
+    if (hasProtectedSourcePending(state)) {
       stop = { outcome: "failed", reason: "establishment_scope_changed", retry: false };
       return finish();
     }

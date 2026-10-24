@@ -161,7 +161,7 @@ export function createSourceTargetAdapter(input: SourceTargetAdapterOptions) {
     if (Object.keys(page.establishments ?? {}).some(id => result.hold?.includes(id) || result.retry?.includes(id))) { overlay.discard(); throw new Error("source target overlay held"); }
     return result;
   }
-  registerSourceTargetConsumer(prepareCommit, commit);
+  registerSourceTargetConsumer(prepareCommit, commit, overlay.discard);
   return { prepareCommit, commit, snapshot: overlay.snapshot, stagedSnapshot: overlay.stagedSnapshot, consume: overlay.consume, discard: overlay.discard,
     async reconcile(state: SourceState, at: string): Promise<SourceOverlayResult> {
       for (const [id, entry] of Object.entries(state.records)) {

@@ -4,6 +4,7 @@
  * compare-and-swap on its version. The managed runner keeps it in its own store;
  * `MemoryMachineState` serves tests and local runs.
  */
+import { parseIsoInstant } from "../verification.js";
 import { isSourceEstablishment } from "./target-descriptor.js";
 import type { SourceEstablishment } from "./target.js";
 import type { RecordChange } from "../record-overlay/types.js";
@@ -32,6 +33,16 @@ export interface PendingChange {
   replay_failures?: number;
 }
 
+/** One acknowledged, engine-owned supplying page; effect identities belong to the host. */
+export interface PendingSourceCommit {
+  v: 1;
+  /** Original change order, independent of JSON object-key enumeration. */
+  order: string[];
+  page: number;
+  baseline: boolean;
+  complete: boolean;
+}
+
 export interface SourceState {
   v: 1;
   /** The profile that wrote `cursor`; a cursor from another id or version is never handed back. */
@@ -42,6 +53,12 @@ export interface SourceState {
   validators?: Record<string, string>;
   records: Record<string, RecordEntry>;
   pending?: Record<string, PendingChange>;
+  /** Protected whole-page pending from the registered target consumer. Original time is the
+   * entries' shared held_at; order names their exact membership (at most 100). Unsupported or
+   * malformed contexts refuse. Legacy pending without this context retains its existing policy;
+   * old establishment descriptors remain protected but do not assert this original-order contract.
+   * Hosts co-publish accepted overlay state through the same MachineState acknowledgment. */
+  pending_commit?: PendingSourceCommit;
   complete_observations: number;
   last_complete_at?: string;
 }
@@ -95,6 +112,37 @@ const record = (value: unknown): value is Record<string, unknown> =>
 const isEntry = (entry: unknown): boolean => record(entry) && record(entry.after) && typeof entry.digest === "string"
   && Number.isInteger(entry.missing) && typeof entry.seen_at === "string";
 
+/** Establishments written by older consumers remain protected without inventing page context. */
+export function hasProtectedSourcePending(state: SourceState): boolean {
+  return state.pending_commit !== undefined || Object.values(state.pending ?? {}).some(p => p.establishment !== undefined);
+}
+
+const scalarId = (id: unknown): id is string => typeof id === "string" && id.length > 0
+  && !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(id);
+
+function pendingCommitValid(state: Record<string, unknown>): boolean {
+  const context = state.pending_commit;
+  if (context === undefined) return true;
+  if (!record(context) || Object.keys(context).some(k => !["v", "order", "page", "baseline", "complete"].includes(k))
+    || context.v !== 1 || !Array.isArray(context.order) || context.order.length < 1 || context.order.length > 100
+    || !context.order.every(scalarId) || new Set(context.order).size !== context.order.length
+    || !Number.isSafeInteger(context.page) || (context.page as number) < 1
+    || typeof context.baseline !== "boolean" || typeof context.complete !== "boolean" || !record(state.pending)
+    || Object.keys(state.pending).length !== context.order.length) return false;
+  let at: string | undefined;
+  for (const id of context.order) {
+    if (!Object.hasOwn(state.pending, id)) return false;
+    const pending = state.pending[id];
+    if (!record(pending) || typeof pending.held_at !== "string" || parseIsoInstant(pending.held_at) === null
+      || at !== undefined && pending.held_at !== at) return false;
+    if (pending.establishment !== undefined && (!isSourceEstablishment(pending.establishment)
+      || pending.establishment.observed_at !== pending.held_at)) return false;
+    at = pending.held_at;
+  }
+  try { return new TextEncoder().encode(JSON.stringify(state)).length <= 4194304; }
+  catch { return false; }
+}
+
 export function isSourceState(value: unknown): value is SourceState {
   if (!record(value) || value.v !== 1 || typeof value.open !== "boolean" || !record(value.records)) return false;
   if (!record(value.profile) || typeof value.profile.id !== "string" || !Number.isInteger(value.profile.version)) return false;
@@ -104,5 +152,5 @@ export function isSourceState(value: unknown): value is SourceState {
     && isEntry(pending.entry) && typeof pending.held_at === "string" && record(pending.change) && pending.change.external_id === id
     && typeof pending.change.change_kind === "string"
     && (pending.establishment === undefined || isSourceEstablishment(pending.establishment))))) return false;
-  return Object.values(value.records).every(isEntry);
+  return Object.values(value.records).every(isEntry) && pendingCommitValid(value);
 }
