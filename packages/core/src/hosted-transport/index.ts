@@ -15,3 +15,5 @@ export * from "./operations.js";
 export * from "./root-write.js";
 export * from "./blob-reads.js";
 export * from "./blob-write.js";
+
+export * from "./document-backend.js";
