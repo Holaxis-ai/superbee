@@ -578,7 +578,10 @@ send or a replacement identity. The port is a trusted persistence contract; Core
 journal or storage implementation for it.
 
 `settle` must durably compare the original digest and retain its descriptor and exact outcome;
-a known outcome is immutable, and contradictory settlement must refuse. Keep both until the importing consumer acknowledges
+a definitive outcome is immutable, and contradictory settlement must refuse.
+A refusal marked `executed: "unknown"` is unresolved attempt evidence, including in older stored
+records. It remains eligible for original-identity lookup and replacement by the recorded truth;
+it must never be cached as a definitive refusal. Keep both until the importing consumer acknowledges
 acceptance. Success is returned only after settlement completes. A settlement failure throws
 `HostedDocumentBackendError` with `code: "outcome_unknown"`, the original `requestId`, and the
 retained descriptor (including a known remote outcome). Unknown receipt results use the same error

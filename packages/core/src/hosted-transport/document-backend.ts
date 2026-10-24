@@ -40,7 +40,9 @@ export interface HostedDocumentIntent {
  * to exactly one caller. An existing row, even pending or in_flight, ALWAYS returns fresh=false.
  * A failed/uncertain acknowledgement grants no freshness. Never overwrite a different descriptor
  * under an identity. settle compares the immutable digest, preserves the descriptor, and must not
- * overwrite a known outcome; contradictory settlement must refuse. Retain both through the consumer's acceptance acknowledgement.
+ * overwrite a definitive outcome; contradictory settlement must refuse. A refused outcome with
+ * executed:"unknown" is unresolved attempt evidence, including in previously stored records.
+ * Retain descriptor and outcome through the consumer's acceptance acknowledgement.
  */
 export interface HostedDocumentIntentPort {
   prepareOrReadAndClaim(candidate: HostedDocumentIntent): Promise<{ record: HostedDocumentIntent; fresh: boolean }>;
@@ -98,6 +100,13 @@ function sameInput(a: HostedDocumentIntent, b: HostedDocumentIntent): boolean {
 }
 function refuse(): never { throw new HostedDocumentBackendError("unsupported", "This backend supports only finite document reads and conditional document writes."); }
 async function unsupported(): Promise<never> { return refuse(); }
+
+/** The shared Outcome contract marks this as attempt evidence, never an identity verdict. */
+function identityOutcome(outcome: Outcome): Outcome {
+  return outcome.kind === "refused" && outcome.executed === "unknown"
+    ? { kind: "unknown", refusal: { code: outcome.code, message: outcome.message } }
+    : outcome;
+}
 
 /**
  * No auth authority or general wire routes are supplied here. An actor option is validated as
@@ -164,10 +173,11 @@ export function createHostedDocumentBackend(options: HostedDocumentBackendOption
         throw new HostedDocumentBackendError("intent_conflict", "Stored identity does not match the immutable write and scope.", requestId);
       const transport = createWholeDocumentTransport({ carrier, bundleId: scope.bundleId, binding: scope.binding, okfVersion: scope.okfVersion,
         remote: reader, intentFor: async (key) => key === requestId ? { ...record.intent } : undefined, routes, signal: reader.signal, now });
-      const result = record.outcome && record.outcome.kind !== "unknown" ? { outcome: record.outcome as Outcome } :
-        await performUncertainWrite({ submit: (sending, opts) => transport.submit(sending, opts), lookup: async (key) => {
+      const storedOutcome = record.outcome === undefined ? undefined : identityOutcome(record.outcome);
+      const result = storedOutcome && storedOutcome.kind !== "unknown" ? { outcome: storedOutcome } :
+        await performUncertainWrite({ submit: async (sending, opts) => identityOutcome(await transport.submit(sending, opts)), lookup: async (key) => {
           const answer = await transport.lookup(key);
-          return answer?.kind === "pending" ? null : answer;
+          return answer === null || answer.kind === "pending" ? null : identityOutcome(answer);
         } }, { ...record.intent }, { settlement: "recorded-only", start: fresh ? "submit-claimed" : "lookup", signal: reader.signal });
       const outcome = result.outcome;
       try { await intents.settle(record, outcome); }
@@ -176,7 +186,7 @@ export function createHostedDocumentBackend(options: HostedDocumentBackendOption
         case "committed": return outcome.version;
         case "conflict": throw new HostedDocumentVersionConflict(capture({ ...record, outcome }));
         case "refused": throw new HostedDocumentBackendError(outcome.code, outcome.message, requestId, capture({ ...record, outcome }));
-        case "unknown": throw new HostedDocumentBackendError("outcome_unknown", "The original write outcome remains unknown.", requestId, record);
+        case "unknown": throw new HostedDocumentBackendError("outcome_unknown", "The original write outcome remains unknown.", requestId, capture({ ...record, outcome }));
       }
     },
     capabilities: () => ({ enforced_cas: true, history: false, blobs: false }),
