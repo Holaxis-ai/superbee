@@ -138,6 +138,7 @@ superbee list --type Task
 superbee doc update tasks/ship-parser --progress_status in_progress
 superbee doc history tasks/ship-parser # who changed what, when
 superbee ui                            # the bundle, rendered — local server, no cloud
+superbee view open <viewId>             # one exact local View; private one-use browser handoff
 superbee index generate                # optional: complete portable Markdown navigation
 superbee sync                          # ordinary shared-board updates — commits yours,
                                        # pulls theirs, pushes; leaves code files untouched

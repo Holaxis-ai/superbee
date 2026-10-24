@@ -9,6 +9,7 @@ import { readdir, realpath, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { } from "@superbee/core";
+import { browserLaunchDestination, type BrowserLaunchTarget } from "@superbee/ui-server";
 
 import { CliError } from "../errors.js";
 import { samePhysicalPath } from "../bundle.js";
@@ -21,7 +22,7 @@ import {
 } from "../user-state.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 
-export const MANAGED_UI_PROTOCOL = 1;
+export const MANAGED_UI_PROTOCOL = 2;
 export const MANAGED_UI_RECORD_SCHEMA = 1;
 export const MANAGED_UI_STARTUP_DEADLINE_MS = 15_000;
 export const MANAGED_UI_PENDING_RECLAIM_MS = 20_000;
@@ -91,6 +92,7 @@ export interface ManagedUiLaunchReceipt {
   authority: ManagedUiAuthority;
   record: ManagedUiRecord;
   url: string;
+  browser_launch?: { url: string; expires_at: number; private: true; one_use: true };
 }
 
 export interface ManagedUiWorkerInput {
@@ -414,6 +416,39 @@ function launchUrl(record: ManagedUiRecord, documentId: string): string {
   return url.toString();
 }
 
+async function launchReceipt(
+  state: "started" | "reused",
+  authority: ManagedUiAuthority,
+  record: ManagedUiRecord,
+  target: string | BrowserLaunchTarget,
+  fetchImpl: typeof fetch,
+): Promise<ManagedUiLaunchReceipt> {
+  // Existing document callers retain their receipt and browser-opening behavior.
+  if (typeof target === "string") return { state, authority, record, url: launchUrl(record, target) };
+  const origin = `http://127.0.0.1:${record.port}`;
+  const response = await boundedFetch(fetchImpl, `${origin}/__manage/browser-launch`, {
+    method: "POST",
+    redirect: "error",
+    headers: { ...managementHeaders(record), "content-type": "application/json" },
+    body: JSON.stringify(target),
+  });
+  if (!response.ok) throw new CliError("RUNTIME", "managed UI refused the one-use browser handoff; stop the exact authority and retry");
+  const value = response.value;
+  const handoff = object(value) ? value.browser_launch : null;
+  const destination = browserLaunchDestination(target);
+  if (!object(value) || !exactKeys(value, ["launch_nonce", "destination", "browser_launch"]) ||
+      value.launch_nonce !== record.launch_nonce || value.destination !== destination ||
+      !object(handoff) || !exactKeys(handoff, ["path", "expires_at"]) ||
+      typeof handoff.path !== "string" || !/^\/__ui\/browser-launch#[A-Za-z0-9_-]{43}$/u.test(handoff.path) ||
+      typeof handoff.expires_at !== "number" || !Number.isSafeInteger(handoff.expires_at) || handoff.expires_at < 0) {
+    throw new CliError("RUNTIME", "managed UI returned an invalid one-use browser handoff");
+  }
+  return {
+    state, authority, record, url: `${origin}${destination}`,
+    browser_launch: { url: `${origin}${handoff.path}`, expires_at: handoff.expires_at, private: true, one_use: true },
+  };
+}
+
 function actorArgs(record: ManagedUiRecord): CommandText {
   return record.authority.actor === null
     ? commandFragment``
@@ -584,7 +619,7 @@ async function recoverOrReuse(
 
 export async function startOrReuseManagedUi(
   authority: ManagedUiAuthority,
-  documentId: string,
+  target: string | BrowserLaunchTarget,
   requestedPort: number | undefined,
   options: ManagedUiControllerOptions = {},
 ): Promise<ManagedUiLaunchReceipt> {
@@ -599,7 +634,7 @@ export async function startOrReuseManagedUi(
     const current = await readRecord(authority, home);
     if (current) {
       const reused = await recoverOrReuse(current, authority, requestedPort, now(), fetchImpl, home, sleep);
-      if (reused) return { state: "reused", authority, record: reused, url: launchUrl(reused, documentId) };
+      if (reused) return launchReceipt("reused", authority, reused, target, fetchImpl);
     }
 
     // Freeze the exact selected directory before publishing a pending operation. A failed
@@ -638,7 +673,7 @@ export async function startOrReuseManagedUi(
     await managementPost(readyRecord, "adopt", fetchImpl);
     const adopted = { ...readyRecord, phase: "adopted" as const };
     await writeRecord(adopted, home);
-    return { state: "started", authority, record: adopted, url: launchUrl(adopted, documentId) };
+    return launchReceipt("started", authority, adopted, target, fetchImpl);
   });
 }
 

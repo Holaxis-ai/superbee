@@ -120,6 +120,7 @@ The two commands meant for you are the ones that show you the knowledge:
 ```sh
 superbee ui --open        # the whole bundle, rendered in your browser
 superbee doc open <id>    # one document, by an id from `superbee list`
+superbee view open <id>   # one exact local registered View, through a private one-use browser handoff
 ```
 
 ## Upgrading from aslite

@@ -135,6 +135,11 @@ function fakeRuntime(home: string): {
       }
       if (url.pathname.endsWith("/adopt")) service.state = "adopted";
       if (url.pathname.endsWith("/stop")) service.state = "stopping";
+      if (url.pathname.endsWith("/browser-launch")) {
+        assert.deepEqual(JSON.parse(String(init?.body)), { kind: "registered-view", id: "views-registry/test" });
+        return Response.json({ launch_nonce: service.nonce, destination: "/?view=page&id=views-registry%2Ftest",
+          browser_launch: { path: `/__ui/browser-launch#${"a".repeat(43)}`, expires_at: Date.now() + 60_000 } });
+      }
       return Response.json({ launch_nonce: service.nonce });
     }) as typeof fetch,
   };
@@ -580,13 +585,13 @@ test("an incompatible active authority refuses; once idle it is deliberately sto
     const first = await startOrReuseManagedUi(authority, "docs/one", undefined, runtime.options);
     const recordFile = managedUiRecordPath(authority, home);
     const raw = await readUserStateFile(home, recordFile, 32 * 1024);
-    const oldRecord = { ...JSON.parse(raw), authority: { ...JSON.parse(raw).authority, protocol: 2 } };
+    const oldRecord = { ...JSON.parse(raw), authority: { ...JSON.parse(raw).authority, protocol: 1 } };
     runtime.services[0]!.input = { ...runtime.services[0]!.input, authority: oldRecord.authority };
     runtime.services[0]!.activeClients = 1;
     await writeUserStateFileAtomic0600(home, userStateDir(home), path.basename(recordFile), `${JSON.stringify(oldRecord)}\n`);
 
     await assert.rejects(
-      () => startOrReuseManagedUi(authority, "docs/two", undefined, runtime.options),
+      () => startOrReuseManagedUi(authority, { kind: "registered-view", id: "views-registry/test" }, undefined, runtime.options),
       (error: unknown) => {
         assert.ok(error instanceof CliError);
         assert.equal(error.code, "CONFLICT");
@@ -597,15 +602,35 @@ test("an incompatible active authority refuses; once idle it is deliberately sto
     assert.equal(runtime.spawnCount(), 1);
 
     runtime.services[0]!.activeClients = 0;
-    const replaced = await startOrReuseManagedUi(authority, "docs/two", undefined, runtime.options);
+    const replaced = await startOrReuseManagedUi(authority, { kind: "registered-view", id: "views-registry/test" }, undefined, runtime.options);
     assert.equal(replaced.state, "started");
     assert.equal(runtime.services[0]!.state, "stopping");
     assert.equal(runtime.spawnCount(), 2);
     assert.notEqual(replaced.record.launch_nonce, first.record.launch_nonce);
+    assert.equal(replaced.record.authority.protocol, 2);
+    assert.equal(new URL(replaced.url).searchParams.get("token"), null);
+    assert.ok(replaced.browser_launch?.one_use);
     await stopManagedUi(authority, runtime.options);
   } finally {
     await rm(home, { recursive: true, force: true });
   }
+});
+
+test("a matched worker refusing browser handoff never falls back to a reusable token URL", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "superbee-managed-handoff-refusal-"));
+  const runtime = fakeRuntime(home);
+  const authority = managedUiAuthority("/canonical/handoff", undefined);
+  try {
+    await startOrReuseManagedUi(authority, "docs/one", undefined, runtime.options);
+    const ordinaryFetch = runtime.options.fetch!;
+    runtime.options.fetch = (async (...args: Parameters<typeof fetch>) => String(args[0]).endsWith("/browser-launch")
+      ? new Response(null, { status: 404 }) : ordinaryFetch(...args)) as typeof fetch;
+    await assert.rejects(() => startOrReuseManagedUi(authority, { kind: "registered-view", id: "views-registry/test" }, undefined, runtime.options),
+      (error: unknown) => error instanceof CliError && error.code === "RUNTIME" && /one-use browser handoff/.test(error.message));
+    assert.equal(runtime.spawnCount(), 1);
+    assert.equal(runtime.services[0]!.state, "adopted");
+    await stopManagedUi(authority, runtime.options);
+  } finally { await rm(home, { recursive: true, force: true }); }
 });
 
 test("built CLI returns while its managed document remains live, then reuses, reports, and stops it", async () => {

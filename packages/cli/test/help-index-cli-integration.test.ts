@@ -114,9 +114,10 @@ test("built CLI: hosted control-plane command families are absent from help and 
   }
 });
 
-test("built CLI: `view` is now catalog inspection only; the retired static renderer remains unreachable", () => {
+test("built CLI: View help exposes exact registered opening and refuses a stale bare file operand", () => {
   const help = run(["--help"]);
   assert.match(help, /^  view list(?: |$)/m);
+  assert.match(help, /^  view open(?: |$)/m);
 
   const result = spawnSync("node", [cliBin, "view", "legacy-file.html"], { encoding: "utf8" });
   assert.equal(result.status, 2, "view must route to the ordinary unknown-command boundary");
