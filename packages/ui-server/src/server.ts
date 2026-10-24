@@ -9,7 +9,7 @@
 // Bundle Views add a second privilege tier alongside the data API: the session-authed shell
 // mints one immutable launch (`POST /__page/mint`), fetches that launch's exact HTML once through
 // its single-use nonce (`GET /__page/<nonce>`), and hands the bytes to the static View host
-// (`/__ui/view-host`), which mounts them in a sandboxed, opaque-origin `blob:` frame. The View
+// (`/__ui/view-host`), which mounts them in a sandboxed, opaque-origin self-contained frame. The View
 // frame makes no request of its own and never holds the session. Data-bearing active HTML also
 // requires an exact-byte local approval, and its bridge requests are resolved here against the
 // immutable launch before and after each read. Plus an SSE `/events` stream (shell-only) fed by a
@@ -421,7 +421,7 @@ function viewHostResponse(): Response {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "content-security-policy": viewHostCsp(viewChildCsp()),
-      // The host's own framing guard. Unlike `frame-ancestors`, the blob child does not inherit it.
+      // The host's own framing guard. Unlike `frame-ancestors`, the local-scheme child does not inherit it.
       "x-frame-options": "SAMEORIGIN",
       "x-content-type-options": "nosniff",
       "cache-control": "no-store",

@@ -8,7 +8,7 @@
 //   1. A per-launch, single-use NONCE. The session-authed shell mints a launch for ONE View and
 //      fetches THAT launch's exact bytes once through the nonce route (session + X-Requested-With
 //      required), verifies them against the approved content version, and hands them to the View
-//      host (`@superbee/view-runtime/view-host`), which mounts them as a `blob:` URL. The View
+//      host (`@superbee/view-runtime/view-host`), which applies its trusted execution policy and mounts a data URL. The View
 //      frame itself never requests its HTML, and the nonce opens no data route.
 //   2. A strict View CSP with `connect-src 'none'` ({@link pageCsp}) blocks ordinary
 //      fetch/XHR/WebSocket/EventSource access. The View inherits it from the host document. The
@@ -50,7 +50,7 @@ export function pageCsp(): string {
   ].join("; ");
 }
 
-/** The View policy applied to the blob child through its `csp` attribute (no `frame-ancestors`, which a local document cannot use). */
+/** The inherited View policy, also applied to the child through its `csp` attribute (no `frame-ancestors`, which a local document cannot use). */
 export function viewChildCsp(): string {
   return pageCsp()
     .split("; ")

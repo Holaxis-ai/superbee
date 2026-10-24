@@ -26,7 +26,7 @@ export default defineConfig({
   },
   projects: [
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },
-    // View delivery depends on how each engine applies an inherited policy to a blob frame, so
+    // View delivery depends on how each engine applies inherited and child execution policies, so
     // its spec also runs on WebKit. The rest of the suite stays Chromium-only to bound CI cost.
     { name: "webkit", use: { ...devices["Desktop Safari"] }, testMatch: /view-delivery\.spec\.ts$/ },
   ],

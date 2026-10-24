@@ -1,12 +1,14 @@
+import { MAX_ACTIVE_VIEW_BYTES } from "@superbee/core/view-admission";
+
 /**
  * The loopback UI's View host: the one document between the trusted shell and a View's
  * sandboxed frame. The shell fetches a launch's exact HTML bytes itself (same origin,
  * session-authorized), verifies them against the approved content version, and posts them here;
- * this host turns them into a `blob:` URL for a `sandbox="allow-scripts"` child frame, so the
+ * this host turns them into a self-contained data URL for a script-only sandboxed child, so the
  * View frame never makes a network request for its own HTML.
  *
  * A local-scheme document inherits the Content-Security-Policy of the document that navigates
- * it. The shell's own policy forbids inline script, so a blob the shell navigated would break
+ * it. The shell's own policy forbids inline script, so HTML the shell navigated would break
  * every self-contained View. This host is served with the View policy plus a `sandbox` directive
  * (an opaque origin assigned by the response, not by a frame attribute, so browsers that refuse
  * requests from attribute-sandboxed frames still load it), and the View inherits that policy.
@@ -21,10 +23,59 @@ export const VIEW_HOST_PROTOCOL = "superbee-view-host/v1";
 /** Shell-relative path the loopback UI serves the host document at. */
 export const VIEW_HOST_PATH = "/__ui/view-host";
 
+/** Exact byte encoding; callers separately own admission and execution-document policy. */
+export function encodeViewHtmlDataUrl(bytes: Uint8Array, maximum: number): string {
+  if (!Number.isSafeInteger(maximum) || maximum < 0 || bytes.byteLength > maximum) {
+    throw new Error("View delivery exceeds its byte limit");
+  }
+  const chunks: string[] = [];
+  for (let start = 0; start < bytes.byteLength; start += 8192) {
+    let chunk = "";
+    for (let i = start; i < Math.min(start + 8192, bytes.byteLength); i++) {
+      chunk += String.fromCharCode(bytes[i]!);
+    }
+    chunks.push(chunk);
+  }
+  return "data:text/html;charset=utf-8;base64," + btoa(chunks.join(""));
+}
+
+/** A trusted policy precedes source activity without changing the admitted source identity. */
+export function decorateViewExecution(bytes: Uint8Array, maximum: number): Uint8Array {
+  if (!Number.isSafeInteger(maximum) || maximum < 0 || bytes.byteLength > maximum) {
+    throw new Error("View delivery exceeds its byte limit");
+  }
+  const bom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
+  const source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(bom));
+  let cursor = 0;
+  for (;;) {
+    cursor += /^[\t\n\f\r ]*/.exec(source.slice(cursor))![0].length;
+    if (!source.startsWith("<!--", cursor)) break;
+    const body = cursor + 4;
+    const end = source.indexOf("--", body);
+    if (source.startsWith(">", body) || source.startsWith("->", body) ||
+        end < 0 || source.slice(end, end + 3) !== "-->") {
+      throw new Error("This View has an unsupported HTML prolog");
+    }
+    cursor = end + 3;
+  }
+  const prolog = source.slice(cursor);
+  const doctype = /^<!doctype[\t\n\f\r ]+html[\t\n\f\r ]*>/i.exec(prolog);
+  if (!doctype && /^(?:<!|<\?)/.test(prolog)) {
+    throw new Error("This View has an unsupported HTML prolog");
+  }
+  const insertion = bom + new TextEncoder().encode(source.slice(0, cursor + (doctype?.[0].length ?? 0))).byteLength;
+  const policy = new TextEncoder().encode('<meta http-equiv="Content-Security-Policy" content="frame-src &#39;none&#39;; child-src &#39;none&#39;">');
+  const decorated = new Uint8Array(bytes.byteLength + policy.byteLength);
+  decorated.set(bytes.subarray(0, insertion));
+  decorated.set(policy, insertion);
+  decorated.set(bytes.subarray(insertion), insertion + policy.byteLength);
+  return decorated;
+}
+
 /**
  * Host -> shell. `loaded` echoes the shell's per-delivery id once the View frame fired `load`
  * (which a refused navigation also fires, so it is not proof of render); `failed` reports a
- * refusal the host could observe, such as a CSP violation on the child's blob navigation.
+ * refusal the host could observe, such as a CSP violation on the child's navigation.
  */
 export type ViewHostEvent =
   | { protocol: typeof VIEW_HOST_PROTOCOL; type: "ready" }
@@ -81,10 +132,10 @@ export function viewHostDeliver(message: unknown): ViewHostCommand {
 }
 
 /**
- * The host's own response policy: the View policy (which the blob child inherits), a `sandbox`
- * directive giving the host an opaque origin, and `frame-src blob:` so it can mount the child.
+ * The host's own response policy: the View policy (which the child inherits), a `sandbox`
+ * directive giving the host an opaque origin, and `frame-src data:` so it can mount the child.
  * `viewPolicy` must not contain `frame-src`, `child-src`, or `sandbox`, and should set
- * `worker-src` itself: otherwise workers fall back to `child-src blob:` here.
+ * `worker-src` itself: otherwise workers fall back to `child-src data:` here.
  *
  * `frame-ancestors` is removed: the child inherits this policy, and its ancestor (this opaque
  * host) can never match `'self'`, so WebKit would refuse to render the View. The serving host
@@ -96,7 +147,7 @@ export function viewHostCsp(viewPolicy: string): string {
     .split(";")
     .map((directive) => directive.trim())
     .filter((directive) => directive !== "" && !/^frame-ancestors(\s|$)/i.test(directive));
-  return ["sandbox allow-scripts", ...inherited, "frame-src blob:", "child-src blob:"].join("; ");
+  return ["sandbox allow-scripts", ...inherited, "frame-src data:", "child-src data:"].join("; ");
 }
 
 /**
@@ -105,13 +156,17 @@ export function viewHostCsp(viewPolicy: string): string {
  * `frame-src 'none'` on top of the inherited host policy.
  */
 export function viewHostDocument(childPolicy: string): string {
+  const executionMaximum = MAX_ACTIVE_VIEW_BYTES + decorateViewExecution(new Uint8Array(), 0).byteLength;
   const script = `(function () {
   "use strict";
   var PROTOCOL = ${JSON.stringify(VIEW_HOST_PROTOCOL)};
   var CHILD_POLICY = ${JSON.stringify(childPolicy)};
+  var encodeHtml = ${encodeViewHtmlDataUrl.toString()};
+  var decorateHtml = ${decorateViewExecution.toString()};
   var shellOrigin = new URL(location.href).origin;
   var view = null;
   var pending = null;
+  var accepted = false;
   function toShell(message) { parent.postMessage(message, shellOrigin); }
   function fail(reason) {
     if (pending === null) return;
@@ -119,10 +174,10 @@ export function viewHostDocument(childPolicy: string): string {
     pending = null;
     toShell({ protocol: PROTOCOL, type: "failed", deliveryId: deliveryId, reason: String(reason).slice(0, 200) });
   }
-  // A refused blob navigation still fires the child's load event; a violation of this host's own
+  // A refused child navigation still fires the child's load event; a violation of this host's own
   // policy is the refusal it can observe.
   document.addEventListener("securitypolicyviolation", function (event) {
-    if (/^blob/.test(String(event.blockedURI)) || /^(frame|child)-src/.test(event.effectiveDirective)) {
+    if (/^data/.test(String(event.blockedURI)) || /^(frame|child)-src/.test(event.effectiveDirective)) {
       fail("the browser refused to load the View frame (" + event.effectiveDirective + ")");
     }
   });
@@ -138,19 +193,25 @@ export function viewHostDocument(childPolicy: string): string {
       if (view !== null && view.contentWindow) view.contentWindow.postMessage(data.message, "*");
       return;
     }
-    if (data.type !== "load" || view !== null) return;
+    if (data.type !== "load" || accepted) return;
     if (!(data.bytes instanceof ArrayBuffer) || typeof data.contentType !== "string" ||
         typeof data.deliveryId !== "string" || typeof data.title !== "string") return;
+    accepted = true;
     var deliveryId = data.deliveryId;
     pending = deliveryId;
-    var url = URL.createObjectURL(new Blob([data.bytes], { type: data.contentType }));
+    var url;
+    try {
+      url = encodeHtml(decorateHtml(new Uint8Array(data.bytes), ${MAX_ACTIVE_VIEW_BYTES}), ${executionMaximum});
+    } catch (_) {
+      fail("the View execution document could not be prepared (byte limit, UTF-8 or HTML prolog)");
+      return;
+    }
     view = document.createElement("iframe");
     view.setAttribute("sandbox", "allow-scripts");
     view.setAttribute("csp", CHILD_POLICY);
     view.setAttribute("referrerpolicy", "no-referrer");
     view.setAttribute("title", data.title);
     view.addEventListener("load", function () {
-      URL.revokeObjectURL(url);
       // Let a violation reported for this navigation arrive first.
       setTimeout(function () {
         if (pending !== deliveryId) return;

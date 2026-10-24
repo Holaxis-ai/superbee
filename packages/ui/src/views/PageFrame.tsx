@@ -8,7 +8,7 @@
  *      (unchanged approvals are remembered locally by the CLI host).
  *   2. Fetches that launch's bytes ONCE itself (same origin, session-authorized), verifies them
  *      against the launch's content version, and hands them to the View host frame, which mounts
- *      them as a `blob:` URL. The View frame never requests its own HTML, so browsers that refuse
+ *      them as a self-contained execution document. The View frame never requests its own HTML, so browsers that refuse
  *      network requests from opaque-origin frames still load it (see view-runtime's view-host).
  *   3. Listens for host-enveloped View messages, VALIDATING `event.source` is this host frame, and
  *      forwards opaque requests to the server-owned bridge; `bundle-propose` may additionally
@@ -431,7 +431,7 @@ export function PageFrame({ pageId }: { pageId: string }) {
         return;
       }
       if (hostEvent.type === "loaded") {
-        // The child frame loaded this generation's blob. Scriptless access:none Views prove
+        // The child frame loaded this generation's execution document. Scriptless access:none Views prove
         // readiness only this way, confirmed by the host's receipt of the shell's byte fetch.
         const delivery = deliveryRef.current;
         if (!delivery || delivery.attempt !== attempt || hostEvent.deliveryId !== delivery.deliveryId) return;
@@ -679,7 +679,7 @@ export function PageFrame({ pageId }: { pageId: string }) {
         // The View host. It has no sandbox ATTRIBUTE on purpose: some browsers refuse every
         // request from an attribute-sandboxed frame, including its own navigation. Its response
         // policy (`sandbox allow-scripts`, no allow-same-origin) makes it an opaque origin, and
-        // the View itself runs in the host's attribute-sandboxed blob child. NO referrer: the
+        // the View itself runs in the host's attribute-sandboxed self-contained child. NO referrer: the
         // shell's URL (which carried ?token= before the scrub) must never reach the host or View.
         <iframe
           key={frameKey}
