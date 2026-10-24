@@ -97,10 +97,12 @@ function pageDoc(overrides: Record<string, unknown> = {}) {
 /** An externally-resolvable promise, for controlling exactly when an async dep settles. */
 function deferred<T>() {
   let resolve!: (v: T) => void;
-  const promise = new Promise<T>((res) => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
     resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 /** Flush pending microtask chains (our mocks resolve via plain Promises, not real timers). */
@@ -568,6 +570,7 @@ describe("PageFrame: registered Page navigation", () => {
 
   afterEach(async () => {
     await act(async () => root.unmount());
+    vi.useRealTimers();
     container.remove();
   });
 
@@ -628,6 +631,35 @@ describe("PageFrame: registered Page navigation", () => {
     expect(fetchViewBytes).toHaveBeenCalledWith("/__page/new-active-view", "sha256:new-html");
     expect(container.querySelector("iframe")?.getAttribute("src")).toBe(VIEW_HOST_PATH);
   });
+
+  for (const outcome of ["success", "failure"] as const) {
+    it(`ignores late approval ${outcome} after a replacement View begins`, async () => {
+      vi.useFakeTimers();
+      const approval = deferred<Awaited<ReturnType<typeof authorizeViewLaunch>>>();
+      vi.mocked(getDoc).mockResolvedValue(pageDoc({ access: "bundle-read" }));
+      vi.mocked(mintPageNonce).mockResolvedValueOnce({
+        url: "/__page/old-approval", launchId: "old-approval", title: "Old approval",
+        entry: "pages/p.html", capability: "bundle-read",
+        authorization: { required: true, authorized: false, contentVersion: "old-bytes" },
+      });
+      vi.mocked(authorizeViewLaunch).mockImplementationOnce(() => approval.promise);
+      await act(async () => { root.render(<PageFrame pageId="pages-registry/p" />); await microtasks(); });
+      act(() => vi.advanceTimersByTime(500));
+      const allow = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Allow this View")!;
+      await act(async () => { allow.click(); await microtasks(); });
+      await act(async () => { root.render(<PageFrame pageId="pages-registry/replacement" />); await microtasks(); });
+      const replacement = container.querySelector("iframe");
+      expect(replacement).toBeTruthy();
+      await act(async () => {
+        if (outcome === "success") approval.resolve({ required: true, authorized: true });
+        else approval.reject(new Error("late old approval failure"));
+        await microtasks();
+      });
+      expect(container.querySelector("iframe")).toBe(replacement);
+      expect(container.textContent).not.toContain("late old approval failure");
+      expect(fetchViewBytes).not.toHaveBeenCalledWith("/__page/old-approval", "old-bytes");
+    });
+  }
 
   it("navigates at most once per source generation when resolutions race", async () => {
     const source = await mount();
@@ -804,6 +836,7 @@ describe("PageFrame: shell-fetched View delivery", () => {
   afterEach(async () => {
     vi.useRealTimers();
     await act(async () => root.unmount());
+    vi.useRealTimers();
     container.remove();
   });
 
@@ -930,6 +963,7 @@ describe("PageFrame: host fail-closed checks", () => {
 
   afterEach(async () => {
     await act(async () => root.unmount());
+    vi.useRealTimers();
     container.remove();
   });
 

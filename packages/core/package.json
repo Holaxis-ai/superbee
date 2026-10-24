@@ -211,6 +211,10 @@
       "types": "./dist/filesystem-push-role.d.ts",
       "default": "./dist/filesystem-push-role.js"
     },
+    "./view-launch-contract": {
+      "types": "./dist/view-launch-contract.d.ts",
+      "default": "./dist/view-launch-contract.js"
+    },
     "./artifact-contract": {
       "types": "./dist/artifact-contract.d.ts",
       "default": "./dist/artifact-contract.js"

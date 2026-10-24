@@ -44,6 +44,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "kind-changes.js", symbol: "classifyKindChanges" },
   { module: "recipe-set-preflight.js", symbol: "preflightRecipeSet" },
+  { module: "view-launch-contract.js", symbol: "createViewLaunchFence" },
   { module: "artifact-contract.js", symbol: "decodeDocumentTargetV1" },
   { module: "engine.js", symbol: "writeDocVersioned" },
   { module: "links.js", symbol: "resolveConceptId" },
