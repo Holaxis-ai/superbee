@@ -304,3 +304,18 @@ test("a retained remote backend renders transport failure hints under its constr
     assert.equal(seen.includes("B"), false);
   }
 });
+
+test('embedded ordinary sync preserves each captured context through asynchronous push', async () => {
+  const {makeTwoCloneTopology,writeBoardDoc}=await import('../../board-git/test/git-harness.js');
+  const {sync}=await import('../src/commands/sync/orchestrate.js');
+  const {withIsolatedUserEnv}=await import('./support/user-env.js');
+  const topology=await makeTwoCloneTopology();const home=await realpath(await mkdtemp(join(tmpdir(),'sb-runtime-transfer-')));
+  try {
+    for(const label of ['A','B']) {
+      const seen:string[]=[];const context=snapshotRuntimeOptions(options(label,seen));
+      await writeBoardDoc(topology.a,`notes/runtime-${label.toLowerCase()}`,{frontmatter:{type:'Note',title:label},body:label});
+      await withIsolatedUserEnv(home,()=>runWithRuntime(context,()=>sync(['--dir',topology.a.board,'--json'],{stdout:()=>{assert.equal(currentHost().renderShellToken('x'),`${label}:x`);},hookInstalled:()=>true})));
+      assert.ok(seen.includes(label),'captured private-state callback remains active');
+    }
+  } finally {await topology.cleanup();await rm(home,{recursive:true,force:true});}
+});

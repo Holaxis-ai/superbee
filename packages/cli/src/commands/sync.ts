@@ -1,3 +1,4 @@
+import { hasFirstPartySync, isOrdinarySync, superviseGitSync, throwWorkerError, withoutFirstPartySync } from "./sync/transfer-worker.js";
 // `agentstate-lite sync` — the historical import surface; the implementation lives in ./sync/
 // (orchestration, conflict convergence + receipts, the --show-incoming viewer).
 export * from "./sync/orchestrate.js";
@@ -40,6 +41,13 @@ export async function sync(argv: string[], deps: UnifiedSyncDeps = {}): Promise<
   if (requestsHelp(argv)) {
     (deps.stdout ?? ((text: string) => void process.stdout.write(text)))(renderUsage(`${SYNC_USAGE}\nHosted checkouts (the target decides; there is no flag):\n\n${HOSTED_SYNC_USAGE}`));
     return;
+  }
+  if (hasFirstPartySync() && isOrdinarySync(argv)) {
+    const outcome=await superviseGitSync(argv);
+    if(outcome.bypass) return withoutFirstPartySync(()=>sync(argv,deps));
+    if(outcome.stdout)(deps.stdout??((text:string)=>void process.stdout.write(text)))(outcome.stdout);
+    if(outcome.stderr)(deps.stderr??((text:string)=>void process.stderr.write(text)))(outcome.stderr);
+    throwWorkerError(outcome);return;
   }
   const home = deps.auth?.home ?? homedir();
   const binding = await hostedCheckoutFor(argv, home, deps.cwd ?? process.cwd());

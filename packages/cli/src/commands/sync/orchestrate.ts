@@ -1,3 +1,4 @@
+import { withTransfer, transferContext, configureTransfer, executeTransfer, admitTransfer, completeTransfer, assertTransferBudget, phaseBudget } from "./transfer.js";
 import { renderUsage } from "../../output.js";
 import { detectBoardChannel } from "../../board-runtime.js";
 import { provisionBoardWorktree } from "../../board-runtime.js";
@@ -35,6 +36,7 @@ import {
   isBoardGitError,
   originDocsBetween,
   push,
+  pushAsync,
   repoTopLevel,
   resolveBundleKey,
   boardRefOf,
@@ -103,6 +105,15 @@ Usage:
   superbee sync --show-incoming <id> [--out <file> | --body-out <file>] [--dir <path>] [--json]
   superbee sync --inspect --doc <id> [--out <file>] [--dir <path>] [--json]
   superbee sync --resolve keep|take|revise --doc <id> [--dir <path>] [--json]
+
+Ordinary Git sync uses a 600-second push budget and a 1500-second total budget. Git configuration
+superbee.syncPushTimeoutSeconds (1..3600) and superbee.syncTimeoutSeconds (1..7200)
+override them. The first-party executable enforces the total across preparation, gates, retries,
+and cleanup. Embedded runtimes cooperatively check preparation and supervise each push. These
+settings do not apply to --establish (including an already-established board) or hosted sync.
+A deadline can leave publication unconfirmed; run foreground sync to continue, without automatic
+upload retry. Stop hooks hand off work that exceeds their short budget and hold further uploads
+until a successful foreground sync. Progress or silence never resets a deadline.
 
 Before first publication, check whether the intended remote repository exists, then whether
 origin/board exists. Superbee does not create the remote repository. If the repository is
@@ -322,6 +333,7 @@ export const SYNC_IN_TREE_CURRENT = "checkout is current with upstream";
 interface SyncRun {
   dir: string; inv: CommandPrefix; mode: OutputMode; limit: number; pullOnly: boolean;
   stdout: (s: string) => void; deps: Partial<SyncCliDeps>;
+  establish?: boolean;
   owner?: BoundBoardOwner;
   route?: ResolvedLocalRoute;
 }
@@ -427,7 +439,8 @@ async function syncInTree(run: SyncRun): Promise<void> {
 export async function sync(argv: string[], deps: Partial<SyncCliDeps> = {}): Promise<void> {
   const run = async (): Promise<void> => {
     try {
-      await syncCommand(argv, deps);
+      if (argv.some(arg => arg.split("=")[0] === "--establish")) await syncCommand(argv, deps);
+      else await withTransfer(() => syncCommand(argv, deps));
     } catch (err) {
       throw isBoardGitError(err) ? cliErrorFromBoardGit(err) : err;
     }
@@ -849,6 +862,7 @@ async function pushPhase(
   const branch = boardBranchOf(board.boardPath);
   let gateDetails: Record<string, unknown> | undefined;
   for (let attempt = 1; ; attempt += 1) {
+    if (!run.establish) assertTransferBudget("push-preparation");
     // One head per attempt: the gate judges it, the counts describe it, and exactly it is pushed.
     const head = currentHead(board.boardPath);
     const counted = unpushedCount(board.boardPath);
@@ -865,13 +879,20 @@ async function pushPhase(
       });
     }
     // An unknown count is gated too: the gate is skipped only when nothing is known to be sent.
+    if (!run.establish) await admitTransfer(board.boardPath);
     if (gate && (counted === null || ahead > 0)) {
       const judged = await runSyncGate(board.boardPath, branch, gate, attempt);
       if (!judged.passed) await failGate(run, board, commitResult, delta, judged.reason ?? "failed", judged.details);
       gateDetails = judged.details;
     }
     try {
-      push(board.boardPath, head, branch);
+      if (run.establish) push(board.boardPath, head, branch);
+      else {
+        const transfer=transferContext()!;
+        const budget=phaseBudget(transfer.deadline,transfer.pushMs);
+        await pushAsync(board.boardPath,head,branch,{timeoutMs:budget,totalBudgetMs:transfer.deadline-transfer.started,
+          execute:(options)=>executeTransfer(options,{kind:'push',candidate:head,branch})});
+      }
       return { commits: ahead, documents: outgoing, delta, ...(gateDetails ? { gate: gateDetails } : {}) };
     } catch (err) {
       const classified = withSharingDetails(toCliError(err, "push"), { operation: "update-board" });
@@ -1026,7 +1047,8 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
     await showIncoming(dispatch.id, dispatch.values, deps, dispatch.route);
     return;
   }
-  const run: SyncRun = { ...dispatch.options, inv, stdout, deps };
+  const run: SyncRun = { ...dispatch.options, inv, stdout, deps, establish: dispatch.establish };
+  if (!dispatch.establish) await configureTransfer(run.dir);
 
   // A plain binding is a normal selected bundle, never a board owner.  Keep sync's supported
   // local-only/no-op result without probing an enclosing private or invoking checkout.
@@ -1108,5 +1130,6 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
   const delta = await deltaPhase(board, baseline);
   if (!run.pullOnly) holdMalformedCommitted(run, board, delta);
   const pushed = await pushPhase(run, board, commitResult, delta, baseline);
+  if (!run.establish) await completeTransfer();
   await receiptPhase(run, board, commitResult, pushed.delta, pushed, establishAlreadyNote);
 }

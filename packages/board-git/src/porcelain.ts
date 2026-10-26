@@ -41,6 +41,7 @@
  * the rebase.
  */
 import { captureBoardHostPolicy, type BoardHostPolicy } from "./host-policy.js";
+import { runOwnedProcess, type OwnedProcessOptions, type OwnedProcessResult } from "./owned-process.js";
 import { spawnSync } from "node:child_process";
 import {
   closeSync,
@@ -372,9 +373,13 @@ export interface GitRunBytesResult {
   stderr: string;
 }
 
+function gitInvocationArgs(dir:string,args:string[],opts:RunOptions={}):string[] {
+ return ['-C',dir,'-c','core.quotepath=off','-c','core.autocrlf=false','-c','core.eol=lf',
+  ...(opts.gitDir?[`--git-dir=${opts.gitDir}`]:[]),...(opts.workTree?[`--work-tree=${opts.workTree}`]:[]),...args];
+}
+
 /**
- * The one spawn site: every git invocation — text or binary —
- * flows through here, so the wrapper invariants (scrubbed env, locale pin, quotepath off, no-hang
+ * Synchronous Git invocations — text or binary — flow through here. The wrapper invariants (scrubbed env, locale pin, quotepath off, no-hang
  * timeouts, non-interactive editors) hold for both. `stdout` is returned as a Buffer of the EXACT
  * bytes git produced; {@link runGit} is the utf8-decoding projection every text parser rides.
  * Call THIS directly when the payload is a raw blob that must round-trip byte-identically (the
@@ -392,22 +397,7 @@ export function runGitBytes(dir: string, args: string[], opts: RunOptions = {}):
   if (opts.timeoutMs !== undefined && opts.timeoutMs <= 0) {
     throw classifyGitError({ args, status: null, stdout: "", stderr: "", timedOut: true });
   }
-  const repositoryArgs = [
-    ...(opts.gitDir ? [`--git-dir=${opts.gitDir}`] : []),
-    ...(opts.workTree ? [`--work-tree=${opts.workTree}`] : []),
-  ];
-  const r = spawnSync("git", [
-    "-C",
-    dir,
-    "-c",
-    "core.quotepath=off",
-    "-c",
-    "core.autocrlf=false",
-    "-c",
-    "core.eol=lf",
-    ...repositoryArgs,
-    ...args,
-  ], {
+  const r = spawnSync("git", gitInvocationArgs(dir,args,opts), {
     env: gitEnv(opts.rebase ?? false, opts.connectTimeoutSeconds, opts.indexFile),
     timeout: opts.timeoutMs ?? LOCAL_TIMEOUT_MS,
     input: opts.input,
@@ -2450,6 +2440,20 @@ export function push(boardPath: string, commit?: string, branch: string = boardB
   const refspec = commit === undefined ? branch : `${commit}:refs/heads/${branch}`;
   assertNoPrivateStateOutgoing(boardPath, commit ?? `refs/heads/${branch}`, { ...PUSH_BACKSTOP, base: remoteRefIfPresent(boardPath, branch) });
   mustGit(boardPath, ["push", BOARD_REMOTE, refspec], { timeoutMs: NETWORK_TIMEOUT_MS });
+}
+
+/** Ordinary sync's finite upload; establishment retains its separate recovery contract. */
+export async function pushAsync(boardPath:string, commit:string, branch:string, options:{
+ timeoutMs:number; totalBudgetMs?:number;
+ execute?:(options:OwnedProcessOptions)=>Promise<OwnedProcessResult>;
+}):Promise<void> {
+ const refspec=`${commit}:refs/heads/${branch}`;
+ assertNoPrivateStateOutgoing(boardPath,commit,{...PUSH_BACKSTOP,base:remoteRefIfPresent(boardPath,branch)});
+ const result=await(options.execute??runOwnedProcess)({file:'git',args:gitInvocationArgs(boardPath,['push',BOARD_REMOTE,refspec]),cwd:boardPath,env:gitEnv(false),timeoutMs:options.timeoutMs});
+ const details={op:'push',candidate_sha:commit,branch,effective_timeout_ms:options.timeoutMs,elapsed_ms:result.elapsedMs,...(options.totalBudgetMs?{total_budget_ms:options.totalBudgetMs}:{}),publication:'unconfirmed',retryable:false};
+ if(!result.cleanupConfirmed)throw new BoardGitError('RUNTIME','push process cleanup could not be confirmed; publication is unconfirmed',{details:{...details,reason:'cleanup-unconfirmed'}});
+ if(result.timedOut||result.cancelled)throw new BoardGitError('TRANSIENT',`push ${result.timedOut?'reached its time budget':'was cancelled'}; publication is unconfirmed`,{details:{...details,reason:result.timedOut?'deadline-exceeded':'cancelled'}});
+ if(result.spawnError||result.status!==0)throw classifyGitError({args:['push'],status:result.status,stdout:result.stdout,stderr:result.stderr,spawnErrorCode:result.spawnError});
 }
 
 /**

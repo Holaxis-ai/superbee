@@ -6,7 +6,7 @@
 // syncing machine executes, just as it cannot install a Git hook. (A command that runs a script
 // stored in the board still runs that script's current, pulled content; the docs say so.)
 import { createHash } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
+import { executeTransfer } from "./transfer.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { countUncommitted, isBoardGitError, currentHead, resolveOriginRef, runGit } from "@superbee/board-git";
@@ -18,9 +18,6 @@ export const SYNC_GATE_TIMEOUT_CONFIG = "superbee.syncGateTimeoutSeconds";
 export const DEFAULT_SYNC_GATE_TIMEOUT_SECONDS = 600;
 const OUTPUT_TAIL_LINES = 40;
 const OUTPUT_MAX_CHARS = 256 * 1024;
-/** The signals that end sync while a gate runs; each takes the gate's whole process group down first. */
-const GATE_FORWARDED_SIGNALS: readonly NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
-
 export interface SyncGate {
   command: string;
   timeoutSeconds: number;
@@ -240,60 +237,9 @@ interface GroupRun {
  * Run `command` through the shell as the leader of a new process group, capture its combined
  * output (bounded), and kill the whole group when the leader exits or the timeout fires.
  */
-function runInOwnGroup(command: string, cwd: string, timeoutMs: number, env: NodeJS.ProcessEnv): Promise<GroupRun> {
-  return new Promise((resolve) => {
-    let output = "";
-    let timedOut = false;
-    let settled = false;
-    // The gate leads its own group, so a Ctrl-C at the terminal reaches only this process: take
-    // the group down with it, then let the signal do what it would have done.
-    function onSignal(signal: NodeJS.Signals): void {
-      killGroup();
-      stopListening();
-      process.kill(process.pid, signal);
-    }
-    function stopListening(): void {
-      for (const signal of GATE_FORWARDED_SIGNALS) process.removeListener(signal, onSignal);
-    }
-    // Listen before spawning: a signal that lands between the spawn and the listeners would end
-    // this process by its default action and leave the gate's group running unowned.
-    for (const signal of GATE_FORWARDED_SIGNALS) process.on(signal, onSignal);
-    let child: ChildProcess;
-    try {
-      child = spawn(command, { cwd, env, shell: true, detached: true, stdio: ["ignore", "pipe", "pipe"] });
-    } catch (error) {
-      stopListening();
-      throw error;
-    }
-    const killGroup = (): void => {
-      if (child.pid === undefined) return;
-      try {
-        process.kill(-child.pid, "SIGKILL");
-      } catch {
-        /* the group is already gone */
-      }
-    };
-    const collect = (chunk: Buffer): void => {
-      output += chunk.toString("utf8");
-      if (output.length > OUTPUT_MAX_CHARS) output = output.slice(-OUTPUT_MAX_CHARS);
-    };
-    child.stdout?.on("data", collect);
-    child.stderr?.on("data", collect);
-    const timer = setTimeout(() => {
-      timedOut = true;
-      killGroup();
-    }, timeoutMs);
-    const finish = (run: Omit<GroupRun, "output" | "timedOut">): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      stopListening();
-      killGroup();
-      resolve({ ...run, output, timedOut });
-    };
-    child.on("error", (error: NodeJS.ErrnoException) => finish({ status: null, signal: null, spawnError: error.code ?? error.message }));
-    child.on("close", (status, signal) => finish({ status, signal }));
-  });
+async function runInOwnGroup(command: string, cwd: string, timeoutMs: number, env: NodeJS.ProcessEnv): Promise<GroupRun> {
+ const result=await executeTransfer({file:command,args:[],cwd,env,timeoutMs,shell:true,maxOutputBytes:OUTPUT_MAX_CHARS},{kind:'gate'});
+ return {status:result.status,signal:result.signal,output:result.stdout+result.stderr,timedOut:result.timedOut,...(result.spawnError?{spawnError:result.spawnError}:{})};
 }
 
 /** The ambient environment minus Git's repository-selection variables, so the gate sees the board. */

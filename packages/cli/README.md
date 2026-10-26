@@ -148,3 +148,32 @@ are observed now and caller-associated; they do not prove historical tool consum
 means equal to every declared required dimension with a nonempty original input basis. A known
 mismatch is `stale`; otherwise unavailable dimensions or absent/empty basis are `unverifiable`.
 Informational tool labels outside `required_identities` are outside that applicability claim.
+
+
+### Ordinary Git sync deadlines
+
+Ordinary Git sync keeps one exact gated board update. Its upload budget defaults to 600 seconds,
+with a 1500-second overall budget. Clone Git configuration `superbee.syncPushTimeoutSeconds`
+accepts whole seconds from 1 through 3600; `superbee.syncTimeoutSeconds` accepts 1 through 7200.
+Invalid values are refused before mutation. The initial engineering target is a roughly 160 MB
+packed upload at 5 Mbps effective throughput, plus 60 seconds each for quiet server processing
+and startup/packing. These values are finite policy defaults, not throughput guarantees.
+
+The first-party executable opts into a supervised worker and enforces the overall deadline across
+routing, configuration reads, preparation, gates, retries, and cleanup. Private `runFirstParty`
+and `runGitSyncWorker` runtime methods belong to that executable adapter. Other hosts continue
+using `run` or `main`; their captured callbacks and policies stay in process. They receive the same
+supervised asynchronous push and diagnostics, with cooperative total checks between preparation
+phases. They do not acquire a hard total-preemption guarantee across synchronous preparation.
+
+A first-party Stop hook retains its short caller budget and hands unfinished work to foreground
+sync. It records a private per-board hold before background gate/push admission, so subsequent
+hooks do not restart the upload. Foreground sync bypasses that hold but clears it only after
+successful completion. Background callers without the supported supervisor hand off before
+publication. A timeout or lost acknowledgement reports publication as unconfirmed and never
+triggers an automatic retry. An explicit later sync performs ordinary fetch/rebase/gate recovery.
+
+These settings exclude every `--establish` invocation, including already-established fallthrough,
+and do not change hosted sync. Process cleanup covers owned POSIX groups, including ordinary
+Git, SSH and gate descendants. Deliberate daemonization that escapes those groups, and
+uncatchable supervisor death, are outside this containment contract; this is not an OS sandbox.

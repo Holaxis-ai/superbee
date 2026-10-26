@@ -19,6 +19,14 @@ function construct(
       runWithRuntime(context, async () => {
         await (await import("./cli.js")).main([...argv]);
       }),
+    runFirstParty: (argv: readonly string[]) => runWithRuntime(context, async () => {
+      const started = Date.now();
+      const { withFirstPartySync }=await import('./commands/sync/transfer-worker.js');
+      const run = async()=>{await(await import('./cli.js')).main([...argv]);};
+      if (argv[0] === 'sync' || argv[0] === 'turn-end') await withFirstPartySync(run, started);
+      else await run();
+    }),
+    runGitSyncWorker: () => runWithRuntime(context, async () => {await(await import('./commands/sync/transfer-worker.js')).runGitSyncWorker();}),
     runManagedUiWorker: () =>
       runWithRuntime(context, async () => {
         await (await import("./ui/managed-worker.js")).runManagedUiWorker();

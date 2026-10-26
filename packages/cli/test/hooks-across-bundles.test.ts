@@ -18,7 +18,7 @@ import { addCatalogEntry } from "../src/catalog.js";
 import { checkout } from "../src/commands/checkout.js";
 import { hook } from "../src/commands/hook.js";
 import { otherCatalogBundles, sessionStart } from "../src/commands/session-start.js";
-import { readTurnEndGitBoards, recordTurnEndGitBoards, sharedGitBoardAt, turnEnd, type GitTurnEndBoard } from "../src/commands/turn-end.js";
+import { readTurnEndGitBoards, recordTurnEndGitBoards, sharedGitBoardAt, turnEnd as directTurnEnd, type GitTurnEndBoard } from "../src/commands/turn-end.js";
 import { CliError } from "../src/errors.js";
 import { defaultHostedAuthDeps } from "../src/hosted-auth/session.js";
 import {
@@ -31,6 +31,16 @@ import {
 import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
 import { seedHostedSession } from "./support/hosted-session.js";
 import { withIsolatedUserEnv } from "./support/user-env.js";
+
+import { withFirstPartySync } from "../src/commands/sync/transfer-worker.js";
+import { registerExecutableEntry } from "../src/invocation.js";
+import { fileURLToPath } from "node:url";
+registerExecutableEntry(fileURLToPath(new URL('./fixtures/git-transfer-entry.ts',import.meta.url)));
+for (let i=0;i<process.execArgv.length;i++) {
+  if(process.execArgv[i]==="--import" && process.execArgv[i+1]) process.execArgv[i+1]=path.resolve(process.execArgv[i+1]!);
+  else if(process.execArgv[i]!.startsWith("--import=")) process.execArgv[i]="--import="+path.resolve(process.execArgv[i]!.slice(9));
+}
+const turnEnd: typeof directTurnEnd = (argv,deps) => withFirstPartySync(()=>directTurnEnd(argv,deps));
 
 const MIN = 60_000;
 

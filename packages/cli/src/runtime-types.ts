@@ -179,6 +179,9 @@ export interface CliRuntimeOptions {
 }
 export interface CliRuntime {
   run(argv: readonly string[]): Promise<void>;
+  /** First-party executable adapters only; embeddings retain run() and their captured policies. */
+  runFirstParty(argv: readonly string[]): Promise<void>;
+  runGitSyncWorker(): Promise<void>;
   runManagedUiWorker(): Promise<void>;
   runUpdateRefreshWorker(token: string): Promise<void>;
 }

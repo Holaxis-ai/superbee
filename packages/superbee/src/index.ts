@@ -22,7 +22,8 @@ if(isBareVersionFlag(argv[0])) {
   predecessorLayouts:[{packageName:'@holaxis/aslite',entryRelativePath:'dist/superbee.mjs',bins:['aslite','agentstate-lite']}],
   ownedSkillPackages:['superbee','aslite','@holaxis/aslite'],updatesEnabled:true,
  });
- if(argv[0]==='__managed-ui-v1') {if(argv.length===1)await runtime.runManagedUiWorker();}
+ if(argv[0]==='__git-sync-v1') {if(argv.length===1)await runtime.runGitSyncWorker();}
+ else if(argv[0]==='__managed-ui-v1') {if(argv.length===1)await runtime.runManagedUiWorker();}
  else if(argv[0]==='__update-refresh-v1') {if(argv.length===2)await runtime.runUpdateRefreshWorker(argv[1]!);}
- else await runtime.run(argv);
+ else await runtime.runFirstParty(argv);
 }

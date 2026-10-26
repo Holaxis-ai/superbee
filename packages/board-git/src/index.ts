@@ -13,3 +13,4 @@ export * from "./private-state.js";
 
 export { captureBoardHostPolicy } from "./host-policy.js";
 export type { BoardHostPolicy } from "./host-policy.js";
+export * from './owned-process.js';

@@ -172,6 +172,7 @@ function sharingDetailsFor(err: CliError, context: SharingContext): SharingDetai
       possible_causes: ["repository-write", "branch-policy"],
     };
   }
+  if (["deadline-exceeded", "cancelled", "cleanup-unconfirmed"].includes(String(err.details?.reason))) return base;
   if (err.code === "TRANSIENT" && err.details?.reason !== "non-fast-forward") {
     return { ...base, cause_certainty: "best-effort", possible_causes: ["network"] };
   }

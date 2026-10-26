@@ -64,6 +64,7 @@ export const PUSH_FAIL_NETWORK_MESSAGE =
  * their actionable message appended.
  */
 export function pushFailureMessage(err: CliError): string {
+  if (["deadline-exceeded", "cancelled", "cleanup-unconfirmed"].includes(String(err.details?.reason))) return `committed to the board locally — your work is saved. ${err.message}. Run foreground sync to continue; do not automatically retry the upload.`;
   const sharing = err.details?.sharing as { operation?: unknown } | undefined;
   const isUpdatePush = sharing?.operation === "update-board";
   if (isUpdatePush && err.code === "AUTH_REQUIRED") return PUSH_FAIL_ACCESS_MESSAGE;

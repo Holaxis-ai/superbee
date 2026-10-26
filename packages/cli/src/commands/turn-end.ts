@@ -1,3 +1,5 @@
+import { firstPartyStarted, hasFirstPartySync, superviseGitSync, throwWorkerError, withoutFirstPartySync } from "./sync/transfer-worker.js";
+import path from "node:path";
 // `superbee turn-end` — the end-of-turn hook payload: sync a hosted checkout when an agent's turn
 // ends, so a batch of edits reaches the host without anyone remembering to run sync.
 //
@@ -222,7 +224,7 @@ export async function turnEnd(argv: string[], partial: Partial<TurnEndDeps> = {}
   const env = partial.env ?? process.env;
   if (env[NO_TURN_SYNC_ENV]) return;
   const home = partial.syncDeps?.auth?.home ?? homedir();
-  const deadline = Date.now() + (partial.budgetMs ?? TURN_END_BUDGET_MS);
+  const deadline = (firstPartyStarted() ?? Date.now()) + (partial.budgetMs ?? TURN_END_BUDGET_MS);
   let binding: CheckoutBinding | null;
   try {
     binding = await (partial.hostedCheckout ?? ((dir) => hostedCheckoutAt(dir, partial.syncDeps?.auth?.home)))(values.dir);
@@ -237,11 +239,11 @@ export async function turnEnd(argv: string[], partial: Partial<TurnEndDeps> = {}
   const conditions: Condition[] = [];
   // The session's own folder first: a hosted checkout, or (opted in) the shared Git board.
   if (binding) {
-    const condition = await hostedTurnEnd(binding, { cwd: true, home, deadline, partial, stopHookActive });
+    const condition = await withoutFirstPartySync(() => hostedTurnEnd(binding!, { cwd: true, home, deadline, partial, stopHookActive }));
     if (condition === "stop") return;
     if (condition) conditions.push(condition);
   } else if (values["git-boards"] || (await readTurnEndGitBoards(home))) {
-    const condition = await gitTurnEnd(values.dir, home, partial, stopHookActive);
+    const condition = await gitTurnEnd(values.dir, home, partial, stopHookActive, deadline);
     if (condition === "stop") return;
     if (condition) conditions.push(condition);
   }
@@ -249,7 +251,7 @@ export async function turnEnd(argv: string[], partial: Partial<TurnEndDeps> = {}
   for (const other of await otherCheckoutsToSync(binding, home, deadline, partial)) {
     if (deadline - Date.now() < TURN_END_START_MARGIN_MS) break;
     const slice = Math.min(deadline, Date.now() + TURN_END_OTHER_SLICE_MS);
-    const condition = await hostedTurnEnd(other.binding, { cwd: false, changedAt: other.changedAt, home, deadline: slice, partial, stopHookActive });
+    const condition = await withoutFirstPartySync(() => hostedTurnEnd(other.binding, { cwd: false, changedAt: other.changedAt, home, deadline: slice, partial, stopHookActive }));
     if (condition === "stop") return;
     if (condition) conditions.push(condition);
   }
@@ -521,39 +523,68 @@ function gitReasonFor(root: string, error: CliError): string {
  * minutes old means no Git network call at all. A converged conflict (the teammate's version kept,
  * yours exported), a failed sync gate or a Git sign-in failure is handed back to the agent once; offline, a busy
  * repository and everything else wait for the next turn or an explicit sync. Git's own per-command
- * timeouts bound the network; the host's Stop-hook timeout is the outer bound, and a sync cut off
- * there is healed at the next sync's entry.
+ * timeouts bound injected test adapters. Production discovery and sync run under the
+ * first-party supervisor and retain a foreground handoff after incomplete publication.
  */
-async function gitTurnEnd(dir: string | undefined, home: string, partial: Partial<TurnEndDeps>, stopHookActive: () => Promise<boolean>): Promise<Condition | null | "stop"> {
+async function gitTurnEnd(dir: string | undefined, home: string, partial: Partial<TurnEndDeps>, stopHookActive: () => Promise<boolean>, deadline: number): Promise<Condition | null | "stop"> {
+  if (!partial.gitBoard && !partial.gitSync) return supervisedGitTurnEnd(dir, home, stopHookActive, deadline);
   const board = await (partial.gitBoard ?? ((d) => sharedGitBoardAt(d, home)))(dir).catch(() => null);
   if (!board) return null;
   if (!board.changed) {
     const age = ageMs(board.lastFetch, (partial.now ?? (() => new Date()))());
-    if (age !== null && age <= AUTO_PULL_STALE_MS) return null;
+    if (age !== null && age <= AUTO_PULL_STALE_MS) return gitTurnEndCondition(home, board.root, { ok: true });
   }
   if (await stopHookActive()) return "stop";
   const run =
     partial.gitSync ??
     (async (args: string[], out: (text: string) => void) => (await import("./sync/orchestrate.js")).sync(args, { stdout: out, stderr: out }));
-  let blocking: CliError | null = null;
   try {
-    // The sync a person would run here: from the same directory, so it routes exactly as they would.
+    // The same sync semantics as an explicit foreground invocation.
     await run([...(dir === undefined ? [] : ["--dir", dir]), "--limit", String(REASON_ROWS), "--json"], () => {});
+    return gitTurnEndCondition(home, board.root, { ok: true });
   } catch (error) {
-    if (error instanceof CliError && (error.code === "CONFLICT" || error.code === "GATE_FAILED" || error.code === "AUTH_REQUIRED" || error.details?.reason === "board_moved")) blocking = error;
+    return gitTurnEndCondition(home, board.root, { ok: false, error });
   }
-  if (!blocking) {
-    if ((await readGitBlock(home, board.root)) !== null) await recordGitBlock(home, board.root, null).catch(() => {});
+}
+
+/** Production Git discovery and sync share the supervisor's original hook deadline. */
+async function supervisedGitTurnEnd(dir: string | undefined, home: string, stopHookActive: () => Promise<boolean>, deadline: number): Promise<Condition | null | "stop"> {
+  if (await stopHookActive()) return "stop";
+  let root = path.resolve(dir ?? process.cwd());
+  try {
+    if (!hasFirstPartySync()) throw new CliError("TRANSIENT", "this host must run Git sync in the foreground", { details: { reason: "foreground-required", retryable: false } });
+    const outcome = await superviseGitSync([...(dir === undefined ? [] : ["--dir", dir]), "--limit", String(REASON_ROWS), "--json"], { background: true, deadline, started: deadline - TURN_END_BUDGET_MS });
+    root = outcome.root ?? root;
+    throwWorkerError(outcome);
+    return gitTurnEndCondition(home, root, { ok: true });
+  } catch (error) {
+    return gitTurnEndCondition(home, root, { ok: false, error });
+  }
+}
+
+const GIT_TURN_END_ACTION_CODES = new Set(["CONFLICT", "GATE_FAILED", "AUTH_REQUIRED"]);
+const GIT_TURN_END_HANDOFF_REASONS = new Set(["deadline-exceeded", "cancelled", "foreground-required", "cleanup-unconfirmed"]);
+
+/** One outcome policy for both execution adapters; this record is separate from upload admission. */
+async function gitTurnEndCondition(home: string, root: string, outcome: { ok: true } | { ok: false; error: unknown }): Promise<Condition | null> {
+  if (outcome.ok) {
+    if ((await readGitBlock(home, root)) !== null) await recordGitBlock(home, root, null).catch(() => {});
     return null;
   }
-  const failed = blocking;
-  const digest = createHash("sha256").update(JSON.stringify([failed.code, failed.message])).digest("hex");
+  const failed = outcome.error;
+  if (!(failed instanceof CliError)) return null;
+  const reasonCode = String(failed.details?.reason);
+  const handoff = GIT_TURN_END_HANDOFF_REASONS.has(reasonCode);
+  if (!GIT_TURN_END_ACTION_CODES.has(failed.code) && reasonCode !== "board_moved" && !handoff) return null;
+  const digest = createHash("sha256").update(JSON.stringify([failed.code, failed.details?.reason ?? failed.message])).digest("hex");
+  const reason = handoff
+    ? `Superbee: Git board work is retained locally. Run foreground sync to continue: ${commandFragment`${cliInvocation()} sync --dir ${commandToken(root)}`}. Publication is unconfirmed if a push started.`
+    : gitReasonFor(root, failed);
   return {
-    root: board.root,
-    digest,
-    blocks: digest !== (await readGitBlock(home, board.root)),
-    reason: gitReasonFor(board.root, failed),
-    note: `the Git board ${board.root}: ${failed.message}`,
-    record: () => recordGitBlock(home, board.root, digest),
+    root, digest,
+    blocks: digest !== await readGitBlock(home, root),
+    reason,
+    note: handoff ? reason : `the Git board ${root}: ${failed.message}`,
+    record: () => recordGitBlock(home, root, digest),
   };
 }
