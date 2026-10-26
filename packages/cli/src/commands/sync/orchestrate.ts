@@ -109,7 +109,9 @@ Usage:
 Ordinary Git sync uses a 600-second push budget and a 1500-second total budget. Git configuration
 superbee.syncPushTimeoutSeconds (1..3600) and superbee.syncTimeoutSeconds (1..7200)
 override them. The first-party executable enforces the total across preparation, gates, retries,
-and cleanup. Embedded runtimes cooperatively check preparation and supervise each push. These
+and cleanup. Discovery before configuration has a 30-second cap from invocation, including
+cleanup; the configured total uses the same start. Embedded runtimes cooperatively check
+preparation and supervise each push. These
 settings do not apply to --establish (including an already-established board) or hosted sync.
 A deadline can leave publication unconfirmed; run foreground sync to continue, without automatic
 upload retry. Stop hooks hand off work that exceeds their short budget and hold further uploads

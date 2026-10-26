@@ -500,3 +500,20 @@ test("a Git-only user with no hooks installed sees no change: home lists labels 
     await rm(home, { recursive: true, force: true });
   }
 });
+
+test('a supervisor handoff before board identity stays visible without cwd-keyed suppression', async () => {
+  const topo = await makeTwoCloneTopology();
+  const home = await tempDir('sb-hab-unresolved-');
+  try {
+    const run = async () => {
+      const output: string[] = [];
+      await withIsolatedUserEnv(home, () => withCwd(topo.a.root, () => turnEnd(['--git-boards'], {
+        stdout: text => void output.push(text), env: {}, readStdin: async () => null,
+        budgetMs: 1,
+      })));
+      return output.join('');
+    };
+    assert.equal(JSON.parse(await run()).decision, 'block');
+    assert.equal(JSON.parse(await run()).decision, 'block', 'unknown identity cannot create a durable suppression key');
+  } finally { await topo.cleanup(); await rm(home, { recursive: true, force: true }); }
+});

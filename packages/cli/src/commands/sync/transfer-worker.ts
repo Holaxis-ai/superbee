@@ -84,6 +84,7 @@ export async function superviseGitSync(argv: string[], options: {
     const started = options.started ?? capability.getStore()?.started ?? Date.now(), nonce = randomBytes(24).toString('hex');
     let deadline = Math.min(options.deadline ?? Infinity, started + 30000), total = DEFAULT_TOTAL_MS, sequence = 0, terminal: WorkerOutcome | undefined;
     let current: OwnedProcess | undefined, worker: OwnedProcess, protocolFailure: string | undefined, phase = 'preparation';
+    let root: string | undefined;
     let publication = false, candidate: string | undefined, branch: string | undefined, effective: number | undefined, received: NodeJS.Signals | undefined;
     let timer: NodeJS.Timeout | undefined;
     let stopping = false;
@@ -100,7 +101,13 @@ export async function superviseGitSync(argv: string[], options: {
             if (!object(raw) || raw.protocol !== PROTOCOL || raw.nonce !== nonce || !finite(raw.id, 100) || raw.id !== sequence + 1 || !bounded(raw) || terminal || current)
                 throw Error('invalid worker ordering');
             sequence = raw.id;
-            if (raw.type === 'policy') {
+            if (raw.type === 'identity') {
+                if (!options.background || root !== undefined || typeof raw.root !== 'string' || raw.root.length > 16384 || raw.root.includes('\0') || !path.isAbsolute(raw.root))
+                    throw Error('invalid worker identity');
+                root = raw.root;
+                respond(raw.id, { ok: true });
+            }
+            else if (raw.type === 'policy') {
                 if (!finite(raw.totalMs, 7200000))
                     throw Error('invalid policy');
                 total = raw.totalMs;
@@ -110,6 +117,7 @@ export async function superviseGitSync(argv: string[], options: {
                 respond(raw.id, { ok: true });
             }
             else if (raw.type === 'execute') {
+                if (options.background && root === undefined) throw Error('missing worker identity');
                 validateExecutionRequest(raw.request);
                 const { operation, options: request } = raw.request;
                 phase = operation.kind;
@@ -131,6 +139,7 @@ export async function superviseGitSync(argv: string[], options: {
             }
             else if (raw.type === 'result') {
                 validateOutcome(raw.outcome);
+                if (options.background && raw.outcome.root !== root) throw Error('inconsistent worker identity');
                 terminal = raw.outcome;
                 respond(raw.id, { ok: true });
             }
@@ -150,11 +159,11 @@ export async function superviseGitSync(argv: string[], options: {
         current?.stop();
         const active = current ? await current.result : undefined;
         if (protocolFailure || !result.cleanupConfirmed || active && !active.cleanupConfirmed)
-            throw new CliError('RUNTIME', 'sync process cleanup or worker protocol could not be confirmed; no further work was started', { details: { reason: protocolFailure ?? 'cleanup-unconfirmed', cleanup_status: result.spawnError, exit_status: result.status, termination_signal: result.signal, cleanup_elapsed_ms: result.elapsedMs, publication: publication ? 'unconfirmed' : 'not-started' } });
+            throw new CliError('RUNTIME', 'sync process cleanup or worker protocol could not be confirmed; no further work was started', { details: { root, reason: protocolFailure ?? 'cleanup-unconfirmed', cleanup_status: result.spawnError, exit_status: result.status, termination_signal: result.signal, cleanup_elapsed_ms: result.elapsedMs, publication: publication ? 'unconfirmed' : 'not-started' } });
         if (!terminal && !result.timedOut && !result.cancelled)
-            throw new CliError('RUNTIME', 'sync worker exited before reporting its outcome', { details: { reason: 'worker-exited', status: result.status, output_tail: result.stderr.slice(-2000), publication: publication ? 'unconfirmed' : 'not-started' } });
+            throw new CliError('RUNTIME', 'sync worker exited before reporting its outcome', { details: { root, reason: 'worker-exited', status: result.status, output_tail: result.stderr.slice(-2000), publication: publication ? 'unconfirmed' : 'not-started' } });
         if (result.timedOut || result.cancelled || !terminal) {
-            throw new CliError('TRANSIENT', 'sync reached its deadline or was cancelled; local work is retained. Run foreground sync to continue.', { details: { reason: received ? 'cancelled' : 'deadline-exceeded', phase, op: publication ? 'push' : 'sync', candidate_sha: candidate, branch, effective_timeout_ms: effective ?? Math.max(0, deadline - started - CLEANUP_MS), elapsed_ms: Date.now() - started, total_budget_ms: Math.min(total, deadline - started), publication: publication ? 'unconfirmed' : 'not-started', retryable: false } });
+            throw new CliError('TRANSIENT', 'sync reached its deadline or was cancelled; local work is retained. Run foreground sync to continue.', { details: { root, reason: received ? 'cancelled' : 'deadline-exceeded', phase, op: publication ? 'push' : 'sync', candidate_sha: candidate, branch, effective_timeout_ms: effective ?? Math.max(0, deadline - started - CLEANUP_MS), elapsed_ms: Date.now() - started, total_budget_ms: Math.min(total, deadline - started), publication: publication ? 'unconfirmed' : 'not-started', retryable: false } });
         }
         if (!terminal.error)
             for (const [root, id] of terminal.admissions ?? [])
@@ -232,6 +241,9 @@ export async function runGitSyncWorker(): Promise<void> {
                             const dir = dirIndex < 0 ? undefined : argv[dirIndex + 1];
                             const board = await sharedGitBoardAt(dir);
                             root = board?.root;
+                            // Acknowledged identity precedes admission, so parent-generated failures
+                            // and terminal outcomes address the same board even without --dir.
+                            if (root) await rpc('identity', { root });
                             if (!board) {
                                 outcome = { stdout: '', stderr: '' };
                             }

@@ -26,7 +26,7 @@ async function cli(args: string[], cwd: string, home: string, packaged: boolean 
 }> {
     return new Promise((resolve, reject) => {
         const exe = typeof packaged === 'string' ? packaged : packaged ? fileURLToPath(new URL('../../superbee/dist/superbee.mjs', import.meta.url)) : entry;
-        const child = spawn(process.execPath, [...(packaged ? [] : ['--import', loader]), exe, ...args], { cwd, env: isolatedUserEnv(home, { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', SUPERBEE_NO_UPDATE_CHECK: '1' }), stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = spawn(process.execPath, [...(packaged ? [] : ['--import', loader]), exe, ...args], { cwd, env: isolatedUserEnv(home, { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', SUPERBEE_NO_UPDATE_CHECK: '1', SUPERBEE_NO_TURN_SYNC: undefined }), stdio: ['ignore', 'pipe', 'pipe'] });
         let stdout = '', stderr = '';
         child.stdout.on('data', b => stdout += b);
         child.stderr.on('data', b => stderr += b);
@@ -197,5 +197,31 @@ test('supervised hook hands a moved board back once with checkout and retained l
         assert.match(result.stdout, /uncommitted file\(s\) stay in/);
         assert.equal(originBoardHead(t), before);
         assert.equal((await hook()).stdout, '', 'the same moved-board condition is reported once');
+    } finally { await t.cleanup(); await rm(home, { recursive: true, force: true }); }
+});
+
+
+test('plain packaged turn-end reports a new deadline after recovery under one canonical board key', async () => {
+    const t = await makeTwoCloneTopology();
+    const home = await realpath(await mkdtemp(path.join(tmpdir(), 'transfer-plain-hook-')));
+    const hook = () => cli(['turn-end', '--git-boards'], t.a.root, home, true);
+    try {
+        await writeBoardDoc(t.a, 'notes/plain-one', { frontmatter: { type: 'Note', title: 'One' }, body: 'one' });
+        git(t.a.board, ['config', 'superbee.syncTimeoutSeconds', '6']);
+        git(t.a.board, ['config', 'superbee.syncGate', 'sleep 30']);
+        const first = await hook();
+        assert.match(first.stdout, /"decision"\s*:\s*"block"/);
+        git(t.a.board, ['config', 'superbee.syncTimeoutSeconds', '30']);
+        git(t.a.board, ['config', 'superbee.syncGate', 'true']);
+        const recovered = await cli(['sync', '--json'], t.a.root, home, true);
+        assert.equal(recovered.status, 0, recovered.stdout + recovered.stderr);
+        assert.equal((await hook()).stdout, '');
+        await writeBoardDoc(t.a, 'notes/plain-two', { frontmatter: { type: 'Note', title: 'Two' }, body: 'two' });
+        git(t.a.board, ['config', 'superbee.syncTimeoutSeconds', '6']);
+        git(t.a.board, ['config', 'superbee.syncGate', 'sleep 30']);
+        const recurrence = await hook();
+        assert.equal(recurrence.status, 0, recurrence.stderr);
+        assert.match(recurrence.stdout, /"decision"\s*:\s*"block"/, 'installed plain-cwd hook reports recurring deadline');
+        assert.ok(recurrence.stdout.includes(t.a.board), 'handoff names the canonical board');
     } finally { await t.cleanup(); await rm(home, { recursive: true, force: true }); }
 });

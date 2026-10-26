@@ -550,15 +550,19 @@ async function gitTurnEnd(dir: string | undefined, home: string, partial: Partia
 /** Production Git discovery and sync share the supervisor's original hook deadline. */
 async function supervisedGitTurnEnd(dir: string | undefined, home: string, stopHookActive: () => Promise<boolean>, deadline: number): Promise<Condition | null | "stop"> {
   if (await stopHookActive()) return "stop";
-  let root = path.resolve(dir ?? process.cwd());
+  let root = path.resolve(dir ?? process.cwd()), identified = false;
   try {
     if (!hasFirstPartySync()) throw new CliError("TRANSIENT", "this host must run Git sync in the foreground", { details: { reason: "foreground-required", retryable: false } });
     const outcome = await superviseGitSync([...(dir === undefined ? [] : ["--dir", dir]), "--limit", String(REASON_ROWS), "--json"], { background: true, deadline, started: deadline - TURN_END_BUDGET_MS });
-    root = outcome.root ?? root;
+    if (outcome.root !== undefined) { root = outcome.root; identified = true; }
     throwWorkerError(outcome);
-    return gitTurnEndCondition(home, root, { ok: true });
+    return gitTurnEndCondition(home, root, { ok: true }, identified);
   } catch (error) {
-    return gitTurnEndCondition(home, root, { ok: false, error });
+    if (error instanceof CliError && typeof error.details?.root === "string") {
+      root = error.details.root;
+      identified = true;
+    }
+    return gitTurnEndCondition(home, root, { ok: false, error }, identified);
   }
 }
 
@@ -566,9 +570,9 @@ const GIT_TURN_END_ACTION_CODES = new Set(["CONFLICT", "GATE_FAILED", "AUTH_REQU
 const GIT_TURN_END_HANDOFF_REASONS = new Set(["deadline-exceeded", "cancelled", "foreground-required", "cleanup-unconfirmed"]);
 
 /** One outcome policy for both execution adapters; this record is separate from upload admission. */
-async function gitTurnEndCondition(home: string, root: string, outcome: { ok: true } | { ok: false; error: unknown }): Promise<Condition | null> {
+async function gitTurnEndCondition(home: string, root: string, outcome: { ok: true } | { ok: false; error: unknown }, identified = true): Promise<Condition | null> {
   if (outcome.ok) {
-    if ((await readGitBlock(home, root)) !== null) await recordGitBlock(home, root, null).catch(() => {});
+    if (identified && (await readGitBlock(home, root)) !== null) await recordGitBlock(home, root, null).catch(() => {});
     return null;
   }
   const failed = outcome.error;
@@ -582,9 +586,10 @@ async function gitTurnEndCondition(home: string, root: string, outcome: { ok: tr
     : gitReasonFor(root, failed);
   return {
     root, digest,
-    blocks: digest !== await readGitBlock(home, root),
+    // Without a resolved board, cwd is a useful hint but never a durable identity.
+    blocks: !identified || digest !== await readGitBlock(home, root),
     reason,
     note: handoff ? reason : `the Git board ${root}: ${failed.message}`,
-    record: () => recordGitBlock(home, root, digest),
+    record: () => identified ? recordGitBlock(home, root, digest) : Promise.resolve(),
   };
 }

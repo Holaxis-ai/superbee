@@ -160,7 +160,9 @@ packed upload at 5 Mbps effective throughput, plus 60 seconds each for quiet ser
 and startup/packing. These values are finite policy defaults, not throughput guarantees.
 
 The first-party executable opts into a supervised worker and enforces the overall deadline across
-routing, configuration reads, preparation, gates, retries, and cleanup. Private `runFirstParty`
+routing, configuration reads, preparation, gates, retries, and cleanup. Before configuration is
+resolved, discovery has a 30-second ceiling from invocation, including reserved cleanup time.
+The configured total then uses that same original start time. Private `runFirstParty`
 and `runGitSyncWorker` runtime methods belong to that executable adapter. Other hosts continue
 using `run` or `main`; their captured callbacks and policies stay in process. They receive the same
 supervised asynchronous push and diagnostics, with cooperative total checks between preparation
