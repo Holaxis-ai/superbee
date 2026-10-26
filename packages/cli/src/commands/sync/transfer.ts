@@ -95,7 +95,8 @@ async function readMarker(home: string, root: string): Promise<string | null> {
         throw Error('invalid transfer marker');
     return parsed.operation;
 }
-export async function foregroundRequired(root: string, home = homedir()): Promise<boolean> { return (await readMarker(home, root)) !== null; }
+export async function transferAdmission(root: string, home = homedir()): Promise<string | null> { return readMarker(home, root); }
+export async function foregroundRequired(root: string, home = homedir()): Promise<boolean> { return (await transferAdmission(root, home)) !== null; }
 /** Admission is persisted before execution; failed/crashed attempts leave background work held. */
 export async function admitTransfer(root: string, home = homedir()): Promise<void> {
     const c = context.getStore();
@@ -105,8 +106,9 @@ export async function admitTransfer(root: string, home = homedir()): Promise<voi
     try {
         await ensureUserStateRoot(home);
         await withCliFilesystemMutationLock(path.join(p.dir, p.name), async () => {
-            if (c.background && await readMarker(home, root))
-                throw new CliError('TRANSIENT', 'this board needs foreground sync before another background upload', { details: { reason: 'foreground-required', root, retryable: false } });
+            const held = c.background ? await readMarker(home, root) : null;
+            if (held !== null)
+                throw new CliError('TRANSIENT', 'this board needs foreground sync before another background upload', { details: { reason: 'foreground-required', root, transfer_operation_id: held, retryable: false } });
             await writeUserStateFileAtomic0600(home, p.dir, p.name, JSON.stringify({ operation: c.operationId }));
             c.admissions.set(root, c.operationId);
         }, { waitMs: 0 });
@@ -115,7 +117,7 @@ export async function admitTransfer(root: string, home = homedir()): Promise<voi
         if (error instanceof CliError)
             throw error;
         if (c.background)
-            throw new CliError('TRANSIENT', 'background sync could not persist its foreground handoff; run foreground sync', { details: { reason: 'foreground-required', root, retryable: false } });
+            throw new CliError('TRANSIENT', 'background sync could not persist its foreground handoff; run foreground sync', { details: { reason: 'foreground-required', root, transfer_operation_id: c.operationId, retryable: false } });
         // Foreground work does not depend on optional hook state being writable.
     }
 }

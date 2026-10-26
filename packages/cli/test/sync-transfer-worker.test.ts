@@ -19,14 +19,15 @@ import { makeTwoCloneTopology, writeBoardDoc, originBoardHead, git } from '../..
 import { isolatedUserEnv } from './support/user-env.js';
 const entry = fileURLToPath(new URL('./fixtures/git-transfer-entry.ts', import.meta.url));
 const loader = fileURLToPath(new URL('./ts-loader.mjs', import.meta.url));
-async function cli(args: string[], cwd: string, home: string, packaged: boolean | string = false): Promise<{
+async function cli(args: string[], cwd: string, home: string, packaged: boolean | string = false, input = ''): Promise<{
     status: number | null;
     stdout: string;
     stderr: string;
 }> {
     return new Promise((resolve, reject) => {
         const exe = typeof packaged === 'string' ? packaged : packaged ? fileURLToPath(new URL('../../superbee/dist/superbee.mjs', import.meta.url)) : entry;
-        const child = spawn(process.execPath, [...(packaged ? [] : ['--import', loader]), exe, ...args], { cwd, env: isolatedUserEnv(home, { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', SUPERBEE_NO_UPDATE_CHECK: '1', SUPERBEE_NO_TURN_SYNC: undefined }), stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = spawn(process.execPath, [...(packaged ? [] : ['--import', loader]), exe, ...args], { cwd, env: isolatedUserEnv(home, { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', SUPERBEE_NO_UPDATE_CHECK: '1', SUPERBEE_NO_TURN_SYNC: undefined }), stdio: ['pipe', 'pipe', 'pipe'] });
+        child.stdin.end(input);
         let stdout = '', stderr = '';
         child.stdout.on('data', b => stdout += b);
         child.stderr.on('data', b => stderr += b);
@@ -223,5 +224,34 @@ test('plain packaged turn-end reports a new deadline after recovery under one ca
         assert.equal(recurrence.status, 0, recurrence.stderr);
         assert.match(recurrence.stdout, /"decision"\s*:\s*"block"/, 'installed plain-cwd hook reports recurring deadline');
         assert.ok(recurrence.stdout.includes(t.a.board), 'handoff names the canonical board');
+    } finally { await t.cleanup(); await rm(home, { recursive: true, force: true }); }
+});
+
+
+test('packaged continuation recovery makes a new failed attempt visible and coalesces the held attempt', async () => {
+    const t = await makeTwoCloneTopology();
+    const home = await realpath(await mkdtemp(path.join(tmpdir(), 'transfer-continuation-')));
+    const hook = (input = '') => cli(['turn-end', '--git-boards'], t.a.root, home, true, input);
+    try {
+        await writeBoardDoc(t.a, 'notes/continuation-one', { frontmatter: { type: 'Note', title: 'One' }, body: 'one' });
+        git(t.a.board, ['config', 'superbee.syncTimeoutSeconds', '6']);
+        git(t.a.board, ['config', 'superbee.syncGate', 'sleep 30']);
+        assert.match((await hook()).stdout, /"decision"\s*:\s*"block"/);
+        git(t.a.board, ['config', 'superbee.syncTimeoutSeconds', '30']);
+        git(t.a.board, ['config', 'superbee.syncGate', 'true']);
+        const recovered = await cli(['sync', '--json'], t.a.root, home, true);
+        assert.equal(recovered.status, 0, recovered.stdout + recovered.stderr);
+        assert.equal((await hook(JSON.stringify({ stop_hook_active: true }))).stdout, '', 'continuation loop guard remains active');
+        await writeBoardDoc(t.a, 'notes/continuation-two', { frontmatter: { type: 'Note', title: 'Two' }, body: 'two' });
+        git(t.a.board, ['config', 'superbee.syncTimeoutSeconds', '6']);
+        git(t.a.board, ['config', 'superbee.syncGate', 'sleep 30']);
+        const recurrence = await hook();
+        assert.match(recurrence.stdout, /"decision"\s*:\s*"block"/, 'new attempt must report without a clean-hook interlude');
+        assert.equal((await hook()).stdout, '', 'worker-held and parent-deadline handoffs identify the same attempt');
+        assert.equal((await hook()).stdout, '', 'repeated unresolved hold remains bounded');
+        const failedForeground = await cli(['sync', '--json'], t.a.root, home, true);
+        assert.equal(failedForeground.status, 1, failedForeground.stdout + failedForeground.stderr);
+        assert.match((await hook()).stdout, /"decision"\s*:\s*"block"/, 'a failed foreground attempt leaves a new held identity');
+        assert.equal((await hook()).stdout, '', 'that new unresolved hold is reported once');
     } finally { await t.cleanup(); await rm(home, { recursive: true, force: true }); }
 });

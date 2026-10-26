@@ -1,11 +1,11 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { startOwnedProcess, type OwnedProcess, type OwnedProcessOptions, type OwnedProcessResult } from '@superbee/board-git';
 import { currentExecutableRealPath } from '../../invocation.js';
 import { CliError, type CliErrorCode } from '../../errors.js';
-import { CLEANUP_MS, DEFAULT_TOTAL_MS, withTransfer, foregroundRequired, clearTransferAdmission, type TransferOperation } from './transfer.js';
+import { CLEANUP_MS, DEFAULT_TOTAL_MS, withTransfer, transferAdmission, clearTransferAdmission, type TransferOperation } from './transfer.js';
 const capability = new AsyncLocalStorage<{
     started: number;
 } | undefined>();
@@ -81,7 +81,7 @@ export async function superviseGitSync(argv: string[], options: {
     const executable = currentExecutableRealPath();
     if (!hasFirstPartySync() || !executable)
         throw new CliError('TRANSIENT', 'background Git sync needs foreground sync in this host', { details: { reason: 'foreground-required', retryable: false } });
-    const started = options.started ?? capability.getStore()?.started ?? Date.now(), nonce = randomBytes(24).toString('hex');
+    const started = options.started ?? capability.getStore()?.started ?? Date.now(), nonce = randomBytes(24).toString('hex'), operationId = randomUUID();
     let deadline = Math.min(options.deadline ?? Infinity, started + 30000), total = DEFAULT_TOTAL_MS, sequence = 0, terminal: WorkerOutcome | undefined;
     let current: OwnedProcess | undefined, worker: OwnedProcess, protocolFailure: string | undefined, phase = 'preparation';
     let root: string | undefined;
@@ -141,6 +141,10 @@ export async function superviseGitSync(argv: string[], options: {
                 validateOutcome(raw.outcome);
                 if (options.background && raw.outcome.root !== root) throw Error('inconsistent worker identity');
                 terminal = raw.outcome;
+                if (terminal.error) terminal.error.details = {
+                    ...terminal.error.details,
+                    transfer_operation_id: terminal.error.details?.transfer_operation_id ?? operationId,
+                };
                 respond(raw.id, { ok: true });
             }
             else
@@ -154,16 +158,16 @@ export async function superviseGitSync(argv: string[], options: {
     try {
         worker = startOwnedProcess({ file: process.execPath, args: [...process.execArgv, executable, '__git-sync-v1'], cwd: process.cwd(), env: process.env, timeoutMs: Math.max(0, deadline - Date.now() - CLEANUP_MS), cleanupMs: CLEANUP_MS, ipc: true, onMessage: (raw) => { void message(raw); } });
         arm();
-        worker.send({ protocol: PROTOCOL, nonce, type: 'initialize', argv, started, deadline: options.deadline ?? started + DEFAULT_TOTAL_MS, background: options.background === true });
+        worker.send({ protocol: PROTOCOL, nonce, type: 'initialize', argv, operationId, started, deadline: options.deadline ?? started + DEFAULT_TOTAL_MS, background: options.background === true });
         const result = await worker.result;
         current?.stop();
         const active = current ? await current.result : undefined;
         if (protocolFailure || !result.cleanupConfirmed || active && !active.cleanupConfirmed)
-            throw new CliError('RUNTIME', 'sync process cleanup or worker protocol could not be confirmed; no further work was started', { details: { root, reason: protocolFailure ?? 'cleanup-unconfirmed', cleanup_status: result.spawnError, exit_status: result.status, termination_signal: result.signal, cleanup_elapsed_ms: result.elapsedMs, publication: publication ? 'unconfirmed' : 'not-started' } });
+            throw new CliError('RUNTIME', 'sync process cleanup or worker protocol could not be confirmed; no further work was started', { details: { root, transfer_operation_id: operationId, reason: protocolFailure ?? 'cleanup-unconfirmed', cleanup_status: result.spawnError, exit_status: result.status, termination_signal: result.signal, cleanup_elapsed_ms: result.elapsedMs, publication: publication ? 'unconfirmed' : 'not-started' } });
         if (!terminal && !result.timedOut && !result.cancelled)
-            throw new CliError('RUNTIME', 'sync worker exited before reporting its outcome', { details: { root, reason: 'worker-exited', status: result.status, output_tail: result.stderr.slice(-2000), publication: publication ? 'unconfirmed' : 'not-started' } });
+            throw new CliError('RUNTIME', 'sync worker exited before reporting its outcome', { details: { root, transfer_operation_id: operationId, reason: 'worker-exited', status: result.status, output_tail: result.stderr.slice(-2000), publication: publication ? 'unconfirmed' : 'not-started' } });
         if (result.timedOut || result.cancelled || !terminal) {
-            throw new CliError('TRANSIENT', 'sync reached its deadline or was cancelled; local work is retained. Run foreground sync to continue.', { details: { root, reason: received ? 'cancelled' : 'deadline-exceeded', phase, op: publication ? 'push' : 'sync', candidate_sha: candidate, branch, effective_timeout_ms: effective ?? Math.max(0, deadline - started - CLEANUP_MS), elapsed_ms: Date.now() - started, total_budget_ms: Math.min(total, deadline - started), publication: publication ? 'unconfirmed' : 'not-started', retryable: false } });
+            throw new CliError('TRANSIENT', 'sync reached its deadline or was cancelled; local work is retained. Run foreground sync to continue.', { details: { root, transfer_operation_id: operationId, reason: received ? 'cancelled' : 'deadline-exceeded', phase, op: publication ? 'push' : 'sync', candidate_sha: candidate, branch, effective_timeout_ms: effective ?? Math.max(0, deadline - started - CLEANUP_MS), elapsed_ms: Date.now() - started, total_budget_ms: Math.min(total, deadline - started), publication: publication ? 'unconfirmed' : 'not-started', retryable: false } });
         }
         if (!terminal.error)
             for (const [root, id] of terminal.admissions ?? [])
@@ -217,12 +221,12 @@ export async function runGitSyncWorker(): Promise<void> {
                     p.resolve(raw.data);
                     return;
                 }
-                if (raw.type !== 'initialize' || typeof raw.nonce !== 'string' || !/^[0-9a-f]{48}$/.test(raw.nonce) || !Array.isArray(raw.argv) || raw.argv.length > 64 || raw.argv.some(x => typeof x !== 'string' || x.length > 16384) || !isOrdinarySync(raw.argv as string[]) || !finite(raw.started, Number.MAX_SAFE_INTEGER) || !finite(raw.deadline, Number.MAX_SAFE_INTEGER) || typeof raw.background !== 'boolean')
+                if (raw.type !== 'initialize' || typeof raw.operationId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(raw.operationId) || typeof raw.nonce !== 'string' || !/^[0-9a-f]{48}$/.test(raw.nonce) || !Array.isArray(raw.argv) || raw.argv.length > 64 || raw.argv.some(x => typeof x !== 'string' || x.length > 16384) || !isOrdinarySync(raw.argv as string[]) || !finite(raw.started, Number.MAX_SAFE_INTEGER) || !finite(raw.deadline, Number.MAX_SAFE_INTEGER) || typeof raw.background !== 'boolean')
                     throw Error('invalid worker initialization');
                 clearTimeout(startup);
                 initialized = true;
                 nonce = raw.nonce;
-                const argv = raw.argv as string[], started = raw.started, deadline = raw.deadline, background = raw.background;
+                const argv = raw.argv as string[], started = raw.started, deadline = raw.deadline, background = raw.background, operationId = raw.operationId;
                 let stdout = '', stderr = '', root: string | undefined;
                 const capture = (kind: 'stdout' | 'stderr', text: string) => { if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) + Buffer.byteLength(text) > MAX_MESSAGE / 2)
                     throw Error('sync output exceeded limit'); if (kind === 'stdout')
@@ -244,11 +248,12 @@ export async function runGitSyncWorker(): Promise<void> {
                             // Acknowledged identity precedes admission, so parent-generated failures
                             // and terminal outcomes address the same board even without --dir.
                             if (root) await rpc('identity', { root });
+                            const held = board ? await transferAdmission(board.root) : null;
                             if (!board) {
                                 outcome = { stdout: '', stderr: '' };
                             }
-                            else if (await foregroundRequired(board.root))
-                                throw new CliError('TRANSIENT', 'this board needs foreground sync before another background upload', { details: { reason: 'foreground-required', root, retryable: false } });
+                            else if (held !== null)
+                                throw new CliError('TRANSIENT', 'this board needs foreground sync before another background upload', { details: { reason: 'foreground-required', root, transfer_operation_id: held, retryable: false } });
                             else if (!board.changed && board.lastFetch && Date.now() - Date.parse(board.lastFetch) < 300000) {
                                 outcome = { stdout: '', stderr: '', root };
                             }
@@ -269,7 +274,7 @@ export async function runGitSyncWorker(): Promise<void> {
                         await sync(argv, { stdout: t => capture('stdout', t), stderr: t => capture('stderr', t) });
                         const { transferContext } = await import('./transfer.js');
                         outcome.admissions = [...transferContext()!.admissions];
-                    }, { started, deadline, background, deferCompletion: true, execute: (options, operation) => rpc('execute', { request: { options, operation } }), configured: totalMs => rpc('policy', { totalMs }) });
+                    }, { started, deadline, background, operationId, deferCompletion: true, execute: (options, operation) => rpc('execute', { request: { options, operation } }), configured: totalMs => rpc('policy', { totalMs }) });
                 }
                 outcome.stdout = stdout;
                 outcome.stderr = stderr;

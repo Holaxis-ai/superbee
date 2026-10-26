@@ -171,7 +171,9 @@ phases. They do not acquire a hard total-preemption guarantee across synchronous
 A first-party Stop hook retains its short caller budget and hands unfinished work to foreground
 sync. It records a private per-board hold before background gate/push admission, so subsequent
 hooks do not restart the upload. Foreground sync bypasses that hold but clears it only after
-successful completion. Background callers without the supported supervisor hand off before
+successful completion. Transfer handoff notices report each attempt once, including when
+foreground recovery happens during a hook continuation that skips hook work. A later failed
+attempt can report again. Background callers without the supported supervisor hand off before
 publication. A timeout or lost acknowledgement reports publication as unconfirmed and never
 triggers an automatic retry. An explicit later sync performs ordinary fetch/rebase/gate recovery.
 

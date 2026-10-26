@@ -580,7 +580,10 @@ async function gitTurnEndCondition(home: string, root: string, outcome: { ok: tr
   const reasonCode = String(failed.details?.reason);
   const handoff = GIT_TURN_END_HANDOFF_REASONS.has(reasonCode);
   if (!GIT_TURN_END_ACTION_CODES.has(failed.code) && reasonCode !== "board_moved" && !handoff) return null;
-  const digest = createHash("sha256").update(JSON.stringify([failed.code, failed.details?.reason ?? failed.message])).digest("hex");
+  // A continuation deliberately skips hook work. Recovery therefore cannot depend on
+  // observing a clean hook: a new admission is a new handoff, and the same hold is not.
+  const attempt = handoff && typeof failed.details?.transfer_operation_id === "string" ? failed.details.transfer_operation_id : undefined;
+  const digest = createHash("sha256").update(JSON.stringify(attempt ? ["transfer-handoff", attempt] : [failed.code, failed.details?.reason ?? failed.message])).digest("hex");
   const reason = handoff
     ? `Superbee: Git board work is retained locally. Run foreground sync to continue: ${commandFragment`${cliInvocation()} sync --dir ${commandToken(root)}`}. Publication is unconfirmed if a push started.`
     : gitReasonFor(root, failed);
