@@ -26,6 +26,20 @@ If the advisory route is unavailable, stop rather than publishing. Use a previou
 maintainer channel to establish contact without placing vulnerability details in a public message.
 There is no public fallback for sensitive disclosure.
 
+## Remediation and disclosure
+
+For confirmed vulnerabilities in distributed versions, our default is private investigation and
+remediation, a verified fixed release, and timely public disclosure through a GitHub Security
+Advisory. Published advisories explain the impact, affected and patched versions, and recommended
+upgrade or mitigation. A scanner alert alone does not establish a vulnerability.
+
+A human maintainer authorizes disclosure. Where publication is withheld, maintainers record the
+reason and conditions for reconsideration. Sensitive investigation evidence remains in private
+advisory records.
+
+Maintainers use the selected project bundle's `docs/security-disclosure-procedure` for the internal
+procedure. It supports this public policy and does not replace the private reporting route above.
+
 ## Fail-closed privacy rule
 
 Repository visibility and bundle visibility are not privacy controls for vulnerability details. If
