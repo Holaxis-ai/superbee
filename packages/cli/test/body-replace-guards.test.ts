@@ -26,3 +26,9 @@ test("CLI mutation forwards explicit loss posture and translates core refusal", 
   await assert.rejects(() => mutateDoc(opts), (e: unknown) => e instanceof CliError && e.code === "USAGE" && e.message.includes("--replace-links"));
   assert.equal((await mutateDoc({ ...opts, bodyReplace: { replaceLinks: true } })).changed, true);
 });
+test("a dropped cross-bundle link is named by its okf: target with the --bundle recovery", () => {
+  const existing: OkfDocument = { id: "a", frontmatter: { type: "Design" }, body: "[part of](okf://plan/roadmap.md)" };
+  assert.throws(() => guardBodyReplace({ root: "/unused" }, existing, "replacement"), (e: unknown) =>
+    e instanceof CliError && /'part of' -> okf:\/\/plan\/roadmap/.test(e.message) && /--bundle <alias>/.test(e.message)
+      && JSON.stringify(e.details) === JSON.stringify({ dropped_links: [{ to: "roadmap", text: "part of", bundle: "plan" }] }));
+});

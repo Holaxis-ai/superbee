@@ -16,17 +16,18 @@ export function bodyReplaceCliError(error: BodyReplaceError): CliError {
   const existing = { id: error.id };
   if (error.finding.reason === "dropped_links") {
     const dropped = error.finding.dropped_links;
-    const named = dropped.map((l) => `'${l.text}' -> ${l.to}`).join(", ");
+    const named = dropped.map((l) => `'${l.text}' -> ${l.bundle === undefined ? l.to : `okf://${l.bundle}/${l.to}`}`).join(", ");
     return new CliError(
       "USAGE",
       `this body replace would silently drop ${dropped.length} outbound link(s) from '${existing.id}': ${named}. ` +
         `OKF cross-links live in the document body, so a full-body replace removes any link the new body ` +
         `doesn't repeat. Pass --replace-links to drop them deliberately, or keep them by including the same ` +
         `markdown link(s) in the new body, or re-add them afterward with ` +
-        `'${cliInvocation()} link add ${commandToken(existing.id)} <to>'.`,
+        `'${cliInvocation()} link add ${commandToken(existing.id)} <to>'` +
+        `${dropped.some((l) => l.bundle !== undefined) ? " (with --bundle <alias> for a link into another bundle)" : ""}.`,
       {
         help: `${cliInvocation()} link add ${commandToken(existing.id)} <to>`,
-        details: { dropped_links: dropped.map((l) => ({ to: l.to, text: l.text })) },
+        details: { dropped_links: dropped.map((l) => ({ to: l.to, text: l.text, ...(l.bundle === undefined ? {} : { bundle: l.bundle }) })) },
       },
     );
   }

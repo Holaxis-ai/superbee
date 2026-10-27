@@ -250,3 +250,72 @@ test("built CLI: plan, apply, then status --with resolves every cross-bundle lin
     assert.equal(report.unresolved_links, 0);
   } finally { await fx.cleanup(); }
 });
+
+function refreshArgs(fx: Fixture, recordId: string, extra: string[] = []): string[] {
+  return ["import", "--from", "wave", "--with", `wave=${fx.source.root}`, "--refresh", recordId,
+    "--actor", "process:import-test", "--dir", fx.target.root, ...extra];
+}
+
+test("--refresh plans, applies with its token, reports a local edit as a conflict and resolves it explicitly", async () => {
+  const fx = await makeFixture();
+  try {
+    const plan = await run(fx, baseArgs(fx));
+    await run(fx, baseArgs(fx, ["--apply", String(plan.plan_token)]));
+    const recordId = (plan.record as { id: string }).id;
+
+    const fresh = await run(fx, refreshArgs(fx, recordId));
+    assert.deepEqual(Object.keys(fresh), ["import", "from", "record", "counts", "entries", "ready", "up_to_date", "help"]);
+    assert.equal(fresh.up_to_date, true);
+
+    const reimport = await run(fx, baseArgs(fx));
+    assert.ok((reimport.help as string[]).some((line) => line.includes(`--refresh ${recordId}`)), "a colliding re-import points at the refresh");
+
+    await writeDoc(fx.source, { id: "themes/a", frontmatter: { type: "Theme", title: "A v2" }, body: "Updated [b](b.md).\n" });
+    await writeDoc(fx.source, { id: "themes/b", frontmatter: { type: "Theme", title: "B v2" }, body: "Updated [a](a.md).\n" });
+    const local = await readDoc(fx.target, "imp/themes/b");
+    await writeDoc(fx.target, { ...local, body: "Investor wording.\n" });
+
+    const blocked = await run(fx, refreshArgs(fx, recordId));
+    assert.equal(blocked.ready, false);
+    assert.deepEqual((blocked.conflicts as { rows: Array<{ code: string; target: string }> }).rows.map((r) => [r.code, r.target]), [["target_edited", "imp/themes/b"]]);
+    assert.match((blocked.help as string[])[0]!, /--overwrite imp\/themes\/b .*--skip imp\/themes\/b/);
+    const refused = await refusal(fx, refreshArgs(fx, recordId, ["--apply", "document-transfer/v1:refresh:sha256:00"]));
+    assert.equal(refused.code, "TRANSFER_CONFLICT");
+    assert.equal(refused.exitCode, EXIT.CONFLICT);
+    assert.equal((await readDoc(fx.target, "imp/themes/b")).body, "Investor wording.\n");
+
+    const skipped = await run(fx, refreshArgs(fx, recordId, ["--skip", "imp/themes/b"]));
+    assert.equal(skipped.ready, true);
+    assert.match((skipped.help as string[])[0]!, /--refresh .* --skip imp\/themes\/b .*--apply /);
+    const applied = await run(fx, refreshArgs(fx, recordId, ["--skip", "imp/themes/b", "--apply", String(skipped.plan_token)]));
+    assert.equal(applied.import, "refreshed");
+    assert.equal(applied.documents, 1);
+    assert.equal((await readDoc(fx.target, "imp/themes/a")).body, "Updated [b](b.md).\n");
+    assert.equal((await readDoc(fx.target, "imp/themes/b")).body, "Investor wording.\n");
+    assert.equal((await readDoc(fx.target, recordId)).frontmatter.promotion_state, "applied");
+  } finally { await fx.cleanup(); }
+});
+
+test("--refresh usage refusals", async () => {
+  const fx = await makeFixture();
+  try {
+    const bind = ["import", "--from", "wave", "--with", `wave=${fx.source.root}`, "--dir", fx.target.root];
+    for (const [argv, pattern] of [
+      [[...bind, "--refresh", "promotions/x", "--select", "type=Theme"], /--refresh takes the record's own selection/],
+      [[...bind, "--refresh", "promotions/x", "--resume", "promotions/x"], /mutually exclusive/],
+      [[...bind, "--select", "type=Theme", "--skip", "imp/themes/a"], /only with --refresh/],
+      [[...bind, "--refresh", " "], /empty record id/],
+    ] as Array<[string[], RegExp]>) {
+      const error = await refusal(fx, argv);
+      assert.equal(error.code, "USAGE", argv.join(" "));
+      assert.match(error.message, pattern);
+    }
+    const missing = await refusal(fx, [...bind, "--refresh", "promotions/none"]);
+    assert.equal(missing.code, "NOT_FOUND");
+    await writeDoc(fx.target, { id: "notes/not-a-record", frontmatter: { type: "Note", title: "N" }, body: "" });
+    const foreign = await refusal(fx, [...bind, "--refresh", "notes/not-a-record"]);
+    assert.equal(foreign.code, "TRANSFER_RESUME_CONFLICT");
+    assert.match(foreign.message, /cannot refresh/);
+    assert.doesNotMatch(foreign.help ?? "", /--resume/, "a record a refresh refuses is not offered a resume");
+  } finally { await fx.cleanup(); }
+});

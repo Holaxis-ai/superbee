@@ -166,8 +166,9 @@ Options:
                          a kind field) never reads stdin, even without --body/--body-file: it patches
                          only the given fields and leaves the body untouched.
   --replace-links         Required when a --body/--body-file replace would silently DROP one or more
-                         of the doc's existing outbound cross-links (links live in the body — OKF).
-                         Without it, such a replace is refused (exit 2, naming the dropped link(s));
+                         of the doc's existing outbound cross-links (links live in the body — OKF),
+                         whatever its type: links to documents here and okf: links into another
+                         bundle; web links are not cross-links. Without it, such a replace is refused (exit 2, naming the dropped link(s));
                          a new body that still contains the same link(s) — the ordinary read-edit-
                          update cycle — never needs this flag. SHORT-TERM guard — see 'link add'/
                          'link show' to manage links.

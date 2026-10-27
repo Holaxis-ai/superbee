@@ -1,6 +1,7 @@
 /** Storage-neutral body replacement policy and portable preview identity. */
 import { normalizeDocumentBodyForStorage } from "./frontmatter.js";
-import { parseLinksFromDoc } from "./links.js";
+import { extractMarkdownLinkSpans, resolveConceptId, type MarkdownLinkSpan } from "./links.js";
+import { isQualifiedHref, parseQualifiedHref } from "./qualified-links.js";
 import { InvalidInputError } from "./errors.js";
 import type { KindConvention } from "./kinds.js";
 import type { Bundle, Link, OkfDocument } from "./types.js";
@@ -113,19 +114,32 @@ export function captureBodyReplacePosture(value: unknown): BodyReplacePosture | 
   return captured;
 }
 
-/** Exact pairs consume first; target mode then admits retext while preserving occurrence counts.
- * Exact-edge mode is available to authorities that protect relationship text as well. */
+/** A cross-bundle edge is a different target from a local one with the same id. */
+function targetKey(l: Link): string {
+  return l.bundle === undefined ? l.to : `okf://${l.bundle}/${l.to}`;
+}
+
+/**
+ * A link alone on its line is the shape `link add` writes: a typed edge whose text is its relation
+ * ("part of"). Another standalone link to the target may relabel it, but a prose link that merely
+ * mentions the same target cannot stand in for it.
+ */
+type GuardedLink = Link & { standalone?: boolean };
+
+/** Exact pairs consume first; target mode then admits retext (a standalone edge only by another
+ * standalone link) while preserving occurrence counts. Exact-edge mode is available to authorities that protect
+ * relationship text as well. */
 export function computeDroppedLinks(existingLinks: readonly Link[], nextLinks: readonly Link[], mode: "target" | "exact-edge" = "target"): Link[] {
   const nextByTarget = new Map<string, Link[]>();
   for (const l of nextLinks) {
-    const key = mode === "exact-edge" ? JSON.stringify([l.from, l.to]) : l.to;
+    const key = mode === "exact-edge" ? JSON.stringify([l.from, targetKey(l)]) : targetKey(l);
     const bucket = nextByTarget.get(key);
     if (bucket) bucket.push(l);
     else nextByTarget.set(key, [l]);
   }
   const existingByTarget = new Map<string, Link[]>();
   for (const l of existingLinks) {
-    const key = mode === "exact-edge" ? JSON.stringify([l.from, l.to]) : l.to;
+    const key = mode === "exact-edge" ? JSON.stringify([l.from, targetKey(l)]) : targetKey(l);
     const bucket = existingByTarget.get(key);
     if (bucket) bucket.push(l);
     else existingByTarget.set(key, [l]);
@@ -145,15 +159,50 @@ export function computeDroppedLinks(existingLinks: readonly Link[], nextLinks: r
     // Pass 2: retext — any leftover old occurrence pairs with any leftover same-target occurrence,
     // regardless of text; anything still left over after that is a real drop.
     for (const old of unmatchedExact) {
-      if (mode === "target" && available.length > 0) available.shift();
+      // A prose link prefers a prose stand-in, leaving standalone links for standalone edges.
+      const prose = available.findIndex((n) => !(n as GuardedLink).standalone);
+      const idx = mode !== "target" ? -1
+        : (old as GuardedLink).standalone ? available.findIndex((n) => (n as GuardedLink).standalone) : prose >= 0 ? prose : 0;
+      if (idx >= 0 && idx < available.length) available.splice(idx, 1);
       else dropped.push(old);
     }
   }
   return dropped;
 }
 
+function aloneOnLine(body: string, span: MarkdownLinkSpan): boolean {
+  const lineStart = body.lastIndexOf("\n", span.start - 1) + 1;
+  const newline = body.indexOf("\n", span.end);
+  const lineEnd = newline < 0 ? body.length : newline;
+  return body.slice(lineStart, span.start).trim() === "" && body.slice(span.end, lineEnd).trim() === "";
+}
+
+/**
+ * Every outbound cross-link a body carries, as the guard compares them: local document links (as
+ * `parseLinksFromDoc` reads them) and well-formed `okf:` links into another bundle outside code (as
+ * `parseQualifiedLinks` reads them). Web links are not cross-links.
+ */
+export function outboundLinks(doc: OkfDocument): Link[] {
+  const live = new Set(extractMarkdownLinkSpans(doc.body, { skipCode: true }).map((span) => span.start));
+  const links: GuardedLink[] = [];
+  for (const span of extractMarkdownLinkSpans(doc.body)) {
+    if (span.image) continue;
+    const standalone = aloneOnLine(doc.body, span);
+    if (isQualifiedHref(span.href)) {
+      if (!live.has(span.start)) continue;
+      const parsed = parseQualifiedHref(span.href);
+      if (parsed.ok) links.push({ from: doc.id, to: parsed.ref.id, text: span.text, href: span.href, bundle: parsed.ref.alias, standalone });
+      continue;
+    }
+    const to = resolveConceptId(doc.id, span.href);
+    if (to !== null) links.push({ from: doc.id, to, text: span.text, href: span.href, standalone });
+  }
+  return links;
+}
+
 export function droppedLinks(_bundle: Bundle, existing: OkfDocument, nextBody: string): Link[] {
-  return computeDroppedLinks(parseLinksFromDoc(existing), parseLinksFromDoc({ ...existing, body: nextBody }));
+  return computeDroppedLinks(outboundLinks(existing), outboundLinks({ ...existing, body: nextBody }))
+    .map(({ standalone: _standalone, ...link }: GuardedLink) => link);
 }
 export function guardTruncatedBodyPreview(existing: OkfDocument, nextBody: string, acceptTruncatedBody: boolean): void {
   if (acceptTruncatedBody) return;

@@ -660,8 +660,8 @@ function held(id: string, rel: string, reason: HeldReason, message: string): Hel
   return { id, path: rel, reason, message };
 }
 
-function droppedLinksRow(id: string, rel: string, links: readonly { to: string }[]): HeldFile {
-  const targets = [...new Set(links.map((link) => link.to))];
+function droppedLinksRow(id: string, rel: string, links: readonly { to: string; bundle?: string }[]): HeldFile {
+  const targets = [...new Set(links.map((link) => link.bundle === undefined ? link.to : `okf://${link.bundle}/${link.to}`))];
   const named = `${targets.slice(0, 10).join(", ")}${targets.length > 10 ? ", ..." : ""}`;
   return held(id, rel, "dropped_links", `'${id}' removes ${targets.length === 1 ? "a link" : `${targets.length} links`} (to ${named}); restore the link, or send the removal deliberately with sync --replace-links ${commandToken(id)}`);
 }

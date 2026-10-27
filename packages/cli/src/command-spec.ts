@@ -399,7 +399,7 @@ export const CLI_COMMAND_GROUPS = [
         id: "docImport",
         leaves: [publicLeaf("docImport", "doc import", zero, undefined, DIR_SURFACE)],
         usage:
-          "doc import --from <alias> (--with <alias>=<path|label> | --with-deps) [--select type=<T>|prefix=<p>|id=<id>]... [--prefix <p>] [--allow-ungoverned] [--record <id>] [--apply <plan-token> | --resume <record-id>] [--actor <n>] [--limit <n>] [--dir <path>]",
+          "doc import --from <alias> (--with <alias>=<path|label> | --with-deps) [--select type=<T>|prefix=<p>|id=<id>]... [--prefix <p>] [--allow-ungoverned] [--record <id>] [--refresh <record-id> [--overwrite <id>]... [--skip <id>]...] [--apply <plan-token> | --resume <record-id>] [--actor <n>] [--limit <n>] [--dir <path>]",
         summary:
           "Copy chosen documents from a declared, bound bundle into this one with new ids, rewritten links, a sources entry each and one Promotion record; read-only plan with a token until --apply, create-only writes, --resume finishes an interrupted import (not 'promote', which moves one file's bytes)",
       },

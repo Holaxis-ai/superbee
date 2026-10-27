@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  applyDocumentRefresh,
   applyDocumentTransfer,
+  planDocumentRefresh,
   planDocumentTransfer,
   resumeDocumentTransfer,
   TransferConflictError,
@@ -10,6 +12,7 @@ import {
   TransferPlanChanged,
   TransferResumeConflict,
   type LinkRewrite,
+  type RefreshRequest,
   type TransferRequest,
 } from "../src/document-transfer.js";
 import { emitLinkHref } from "../src/link-emit.js";
@@ -581,4 +584,301 @@ test("resume refuses when the target's alias now names another bundle", async ()
 test("an invalid OKF actor is refused before anything is read or written", async () => {
   const fx = await fixture();
   await assert.rejects(planDocumentTransfer(fx.request({ actor: "not an actor" })), /must be human/);
+});
+
+// ── Refresh ────────────────────────────────────────────────────────────────
+
+/** An applied import, plus a refresh request against its record. */
+async function imported(options: { target?: NoDeleteBackend } = {}) {
+  const fx = await fixture(options);
+  const plan = await planDocumentTransfer(fx.request());
+  await applyDocumentTransfer(fx.request(), plan.plan_token!);
+  const recordId = plan.record.id;
+  const refresh = (overrides: Partial<RefreshRequest> = {}): RefreshRequest => ({
+    target: { root: "/target", backend: fx.target },
+    recordId,
+    from: { alias: "wave", binding: fx.binding },
+    actor: "process:importer",
+    now: () => "2026-10-23T12:00:00.000Z",
+    ...overrides,
+  });
+  return { fx, recordId, refresh };
+}
+
+async function versionsOf(backend: MemoryBackend): Promise<Array<[string, string]>> {
+  return Promise.all((await backend.list()).map(async (id) => [id, (await backend.read(id)).version] as [string, string]));
+}
+
+test("refresh of an unchanged source plans nothing and issues no token", async () => {
+  const { refresh } = await imported();
+  const plan = await planDocumentRefresh(refresh());
+  assert.equal(plan.ready, true);
+  assert.equal(plan.plan_token, undefined);
+  assert.deepEqual(plan.counts, { update: 0, overwrite: 0, unchanged: 3, skip: 0, conflict: 0 });
+});
+
+test("refresh updates a changed source in place, rewrites its links and moves the record forward", async () => {
+  const { fx, recordId, refresh } = await imported();
+  await put(fx.source, "themes/a", { type: "Theme", title: "A v2" }, "Now see [b](b.md) and [f2](../findings/f2.md).\n");
+  const plan = await planDocumentRefresh(refresh());
+  assert.equal(plan.ready, true);
+  assert.deepEqual(plan.entries.map((e) => [e.target, e.action]), [["imp/memo", "unchanged"], ["imp/themes/a", "update"], ["imp/themes/b", "unchanged"]]);
+  assert.equal(plan.entries[1]!.dropped_links, 1, "the finding link the new body no longer carries is reported");
+  const result = await applyDocumentRefresh(refresh(), plan.plan_token!);
+  assert.equal(result.changed, true);
+  assert.deepEqual(result.written.map((w) => w.target), ["imp/themes/a"]);
+  const a = await fx.target.read("imp/themes/a");
+  assert.equal(a.doc.frontmatter.title, "A v2");
+  assert.equal(a.doc.body, "Now see [b](b.md) and [f2](okf://wave/findings/f2.md).\n");
+  const sourceVersion = (await fx.source.read("themes/a")).version;
+  assert.deepEqual(a.doc.frontmatter.sources, [{ resource: "okf://wave/themes/a.md", id: recordId, title: `Imported from ${SOURCE_ID} at ${sourceVersion}` }]);
+  const record = (await fx.target.read(recordId)).doc;
+  assert.equal(record.frontmatter.promotion_state, "applied");
+  assert.equal(record.frontmatter.refresh, undefined);
+  assert.equal(record.frontmatter.refresh_token, plan.plan_token);
+  const row = (record.frontmatter.entries as Array<Record<string, string>>).find((r) => r.target === "imp/themes/a")!;
+  assert.deepEqual([row.source_version, row.target_version], [sourceVersion, a.version]);
+  assert.equal((await planDocumentRefresh(refresh())).counts.unchanged, 3, "a refreshed copy is the new baseline");
+  const before = await versionsOf(fx.target);
+  const again = await applyDocumentRefresh(refresh(), plan.plan_token!);
+  assert.equal(again.changed, false, "the same token again is a no-op success");
+  assert.deepEqual(await versionsOf(fx.target), before);
+  assert.equal(fx.target.deletes, 0);
+});
+
+test("refresh reports a locally edited copy as a conflict and never overwrites it silently", async () => {
+  const { fx, refresh } = await imported();
+  await put(fx.source, "themes/a", { type: "Theme", title: "A v2" }, "Changed.\n");
+  await put(fx.source, "themes/b", { type: "Theme", title: "B v2" }, "Changed too.\n");
+  const edited = await fx.target.read("imp/themes/a");
+  await fx.target.write("imp/themes/a", { ...edited.doc, body: "Investor wording.\n" });
+  const localVersion = (await fx.target.read("imp/themes/a")).version;
+
+  const plan = await planDocumentRefresh(refresh());
+  assert.equal(plan.ready, false);
+  assert.equal(plan.plan_token, undefined);
+  assert.deepEqual(plan.conflicts.map((c) => [c.code, c.target]), [["target_edited", "imp/themes/a"]]);
+  assert.equal(plan.entries.find((e) => e.target === "imp/themes/a")!.edited, true);
+  await assert.rejects(applyDocumentRefresh(refresh(), "document-transfer/v1:refresh:sha256:00"), TransferConflictError);
+  assert.equal((await fx.target.read("imp/themes/a")).version, localVersion);
+
+  // --skip keeps the local edit and refreshes the rest; the copy stays reported next time.
+  const skipped = await planDocumentRefresh(refresh({ skip: ["imp/themes/a"] }));
+  assert.deepEqual(skipped.entries.map((e) => e.action), ["unchanged", "skip", "update"]);
+  await applyDocumentRefresh(refresh({ skip: ["imp/themes/a"] }), skipped.plan_token!);
+  assert.equal((await fx.target.read("imp/themes/a")).doc.body, "Investor wording.\n");
+  assert.equal((await fx.target.read("imp/themes/b")).doc.frontmatter.title, "B v2");
+  assert.deepEqual((await planDocumentRefresh(refresh())).conflicts.map((c) => c.code), ["target_edited"]);
+
+  // --overwrite (by source id) discards it deliberately.
+  const overwritten = await planDocumentRefresh(refresh({ overwrite: ["themes/a"] }));
+  assert.deepEqual(overwritten.entries.map((e) => e.action), ["unchanged", "overwrite", "unchanged"]);
+  await applyDocumentRefresh(refresh({ overwrite: ["themes/a"] }), overwritten.plan_token!);
+  assert.equal((await fx.target.read("imp/themes/a")).doc.body, "Changed.\n");
+  assert.equal(fx.target.deletes, 0);
+});
+
+test("an edit to an unchanged source's copy is reported but not a conflict", async () => {
+  const { fx, refresh } = await imported();
+  const read = await fx.target.read("imp/memo");
+  await fx.target.write("imp/memo", { ...read.doc, body: "Local.\n" });
+  const plan = await planDocumentRefresh(refresh());
+  assert.equal(plan.ready, true);
+  const memo = plan.entries.find((e) => e.target === "imp/memo")!;
+  assert.deepEqual([memo.action, memo.edited], ["unchanged", true]);
+});
+
+test("refresh conflicts: source gone, copy gone, unknown names, an unapplied record and a foreign alias", async () => {
+  const { fx, refresh } = await imported();
+  await put(fx.source, "themes/a", { type: "Theme", title: "A v2" }, "Changed.\n");
+  await fx.source.delete("memo");
+  await put(fx.source, "themes/b", { type: "Theme", title: "B v2" }, "Changed.\n");
+  const plan = await planDocumentRefresh(refresh({ skip: ["nope"], overwrite: ["imp/themes/b"] }));
+  assert.deepEqual(plan.conflicts.map((c) => c.code).sort(), ["not_in_record", "source_missing"]);
+  assert.equal(plan.entries.find((e) => e.target === "imp/themes/b")!.action, "update", "overwrite of an unedited copy is an ordinary update");
+  const both = await planDocumentRefresh(refresh({ skip: ["imp/memo"], overwrite: ["imp/memo"] }));
+  assert.ok(both.conflicts.some((c) => c.code === "not_in_record" && /both/.test(c.detail)));
+  assert.deepEqual((await planDocumentRefresh(refresh({ from: { alias: "other", binding: fx.binding } }))).conflicts.map((c) => c.code).includes("alias_identity"), true);
+  assert.equal(fx.target.deletes, 0);
+});
+
+test("refresh never recreates a copy that was deleted in the target", async () => {
+  const { fx, refresh } = await imported();
+  await put(fx.source, "themes/b", { type: "Theme", title: "B v2" }, "Changed.\n");
+  // The no-delete backend refuses deletes, so remove the copy beneath it.
+  await MemoryBackend.prototype.delete.call(fx.target, "imp/themes/b");
+  const plan = await planDocumentRefresh(refresh());
+  assert.deepEqual(plan.conflicts.map((c) => [c.code, c.target]), [["target_missing", "imp/themes/b"]]);
+  const skipped = await planDocumentRefresh(refresh({ skip: ["imp/themes/b"] }));
+  assert.equal(skipped.ready, true);
+  assert.equal(skipped.plan_token, undefined);
+  assert.equal(await fx.target.exists("imp/themes/b"), false);
+});
+
+test("a copy edited between plan and apply refuses with nothing written", async () => {
+  const { fx, recordId, refresh } = await imported();
+  await put(fx.source, "themes/a", { type: "Theme", title: "A v2" }, "Changed.\n");
+  const plan = await planDocumentRefresh(refresh());
+  const read = await fx.target.read("imp/themes/a");
+  await fx.target.write("imp/themes/a", { ...read.doc, body: "Raced.\n" });
+  await assert.rejects(applyDocumentRefresh(refresh(), plan.plan_token!), TransferConflictError);
+  assert.equal((await fx.target.read("imp/themes/a")).doc.body, "Raced.\n");
+  assert.equal((await fx.target.read(recordId)).doc.frontmatter.promotion_state, "applied");
+});
+
+test("an interrupted refresh stays refreshing, blocks a new plan, and resume finishes it idempotently", async () => {
+  const target = new CrashingBackend("never");
+  const { fx, recordId, refresh } = await imported({ target });
+  await put(fx.source, "themes/a", { type: "Theme", title: "A v2" }, "Changed a.\n");
+  await put(fx.source, "themes/b", { type: "Theme", title: "B v2" }, "Changed b.\n");
+  const plan = await planDocumentRefresh(refresh());
+  (target as unknown as { crashOn: string }).crashOn = "imp/themes/b";
+  await assert.rejects(applyDocumentRefresh(refresh(), plan.plan_token!), (error: unknown) =>
+    error instanceof TransferInterrupted && error.state === "refreshing" && /promotion_state refreshing/.test(error.message)
+      && error.written.length === 1 && error.pending[0]!.target === "imp/themes/b");
+  const record = (await fx.target.read(recordId)).doc;
+  assert.equal(record.frontmatter.promotion_state, "refreshing");
+  assert.deepEqual(((record.frontmatter.refresh as { entries: Array<{ target: string }> }).entries).map((e) => e.target), ["imp/themes/a", "imp/themes/b"]);
+  assert.ok((await planDocumentRefresh(refresh())).conflicts.some((c) => c.code === "record_state"));
+
+  const bundle = { root: "/t", backend: fx.target };
+  const resumed = await resumeDocumentTransfer(bundle, recordId, { alias: "wave", binding: fx.binding }, { actor: "process:importer" });
+  assert.equal(resumed.changed, true);
+  assert.deepEqual(resumed.written.map((w) => w.target), ["imp/themes/a", "imp/themes/b"]);
+  assert.equal((await fx.target.read("imp/themes/b")).doc.body, "Changed b.\n");
+  const closed = (await fx.target.read(recordId)).doc;
+  assert.equal(closed.frontmatter.promotion_state, "applied");
+  assert.equal(closed.frontmatter.refresh, undefined);
+  assert.equal((await planDocumentRefresh(refresh())).counts.unchanged, 3);
+  const again = await resumeDocumentTransfer(bundle, recordId, { alias: "wave", binding: fx.binding });
+  assert.equal(again.changed, false);
+  assert.equal(fx.target.deletes, 0);
+});
+
+test("resume of a refresh leaves a copy another writer changed, closes the record and reports it", async () => {
+  const target = new CrashingBackend("never");
+  const { fx, recordId, refresh } = await imported({ target });
+  await put(fx.source, "themes/a", { type: "Theme", title: "A v2" }, "Changed a.\n");
+  const plan = await planDocumentRefresh(refresh());
+  (target as unknown as { crashOn: string }).crashOn = "imp/themes/a";
+  await assert.rejects(applyDocumentRefresh(refresh(), plan.plan_token!), TransferInterrupted);
+  const read = await fx.target.read("imp/themes/a");
+  await fx.target.write("imp/themes/a", { ...read.doc, body: "Someone else.\n" });
+  const resumed = await resumeDocumentTransfer({ root: "/t", backend: fx.target }, recordId, { alias: "wave", binding: fx.binding });
+  assert.deepEqual(resumed.written, []);
+  assert.deepEqual(resumed.left?.map((l) => l.target), ["imp/themes/a"]);
+  assert.match(resumed.left![0]!.detail, /another writer/);
+  assert.equal((await fx.target.read("imp/themes/a")).doc.body, "Someone else.\n");
+  assert.equal((await fx.target.read(recordId)).doc.frontmatter.promotion_state, "applied");
+  assert.deepEqual((await planDocumentRefresh(refresh())).conflicts.map((c) => [c.code, c.target]), [["target_edited", "imp/themes/a"]], "the old baseline brings it back as a conflict");
+});
+
+test("resume of a refresh leaves a row whose source moved on, unwritten", async () => {
+  const target = new CrashingBackend("never");
+  const { fx, recordId, refresh } = await imported({ target });
+  await put(fx.source, "themes/a", { type: "Theme", title: "A v2" }, "Changed a.\n");
+  const plan = await planDocumentRefresh(refresh());
+  (target as unknown as { crashOn: string }).crashOn = "imp/themes/a";
+  await assert.rejects(applyDocumentRefresh(refresh(), plan.plan_token!), TransferInterrupted);
+  const before = (await fx.target.read("imp/themes/a")).version;
+  await put(fx.source, "themes/a", { type: "Theme", title: "A v3" }, "Changed again.\n");
+  const resumed = await resumeDocumentTransfer({ root: "/t", backend: fx.target }, recordId, { alias: "wave", binding: fx.binding });
+  assert.match(resumed.left![0]!.detail, /changed since the refresh was planned/);
+  assert.equal((await fx.target.read("imp/themes/a")).version, before);
+  const next = await planDocumentRefresh(refresh());
+  assert.deepEqual(next.entries.find((e) => e.target === "imp/themes/a")!.action, "update");
+});
+
+test("a re-import that collides with promoted copies names the record a refresh updates", async () => {
+  const { fx, recordId } = await imported();
+  const plan = await planDocumentTransfer(fx.request({ recordId: "promotions/second" }));
+  const collisions = plan.conflicts.filter((c) => c.code === "target_exists");
+  assert.equal(collisions.length, 3);
+  assert.ok(collisions.every((c) => c.record === recordId && c.detail.includes(recordId)));
+});
+
+test("a copy edited after a crashed refresh wrote it is left by resume, not adopted as the new baseline", async () => {
+  const target = new CrashingBackend("never");
+  const { fx, recordId, refresh } = await imported({ target });
+  await put(fx.source, "themes/a", { type: "Theme", title: "A v2" }, "Changed a.\n");
+  await put(fx.source, "themes/b", { type: "Theme", title: "B v2" }, "Changed b.\n");
+  const plan = await planDocumentRefresh(refresh());
+  (target as unknown as { crashOn: string }).crashOn = "imp/themes/b";
+  await assert.rejects(applyDocumentRefresh(refresh(), plan.plan_token!), TransferInterrupted);
+  const written = await fx.target.read("imp/themes/a");
+  await fx.target.write("imp/themes/a", { ...written.doc, body: "Edited after the refresh wrote it.\n" });
+  const resumed = await resumeDocumentTransfer({ root: "/t", backend: fx.target }, recordId, { alias: "wave", binding: fx.binding });
+  assert.deepEqual(resumed.left?.map((l) => l.target), ["imp/themes/a"]);
+  await put(fx.source, "themes/a", { type: "Theme", title: "A v3" }, "Changed again.\n");
+  const next = await planDocumentRefresh(refresh());
+  assert.deepEqual(next.conflicts.map((c) => [c.code, c.target]), [["target_edited", "imp/themes/a"]]);
+  assert.equal((await fx.target.read("imp/themes/a")).doc.body, "Edited after the refresh wrote it.\n");
+});
+
+test("an overwrite row edited again before resume is left, not reported written", async () => {
+  const target = new CrashingBackend("never");
+  const { fx, recordId, refresh } = await imported({ target });
+  const first = await fx.target.read("imp/themes/a");
+  await fx.target.write("imp/themes/a", { ...first.doc, body: "First local edit.\n" });
+  const plan = await planDocumentRefresh(refresh({ overwrite: ["imp/themes/a"] }));
+  (target as unknown as { crashOn: string }).crashOn = "imp/themes/a";
+  await assert.rejects(applyDocumentRefresh(refresh({ overwrite: ["imp/themes/a"] }), plan.plan_token!), TransferInterrupted);
+  const second = await fx.target.read("imp/themes/a");
+  await fx.target.write("imp/themes/a", { ...second.doc, body: "Second local edit.\n" });
+  const resumed = await resumeDocumentTransfer({ root: "/t", backend: fx.target }, recordId, { alias: "wave", binding: fx.binding });
+  assert.deepEqual(resumed.written, []);
+  assert.deepEqual(resumed.left?.map((l) => l.target), ["imp/themes/a"]);
+  assert.equal((await planDocumentRefresh(refresh())).entries.find((e) => e.target === "imp/themes/a")!.edited, true);
+});
+
+test("an import resume flags a copy edited after the interrupted write, so a refresh treats it as edited", async () => {
+  const fx = await fixture({ target: new CrashingBackend("imp/themes/b") });
+  const plan = await planDocumentTransfer(fx.request());
+  await assert.rejects(applyDocumentTransfer(fx.request(), plan.plan_token!), TransferInterrupted);
+  const written = await fx.target.read("imp/themes/a");
+  await fx.target.write("imp/themes/a", { ...written.doc, body: "Edited before the resume.\n" });
+  const bundle = { root: "/target", backend: fx.target };
+  await resumeDocumentTransfer(bundle, plan.record.id, { alias: "wave", binding: fx.binding }, { actor: "process:importer" });
+  const rows = (await fx.target.read(plan.record.id)).doc.frontmatter.entries as Array<Record<string, unknown>>;
+  assert.deepEqual(rows.filter((r) => r.target_edited === true).map((r) => r.target), ["imp/themes/a"]);
+  await put(fx.source, "themes/a", { type: "Theme", title: "A v2" }, "Changed.\n");
+  const refreshPlan = await planDocumentRefresh({ target: bundle, recordId: plan.record.id, from: { alias: "wave", binding: fx.binding } });
+  assert.deepEqual(refreshPlan.conflicts.map((c) => [c.code, c.target]), [["target_edited", "imp/themes/a"]]);
+  // An explicit overwrite clears the flag: the refreshed copy is the import's baseline again.
+  const overwrite = { target: bundle, recordId: plan.record.id, from: { alias: "wave", binding: fx.binding }, overwrite: ["imp/themes/a"], actor: "process:importer" };
+  const overwritePlan = await planDocumentRefresh(overwrite);
+  await applyDocumentRefresh(overwrite, overwritePlan.plan_token!);
+  const after = (await fx.target.read(plan.record.id)).doc.frontmatter.entries as Array<Record<string, unknown>>;
+  assert.equal(after.some((r) => r.target_edited === true), false);
+});
+
+test("v0.1: copies written before a crash are adopted on resume, not flagged for the writer's actor stamp", async () => {
+  const v01 = async (backend: MemoryBackend) => backend.writeReserved("", "index.md", "---\nokf_version: '0.1'\n---\n# Bundle\n");
+  const source = new MemoryBackend();
+  await v01(source);
+  await put(source, "docs/bundle", { type: "Bundle Name", title: "Wave", bundle_id: SOURCE_ID });
+  await put(source, "themes/a", { type: "Theme", title: "A" }, "A.\n");
+  await put(source, "themes/b", { type: "Theme", title: "B" }, "B.\n");
+  const target = new CrashingBackend("imp/themes/b");
+  await v01(target);
+  await put(target, "docs/bundle", { type: "Bundle Name", title: "Board", bundle_id: TARGET_ID });
+  await put(target, "docs/dependencies", { type: "Bundle Dependencies", dependencies: { wave: { bundle_id: SOURCE_ID } } });
+  const bundle = { root: "/t", backend: target };
+  const from = { alias: "wave", binding: { backend: source, label: "../wave", identity: SOURCE_ID } };
+  const request: TransferRequest = { target: bundle, from, select: { types: ["Theme"] }, prefix: "imp", actor: "importer" };
+  const plan = await planDocumentTransfer(request);
+  await assert.rejects(applyDocumentTransfer(request, plan.plan_token!), TransferInterrupted);
+  await resumeDocumentTransfer(bundle, plan.record.id, from, { actor: "importer" });
+  const refresh: RefreshRequest = { target: bundle, recordId: plan.record.id, from, actor: "importer" };
+  assert.deepEqual((await planDocumentRefresh(refresh)).entries.map((e) => e.edited), [false, false]);
+
+  await put(source, "themes/a", { type: "Theme", title: "A2" }, "A2.\n");
+  await put(source, "themes/b", { type: "Theme", title: "B2" }, "B2.\n");
+  const refreshPlan = await planDocumentRefresh(refresh);
+  target.crashed = false;
+  (target as unknown as { crashOn: string }).crashOn = "imp/themes/b";
+  await assert.rejects(applyDocumentRefresh(refresh, refreshPlan.plan_token!), TransferInterrupted);
+  const resumed = await resumeDocumentTransfer(bundle, plan.record.id, from, { actor: "importer" });
+  assert.equal(resumed.left, undefined);
+  assert.deepEqual((await planDocumentRefresh(refresh)).entries.map((e) => [e.action, e.edited]), [["unchanged", false], ["unchanged", false]]);
 });
