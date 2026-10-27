@@ -851,3 +851,34 @@ test("an import resume flags a copy edited after the interrupted write, so a ref
   const after = (await fx.target.read(plan.record.id)).doc.frontmatter.entries as Array<Record<string, unknown>>;
   assert.equal(after.some((r) => r.target_edited === true), false);
 });
+
+test("v0.1: copies written before a crash are adopted on resume, not flagged for the writer's actor stamp", async () => {
+  const v01 = async (backend: MemoryBackend) => backend.writeReserved("", "index.md", "---\nokf_version: '0.1'\n---\n# Bundle\n");
+  const source = new MemoryBackend();
+  await v01(source);
+  await put(source, "docs/bundle", { type: "Bundle Name", title: "Wave", bundle_id: SOURCE_ID });
+  await put(source, "themes/a", { type: "Theme", title: "A" }, "A.\n");
+  await put(source, "themes/b", { type: "Theme", title: "B" }, "B.\n");
+  const target = new CrashingBackend("imp/themes/b");
+  await v01(target);
+  await put(target, "docs/bundle", { type: "Bundle Name", title: "Board", bundle_id: TARGET_ID });
+  await put(target, "docs/dependencies", { type: "Bundle Dependencies", dependencies: { wave: { bundle_id: SOURCE_ID } } });
+  const bundle = { root: "/t", backend: target };
+  const from = { alias: "wave", binding: { backend: source, label: "../wave", identity: SOURCE_ID } };
+  const request: TransferRequest = { target: bundle, from, select: { types: ["Theme"] }, prefix: "imp", actor: "importer" };
+  const plan = await planDocumentTransfer(request);
+  await assert.rejects(applyDocumentTransfer(request, plan.plan_token!), TransferInterrupted);
+  await resumeDocumentTransfer(bundle, plan.record.id, from, { actor: "importer" });
+  const refresh: RefreshRequest = { target: bundle, recordId: plan.record.id, from, actor: "importer" };
+  assert.deepEqual((await planDocumentRefresh(refresh)).entries.map((e) => e.edited), [false, false]);
+
+  await put(source, "themes/a", { type: "Theme", title: "A2" }, "A2.\n");
+  await put(source, "themes/b", { type: "Theme", title: "B2" }, "B2.\n");
+  const refreshPlan = await planDocumentRefresh(refresh);
+  target.crashed = false;
+  (target as unknown as { crashOn: string }).crashOn = "imp/themes/b";
+  await assert.rejects(applyDocumentRefresh(refresh, refreshPlan.plan_token!), TransferInterrupted);
+  const resumed = await resumeDocumentTransfer(bundle, plan.record.id, from, { actor: "importer" });
+  assert.equal(resumed.left, undefined);
+  assert.deepEqual((await planDocumentRefresh(refresh)).entries.map((e) => [e.action, e.edited]), [["unchanged", false], ["unchanged", false]]);
+});

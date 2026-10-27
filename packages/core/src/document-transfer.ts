@@ -1148,8 +1148,9 @@ function provenanceEntries(doc: OkfDocument): Array<Record<string, unknown>> {
 function isWrittenCopy(doc: OkfDocument, candidate: DocumentMutationCandidate, registry: KindRegistry, okfVersion: "0.1" | "0.2"): boolean {
   const attributed = doc.frontmatter[okfVersion === "0.1" ? "actor" : SUPERBEE_UPDATED_BY_FIELD];
   try {
+    // Overwrite mode compares after attribution, so a v0.1 `actor` the writer stamped matches too.
     return !prepareDocumentMutationCandidate(doc, structuredClone(candidate), {
-      mode: "replace-document",
+      mode: "overwrite",
       id: doc.id,
       registry,
       strict: false,
