@@ -329,7 +329,7 @@ export function cliErrorFromTransfer(err: unknown): CliError | null {
   if (err instanceof TransferInterrupted) {
     const progress = {
       record: err.recordId,
-      record_state: "applying",
+      record_state: err.state,
       written_count: err.written.length,
       pending_count: err.pending.length,
       written: err.written.slice(0, TRANSFER_ERROR_ROW_CAP).map((w) => ({ source: w.source, target: w.target })),

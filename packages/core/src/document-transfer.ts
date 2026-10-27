@@ -11,8 +11,17 @@
  * all-or-nothing. It writes the Promotion record first (`promotion_state: applying`, with the
  * whole mapping) as the journal, then creates every document with an expect-absent write, then
  * marks the record `applied`. A failed write stops the apply and leaves the record at `applying`;
- * {@link resumeDocumentTransfer} is the one recovery path. Nothing here deletes or overwrites a
- * document.
+ * {@link resumeDocumentTransfer} is the one recovery path. Nothing here deletes a document, and only a
+ * refresh replaces one.
+ *
+ * A refresh ({@link planDocumentRefresh}, {@link applyDocumentRefresh}) brings the copies an
+ * applied record names up to date with their sources. The record's `source_version` and
+ * `target_version` per entry are the baseline: a changed source is an update, and a copy whose
+ * version differs from `target_version` was edited in the target and is a conflict unless the
+ * caller names it to overwrite or skip. The record is the journal again (`promotion_state:
+ * refreshing` with the pending rows), every copy is replaced under a hard compare-and-swap on the
+ * version the plan saw, and {@link resumeDocumentTransfer} finishes an interrupted refresh. A
+ * refresh never creates, deletes or picks up documents the record does not already name.
  *
  * v1 caveats: resume writes the remaining documents even if the target has since dropped a Kind
  * that governed them. Reference-style link definitions (`[x]: ../f.md`) are copied unchanged and
@@ -22,6 +31,7 @@
  * through the shared document mutation policy, and no Node module is imported.
  */
 
+import { computeDroppedLinks, outboundLinks } from "./body-replace-guards.js";
 import { backendFor, readBundleOkfVersion, readDocVersioned } from "./bundle-ops.js";
 import type { BundleBinding, CommitPin } from "./cross-bundle.js";
 import {
@@ -94,13 +104,23 @@ export type TransferConflictCode =
   | "case_collision"
   | "kind_missing"
   | "qualified_alias_mismatch"
-  | "record_exists";
+  | "record_exists"
+  /** Refresh: the copy was changed in the target since the record last wrote it. */
+  | "target_edited"
+  /** Refresh: the source changed but the copy is gone; a refresh never recreates it. */
+  | "target_missing"
+  /** Refresh: the record is not applied, or names a row a refresh cannot use. */
+  | "record_state"
+  /** Refresh: an overwrite or skip names no entry of the record. */
+  | "not_in_record";
 
 export interface TransferConflict {
   code: TransferConflictCode;
   source?: ConceptId;
   target?: ConceptId;
   detail: string;
+  /** target_exists: the Promotion record whose copy already sits at the target; a refresh of it updates the copy. */
+  record?: ConceptId;
 }
 
 export type LinkRewriteKind = "local" | "qualified" | "dequalified" | "unchanged";
@@ -188,6 +208,12 @@ export interface TransferResult {
   written: TransferWritten[];
   /** False when the record was already applied and this call wrote nothing. */
   changed: boolean;
+  /**
+   * Resume of a refresh only: pending copies it left as they are because the copy or its source
+   * moved since the refresh was planned. The record keeps their old baseline, so the next refresh
+   * plan reports them again.
+   */
+  left?: Array<{ source: ConceptId; target: ConceptId; detail: string }>;
 }
 
 // ── Typed failures ─────────────────────────────────────────────────────────
@@ -223,18 +249,27 @@ export class TransferInterrupted extends Error {
   readonly recordId: ConceptId;
   readonly written: TransferWritten[];
   readonly pending: Array<{ source: ConceptId; target: ConceptId }>;
+  /** The state the record was left in: `applying` for an import, `refreshing` for a refresh. */
+  readonly state: "applying" | "refreshing";
   override readonly cause: unknown;
-  constructor(recordId: ConceptId, written: TransferWritten[], pending: Array<{ source: ConceptId; target: ConceptId }>, cause: unknown) {
+  constructor(
+    recordId: ConceptId,
+    written: TransferWritten[],
+    pending: Array<{ source: ConceptId; target: ConceptId }>,
+    cause: unknown,
+    state: "applying" | "refreshing" = "applying",
+  ) {
     const why = cause instanceof Error ? cause.message : String(cause);
     super(
-      `the import stopped after writing ${written.length} document${written.length === 1 ? "" : "s"}` +
+      `the ${state === "applying" ? "import" : "refresh"} stopped after writing ${written.length} document${written.length === 1 ? "" : "s"}` +
         `${pending.length > 0 ? ` (${pending.length} not written, first '${pending[0]!.target}')` : ""}: ${why}. ` +
-        `'${recordId}' stays at promotion_state applying; resume it to finish.`,
+        `'${recordId}' stays at promotion_state ${state}; resume it to finish.`,
     );
     this.name = "TransferInterrupted";
     this.recordId = recordId;
     this.written = written;
     this.pending = pending;
+    this.state = state;
     this.cause = cause;
   }
 }
@@ -244,8 +279,8 @@ export class TransferResumeConflict extends Error {
   readonly recordId: ConceptId;
   readonly id?: ConceptId;
   readonly written: TransferWritten[];
-  constructor(recordId: ConceptId, detail: string, options: { id?: ConceptId; written?: TransferWritten[] } = {}) {
-    super(`cannot resume '${recordId}': ${detail}`);
+  constructor(recordId: ConceptId, detail: string, options: { id?: ConceptId; written?: TransferWritten[]; verb?: "resume" | "refresh" } = {}) {
+    super(`cannot ${options.verb ?? "resume"} '${recordId}': ${detail}`);
     this.name = "TransferResumeConflict";
     this.recordId = recordId;
     if (options.id !== undefined) this.id = options.id;
@@ -805,6 +840,13 @@ async function computeTransfer(request: TransferRequest): Promise<Computed> {
     target.ids,
     conflicts,
   );
+  for (const conflict of conflicts) {
+    if (conflict.code !== "target_exists" || conflict.target === undefined) continue;
+    const promotedBy = await promotingRecord(request.target, conflict.target, request.from.alias);
+    if (promotedBy === undefined) continue;
+    conflict.record = promotedBy;
+    conflict.detail += `; it is a copy promoted by '${promotedBy}', which a refresh of that record updates`;
+  }
 
   const ctx: RewriteContext = { alias: request.from.alias, source, target, mapping };
   const built: BuiltEntry[] = [];
@@ -941,7 +983,7 @@ export async function applyDocumentTransfer(request: TransferRequest, planToken:
     if (prior && prior.doc.frontmatter.type === PROMOTION_TYPE && prior.doc.frontmatter.plan_token === planToken.trim()) {
       const record = parseRecord(plan.record.id, prior.doc);
       if (record.state === "applied") return appliedResult(plan.record.id, prior.version, record.entries, false);
-      throw new TransferConflictError([{ code: "record_exists", target: plan.record.id, detail: `'${plan.record.id}' from this plan is still applying; resume it to finish` }]);
+      throw new TransferConflictError([{ code: "record_exists", target: plan.record.id, detail: `'${plan.record.id}' from this plan is still ${record.state}; resume it to finish` }]);
     }
     throw new TransferConflictError(plan.conflicts);
   }
@@ -1007,12 +1049,32 @@ interface RecordEntry {
   target_version?: Version;
 }
 
-function parseRecord(recordId: ConceptId, doc: OkfDocument): { state: "applying" | "applied"; alias: string; bundleId: string; prefix?: string; entries: RecordEntry[] } {
+type RecordState = "applying" | "applied" | "refreshing";
+
+/** One pending row of a refresh: the copy at `target`, at `replaces_version`, becomes the source at `source_version`. */
+interface RefreshJournalEntry {
+  source: ConceptId;
+  source_version: Version;
+  target: ConceptId;
+  replaces_version: Version;
+}
+
+interface ParsedRecord {
+  state: RecordState;
+  alias: string;
+  bundleId: string;
+  prefix?: string;
+  entries: RecordEntry[];
+  /** Present only while `refreshing`. */
+  refresh?: RefreshJournalEntry[];
+}
+
+function parseRecord(recordId: ConceptId, doc: OkfDocument, verb: "resume" | "refresh" = "resume"): ParsedRecord {
   const fm = doc.frontmatter;
-  const refuse = (detail: string): never => { throw new TransferResumeConflict(recordId, detail); };
+  const refuse = (detail: string): never => { throw new TransferResumeConflict(recordId, detail, { verb }); };
   if (String(fm.type).trim() !== PROMOTION_TYPE) refuse(`it is not a ${PROMOTION_TYPE} record (type '${String(fm.type)}')`);
   const state = fm.promotion_state;
-  if (state !== "applying" && state !== "applied") refuse("promotion_state must be applying or applied");
+  if (state !== "applying" && state !== "applied" && state !== "refreshing") refuse("promotion_state must be applying, applied or refreshing");
   if (typeof fm.from_alias !== "string" || typeof fm.from_bundle_id !== "string") refuse("from_alias and from_bundle_id are required");
   if (!Array.isArray(fm.entries)) refuse("entries must be a list");
   if (fm.target_prefix !== undefined && typeof fm.target_prefix !== "string") refuse("target_prefix must be a string");
@@ -1039,7 +1101,23 @@ function parseRecord(recordId: ConceptId, doc: OkfDocument): { state: "applying"
     }
     entries.push(entry);
   }
-  return { state: state as "applying" | "applied", alias: fm.from_alias as string, bundleId: fm.from_bundle_id as string, ...(prefix === undefined ? {} : { prefix }), entries };
+  const parsed: ParsedRecord = { state: state as RecordState, alias: fm.from_alias as string, bundleId: fm.from_bundle_id as string, ...(prefix === undefined ? {} : { prefix }), entries };
+  if (state === "refreshing") {
+    const journal = fm.refresh as Record<string, unknown> | null | undefined;
+    if (!journal || typeof journal !== "object" || !Array.isArray(journal.entries)) refuse("a refreshing record needs refresh.entries");
+    const byTarget = new Map(entries.map((e) => [e.target, e]));
+    parsed.refresh = [];
+    for (const row of journal!.entries as unknown[]) {
+      const r = row as Record<string, unknown> | null;
+      if (!r || typeof r.source !== "string" || typeof r.source_version !== "string" || typeof r.target !== "string" || typeof r.replaces_version !== "string") {
+        refuse("every refresh entry needs source, source_version, target and replaces_version");
+      }
+      // A pending row may only name an entry the record already holds, with the same source.
+      if (byTarget.get(r!.target as string)?.source !== r!.source) refuse(`refresh entry '${String(r!.target)}' is not an entry of this record`);
+      parsed.refresh.push({ source: r!.source as string, source_version: r!.source_version as string, target: r!.target as string, replaces_version: r!.replaces_version as string });
+    }
+  }
+  return parsed;
 }
 
 /** The result an already-applied record stands for: nothing is written again. */
@@ -1052,9 +1130,26 @@ function appliedResult(recordId: ConceptId, version: Version, entries: readonly 
   return { record: { id: recordId, version, state: "applied" }, written, changed };
 }
 
-function hasProvenance(doc: OkfDocument, recordId: ConceptId): boolean {
+function provenanceEntries(doc: OkfDocument): Array<Record<string, unknown>> {
   const sources = doc.frontmatter.sources;
-  return Array.isArray(sources) && sources.some((s) => s !== null && typeof s === "object" && (s as Record<string, unknown>).id === recordId);
+  return Array.isArray(sources) ? sources.filter((s): s is Record<string, unknown> => s !== null && typeof s === "object" && !Array.isArray(s)) : [];
+}
+
+function hasProvenance(doc: OkfDocument, recordId: ConceptId): boolean {
+  return provenanceEntries(doc).some((s) => s.id === recordId);
+}
+
+/** The Promotion record an existing copy at `id` names as its import from `alias`, if any. */
+async function promotingRecord(target: Bundle, id: ConceptId, alias: string): Promise<ConceptId | undefined> {
+  const read = await readOptional(target, id).catch(() => null);
+  if (!read) return undefined;
+  for (const entry of provenanceEntries(read.doc)) {
+    if (typeof entry.id !== "string" || !entry.id.startsWith(PROMOTIONS_PREFIX)) continue;
+    if (typeof entry.resource !== "string" || !entry.resource.startsWith(`okf://${alias}/`)) continue;
+    const record = await readOptional(target, entry.id).catch(() => null);
+    if (record && String(record.doc.frontmatter.type).trim() === PROMOTION_TYPE) return entry.id;
+  }
+  return undefined;
 }
 
 /**
@@ -1062,6 +1157,7 @@ function hasProvenance(doc: OkfDocument, recordId: ConceptId): boolean {
  * source at the recorded source version (a changed source refuses); a present target carrying a
  * `sources` entry with this record's id is already done; anything else refuses. When every entry
  * is done the record becomes `applied`. Running it again on an `applied` record is a no-op.
+ * A `refreshing` record is finished the same way by {@link finishRefresh}.
  */
 export async function resumeDocumentTransfer(
   target: Bundle,
@@ -1077,6 +1173,7 @@ export async function resumeDocumentTransfer(
     throw new TransferResumeConflict(recordId, `${from.binding.label} is '${from.binding.identity ?? "undeclared"}', not '${record.bundleId}'`);
   }
   if (record.state === "applied") return appliedResult(recordId, read.version, record.entries, false);
+  if (record.state === "refreshing") return finishRefresh(target, recordId, read, record, from, options);
 
   const snapshot = await readTarget(target);
   assertActor(options.actor, snapshot.okfVersion);
@@ -1144,4 +1241,432 @@ export async function resumeDocumentTransfer(
   }
   const version = await writeRecordState(target, registry, recordId, read.version, "applied", versions, options.actor, options.now);
   return { record: { id: recordId, version, state: "applied" }, written, changed: true };
+}
+
+// ── Refresh ────────────────────────────────────────────────────────────────
+
+export const DOCUMENT_REFRESH_TOKEN_PREFIX = `${DOCUMENT_TRANSFER_CONTRACT}:refresh`;
+
+/**
+ * What a refresh does to one entry of the record: `update` replaces a copy whose source changed;
+ * `overwrite` replaces a locally edited copy the caller named; `unchanged` and `skip` write
+ * nothing; `conflict` blocks the plan (see the plan's conflicts).
+ */
+export type RefreshAction = "update" | "overwrite" | "unchanged" | "skip" | "conflict";
+
+export interface RefreshRequest {
+  /** A local bundle or git board holding the record. */
+  target: Bundle;
+  /** The applied Promotion record whose copies to refresh. */
+  recordId: ConceptId;
+  from: TransferSource;
+  /** Copies (target or source ids) to replace even though they were edited in the target. */
+  overwrite?: readonly ConceptId[];
+  /** Copies (target or source ids) to leave as they are in this refresh. */
+  skip?: readonly ConceptId[];
+  actor?: string;
+  now?: () => string;
+}
+
+export interface RefreshEntry {
+  source: ConceptId;
+  target: ConceptId;
+  action: RefreshAction;
+  /** The source version the record holds. */
+  recorded_source_version: Version;
+  /** The source version now, when the source document is present. */
+  source_version?: Version;
+  /** The copy's version the record holds. */
+  recorded_target_version?: Version;
+  /** The copy's version now; null when the copy is gone. */
+  target_version: Version | null;
+  /** True when the copy differs from the version the record last wrote. */
+  edited: boolean;
+  /** Outbound links of the copy that the new body no longer carries (update and overwrite only). */
+  dropped_links: number;
+  detail?: string;
+}
+
+export interface RefreshPlan {
+  contract: typeof DOCUMENT_TRANSFER_CONTRACT;
+  record: { id: ConceptId; version: Version; state: RecordState };
+  from: { alias: string; bundle_id: string; label: string; pin?: CommitPin };
+  /** In record order. */
+  entries: RefreshEntry[];
+  counts: Record<RefreshAction, number>;
+  conflicts: TransferConflict[];
+  /** No conflicts. A ready plan with no update or overwrite has nothing to write and no token. */
+  ready: boolean;
+  /** Present only when ready and something would be written. */
+  plan_token?: string;
+}
+
+interface ComputedRefresh {
+  plan: RefreshPlan;
+  candidates: Map<ConceptId, DocumentMutationCandidate>;
+  read: ReadResult;
+}
+
+function matchesEntry(names: ReadonlySet<string>, entry: RecordEntry): boolean {
+  return names.has(entry.target) || names.has(entry.source);
+}
+
+async function computeRefresh(request: RefreshRequest): Promise<ComputedRefresh> {
+  const conflicts: TransferConflict[] = [];
+  const now = request.now ?? (() => new Date().toISOString());
+  const read = await readOptional(request.target, request.recordId);
+  if (!read) throw new DocumentNotFoundError(request.recordId);
+  const record = parseRecord(request.recordId, read.doc, "refresh");
+  const target = await readTarget(request.target);
+  assertActor(request.actor, target.okfVersion);
+
+  if (record.alias !== request.from.alias) {
+    conflicts.push({ code: "alias_identity", detail: `'${request.recordId}' was written for alias '${record.alias}', not '${request.from.alias}'` });
+  }
+  const identity = await sourceIdentity(request.from, target, conflicts);
+  if (identity.bundleId !== record.bundleId) {
+    conflicts.push({ code: "alias_identity", detail: `'${request.recordId}' imported from '${record.bundleId}', but '${request.from.alias}' is '${identity.bundleId}'` });
+  }
+  if (record.state !== "applied") {
+    conflicts.push({ code: "record_state", detail: `'${request.recordId}' is ${record.state}; resume it before a refresh` });
+  }
+
+  const overwrite = new Set(request.overwrite ?? []);
+  const skip = new Set(request.skip ?? []);
+  for (const name of [...overwrite, ...skip]) {
+    if (!record.entries.some((e) => e.target === name || e.source === name)) {
+      conflicts.push({ code: "not_in_record", target: name, detail: `'${name}' is not a copy '${request.recordId}' names` });
+    }
+  }
+  for (const name of overwrite) {
+    if (skip.has(name)) conflicts.push({ code: "not_in_record", target: name, detail: `'${name}' is named both to overwrite and to skip` });
+  }
+
+  const source = await readSource(request.from.binding);
+  const mapping = new Map(record.entries.map((e) => [e.source, e.target]));
+  const selected = new Set(mapping.keys());
+  const ctx: RewriteContext = { alias: request.from.alias, source, target, mapping };
+  const candidates = new Map<ConceptId, DocumentMutationCandidate>();
+  const entries: RefreshEntry[] = [];
+
+  for (const entry of record.entries) {
+    let current: ReadResult | null;
+    try {
+      current = await readOptional(request.target, entry.target);
+    } catch (error) {
+      if (!(error instanceof FilesystemIdentityAliasError)) throw error;
+      current = null;
+      conflicts.push({ code: "case_collision", source: entry.source, target: entry.target, detail: `'${entry.target}' is spelled differently on disk: ${error.message}` });
+    }
+    const sourceRead = source.docs.get(entry.source);
+    const row: RefreshEntry = {
+      source: entry.source,
+      target: entry.target,
+      action: "unchanged",
+      recorded_source_version: entry.source_version,
+      target_version: current?.version ?? null,
+      edited: current !== null && current.version !== entry.target_version,
+      dropped_links: 0,
+    };
+    if (entry.target_version !== undefined) row.recorded_target_version = entry.target_version;
+    if (sourceRead) row.source_version = sourceRead.version;
+    entries.push(row);
+    const where = { source: entry.source, target: entry.target };
+    const block = (code: TransferConflictCode, detail: string): void => {
+      row.action = "conflict";
+      row.detail = detail;
+      conflicts.push({ code, ...where, detail });
+    };
+
+    if (matchesEntry(skip, entry)) {
+      row.action = "skip";
+      continue;
+    }
+    if (entry.target_version === undefined) {
+      block("record_state", `the record holds no target_version for '${entry.target}', so a local edit cannot be told apart`);
+      continue;
+    }
+    if (source.malformed.has(entry.source)) {
+      block("source_malformed", `'${entry.source}' is malformed in the source: ${source.malformed.get(entry.source)}`);
+      continue;
+    }
+    const sourceChanged = sourceRead?.version !== entry.source_version;
+    if (!sourceRead) {
+      block("source_missing", `'${entry.source}' is no longer in ${request.from.binding.label}; a refresh never deletes the copy`);
+      continue;
+    }
+    if (current === null) {
+      if (sourceChanged) block("target_missing", `'${entry.target}' is gone from the target; a refresh never recreates it`);
+      else row.detail = "the copy is gone from the target; its source has not changed";
+      continue;
+    }
+    const overwriting = row.edited && matchesEntry(overwrite, entry);
+    if (!sourceChanged && !overwriting) {
+      if (row.edited) row.detail = "the copy was edited in the target; its source has not changed";
+      continue;
+    }
+    if (row.edited && !overwriting) {
+      block("target_edited", `'${entry.target}' was edited in the target since '${request.recordId}' wrote it; overwrite or skip it explicitly`);
+      continue;
+    }
+    const built = buildEntry(ctx, record.bundleId, request.recordId, sourceRead, entry.target, selected, true, request.actor, now, conflicts);
+    candidates.set(entry.source, built.candidate);
+    row.action = overwriting ? "overwrite" : "update";
+    row.dropped_links = computeDroppedLinks(outboundLinks(current.doc), outboundLinks({ ...current.doc, body: built.candidate.body })).length;
+  }
+
+  const counts: Record<RefreshAction, number> = { update: 0, overwrite: 0, unchanged: 0, skip: 0, conflict: 0 };
+  for (const row of entries) counts[row.action]++;
+  const from: RefreshPlan["from"] = { alias: request.from.alias, bundle_id: identity.bundleId, label: request.from.label ?? request.from.binding.label };
+  if (identity.pin) from.pin = identity.pin;
+  const ready = conflicts.length === 0;
+  const plan: RefreshPlan = {
+    contract: DOCUMENT_TRANSFER_CONTRACT,
+    record: { id: request.recordId, version: read.version, state: record.state },
+    from,
+    entries,
+    counts,
+    conflicts,
+    ready,
+  };
+  if (ready && counts.update + counts.overwrite > 0) {
+    plan.plan_token = `${DOCUMENT_REFRESH_TOKEN_PREFIX}:sha256:${hashOf({
+      contract: DOCUMENT_REFRESH_TOKEN_PREFIX,
+      record: { id: request.recordId, version: read.version },
+      from: { bundle_id: identity.bundleId, pin: identity.pin?.value ?? null },
+      target: { okf_version: target.okfVersion, bundle_id: target.bundleId ?? null, dependencies_version: target.dependenciesVersion },
+      entries: entries.map((row) => ({
+        source: row.source,
+        target: row.target,
+        action: row.action,
+        source_version: row.source_version ?? null,
+        target_version: row.target_version,
+        candidate: candidates.has(row.source) ? hashOf(candidates.get(row.source)) : null,
+      })),
+    })}`;
+  }
+  return { plan, candidates, read };
+}
+
+/** Read-only: compute what a refresh of an applied Promotion record would write, and its conflicts. */
+export async function planDocumentRefresh(request: RefreshRequest): Promise<RefreshPlan> {
+  return (await computeRefresh(request)).plan;
+}
+
+/** The record as applied, with each refreshed row's versions moved forward and the journal removed. */
+async function closeRefresh(
+  target: Bundle,
+  registry: KindRegistry,
+  recordId: ConceptId,
+  expectedVersion: Version,
+  done: ReadonlyMap<ConceptId, { source_version: Version; target_version: Version }>,
+  token: string | undefined,
+  pin: CommitPin | undefined,
+  actor: string | undefined,
+  now: (() => string) | undefined,
+): Promise<Version> {
+  const result = await mutateDocument({
+    bundle: target,
+    id: recordId,
+    mode: "replace-document",
+    onAbsent: "fail",
+    expectedVersion,
+    registry,
+    strict: false,
+    actor,
+    ...(now ? { now } : {}),
+    buildCandidate: (existing) => {
+      const frontmatter = structuredClone(existing!.frontmatter);
+      frontmatter.promotion_state = "applied";
+      delete frontmatter.refresh;
+      if (token !== undefined) frontmatter.refresh_token = token;
+      if (pin) frontmatter.from_pin = pin.value;
+      frontmatter.entries = (frontmatter.entries as unknown[]).map((row) => {
+        const entry = { ...(row as Record<string, unknown>) };
+        const moved = done.get(String(entry.target));
+        if (moved) Object.assign(entry, moved);
+        return entry;
+      });
+      return { frontmatter, body: existing!.body };
+    },
+  });
+  return result.version;
+}
+
+function refreshedResult(recordId: ConceptId, version: Version, written: TransferWritten[], changed: boolean): TransferResult {
+  return { record: { id: recordId, version, state: "applied" }, written, changed };
+}
+
+/**
+ * Recompute the refresh plan from fresh reads, refuse unless it is ready and its token equals
+ * `planToken`, then write: the record (`refreshing`, with the pending rows), each copy replaced
+ * under a hard compare-and-swap on the version the plan saw, and the record again (`applied`, its
+ * rows moved forward). A failed write throws {@link TransferInterrupted} with state `refreshing`;
+ * {@link resumeDocumentTransfer} finishes it. The same token applied again after it completed is
+ * a no-op success.
+ */
+export async function applyDocumentRefresh(request: RefreshRequest, planToken: string): Promise<TransferResult> {
+  const token = planToken.trim();
+  const { plan, candidates, read } = await computeRefresh(request);
+  if (!plan.ready) throw new TransferConflictError(plan.conflicts);
+  if (plan.plan_token === undefined && read.doc.frontmatter.refresh_token === token) {
+    return refreshedResult(request.recordId, read.version, [], false);
+  }
+  if (plan.plan_token !== token) throw new TransferPlanChanged(token, plan.plan_token ?? "(nothing to refresh)");
+
+  const registry = await loadKinds(request.target);
+  const pending = plan.entries.filter((row) => row.action === "update" || row.action === "overwrite");
+  const journal: RefreshJournalEntry[] = pending.map((row) => ({
+    source: row.source,
+    source_version: row.source_version!,
+    target: row.target,
+    replaces_version: row.target_version!,
+  }));
+  let recordVersion: Version;
+  try {
+    recordVersion = (await mutateDocument({
+      bundle: request.target,
+      id: request.recordId,
+      mode: "replace-document",
+      onAbsent: "fail",
+      expectedVersion: read.version,
+      registry,
+      strict: false,
+      actor: request.actor,
+      ...(request.now ? { now: request.now } : {}),
+      buildCandidate: (existing) => {
+        const frontmatter = structuredClone(existing!.frontmatter);
+        frontmatter.promotion_state = "refreshing";
+        frontmatter.refresh = { plan_token: token, entries: journal.map((row) => ({ ...row })) };
+        return { frontmatter, body: existing!.body };
+      },
+    })).version;
+  } catch (error) {
+    if (error instanceof VersionConflict) throw new TransferPlanChanged(token, `'${request.recordId}' changed during the refresh`);
+    throw error;
+  }
+
+  const written: TransferWritten[] = [];
+  const done = new Map<ConceptId, { source_version: Version; target_version: Version }>();
+  for (let index = 0; index < journal.length; index++) {
+    const row = journal[index]!;
+    try {
+      const result = await replaceCopy(request.target, registry, row, candidates.get(row.source)!, request.actor, request.now);
+      written.push({ source: row.source, target: row.target, version: result });
+      done.set(row.target, { source_version: row.source_version, target_version: result });
+    } catch (cause) {
+      throw new TransferInterrupted(request.recordId, written, journal.slice(index).map((e) => ({ source: e.source, target: e.target })), cause, "refreshing");
+    }
+  }
+  try {
+    recordVersion = await closeRefresh(request.target, registry, request.recordId, recordVersion, done, token, plan.from.pin, request.actor, request.now);
+  } catch (cause) {
+    throw new TransferInterrupted(request.recordId, written, [], cause, "refreshing");
+  }
+  return refreshedResult(request.recordId, recordVersion, written, true);
+}
+
+/** Replace one copy, only if it is still exactly the version the refresh planned against. */
+async function replaceCopy(
+  target: Bundle,
+  registry: KindRegistry,
+  row: RefreshJournalEntry,
+  candidate: DocumentMutationCandidate,
+  actor: string | undefined,
+  now: (() => string) | undefined,
+): Promise<Version> {
+  const result = await mutateDocument({
+    bundle: target,
+    id: row.target,
+    mode: "replace-document",
+    onAbsent: "fail",
+    expectedVersion: row.replaces_version,
+    registry,
+    strict: false,
+    actor,
+    seedGenerationClock: false,
+    // The source is the authority for a promoted copy's body; the plan reported the links it drops.
+    bodyReplace: { replaceLinks: true },
+    ...(now ? { now } : {}),
+    buildCandidate: () => structuredClone(candidate),
+  });
+  return result.version;
+}
+
+/**
+ * Finish a `refreshing` record. For each pending row: a copy whose provenance already names this
+ * record at the row's source version is done; a copy still at `replaces_version` whose source is
+ * still at the row's `source_version` is replaced; any other row (the copy was deleted or edited,
+ * or the source moved on) is left as it is, keeps its old baseline in the record, and is reported,
+ * so the record always closes without overwriting anything the plan did not show.
+ */
+async function finishRefresh(
+  target: Bundle,
+  recordId: ConceptId,
+  read: ReadResult,
+  record: ParsedRecord,
+  from: TransferSource,
+  options: { actor?: string; now?: () => string },
+): Promise<TransferResult> {
+  const snapshot = await readTarget(target);
+  assertActor(options.actor, snapshot.okfVersion);
+  const identity: TransferConflict[] = [];
+  const { pin } = await sourceIdentity(from, snapshot, identity);
+  if (identity.length > 0) throw new TransferResumeConflict(recordId, `${identity[0]!.code}: ${identity[0]!.detail}`);
+  const source = await readSource(from.binding);
+  const mapping = new Map(record.entries.map((e) => [e.source, e.target]));
+  const ctx: RewriteContext = { alias: from.alias, source, target: snapshot, mapping };
+  const now = options.now ?? (() => new Date().toISOString());
+  const registry = snapshot.registry;
+  const token = (read.doc.frontmatter.refresh as Record<string, unknown>).plan_token;
+
+  const written: TransferWritten[] = [];
+  const left: NonNullable<TransferResult["left"]> = [];
+  const done = new Map<ConceptId, { source_version: Version; target_version: Version }>();
+  for (const row of record.refresh!) {
+    const leave = (detail: string): void => { left.push({ source: row.source, target: row.target, detail }); };
+    let current: ReadResult | null;
+    try {
+      current = await readOptional(target, row.target);
+    } catch (error) {
+      if (!(error instanceof FilesystemIdentityAliasError)) throw error;
+      leave(`'${row.target}' is spelled differently on disk: ${error.message}`);
+      continue;
+    }
+    if (!current) {
+      leave(`'${row.target}' was deleted during the refresh`);
+      continue;
+    }
+    if (current.version !== row.replaces_version) {
+      const title = sourcesEntryTitle(record.bundleId, row.source_version);
+      if (provenanceEntries(current.doc).some((s) => s.id === recordId && s.title === title)) {
+        written.push({ source: row.source, target: row.target, version: current.version });
+        done.set(row.target, { source_version: row.source_version, target_version: current.version });
+      } else {
+        leave(`'${row.target}' was changed by another writer during the refresh`);
+      }
+      continue;
+    }
+    const sourceDoc = source.docs.get(row.source);
+    if (!sourceDoc || sourceDoc.version !== row.source_version) {
+      leave(`the source '${row.source}' is ${sourceDoc ? "changed" : "missing"} since the refresh was planned`);
+      continue;
+    }
+    const conflicts: TransferConflict[] = [];
+    const built = buildEntry(ctx, record.bundleId, recordId, sourceDoc, row.target, new Set(mapping.keys()), true, options.actor, now, conflicts);
+    if (conflicts.length > 0) {
+      leave(`${conflicts[0]!.code}: ${conflicts[0]!.detail}`);
+      continue;
+    }
+    try {
+      const version = await replaceCopy(target, registry, row, built.candidate, options.actor, options.now);
+      written.push({ source: row.source, target: row.target, version });
+      done.set(row.target, { source_version: row.source_version, target_version: version });
+    } catch (error) {
+      if (!(error instanceof VersionConflict)) throw error;
+      leave(`'${row.target}' was changed by another writer during the resume`);
+    }
+  }
+  const version = await closeRefresh(target, registry, recordId, read.version, done, typeof token === "string" ? token : undefined, pin, options.actor, options.now);
+  return { ...refreshedResult(recordId, version, written, true), ...(left.length > 0 ? { left } : {}) };
 }
