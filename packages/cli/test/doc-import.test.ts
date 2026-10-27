@@ -312,5 +312,10 @@ test("--refresh usage refusals", async () => {
     }
     const missing = await refusal(fx, [...bind, "--refresh", "promotions/none"]);
     assert.equal(missing.code, "NOT_FOUND");
+    await writeDoc(fx.target, { id: "notes/not-a-record", frontmatter: { type: "Note", title: "N" }, body: "" });
+    const foreign = await refusal(fx, [...bind, "--refresh", "notes/not-a-record"]);
+    assert.equal(foreign.code, "TRANSFER_RESUME_CONFLICT");
+    assert.match(foreign.message, /cannot refresh/);
+    assert.doesNotMatch(foreign.help ?? "", /--resume/, "a record a refresh refuses is not offered a resume");
   } finally { await fx.cleanup(); }
 });

@@ -336,9 +336,10 @@ export async function docImport(argv: string[], deps: Partial<DocCliDeps> & { ho
       skip: (values.skip ?? []).map((v) => v.trim()),
       ...(actor !== undefined ? { actor } : {}),
     };
-    const plan = await planDocumentRefresh(refreshRequest).catch((e: unknown) => fail(e, refresh));
+    // A record refused at plan time is not resumable by implication, so no record id for help.
+    const plan = await planDocumentRefresh(refreshRequest).catch((e: unknown) => fail(e));
     if (values.apply === undefined) {
-      stdout(render(refreshPlanRecord(plan, limit, importCommand, `${inv} doc read ${commandToken(plan.record.id)}`, importCommand(commandFragment`--limit 0`)), resolveMode(values)));
+      stdout(render(refreshPlanRecord(plan, limit, importCommand, `${inv} doc read ${commandToken(plan.record.id)}`, resumeCommand(plan.record.id), importCommand(commandFragment`--limit 0`)), resolveMode(values)));
       return;
     }
     const result = await applyDocumentRefresh(refreshRequest, values.apply).catch((e: unknown) => fail(e, refresh));
@@ -447,6 +448,7 @@ function refreshPlanRecord(
   limit: number,
   importCommand: (...tail: CommandText[]) => string,
   readRecord: string,
+  resume: string,
   allRows: string | undefined,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {
@@ -476,6 +478,8 @@ function refreshPlanRecord(
   } else if (plan.ready) {
     out.up_to_date = true;
     help.push(`${readRecord}   # nothing to refresh: every copy matches its source`);
+  } else if (plan.record.state !== "applied") {
+    help.push(`${resume}   # '${plan.record.id}' is ${plan.record.state}; finish it, then plan the refresh again`);
   } else {
     const first = plan.conflicts[0]!;
     const how = first.code === "target_edited" && first.target !== undefined

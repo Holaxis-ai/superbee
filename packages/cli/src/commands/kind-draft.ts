@@ -152,7 +152,7 @@ export async function kindDraftCommand(
   // The O4 wholesale replacement is permitted, not silent: name every outbound link the dismissal
   // record carried that the accepted schema's body does not, so the caller can re-add it.
   if (result.changed && droppedOnRedraft.length > 0) {
-    receipt.dropped_links = droppedOnRedraft.map((l) => ({ to: l.to, text: l.text }));
+    receipt.dropped_links = droppedOnRedraft.map((l) => ({ to: l.to, text: l.text, ...(l.bundle === undefined ? {} : { bundle: l.bundle }) }));
   }
   receipt.help = [`${inv} kinds`];
   stdout(render(receipt, resolveMode(values)));

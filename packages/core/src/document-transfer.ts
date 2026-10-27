@@ -50,6 +50,7 @@ import { CONVENTIONS_PREFIX, type KindRegistry } from "./kinds.js";
 import { emitLinkHref } from "./link-emit.js";
 import { extractMarkdownLinkSpans, maskMarkdownCode, normalizeSegments, resolveConceptId, rewriteMarkdownLinks, type MarkdownLinkSpan } from "./links.js";
 import { isOkfActor } from "./okf-actor.js";
+import { SUPERBEE_UPDATED_BY_FIELD } from "./mutation-attribution.js";
 import { assertSafeConceptId, compareStorageKeys, isReservedFile, pathFromConceptId, trimTrailingSlashes } from "./paths.js";
 import { isQualifiedHref, parseQualifiedHref, qualifiedHref } from "./qualified-links.js";
 import { sha256HexOfUtf8 } from "./sha256.js";
@@ -940,6 +941,7 @@ async function writeRecordState(
   versions: ReadonlyMap<ConceptId, Version>,
   actor: string | undefined,
   now: (() => string) | undefined,
+  edited: ReadonlySet<ConceptId> = new Set(),
 ): Promise<Version> {
   const result = await mutateDocument({
     bundle: target,
@@ -960,6 +962,7 @@ async function writeRecordState(
           const entry = { ...(row as Record<string, unknown>) };
           const version = versions.get(String(entry.target));
           if (version !== undefined) entry.target_version = version;
+          if (edited.has(String(entry.target))) entry.target_edited = true;
           return entry;
         });
       }
@@ -1047,6 +1050,8 @@ interface RecordEntry {
   source_version: Version;
   target: ConceptId;
   target_version?: Version;
+  /** The copy at `target_version` is not known to be what the import wrote (it was edited before a resume adopted it). */
+  target_edited?: true;
 }
 
 type RecordState = "applying" | "applied" | "refreshing";
@@ -1087,6 +1092,7 @@ function parseRecord(recordId: ConceptId, doc: OkfDocument, verb: "resume" | "re
     }
     const entry: RecordEntry = { source: r!.source as string, source_version: r!.source_version as string, target: r!.target as string };
     if (typeof r!.target_version === "string") entry.target_version = r!.target_version;
+    if (r!.target_edited === true) entry.target_edited = true;
     // The record is a document anyone can edit: every target is recomputed from its source and
     // the record's prefix, and must pass the same rule a plan applies, before resume trusts it.
     if (SOURCE_SELF_DOCS.has(entry.source)) refuse(`'${entry.source}' describes the source bundle itself and never transfers`);
@@ -1133,6 +1139,27 @@ function appliedResult(recordId: ConceptId, version: Version, entries: readonly 
 function provenanceEntries(doc: OkfDocument): Array<Record<string, unknown>> {
   const sources = doc.frontmatter.sources;
   return Array.isArray(sources) ? sources.filter((s): s is Record<string, unknown> => s !== null && typeof s === "object" && !Array.isArray(s)) : [];
+}
+
+/**
+ * True when `doc` is what writing `candidate` over it would leave: the mutation service's own no-op
+ * test, attributed to whichever actor the copy names (the writer may not be the resuming actor).
+ */
+function isWrittenCopy(doc: OkfDocument, candidate: DocumentMutationCandidate, registry: KindRegistry, okfVersion: "0.1" | "0.2"): boolean {
+  const attributed = doc.frontmatter[okfVersion === "0.1" ? "actor" : SUPERBEE_UPDATED_BY_FIELD];
+  try {
+    return !prepareDocumentMutationCandidate(doc, structuredClone(candidate), {
+      mode: "replace-document",
+      id: doc.id,
+      registry,
+      strict: false,
+      okfVersion,
+      ...(typeof attributed === "string" ? { actor: attributed } : {}),
+      seedGenerationClock: false,
+    }).changed;
+  } catch {
+    return false;
+  }
 }
 
 function hasProvenance(doc: OkfDocument, recordId: ConceptId): boolean {
@@ -1190,6 +1217,7 @@ export async function resumeDocumentTransfer(
 
   const written: TransferWritten[] = [];
   const versions = new Map<ConceptId, Version>();
+  const edited = new Set<ConceptId>();
   for (const entry of record.entries) {
     let existing: ReadResult | null;
     try {
@@ -1206,6 +1234,14 @@ export async function resumeDocumentTransfer(
       }
       written.push({ source: entry.source, target: entry.target, version: existing.version });
       versions.set(entry.target, existing.version);
+      // A copy edited after the interrupted write still carries the provenance; it is adopted, but
+      // flagged so a refresh treats it as edited instead of as the import's own baseline.
+      const sourceRead = source.docs.get(entry.source);
+      const conflicts: TransferConflict[] = [];
+      const built = sourceRead?.version === entry.source_version
+        ? buildEntry(ctx, record.bundleId, recordId, sourceRead, entry.target, selected, true, options.actor, now, conflicts)
+        : undefined;
+      if (!built || conflicts.length > 0 || !isWrittenCopy(existing.doc, built.candidate, registry, snapshot.okfVersion)) edited.add(entry.target);
       continue;
     }
     const sourceDoc = source.docs.get(entry.source);
@@ -1239,7 +1275,7 @@ export async function resumeDocumentTransfer(
       throw error;
     }
   }
-  const version = await writeRecordState(target, registry, recordId, read.version, "applied", versions, options.actor, options.now);
+  const version = await writeRecordState(target, registry, recordId, read.version, "applied", versions, options.actor, options.now, edited);
   return { record: { id: recordId, version, state: "applied" }, written, changed: true };
 }
 
@@ -1365,7 +1401,7 @@ async function computeRefresh(request: RefreshRequest): Promise<ComputedRefresh>
       action: "unchanged",
       recorded_source_version: entry.source_version,
       target_version: current?.version ?? null,
-      edited: current !== null && current.version !== entry.target_version,
+      edited: current !== null && (current.version !== entry.target_version || entry.target_edited === true),
       dropped_links: 0,
     };
     if (entry.target_version !== undefined) row.recorded_target_version = entry.target_version;
@@ -1484,7 +1520,10 @@ async function closeRefresh(
       frontmatter.entries = (frontmatter.entries as unknown[]).map((row) => {
         const entry = { ...(row as Record<string, unknown>) };
         const moved = done.get(String(entry.target));
-        if (moved) Object.assign(entry, moved);
+        if (moved) {
+          Object.assign(entry, moved);
+          delete entry.target_edited;
+        }
         return entry;
       });
       return { frontmatter, body: existing!.body };
@@ -1637,16 +1676,6 @@ async function finishRefresh(
       leave(`'${row.target}' was deleted during the refresh`);
       continue;
     }
-    if (current.version !== row.replaces_version) {
-      const title = sourcesEntryTitle(record.bundleId, row.source_version);
-      if (provenanceEntries(current.doc).some((s) => s.id === recordId && s.title === title)) {
-        written.push({ source: row.source, target: row.target, version: current.version });
-        done.set(row.target, { source_version: row.source_version, target_version: current.version });
-      } else {
-        leave(`'${row.target}' was changed by another writer during the refresh`);
-      }
-      continue;
-    }
     const sourceDoc = source.docs.get(row.source);
     if (!sourceDoc || sourceDoc.version !== row.source_version) {
       leave(`the source '${row.source}' is ${sourceDoc ? "changed" : "missing"} since the refresh was planned`);
@@ -1656,6 +1685,17 @@ async function finishRefresh(
     const built = buildEntry(ctx, record.bundleId, recordId, sourceDoc, row.target, new Set(mapping.keys()), true, options.actor, now, conflicts);
     if (conflicts.length > 0) {
       leave(`${conflicts[0]!.code}: ${conflicts[0]!.detail}`);
+      continue;
+    }
+    if (current.version !== row.replaces_version) {
+      // Done only when the copy is exactly what this refresh writes; provenance alone would also
+      // match a copy edited after the write, and adopting it would make that edit the baseline.
+      if (isWrittenCopy(current.doc, built.candidate, registry, snapshot.okfVersion)) {
+        written.push({ source: row.source, target: row.target, version: current.version });
+        done.set(row.target, { source_version: row.source_version, target_version: current.version });
+      } else {
+        leave(`'${row.target}' was changed by another writer during the refresh`);
+      }
       continue;
     }
     try {

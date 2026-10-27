@@ -796,3 +796,58 @@ test("a re-import that collides with promoted copies names the record a refresh 
   assert.equal(collisions.length, 3);
   assert.ok(collisions.every((c) => c.record === recordId && c.detail.includes(recordId)));
 });
+
+test("a copy edited after a crashed refresh wrote it is left by resume, not adopted as the new baseline", async () => {
+  const target = new CrashingBackend("never");
+  const { fx, recordId, refresh } = await imported({ target });
+  await put(fx.source, "themes/a", { type: "Theme", title: "A v2" }, "Changed a.\n");
+  await put(fx.source, "themes/b", { type: "Theme", title: "B v2" }, "Changed b.\n");
+  const plan = await planDocumentRefresh(refresh());
+  (target as unknown as { crashOn: string }).crashOn = "imp/themes/b";
+  await assert.rejects(applyDocumentRefresh(refresh(), plan.plan_token!), TransferInterrupted);
+  const written = await fx.target.read("imp/themes/a");
+  await fx.target.write("imp/themes/a", { ...written.doc, body: "Edited after the refresh wrote it.\n" });
+  const resumed = await resumeDocumentTransfer({ root: "/t", backend: fx.target }, recordId, { alias: "wave", binding: fx.binding });
+  assert.deepEqual(resumed.left?.map((l) => l.target), ["imp/themes/a"]);
+  await put(fx.source, "themes/a", { type: "Theme", title: "A v3" }, "Changed again.\n");
+  const next = await planDocumentRefresh(refresh());
+  assert.deepEqual(next.conflicts.map((c) => [c.code, c.target]), [["target_edited", "imp/themes/a"]]);
+  assert.equal((await fx.target.read("imp/themes/a")).doc.body, "Edited after the refresh wrote it.\n");
+});
+
+test("an overwrite row edited again before resume is left, not reported written", async () => {
+  const target = new CrashingBackend("never");
+  const { fx, recordId, refresh } = await imported({ target });
+  const first = await fx.target.read("imp/themes/a");
+  await fx.target.write("imp/themes/a", { ...first.doc, body: "First local edit.\n" });
+  const plan = await planDocumentRefresh(refresh({ overwrite: ["imp/themes/a"] }));
+  (target as unknown as { crashOn: string }).crashOn = "imp/themes/a";
+  await assert.rejects(applyDocumentRefresh(refresh({ overwrite: ["imp/themes/a"] }), plan.plan_token!), TransferInterrupted);
+  const second = await fx.target.read("imp/themes/a");
+  await fx.target.write("imp/themes/a", { ...second.doc, body: "Second local edit.\n" });
+  const resumed = await resumeDocumentTransfer({ root: "/t", backend: fx.target }, recordId, { alias: "wave", binding: fx.binding });
+  assert.deepEqual(resumed.written, []);
+  assert.deepEqual(resumed.left?.map((l) => l.target), ["imp/themes/a"]);
+  assert.equal((await planDocumentRefresh(refresh())).entries.find((e) => e.target === "imp/themes/a")!.edited, true);
+});
+
+test("an import resume flags a copy edited after the interrupted write, so a refresh treats it as edited", async () => {
+  const fx = await fixture({ target: new CrashingBackend("imp/themes/b") });
+  const plan = await planDocumentTransfer(fx.request());
+  await assert.rejects(applyDocumentTransfer(fx.request(), plan.plan_token!), TransferInterrupted);
+  const written = await fx.target.read("imp/themes/a");
+  await fx.target.write("imp/themes/a", { ...written.doc, body: "Edited before the resume.\n" });
+  const bundle = { root: "/target", backend: fx.target };
+  await resumeDocumentTransfer(bundle, plan.record.id, { alias: "wave", binding: fx.binding }, { actor: "process:importer" });
+  const rows = (await fx.target.read(plan.record.id)).doc.frontmatter.entries as Array<Record<string, unknown>>;
+  assert.deepEqual(rows.filter((r) => r.target_edited === true).map((r) => r.target), ["imp/themes/a"]);
+  await put(fx.source, "themes/a", { type: "Theme", title: "A v2" }, "Changed.\n");
+  const refreshPlan = await planDocumentRefresh({ target: bundle, recordId: plan.record.id, from: { alias: "wave", binding: fx.binding } });
+  assert.deepEqual(refreshPlan.conflicts.map((c) => [c.code, c.target]), [["target_edited", "imp/themes/a"]]);
+  // An explicit overwrite clears the flag: the refreshed copy is the import's baseline again.
+  const overwrite = { target: bundle, recordId: plan.record.id, from: { alias: "wave", binding: fx.binding }, overwrite: ["imp/themes/a"], actor: "process:importer" };
+  const overwritePlan = await planDocumentRefresh(overwrite);
+  await applyDocumentRefresh(overwrite, overwritePlan.plan_token!);
+  const after = (await fx.target.read(plan.record.id)).doc.frontmatter.entries as Array<Record<string, unknown>>;
+  assert.equal(after.some((r) => r.target_edited === true), false);
+});
