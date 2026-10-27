@@ -1,6 +1,7 @@
 /** Storage-neutral body replacement policy and portable preview identity. */
 import { normalizeDocumentBodyForStorage } from "./frontmatter.js";
 import { parseLinksFromDoc } from "./links.js";
+import { parseQualifiedLinks, qualifiedLinkEdge } from "./qualified-links.js";
 import { InvalidInputError } from "./errors.js";
 import type { KindConvention } from "./kinds.js";
 import type { Bundle, Link, OkfDocument } from "./types.js";
@@ -113,19 +114,24 @@ export function captureBodyReplacePosture(value: unknown): BodyReplacePosture | 
   return captured;
 }
 
+/** A cross-bundle edge is a different target from a local one with the same id. */
+function targetKey(l: Link): string {
+  return l.bundle === undefined ? l.to : `okf://${l.bundle}/${l.to}`;
+}
+
 /** Exact pairs consume first; target mode then admits retext while preserving occurrence counts.
  * Exact-edge mode is available to authorities that protect relationship text as well. */
 export function computeDroppedLinks(existingLinks: readonly Link[], nextLinks: readonly Link[], mode: "target" | "exact-edge" = "target"): Link[] {
   const nextByTarget = new Map<string, Link[]>();
   for (const l of nextLinks) {
-    const key = mode === "exact-edge" ? JSON.stringify([l.from, l.to]) : l.to;
+    const key = mode === "exact-edge" ? JSON.stringify([l.from, targetKey(l)]) : targetKey(l);
     const bucket = nextByTarget.get(key);
     if (bucket) bucket.push(l);
     else nextByTarget.set(key, [l]);
   }
   const existingByTarget = new Map<string, Link[]>();
   for (const l of existingLinks) {
-    const key = mode === "exact-edge" ? JSON.stringify([l.from, l.to]) : l.to;
+    const key = mode === "exact-edge" ? JSON.stringify([l.from, targetKey(l)]) : targetKey(l);
     const bucket = existingByTarget.get(key);
     if (bucket) bucket.push(l);
     else existingByTarget.set(key, [l]);
@@ -152,8 +158,18 @@ export function computeDroppedLinks(existingLinks: readonly Link[], nextLinks: r
   return dropped;
 }
 
+/** Every outbound cross-link a body carries: local document links and well-formed `okf:` links to another bundle. */
+export function outboundLinks(doc: OkfDocument): Link[] {
+  const links = parseLinksFromDoc(doc);
+  for (const qualified of parseQualifiedLinks(doc)) {
+    const edge = qualifiedLinkEdge(qualified);
+    if (edge) links.push(edge);
+  }
+  return links;
+}
+
 export function droppedLinks(_bundle: Bundle, existing: OkfDocument, nextBody: string): Link[] {
-  return computeDroppedLinks(parseLinksFromDoc(existing), parseLinksFromDoc({ ...existing, body: nextBody }));
+  return computeDroppedLinks(outboundLinks(existing), outboundLinks({ ...existing, body: nextBody }));
 }
 export function guardTruncatedBodyPreview(existing: OkfDocument, nextBody: string, acceptTruncatedBody: boolean): void {
   if (acceptTruncatedBody) return;
