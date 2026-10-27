@@ -39,7 +39,7 @@
     "prepublishOnly": "node -e \"console.error('Direct publish is disabled. Use release-cli-library.yml (cli/v<version>) and human npm approval; see CONTRIBUTING.md.'); process.exit(1)\""
   },
   "devDependencies": {
-    "@modelcontextprotocol/client": "^2.3.1",
+    "@modelcontextprotocol/client": "^2.4.0",
     "@superbee/board-git": "*",
     "@superbee/browser-local": "*",
     "@superbee/bundle-descriptor": "*",
