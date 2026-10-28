@@ -767,6 +767,13 @@ export const CLI_COMMAND_GROUPS = [
           "Who can reach a hosted bundle, and sharing it with a member of its workspace: list shows your own level and, for a workspace admin, everyone with access; grant and revoke preview with no request, and with --yes a workspace admin gives a member read or write (never above their own level) or takes it away; the person must already be a workspace member (invite them in the app first); repeating a grant or revoke is a no-op",
       },
       {
+        id: "workloadRegister",
+        leaves: [publicLeaf("workloadRegister", "workload register", zero, 43)],
+        usage: "workload register [--name <name>] [--environment <name>] [--url <workspace-url>] [--no-open] [--json]",
+        summary:
+          "In a site repository, open the hosted workspace's workload app registration page filled in: the repository and owner ids and default branch from your local gh, the workflow, workspace and bundle from release.config.json, events schedule, repository_dispatch and workflow_dispatch, the bundle at read and no environment; nothing is registered until a workspace administrator reviews the page and clicks Register; --no-open prints the link; prints the gh variable set HOSTED_APP_ID command for after",
+      },
+      {
         id: "bundleRetire",
         leaves: [publicLeaf("bundleRetire", "bundle retire", one)],
         usage: "bundle retire <bundle> [--host <url>] [--workspace <id>] [--json]",

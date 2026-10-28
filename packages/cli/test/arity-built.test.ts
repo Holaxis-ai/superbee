@@ -171,6 +171,7 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
     accessGrant: simple(CLI_LEAVES.accessGrant, ["access", "grant"], ["team.knowledge", "ana@example.com"], ["--level", "read", "--host", "http://127.0.0.1:9"]),
     accessRevoke: simple(CLI_LEAVES.accessRevoke, ["access", "revoke"], ["team.knowledge", "ana@example.com"], ["--host", "http://127.0.0.1:9"]),
     bundleRetire: simple(CLI_LEAVES.bundleRetire, ["bundle", "retire"], ["team.knowledge"], ["--host", "http://127.0.0.1:9"]),
+    workloadRegister: simple(CLI_LEAVES.workloadRegister, ["workload", "register"], [], ["--no-open"]),
     turnEnd: simple(CLI_LEAVES.turnEnd, ["turn-end"], [], dir),
     setupHosted: simple(CLI_LEAVES.setupHosted, ["setup", "hosted"], [], ["--url", "http://127.0.0.1:9"]),
   };
