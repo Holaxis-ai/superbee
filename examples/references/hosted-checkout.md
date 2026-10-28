@@ -91,6 +91,23 @@ them from the Members page in the Superbee app first. Repeating a grant or revok
 bundle id in their own terminal. If it refuses with `needs_person_at_terminal`, show the person
 the host's statement and give them the command; do not try to work around it.
 
+## Registering a site's CI: `workload register`
+
+A site whose content lives in hosted Superbee reads it in CI as a registered workload app. In the
+site's repository, `superbee workload register` reads the repository and owner ids and the default
+branch with the person's `gh` (`gh api repos/<owner>/<repo>`), and the workflow, workspace and
+bundle from `release.config.json`. It opens the workspace's workload apps page with the form filled
+in: both workflow refs `<owner>/<repo>/<workflow path>@refs/heads/<branch>`, events schedule,
+repository_dispatch and workflow_dispatch, the bundle at read, and no environment. The job that
+mints the token runs outside any GitHub environment, so the environment stays empty; pass
+`--environment <name>` only when that job declares one. `--no-open` prints the link instead, and
+`--url` names the workspace's address when it can't be derived from `content.origin`.
+
+Nothing is registered by the command. Registering is the person's step on the web: a workspace
+administrator reviews every value on the page and clicks Register. Then they run the printed
+`gh variable set HOSTED_APP_ID --repo <owner>/<repo> --body <app-id>` with the App id the page
+shows. The values travel in the link's fragment, which the browser never sends to a server.
+
 ## Sign-in: relay the link, then retry
 
 First run on a machine, in order:

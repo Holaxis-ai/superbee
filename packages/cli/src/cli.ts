@@ -54,6 +54,7 @@ import { exportCommand } from "./commands/export.js";
 import { op } from "./commands/op.js";
 import { notify } from "./commands/notify.js";
 import { inbox } from "./commands/inbox.js";
+import { workload } from "./commands/workload.js";
 import { publish } from "./commands/publish.js";
 import { access } from "./commands/access.js";
 import { deps } from "./commands/deps.js";
@@ -152,6 +153,7 @@ export const PUBLIC_HANDLERS = Object.freeze({
   inbox,
   search,
   source,
+  workload,
 } satisfies PublicHandlerMap);
 
 type RuntimeHandler = (args: string[]) => Promise<string>;

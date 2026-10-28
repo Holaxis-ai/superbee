@@ -193,6 +193,7 @@ export const BEHAVIOR_ASSIGNMENTS = [
   ordinary("accessGrant", 2),
   ordinary("accessRevoke", 2),
   ordinary("bundleRetire", 1),
+  ordinary("workloadRegister", 0),
   ordinary("bundleIdSet", 1),
   ordinary("depsAdd", 1),
   ordinary("depsRemove", 1),
