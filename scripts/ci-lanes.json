@@ -18,11 +18,11 @@
     "release_pin_refresh_by": "2026-11-21",
     "forward_review": {
       "review_after": "2026-10-28",
-      "disposition": "pending",
-      "decided_at": null,
-      "decided_by": null,
-      "evidence": null,
-      "revisit_by": null
+      "disposition": "retain_probe",
+      "decided_at": "2026-10-28",
+      "decided_by": "human:mike",
+      "evidence": "reviews/node-26-forward-review-2026-10-28@sha256:37fdad0fbd7bb5d076547b212eb6c34425f10f06499f6bfcb43d18ebf7593f02",
+      "revisit_by": "2026-11-11"
     },
     "floor_retirement": {
       "retire_by": "2027-04-30"
