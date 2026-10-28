@@ -163,8 +163,20 @@ test("the Node runtime policy agrees across every first-party projection", () =>
   validateNodePolicyAgreement();
 });
 
+// Lifecycle fixtures start from the live manifest with the forward review pending, so they keep
+// exercising the pending rules after a real disposition is recorded in ci-lanes.json.
+const pendingManifest = structuredClone(manifest);
+pendingManifest.node_policy.forward_review = {
+  review_after: "2026-10-28",
+  disposition: "pending",
+  decided_at: null,
+  decided_by: null,
+  evidence: null,
+  revisit_by: null,
+};
+
 test("Node runtime lifecycle boundaries fail closed", () => {
-  const pending = structuredClone(manifest);
+  const pending = structuredClone(pendingManifest);
   pending.node_policy.release_pin_reviewed_at = "2026-09-24";
   pending.node_policy.release_pin_refresh_by = "2026-10-24";
   assert.doesNotThrow(() => validateNodeRuntimeManifest(pending, { now: new Date("2026-10-24T23:59:59Z") }));
@@ -173,13 +185,13 @@ test("Node runtime lifecycle boundaries fail closed", () => {
     /release pin expired/,
   );
 
-  const futurePinReview = structuredClone(manifest.node_policy);
+  const futurePinReview = structuredClone(pendingManifest.node_policy);
   futurePinReview.release_pin_reviewed_at = "2099-01-01";
   assert.throws(
     () => validateNodeRuntimePolicy(futurePinReview, { now: pinReviewed }),
     /release pin review cannot be in the future/,
   );
-  const longPinWindow = structuredClone(manifest.node_policy);
+  const longPinWindow = structuredClone(pendingManifest.node_policy);
   longPinWindow.release_pin_refresh_by = pinDay(31, manifest.node_policy.release_pin_reviewed_at);
   assert.throws(
     () => validateNodeRuntimePolicy(longPinWindow, { now: pinReviewed }),
@@ -191,7 +203,7 @@ test("Node runtime lifecycle boundaries fail closed", () => {
     /within 30 days/,
   );
 
-  const movableBoundaries = structuredClone(manifest.node_policy);
+  const movableBoundaries = structuredClone(pendingManifest.node_policy);
   movableBoundaries.forward_review.review_after = "2099-12-31";
   assert.throws(
     () => validateNodeRuntimePolicy(movableBoundaries, { now: pinReviewed }),
@@ -204,7 +216,7 @@ test("Node runtime lifecycle boundaries fail closed", () => {
     /fixed at 2027-04-30/,
   );
 
-  const forwardDue = structuredClone(manifest);
+  const forwardDue = structuredClone(pendingManifest);
   forwardDue.node_policy.release_pin_reviewed_at = "2026-10-28";
   forwardDue.node_policy.release_pin_refresh_by = "2026-11-27";
   assert.throws(
@@ -238,7 +250,7 @@ test("Node runtime lifecycle boundaries fail closed", () => {
     /one-cycle cap of 2027-04-26/,
   );
 
-  const pendingWithDecision = structuredClone(manifest.node_policy);
+  const pendingWithDecision = structuredClone(pendingManifest.node_policy);
   pendingWithDecision.forward_review.decided_at = "2026-10-28";
   assert.throws(
     () => validateNodeRuntimePolicy(pendingWithDecision, { now: pinReviewed }),
@@ -295,14 +307,14 @@ test("Node runtime lifecycle boundaries fail closed", () => {
   retired.runtime_nodes = [22];
   assert.doesNotThrow(() => validateNodeRuntimeManifest(retired, { now: new Date("2026-10-28T00:00:00Z") }));
 
-  const missingPendingProbe = structuredClone(manifest);
+  const missingPendingProbe = structuredClone(pendingManifest);
   missingPendingProbe.runtime_nodes = [22];
   assert.throws(
     () => validateNodeRuntimeManifest(missingPendingProbe, { now: pinReviewed }),
     /pending runtime_nodes must equal \[22,26\]/,
   );
 
-  const demotedPending = structuredClone(manifest);
+  const demotedPending = structuredClone(pendingManifest);
   demotedPending.node_policy.default_runtime = "22.14.0";
   demotedPending.node_policy.supported_majors = [22, 26];
   demotedPending.node_policy.engine_range = "^22.14.0 || ^26.0.0";
@@ -312,7 +324,7 @@ test("Node runtime lifecycle boundaries fail closed", () => {
     /pending must use Node 24 as the default major/,
   );
 
-  const leapfroggedPending = structuredClone(manifest);
+  const leapfroggedPending = structuredClone(pendingManifest);
   leapfroggedPending.node_policy.default_runtime = "28.0.0";
   leapfroggedPending.node_policy.supported_majors = [22, 26, 28];
   leapfroggedPending.node_policy.engine_range = "^22.14.0 || ^26.0.0 || ^28.0.0";
@@ -322,7 +334,7 @@ test("Node runtime lifecycle boundaries fail closed", () => {
     /pending must use Node 24 as the default major/,
   );
 
-  const expandedPending = structuredClone(manifest);
+  const expandedPending = structuredClone(pendingManifest);
   expandedPending.node_policy.supported_majors = [22, 24, 26, 28];
   expandedPending.node_policy.engine_range = "^22.14.0 || ^24.0.0 || ^26.0.0 || ^28.0.0";
   assert.throws(
@@ -330,14 +342,14 @@ test("Node runtime lifecycle boundaries fail closed", () => {
     /pending supported_majors must equal \[22,24,26\]/,
   );
 
-  const unexpectedPendingRuntime = structuredClone(manifest);
+  const unexpectedPendingRuntime = structuredClone(pendingManifest);
   unexpectedPendingRuntime.runtime_nodes = [22, 24, 26];
   assert.throws(
     () => validateNodeRuntimeManifest(unexpectedPendingRuntime, { now: pinReviewed }),
     /pending runtime_nodes must equal \[22,26\]/,
   );
 
-  const refreshedNode24 = structuredClone(manifest);
+  const refreshedNode24 = structuredClone(pendingManifest);
   refreshedNode24.node_policy.default_runtime = "24.22.0";
   refreshedNode24.singleton_node = "24.22.0";
   assert.doesNotThrow(
@@ -669,7 +681,7 @@ test("contributor projections fail red on lane, edition, pointer, and assurance 
     }));
   }
 
-  const renamedLane = structuredClone(manifest);
+  const renamedLane = structuredClone(pendingManifest);
   renamedLane.lanes.runtime.script = "ci:runtime-renamed";
   assert.throws(
     () => validateContributorAuthority(contributing, renamedLane),
@@ -710,7 +722,7 @@ test("lane ownership is pinned to executing scripts", () => {
     assert.throws(() => validateLaneManifest(manifest, changedPackage), error, script);
   }
 
-  const incomplete = structuredClone(manifest);
+  const incomplete = structuredClone(pendingManifest);
   incomplete.required_jobs.pop();
   assert.throws(() => validateLaneManifest(incomplete), /required_jobs must equal the automatically run lane set/);
 });
