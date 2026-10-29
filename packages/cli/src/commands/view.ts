@@ -7,14 +7,18 @@ import { maybeAutoPull } from "../autopull.js";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
+import { commandToken } from "../command-text.js";
 import { render, resolveMode } from "../output.js";
 import { presentManagedLocalView, type UiCliDeps } from "./ui.js";
+import type { HostedAccountDeps } from "../hosted/account.js";
 
 export const VIEW_USAGE = `superbee view — inspect and open durable bundle Views
 
 Usage:
   superbee view list [--limit <n>] [--dir <path> | --remote <url>]
   superbee view open <viewId> [--dir <path>] [--actor <name>] [--no-open --json]
+  superbee view read <viewId> [--out <path>] [--dir <path>] [--json]
+  superbee view update <viewId> --expected-version <sha256:...> [--file <path>] [--dir <path>] [--json]
 
 Lists the same registered durable Views used by the web launcher and MCP list_views tool. Rows are
 sorted by stable View id and include the declared access and optional presentation hint.
@@ -22,6 +26,12 @@ Open selects one exact registered local View through the reusable managed UI. It
 one-use browser handoff expires after 60 seconds and establishes this UI authority's session;
 the shell still requires approval for executable data-bearing View bytes. No reusable session
 secret is included in the ordinary destination URL. Remote View opening is not supported here.
+
+In a hosted checkout, read and update reach a View's page (its entry under views/) on the host,
+which sync never sends: read prints the page's sha256 version (and --out saves its bytes), and
+update replaces it, pinned to --expected-version, the page version you started from. Uploading
+never approves execution (a site's pin, a hosted app slot's approval). See view read --help and
+view update --help.
 
 Options:
   --limit <n>          Cap rows (default: 100; 0 = unlimited)
@@ -35,10 +45,18 @@ Options:
 
 export interface ViewCliDeps extends Partial<UiCliDeps> {
   autoPull: (dir?: string) => Promise<unknown>;
+  /** read and update: the checkout's person and the fetch the sync routes are reached with (tests inject both). */
+  hosted: HostedAccountDeps;
+  cwd: string;
 }
 
 export async function view(argv: string[], deps: Partial<ViewCliDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((text: string) => void process.stdout.write(text));
+  // read and update parse their own flags, so no other view leaf accepts --out or --file.
+  if (argv[0] === "read" || argv[0] === "update") {
+    const { viewRead, viewUpdate } = await import("./view-content.js");
+    return (argv[0] === "read" ? viewRead : viewUpdate)(argv.slice(1), { ...deps, stdout });
+  }
   const { values, selection } = parseSelectorOrUsage(
     () => parseArgs({
       args: argv,
@@ -58,12 +76,18 @@ export async function view(argv: string[], deps: Partial<ViewCliDeps> = {}): Pro
       if (positionals.length === 0) return { kind: "navigation" } as const;
       if (positionals[0] === "list") return { kind: "selected", leaf: CLI_LEAVES.viewList, data: positionals.slice(1), payload: undefined } as const;
       if (positionals[0] === "open") return { kind: "selected", leaf: CLI_LEAVES.viewOpen, data: positionals.slice(1), payload: undefined } as const;
+      if (positionals[0] === "read" || positionals[0] === "update") return { kind: "unknown", token: positionals[0], reason: "misplaced" } as const;
       return { kind: "unknown", token: positionals[0] } as const;
     },
   );
   if (selection.kind === "help" || selection.kind === "navigation") {
     stdout(renderUsage(VIEW_USAGE));
     return;
+  }
+  if (selection.kind === "unknown" && selection.reason === "misplaced") {
+    throw new CliError("USAGE", `name the subcommand first: view ${selection.token} <viewId> [options]`, {
+      help: `${cliInvocation()} view ${commandToken(selection.token ?? "")} --help`,
+    });
   }
   if (selection.kind === "unknown") {
     throw new CliError("USAGE", `unknown view subcommand: ${selection.token ?? ""}`, {

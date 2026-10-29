@@ -52,6 +52,21 @@ export {
   type HostedWriteRefusalCode,
   type HostedWriteResult,
 } from "./write.js";
+export {
+  isViewContentVersion,
+  viewContentVersion,
+  VIEW_CONTENT_MAX_BYTES,
+  VIEW_CONTENT_READ_OPERATION,
+  VIEW_CONTENT_UPDATE_OPERATION,
+  WRITE_OUTCOME_UNKNOWN,
+  type HostedViewContent,
+  type HostedViewContentReadRequest,
+  type HostedViewContentReadResult,
+  type HostedViewContentRefusal,
+  type HostedViewContentUpdate,
+  type HostedViewContentUpdateRequest,
+  type HostedViewContentUpdateResult,
+} from "./view-content.js";
 export { HostedBlobWritesNotServed, HostedRouteNotServed, isRouteNotServed, ROUTE_NOT_SERVED } from "./errors.js";
 export {
   driveJournaledBlob,

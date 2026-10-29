@@ -500,7 +500,6 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
     // Both succeeded locally and were then held by sync forever: refuse them up front instead.
     ["index", ["generate", "--dir", folder]],
     ["delete", ["--doc-key", "References/logo.png", "--dir", folder]],
-    ["delete", ["--doc-key=views/board/index.html", "--dir", folder]],
   ];
   for (const [command, args] of refused) {
     const error = await rejects(assertAllowedInHostedCheckout(command, args, context));
@@ -509,6 +508,22 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
     assert.match(error.message, /do this in the Superbee app/);
     assert.equal(error.details?.bundle_id, BUNDLE);
   }
+  // A View page's key is refused with the command that updates it on the host, not "the app".
+  for (const [command, args] of [
+    ["delete", ["--doc-key=views/board/index.html", "--dir", folder]],
+    ["promote", ["x.html", "--doc-key", "Views/x.html", "--dir", folder]],
+  ] as [string, string[]][]) {
+    const error = await rejects(assertAllowedInHostedCheckout(command, args, context));
+    assert.equal(error.code, "FORBIDDEN", `${command} ${args[0]}`);
+    assert.equal(error.details?.do_this_in, undefined);
+    assert.match(error.message, /View page; View pages do not sync as files/);
+    assert.match(error.help ?? "", /view update <viewId> --expected-version <version>/);
+  }
+  // Another file under views/ cannot be a View's page: it keeps the general refusal.
+  assert.equal((await rejects(assertAllowedInHostedCheckout("promote", ["x.pdf", "--doc-key", "Views/x.pdf", "--dir", folder], context))).details?.do_this_in, "app");
+  // view read and view update are how a checkout reaches a View page: never refused up front.
+  await assertAllowedInHostedCheckout("view", ["read", "views-registry/board", "--dir", folder], context);
+  await assertAllowedInHostedCheckout("view", ["update", "views-registry/board", "--expected-version", `sha256:${"0".repeat(64)}`, "--dir", folder], context);
   // From inside the folder, with no --dir, the checkout is still found.
   const inside = await rejects(assertAllowedInHostedCheckout("doc", ["verify", "notes/alpha"], { home: h.home, cwd: path.join(folder, "notes") }));
   assert.equal(inside.code, "FORBIDDEN");
@@ -541,7 +556,7 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
   // Ordinary keys enter offline admission; protected keys and serving still refuse up front.
   await assertAllowedInHostedCheckout("promote", ["x.pdf", "--doc-key", "files/x.pdf", "--dir", folder], context);
   await assertAllowedInHostedCheckout("delete", ["--doc-key", "assets/logo.png", "--dir", folder], context);
-  const protectedBlob = await rejects(assertAllowedInHostedCheckout("promote", ["x.pdf", "--doc-key", "Views/x.pdf", "--dir", folder], context));
+  const protectedBlob = await rejects(assertAllowedInHostedCheckout("promote", ["x.pdf", "--doc-key", "Conventions/x.pdf", "--dir", folder], context));
   assert.equal(protectedBlob.details?.do_this_in, "app");
   const serve = await rejects(assertAllowedInHostedCheckout("serve", ["--dir", folder, "--port", "0"], context));
   assert.equal(serve.details?.do_this_in, "app");

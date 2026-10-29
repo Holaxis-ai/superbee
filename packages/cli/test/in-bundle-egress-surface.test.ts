@@ -52,6 +52,7 @@ interface EgressRow {
 }
 
 const EGRESS_ROWS: readonly EgressRow[] = [
+  {leaf:"viewRead",flag:"--out",skip:"Requires a hosted checkout and its host; hosted-view-content.test.ts proves an in-bundle .md target is refused (the shared assertSafeNonDocumentOutTarget, as --rendered-out) and an existing target is never overwritten"},
   {leaf:"opRun",flag:"--export-html",skip:"Requires a reviewed registered capability plus accepted machine binding; local-operation.test.ts exercises all seven in-bundle/alias shapes and the ordinary-output control with that complete fixture"},
   {leaf:"opRun",flag:"--export-output",skip:"Requires a reviewed registered capability plus accepted machine binding; local-operation.test.ts exercises all seven in-bundle/alias shapes and the ordinary-output control with that complete fixture"},
   {

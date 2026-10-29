@@ -615,6 +615,18 @@ export const CLI_COMMAND_GROUPS = [
         summary: "Open one exact local registered View through a private one-use browser handoff; --no-open --json prepares it for the selected browser",
       },
       {
+        id: "viewRead",
+        leaves: [publicLeaf("viewRead", "view read", one, undefined, { flags: pathFlags({ flag: "dir", role: "bundle-root" }, { flag: "out", role: "egress" }) })],
+        usage: "view read <viewId> [--out <path>] [--dir <path>] [--json]",
+        summary: "In a hosted checkout, read a registered View's page from the host: its key, sha256 version and size; --out writes its exact bytes to a new file",
+      },
+      {
+        id: "viewUpdate",
+        leaves: [publicLeaf("viewUpdate", "view update", one, undefined, { flags: pathFlags({ flag: "dir", role: "bundle-root" }, { flag: "file", role: "ingress" }) })],
+        usage: "view update <viewId> --expected-version <sha256:...> [--file <path>] [--dir <path>] [--json]",
+        summary: "In a hosted checkout, replace a registered View's page on the host from --file (default: its entry in the checkout), pinned to the page version you started from; uploading never approves execution",
+      },
+      {
         id: "sync",
         leaves: [publicLeaf("sync", "sync", zero, 22, DIR_SYNC_SURFACE)],
         usage: "sync [--establish [--yes] | --pull-only | --show-incoming <id> [--out <file> | --body-out <file>] | --inspect --doc <id> [--out <file>] | --resolve keep|take|revise --doc <id> | --restore-deletes | --accept-deletes <token> | --take-host-deletions <token> | --replace-links <id>] [--dir <path>] [--limit <n>]",

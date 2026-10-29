@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { syncExportsRoot } from "./cursor.js";
+import { readRegularFileNoFollowSync } from "./nofollow-read.js";
 import { assertPathOutsidePrivateState, relateToPrivateState } from "./private-state-bundle-boundary.js";
 
 /**
@@ -71,4 +72,34 @@ export async function readExternalTextFileWithin(file: string, maxBytes: number,
   } finally {
     await handle.close();
   }
+}
+
+/** What {@link readExternalFileBytesNoFollowWithin} found at a path. */
+export type ExternalLeafRead =
+  | { readonly state: "missing" }
+  | { readonly state: "unsafe" }
+  | { readonly state: "too_large"; readonly size: number }
+  | { readonly state: "present"; readonly bytes: Buffer };
+
+/**
+ * Guarded acquisition of a caller-supplied regular file's exact bytes within `maxBytes`, refusing a
+ * symbolic link at the leaf (`unsafe`), as checkout reads do: `too_large` from the file's size
+ * before any byte is read, and `unsafe` when it changes while being read.
+ */
+export async function readExternalFileBytesNoFollowWithin(file: string, maxBytes: number, home?: string): Promise<ExternalLeafRead> {
+  guardExternalRead(file, home);
+  return readLeafNoFollowWithin(file, maxBytes);
+}
+
+/** {@link readExternalFileBytesNoFollowWithin} for a path inside a bundle the CLI resolved itself (no private-state guard to apply). */
+export async function readLeafNoFollowWithin(file: string, maxBytes: number): Promise<ExternalLeafRead> {
+  try {
+    const leaf = await fs.lstat(file);
+    if (leaf.isFile() && leaf.size > maxBytes) return { state: "too_large", size: leaf.size };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR") return { state: "missing" };
+    return { state: "unsafe" };
+  }
+  const read = readRegularFileNoFollowSync(file, { maximumBytes: maxBytes });
+  return read.state === "present" ? { state: "present", bytes: read.bytes } : read;
 }
