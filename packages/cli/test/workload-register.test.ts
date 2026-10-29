@@ -160,10 +160,11 @@ const SITE_CONFIG = {
   reconcile: { adapter: "hosted", gateway: "https://mcp.getsuperbee.com", workspace: "holaxis-sites", app: "00000000-0000-4000-8000-000000000000", site: "investor-plan", environment: "portal-release", artifactDirectory: "dist" },
 };
 
-test("a site that publishes to hosted declares <bundle> site, pins reconcile.environment and points at reconcile.app", async () => {
+test("a hosted publisher requests only its site grant, pins reconcile.environment and points at reconcile.app", async () => {
   const { receipt } = await run(["--no-open"], await site(SITE_CONFIG));
   const values = fragment(receipt.url);
-  assert.deepEqual(values.getAll("bundles"), ["investor-plan read", "investor-plan site"]);
+  assert.deepEqual(values.getAll("bundles"), ["investor-plan site"]);
+  assert.deepEqual(receipt.bundles, ["investor-plan site"]);
   assert.equal(values.get("environment"), "portal-release");
   assert.equal(receipt.environment, "portal-release");
   assert.equal(receipt.site, "investor-plan");

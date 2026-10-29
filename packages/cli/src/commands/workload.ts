@@ -32,12 +32,13 @@ local GitHub CLI (gh api repos/<owner>/<repo>), and the workflow, hosted workspa
 release.config.json. Then opens the workspace's workload apps page with the form filled in. Nothing
 is registered here: a workspace administrator reviews the values on the page and clicks Register.
 
-A site that publishes to hosted (reconcile.adapter "hosted") also declares its site
-(<bundle> site), and the app pins the GitHub environment reconcile.environment names. After
+A site that publishes to hosted (reconcile.adapter "hosted") requests one site grant
+(<bundle> site), which also permits reading that bundle. The app pins the GitHub environment reconcile.environment names. After
 Register, put the App id the page shows in release.config.json as reconcile.app. A site that only
 reads hosted content stores the id with the printed gh variable set command instead.
 
-Defaults: events schedule, repository_dispatch and workflow_dispatch; the bundle at read; the
+Defaults: events schedule, repository_dispatch and workflow_dispatch; site for a hosted publisher,
+read for other hosted-content consumers; the
 environment reconcile.environment names for a hosted site, else none (the job that mints the token
 runs outside any GitHub environment).
 
@@ -243,12 +244,11 @@ function workspaceOrigin(flag: string | undefined, config: ReleaseConfig): { ori
 type BundleGrant = `${string} ${"read" | "write" | "site"}`;
 
 /**
- * The bundle lines a site's app asks for: it reads its content bundle, and a site that publishes to
- * hosted also declares that bundle's site (`<bundle> site`, board design `hosted-site-serving` D7;
- * the page puts it in the app's site list, not its grants).
+ * Hosted derives a publisher's read access from its site declaration. Other consumers still
+ * request read explicitly; reading hosted content alone does not authorize publishing a site.
  */
 function bundleGrants(config: ReleaseConfig): BundleGrant[] {
-  return [`${config.bundle} read`, ...(config.site ? [`${config.site.name} site` as const] : [])];
+  return config.site ? [`${config.site.name} site`] : [`${config.bundle} read`];
 }
 
 /** The page's prefill link, format v1, keys in the form's order. */
