@@ -218,7 +218,7 @@ function idleBounded(body: ReadableStream<Uint8Array>, deadlineMs: number, abort
       clear();
       await reader.cancel(reason);
     },
-  });
+  }, { highWaterMark: 0 });
 }
 
 /** A request's headers: its own fields, then the credential and the content headers, which always win. */
