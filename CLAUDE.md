@@ -167,13 +167,13 @@ mismatched visibility never weakens the conservative rule.
 
 ### Releases
 
-Releases use GitHub and npm's native controls; the repository adds no release state, ledger,
-receipt, or approval transport of its own. The gate is the reviewed merge to `main` plus release
-tags whose creation, update and deletion the tag ruleset restricts to repository admins, and the
-`release` environment's tag-pattern policy. Pushing such a tag builds once, publishes to npm via
-OIDC with provenance, and dispatches the finalizer. The public CLI uses `release.yml` and
-`release-finalize.yml` (verify the registry against the build attestation, create the GitHub
-release) in `.github/workflows/`. Read those files; do not reconstruct a procedure from memory.
+Releases use GitHub and npm's native controls; the repository adds no release state or approval
+transport of its own. The gate is the reviewed merge to `main`; a creation-only tag ruleset with
+admin bypass, so only admins create release tags; the separate "release tags are immutable"
+ruleset, blocking update and deletion for everyone with no bypass (never add one); and the
+`release` environment's tag-pattern policy. Pushing a tag builds once, publishes to npm via OIDC
+with provenance, and dispatches the finalizer. The CLI uses `release.yml` and `release-finalize.yml`
+in `.github/workflows/`; read them, do not reconstruct a procedure from memory.
 
 The runtime libraries use `.github/workflows/release-libraries.yml` and its finalizer under the
 separate `libraries/v<version>` tag identity, publishing core, then server (the first `0.1.0` pair

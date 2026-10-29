@@ -433,10 +433,12 @@ and complete the new-package bootstrap. Existing `v*` and `libraries/v*` control
 namespace automatically. Local tests cannot establish these provider settings or authorize release.
 
 All three release workflows (`release.yml`, `release-cli-library.yml`, `release-libraries.yml`)
-publish without a human npm step. The gate is the reviewed merge to `main` plus release-tag
-creation restricted to repository admins by the tag ruleset (creation, update and deletion of
-`v*`, `libraries/v*` and `cli/v*`) and the `release` environment's tag-pattern policy; pushing
-such a tag publishes to npm. Agents push a release tag only when explicitly asked by a human with
+publish without a human npm step. The gate is the reviewed merge to `main`, two separate tag
+rulesets on `v*`, `libraries/v*` and `cli/v*`, and the `release` environment's tag-pattern policy.
+A creation-only ruleset with a repository-admin bypass means only admins create release tags. The
+existing "release tags are immutable" ruleset blocks update and deletion for everyone with no
+bypass; never add a bypass to it, since the finalizers rely on immutable tags. Pushing such a tag
+publishes to npm. Agents push a release tag only when explicitly asked by a human with
 release authority. Each package's npm trusted publisher must name `Holaxis-ai/superbee`, its
 release workflow file and environment `release`, with `npm publish` allowed; npm entries cannot be
 edited, so a maintainer deletes and recreates an entry to allow it. Transitionally, a failed
