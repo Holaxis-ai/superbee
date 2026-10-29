@@ -7,6 +7,7 @@ import { maybeAutoPull } from "../autopull.js";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
+import { commandToken } from "../command-text.js";
 import { render, resolveMode } from "../output.js";
 import { presentManagedLocalView, type UiCliDeps } from "./ui.js";
 import type { HostedAccountDeps } from "../hosted/account.js";
@@ -85,7 +86,7 @@ export async function view(argv: string[], deps: Partial<ViewCliDeps> = {}): Pro
   }
   if (selection.kind === "unknown" && selection.reason === "misplaced") {
     throw new CliError("USAGE", `name the subcommand first: view ${selection.token} <viewId> [options]`, {
-      help: `${cliInvocation()} view ${selection.token} --help`,
+      help: `${cliInvocation()} view ${commandToken(selection.token ?? "")} --help`,
     });
   }
   if (selection.kind === "unknown") {

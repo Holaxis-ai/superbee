@@ -27,7 +27,7 @@ import { parseLeafOrUsage } from "../args.js";
 import { openBundle, resolveLocalBundleTarget } from "../bundle.js";
 import { bundleHomeAt } from "../bundle-home.js";
 import { CLI_LEAVES } from "../command-spec.js";
-import { commandFragment, commandToken, type CommandText } from "../command-text.js";
+import { commandFragment, commandLiteral, commandToken, type CommandText } from "../command-text.js";
 import { resolveConceptIdCliArgument } from "../concept-id.js";
 import { CliError } from "../errors.js";
 import { readExternalFileBytesNoFollowWithin, readLeafNoFollowWithin, type ExternalLeafRead } from "../external-file.js";
@@ -169,7 +169,7 @@ async function refusalError(refusal: HostedViewContentRefusal, connection: Check
       if (refusal.target === "content") {
         return new CliError("CONFLICT", `the host's page for '${registryId}' is ${refusal.actual ?? "absent"}, not ${refusal.expected ?? "the version given"}: nothing changed`, {
           details: { ...details, reason: "content_version_conflict", expected: refusal.expected ?? null, actual: refusal.actual ?? null },
-          help: `inspect the host's page with ${cliInvocation()} view read ${commandToken(registryId)} --out <new-file> --dir ${commandToken(binding.path)}, merge your change into it, then re-run with --expected-version ${refusal.actual ? commandToken(refusal.actual) : "<version>"}`,
+          help: `inspect the host's page with ${cliInvocation()} view read ${commandToken(registryId)} --out <new-file> --dir ${commandToken(binding.path)}, merge your change into it, then re-run with --expected-version ${refusal.actual ? commandToken(refusal.actual) : commandLiteral("<version>")}`,
         });
       }
       return new CliError("CONFLICT", `the View registration '${registryId}' changed on ${binding.origin} while this command ran: nothing changed`, {
@@ -377,7 +377,7 @@ export async function viewUpdate(argv: string[], deps: Partial<ViewContentDeps> 
     ...(confirmed ? { confirmed_by: "re-read after the update's answer was lost" } : {}),
     checkout_copy: copy.state,
     notes: [
-      ...(alreadyApplied ? [`the host's page already held exactly these bytes (${sent}), so nothing changed; --expected-version ${expected} was not its version`] : []),
+      ...(alreadyApplied ? [`the host's page already held exactly these bytes (${sent}), so nothing changed; --expected-version ${commandToken(expected)} was not its version`] : []),
       EXECUTION_NOTE,
       ...(copy.note ? [copy.note] : []),
     ],
@@ -428,7 +428,7 @@ async function settle(
   const unknown = (why: string) =>
     new CliError("RUNTIME", `the update of '${registryId}' may or may not have applied, and ${why}`, {
       details: { reason: "write_outcome_unknown", write_state: "unknown", registry_id: registryId, sent_version: context.sent, expected_version: context.expected },
-      help: `check with ${cliInvocation()} view read ${commandToken(registryId)} --dir ${commandToken(binding.path)}: version ${context.sent} means it applied; ${context.expected} means it did not, and the same command is safe to re-run`,
+      help: `check with ${cliInvocation()} view read ${commandToken(registryId)} --dir ${commandToken(binding.path)}: version ${commandToken(context.sent)} means it applied; ${commandToken(context.expected)} means it did not, and the same command is safe to re-run`,
     });
   let current;
   try {
@@ -457,7 +457,7 @@ async function settle(
   if (current.version === context.expected) {
     throw new CliError("TRANSIENT", `the update of '${registryId}' had not applied when the page was read again just now: the host's page was still ${context.expected}`, {
       details: { reason: "not_applied_as_observed", write_state: "not_applied_as_observed", registry_id: registryId, version: current.version, retryable: true },
-      help: `re-running is safe because it is pinned to --expected-version ${context.expected} (if the lost update lands first, the re-run reports it as already applied): ${context.again}`,
+      help: `re-running is safe because it is pinned to --expected-version ${commandToken(context.expected)} (if the lost update lands first, the re-run reports it as already applied): ${context.again}`,
     });
   }
   throw new CliError("CONFLICT", `the host's page for '${registryId}' is ${current.version}: neither the page sent (${context.sent}) nor the version expected (${context.expected})`, {
