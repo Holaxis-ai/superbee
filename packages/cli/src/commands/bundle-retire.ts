@@ -96,7 +96,7 @@ export async function bundleRetire(argv: string[], partial: Partial<BundleRetire
   const subject = { reference, host: target, again: resume, retire: true };
 
   const previewed = await postRoute(context, "bundle-retire-preview", { bundleId });
-  if (!previewed.ok) throw accessRefusal(previewed.code, previewed.message, subject);
+  if (!previewed.ok) throw accessRefusal(previewed.code, previewed.message, { ...subject, ...(previewed.accessUrl ? { accessUrl: previewed.accessUrl } : {}) });
   const preview = previewed.data;
   const people = preview.people;
   const invitations = preview.pendingInvitations;
@@ -160,7 +160,7 @@ export async function bundleRetire(argv: string[], partial: Partial<BundleRetire
       deps.stdout(render({ retire: "already_retired", ...shown, help: [] }, mode));
       return;
     }
-    throw accessRefusal(answer.code, answer.message, subject);
+    throw accessRefusal(answer.code, answer.message, { ...subject, ...(answer.accessUrl ? { accessUrl: answer.accessUrl } : {}) });
   }
   const data = answer.data;
   deps.stdout(

@@ -31,7 +31,23 @@ const PENDING_MS = 60 * 60 * 1000;
 
 export type AccessRoute = "access-list" | "access-grant" | "access-revoke" | "bundle-retire-preview" | "bundle-retire";
 
-export type RouteAnswer = { readonly ok: true; readonly data: Record<string, unknown> } | { readonly ok: false; readonly code: string; readonly message: string };
+export type RouteAnswer =
+  | { readonly ok: true; readonly data: Record<string, unknown> }
+  | { readonly ok: false; readonly code: string; readonly message: string; readonly accessUrl?: string };
+
+/** Where a hosted bundle is shared: hosted keeps sharing administration on the web (`admin_on_web`). */
+export const ACCESS_PAGE_HINT = "a workspace admin grants it on the web Access page (https://<workspace host>/settings/access)";
+
+/** The web Access page's address as the host names it (`accessUrl`), when it is a plain https URL. */
+export function accessPageUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 2048 || /[\u0000-\u001f\u007f\s]/.test(value)) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.username === "" && url.password === "" ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export interface RouteContext {
   readonly client: HostedSyncClient;
@@ -78,7 +94,10 @@ export async function postRoute(context: RouteContext, route: AccessRoute, body:
   if (answer.status === 200 && envelope.ok === true && typeof envelope.data === "object" && envelope.data !== null && !Array.isArray(envelope.data)) {
     return { ok: true, data: envelope.data as Record<string, unknown> };
   }
-  if (answer.status === 200 && envelope.ok === false && code !== null) return { ok: false, code, message };
+  if (answer.status === 200 && envelope.ok === false && code !== null) {
+    const accessUrl = accessPageUrl((error as { accessUrl?: unknown } | undefined)?.accessUrl);
+    return { ok: false, code, message, ...(accessUrl ? { accessUrl } : {}) };
+  }
   throw hostedFailure(new RemoteError(`hosted ${route} answered ${answer.status}`, code ?? "RUNTIME", answer.status), target, resume);
 }
 
@@ -91,6 +110,8 @@ export interface RefusalSubject {
   readonly again: string;
   /** Retiring rather than changing access (a refusal then names who may retire). */
   readonly retire?: boolean;
+  /** The web Access page's address, when the host named it. */
+  readonly accessUrl?: string;
 }
 
 /** One refusal of the access and retire routes, as the CLI taxonomy names it. */
@@ -112,6 +133,21 @@ export function accessRefusal(code: string, hostMessage: string, subject: Refusa
         details,
         help: `ask a workspace admin to do it, or to make you an admin; ${list} shows your own access`,
       });
+    case "admin_on_web": {
+      // Hosted keeps sharing administration, and retiring a bundle one does not own, on the web.
+      const page = subject.accessUrl ?? `the Access page of the workspace's Superbee app (https://<workspace host>/settings/access)`;
+      const withPage = { ...details, ...(subject.accessUrl ? { access_url: subject.accessUrl } : {}) };
+      if (subject.retire) {
+        return new CliError("FORBIDDEN", `${origin} retires '${reference}' from the CLI only for its owner; a workspace admin retires it on the web; nothing was retired`, {
+          details: withPage,
+          help: `a workspace admin retires it from ${page}`,
+        });
+      }
+      return new CliError("FORBIDDEN", `${origin} manages who reaches '${reference}' on the web, not from the CLI; nothing was changed`, {
+        details: withPage,
+        help: `a workspace admin gives or takes access on ${page}`,
+      });
+    }
     case "level_above_own":
       return new CliError("FORBIDDEN", `you cannot grant more than your own access to '${reference}'`, { details, help: `grant read instead, or ask an admin with write access; ${list} shows your level` });
     case "person_not_member":

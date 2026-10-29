@@ -187,6 +187,68 @@ test("access grant refusals map to the CLI taxonomy, and nothing is changed", as
   assert.match(absent.help ?? "", /catalog list --hosted/);
 });
 
+test("access grant and revoke: today's hosted answers admin_on_web, and the refusal points at the web Access page", async () => {
+  const page = "https://north.example/settings/access";
+  for (const [verb, argv] of [["grant", ["ana@example.com", "--level", "read"]], ["revoke", ["ana@example.com"]]] as const) {
+    for (const accessUrl of [page, undefined, "javascript:alert(1)"]) {
+      const h = await harness();
+      h.host.hook = (r) =>
+        r.route === `access-${verb}`
+          ? Response.json({ ok: false, error: { code: "admin_on_web", message: "Manage bundle access on the web Access page. Nothing changed.", writeState: "not_applied", ...(accessUrl ? { accessUrl } : {}) } })
+          : undefined;
+      const before = [...h.host.grants];
+      const error = await rejects(runAccess(h, [verb, ACCESS_BUNDLE, ...argv, "--host", HOST, "--yes"]));
+      assert.equal(error.code, "FORBIDDEN");
+      assert.equal(error.details?.reason, "admin_on_web");
+      assert.match(error.message, /on the web, not from the CLI; nothing was changed/);
+      if (accessUrl === page) {
+        assert.equal(error.details?.access_url, page);
+        assert.equal(error.help, `a workspace admin gives or takes access on ${page}`);
+      } else {
+        assert.equal(error.details?.access_url, undefined);
+        assert.match(error.help ?? "", /settings\/access/);
+      }
+      assert.deepEqual([...h.host.grants], before);
+    }
+  }
+});
+
+test("access list: a host that names the Access page shows it, and says where access is given", async () => {
+  const h = await harness();
+  h.host.you = { level: "write", admin: false };
+  h.host.hook = (r) =>
+    r.route === "access-list"
+      ? Response.json({ ok: true, data: { bundleId: ACCESS_BUNDLE, workspace: "tenant-north", you: { principalId: "principal-7", level: "write", admin: false }, people: null, accessUrl: "https://north.example/settings/access" } })
+      : undefined;
+  const receipt = await runAccess(h, ["list", ACCESS_BUNDLE, "--host", HOST]);
+  assert.equal(receipt.access_page, "https://north.example/settings/access");
+  assert.deepEqual(receipt.help, ["a workspace admin gives or takes access on https://north.example/settings/access"]);
+});
+
+test("access list: an access page that is not a plain https address is left out", async () => {
+  for (const accessUrl of ["javascript:alert(1)", "http://north.example/settings/access", "https://user:pw@north.example/", "https://north.example/a b", 42]) {
+    const h = await harness();
+    h.host.you = { level: "read", admin: false };
+    h.host.hook = (r) =>
+      r.route === "access-list"
+        ? Response.json({ ok: true, data: { bundleId: ACCESS_BUNDLE, workspace: "tenant-north", you: { principalId: "principal-7", level: "read", admin: false }, people: null, accessUrl } })
+        : undefined;
+    const receipt = await runAccess(h, ["list", ACCESS_BUNDLE, "--host", HOST]);
+    assert.equal(receipt.access_page, undefined, String(accessUrl));
+    assert.deepEqual(receipt.help, [], String(accessUrl));
+  }
+});
+
+test("access --help sends sharing to the web Access page and documents no grant --yes example", async () => {
+  const h = await harness();
+  h.out.length = 0;
+  await access(["--help"], { stdout: (text) => void h.out.push(text), auth: h.auth, fetch: h.host.fetch });
+  const help = h.out.join("");
+  assert.match(help, /settings\/access/);
+  assert.match(help, /admin_on_web/);
+  assert.doesNotMatch(help, /access grant [^\n]*--yes\n/);
+});
+
 test("access grant: a bad level or person is refused before any request", async () => {
   const h = await harness();
   for (const argv of [
@@ -294,6 +356,23 @@ test("bundle retire: the host's statement is shown, the person types the id, and
   const again = await runRetire(h, [ACCESS_BUNDLE, "--host", HOST], noTerminal());
   assert.equal(again.retire, "already_retired");
   assert.deepEqual(routed(h).map((r) => r.route), ["bundle-retire-preview"]);
+});
+
+test("bundle retire: admin_on_web reads as a retire refusal and carries the host's Access page", async () => {
+  for (const route of ["bundle-retire-preview", "bundle-retire"]) {
+    const h = await harness();
+    h.host.hook = (r) =>
+      r.route === route
+        ? Response.json({ ok: false, error: { code: "admin_on_web", message: "Manage bundle access and administrative retirement on the web Access page. Nothing changed.", writeState: "not_applied", accessUrl: "https://north.example/settings/access" } })
+        : undefined;
+    const error = await rejects(runRetire(h, [ACCESS_BUNDLE, "--host", HOST], personAtTerminal(() => `${ACCESS_BUNDLE}\n`)));
+    assert.equal(error.code, "FORBIDDEN", route);
+    assert.equal(error.details?.reason, "admin_on_web", route);
+    assert.match(error.message, /retires 'team\.knowledge' from the CLI only for its owner; .*nothing was retired/, route);
+    assert.equal(error.details?.access_url, "https://north.example/settings/access", route);
+    assert.equal(error.help, "a workspace admin retires it from https://north.example/settings/access", route);
+    assert.equal(h.host.retire.state, "ready", route);
+  }
 });
 
 test("bundle retire: a wrong id typed retires nothing and sends nothing", async () => {
