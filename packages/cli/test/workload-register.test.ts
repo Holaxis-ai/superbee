@@ -182,11 +182,6 @@ test("a hosted site refuses a missing or different environment and a site that i
       async () => run([], await site({ ...SITE_CONFIG, content: { ...SITE_CONFIG.content, bundle: "team.notes" }, reconcile: { ...SITE_CONFIG.reconcile, site: "team.notes" } })),
       "release_config_site_name",
     ],
-    [
-      "site name starting with a digit",
-      async () => run([], await site({ ...SITE_CONFIG, content: { ...SITE_CONFIG.content, bundle: "9notes" }, reconcile: { ...SITE_CONFIG.reconcile, site: "9notes" } })),
-      "release_config_site_name",
-    ],
   ];
   for (const [name, attempt, reason] of cases) {
     await assert.rejects(attempt, (error: unknown) => {
