@@ -254,6 +254,10 @@
     "./kind-changes": {
       "types": "./dist/kind-changes.d.ts",
       "default": "./dist/kind-changes.js"
+    },
+    "./site-manifest": {
+      "types": "./dist/site-manifest.d.ts",
+      "default": "./dist/site-manifest.js"
     }
   },
   "files": [

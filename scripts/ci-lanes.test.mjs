@@ -118,7 +118,10 @@ function validateNodePolicyAgreement({
   }
 
   assert.equal(count(read("packages/cli/build.mjs"), new RegExp(`target:\\s*["']${policy.build_target}["']`, "g")), 2);
-  assert.equal(count(read("packages/superbee/scripts/build-bundle.mjs"), new RegExp(`target:\\s*["']${policy.build_target}["']`, "g")), 4);
+  const bundleBuilder = read("packages/superbee/scripts/build-bundle.mjs");
+  assert.equal(count(bundleBuilder, new RegExp(`target:\\s*["']${policy.build_target}["']`, "g")), 3);
+  // The portable data-only surface has no Node runtime target; other publication surfaces retain it.
+  assert.match(bundleBuilder, new RegExp(`target:\\s*surface\\s*===\\s*["']site-manifest["']\\s*\\?\\s*["']es2022["']\\s*:\\s*["']${policy.build_target}["']`));
   assert.equal(read(".node-version").trim(), policy.default_runtime);
   assert.deepEqual(candidate.runtime_nodes, [Number(policy.compatibility_floor.split(".")[0]), policy.forward_probe]);
   assert.equal(candidate.singleton_node, policy.default_runtime);

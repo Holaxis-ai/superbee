@@ -1,3 +1,5 @@
+import { isJsonData } from "../json-data.js";
+export { isJsonData } from "../json-data.js";
 /** Internal observation owner shared by network and finite acquisition wrappers. */
 import { changeBetween, mapRecord, type BoundFeed, type MappingDiagnostic } from "../connectors.js";
 import { overlayCanonicalJson } from "../record-overlay/canonical.js";
@@ -23,19 +25,6 @@ const clip = (text: string, n: number): string => (text.length > n ? text.slice(
 /** External identities are arbitrary strings, including Object.prototype member names. */
 const idMap = <T>(entries?: Readonly<Record<string, T>>): Record<string, T> => Object.assign(Object.create(null) as Record<string, T>, entries);
 const ownEntry = <T>(entries: Readonly<Record<string, T>>, id: string): T | undefined => Object.hasOwn(entries, id) ? entries[id] : undefined;
-
-/** JSON data only: finite numbers, plain objects and arrays, no undefined members. */
-export function isJsonData(value: unknown, depth = 0): boolean {
-  if (depth > 32) return false;
-  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
-  if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every((item) => isJsonData(item, depth + 1));
-  if (!record(value)) return false;
-  // A plain object from any realm: its prototype is null or a prototype that itself has none.
-  const proto: unknown = Object.getPrototypeOf(value);
-  if (proto !== null && Object.getPrototypeOf(proto) !== null) return false;
-  return Object.values(value).every((item) => item !== undefined && isJsonData(item, depth + 1));
-}
 
 /** The page as the engine accepts it, or why not. */
 function pageProblem(page: unknown): string | undefined {

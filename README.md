@@ -315,3 +315,5 @@ One task guide lives in the repository too:
 ## License
 
 Apache-2.0 © 2026 Holaxis
+
+See [Site declaration validation](packages/publication/SITE-MANIFEST.md) for the read-only publication contract used by site builders.

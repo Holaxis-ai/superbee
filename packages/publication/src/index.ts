@@ -19,3 +19,7 @@ export {
 export type { CapturePublicationRuntimeOptions } from "./capture.js";
 export { assertPublicationSourceExclusions } from "./source-exclusions.js";
 export type { PublicationSourceInventory, PublicationSourceExclusions } from "./source-exclusions.js";
+
+export { parseSiteManifestDoc, isSiteLabel, SITE_LABEL, SITE_TYPE, SITES_PREFIX, SITE_DOCUMENT_KEYS } from "@superbee/core/site-manifest";
+export type { SiteManifest, SiteManifestError, SiteManifestParseResult, SitePresentationReference } from "@superbee/core/site-manifest";
+export { readPublicationSiteManifest } from "./site-manifest.js";

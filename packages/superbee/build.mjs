@@ -16,7 +16,7 @@
 // may call require() at runtime; ESM output has no ambient `require`, so we provide one.
 //
 // This explicitly flavored dev/npm build writes only dist/ plus gitignored generated inputs.
-import { rm, chmod, cp, mkdir, readdir } from "node:fs/promises";
+import { rm, chmod, cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -32,6 +32,7 @@ const r = (p) => resolve(here, p);
 const outfile = r("dist/superbee.mjs");
 const publicationOutfile = r("dist/publication.mjs");
 const publicationBridgeOutfile = r("dist/publication-bridge.mjs");
+const publicationSiteOutfile = r("dist/publication-site-manifest.mjs");
 const bundleDescriptorOutfile = r("dist/bundle-descriptor.mjs");
 const thirdPartyNoticesOutfile = r("dist/THIRD-PARTY-NOTICES.txt");
 const execFileAsync = promisify(execFile);
@@ -65,6 +66,12 @@ export async function prepareDistributionTypes(compiledWorkspaces = [], compile 
 
 async function buildPublicationTypes() {
   await copyDeclarationTree(r("../publication/dist"), r("dist/publication"));
+  // The Core declaration is standalone; keep its one owner without a consumer Core dependency.
+  await cp(r("../core/dist/site-manifest.d.ts"), r("dist/publication/site-manifest-core.d.ts"));
+  for (const file of ["index.d.ts", "site-manifest.d.ts", "site-manifest-entry.d.ts"]) {
+    const path = r(`dist/publication/${file}`);
+    await writeFile(path, (await readFile(path, "utf8")).replaceAll('"@superbee/core/site-manifest"', '"./site-manifest-core.js"'));
+  }
   await mkdir(r("dist/publication/schema"), { recursive: true });
   await cp(
     r("../publication/schema/publication-snapshot-v1.schema.json"),
@@ -118,7 +125,7 @@ export async function buildCli(artifactChannel, { source, packageIdentity, updat
     ...(packageIdentity === undefined ? {} : { packageIdentity }),
   });
   await prepareDistributionTypes(compiledWorkspaces);
-  const [publicationBuild, bridgeBuild, descriptorBuild, , portableBuild] = await Promise.all([
+  const [publicationBuild, bridgeBuild, descriptorBuild, , portableBuild, , , siteBuild] = await Promise.all([
     buildPublicationBundle(publicationOutfile, "full", metafile),
     buildPublicationBundle(publicationBridgeOutfile, "bridge", metafile),
     buildBundleDescriptorBundle(bundleDescriptorOutfile, metafile),
@@ -126,11 +133,12 @@ export async function buildCli(artifactChannel, { source, packageIdentity, updat
     buildPortableExportBundle(r("dist/portable-export.mjs"), metafile),
     cp(r("../core/dist/portable-export.d.ts"), r("dist/portable-export.d.ts")),
     buildBundleDescriptorTypes(),
+    buildPublicationBundle(publicationSiteOutfile, "site-manifest", metafile),
   ]);
-  // Every third-party module inlined into a shipped file: the five esbuild bundles plus the UI and
+  // Every third-party module inlined into a shipped file: the six esbuild bundles plus the UI and
   // MCP App code embedded into the CLI bundle as prepared bytes.
   writeThirdPartyNotices([
-    ...[cliBuild, publicationBuild, bridgeBuild, descriptorBuild, portableBuild]
+    ...[cliBuild, publicationBuild, bridgeBuild, descriptorBuild, portableBuild, siteBuild]
       .flatMap((result) => metafileModulePaths(result.metafile, BUNDLE_WORKING_DIR)),
     ...requireBundledModules(prepared),
   ], thirdPartyNoticesOutfile);
