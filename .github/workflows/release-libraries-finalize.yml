@@ -1,10 +1,13 @@
 name: Runtime libraries finalize (read-only registry proof)
 
+# Dispatched automatically by release-libraries.yml once it publishes directly, or by a
+# maintainer after a human approves the transitional staged fallback. Holds no npm credential.
+
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Exact core and server version already approved on npm"
+        description: "Exact core and server version already published on npm"
         required: true
 
 permissions: {}
@@ -32,7 +35,7 @@ jobs:
           set -euo pipefail
           case "$V" in v*|libraries/*) echo "::error::pass the bare version"; exit 1 ;; esac
           case "$V" in *-*) T=next ;; *) T=latest ;; esac
-          for attempt in 1 2 3 4 5 6; do
+          for attempt in $(seq 1 12); do
             CORE="$(npm view "@superbee/core@$V" version 2>/dev/null || true)"
             SERVER="$(npm view "@superbee/server@$V" version 2>/dev/null || true)"
             CORE_TAG="$(npm view @superbee/core "dist-tags.$T" 2>/dev/null || true)"

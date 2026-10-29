@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -139,7 +140,7 @@ test("runtime library workflows pin actions and share an isolated release identi
   assert.doesNotMatch(release, /gh release (?:create|upload)|release assets?/i);
   assert.doesNotMatch(finalize, /gh release|npm stage|npm publish|id-token: write|contents: write/);
   assert.doesNotMatch(finalize, /secrets\.|NODE_AUTH_TOKEN/, "registry proof must use anonymous access");
-  assert.doesNotMatch(release, /secrets\.|NODE_AUTH_TOKEN/, "payload build and OIDC staging need no long-lived npm credential");
+  assert.doesNotMatch(release, /secrets\.|NODE_AUTH_TOKEN/, "payload build and OIDC publishing need no long-lived npm credential");
   const entrypoint = read("CLAUDE.md");
   const contributing = read("CONTRIBUTING.md");
   assert.match(entrypoint, /release-libraries\.yml/);
@@ -149,7 +150,7 @@ test("runtime library workflows pin actions and share an isolated release identi
 });
 
 test("payload code builds once before a literal two-tarball verification", () => {
-  const { build, attest, stage_core: core, stage_server: server } = jobs(release);
+  const { build, attest, publish_core: core, publish_server: server } = jobs(release);
   assert.ok(build && attest && core && server);
   assert.match(build, /^ {4}permissions:\n {6}contents: read\n {6}checks: read$/m);
   assert.match(build, /actions\/checkout@[0-9a-f]{40} # v7\.0\.1\n {8}with:\n {10}fetch-depth: 0/);
@@ -165,7 +166,7 @@ test("payload code builds once before a literal two-tarball verification", () =>
 });
 
 test("release source and first-version boundaries fail closed", () => {
-  const { build, attest, stage_core: core, stage_server: server } = jobs(release);
+  const { build, attest, publish_core: core, publish_server: server } = jobs(release);
   assert.match(build, /git\/ref\/heads\/main/);
   assert.match(build, /test "\$GITHUB_SHA" = "\$MAIN_SHA"/);
   assert.match(build, /git fetch --force --no-tags origin '\+refs\/tags\/libraries\/v\*:refs\/tags\/libraries\/v\*'/);
@@ -258,45 +259,89 @@ test("the bootstrap instructions override an ambient npm tag", () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("later releases stage core and server separately behind the existing environment", () => {
-  const { stage_core: core, stage_server: server } = jobs(release);
+test("later releases publish core then server separately behind the existing environment", () => {
+  const { publish_core: core, publish_server: server, finalize: dispatch } = jobs(release);
+  assert.deepEqual(Object.keys(jobs(release)), ["build", "attest", "publish_core", "publish_server", "finalize"]);
   for (const job of [core, server]) {
     assert.match(job, /^ {4}environment: release$/m);
-    assert.match(job, /id-token: write/);
+    assert.match(job, /^ {4}permissions:\n {6}id-token: write\n {6}contents: read$/m);
+    assert.match(job, /registry-url: "https:\/\/registry.npmjs.org"/);
+    assert.match(job, /npm publish "\.\/out\/\$TGZ" --tag "\$DIST_TAG" --access public --provenance --ignore-scripts --loglevel verbose/);
     assert.match(job, /npm stage publish "\.\/out\/\$TGZ" --tag "\$DIST_TAG" --access public --provenance=false --json/);
-    assert.doesNotMatch(job, /npm publish|npm dist-tag/);
+    assert.match(job, /# TRANSITIONAL: remove once every trusted publisher allows npm publish\./);
+    assert.match(job, /^ {6}mode: \$\{\{ steps\.publish\.outputs\.mode \}\}$/m);
+    assert.doesNotMatch(job, /npm dist-tag/);
   }
   assert.match(core, /sha256sum "out\/\$\{\{ needs\.build\.outputs\.core_tgz \}\}"[\s\S]*needs\.build\.outputs\.core_sha256/);
   assert.match(server, /sha256sum "out\/\$\{\{ needs\.build\.outputs\.server_tgz \}\}"[\s\S]*needs\.build\.outputs\.server_sha256/);
-  assert.match(server, /needs: \[build, attest, stage_core\]/);
-  assert.match(server, /npm stage approve \$CORE_STAGE/);
-  assert.match(server, /npm stage approve \$SERVER_STAGE/);
+  assert.match(server, /needs: \[build, attest, publish_core\]/);
+  assert.match(server, /CORE_MODE: \$\{\{ needs\.publish_core\.outputs\.mode \}\}/);
+  assert.match(server, /elif \[ "\$CORE_MODE" = published \] && npm publish/, "server never goes public while core is only staged");
+  assert.match(server, /if \[ "\$CORE_MODE" = staged \]; then echo "npm stage approve \$CORE_STAGE"; fi/);
+  assert.match(server, /if \[ "\$SERVER_MODE" = staged \]; then echo "npm stage approve \$SERVER_STAGE"; fi/);
+  assert.match(dispatch, /^ {4}needs: \[build, publish_core, publish_server\]\n {4}if: needs\.publish_core\.outputs\.mode == 'published' && needs\.publish_server\.outputs\.mode == 'published'$/m);
+  assert.match(dispatch, /^ {4}permissions:\n {6}actions: write$/m);
+  assert.doesNotMatch(dispatch, /id-token|environment:|uses:|npm /);
+  assert.match(dispatch, /gh workflow run release-libraries-finalize\.yml -R "\$GITHUB_REPOSITORY" --ref main -f version="\$V"/);
+  assert.deepEqual([...new Set([...release.matchAll(/gh workflow run (\S+)/g)].map((m) => m[1]))], ["release-libraries-finalize.yml"]);
+  assert.match(finalize, /^on:\n {2}workflow_dispatch:/m);
 });
 
-test("both literal stage steps enforce public access and the existing attestation channel", () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "runtime-library-stage-options-"));
+test("both literal publish steps publish with provenance, skip identical re-runs, and fall back", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "runtime-library-publish-options-"));
   try {
+    mkdirSync(path.join(dir, "out"));
     for (const name of ["core", "server"]) {
-      const step = path.join(dir, "stage-step.sh");
-      const argsFile = path.join(dir, "args");
-      const outputFile = path.join(dir, "output");
-      writeFileSync(step, runBody(release, `Stage the exact ${name} tarball`));
-      const result = spawnSync("bash", ["-c", [
-        'npm() { printf "%s\\n" "$@" > "$ARGS_OUT"; printf \'{"stageId":"test-stage"}\\n\'; }',
-        'source "$SOURCE_STEP"',
-      ].join("\n")], {
-        cwd: dir,
-        encoding: "utf8",
-        env: { ...process.env, SOURCE_STEP: step, ARGS_OUT: argsFile,
-          GITHUB_OUTPUT: outputFile, TGZ: `superbee-${name}.tgz`, DIST_TAG: "latest",
-          npm_config_access: "restricted", npm_config_provenance: "true" },
-      });
+      writeFileSync(path.join(dir, "out", `superbee-${name}.tgz`), `${name} bytes`);
+      const integrity = `sha512-${createHash("sha512").update(`${name} bytes`).digest("base64")}`;
+      const step = path.join(dir, "publish-step.sh");
+      writeFileSync(step, runBody(release, `Publish the exact ${name} tarball`));
+      const run = ({ served = "", publishStatus = 0, coreMode = "published" } = {}) => {
+        const argsFile = path.join(dir, "args");
+        const outputFile = path.join(dir, "output");
+        const summaryFile = path.join(dir, "summary");
+        writeFileSync(argsFile, "");
+        writeFileSync(outputFile, "");
+        writeFileSync(summaryFile, "");
+        const result = spawnSync("bash", ["-c", [
+          'npm() { printf "%s\\n" "$*" >> "$ARGS_OUT"; case "$1" in view) printf "%s" "$SERVED" ;; publish) [ "$PUBLISH_STATUS" = 0 ] || echo "npm error code ENEEDAUTH"; return "$PUBLISH_STATUS" ;; stage) printf \'{"stageId":"test-stage"}\\n\' ;; esac; }',
+          'source "$SOURCE_STEP"',
+        ].join("\n")], {
+          cwd: dir,
+          encoding: "utf8",
+          env: { ...process.env, SOURCE_STEP: step, ARGS_OUT: argsFile, GITHUB_OUTPUT: outputFile, GITHUB_STEP_SUMMARY: summaryFile,
+            PKG: `@superbee/${name}`, V: "1.2.3", TGZ: `superbee-${name}.tgz`, DIST_TAG: "latest",
+            SERVED: served, PUBLISH_STATUS: String(publishStatus), CORE_MODE: coreMode,
+            npm_config_access: "restricted", npm_config_provenance: "false" },
+        });
+        return { status: result.status, stderr: result.stderr, calls: readFileSync(argsFile, "utf8").trim().split("\n"), output: readFileSync(outputFile, "utf8"), summary: readFileSync(summaryFile, "utf8") };
+      };
+      let result = run();
       assert.equal(result.status, 0, result.stderr);
-      assert.deepEqual(readFileSync(argsFile, "utf8").trim().split("\n"), [
-        "stage", "publish", `./out/superbee-${name}.tgz`, "--tag", "latest",
-        "--access", "public", "--provenance=false", "--json", "--loglevel", "verbose",
+      assert.deepEqual(result.calls, [
+        `view @superbee/${name}@1.2.3 dist.integrity`,
+        `publish ./out/superbee-${name}.tgz --tag latest --access public --provenance --ignore-scripts --loglevel verbose`,
       ]);
-      assert.match(readFileSync(outputFile, "utf8"), /^stage_id=test-stage$/m);
+      assert.equal(result.output, "mode=published\n");
+      result = run({ served: integrity });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.calls.length, 1, "identical served bytes are never republished");
+      assert.equal(result.output, "mode=published\n");
+      result = run({ served: "sha512-other" });
+      assert.notEqual(result.status, 0);
+      assert.equal(result.calls.length, 1);
+      result = run({ publishStatus: 1 });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.calls.at(-1), `stage publish ./out/superbee-${name}.tgz --tag latest --access public --provenance=false --json --loglevel verbose`);
+      assert.equal(result.output, "mode=staged\nstage_id=test-stage\n");
+      assert.match(result.summary, new RegExp(`@superbee/${name}: not published directly \\(ENEEDAUTH\\)`));
+      if (name === "server") {
+        result = run({ coreMode: "staged" });
+        assert.equal(result.status, 0, result.stderr);
+        assert.doesNotMatch(result.calls.join("\n"), /^publish /m, "server is never published while core is only staged");
+        assert.equal(result.output, "mode=staged\nstage_id=test-stage\n");
+        assert.match(result.summary, /not published directly \(core is only staged\)/);
+      }
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

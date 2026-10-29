@@ -1,9 +1,12 @@
-name: Release runtime libraries (build once, stage separately)
+name: Release runtime libraries (build once, publish separately)
 
 # `libraries/v<version>` is independent of the public CLI's `v<version>` release identity. The
-# credential-free job builds and packs both libraries once. Later jobs only move those exact bytes.
-# The pair retains GitHub build attestations, which the registry finalizer verifies against the
-# dedicated source tag. npm provenance remains disabled; it is not this workflow's proof channel.
+# credential-free job builds and packs both libraries once. Later jobs only move those exact bytes:
+# core, then server, each published through OIDC trusted publishing with npm provenance, then the
+# finalizer is dispatched automatically. The pair also retains GitHub build attestations, which
+# remain the registry finalizer's proof, verified against the dedicated source tag.
+# TRANSITIONAL: a failed publish falls back to `npm stage publish` and human `npm stage approve`
+# until every trusted publisher allows `npm publish`.
 on:
   push:
     tags: ["libraries/v*"]
@@ -106,7 +109,7 @@ jobs:
           # workflow counts equally — and never reruns CI. The newest repository-workflow check run
           # named after the canonical required context decides. A pending or not-yet-visible verdict
           # is polled briefly (a full CI run takes ~6 minutes); a failed, missing, or unqueryable
-          # verdict refuses fail-closed: never stage bytes whose source CI cannot vouch for.
+          # verdict refuses fail-closed: never publish bytes whose source CI cannot vouch for.
           for attempt in $(seq 1 16); do
             VERDICT="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=CI%20required%20lanes&filter=latest&per_page=100" \
               --jq '([.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at) | last) as $r
@@ -191,7 +194,7 @@ jobs:
           {
             echo "## Human bootstrap required for the first public library release"
             echo ""
-            echo "npm staging cannot create a new package. Download this run's retained artifact, verify the two digests, then a human maintainer may publish core followed by server with interactive 2FA:"
+            echo "npm trusted publishing cannot create a new package. Download this run's retained artifact, verify the two digests, then a human maintainer may publish core followed by server with interactive 2FA:"
             echo ""
             echo "- $CORE_TGZ: \`$CORE_SHA\`"
             echo "- $SERVER_TGZ: \`$SERVER_SHA\`"
@@ -203,8 +206,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  stage_core:
-    name: stage core on npm (OIDC)
+  publish_core:
+    name: publish core on npm (OIDC)
     if: needs.build.outputs.bootstrap != 'true'
     needs: [build, attest]
     runs-on: ubuntu-latest
@@ -214,88 +217,169 @@ jobs:
       id-token: write
       contents: read
     outputs:
-      stage_id: ${{ steps.stage.outputs.stage_id }}
+      mode: ${{ steps.publish.outputs.mode }}
+      stage_id: ${{ steps.publish.outputs.stage_id }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: runtime-libraries-${{ needs.build.outputs.version }}
           path: out
-      - name: Re-hash the core bytes about to be staged
+      - name: Re-hash the core bytes about to be published
         run: |
           test "$(sha256sum "out/${{ needs.build.outputs.core_tgz }}" | cut -d' ' -f1)" = "${{ needs.build.outputs.core_sha256 }}"
+      # registry-url is load-bearing: npm writes the exchanged OIDC token into the user config layer
+      # this creates (npm oidc.js). Removing it produced ENEEDAUTH in run 31975597582.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.22.1
           package-manager-cache: false
           registry-url: "https://registry.npmjs.org"
       - run: npm install --global npm@11.15.0 --ignore-scripts --no-audit --no-fund
-      - name: Stage the exact core tarball
-        id: stage
+      - name: Publish the exact core tarball
+        id: publish
         env:
+          PKG: "@superbee/core"
+          V: ${{ needs.build.outputs.version }}
           TGZ: ${{ needs.build.outputs.core_tgz }}
           DIST_TAG: ${{ needs.build.outputs.dist_tag }}
         run: |
           set -euo pipefail
-          npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --access public --provenance=false --json --loglevel verbose > stage.json
-          STAGE_ID="$(node -e '
-            const value = JSON.parse(require("fs").readFileSync("stage.json", "utf8"));
-            const find = (v) => v && typeof v === "object" ? (typeof v.stageId === "string" ? v.stageId : Object.values(v).map(find).find(Boolean)) : undefined;
-            const id = find(value); if (!id) process.exit(1); process.stdout.write(id);
-          ')"
-          echo "stage_id=$STAGE_ID" >> "$GITHUB_OUTPUT"
+          # The leading ./ is load-bearing: npm parses a bare dir/file.tgz as github:owner/repo
+          # shorthand (run 31499362043). --loglevel verbose is where npm reports a failed OIDC
+          # exchange (run 31972609262).
+          LOCAL="sha512-$(node -e 'process.stdout.write(require("crypto").createHash("sha512").update(require("fs").readFileSync(process.argv[1])).digest("base64"))' "./out/$TGZ")"
+          # Re-run safety: a version npm already serves must be exactly these bytes; never publish twice.
+          # Read anonymously: the registry-url user config carries setup-node's placeholder token.
+          SERVED="$(NPM_CONFIG_USERCONFIG=/dev/null npm view "$PKG@$V" dist.integrity 2>/dev/null || true)"
+          if [ -n "$SERVED" ]; then
+            test "$SERVED" = "$LOCAL" || { echo "::error::npm already serves $PKG@$V as $SERVED, not this run's tarball ($LOCAL)"; exit 1; }
+            echo "$PKG@$V is already published with these exact bytes; nothing to publish"
+            echo "mode=published" >> "$GITHUB_OUTPUT"
+          elif npm publish "./out/$TGZ" --tag "$DIST_TAG" --access public --provenance --ignore-scripts --loglevel verbose 2>&1 | tee publish.log; then
+            echo "mode=published" >> "$GITHUB_OUTPUT"
+          else
+            # TRANSITIONAL: remove once every trusted publisher allows npm publish. Until then OIDC
+            # `npm publish` fails auth while `npm stage publish` is still allowed.
+            CODE="$(grep -oE '\bE[0-9]{3}\b|ENEEDAUTH|EOTP' publish.log 2>/dev/null | head -n 1 || true)"
+            echo "::warning::$PKG not published directly (${CODE:-no npm error code}); falling back to npm stage publish for human approval"
+            echo "- $PKG: not published directly (${CODE:-no npm error code}); staged for human approval instead" >> "$GITHUB_STEP_SUMMARY"
+            npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --access public --provenance=false --json --loglevel verbose > stage.json
+            STAGE_ID="$(node -e '
+              const value = JSON.parse(require("fs").readFileSync("stage.json", "utf8"));
+              const find = (v) => v && typeof v === "object" ? (typeof v.stageId === "string" ? v.stageId : Object.values(v).map(find).find(Boolean)) : undefined;
+              const id = find(value); if (!id) process.exit(1); process.stdout.write(id);
+            ')"
+            { echo "mode=staged"; echo "stage_id=$STAGE_ID"; } >> "$GITHUB_OUTPUT"
+          fi
 
-  stage_server:
-    name: stage server on npm (OIDC)
-    if: ${{ always() && needs.build.outputs.bootstrap != 'true' && needs.attest.result == 'success' && needs.stage_core.result == 'success' }}
-    needs: [build, attest, stage_core]
+  publish_server:
+    name: publish server on npm (OIDC)
+    if: ${{ always() && needs.build.outputs.bootstrap != 'true' && needs.attest.result == 'success' && needs.publish_core.result == 'success' }}
+    needs: [build, attest, publish_core]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release
     permissions:
       id-token: write
       contents: read
+    outputs:
+      mode: ${{ steps.publish.outputs.mode }}
+      stage_id: ${{ steps.publish.outputs.stage_id }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: runtime-libraries-${{ needs.build.outputs.version }}
           path: out
-      - name: Re-hash the server bytes about to be staged
+      - name: Re-hash the server bytes about to be published
         run: |
           test "$(sha256sum "out/${{ needs.build.outputs.server_tgz }}" | cut -d' ' -f1)" = "${{ needs.build.outputs.server_sha256 }}"
+      # registry-url is load-bearing: npm writes the exchanged OIDC token into the user config layer
+      # this creates (npm oidc.js). Removing it produced ENEEDAUTH in run 31975597582.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.22.1
           package-manager-cache: false
           registry-url: "https://registry.npmjs.org"
       - run: npm install --global npm@11.15.0 --ignore-scripts --no-audit --no-fund
-      - name: Stage the exact server tarball
-        id: stage
+      - name: Publish the exact server tarball
+        id: publish
         env:
+          PKG: "@superbee/server"
+          V: ${{ needs.build.outputs.version }}
           TGZ: ${{ needs.build.outputs.server_tgz }}
           DIST_TAG: ${{ needs.build.outputs.dist_tag }}
+          CORE_MODE: ${{ needs.publish_core.outputs.mode }}
         run: |
           set -euo pipefail
-          npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --access public --provenance=false --json --loglevel verbose > stage.json
-          STAGE_ID="$(node -e '
-            const value = JSON.parse(require("fs").readFileSync("stage.json", "utf8"));
-            const find = (v) => v && typeof v === "object" ? (typeof v.stageId === "string" ? v.stageId : Object.values(v).map(find).find(Boolean)) : undefined;
-            const id = find(value); if (!id) process.exit(1); process.stdout.write(id);
-          ')"
-          echo "stage_id=$STAGE_ID" >> "$GITHUB_OUTPUT"
-      - name: Print the two human npm gates
+          # The leading ./ is load-bearing: npm parses a bare dir/file.tgz as github:owner/repo
+          # shorthand (run 31499362043). --loglevel verbose is where npm reports a failed OIDC
+          # exchange (run 31972609262).
+          LOCAL="sha512-$(node -e 'process.stdout.write(require("crypto").createHash("sha512").update(require("fs").readFileSync(process.argv[1])).digest("base64"))' "./out/$TGZ")"
+          # Re-run safety: a version npm already serves must be exactly these bytes; never publish twice.
+          # Read anonymously: the registry-url user config carries setup-node's placeholder token.
+          SERVED="$(NPM_CONFIG_USERCONFIG=/dev/null npm view "$PKG@$V" dist.integrity 2>/dev/null || true)"
+          # server pins core exactly: while core is only staged, server is staged too (never public first).
+          if [ -n "$SERVED" ]; then
+            test "$SERVED" = "$LOCAL" || { echo "::error::npm already serves $PKG@$V as $SERVED, not this run's tarball ($LOCAL)"; exit 1; }
+            echo "$PKG@$V is already published with these exact bytes; nothing to publish"
+            echo "mode=published" >> "$GITHUB_OUTPUT"
+          elif [ "$CORE_MODE" = published ] && npm publish "./out/$TGZ" --tag "$DIST_TAG" --access public --provenance --ignore-scripts --loglevel verbose 2>&1 | tee publish.log; then
+            echo "mode=published" >> "$GITHUB_OUTPUT"
+          else
+            # TRANSITIONAL: remove once every trusted publisher allows npm publish. Until then OIDC
+            # `npm publish` fails auth while `npm stage publish` is still allowed.
+            CODE="$(grep -oE '\bE[0-9]{3}\b|ENEEDAUTH|EOTP' publish.log 2>/dev/null | head -n 1 || true)"
+            [ "$CORE_MODE" = published ] || CODE="core is only staged"
+            echo "::warning::$PKG not published directly (${CODE:-no npm error code}); falling back to npm stage publish for human approval"
+            echo "- $PKG: not published directly (${CODE:-no npm error code}); staged for human approval instead" >> "$GITHUB_STEP_SUMMARY"
+            npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --access public --provenance=false --json --loglevel verbose > stage.json
+            STAGE_ID="$(node -e '
+              const value = JSON.parse(require("fs").readFileSync("stage.json", "utf8"));
+              const find = (v) => v && typeof v === "object" ? (typeof v.stageId === "string" ? v.stageId : Object.values(v).map(find).find(Boolean)) : undefined;
+              const id = find(value); if (!id) process.exit(1); process.stdout.write(id);
+            ')"
+            { echo "mode=staged"; echo "stage_id=$STAGE_ID"; } >> "$GITHUB_OUTPUT"
+          fi
+      # TRANSITIONAL: remove once every trusted publisher allows npm publish.
+      - name: Print the human npm gates
+        if: needs.publish_core.outputs.mode == 'staged' || steps.publish.outputs.mode == 'staged'
         env:
           V: ${{ needs.build.outputs.version }}
-          CORE_STAGE: ${{ needs.stage_core.outputs.stage_id }}
-          SERVER_STAGE: ${{ steps.stage.outputs.stage_id }}
+          CORE_MODE: ${{ needs.publish_core.outputs.mode }}
+          SERVER_MODE: ${{ steps.publish.outputs.mode }}
+          CORE_STAGE: ${{ needs.publish_core.outputs.stage_id }}
+          SERVER_STAGE: ${{ steps.publish.outputs.stage_id }}
         run: |
           {
-            echo "## @superbee/core and @superbee/server are staged separately"
+            echo "## @superbee/core and @superbee/server need human npm approval (transitional fallback)"
             echo ""
             echo "Inspect and approve core first, then server. Each approval requires the human's npm 2FA."
             echo ""
             echo '```sh'
-            echo "npm stage approve $CORE_STAGE"
-            echo "npm stage approve $SERVER_STAGE"
+            if [ "$CORE_MODE" = staged ]; then echo "npm stage approve $CORE_STAGE"; fi
+            if [ "$SERVER_MODE" = staged ]; then echo "npm stage approve $SERVER_STAGE"; fi
             echo "gh workflow run release-libraries-finalize.yml -f version=$V"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  finalize:
+    # Only when both packages were published directly; any staged fallback waits for human approval.
+    # The finalizer queues behind this run in the shared concurrency group and stays read-only.
+    # A queued finalizer can be cancelled if another tag of the same family is pushed meanwhile
+    # (only one pending run per group); then re-dispatch it by hand with the printed version.
+    name: dispatch the runtime libraries finalizer
+    needs: [build, publish_core, publish_server]
+    if: needs.publish_core.outputs.mode == 'published' && needs.publish_server.outputs.mode == 'published'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch release-libraries-finalize.yml for this version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh workflow run release-libraries-finalize.yml -R "$GITHUB_REPOSITORY" --ref main -f version="$V"
+          echo "Dispatched release-libraries-finalize.yml for @superbee/core and @superbee/server $V" >> "$GITHUB_STEP_SUMMARY"

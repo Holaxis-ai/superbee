@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -162,8 +163,8 @@ function literal(workflow, step, { env = {}, prefix = '', cwd } = {}) {
 }
 
 test('release topology isolates payload execution from credentials and retains exactly one artifact', () => {
-  const {build,attest,stage} = jobs(release);
-  assert.deepEqual(Object.keys(jobs(release)), ['build','attest','stage']);
+  const {build,attest,publish:stage,finalize:dispatch} = jobs(release);
+  assert.deepEqual(Object.keys(jobs(release)), ['build','attest','publish','finalize']);
   for (const workflow of [release,finalize]) {
     assert.match(workflow,/^permissions: \{\}$/m);
     assert.match(workflow,/group: cli-library-release\n  cancel-in-progress: false/);
@@ -187,6 +188,16 @@ test('release topology isolates payload execution from credentials and retains e
   assert.match(stage,/if: needs.build.outputs.bootstrap != 'true'/);
   assert.match(stage,/environment: release/);
   assert.match(stage,/npm@11\.15\.0/);
+  assert.match(stage,/^ {4}permissions:\n {6}id-token: write\n {6}contents: read$/m);
+  assert.match(stage,/registry-url: "https:\/\/registry.npmjs.org"/);
+  assert.match(stage,/# TRANSITIONAL: remove once every trusted publisher allows npm publish\./);
+  assert.match(stage,/- name: Print the human npm gate\n {8}if: steps\.publish\.outputs\.mode == 'staged'/);
+  assert.match(dispatch,/^ {4}needs: \[build, publish\]\n {4}if: needs\.publish\.outputs\.mode == 'published'$/m);
+  assert.match(dispatch,/^ {4}permissions:\n {6}actions: write$/m);
+  assert.doesNotMatch(dispatch,/id-token|environment:|uses:|npm /);
+  assert.match(dispatch,/gh workflow run release-cli-library-finalize\.yml -R "\$GITHUB_REPOSITORY" --ref main -f version="\$V"/);
+  assert.deepEqual([...new Set([...release.matchAll(/gh workflow run (\S+)/g)].map((m)=>m[1]))],['release-cli-library-finalize.yml']);
+  assert.match(finalize,/^on:\n {2}workflow_dispatch:/m);
   assert.match(build,/if \[ "\$V" = "0\.1\.0-pre\.1" \]; then BOOTSTRAP=true/);
   assert.doesNotMatch(finalize,/actions\/checkout|registry-url:|npm publish|npm stage|npm dist-tag|id-token|contents: write/);
   assert.match(finalize,/contents: read/);
@@ -210,12 +221,12 @@ test('CI verdict block remains byte-identical to both established release workfl
   assert.notEqual(runSourceGuard({currentVersion:'0.1.0-pre.1',refVersion:'0.1.0-pre.2'}).status,0);
 });
 
-test('digest handoffs refuse replaced bytes before attestation or staging', () => {
+test('digest handoffs refuse replaced bytes before attestation or publication', () => {
   const dir=mkdtempSync(path.join(os.tmpdir(),'cli-digest-')); mkdirSync(path.join(dir,'out'));
   try {
     writeFileSync(path.join(dir,'out/superbee-cli.tgz'),'retained');
     const sha=spawnSync('shasum',['-a','256','out/superbee-cli.tgz'],{cwd:dir,encoding:'utf8'}).stdout.split(' ')[0];
-    for (const name of ['Re-hash the retained artifact','Re-hash the CLI bytes about to be staged']) {
+    for (const name of ['Re-hash the retained artifact','Re-hash the CLI bytes about to be published']) {
       const body=runBody(release,name).replaceAll('${{ needs.build.outputs.tgz }}','superbee-cli.tgz').replaceAll('${{ needs.build.outputs.sha256 }}',sha);
       const run=()=>spawnSync('bash',['-c',`sha256sum() { shasum -a 256 "$@"; };\n${body}`],{cwd:dir,encoding:'utf8'});
       writeFileSync(path.join(dir,'out/superbee-cli.tgz'),'retained'); assert.equal(run().status,0);
@@ -224,7 +235,7 @@ test('digest handoffs refuse replaced bytes before attestation or staging', () =
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
 
-test('bootstrap only prints fixed-registry next/public commands; later staging submits the literal bytes', () => {
+test('bootstrap only prints fixed-registry next/public commands; later publication submits the literal bytes', () => {
   const dir=mkdtempSync(path.join(os.tmpdir(),'cli-stage-'));
   try {
     let result=literal(release,'Print the one-time bootstrap gate',{cwd:dir,env:{V:'0.1.0-pre.1',TGZ:'superbee-cli.tgz',SHA:'digest',npm_config_tag:'wrong',npm_config_access:'restricted'}});
@@ -232,10 +243,26 @@ test('bootstrap only prints fixed-registry next/public commands; later staging s
     const summary=readFileSync(path.join(dir,'summary'),'utf8');
     assert.match(summary,/npm publish "\.\/superbee-cli.tgz" --access public --tag next --ignore-scripts --registry https:\/\/registry.npmjs.org\//);
     assert.match(summary,/digest/);
-    result=literal(release,'Stage the exact CLI tarball',{cwd:dir,env:{TGZ:'superbee-cli.tgz',DIST_TAG:'next',ARGS_OUT:path.join(dir,'args'),npm_config_tag:'wrong',npm_config_access:'restricted'},prefix:'npm() { printf "%s\\n" "$@" > "$ARGS_OUT"; printf \'{"stageId":"fixture-stage"}\\n\'; }'});
-    assert.equal(result.status,0,result.stderr);
-    assert.deepEqual(readFileSync(path.join(dir,'args'),'utf8').trim().split('\n'),['stage','publish','./out/superbee-cli.tgz','--tag','next','--access','public','--provenance=false','--registry','https://registry.npmjs.org/','--ignore-scripts','--json','--loglevel','verbose']);
-    assert.match(readFileSync(path.join(dir,'output'),'utf8'),/stage_id=fixture-stage/);
+    mkdirSync(path.join(dir,'out'),{recursive:true}); writeFileSync(path.join(dir,'out/superbee-cli.tgz'),'retained');
+    const integrity=`sha512-${createHash('sha512').update('retained').digest('base64')}`;
+    const publish=(served,publishStatus)=>{
+      writeFileSync(path.join(dir,'output'),''); writeFileSync(path.join(dir,'args'),'');
+      const r=literal(release,'Publish the exact CLI tarball',{cwd:dir,env:{PKG:'@superbee/cli',V:'0.1.0-pre.2',TGZ:'superbee-cli.tgz',DIST_TAG:'next',SERVED:served,PUBLISH_STATUS:String(publishStatus),ARGS_OUT:path.join(dir,'args'),npm_config_tag:'wrong',npm_config_access:'restricted'},prefix:'npm() { printf "%s\\n" "$*" >> "$ARGS_OUT"; case "$1" in view) printf "%s" "$SERVED" ;; publish) [ "$PUBLISH_STATUS" = 0 ] || echo "npm error code E401"; return "$PUBLISH_STATUS" ;; stage) printf \'{"stageId":"fixture-stage"}\\n\' ;; esac; }'});
+      return {status:r.status,stderr:r.stderr,calls:readFileSync(path.join(dir,'args'),'utf8').trim().split('\n'),output:readFileSync(path.join(dir,'output'),'utf8')};
+    };
+    let run=publish('',0);
+    assert.equal(run.status,0,run.stderr);
+    assert.deepEqual(run.calls,['view @superbee/cli@0.1.0-pre.2 dist.integrity --registry https://registry.npmjs.org/','publish ./out/superbee-cli.tgz --tag next --access public --provenance --registry https://registry.npmjs.org/ --ignore-scripts --loglevel verbose']);
+    assert.equal(run.output,'mode=published\n');
+    run=publish(integrity,0);
+    assert.equal(run.status,0,run.stderr); assert.equal(run.calls.length,1,'identical served bytes are never republished'); assert.equal(run.output,'mode=published\n');
+    run=publish('sha512-other',0);
+    assert.notEqual(run.status,0); assert.equal(run.calls.length,1);
+    run=publish('',1);
+    assert.equal(run.status,0,run.stderr);
+    assert.equal(run.calls[2],'stage publish ./out/superbee-cli.tgz --tag next --access public --provenance=false --registry https://registry.npmjs.org/ --ignore-scripts --json --loglevel verbose');
+    assert.equal(run.output,'mode=staged\nstage_id=fixture-stage\n');
+    assert.match(readFileSync(path.join(dir,'summary'),'utf8'),/@superbee\/cli: not published directly \(E401\)/);
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
 

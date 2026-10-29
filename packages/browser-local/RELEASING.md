@@ -23,7 +23,8 @@ Browser-local 0.1.0-pre.20 contains the durable editor-intent implementation and
 exactly Core 0.2.0-pre.30. Its publication and actual-archive consumer qualification are
 part of this delivery; dependency alignment alone does not deliver its product changes.
 Published browser-local 0.1.0-pre.17 retains its exact Core 0.2.0-pre.20 dependency.
-Core/Server pre.30 and CLI pre.20 use the native workflows and human npm stage approvals.
+Core/Server pre.30 and CLI pre.20 use the native workflows, which publish through OIDC once the
+protected tag is pushed (human npm stage approval only on the transitional staged fallback).
 Browser-local uses the separately approved literal-artifact process below, after Core
 pre.30 registry verification. Its locally packed proof is not a native release attestation.
 
@@ -43,10 +44,10 @@ this Server/browser-local delivery or the self-contained executable release.
    `.github/workflows/release-libraries.yml` and
    `release-libraries-finalize.yml` process from the current-main
    `libraries/v<version>` tag for the table's core version. That workflow builds and
-   retains exact tarballs, attests them, and stages each package separately. Human npm
-   approval remains required. Do not independently rebuild/publish replacement
-   core/server tarballs.
-3. Complete the existing read-only core/server registry finalizer. Verify both exact
+   retains exact tarballs, attests them, and publishes core, then server, then dispatches
+   the finalizer. If it fell back to staging, human npm approval is required first. Do not
+   independently rebuild/publish replacement core/server tarballs.
+3. Confirm the read-only core/server registry finalizer succeeded. Verify both exact
    versions and the `next` channel before browser-local publication.
 
 ## Browser-local and renderer artifacts

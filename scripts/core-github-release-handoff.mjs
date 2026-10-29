@@ -141,7 +141,7 @@ function draftBody(plan) {
     `Source: ${PRODUCER}@${candidate.source_sha}. CLI: ${candidate.cli}.\nCLI archive: ${archives.cli.sha256}. Core archive: ${archives.core.sha256}.\n` +
     `Verified Core/Server finalizer: https://github.com/${PRODUCER}/actions/runs/${plan.publication.finalizer_run}.\nCore registry integrity: ${plan.publication.registry_integrity}.\n` +
     `Native CLI/Core attestations and Core source-tree equality checked. Base lease: ${CONSUMER}@${plan.base_sha} (main).\n\n` +
-    `This is a draft metadata proposal. CLI npm approval/finalization, actual proposed-checkout build and installed archive tests, README/install review, normal review and CI remain required before the owning maintainer merges it. If base, head, source or archive changes, rerun the handoff. No ranges widened, plugin npm publication, automatic registration or downstream merge.\n`;
+    `This is a draft metadata proposal. CLI npm publication/finalization, actual proposed-checkout build and installed archive tests, README/install review, normal review and CI remain required before the owning maintainer merges it. If base, head, source or archive changes, rerun the handoff. No ranges widened, plugin npm publication, automatic registration or downstream merge.\n`;
 }
 
 export async function prepareHandoff(options, io = githubTransport()) {
