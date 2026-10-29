@@ -17,7 +17,7 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { commandFragment, commandToken } from "../command-text.js";
 import { CliError } from "../errors.js";
 import { defaultHostedAuthDeps, hostArgument, requireHostedBundleHost, workspaceForNamedHost, type HostedAuthDeps } from "../hosted-auth/session.js";
-import { accessRefusal, postRoute } from "../hosted/access.js";
+import { accessPageUrl, accessRefusal, postRoute, retireOwnerOnlyRefusal } from "../hosted/access.js";
 import { connectHostedAccount, resolveBundleReference } from "../hosted/account.js";
 import { hostedBundleReferenceText, parseHostedBundleReference } from "../hosted/reference.js";
 import { needsPersonAtTerminal, processTerminal, type HostedTerminal } from "../hosted/terminal.js";
@@ -33,7 +33,7 @@ Reads the host's preview of retiring the bundle and shows it: what retiring does
 own words, how many people have access and how many invitations it cancels. Then the person types
 the bundle id in their own terminal to confirm. No flag skips that: in a shell no person can answer
 in (an agent's, a pipe, a hook) it is refused before anything is sent, so an agent asks the person
-to run it. Only a workspace admin, or the bundle's owner, may retire it.
+to run it. From the CLI only the bundle's owner can retire it; a workspace admin retires it in the web app.
 
 To keep a copy first: superbee export <bundle> --to <folder> --git
 
@@ -117,10 +117,7 @@ export async function bundleRetire(argv: string[], partial: Partial<BundleRetire
     return;
   }
   if (allowed === null) {
-    throw new CliError("FORBIDDEN", `you may not retire '${reference}' on ${target.origin}: only a workspace admin, or the bundle's owner, may`, {
-      details: { reason: "not_allowed", ...shown },
-      help: "ask a workspace admin to retire it",
-    });
+    throw retireOwnerOnlyRefusal(reference, target.origin, accessPageUrl(preview.accessUrl), { reason: "not_allowed", ...shown });
   }
   if (!deps.terminal.interactive) {
     throw needsPersonAtTerminal(`retiring '${reference}' needs the person to type its id in their own terminal, and this shell is not interactive; nothing was retired`, String(command(reference)), {
