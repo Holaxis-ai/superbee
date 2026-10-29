@@ -110,19 +110,21 @@ test("the committed publish step publishes, skips identical re-runs, refuses oth
   writeFileSync(path.join(dir, "step.sh"), body.join("\n"));
   const run = (served, publishStatus) => {
     const output = path.join(dir, "output");
+    const summary = path.join(dir, "summary");
     writeFileSync(output, "");
+    writeFileSync(summary, "");
     const stub = [
       'npm() { echo "$*" >> "$CALLS"; case "$1" in',
       '  view) printf "%s" "$SERVED" ;;',
-      '  publish) return "$PUBLISH_STATUS" ;;',
+      '  publish) [ "$PUBLISH_STATUS" = 0 ] || echo "npm error code E403"; return "$PUBLISH_STATUS" ;;',
       '  stage) printf \'{"stageId":"fixture-stage"}\\n\' ;;',
       'esac; }',
       'source ./step.sh',
     ].join("\n");
     const calls = path.join(dir, `calls-${Math.random()}`);
     writeFileSync(calls, "");
-    const result = spawnSync("bash", ["-c", stub], { cwd: dir, encoding: "utf8", env: { ...process.env, PKG: "superbee", V: "1.0.0", TGZ: "superbee-1.0.0.tgz", DIST_TAG: "latest", SERVED: served, PUBLISH_STATUS: String(publishStatus), CALLS: calls, GITHUB_OUTPUT: output } });
-    return { status: result.status, output: readFileSync(output, "utf8"), calls: readFileSync(calls, "utf8") };
+    const result = spawnSync("bash", ["-c", stub], { cwd: dir, encoding: "utf8", env: { ...process.env, PKG: "superbee", V: "1.0.0", TGZ: "superbee-1.0.0.tgz", DIST_TAG: "latest", SERVED: served, PUBLISH_STATUS: String(publishStatus), CALLS: calls, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary } });
+    return { status: result.status, output: readFileSync(output, "utf8"), calls: readFileSync(calls, "utf8"), summary: readFileSync(summary, "utf8"), stderr: result.stderr };
   };
   const direct = run("", 0);
   assert.equal(direct.status, 0);
@@ -139,6 +141,7 @@ test("the committed publish step publishes, skips identical re-runs, refuses oth
   const fallback = run("", 1);
   assert.equal(fallback.status, 0);
   assert.equal(fallback.output, "mode=staged\nstage_id=fixture-stage\n");
+  assert.match(fallback.summary, /superbee: not published directly \(E403\); staged for human approval/, "the fallback surfaces npm's error code");
   assert.match(fallback.calls, /^stage publish \.\/out\/superbee-1\.0\.0\.tgz --tag latest --provenance --json --loglevel verbose$/m);
 });
 

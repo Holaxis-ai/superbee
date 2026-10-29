@@ -255,12 +255,14 @@ jobs:
             test "$SERVED" = "$LOCAL" || { echo "::error::npm already serves $PKG@$V as $SERVED, not this run's tarball ($LOCAL)"; exit 1; }
             echo "$PKG@$V is already published with these exact bytes; nothing to publish"
             echo "mode=published" >> "$GITHUB_OUTPUT"
-          elif npm publish "./out/$TGZ" --tag "$DIST_TAG" --access public --provenance --ignore-scripts --loglevel verbose; then
+          elif npm publish "./out/$TGZ" --tag "$DIST_TAG" --access public --provenance --ignore-scripts --loglevel verbose 2>&1 | tee publish.log; then
             echo "mode=published" >> "$GITHUB_OUTPUT"
           else
             # TRANSITIONAL: remove once every trusted publisher allows npm publish. Until then OIDC
             # `npm publish` fails auth while `npm stage publish` is still allowed.
-            echo "::warning::$PKG not published directly; falling back to npm stage publish for human approval"
+            CODE="$(grep -oE '\bE[0-9]{3}\b|ENEEDAUTH|EOTP' publish.log 2>/dev/null | head -n 1 || true)"
+            echo "::warning::$PKG not published directly (${CODE:-no npm error code}); falling back to npm stage publish for human approval"
+            echo "- $PKG: not published directly (${CODE:-no npm error code}); staged for human approval instead" >> "$GITHUB_STEP_SUMMARY"
             npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --access public --provenance=false --json --loglevel verbose > stage.json
             STAGE_ID="$(node -e '
               const value = JSON.parse(require("fs").readFileSync("stage.json", "utf8"));
@@ -321,12 +323,15 @@ jobs:
             test "$SERVED" = "$LOCAL" || { echo "::error::npm already serves $PKG@$V as $SERVED, not this run's tarball ($LOCAL)"; exit 1; }
             echo "$PKG@$V is already published with these exact bytes; nothing to publish"
             echo "mode=published" >> "$GITHUB_OUTPUT"
-          elif [ "$CORE_MODE" = published ] && npm publish "./out/$TGZ" --tag "$DIST_TAG" --access public --provenance --ignore-scripts --loglevel verbose; then
+          elif [ "$CORE_MODE" = published ] && npm publish "./out/$TGZ" --tag "$DIST_TAG" --access public --provenance --ignore-scripts --loglevel verbose 2>&1 | tee publish.log; then
             echo "mode=published" >> "$GITHUB_OUTPUT"
           else
             # TRANSITIONAL: remove once every trusted publisher allows npm publish. Until then OIDC
             # `npm publish` fails auth while `npm stage publish` is still allowed.
-            echo "::warning::$PKG not published directly; falling back to npm stage publish for human approval"
+            CODE="$(grep -oE '\bE[0-9]{3}\b|ENEEDAUTH|EOTP' publish.log 2>/dev/null | head -n 1 || true)"
+            [ "$CORE_MODE" = published ] || CODE="core is only staged"
+            echo "::warning::$PKG not published directly (${CODE:-no npm error code}); falling back to npm stage publish for human approval"
+            echo "- $PKG: not published directly (${CODE:-no npm error code}); staged for human approval instead" >> "$GITHUB_STEP_SUMMARY"
             npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --access public --provenance=false --json --loglevel verbose > stage.json
             STAGE_ID="$(node -e '
               const value = JSON.parse(require("fs").readFileSync("stage.json", "utf8"));
@@ -360,6 +365,8 @@ jobs:
   finalize:
     # Only when both packages were published directly; any staged fallback waits for human approval.
     # The finalizer queues behind this run in the shared concurrency group and stays read-only.
+    # A queued finalizer can be cancelled if another tag of the same family is pushed meanwhile
+    # (only one pending run per group); then re-dispatch it by hand with the printed version.
     name: dispatch the runtime libraries finalizer
     needs: [build, publish_core, publish_server]
     if: needs.publish_core.outputs.mode == 'published' && needs.publish_server.outputs.mode == 'published'

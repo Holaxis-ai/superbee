@@ -433,13 +433,18 @@ and complete the new-package bootstrap. Existing `v*` and `libraries/v*` control
 namespace automatically. Local tests cannot establish these provider settings or authorize release.
 
 All three release workflows (`release.yml`, `release-cli-library.yml`, `release-libraries.yml`)
-publish without a human npm step: the reviewed merge to `main`, the protected tag and the `release`
-environment are the gate. Each package's npm trusted publisher must name `Holaxis-ai/superbee`, its
+publish without a human npm step. The gate is the reviewed merge to `main` plus release-tag
+creation restricted to repository admins by the tag ruleset (creation, update and deletion of
+`v*`, `libraries/v*` and `cli/v*`) and the `release` environment's tag-pattern policy; pushing
+such a tag publishes to npm. Agents push a release tag only when explicitly asked by a human with
+release authority. Each package's npm trusted publisher must name `Holaxis-ai/superbee`, its
 release workflow file and environment `release`, with `npm publish` allowed; npm entries cannot be
 edited, so a maintainer deletes and recreates an entry to allow it. Transitionally, a failed
 `npm publish` falls back to `npm stage publish` and the run summary prints the human
 `npm stage approve` and finalizer dispatch commands; only a direct publish dispatches the finalizer
-automatically. The fallback is removed once every trusted publisher allows `npm publish`.
+automatically. The fallback is removed once every trusted publisher allows `npm publish`. An
+auto-dispatched finalizer waits in its family's shared concurrency group; if another tag of the
+same family is pushed meanwhile, GitHub may cancel that pending run, so re-dispatch it by hand.
 
 ## OKF compatibility
 

@@ -299,20 +299,22 @@ test("both literal publish steps publish with provenance, skip identical re-runs
       const run = ({ served = "", publishStatus = 0, coreMode = "published" } = {}) => {
         const argsFile = path.join(dir, "args");
         const outputFile = path.join(dir, "output");
+        const summaryFile = path.join(dir, "summary");
         writeFileSync(argsFile, "");
         writeFileSync(outputFile, "");
+        writeFileSync(summaryFile, "");
         const result = spawnSync("bash", ["-c", [
-          'npm() { printf "%s\\n" "$*" >> "$ARGS_OUT"; case "$1" in view) printf "%s" "$SERVED" ;; publish) return "$PUBLISH_STATUS" ;; stage) printf \'{"stageId":"test-stage"}\\n\' ;; esac; }',
+          'npm() { printf "%s\\n" "$*" >> "$ARGS_OUT"; case "$1" in view) printf "%s" "$SERVED" ;; publish) [ "$PUBLISH_STATUS" = 0 ] || echo "npm error code ENEEDAUTH"; return "$PUBLISH_STATUS" ;; stage) printf \'{"stageId":"test-stage"}\\n\' ;; esac; }',
           'source "$SOURCE_STEP"',
         ].join("\n")], {
           cwd: dir,
           encoding: "utf8",
-          env: { ...process.env, SOURCE_STEP: step, ARGS_OUT: argsFile, GITHUB_OUTPUT: outputFile,
+          env: { ...process.env, SOURCE_STEP: step, ARGS_OUT: argsFile, GITHUB_OUTPUT: outputFile, GITHUB_STEP_SUMMARY: summaryFile,
             PKG: `@superbee/${name}`, V: "1.2.3", TGZ: `superbee-${name}.tgz`, DIST_TAG: "latest",
             SERVED: served, PUBLISH_STATUS: String(publishStatus), CORE_MODE: coreMode,
             npm_config_access: "restricted", npm_config_provenance: "false" },
         });
-        return { status: result.status, stderr: result.stderr, calls: readFileSync(argsFile, "utf8").trim().split("\n"), output: readFileSync(outputFile, "utf8") };
+        return { status: result.status, stderr: result.stderr, calls: readFileSync(argsFile, "utf8").trim().split("\n"), output: readFileSync(outputFile, "utf8"), summary: readFileSync(summaryFile, "utf8") };
       };
       let result = run();
       assert.equal(result.status, 0, result.stderr);
@@ -332,11 +334,13 @@ test("both literal publish steps publish with provenance, skip identical re-runs
       assert.equal(result.status, 0, result.stderr);
       assert.equal(result.calls.at(-1), `stage publish ./out/superbee-${name}.tgz --tag latest --access public --provenance=false --json --loglevel verbose`);
       assert.equal(result.output, "mode=staged\nstage_id=test-stage\n");
+      assert.match(result.summary, new RegExp(`@superbee/${name}: not published directly \\(ENEEDAUTH\\)`));
       if (name === "server") {
         result = run({ coreMode: "staged" });
         assert.equal(result.status, 0, result.stderr);
         assert.doesNotMatch(result.calls.join("\n"), /^publish /m, "server is never published while core is only staged");
         assert.equal(result.output, "mode=staged\nstage_id=test-stage\n");
+        assert.match(result.summary, /not published directly \(core is only staged\)/);
       }
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }

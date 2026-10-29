@@ -168,12 +168,12 @@ mismatched visibility never weakens the conservative rule.
 ### Releases
 
 Releases use GitHub and npm's native controls; the repository adds no release state, ledger,
-receipt, or approval transport of its own. The gate is the reviewed merge to `main`, the protected
-release tag (tag ruleset), and the `release` environment: pushing the tag builds once, publishes
-the exact tarball on npm through OIDC trusted publishing with provenance, and dispatches the
-finalizer. The public CLI uses `.github/workflows/release.yml` and
-`.github/workflows/release-finalize.yml` (verify the registry against the build attestation and
-create the GitHub release). Read those two files; do not reconstruct a procedure from memory.
+receipt, or approval transport of its own. The gate is the reviewed merge to `main` plus release
+tags whose creation, update and deletion the tag ruleset restricts to repository admins, and the
+`release` environment's tag-pattern policy. Pushing such a tag builds once, publishes to npm via
+OIDC with provenance, and dispatches the finalizer. The public CLI uses `release.yml` and
+`release-finalize.yml` (verify the registry against the build attestation, create the GitHub
+release) in `.github/workflows/`. Read those files; do not reconstruct a procedure from memory.
 
 The runtime libraries use `.github/workflows/release-libraries.yml` and its finalizer under the
 separate `libraries/v<version>` tag identity, publishing core, then server (the first `0.1.0` pair
@@ -189,8 +189,8 @@ prerequisites, the rehearsal, and Mike's one-time npmjs.com setup: per package, 
 Transitionally, a failed publish falls back to `npm stage publish` and prints the human
 `npm stage approve` and finalizer commands; that fallback goes once every publisher allows it.
 
-Agents may prepare a version-bump PR and, when explicitly asked, push the release tag that starts
-a release. Agents never run `npm publish`, `npm stage approve`, `npm dist-tag`, or any other
+Agents may prepare a version-bump PR and push a release tag only when explicitly asked by a human
+with release authority. Agents never run `npm publish`, `npm stage approve`, `npm dist-tag`, or any other
 authenticated npm mutation by hand unless specifically authorized by Mike, Brian, or another
 human user with release authority; the release workflows are the only publishers. Prereleases
 publish on `next`, stable versions on `latest`, chosen at build time.

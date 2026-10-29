@@ -247,7 +247,7 @@ test('bootstrap only prints fixed-registry next/public commands; later publicati
     const integrity=`sha512-${createHash('sha512').update('retained').digest('base64')}`;
     const publish=(served,publishStatus)=>{
       writeFileSync(path.join(dir,'output'),''); writeFileSync(path.join(dir,'args'),'');
-      const r=literal(release,'Publish the exact CLI tarball',{cwd:dir,env:{PKG:'@superbee/cli',V:'0.1.0-pre.2',TGZ:'superbee-cli.tgz',DIST_TAG:'next',SERVED:served,PUBLISH_STATUS:String(publishStatus),ARGS_OUT:path.join(dir,'args'),npm_config_tag:'wrong',npm_config_access:'restricted'},prefix:'npm() { printf "%s\\n" "$*" >> "$ARGS_OUT"; case "$1" in view) printf "%s" "$SERVED" ;; publish) return "$PUBLISH_STATUS" ;; stage) printf \'{"stageId":"fixture-stage"}\\n\' ;; esac; }'});
+      const r=literal(release,'Publish the exact CLI tarball',{cwd:dir,env:{PKG:'@superbee/cli',V:'0.1.0-pre.2',TGZ:'superbee-cli.tgz',DIST_TAG:'next',SERVED:served,PUBLISH_STATUS:String(publishStatus),ARGS_OUT:path.join(dir,'args'),npm_config_tag:'wrong',npm_config_access:'restricted'},prefix:'npm() { printf "%s\\n" "$*" >> "$ARGS_OUT"; case "$1" in view) printf "%s" "$SERVED" ;; publish) [ "$PUBLISH_STATUS" = 0 ] || echo "npm error code E401"; return "$PUBLISH_STATUS" ;; stage) printf \'{"stageId":"fixture-stage"}\\n\' ;; esac; }'});
       return {status:r.status,stderr:r.stderr,calls:readFileSync(path.join(dir,'args'),'utf8').trim().split('\n'),output:readFileSync(path.join(dir,'output'),'utf8')};
     };
     let run=publish('',0);
@@ -262,6 +262,7 @@ test('bootstrap only prints fixed-registry next/public commands; later publicati
     assert.equal(run.status,0,run.stderr);
     assert.equal(run.calls[2],'stage publish ./out/superbee-cli.tgz --tag next --access public --provenance=false --registry https://registry.npmjs.org/ --ignore-scripts --json --loglevel verbose');
     assert.equal(run.output,'mode=staged\nstage_id=fixture-stage\n');
+    assert.match(readFileSync(path.join(dir,'summary'),'utf8'),/@superbee\/cli: not published directly \(E401\)/);
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
 
