@@ -134,9 +134,17 @@ export function accessRefusal(code: string, hostMessage: string, subject: Refusa
         help: `ask a workspace admin to do it, or to make you an admin; ${list} shows your own access`,
       });
     case "admin_on_web": {
+      // Hosted keeps sharing administration, and retiring a bundle one does not own, on the web.
       const page = subject.accessUrl ?? `the Access page of the workspace's Superbee app (https://<workspace host>/settings/access)`;
+      const withPage = { ...details, ...(subject.accessUrl ? { access_url: subject.accessUrl } : {}) };
+      if (subject.retire) {
+        return new CliError("FORBIDDEN", `${origin} retires '${reference}' from the CLI only for its owner; a workspace admin retires it on the web; nothing was retired`, {
+          details: withPage,
+          help: `a workspace admin retires it from ${page}`,
+        });
+      }
       return new CliError("FORBIDDEN", `${origin} manages who reaches '${reference}' on the web, not from the CLI; nothing was changed`, {
-        details: { ...details, ...(subject.accessUrl ? { access_url: subject.accessUrl } : {}) },
+        details: withPage,
         help: `a workspace admin gives or takes access on ${page}`,
       });
     }

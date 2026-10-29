@@ -225,6 +225,20 @@ test("access list: a host that names the Access page shows it, and says where ac
   assert.deepEqual(receipt.help, ["a workspace admin gives or takes access on https://north.example/settings/access"]);
 });
 
+test("access list: an access page that is not a plain https address is left out", async () => {
+  for (const accessUrl of ["javascript:alert(1)", "http://north.example/settings/access", "https://user:pw@north.example/", "https://north.example/a b", 42]) {
+    const h = await harness();
+    h.host.you = { level: "read", admin: false };
+    h.host.hook = (r) =>
+      r.route === "access-list"
+        ? Response.json({ ok: true, data: { bundleId: ACCESS_BUNDLE, workspace: "tenant-north", you: { principalId: "principal-7", level: "read", admin: false }, people: null, accessUrl } })
+        : undefined;
+    const receipt = await runAccess(h, ["list", ACCESS_BUNDLE, "--host", HOST]);
+    assert.equal(receipt.access_page, undefined, String(accessUrl));
+    assert.deepEqual(receipt.help, [], String(accessUrl));
+  }
+});
+
 test("access --help sends sharing to the web Access page and documents no grant --yes example", async () => {
   const h = await harness();
   h.out.length = 0;
@@ -342,6 +356,23 @@ test("bundle retire: the host's statement is shown, the person types the id, and
   const again = await runRetire(h, [ACCESS_BUNDLE, "--host", HOST], noTerminal());
   assert.equal(again.retire, "already_retired");
   assert.deepEqual(routed(h).map((r) => r.route), ["bundle-retire-preview"]);
+});
+
+test("bundle retire: admin_on_web reads as a retire refusal and carries the host's Access page", async () => {
+  for (const route of ["bundle-retire-preview", "bundle-retire"]) {
+    const h = await harness();
+    h.host.hook = (r) =>
+      r.route === route
+        ? Response.json({ ok: false, error: { code: "admin_on_web", message: "Manage bundle access and administrative retirement on the web Access page. Nothing changed.", writeState: "not_applied", accessUrl: "https://north.example/settings/access" } })
+        : undefined;
+    const error = await rejects(runRetire(h, [ACCESS_BUNDLE, "--host", HOST], personAtTerminal(() => `${ACCESS_BUNDLE}\n`)));
+    assert.equal(error.code, "FORBIDDEN", route);
+    assert.equal(error.details?.reason, "admin_on_web", route);
+    assert.match(error.message, /retires 'team\.knowledge' from the CLI only for its owner; .*nothing was retired/, route);
+    assert.equal(error.details?.access_url, "https://north.example/settings/access", route);
+    assert.equal(error.help, "a workspace admin retires it from https://north.example/settings/access", route);
+    assert.equal(h.host.retire.state, "ready", route);
+  }
 });
 
 test("bundle retire: a wrong id typed retires nothing and sends nothing", async () => {
