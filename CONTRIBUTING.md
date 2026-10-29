@@ -372,7 +372,7 @@ state before retrying. A lost create response triggers read-back before any late
 
 The draft is not a release approval or installed-compatibility verdict. Its owner still reviews
 README/install guidance, runs the proposed checkout against the exact archives, checks current
-base/head/evidence, waits for CLI npm approval/finalization and follows ordinary review/CI/merge.
+base/head/evidence, waits for CLI npm publication/finalization and follows ordinary review/CI/merge.
 This command never merges downstream, changes an existing owner's proposal, publishes a plugin,
 widens a version range or registers global plugin state. Broader consumer automation stays deferred.
 
@@ -418,18 +418,28 @@ parity, not binary or third-party dependency parity. Missing tags or changed lib
 block a release until updated libraries have been released.
 
 The independent `cli/v<version>` path in `release-cli-library.yml` builds the root once, packs once,
-and retains those bytes through digest checks, attestation and OIDC staging. Only the build job
-checks out or executes repository code. First version `0.1.0-pre.1` needs human bootstrap on `next`;
-later versions stage on `next` for prereleases or `latest` for stable versions. Humans approve npm
-stages interactively. The read-only `release-cli-library-finalize.yml` verifies anonymous registry
-metadata and tarball bytes against the signer workflow, exact CLI tag and packed source commit;
-it does not create a GitHub Release. `prepublishOnly` is an ergonomics tripwire.
+and retains those bytes through digest checks, attestation and OIDC publication with npm
+provenance. Only the build job checks out or executes repository code. First version `0.1.0-pre.1`
+needs human bootstrap on `next`; later versions publish on `next` for prereleases or `latest` for
+stable versions, and the workflow then dispatches the read-only `release-cli-library-finalize.yml`,
+which verifies anonymous registry metadata and tarball bytes against the signer workflow, exact
+CLI tag and packed source commit; it does not create a GitHub Release. `prepublishOnly` is an
+ergonomics tripwire.
 
 Before first live use, rehearse with a disposable package and have a maintainer configure and verify
 an immutable `cli/v*` tag ruleset, the release environment's `cli/v*` allow-list, and the package's
 OIDC trusted publisher for `release-cli-library.yml`. Verify npm requires 2FA and disallows tokens,
 and complete the new-package bootstrap. Existing `v*` and `libraries/v*` controls do not cover this
 namespace automatically. Local tests cannot establish these provider settings or authorize release.
+
+All three release workflows (`release.yml`, `release-cli-library.yml`, `release-libraries.yml`)
+publish without a human npm step: the reviewed merge to `main`, the protected tag and the `release`
+environment are the gate. Each package's npm trusted publisher must name `Holaxis-ai/superbee`, its
+release workflow file and environment `release`, with `npm publish` allowed; npm entries cannot be
+edited, so a maintainer deletes and recreates an entry to allow it. Transitionally, a failed
+`npm publish` falls back to `npm stage publish` and the run summary prints the human
+`npm stage approve` and finalizer dispatch commands; only a direct publish dispatches the finalizer
+automatically. The fallback is removed once every trusted publisher allows `npm publish`.
 
 ## OKF compatibility
 

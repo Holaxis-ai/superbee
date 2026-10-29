@@ -15,9 +15,10 @@ const cliPackageRoot = path.join(repoRoot, "packages", "superbee");
 export function publishedManifest(source, readme) {
   return {
     ...source,
-    // `npm stage publish <tarball>` does not read README.md while deriving registry metadata.
-    // Carry the exact page bytes in the packed manifest so direct tarball staging stays exact and
-    // npm's package page receives the same README that users install.
+    // Publishing a tarball (`npm publish` or the staged fallback) may not read README.md while
+    // deriving registry metadata. Carry the exact page bytes in the packed manifest so direct
+    // tarball publication stays exact and npm's package page receives the same README that
+    // users install.
     readme,
     readmeFilename: "README.md",
   };

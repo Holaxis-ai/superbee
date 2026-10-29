@@ -35,8 +35,9 @@ test("release workflows hold no ambient permissions and pin every action by comm
     for (const use of text.matchAll(/^\s+- uses: (.+)$/gm)) {
       assert.match(use[1], /@[0-9a-f]{40} # v\d/, `${name} action ${use[1]} must be pinned to a full SHA with its version comment`);
     }
-    assert.doesNotMatch(text, /\bnpm (publish|dist-tag)\b|\bnpx\b[^\n]*\bnpm\b/, `${name} must never publish or move a dist-tag directly`);
+    assert.doesNotMatch(text, /\bnpm dist-tag\b|\bnpx\b[^\n]*\bnpm\b/, `${name} must never move a dist-tag directly`);
   }
+  assert.doesNotMatch(finalize, /\bnpm (publish|stage)\b/, "the finalizer performs no npm write");
 });
 
 // Any job on main can write the Actions cache, so a release that restores one would trust bytes
@@ -57,24 +58,88 @@ test("no release workflow restores a dependency cache", () => {
   }
 });
 
-test("payload code runs only in the credential-free build job; staging runs no payload code", () => {
-  const { build, stage } = jobs(release);
-  assert.ok(build && stage, "release.yml declares build and stage jobs");
+test("payload code runs only in the credential-free build job; publishing runs no payload code", () => {
+  const { build, publish: stage } = jobs(release);
+  assert.deepEqual(Object.keys(jobs(release)), ["build", "publish", "finalize"]);
+  assert.ok(build && stage, "release.yml declares build and publish jobs");
   assert.match(build, /^ {4}permissions:\n {6}contents: read\n {6}checks: read$/m, "build holds only contents: read plus checks: read for the CI verdict");
   assert.doesNotMatch(build, /id-token|environment:|secrets\./, "build must not mint OIDC tokens or see environment secrets");
   assert.match(build, /npm ci --ignore-scripts/, "dependency lifecycle scripts stay off in the release build");
   assert.match(build, /case "\$V" in\n\s+\*-\*\) SOURCE_REF=main ;;\n\s+\*\) SOURCE_REF="release\/\$V" ;;/, "prereleases must use main and stable versions their named release branch");
   assert.match(build, /compare\/\$SOURCE_REF\.\.\.\$GITHUB_SHA[\s\S]*case "\$REL" in identical\|behind\) ;; \*\)/, "the tag must point at an allowed source ref");
-  assert.match(build, /No other branch can feed staging\./, "only main or the exact stable release branch may feed staging");
+  assert.match(build, /No other branch can feed publication\./, "only main or the exact stable release branch may feed publication");
   assert.doesNotMatch(build, /npm view[^\n]*\|\| true/, "registry reads must fail closed, never fall through");
   assert.match(build, /npm run build:npm-package -w superbee/, "the release build runs through npm (npm_execpath)");
   assert.match(build, /npm run --silent pack:npm-package -- --pack-destination out/, "the release pack embeds exact npm-page metadata before creating the retained tarball");
   assert.match(build, /npm run verify:npm-package:tarball -- "out\//, "the packed tarball is proved before upload");
-  assert.match(stage, /^ {4}environment: release$/m, "stage runs in the environment the npm trusted publisher is bound to");
-  assert.match(stage, /id-token: write/, "stage exchanges OIDC with npm");
-  assert.doesNotMatch(stage, /actions\/checkout|npm ci|npm run build/, "stage must not check out or execute repository code");
+  assert.match(stage, /^ {4}environment: release$/m, "publish runs in the environment the npm trusted publisher is bound to");
+  assert.match(stage, /^ {4}permissions:\n {6}id-token: write\n {6}attestations: write\n {6}contents: read$/m, "publish exchanges OIDC with npm and attests, nothing more");
+  assert.doesNotMatch(stage, /actions\/checkout|npm ci|npm run build/, "publish must not check out or execute repository code");
   assert.match(stage, /registry-url: "https:\/\/registry.npmjs.org"/, "registry-url is load-bearing for the OIDC exchange");
-  assert.match(stage, /npm stage publish "\.\/out\/\$TGZ" --tag "\$DIST_TAG" --provenance --json/, "stage the literal tarball with its final tag");
+  assert.match(stage, /npm publish "\.\/out\/\$TGZ" --tag "\$DIST_TAG" --access public --provenance --ignore-scripts --loglevel verbose/, "publish the literal tarball with its final tag and provenance");
+  assert.match(stage, /npm stage publish "\.\/out\/\$TGZ" --tag "\$DIST_TAG" --provenance --json/, "the transitional fallback stages the literal tarball with its final tag");
+  assert.match(stage, /# TRANSITIONAL: remove once every trusted publisher allows npm publish\./, "the staged fallback is marked for removal");
+  assert.ok(stage.indexOf("actions/attest-build-provenance") < stage.indexOf("npm publish"), "the bytes are attested before npm sees them");
+});
+
+test("only a direct publish dispatches the finalizer, with nothing but actions: write", () => {
+  const { publish, finalize: dispatch } = jobs(release);
+  assert.match(publish, /^ {6}mode: \$\{\{ steps\.publish\.outputs\.mode \}\}$/m, "publish reports published or staged");
+  assert.match(publish, /- name: Print the human gate\n {8}if: steps\.publish\.outputs\.mode == 'staged'/, "the human gate prints only for the staged fallback");
+  assert.match(dispatch, /^ {4}needs: \[build, publish\]\n {4}if: needs\.publish\.outputs\.mode == 'published'$/m, "a staged fallback must not dispatch the finalizer");
+  assert.match(dispatch, /^ {4}permissions:\n {6}actions: write$/m, "dispatch holds only actions: write");
+  assert.doesNotMatch(dispatch, /id-token|environment:|uses:|npm /, "dispatch runs no action and no npm");
+  assert.match(dispatch, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(dispatch, /gh workflow run release-finalize\.yml -R "\$GITHUB_REPOSITORY" --ref main -f version="\$V"/);
+  assert.match(finalize, /^on:\n {2}workflow_dispatch:/m, "the finalizer stays manually dispatchable");
+});
+
+// Execute the committed publish step against a stubbed npm: direct publish, idempotent re-run,
+// mismatched bytes, and the transitional staged fallback.
+test("the committed publish step publishes, skips identical re-runs, refuses other bytes, and falls back", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "release-publish-"));
+  mkdirSync(path.join(dir, "out"));
+  writeFileSync(path.join(dir, "out", "superbee-1.0.0.tgz"), "retained bytes");
+  const integrity = `sha512-${spawnSync(process.execPath, ["-e", "process.stdout.write(require('crypto').createHash('sha512').update('retained bytes').digest('base64'))"], { encoding: "utf8" }).stdout}`;
+  const start = release.indexOf("- name: Publish the literal tarball with its final dist-tag");
+  const body = [];
+  for (const line of release.slice(release.indexOf("\n", release.indexOf("run: |", start)) + 1).split("\n")) {
+    if (line !== "" && !line.startsWith("          ")) break;
+    body.push(line.slice(10));
+  }
+  writeFileSync(path.join(dir, "step.sh"), body.join("\n"));
+  const run = (served, publishStatus) => {
+    const output = path.join(dir, "output");
+    writeFileSync(output, "");
+    const stub = [
+      'npm() { echo "$*" >> "$CALLS"; case "$1" in',
+      '  view) printf "%s" "$SERVED" ;;',
+      '  publish) return "$PUBLISH_STATUS" ;;',
+      '  stage) printf \'{"stageId":"fixture-stage"}\\n\' ;;',
+      'esac; }',
+      'source ./step.sh',
+    ].join("\n");
+    const calls = path.join(dir, `calls-${Math.random()}`);
+    writeFileSync(calls, "");
+    const result = spawnSync("bash", ["-c", stub], { cwd: dir, encoding: "utf8", env: { ...process.env, PKG: "superbee", V: "1.0.0", TGZ: "superbee-1.0.0.tgz", DIST_TAG: "latest", SERVED: served, PUBLISH_STATUS: String(publishStatus), CALLS: calls, GITHUB_OUTPUT: output } });
+    return { status: result.status, output: readFileSync(output, "utf8"), calls: readFileSync(calls, "utf8") };
+  };
+  const direct = run("", 0);
+  assert.equal(direct.status, 0);
+  assert.equal(direct.output, "mode=published\n");
+  assert.match(direct.calls, /^publish \.\/out\/superbee-1\.0\.0\.tgz --tag latest --access public --provenance --ignore-scripts --loglevel verbose$/m);
+  assert.doesNotMatch(direct.calls, /^stage/m);
+  const rerun = run(integrity, 0);
+  assert.equal(rerun.status, 0);
+  assert.equal(rerun.output, "mode=published\n");
+  assert.doesNotMatch(rerun.calls, /^(publish|stage)/m, "a re-run with identical served bytes publishes nothing");
+  const other = run("sha512-other", 0);
+  assert.notEqual(other.status, 0, "served bytes that differ from the retained tarball must refuse");
+  assert.doesNotMatch(other.calls, /^(publish|stage)/m);
+  const fallback = run("", 1);
+  assert.equal(fallback.status, 0);
+  assert.equal(fallback.output, "mode=staged\nstage_id=fixture-stage\n");
+  assert.match(fallback.calls, /^stage publish \.\/out\/superbee-1\.0\.0\.tgz --tag latest --provenance --json --loglevel verbose$/m);
 });
 
 test("the build consumes the exact-source CI verdict and refuses to build without it", () => {
@@ -104,6 +169,7 @@ test("the build consumes the exact-source CI verdict and refuses to build withou
   assert.ok(gate !== -1 && gate < build.indexOf("npm run build:npm-package"), "the verdict gate must precede the package build");
   assert.ok(build.indexOf("compare/$SOURCE_REF...$GITHUB_SHA") < gate, "tag source is established before its verdict is consulted");
   assert.doesNotMatch(release, /workflow_dispatch|ci-tests\.yml/, "release.yml must consume the recorded verdict, never trigger CI itself");
+  assert.deepEqual([...new Set([...release.matchAll(/gh workflow run (\S+)/g)].map((m) => m[1]))], ["release-finalize.yml"], "release.yml dispatches only its finalizer");
 });
 
 // Execute the committed gate step verbatim against synthetic check-run fixtures: `gh` is stubbed
@@ -202,7 +268,7 @@ test("finalize holds no npm credential, verifies provider state, and creates the
   assert.match(job, /gh release download "\$TAG"[\s\S]*differs from the bytes npm serves/, "every finalize path verifies the release asset against the npm bytes");
 });
 
-test("finalize accepts empty staged README metadata while retaining packed identity checks", () => {
+test("finalize accepts staged and direct-publish README metadata while retaining packed identity checks", () => {
   const start = finalize.indexOf("- name: Prove the installed README and npm platform metadata");
   assert.notEqual(start, -1, "release-finalize.yml declares the installed metadata proof");
   const heredoc = finalize.indexOf("node --input-type=module <<'NODE'", start);
@@ -252,6 +318,7 @@ test("finalize accepts empty staged README metadata while retaining packed ident
     });
   };
   assert.equal(prove().status, 0, "empty registry README filename must defer to the attested tarball");
+  assert.equal(prove({ readmeFilename: "README.md", readme: "document-level README of another version" }).status, 0, "direct-publish README metadata is accepted without comparing the document-level readme");
   for (const [registryPatch, manifestPatch] of [
     [{ readmeFilename: "OTHER.md" }, {}],
     [{ readmeFilename: null }, {}],

@@ -80,6 +80,7 @@ test('handoff mandates exact inspection and native publication; default proposal
   assert.deepEqual(first, second); assert.equal(first.status, 'draft-plan'); assert.equal(first.files.length, 4);
   assert.equal(first.impact.archives.cli.sha256, `sha256:${f.options.cliSha256}`);
   assert.match(first.body, /draft metadata proposal/); assert.match(first.body, /finalizer.*123/);
+  assert.match(first.body, /CLI npm publication\/finalization/); assert.doesNotMatch(first.body, /npm approval|stage approve/);
   assert.deepEqual(f.mutations(), []);
   await assert.rejects(createDraft(JSON.parse(JSON.stringify(first)), f.io), /fresh verified handoff/);
 });

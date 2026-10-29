@@ -1,15 +1,16 @@
-name: Release finalize (GitHub release after npm approval)
+name: Release finalize (GitHub release after npm publication)
 
-# Dispatched by a maintainer after `npm stage approve`. Holds no npm credential and performs no
-# npm write: it proves the registry already serves the version on its dist-tag, downloads the
-# exact published bytes back from npm, checks them against the build attestation from release.yml,
+# Dispatched automatically by release.yml once it publishes directly, or by a maintainer after a
+# human approves the transitional staged fallback. Holds no npm credential and performs no npm
+# write: it proves the registry already serves the version on its dist-tag, downloads the exact
+# published bytes back from npm, checks them against the build attestation from release.yml,
 # and creates the GitHub release published in one step (no draft). Re-running is safe: an existing
 # published release is left alone.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Exact version already approved on npm, e.g. 0.1.3 or 0.1.3-pre.1"
+        description: "Exact version already published on npm, e.g. 0.1.3 or 0.1.3-pre.1"
         required: true
 
 permissions: {}
@@ -38,15 +39,16 @@ jobs:
           set -euo pipefail
           case "$V" in v*) echo "::error::pass the bare version, not the tag"; exit 1 ;; esac
           case "$V" in *-*) T=next ;; *) T=latest ;; esac
-          # Registry reads lag writes by seconds (commit d6e4f6f); retry briefly, then fail with the
-          # command still owed. Unreachable and mismatch both stop here; nothing has been mutated.
-          for attempt in 1 2 3 4 5 6; do
+          # Registry reads lag writes by seconds (commit d6e4f6f), and an automatic dispatch arrives
+          # right after publish; retry for up to two minutes, then fail with the command still owed.
+          # Unreachable and mismatch both stop here; nothing has been mutated.
+          for attempt in $(seq 1 12); do
             SEEN="$(npm view "superbee@$V" version 2>/dev/null || true)"
             TAGGED="$(npm view superbee "dist-tags.$T" 2>/dev/null || true)"
             [ "$SEEN" = "$V" ] && [ "$TAGGED" = "$V" ] && break
             echo "registry not settled yet (attempt $attempt): version=$SEEN $T=$TAGGED"; sleep 10
           done
-          test "$SEEN" = "$V" || { echo "::error::npm does not serve superbee@$V. If the stage is still pending run: npm stage approve <stage-id>"; exit 1; }
+          test "$SEEN" = "$V" || { echo "::error::npm does not serve superbee@$V. If release.yml fell back to staging, a human must approve that stage first"; exit 1; }
           test "$TAGGED" = "$V" || { echo "::error::the npm $T tag points at $TAGGED, expected $V"; exit 1; }
           echo "dist_tag=$T" >> "$GITHUB_OUTPUT"
       - name: Download the exact published bytes from npm and verify the build attestation
@@ -58,11 +60,11 @@ jobs:
           mkdir -p out
           npm pack "superbee@$V" --ignore-scripts --pack-destination out >/dev/null
           test -f "out/superbee-$V.tgz"
-          # The attestation was made by release.yml's stage job on the tarball it staged; a match
-          # proves npm published exactly those bytes.
+          # The attestation was made by release.yml's publish job on the tarball it handed to npm; a
+          # match proves npm published exactly those bytes.
           gh attestation verify "out/superbee-$V.tgz" -R "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" --source-ref "refs/tags/v$V" \
-            || { echo "::error::no build attestation from release.yml at refs/tags/v$V matches the bytes npm serves for superbee@$V (was this version staged by release.yml?)"; exit 1; }
+            || { echo "::error::no build attestation from release.yml at refs/tags/v$V matches the bytes npm serves for superbee@$V (was this version published by release.yml?)"; exit 1; }
       - name: Prove the installed README and npm platform metadata
         env:
           V: ${{ inputs.version }}
@@ -84,11 +86,13 @@ jobs:
             readFile("out/tarball-package.json", "utf8").then(JSON.parse),
             readFile("out/tarball-readme.md", "utf8"),
           ]);
-          assert.equal(registry.version, version, "registry metadata version differs from the approved version");
-          assert.equal(tags[tag], version, `registry ${tag} tag differs from the approved version`);
-          // Staged publishing may omit README metadata; the attested tarball below owns its bytes and name.
+          assert.equal(registry.version, version, "registry metadata version differs from the published version");
+          assert.equal(tags[tag], version, `registry ${tag} tag differs from the published version`);
+          // Direct publish records README.md; the transitional staged fallback may omit README
+          // metadata. Both are accepted; the attested tarball below owns the README bytes and name.
           assert.ok(registry.readmeFilename === "" || registry.readmeFilename === "README.md", "registry metadata names an unexpected README file");
-          // npm staged publishing leaves the registry document's `readme` field empty. The exact
+          // The registry document's `readme` field is never compared: staged publishing leaves it
+          // empty, and after a direct publish it is document-level, not per version. The exact
           // public tarball was verified against release.yml's build attestation in the prior step,
           // so its installed README and embedded manifest are the supported byte authorities.
           assert.equal(manifest.readme, readme, "packed manifest does not carry the installed README.md bytes");

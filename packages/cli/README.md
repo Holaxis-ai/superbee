@@ -27,9 +27,9 @@ at the supplied executable's package root (the parent of its `dist/` directory).
 Build from the repository root. The root build schedules prerequisites, this package, and the
 executable before source and distribution tests run. Releases use `cli/v<version>` and
 `release-cli-library.yml`; direct workspace `npm publish` is refused. The first `0.1.0-pre.1`
-requires human bootstrap on `next`. Later releases use OIDC staging and human npm approval.
-The read-only `release-cli-library-finalize.yml` verifies the registry bytes; it creates no GitHub
-Release. See [the contribution guide](../../CONTRIBUTING.md) for release prerequisites.
+requires human bootstrap on `next`. Later releases publish through OIDC trusted publishing with
+provenance, then dispatch the read-only `release-cli-library-finalize.yml`, which verifies the
+registry bytes; it creates no GitHub Release. See [the contribution guide](../../CONTRIBUTING.md) for release prerequisites.
 
 ## Supported surface
 

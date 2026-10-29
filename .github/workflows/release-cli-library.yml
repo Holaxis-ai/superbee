@@ -1,7 +1,10 @@
-name: Release CLI library (build once, stage retained bytes)
+name: Release CLI library (build once, publish retained bytes)
 
-# Only build runs repository code. Attest and stage consume the same retained tarball.
-# The registry finalizer verifies its attestation against the CLI tag and packed source commit.
+# Only build runs repository code. Attest and publish consume the same retained tarball, which npm
+# publishes through OIDC trusted publishing with provenance; finalize is then dispatched
+# automatically. The registry finalizer verifies the GitHub build attestation against the CLI tag
+# and packed source commit. TRANSITIONAL: a failed publish falls back to `npm stage publish` and a
+# human `npm stage approve` until every trusted publisher allows `npm publish`.
 on:
   push:
     tags: ["cli/v*"]
@@ -105,7 +108,7 @@ jobs:
           # workflow counts equally — and never reruns CI. The newest repository-workflow check run
           # named after the canonical required context decides. A pending or not-yet-visible verdict
           # is polled briefly (a full CI run takes ~6 minutes); a failed, missing, or unqueryable
-          # verdict refuses fail-closed: never stage bytes whose source CI cannot vouch for.
+          # verdict refuses fail-closed: never publish bytes whose source CI cannot vouch for.
           for attempt in $(seq 1 16); do
             VERDICT="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=CI%20required%20lanes&filter=latest&per_page=100" \
               --jq '([.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at) | last) as $r
@@ -174,7 +177,7 @@ jobs:
         run: |
           {
             echo "## Human bootstrap required for @superbee/cli"
-            echo "npm staging cannot create a new package. Download this run's retained artifact and verify its digest before interactive human 2FA publication."
+            echo "npm trusted publishing cannot create a new package. Download this run's retained artifact and verify its digest before interactive human 2FA publication."
             echo "- $TGZ: \`$SHA\`"
             echo '```sh'
             echo "npm publish \"./$TGZ\" --access public --tag next --ignore-scripts --registry https://registry.npmjs.org/"
@@ -182,8 +185,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  stage:
-    name: stage CLI library on npm (OIDC)
+  publish:
+    name: publish CLI library on npm (OIDC)
     if: needs.build.outputs.bootstrap != 'true'
     needs: [build, attest]
     runs-on: ubuntu-latest
@@ -193,45 +196,90 @@ jobs:
       id-token: write
       contents: read
     outputs:
-      stage_id: ${{ steps.stage.outputs.stage_id }}
+      mode: ${{ steps.publish.outputs.mode }}
+      stage_id: ${{ steps.publish.outputs.stage_id }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: cli-library-${{ needs.build.outputs.version }}
           path: out
-      - name: Re-hash the CLI bytes about to be staged
+      - name: Re-hash the CLI bytes about to be published
         run: |
           test "$(sha256sum "out/${{ needs.build.outputs.tgz }}" | cut -d' ' -f1)" = "${{ needs.build.outputs.sha256 }}"
+      # registry-url is load-bearing: npm writes the exchanged OIDC token into the user config layer
+      # this creates (npm oidc.js). Removing it produced ENEEDAUTH in run 31975597582.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.22.1
           package-manager-cache: false
           registry-url: "https://registry.npmjs.org"
       - run: npm install --global npm@11.15.0 --ignore-scripts --no-audit --no-fund --registry https://registry.npmjs.org/
-      - name: Stage the exact CLI tarball
-        id: stage
+      - name: Publish the exact CLI tarball
+        id: publish
         env:
+          PKG: "@superbee/cli"
+          V: ${{ needs.build.outputs.version }}
           TGZ: ${{ needs.build.outputs.tgz }}
           DIST_TAG: ${{ needs.build.outputs.dist_tag }}
         run: |
           set -euo pipefail
-          npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --access public --provenance=false --registry https://registry.npmjs.org/ --ignore-scripts --json --loglevel verbose > stage.json
-          STAGE_ID="$(node -e '
-            const value = JSON.parse(require("fs").readFileSync("stage.json", "utf8"));
-            const find = (v) => v && typeof v === "object" ? (typeof v.stageId === "string" ? v.stageId : Object.values(v).map(find).find(Boolean)) : undefined;
-            const id = find(value); if (!id) process.exit(1); process.stdout.write(id);
-          ')"
-          echo "stage_id=$STAGE_ID" >> "$GITHUB_OUTPUT"
+          # The leading ./ is load-bearing: npm parses a bare dir/file.tgz as github:owner/repo
+          # shorthand (run 31499362043). --loglevel verbose is where npm reports a failed OIDC
+          # exchange (run 31972609262).
+          LOCAL="sha512-$(node -e 'process.stdout.write(require("crypto").createHash("sha512").update(require("fs").readFileSync(process.argv[1])).digest("base64"))' "./out/$TGZ")"
+          # Re-run safety: a version npm already serves must be exactly these bytes; never publish twice.
+          # Read anonymously: the registry-url user config carries setup-node's placeholder token.
+          SERVED="$(NPM_CONFIG_USERCONFIG=/dev/null npm view "$PKG@$V" dist.integrity --registry https://registry.npmjs.org/ 2>/dev/null || true)"
+          if [ -n "$SERVED" ]; then
+            test "$SERVED" = "$LOCAL" || { echo "::error::npm already serves $PKG@$V as $SERVED, not this run's tarball ($LOCAL)"; exit 1; }
+            echo "$PKG@$V is already published with these exact bytes; nothing to publish"
+            echo "mode=published" >> "$GITHUB_OUTPUT"
+          elif npm publish "./out/$TGZ" --tag "$DIST_TAG" --access public --provenance --registry https://registry.npmjs.org/ --ignore-scripts --loglevel verbose; then
+            echo "mode=published" >> "$GITHUB_OUTPUT"
+          else
+            # TRANSITIONAL: remove once every trusted publisher allows npm publish. Until then OIDC
+            # `npm publish` fails auth while `npm stage publish` is still allowed.
+            echo "::warning::npm publish failed; falling back to npm stage publish for human approval"
+            npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --access public --provenance=false --registry https://registry.npmjs.org/ --ignore-scripts --json --loglevel verbose > stage.json
+            STAGE_ID="$(node -e '
+              const value = JSON.parse(require("fs").readFileSync("stage.json", "utf8"));
+              const find = (v) => v && typeof v === "object" ? (typeof v.stageId === "string" ? v.stageId : Object.values(v).map(find).find(Boolean)) : undefined;
+              const id = find(value); if (!id) process.exit(1); process.stdout.write(id);
+            ')"
+            { echo "mode=staged"; echo "stage_id=$STAGE_ID"; } >> "$GITHUB_OUTPUT"
+          fi
 
+      # TRANSITIONAL: remove once every trusted publisher allows npm publish.
       - name: Print the human npm gate
+        if: steps.publish.outputs.mode == 'staged'
         env:
           V: ${{ needs.build.outputs.version }}
-          STAGE_ID: ${{ steps.stage.outputs.stage_id }}
+          STAGE_ID: ${{ steps.publish.outputs.stage_id }}
         run: |
           {
-            echo "## @superbee/cli is staged for human approval"
+            echo "## @superbee/cli is staged for human approval (transitional fallback)"
             echo '```sh'
             echo "npm stage approve $STAGE_ID --registry https://registry.npmjs.org/"
             echo "gh workflow run release-cli-library-finalize.yml -f version=$V"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  finalize:
+    # Only a direct publish dispatches the finalizer; a staged fallback waits for human approval.
+    # The finalizer queues behind this run in the shared concurrency group and stays read-only.
+    name: dispatch the CLI library finalizer
+    needs: [build, publish]
+    if: needs.publish.outputs.mode == 'published'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch release-cli-library-finalize.yml for this version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh workflow run release-cli-library-finalize.yml -R "$GITHUB_REPOSITORY" --ref main -f version="$V"
+          echo "Dispatched release-cli-library-finalize.yml for @superbee/cli@$V" >> "$GITHUB_STEP_SUMMARY"

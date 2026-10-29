@@ -1,10 +1,13 @@
 name: CLI library finalize (read-only registry proof)
 
+# Dispatched automatically by release-cli-library.yml once it publishes directly, or by a
+# maintainer after a human approves the transitional staged fallback. Holds no npm credential.
+
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Exact @superbee/cli version already approved on npm"
+        description: "Exact @superbee/cli version already published on npm"
         required: true
 
 permissions: {}
@@ -38,7 +41,7 @@ jobs:
           process.stdout.write(match[4] ? 'next' : 'latest');
           NODE
           )"
-          for attempt in 1 2 3 4 5 6; do
+          for attempt in $(seq 1 12); do
             VERSION="$(npm view "@superbee/cli@$V" version --registry https://registry.npmjs.org/ 2>/dev/null || true)"
             TAG="$(npm view @superbee/cli "dist-tags.$T" --registry https://registry.npmjs.org/ 2>/dev/null || true)"
             [ "$VERSION" = "$V" ] && [ "$TAG" = "$V" ] && break
