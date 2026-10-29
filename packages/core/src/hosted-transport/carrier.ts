@@ -159,7 +159,7 @@ export interface FetchCarrierOptions {
   /** The header that carries `binding`. Default `X-Superbee-Checkout`. */
   bindingHeader?: string;
   fetch?: typeof fetch;
-  /** Every request is answered within this many milliseconds; a stream restarts it at each chunk. Default 15 s. */
+  /** Request deadline, or the wait for each upstream stream read; downstream processing is excluded. Default 15 s. */
   deadlineMs?: number;
 }
 
@@ -193,30 +193,32 @@ async function readBounded(response: Response, maximum: number): Promise<unknown
   }
 }
 
-/** Restart `deadlineMs` at every chunk, so a slow but live stream is not cut and a stalled one is. */
+/** Bound waiting for upstream bytes, not the consumer's work between reads. */
 function idleBounded(body: ReadableStream<Uint8Array>, deadlineMs: number, abort: () => void): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const arm = () => {
-    clearTimeout(timer);
-    timer = setTimeout(abort, deadlineMs);
-  };
-  arm();
-  return body.pipeThrough(
-    new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        arm();
-        controller.enqueue(chunk);
-      },
-      flush() {
-        clearTimeout(timer);
-      },
-      // A consumer that stops reading, or a body that fails, never reaches flush; a live timer
-      // would hold the process open for the rest of the deadline.
-      cancel() {
-        clearTimeout(timer);
-      },
-    }),
-  );
+  let cancelled = false;
+  const clear = () => clearTimeout(timer);
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      timer = setTimeout(abort, deadlineMs);
+      try {
+        const step = await reader.read();
+        clear();
+        if (cancelled) return;
+        if (step.done) controller.close();
+        else controller.enqueue(step.value);
+      } catch (error) {
+        clear();
+        if (!cancelled) controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      cancelled = true;
+      clear();
+      await reader.cancel(reason);
+    },
+  });
 }
 
 /** A request's headers: its own fields, then the credential and the content headers, which always win. */

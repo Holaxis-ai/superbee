@@ -132,7 +132,7 @@ export interface HostedClientOptions {
   readonly target: HostedClientTarget;
   readonly credentials: HostedCredentialProvider;
   readonly fetch?: typeof fetch;
-  /** Every request is answered within this many milliseconds. Default 15 s. */
+  /** Request deadline; streamed reads bound upstream idle time, excluding downstream processing. Default 15 s. */
   readonly deadlineMs?: number;
   /** Aborting it stops every request the client (and each `within` client) sends. */
   readonly signal?: AbortSignal;
