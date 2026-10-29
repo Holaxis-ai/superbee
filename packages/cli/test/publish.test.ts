@@ -162,7 +162,7 @@ test("the preview makes no request and lists what travels, what stays, and the n
   assert.equal((preview.to as Record<string, unknown>).bundle_id, "team-notes");
   assert.match(String((preview.help as string[])[0]), /publish --to hosted --dir .* --host https:\/\/hosted\.example --bundle-id team-notes --yes$/);
   // Sharing is named as a command an agent can run, with the app as the other way.
-  assert.match(String((preview.then as string[])[0]), /until you share it: .*access grant team-notes <email> --level write --host https:\/\/hosted\.example, or in the app$/);
+  assert.match(String((preview.then as string[])[0]), /until a workspace admin grants it on the web Access page \(https:\/\/<workspace host>\/settings\/access\)$/);
   assert.equal(await bindingForPath(h.home, folder), null);
 });
 
@@ -183,7 +183,7 @@ test("a host that names workspaces: the new checkout names its bundle in the wor
   const binding = (await bindingForPath(h.home, await realpath(folder)))!;
   assert.equal(binding.bundle_id, "team-notes");
   assert.equal(binding.workspace_slug, "north");
-  assert.match(String(receipt.access), /access grant north\/team-notes <email> --level write --host https:\/\/hosted\.example, or in the app\)$/);
+  assert.match(String(receipt.access), /until a workspace admin grants it on the web Access page \(https:\/\/<workspace host>\/settings\/access\)\)$/);
   assert.equal(readCheckoutMarker(folder)?.workspace_slug, "north");
   // Every read after the creation names the bundle in that workspace.
   const after = fake.requests.slice(fake.requests.findIndex((r) => r.path.endsWith("/bundle-create")) + 1);
@@ -201,7 +201,7 @@ test("--yes creates the bundle and converts the folder in place, rewriting nothi
   assert.equal(receipt.published, "created");
   assert.equal(receipt.bundle_id, "team-notes");
   assert.equal(receipt.workspace, "tenant:a");
-  assert.match(String(receipt.access), /^write \(only you, until you share it: .*access grant team-notes <email> --level write --host https:\/\/hosted\.example, or in the app\)$/);
+  assert.match(String(receipt.access), /^write \(only you, until a workspace admin grants it on the web Access page \(https:\/\/<workspace host>\/settings\/access\)\)$/);
   assert.deepEqual(receipt.sent, { documents: 2, reserved_files: 2, other_files: 1, history: { imported: 0, verified: false }, provenance: NO_PROVENANCE });
   assert.deepEqual(receipt.checkout, { matched: 2, placed: 0, conflicts: 0, local_only: 0 });
   // One creation request, identified, carrying the whole bundle.
@@ -698,7 +698,7 @@ test("a moved board: publish pushes the marker, and a teammate's sync then refus
   assert.equal(marker.bundle, "team.board");
   assert.equal(marker.moved_by, "mover@example.com", "the marker names who moved the board");
   // Teammates reach the bundle only once it is shared: that is the first next step.
-  assert.match(String((receipt.help as string[])[0]), /access grant team\.board <email> --level write --host /);
+  assert.match(String((receipt.help as string[])[0]), /^share it with the board's teammates: a workspace admin grants it on the web Access page/);
 
   // The teammate edits and syncs: the pull brings the marker, and nothing is pushed.
   await writeFile(path.join(teammate, "notes", "alpha.md"), "---\ntype: Note\ntitle: Alpha\n---\nTeammate edit.\n");
@@ -708,7 +708,7 @@ test("a moved board: publish pushes the marker, and a teammate's sync then refus
   assert.equal(error.code, "FORBIDDEN");
   assert.equal(error.details?.bundle, "team.board");
   assert.match(error.help ?? "", /checkout team\.board --host /);
-  assert.match(error.help ?? "", /if checkout says not found, ask mover@example\.com to share it: .*access grant team\.board <your email> --level write --host /);
+  assert.match(error.help ?? "", /if checkout says not found, ask mover@example\.com or a workspace admin to give you access on the web Access page \(https:\/\/<workspace host>\/settings\/access\)/);
   assert.equal(git(remote, ["rev-parse", "board"]), before, "nothing reached the board");
   // A second sync refuses before committing anything else.
   const again = await rejects(gitSync(["--dir", teammate, "--json"], { stdout: () => {}, stderr: () => {} }));

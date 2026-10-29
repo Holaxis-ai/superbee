@@ -31,14 +31,20 @@ Run in a site repository. Reads the repository and owner ids and the default bra
 local GitHub CLI (gh api repos/<owner>/<repo>), and the workflow, hosted workspace and bundle from
 release.config.json. Then opens the workspace's workload apps page with the form filled in. Nothing
 is registered here: a workspace administrator reviews the values on the page and clicks Register.
-After that, store the app id the page shows with the printed gh variable set command.
 
-Defaults: events schedule, repository_dispatch and workflow_dispatch; the bundle at read; no
-environment (the job that mints the token runs outside any GitHub environment).
+A site that publishes to hosted (reconcile.adapter "hosted") also declares its site
+(<bundle> site), and the app pins the GitHub environment reconcile.environment names. After
+Register, put the App id the page shows in release.config.json as reconcile.app. A site that only
+reads hosted content stores the id with the printed gh variable set command instead.
+
+Defaults: events schedule, repository_dispatch and workflow_dispatch; the bundle at read; the
+environment reconcile.environment names for a hosted site, else none (the job that mints the token
+runs outside any GitHub environment).
 
 Options:
   --name <name>          The app's name on the page (default: <owner>/<repo>)
   --environment <name>   The GitHub environment of the job that mints the token, if it has one
+                         (default: reconcile.environment for a site that publishes to hosted)
   --url <workspace-url>  The workspace's address (default: derived from content.origin and
                          content.workspace, e.g. https://<workspace>.getsuperbee.com)
   --no-open              Print the link instead of opening a browser
@@ -98,6 +104,8 @@ interface ReleaseConfig {
   readonly repository: string | null;
   /** `workflow.defaultBranch`, compared with GitHub's own default branch. */
   readonly configBranch: string | null;
+  /** The site the release publishes to hosted (`reconcile.adapter: "hosted"`), else null. */
+  readonly site: { readonly name: string; readonly environment: string | null; readonly app: string | null } | null;
 }
 
 const text = (value: unknown) => (typeof value === "string" && value.trim() !== "" ? value.trim() : null);
@@ -129,6 +137,16 @@ async function readReleaseConfig(cwd: string): Promise<ReleaseConfig> {
     throw usage(`${CONFIG_FILE} content needs origin, workspace and bundle`, "release_config_content");
   if (!isHostedBundleId(bundle))
     throw usage(`${CONFIG_FILE} content.bundle ${commandQuoted(bundle)} is not a hosted bundle id`, "release_config_bundle");
+  // The hosted target publishes the built site as the content bundle's site (Portal's hosted
+  // target: reconcile.site is the bundle id, and the app pins reconcile.environment).
+  const reconcile = config?.reconcile;
+  let site: ReleaseConfig["site"] = null;
+  if (reconcile?.adapter === "hosted") {
+    const name = text(reconcile.site);
+    if (name !== bundle)
+      throw usage(`${CONFIG_FILE} reconcile.site must be the content bundle ${commandQuoted(bundle)}: a hosted site is its bundle's`, "release_config_site");
+    site = { name, environment: text(reconcile.environment), app: text(reconcile.app) };
+  }
   return {
     workflowPath,
     workspace,
@@ -136,6 +154,7 @@ async function readReleaseConfig(cwd: string): Promise<ReleaseConfig> {
     origin,
     repository: text(config?.code?.repository),
     configBranch: text(config?.workflow?.defaultBranch),
+    site,
   };
 }
 
@@ -217,17 +236,16 @@ function workspaceOrigin(flag: string | undefined, config: ReleaseConfig): { ori
   return { origin: `${gateway.protocol}//${config.workspace}.${gateway.host.slice("mcp.".length)}`, from: "derived" };
 }
 
-/** One bundle grant line as the page takes it: `<bundle-id> read|write`. */
-type BundleGrant = `${string} ${"read" | "write"}`;
+/** One bundle line as the page takes it: `<bundle-id> read|write`, or `<bundle-id> site`. */
+type BundleGrant = `${string} ${"read" | "write" | "site"}`;
 
 /**
- * The bundle grants a site's app asks for. Today a site reads its content bundle. The `site`
- * capability (publishing built files to hosted, board design `designs/hosted-site-serving`) is
- * declared on the app row once that design lands; it joins here, as release.config.json declares it,
- * and the fragment format gains its key in a new version.
+ * The bundle lines a site's app asks for: it reads its content bundle, and a site that publishes to
+ * hosted also declares that bundle's site (`<bundle> site`, board design `hosted-site-serving` D7;
+ * the page puts it in the app's site list, not its grants).
  */
 function bundleGrants(config: ReleaseConfig): BundleGrant[] {
-  return [`${config.bundle} read`];
+  return [`${config.bundle} read`, ...(config.site ? [`${config.site.name} site` as const] : [])];
 }
 
 /** The page's prefill link, format v1, keys in the form's order. */
@@ -284,10 +302,15 @@ async function register(argv: string[], deps: WorkloadDeps): Promise<void> {
     return;
   }
   const mode = resolveMode(values);
-  const environment = values.environment?.trim() ?? "";
-  if (environment !== "" && !/^[A-Za-z0-9._-]{1,255}$/.test(environment))
-    throw usage(`--environment ${commandQuoted(values.environment ?? "")} is not a GitHub environment name`, "environment_invalid");
   const config = await readReleaseConfig(deps.cwd);
+  // Hosted compares the environment exactly, and refuses a site app without one.
+  const environment = values.environment?.trim() ?? config.site?.environment ?? "";
+  if (environment !== "" && !/^[A-Za-z0-9._-]{1,255}$/.test(environment))
+    throw usage(`${values.environment === undefined ? `${CONFIG_FILE} reconcile.environment` : "--environment"} ${commandQuoted(environment)} is not a GitHub environment name`, "environment_invalid");
+  if (config.site && environment === "")
+    throw usage(`a site that publishes to hosted needs a GitHub environment: set reconcile.environment in ${CONFIG_FILE} (the template uses portal-release)`, "site_environment_required");
+  if (config.site && config.site.environment !== null && environment !== config.site.environment)
+    throw usage(`--environment ${commandQuoted(environment)} is not ${CONFIG_FILE} reconcile.environment ${commandQuoted(config.site.environment)}: the release refuses a token from any other environment`, "environment_mismatch");
   try {
     await fs.access(path.join(deps.cwd, config.workflowPath));
   } catch {
@@ -320,7 +343,14 @@ async function register(argv: string[], deps: WorkloadDeps): Promise<void> {
     config.configBranch !== null && config.configBranch !== repository.defaultBranch
       ? [`${CONFIG_FILE} workflow.defaultBranch is ${config.configBranch}, but GitHub's default branch is ${repository.defaultBranch}: the app is registered for ${repository.defaultBranch}, where schedule and repository_dispatch run; fix the configuration if that is wrong`]
       : [];
-  const setVariable: CommandText = commandFragment`gh variable set HOSTED_APP_ID --repo ${commandToken(repository.fullName)} --body <app-id>`;
+  // A hosted site reads its app id from release.config.json (reconcile.app); a site that only
+  // reads hosted content keeps it in a repository variable its token script reads.
+  const setVariable: CommandText | null = config.site
+    ? null
+    : commandFragment`gh variable set HOSTED_APP_ID --repo ${commandToken(repository.fullName)} --body <app-id>`;
+  const appStep = config.site
+    ? `then put the App id the page shows in ${CONFIG_FILE} as reconcile.app${config.site.app !== null ? ` (it now holds ${config.site.app})` : ""}, and commit it to ${repository.defaultBranch}`
+    : "then run set_variable with the App id the page shows in place of <app-id>";
   deps.stdout(
     render(
       {
@@ -345,13 +375,14 @@ async function register(argv: string[], deps: WorkloadDeps): Promise<void> {
               ? "none: the job that mints the token runs outside any GitHub environment, so the app admits tokens from no environment; pass --environment <name> only if that job declares one"
               : `tokens are admitted only from jobs in the GitHub environment ${environment}`,
           url,
+          ...(config.site ? { site: config.site.name } : {}),
           ...(notes.length > 0 ? { notes } : {}),
-          set_variable: setVariable,
+          ...(setVariable ? { set_variable: setVariable } : {}),
           next: [
             open
               ? "a workspace administrator reviews the values on the opened page and clicks Register"
               : "open url in a browser signed in as a workspace administrator, review the values and click Register",
-            "then run set_variable with the App id the page shows in place of <app-id>",
+            appStep,
           ],
         },
       },

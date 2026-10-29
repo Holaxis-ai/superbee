@@ -187,6 +187,54 @@ test("access grant refusals map to the CLI taxonomy, and nothing is changed", as
   assert.match(absent.help ?? "", /catalog list --hosted/);
 });
 
+test("access grant and revoke: today's hosted answers admin_on_web, and the refusal points at the web Access page", async () => {
+  const page = "https://north.example/settings/access";
+  for (const [verb, argv] of [["grant", ["ana@example.com", "--level", "read"]], ["revoke", ["ana@example.com"]]] as const) {
+    for (const accessUrl of [page, undefined, "javascript:alert(1)"]) {
+      const h = await harness();
+      h.host.hook = (r) =>
+        r.route === `access-${verb}`
+          ? Response.json({ ok: false, error: { code: "admin_on_web", message: "Manage bundle access on the web Access page. Nothing changed.", writeState: "not_applied", ...(accessUrl ? { accessUrl } : {}) } })
+          : undefined;
+      const before = [...h.host.grants];
+      const error = await rejects(runAccess(h, [verb, ACCESS_BUNDLE, ...argv, "--host", HOST, "--yes"]));
+      assert.equal(error.code, "FORBIDDEN");
+      assert.equal(error.details?.reason, "admin_on_web");
+      assert.match(error.message, /on the web, not from the CLI; nothing was changed/);
+      if (accessUrl === page) {
+        assert.equal(error.details?.access_url, page);
+        assert.equal(error.help, `a workspace admin gives or takes access on ${page}`);
+      } else {
+        assert.equal(error.details?.access_url, undefined);
+        assert.match(error.help ?? "", /settings\/access/);
+      }
+      assert.deepEqual([...h.host.grants], before);
+    }
+  }
+});
+
+test("access list: a host that names the Access page shows it, and says where access is given", async () => {
+  const h = await harness();
+  h.host.you = { level: "write", admin: false };
+  h.host.hook = (r) =>
+    r.route === "access-list"
+      ? Response.json({ ok: true, data: { bundleId: ACCESS_BUNDLE, workspace: "tenant-north", you: { principalId: "principal-7", level: "write", admin: false }, people: null, accessUrl: "https://north.example/settings/access" } })
+      : undefined;
+  const receipt = await runAccess(h, ["list", ACCESS_BUNDLE, "--host", HOST]);
+  assert.equal(receipt.access_page, "https://north.example/settings/access");
+  assert.deepEqual(receipt.help, ["a workspace admin gives or takes access on https://north.example/settings/access"]);
+});
+
+test("access --help sends sharing to the web Access page and documents no grant --yes example", async () => {
+  const h = await harness();
+  h.out.length = 0;
+  await access(["--help"], { stdout: (text) => void h.out.push(text), auth: h.auth, fetch: h.host.fetch });
+  const help = h.out.join("");
+  assert.match(help, /settings\/access/);
+  assert.match(help, /admin_on_web/);
+  assert.doesNotMatch(help, /access grant [^\n]*--yes\n/);
+});
+
 test("access grant: a bad level or person is refused before any request", async () => {
   const h = await harness();
   for (const argv of [

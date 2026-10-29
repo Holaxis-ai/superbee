@@ -154,3 +154,36 @@ test("refuses before opening anything: no config, a non-hosted site, a missing w
     assert.deepEqual(opened, [], name);
   }
 });
+
+const SITE_CONFIG = {
+  ...RELEASE_CONFIG,
+  reconcile: { adapter: "hosted", gateway: "https://mcp.getsuperbee.com", workspace: "holaxis-sites", app: "00000000-0000-4000-8000-000000000000", site: "investor-plan", environment: "portal-release", artifactDirectory: "dist" },
+};
+
+test("a site that publishes to hosted declares <bundle> site, pins reconcile.environment and points at reconcile.app", async () => {
+  const { receipt } = await run(["--no-open"], await site(SITE_CONFIG));
+  const values = fragment(receipt.url);
+  assert.deepEqual(values.getAll("bundles"), ["investor-plan read", "investor-plan site"]);
+  assert.equal(values.get("environment"), "portal-release");
+  assert.equal(receipt.environment, "portal-release");
+  assert.equal(receipt.site, "investor-plan");
+  assert.equal(receipt.set_variable, undefined);
+  assert.doesNotMatch(JSON.stringify(receipt), /HOSTED_APP_ID/);
+  assert.match(receipt.next[1], /release\.config\.json as reconcile\.app \(it now holds 00000000-0000-4000-8000-000000000000\)/);
+});
+
+test("a hosted site refuses a missing or different environment and a site that is not its bundle", async () => {
+  const cases: [string, () => Promise<unknown>, string][] = [
+    ["no environment", async () => run([], await site({ ...SITE_CONFIG, reconcile: { ...SITE_CONFIG.reconcile, environment: undefined } })), "site_environment_required"],
+    ["other environment", async () => run(["--environment", "release"], await site(SITE_CONFIG)), "environment_mismatch"],
+    ["other site", async () => run([], await site({ ...SITE_CONFIG, reconcile: { ...SITE_CONFIG.reconcile, site: "intro" } })), "release_config_site"],
+  ];
+  for (const [name, attempt, reason] of cases) {
+    await assert.rejects(attempt, (error: unknown) => {
+      assert.ok(error instanceof CliError, name);
+      assert.equal((error.details as any)?.reason, reason, name);
+      return true;
+    });
+    assert.deepEqual(opened, [], name);
+  }
+});

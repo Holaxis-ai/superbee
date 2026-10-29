@@ -46,6 +46,7 @@ import {
   type HostedWriteHost,
 } from "../hosted-auth/session.js";
 import { unboundCopyRefusal } from "../hosted/refusals.js";
+import { ACCESS_PAGE_HINT } from "../hosted/access.js";
 import { hostedFailure, type HostedSyncClient } from "../hosted/client.js";
 import { connectHostedAccount, hostedListCommand, workspaceNames } from "../hosted/account.js";
 import { bindingHostArgument, writeCheckoutMarker } from "../hosted/marker.js";
@@ -87,7 +88,7 @@ frontmatter.
 
 With --yes, signs in if needed (AUTH_REQUIRED, exit 4, carries the one link to relay and the
 command to re-run), creates the bundle in your workspace (only you can reach it, at write, until
-you share it: superbee access grant <bundle-id> <email> --level write, or in the app), then
+a workspace admin shares it on the web Access page, https://<workspace host>/settings/access), then
 converts this folder in place into a hosted checkout: nothing in it
 is rewritten, a read-only .superbee/checkout.json marker is added, and 'superbee sync' then syncs
 it with the host. A Git board is unbound first: the folder stops being a worktree of the board
@@ -557,9 +558,6 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
   let plan = await planFor(CURRENT_HOST_DOCUMENT_INPUT_BYTES);
 
   const yesCommand = yesCommandFor(target ? bindingHostArgument(target) : null);
-  const shareCommand = commandFragment`${cliInvocation()} access grant ${commandToken(bundleId)} <email> --level write${
-    target ? commandFragment` --host ${commandToken(bindingHostArgument(target))}` : commandFragment``
-  }`;
   // A checkout holds at most CHECKOUT_DOCUMENT_LIMIT documents, read a page at a time, which is also
   // staged creation's own document bound; a larger bundle (never one this command creates) would be
   // created and the folder left as it is (a Git board stays bound), to use in the app.
@@ -603,7 +601,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
           ...(blockers.length > 0 ? { blockers: { shown: Math.min(LISTED, blockers.length), total: blockers.length, rows: blockers.slice(0, LISTED) } } : {}),
           ...(gitPlan ? { git: gitPlan } : {}),
           then: [
-            `create the bundle in your workspace, reachable only by you (write) until you share it: ${shareCommand}, or in the app`,
+            `create the bundle in your workspace, reachable only by you (write) until ${ACCESS_PAGE_HINT}`,
             ...(converts
               ? [
                   "convert this folder in place into a hosted checkout: no file rewritten, a read-only .superbee/checkout.json added",
@@ -669,10 +667,8 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
   }
 
   // The checkout names the bundle in the workspace it was created in, so another of the person's
-  // workspaces holding the same id never makes it ambiguous; sharing names it the same way.
+  // workspaces holding the same id never makes it ambiguous.
   const slug = identity.workspaces.find((w) => w.tenantId === workspace)?.slug ?? null;
-  const shareFor = (inSlug: string | null) =>
-    commandFragment`${cliInvocation()} access grant ${commandToken(inSlug !== null ? `${inSlug}/${bundleId}` : bundleId)} <email> --level write --host ${commandToken(bindingHostArgument(target))}`;
   const created = await sendCreation(plan, { workspace, bundleId, name, home, canonical, target, client, yesCommand, deps, json: values.json === true });
 
   if (!converts) {
@@ -685,7 +681,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
           host: target.origin,
           host_from: chosen!.source,
           workspace,
-          access: `write (only you, until you share it: ${shareFor(slug)}, or in the app)`,
+          access: `write (only you, until ${ACCESS_PAGE_HINT})`,
           sent: {
             documents: created.documents ?? plan.documents.length,
             reserved_files: created.reserved ?? plan.reserved.length,
@@ -787,7 +783,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
         host: target.origin,
         host_from: chosen!.source,
         workspace,
-        access: `write (only you, until you share it: ${shareFor(slug)}, or in the app)`,
+        access: `write (only you, until ${ACCESS_PAGE_HINT})`,
         sent: {
           documents: created.documents ?? plan.documents.length,
           reserved_files: created.reserved ?? plan.reserved.length,
@@ -810,7 +806,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
         reverse: `${cliInvocation()} checkout --release ${commandToken(canonical)} leaves a plain local folder; the hosted bundle stays until deleted in the app`,
         help: [
           // A moved board's teammates reach the bundle only once it is shared with them.
-          ...(board ? [String(shareFor(slug))] : []),
+          ...(board ? [`share it with the board's teammates: ${ACCESS_PAGE_HINT}`] : []),
           `${cliInvocation()} status --dir ${commandToken(canonical)}`,
           `${cliInvocation()} sync --dir ${commandToken(canonical)}`,
         ],
