@@ -31,6 +31,10 @@ const SUCCESSOR_BUILD_IDENTITY_SCHEMA = "superbee.build-identity.v1";
 
 const publicationExpectedFiles = [
   "dist/publication-bridge.mjs",
+  "dist/publication-site-manifest.mjs",
+  "dist/publication/site-manifest-entry.d.ts",
+  "dist/publication/site-manifest.d.ts",
+  "dist/publication/site-manifest-core.d.ts",
   "dist/publication.mjs",
   "dist/publication/bridge-entry.d.ts",
   "dist/publication/bridge.d.ts",
@@ -315,7 +319,7 @@ export function assertPackageContract(receipt, manifest, referenceFiles, target 
   assert.deepEqual(
     tarballFiles.filter((file) => file.endsWith(".mjs")),
     expectedArtifact === SUCCESSOR_ARTIFACT
-      ? ["dist/portable-export.mjs", "dist/bundle-descriptor.mjs", "dist/publication-bridge.mjs", "dist/publication.mjs", expectedArtifact].sort()
+      ? ["dist/portable-export.mjs", "dist/bundle-descriptor.mjs", "dist/publication-site-manifest.mjs", "dist/publication-bridge.mjs", "dist/publication.mjs", expectedArtifact].sort()
       : [expectedArtifact],
     "the tarball must carry the declared executable and declared public subpath bundles",
   );
@@ -549,6 +553,28 @@ async function runInstalledProof(spec) {
       const exportDirectory = await portable.materializeExport(accepted, scratch);
       assert.deepEqual(await readFile(path.join(exportDirectory, "notes/one.md")), Buffer.from(accepted.entries.find((entry) => entry.path === "notes/one.md").bytes));
       await rm(exportDirectory, { recursive: true });
+      const siteManifest = await import(pathToFileURL(path.join(installedRoot, "dist", "publication-site-manifest.mjs")).href);
+      const siteDeclaration = siteManifest.parseSiteManifestDoc({ id: "sites/example", frontmatter: {
+        type: "Site", title: "Example", audience: "restricted", presentation: "@example/document@1.0.0", views: [],
+      } });
+      assert.equal(siteDeclaration.ok, true);
+      assert.equal(siteDeclaration.manifest.presentation.name, "@example/document");
+      const typeConsumer = path.join(scratch, "site-type-consumer");
+      await mkdir(path.join(typeConsumer, "node_modules"), { recursive: true });
+      await symlink(installedRoot, path.join(typeConsumer, "node_modules", "superbee"), "dir");
+      await writeFile(path.join(typeConsumer, "proof.mts"), [
+        'import { parseSiteManifestDoc, readPublicationSiteManifest, type SiteManifest } from "superbee/publication/site-manifest";',
+        'const parsed = parseSiteManifestDoc({id:"sites/example",frontmatter:{type:"Site",title:"Example",audience:"restricted",presentation:"p@1.0.0",views:[]}});',
+        'if (parsed.ok) { const manifest: SiteManifest = parsed.manifest; const title: string = manifest.title; }',
+        'readPublicationSiteManifest({documents:[],views:[],blobs:[]},"example");',
+      ].join("\n"));
+      await writeFile(path.join(typeConsumer, "tsconfig.json"), JSON.stringify({ compilerOptions: {
+        strict: true, noEmit: true, types: [], skipLibCheck: false, target: "ES2022", module: "NodeNext",
+      }, files: ["proof.mts"] }));
+      await runProcess(process.execPath, [path.join(repoRoot, "node_modules", "typescript", "bin", "tsc"), "-p", typeConsumer], {
+        cwd: typeConsumer, env: isolatedEnvironment({ home }),
+      });
+
       const publicationBundle = path.join(scratch, "publication-bundle");
       await mkdir(publicationBundle);
       await writeFile(path.join(publicationBundle, "index.md"), "---\nokf_version: '0.2'\n---\n# Published\n");
