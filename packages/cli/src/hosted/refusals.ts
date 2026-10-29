@@ -25,7 +25,7 @@ import type { UnboundCopy } from "../bundle-home.js";
 import { readBundleListing } from "@superbee/core/hosted-client";
 import type { HostedSyncClient } from "./client.js";
 import { bindingHostArgument, checkoutMarkerPath, unboundCopyInfo } from "./marker.js";
-import { DEFINITIONS_REFUSED, heldPathReason, type HeldFile, type HeldReason } from "./sync-scan.js";
+import { DEFINITIONS_REFUSED, heldPathReason, isViewPagePath, VIEW_PAGE_UPDATE, type HeldFile, type HeldReason } from "./sync-scan.js";
 
 type RefusalReason = "not_syncable" | "checkout_target" | "connectors";
 
@@ -50,7 +50,13 @@ interface RefusalRow {
    * about that recipe (one carrying a Connector) comes first; the up-front check passes it.
    */
   readonly deferred?: true;
+  /** A more specific why and instead for these arguments, when the row's own words are too general. */
+  readonly refine?: (args: readonly string[]) => Pick<RefusalRow, "why" | "instead"> | undefined;
 }
+
+/** A View page's key gets the command that updates it, instead of the general blob refusal. */
+const viewPageRefinement = (args: readonly string[]): Pick<RefusalRow, "why" | "instead"> | undefined =>
+  isViewPagePath(docKey(args) ?? "") ? { why: `the key is a View page; ${VIEW_PAGE_UPDATE.why}`, instead: VIEW_PAGE_UPDATE.instead } : undefined;
 
 const KINDS_INSTEAD = "to design Kinds, work in a local or Git bundle and publish it";
 
@@ -93,6 +99,7 @@ export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
     reason: "not_syncable",
     why: "a key that is not a .md document is stored as a blob; blobs, reserved files and View files do not sync, and conventions change only through the kind and recipe commands",
     when: (args) => heldKey(docKey(args) ?? "") && !isOrdinaryBlobKey(docKey(args) ?? ""),
+    refine: viewPageRefinement,
   },
   {
     words: ["delete"],
@@ -102,6 +109,7 @@ export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
       const key = docKey(args);
       return key !== undefined && heldKey(key) && !isOrdinaryBlobKey(key);
     },
+    refine: viewPageRefinement,
   },
   {
     words: ["index", "generate"],
@@ -196,7 +204,7 @@ export async function assertAllowedInHostedCheckout(command: string, args: reado
   // A model change by a person the host allows: the command runs, and sync sends the conventions.
   if (row.definitions && binding.definition_writes === "allowed") return;
   const sub = row.words.length > 1 ? args.find((token) => !token.startsWith("-")) : undefined;
-  throw hostedCheckoutRefusal(row, sub ? `${command} ${sub}` : command, binding);
+  throw hostedCheckoutRefusal({ ...row, ...row.refine?.(args) }, sub ? `${command} ${sub}` : command, binding);
 }
 
 /**

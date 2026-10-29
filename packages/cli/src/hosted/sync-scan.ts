@@ -31,6 +31,7 @@ import { mintRequestId } from "@superbee/core/uncertain-write";
 import type { IntentRecord, NewIntentRecord } from "@superbee/core/journaled-backend";
 
 import { commandToken } from "../command-text.js";
+import { cliInvocation } from "../invocation.js";
 import { readUserStateFile, writeUserStateFileAtomic0600 } from "../user-state.js";
 import { checkoutDir } from "./binding.js";
 import { digestOf, ensureParentInside, fold, parentUnsafe, placeNew, PLACEMENT_TEMP, replaceGuarded, ROOT_INDEX, UnsafePlacementError } from "./projection.js";
@@ -75,6 +76,22 @@ export function heldPathReason(rel: string, options: { readonly definitionWrites
   if (HELD_FOLDERS.some((folder) => underFolded(rel, folder))) return "convention_folder";
   if (underFolded(rel, "conventions") && !(options.definitionWrites === "allowed" && isConventionId(rel))) return "convention_folder";
   return null;
+}
+
+/** True for a View page's path: a file other than a `.md` document under `views/` (or legacy `pages/`), compared folded. */
+export function isViewPagePath(rel: string): boolean {
+  return !rel.toLowerCase().endsWith(".md") && (underFolded(rel, "views") || underFolded(rel, "pages"));
+}
+
+/** How a View page changes on the host, since sync never sends one. */
+export const VIEW_PAGE_UPDATE = Object.freeze({
+  why: "View pages do not sync as files",
+  instead: `update a View page on the host with ${cliInvocation()} view update <viewId> --expected-version <version> (${cliInvocation()} view read <viewId> prints the version)`,
+});
+
+/** Why sync holds a View page, in the person's terms, with the command that updates it. */
+export function viewPageHeldMessage(rel: string): string {
+  return `${rel} is a View page, which sync does not send; ${VIEW_PAGE_UPDATE.instead}`;
 }
 
 /**
@@ -781,7 +798,7 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
       continue;
     }
     if (!isMarkdown) {
-      report.held.push(held(rel, rel, "not_a_document", `${rel} is not a .md document; files other than documents do not sync`));
+      report.held.push(held(rel, rel, "not_a_document", isViewPagePath(rel) ? viewPageHeldMessage(rel) : `${rel} is not a .md document; files other than documents do not sync`));
       continue;
     }
     try {

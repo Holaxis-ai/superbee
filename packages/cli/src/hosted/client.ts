@@ -114,6 +114,12 @@ function wording(client: HostedClient, target: HostedTarget, resume: string | un
     return { message: `${target.origin} does not offer operations by id yet`, help: routeOptions.unavailableHelp ? `${help}; ${routeOptions.unavailableHelp}` : help };
   };
 
+  /** A gateway from before the View content routes. */
+  const viewContentMissing = {
+    message: `${target.origin} does not offer View content updates yet`,
+    help: "a later release of the host offers them",
+  };
+
   return {
     target,
     prefix,
@@ -149,6 +155,20 @@ function wording(client: HostedClient, target: HostedTarget, resume: string | un
           message: `${target.origin} does not serve document history yet`,
           help: `a later release of the host serves it; until then ${cliInvocation()} doc read ${commandToken(request.documentId)} shows the current version`,
         });
+      }
+    },
+    async readViewContent(bundleId, request) {
+      try {
+        return await client.readViewContent(bundleId, request);
+      } catch (error) {
+        throw readFailure(error, `${prefix}/view-content-read`, viewContentMissing);
+      }
+    },
+    async updateViewContent(bundleId, request) {
+      try {
+        return await client.updateViewContent(bundleId, request);
+      } catch (error) {
+        throw readFailure(error, `${prefix}/view-content-update`, viewContentMissing);
       }
     },
     async listOperations(bundleId, listOptions = {}) {

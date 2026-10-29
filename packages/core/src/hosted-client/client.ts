@@ -30,7 +30,24 @@ import {
   type HostedReadRoutes,
   type JsonObject,
 } from "../hosted-transport/index.js";
-import { MalformedAnswer, RemoteError } from "../remote-error.js";
+import { isMalformedAnswer, MalformedAnswer, RemoteError } from "../remote-error.js";
+import { HostedCarrierError } from "../hosted-transport/index.js";
+import {
+  decodeViewContentRead,
+  decodeViewContentUpdate,
+  unknownOutcome,
+  VIEW_CONTENT_READ_ANSWER_BYTES,
+  VIEW_CONTENT_READ_OPERATION,
+  VIEW_CONTENT_UPDATE_ANSWER_BYTES,
+  VIEW_CONTENT_UPDATE_OPERATION,
+  viewContentReadBody,
+  viewContentRefusal,
+  viewContentUpdateBody,
+  type HostedViewContentReadRequest,
+  type HostedViewContentReadResult,
+  type HostedViewContentUpdateRequest,
+  type HostedViewContentUpdateResult,
+} from "./view-content.js";
 import type { HostedBundleRow } from "./bundle-listing.js";
 import { HostedRouteNotServed } from "./errors.js";
 import { hostedBundleReferenceText, isWorkspaceSlug, parseHostedBundleReference } from "./reference.js";
@@ -264,6 +281,23 @@ export interface HostedClient {
   blobHead(bundleId: string, key: string, options?: { signal?: AbortSignal }): Promise<BlobHead | null>;
   /** The bytes at exactly `pin` (required), verified; null when the key is no longer at that pin. */
   readBlob(bundleId: string, key: string, options: { pin: BlobPin; signal?: AbortSignal }): Promise<HostedBlobRead | null>;
+  /**
+   * A registered View's page (`<prefix>/view-content-read`, `views.content.read.v1`), at the
+   * registration's version the caller read: the page with its version and byte count, checked
+   * against its html, or the host's refusal (`version_conflict`, `view_not_found`, ...). Throws
+   * `HostedRouteNotServed` on a host without the route, and the transport's errors otherwise.
+   */
+  readViewContent(bundleId: string, request: HostedViewContentReadRequest): Promise<HostedViewContentReadResult>;
+  /**
+   * Replace a registered View's page whole (`<prefix>/view-content-update`,
+   * `views.content.update.v1`), pinned to the registration's version and the page's. Sent once and
+   * never resent: an answer that may follow an applied update and cannot be read (no answer, a
+   * `5xx` without the operation's refusal) is the refusal `write_outcome_unknown`, `writeState:
+   * "unknown"`, for the caller to settle by reading the page again. A request refused before it
+   * left (`RangeError`, the transport's `denied`) and a host without the route
+   * (`HostedRouteNotServed`) throw. Uploading a page never approves its execution.
+   */
+  updateViewContent(bundleId: string, request: HostedViewContentUpdateRequest): Promise<HostedViewContentUpdateResult>;
 }
 
 /**
@@ -501,6 +535,47 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
     blobHeads: (bundleId, readOptions) => hostedBlobHeads(writeContext, bundleId, readOptions),
     blobHead: (bundleId, key, readOptions) => hostedBlobHead(writeContext, bundleId, key, readOptions),
     readBlob: (bundleId, key, readOptions) => hostedReadBlob(writeContext, bundleId, key, readOptions),
+    async readViewContent(bundleId, request) {
+      const route = `${prefix}/view-content-read`;
+      const answer = await send(route, viewContentReadBody(bundleId, request), VIEW_CONTENT_READ_ANSWER_BYTES);
+      if (answer.status === 200 && (answer.body as { ok?: unknown } | undefined)?.ok === true) {
+        return { ok: true, content: decodeViewContentRead(bundleId, request, answer.body, route) };
+      }
+      if (answer.status === 401) throw readRefusal(answer);
+      const refusal = viewContentRefusal(answer.status, answer.body, VIEW_CONTENT_READ_OPERATION, "not_applied", route);
+      if (refusal) return { ok: false, refusal };
+      if (answer.status === 200) throw new MalformedAnswer(`view-content-read answered an envelope that is not ${VIEW_CONTENT_READ_OPERATION}'s result`, route);
+      throw readRefusal(answer);
+    },
+    async updateViewContent(bundleId, request) {
+      const route = `${prefix}/view-content-update`;
+      const { body, bytes } = viewContentUpdateBody(bundleId, request);
+      let answer: HostedAnswer;
+      try {
+        answer = await send(route, body, VIEW_CONTENT_UPDATE_ANSWER_BYTES);
+      } catch (error) {
+        // `denied` sent nothing; `unavailable` may have left and been applied.
+        if (error instanceof HostedCarrierError && error.code === "unavailable") return { ok: false, refusal: unknownOutcome(0, "no answer was read; the update may have been applied") };
+        throw error;
+      }
+      if (answer.status === 200 && (answer.body as { ok?: unknown } | undefined)?.ok === true) {
+        return { ok: true, update: decodeViewContentUpdate(bundleId, request, bytes, answer.body, route) };
+      }
+      if (answer.status === 401) throw readRefusal(answer);
+      let refusal;
+      try {
+        // A refusal that states no write state is unknown only where the host may have failed mid-write.
+        refusal = viewContentRefusal(answer.status, answer.body, VIEW_CONTENT_UPDATE_OPERATION, answer.status >= 500 ? "unknown" : "not_applied", route);
+      } catch (error) {
+        // A failure answer this client cannot read says nothing about whether the update applied.
+        if (isMalformedAnswer(error) && answer.status >= 500) return { ok: false, refusal: unknownOutcome(answer.status, "the host's failure answer could not be read; the update may have been applied") };
+        throw error;
+      }
+      if (refusal) return { ok: false, refusal };
+      if (answer.status >= 500) return { ok: false, refusal: unknownOutcome(answer.status, `the host answered ${answer.status}; the update may have been applied`) };
+      if (answer.status === 200) throw new MalformedAnswer(`view-content-update answered an envelope that is not ${VIEW_CONTENT_UPDATE_OPERATION}'s result`, route);
+      throw readRefusal(answer);
+    },
     async history(bundleId, request) {
       const route = `${prefix}/history`;
       const answer = await send(route, historyInput(bundleId, request), HOSTED_READ_BOUNDS.historyBytes);

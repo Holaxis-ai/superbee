@@ -75,6 +75,7 @@
 // The host stores its own serialization (the managed `superbee_updated_by` field added), so a
 // committed version is never the client's local version, as on the real host.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -191,6 +192,8 @@ export interface FakeHostOptions {
    * follow it (the model-changes item above).
    */
   definitionWrites?: "allowed" | "refused";
+  /** False is a gateway from before `/view-content-read` and `/view-content-update`: both are the family's unknown-route 404. */
+  viewContent?: boolean;
   /** False is a gateway from before the paged export: a paged request's body is `400 invalid_input`. */
   exportPaging?: boolean;
   /**
@@ -277,6 +280,19 @@ export class FakeHost {
   exportHook: ((archive: Uint8Array) => Uint8Array | Response) | undefined;
   /** The listing `/operations` answers, when a test sets it; otherwise the golden `operations-200` listing. */
   operationsListing: OperationDescriptor[] | undefined;
+  /**
+   * Each View registration's page (sync v1 `views.content.*.v1`), by registration id: its key, its
+   * content type and its exact text. The registration itself is an ordinary document in `docs`.
+   */
+  readonly viewPages = new Map<string, { key: string; contentType: string; html: string }>();
+  /** Every View content update the fake applied, in order. */
+  readonly viewUpdates: { registryId: string; html: string }[] = [];
+  /**
+   * Called before a View content route answers, with the route and body: a response it returns is
+   * answered instead; `"apply-then"` with a response applies the update first and then answers it
+   * (a lost or failed answer after the write).
+   */
+  viewContentHook: ((route: "view-content-read" | "view-content-update", body: Record<string, unknown>) => Response | { applyThen: Response } | undefined) | undefined;
   /** The data a run of a listed operation other than `documents.history.v1` answers. */
   runHook: ((operationId: string, input: Record<string, unknown>) => unknown) | undefined;
   capabilities: string;
@@ -495,10 +511,52 @@ export class FakeHost {
         return this.write(route, body, headers);
       case "root":
         return this.rootWrite(body, headers);
+      case "view-content-read":
+      case "view-content-update":
+        return this.options.viewContent === false ? unknownRoute() : this.viewContent(route, body);
       default:
         return unknownRoute();
     }
   }) as typeof fetch;
+
+  /** A registered View with its page, as the host installs it: the registration document and the page's bytes. */
+  putView(registryId: string, key: string, html: string, contentType = "text/html; charset=utf-8"): { registryVersion: string; version: string } {
+    const registryVersion = this.put(registryId, { type: "View", title: registryId, entry: key }, "");
+    this.viewPages.set(registryId, { key, contentType, html });
+    return { registryVersion, version: pageVersion(html) };
+  }
+
+  private viewContent(route: "view-content-read" | "view-content-update", body: Record<string, unknown>): Response {
+    const operationId = route === "view-content-read" ? "views.content.read.v1" : "views.content.update.v1";
+    const refuse = (status: number, code: string, extra: Record<string, unknown> = {}, writeState = "not_applied") =>
+      Response.json({ ok: false, operationId, error: { code, message: `refused: ${code}`, writeState, retryable: false, ...extra } }, { status });
+    const keys = route === "view-content-read" ? ["bundleId", "registryId", "expectedRegistryVersion"] : ["bundleId", "registryId", "expectedRegistryVersion", "expectedContentVersion", "html"];
+    if (!onlyKeys(body, keys) || keys.some((key) => typeof body[key] !== "string")) return refuse(400, "invalid_input");
+    if (body.bundleId !== BUNDLE) return refuse(403, "bundle_access_denied");
+    const hooked = this.viewContentHook?.(route, body);
+    if (hooked instanceof Response) return hooked;
+    const registryId = String(body.registryId);
+    const registration = this.docs.get(registryId);
+    const page = this.viewPages.get(registryId);
+    if (!registration || registration.frontmatter.type !== "View" || !page) return refuse(404, "view_not_found");
+    if (registration.version !== body.expectedRegistryVersion) return refuse(409, "version_conflict", { target: "registry", expected: body.expectedRegistryVersion, actual: registration.version });
+    const version = pageVersion(page.html);
+    if (route === "view-content-read") {
+      return Response.json({ ok: true, operationId, data: { bundleId: BUNDLE, registryId, registryVersion: registration.version, key: page.key, version, contentType: page.contentType, byteCount: Buffer.byteLength(page.html, "utf8"), html: page.html } });
+    }
+    if (this.definitionWrites === "refused") return refuse(403, "definition_writes_refused");
+    const html = String(body.html);
+    if (Buffer.byteLength(html, "utf8") > 512 * 1024) return refuse(400, "invalid_input");
+    if (version !== body.expectedContentVersion) return refuse(409, "version_conflict", { target: "content", expected: body.expectedContentVersion, actual: version });
+    const next = pageVersion(html);
+    const changed = next !== version;
+    if (changed) {
+      this.viewPages.set(registryId, { ...page, html });
+      this.viewUpdates.push({ registryId, html });
+    }
+    const answer = Response.json({ ok: true, operationId, data: { bundleId: BUNDLE, registryId, registryVersion: registration.version, key: page.key, changed, version: next, previousVersion: version, byteCount: Buffer.byteLength(html, "utf8"), contentType: page.contentType, requestId: `req-${this.viewUpdates.length}` } });
+    return hooked && "applyThen" in hooked ? hooked.applyThen : answer;
+  }
 
   /** The root the host stores now: its exact content and version, or null without one. */
   root(): { content: string; version: string } | null {
@@ -892,6 +950,9 @@ const WRITE_BODY_KEYS = {
 } as const;
 
 const outcomeOf = (body: Record<string, unknown>): keyof typeof WRITE_BODY_KEYS => (body.expectAbsent === true ? "create" : body.body === undefined ? "delete" : "replace");
+
+/** A View page's version: the sha256 of its exact UTF-8 bytes. */
+export const pageVersion = (html: string) => `sha256:${createHash("sha256").update(Buffer.from(html, "utf8")).digest("hex")}`;
 
 /** The working copy routes' answer for a bundle no admitted workspace serves (the export's golden exchange). */
 function bundleNotFound(): Response {

@@ -38,7 +38,7 @@ import { HOSTED_AUTOPULL_STALE_MS } from "./freshness.js";
 import { bundleHomeAt, unboundLocalCopyAt, type UnboundCopy } from "../bundle-home.js";
 import { readCheckoutMarker } from "./marker.js";
 import { hostedHeldWriteRefusal, hostedManagedFieldRefusal, unboundCopyRefusal } from "./refusals.js";
-import { heldPathMessage, heldPathReason, unsendable, type HeldFile } from "./sync-scan.js";
+import { heldPathMessage, heldPathReason, isViewPagePath, unsendable, viewPageHeldMessage, type HeldFile } from "./sync-scan.js";
 
 /** Every storage backend method, as the guard treats it. The compiler keeps the table complete. */
 const ACCESS = {
@@ -228,7 +228,7 @@ function checkoutGuard(binding: CheckoutBinding, home: string, folder: StorageBa
         case "deleteBlob": {
           const key = String(args[0]);
           const reason = heldPathReason(key) ?? "not_a_document";
-          const message = reason === "convention_folder" ? heldPathMessage(key, binding.definition_writes ?? null, "app") : reason === "reserved_file" ? `${key} is a reserved OKF file, which sync does not send` : `${key} is not a .md document; files other than documents do not sync`;
+          const message = reason === "convention_folder" ? heldPathMessage(key, binding.definition_writes ?? null, "app") : reason === "reserved_file" ? `${key} is a reserved OKF file, which sync does not send` : isViewPagePath(key) ? viewPageHeldMessage(key) : `${key} is not a .md document; files other than documents do not sync`;
           return refuse({ id: key, path: key, reason, message });
         }
         default:
