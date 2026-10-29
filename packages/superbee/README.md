@@ -123,6 +123,10 @@ superbee doc open <id>    # one document, by an id from `superbee list`
 superbee view open <id>   # one exact local registered View, through a private one-use browser handoff
 ```
 
+In a hosted checkout, `superbee view read <id>` prints a View page's version on the host and
+`superbee view update <id> --expected-version <version>` replaces the page there (sync never sends
+`views/`). Uploading a page never approves its execution.
+
 ## Upgrading from aslite
 
 If you installed the earlier `@holaxis/aslite` package or its marketplace plugin: install

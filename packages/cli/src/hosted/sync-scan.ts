@@ -78,9 +78,12 @@ export function heldPathReason(rel: string, options: { readonly definitionWrites
   return null;
 }
 
-/** True for a View page's path: a file other than a `.md` document under `views/` (or legacy `pages/`), compared folded. */
+/**
+ * True for a path that could be a registered View's page: an `.html` (or `.htm`) file under
+ * `views/` (or legacy `pages/`), compared folded. Any other file there keeps the general wording.
+ */
 export function isViewPagePath(rel: string): boolean {
-  return !rel.toLowerCase().endsWith(".md") && (underFolded(rel, "views") || underFolded(rel, "pages"));
+  return /\.html?$/i.test(rel) && (underFolded(rel, "views") || underFolded(rel, "pages"));
 }
 
 /** How a View page changes on the host, since sync never sends one. */

@@ -37,6 +37,7 @@ import { assertPathOutsidePrivateState } from "../private-state-bundle-boundary.
 import type { HostedAccountDeps } from "../hosted/account.js";
 import type { CheckoutBinding } from "../hosted/binding.js";
 import { openCheckoutConnection, type CheckoutConnection } from "../hosted/checkout-connection.js";
+import { parentUnsafe } from "../hosted/projection.js";
 import { assertSafeNonDocumentOutTarget } from "./egress.js";
 
 export const VIEW_READ_USAGE = `superbee view read — read a registered View's page from a hosted checkout's host
@@ -330,6 +331,8 @@ export async function viewUpdate(argv: string[], deps: Partial<ViewContentDeps> 
   }
   const entryFile = localEntry === null ? null : path.join(root, ...localEntry.split("/"));
   const file = given ?? entryFile!;
+  // The checkout's entry is read only through plain folders: a symbolic link on the way could reach outside the checkout.
+  if (given === undefined && (await parentUnsafe(root, file))) pageBytes({ state: "unsafe" }, file);
   const read = given === undefined ? await readLeafNoFollowWithin(file, VIEW_CONTENT_MAX_BYTES) : await readExternalFileBytesNoFollowWithin(file, VIEW_CONTENT_MAX_BYTES, homeOf(deps));
   const bytes = pageBytes(read, file);
   const html = decodePage(bytes, file);
@@ -353,9 +356,13 @@ export async function viewUpdate(argv: string[], deps: Partial<ViewContentDeps> 
     // update may have applied, so it is settled like a lost answer. Anything else was not sent.
     if (!(error instanceof CliError) || error.code !== "RUNTIME") throw error;
   }
-  if (answer && !answer.ok && answer.refusal.writeState === "not_applied") throw await refusalError(answer.refusal, connection, located, again);
-  const confirmed = !answer?.ok;
-  const update = answer?.ok ? answer.update : await settle(connection, located, { sent, expected, again });
+  // The host's page already holds exactly these bytes (a re-run after a lost answer, say): nothing to change.
+  const alreadyApplied = answer !== undefined && !answer.ok && answer.refusal.code === "version_conflict" && answer.refusal.target === "content" && answer.refusal.actual === sent;
+  if (answer && !answer.ok && answer.refusal.writeState === "not_applied" && !alreadyApplied) throw await refusalError(answer.refusal, connection, located, again);
+  const confirmed = !alreadyApplied && !answer?.ok;
+  const update: HostedViewContentUpdate = alreadyApplied
+    ? { bundleId: binding.bundle_id, registryId, registryVersion: registration.version, key: registration.entry, changed: false, version: sent, previousVersion: sent, byteCount: bytes.byteLength, contentType: "", requestId: "" }
+    : answer?.ok ? answer.update : await settle(connection, located, { sent, expected, again });
 
   const copy = await checkoutCopy({ binding, home: homeOf(deps), file, sentBytes: bytes, update });
   stdout(render({
@@ -366,10 +373,14 @@ export async function viewUpdate(argv: string[], deps: Partial<ViewContentDeps> 
     previous_version: update.previousVersion,
     version: update.version,
     byte_count: update.byteCount,
+    ...(alreadyApplied ? { already_applied: true } : {}),
     ...(confirmed ? { confirmed_by: "re-read after the update's answer was lost" } : {}),
     checkout_copy: copy.state,
-    note: EXECUTION_NOTE,
-    ...(copy.note ? { notes: [copy.note] } : {}),
+    notes: [
+      ...(alreadyApplied ? [`the host's page already held exactly these bytes (${sent}), so nothing changed; --expected-version ${expected} was not its version`] : []),
+      EXECUTION_NOTE,
+      ...(copy.note ? [copy.note] : []),
+    ],
   }, mode));
 }
 
@@ -383,7 +394,7 @@ async function localRegistrationEntry(root: string, registryId: string): Promise
   }
 }
 
-function pageBytes(read: ExternalLeafRead, file: string): Buffer {
+function pageBytes(read: ExternalLeafRead | { readonly state: "unsafe" }, file: string): Buffer {
   if (read.state === "present") return read.bytes;
   if (read.state === "too_large") {
     throw new CliError("USAGE", `${file} is ${read.size} bytes; a View page is at most ${VIEW_CONTENT_MAX_BYTES} bytes (512 KiB): nothing was sent`, {
@@ -444,9 +455,9 @@ async function settle(
     };
   }
   if (current.version === context.expected) {
-    throw new CliError("TRANSIENT", `the update of '${registryId}' did not apply: the host's page is still ${context.expected}`, {
-      details: { reason: "not_applied", write_state: "not_applied", registry_id: registryId, version: current.version, retryable: true },
-      help: `re-run the same command: ${context.again}`,
+    throw new CliError("TRANSIENT", `the update of '${registryId}' had not applied when the page was read again just now: the host's page was still ${context.expected}`, {
+      details: { reason: "not_applied_as_observed", write_state: "not_applied_as_observed", registry_id: registryId, version: current.version, retryable: true },
+      help: `re-running is safe because it is pinned to --expected-version ${context.expected} (if the lost update lands first, the re-run reports it as already applied): ${context.again}`,
     });
   }
   throw new CliError("CONFLICT", `the host's page for '${registryId}' is ${current.version}: neither the page sent (${context.sent}) nor the version expected (${context.expected})`, {
@@ -472,13 +483,16 @@ async function checkoutCopy(input: {
   const entry = update.key;
   const entryFile = path.join(binding.path, ...entry.split("/"));
   const sameFile = await realpath(input.file).then(async (a) => a === (await realpath(entryFile).catch(() => null)), () => false);
+  if (await parentUnsafe(binding.path, entryFile)) return { state: "differs", note: `the checkout's ${entry} is reached through a symbolic link or a file; it was left as it is` };
   const read = sameFile ? ({ state: "present", bytes: Buffer.from(input.sentBytes) } as const) : await readLeafNoFollowWithin(entryFile, VIEW_CONTENT_MAX_BYTES);
   if (read.state === "missing") return { state: "absent" };
   if (read.state !== "present") return { state: "differs", note: `the checkout's ${entry} is not a plain file within 512 KiB; it was left as it is` };
   const version = viewContentVersion(read.bytes);
   if (version === update.version) {
     const recorded = await recordCurrent(binding, input.home, entry, entryFile, update.version);
-    return recorded ? { state: "current" } : { state: "current", note: `another command holds the checkout, so sync may list ${entry} as held until it is recorded; re-running this command records it` };
+    return recorded
+      ? { state: "current" }
+      : { state: "current", note: `another command holds the checkout, so sync may list ${entry} as held until it is recorded; record it with ${cliInvocation()} view update ${commandToken(update.registryId)} --expected-version ${commandToken(update.version)} --dir ${commandToken(binding.path)} (a no-op update of the same bytes)` };
   }
   if (version === update.previousVersion) {
     return { state: "stale", note: `the checkout's ${entry} still holds the previous page (${update.previousVersion}); copy the new page there if you keep editing it in the checkout` };
@@ -494,6 +508,7 @@ async function recordCurrent(binding: CheckoutBinding, home: string, entry: stri
     import("../hosted/projection.js"),
   ]);
   const done = await withIdleCheckoutStore(binding, home, async (store) => {
+    if (await parentUnsafe(binding.path, entryFile)) return true;
     const read = await readLeafNoFollowWithin(entryFile, VIEW_CONTENT_MAX_BYTES);
     if (read.state !== "present" || digestOf(read.bytes) !== version) return true;
     const projection = await readProjection(home, binding.checkout_id, store);

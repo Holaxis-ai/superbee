@@ -511,7 +511,7 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
   // A View page's key is refused with the command that updates it on the host, not "the app".
   for (const [command, args] of [
     ["delete", ["--doc-key=views/board/index.html", "--dir", folder]],
-    ["promote", ["x.pdf", "--doc-key", "Views/x.pdf", "--dir", folder]],
+    ["promote", ["x.html", "--doc-key", "Views/x.html", "--dir", folder]],
   ] as [string, string[]][]) {
     const error = await rejects(assertAllowedInHostedCheckout(command, args, context));
     assert.equal(error.code, "FORBIDDEN", `${command} ${args[0]}`);
@@ -519,6 +519,8 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
     assert.match(error.message, /View page; View pages do not sync as files/);
     assert.match(error.help ?? "", /view update <viewId> --expected-version <version>/);
   }
+  // Another file under views/ cannot be a View's page: it keeps the general refusal.
+  assert.equal((await rejects(assertAllowedInHostedCheckout("promote", ["x.pdf", "--doc-key", "Views/x.pdf", "--dir", folder], context))).details?.do_this_in, "app");
   // view read and view update are how a checkout reaches a View page: never refused up front.
   await assertAllowedInHostedCheckout("view", ["read", "views-registry/board", "--dir", folder], context);
   await assertAllowedInHostedCheckout("view", ["update", "views-registry/board", "--expected-version", `sha256:${"0".repeat(64)}`, "--dir", folder], context);

@@ -4,7 +4,7 @@
 // one way a checkout changes a page, pinned to the registration's and the page's versions.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, realpath, writeFile, symlink } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rename, writeFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -16,7 +16,9 @@ import { sync } from "../src/commands/sync.js";
 import { view } from "../src/commands/view.js";
 import { init } from "../src/commands/init.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
-import { checkoutDir, bindingForPath } from "../src/hosted/binding.js";
+import { checkoutDir, bindingForPath, checkoutLockName } from "../src/hosted/binding.js";
+import { isViewPagePath } from "../src/hosted/sync-scan.js";
+import { filesystemPushRoleLocks } from "@superbee/core/filesystem-push-role";
 import { BUNDLE, FakeHost, HOST, pageVersion, TOKEN, type FakeHostOptions } from "./support/fake-hosted-sync.js";
 
 const VIEW = "views-registry/board";
@@ -116,9 +118,11 @@ test("view update: the checkout's entry is sent byte for byte, pinned to both ve
   assert.equal(record.byte_count, Buffer.byteLength(next));
   assert.equal(record.key, KEY);
   assert.equal(record.checkout_copy, "current");
-  assert.match(String(record.note), /does not approve execution/);
-  assert.match(String(record.note), /pin/);
-  assert.match(String(record.note), /approving again/);
+  const notes = (record.notes as string[]).join("\n");
+  assert.match(notes, /does not approve execution/);
+  assert.match(notes, /pin/);
+  assert.match(notes, /approving again/);
+  assert.equal(record.note, undefined, "one notes list");
   assert.deepEqual(sentUpdates(h).map((request) => request.body), [
     { bundleId: BUNDLE, registryId: VIEW, expectedRegistryVersion: h.host.docs.get(VIEW)!.version, expectedContentVersion: h.v1, html: next },
   ]);
@@ -148,7 +152,7 @@ test("view update --file outside the checkout: sent, and the checkout's copy rep
   const record = await update(h, h.v1, ["--file", file]);
   assert.equal(record.update, "changed");
   assert.equal(record.checkout_copy, "stale");
-  assert.match(String((record.notes as string[])[0]), /still holds the previous page/);
+  assert.match((record.notes as string[]).join("\n"), /still holds the previous page/);
   assert.equal(await readFile(path.join(h.folder, KEY), "utf8"), PAGE);
 });
 
@@ -250,8 +254,9 @@ test("a lost answer is settled by one re-read: applied, not applied, or someone 
   await writeFile(path.join(lost.folder, KEY), "<p>v2</p>");
   const notApplied = await rejects(update(lost, lost.v1));
   assert.equal(notApplied.code, "TRANSIENT");
-  assert.equal(notApplied.details?.write_state, "not_applied");
-  assert.match(notApplied.help ?? "", /re-run the same command/);
+  assert.equal(notApplied.details?.write_state, "not_applied_as_observed");
+  assert.match(notApplied.message, /had not applied when the page was read again/);
+  assert.match(notApplied.help ?? "", /re-running is safe because it is pinned to --expected-version/);
   assert.equal(sentUpdates(lost).length, 1);
 
   // An unreadable answer, and meanwhile someone else's page: a conflict naming it.
@@ -326,4 +331,70 @@ test("sync still never sends views/: an edited page is held, naming view update"
   assert.match(JSON.stringify(row), /view update <viewId> --expected-version <version>/);
   assert.equal(sentUpdates(h).length, 0);
   assert.equal(h.host.viewPages.get(VIEW)!.html, PAGE);
+});
+
+test("a content conflict whose host version is the bytes being sent is already applied: success-shaped and recorded", async () => {
+  const h = await harness();
+  const next = "<p>v2</p>";
+  await writeFile(path.join(h.folder, KEY), next);
+  // The update landed earlier (its answer lost); the author re-runs from the version they started at.
+  h.host.viewPages.get(VIEW)!.html = next;
+  const record = await update(h, h.v1);
+  assert.equal(record.already_applied, true);
+  assert.equal(record.update, "unchanged");
+  assert.equal(record.version, pageVersion(next));
+  assert.equal(record.checkout_copy, "current");
+  assert.match((record.notes as string[])[0]!, /already held exactly these bytes/);
+  const binding = (await bindingForPath(h.home, h.folder))!;
+  const projection = JSON.parse(await readFile(path.join(checkoutDir(h.home, binding.checkout_id), "projection.json"), "utf8")) as { extras?: Record<string, string> };
+  assert.equal(projection.extras?.[KEY], pageVersion(next));
+});
+
+test("a busy checkout lock: the update lands and the note names the no-op update that records the copy", async () => {
+  const h = await harness();
+  await writeFile(path.join(h.folder, KEY), "<p>v2</p>");
+  const binding = (await bindingForPath(h.home, h.folder))!;
+  let record: Record<string, unknown> | undefined;
+  await filesystemPushRoleLocks().request(checkoutLockName(binding.path), {}, async () => {
+    record = await update(h, h.v1);
+  });
+  assert.equal(record!.update, "changed");
+  assert.equal(record!.checkout_copy, "current");
+  const note = (record!.notes as string[]).find((text) => text.includes("another command holds the checkout"))!;
+  assert.match(note, new RegExp(`view update ${VIEW} --expected-version ${pageVersion("<p>v2</p>")}`));
+  assert.match(note, /no-op update/);
+  // That no-op update, run once the lock is free, records it.
+  const again = await update(h, pageVersion("<p>v2</p>"));
+  assert.equal(again.update, "unchanged");
+  assert.equal(again.checkout_copy, "current");
+  assert.equal((again.notes as string[]).some((text) => text.includes("another command holds the checkout")), false);
+});
+
+test("the default page is never read through a symbolic link on its folder", async () => {
+  const h = await harness();
+  const outside = await realpath(await mkdtemp(path.join(tmpdir(), "sb-viewc-outside-")));
+  await writeFile(path.join(outside, "board.html"), "<p>secret from outside</p>");
+  await rename(path.join(h.folder, "views"), path.join(h.cwd, "views-moved"));
+  await symlink(outside, path.join(h.folder, "views"));
+  const error = await rejects(update(h, h.v1));
+  assert.equal(error.code, "USAGE");
+  assert.equal(error.details?.reason, "unsafe_file");
+  assert.equal(sentUpdates(h).length, 0);
+  assert.deepEqual(routes(h), [], "refused before any request");
+});
+
+test("a malformed 200 update answer is settled by the re-read, never resent", async () => {
+  const h = await harness();
+  h.host.viewContentHook = (route) => (route === "view-content-update" ? { applyThen: Response.json({ ok: true, operationId: "views.content.update.v1", data: { bundleId: BUNDLE } }) } : undefined);
+  await writeFile(path.join(h.folder, KEY), "<p>v2</p>");
+  const record = await update(h, h.v1);
+  assert.equal(record.update, "changed");
+  assert.equal(record.version, pageVersion("<p>v2</p>"));
+  assert.match(String(record.confirmed_by), /re-read/);
+  assert.equal(sentUpdates(h).length, 1);
+});
+
+test("only a path that could be a View's page points at view update", () => {
+  for (const rel of ["views/board.html", "Views/a/b.HTM", "pages/legacy.html"]) assert.equal(isViewPagePath(rel), true, rel);
+  for (const rel of ["views/logo.png", "views/board.md", "notes/page.html", "views", "viewsx/a.html"]) assert.equal(isViewPagePath(rel), false, rel);
 });
