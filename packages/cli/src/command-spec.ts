@@ -764,14 +764,14 @@ export const CLI_COMMAND_GROUPS = [
         ],
         usage: "access (list <bundle> | grant <bundle> <email-or-principal> --level read|write [--yes] | revoke <bundle> <email-or-principal> [--yes]) [--host <url>] [--workspace <id>] [--json]",
         summary:
-          "Who can reach a hosted bundle, and sharing it with a member of its workspace: list shows your own level and, for a workspace admin, everyone with access; grant and revoke preview with no request, and with --yes a workspace admin gives a member read or write (never above their own level) or takes it away; the person must already be a workspace member (invite them in the app first); repeating a grant or revoke is a no-op",
+          "Who can reach a hosted bundle: list shows your own level and the workspace's web Access page when the host names it; sharing is managed there by a workspace admin (https://<workspace host>/settings/access), not from the CLI: hosted Superbee answers grant and revoke --yes with admin_on_web and changes nothing (without --yes they only preview)",
       },
       {
         id: "workloadRegister",
         leaves: [publicLeaf("workloadRegister", "workload register", zero, 43)],
         usage: "workload register [--name <name>] [--environment <name>] [--url <workspace-url>] [--no-open] [--json]",
         summary:
-          "In a site repository, open the hosted workspace's workload app registration page filled in: the repository and owner ids and default branch from your local gh, the workflow, workspace and bundle from release.config.json, events schedule, repository_dispatch and workflow_dispatch, the bundle at read and no environment; nothing is registered until a workspace administrator reviews the page and clicks Register; --no-open prints the link; prints the gh variable set HOSTED_APP_ID command for after",
+          "In a site repository, open the hosted workspace's workload app registration page filled in: the repository and owner ids and default branch from your local gh, the workflow, workspace and bundle from release.config.json, events schedule, repository_dispatch and workflow_dispatch, the bundle at read and, for a site that publishes to hosted, its <bundle> site line and reconcile.environment (else no environment); nothing is registered until a workspace administrator reviews the page and clicks Register; --no-open prints the link; then the App id goes in release.config.json reconcile.app (a site that only reads hosted content: the printed gh variable set HOSTED_APP_ID command)",
       },
       {
         id: "bundleRetire",

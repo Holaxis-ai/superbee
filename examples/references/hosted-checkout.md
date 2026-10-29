@@ -80,12 +80,13 @@ Only run it when the person asks for the move.
 
 ## Sharing a hosted bundle, and retiring one
 
-`superbee access list <bundle>` shows the person's own access and, for a workspace admin, everyone
-with access. When the person asks you to share a bundle with someone, run
-`superbee access grant <bundle> <email> --level read|write` without `--yes` first, show the
-preview, then run the `--yes` command it names. `access revoke <bundle> <email>` works the same
-way. Only a workspace admin may change access. `person_not_member` means the person must invite
-them from the Members page in the Superbee app first. Repeating a grant or revoke is safe.
+`superbee access list <bundle>` shows the person's own access and, when the host names it, the
+workspace's web Access page (`access_page`). Sharing is managed there, not from the CLI: hosted
+Superbee answers `access grant` and `access revoke --yes` with `admin_on_web` and changes nothing.
+When the person asks you to share a bundle with someone, tell them a workspace admin gives that
+member read or write on the Access page (`https://<workspace host>/settings/access`); the person
+must already be a member of the workspace (invited from the Members page first). A bundle that
+`superbee publish --to hosted` creates is readable only by its creator until then.
 
 `superbee bundle retire <bundle>` is the person's step, never yours: it needs them to type the
 bundle id in their own terminal. If it refuses with `needs_person_at_terminal`, show the person
@@ -98,15 +99,18 @@ site's repository, `superbee workload register` reads the repository and owner i
 branch with the person's `gh` (`gh api repos/<owner>/<repo>`), and the workflow, workspace and
 bundle from `release.config.json`. It opens the workspace's workload apps page with the form filled
 in: both workflow refs `<owner>/<repo>/<workflow path>@refs/heads/<branch>`, events schedule,
-repository_dispatch and workflow_dispatch, the bundle at read, and no environment. The job that
-mints the token runs outside any GitHub environment, so the environment stays empty; pass
+repository_dispatch and workflow_dispatch, and the bundle at read. A site that publishes to hosted
+(`reconcile.adapter: "hosted"`) also gets its `<bundle> site` line and the GitHub environment
+`reconcile.environment` names (hosted refuses a site app without one). Otherwise the environment
+stays empty, because the job that mints the token runs outside any GitHub environment; pass
 `--environment <name>` only when that job declares one. `--no-open` prints the link instead, and
 `--url` names the workspace's address when it can't be derived from `content.origin`.
 
 Nothing is registered by the command. Registering is the person's step on the web: a workspace
-administrator reviews every value on the page and clicks Register. Then they run the printed
-`gh variable set HOSTED_APP_ID --repo <owner>/<repo> --body <app-id>` with the App id the page
-shows. The values travel in the link's fragment, which the browser never sends to a server.
+administrator reviews every value on the page and clicks Register. Then the App id the page shows
+goes in `release.config.json` as `reconcile.app` for a hosted site; a site that only reads hosted
+content runs the printed `gh variable set HOSTED_APP_ID --repo <owner>/<repo> --body <app-id>`
+instead. The values travel in the link's fragment, which the browser never sends to a server.
 
 ## Sign-in: relay the link, then retry
 

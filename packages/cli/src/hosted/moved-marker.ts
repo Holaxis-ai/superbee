@@ -95,8 +95,6 @@ export function movedBoardRefusal(
   options: { readonly markerUnpushed?: string } = {},
 ): CliError {
   const checkout = "unreadable" in marker ? null : commandFragment`${cliInvocation()} checkout ${commandToken(marker.bundle)} --host ${commandToken(marker.host)}`;
-  const share =
-    "unreadable" in marker ? null : commandFragment`${cliInvocation()} access grant ${commandToken(marker.bundle)} <your email> --level write --host ${commandToken(marker.host)}`;
   const who = "unreadable" in marker || marker.moved_by === undefined ? "whoever moved the board" : marker.moved_by;
   const local = unpushed.commits + unpushed.uncommitted > 0;
   return new CliError(
@@ -122,7 +120,7 @@ export function movedBoardRefusal(
         moved_back: `if the board was moved back to Git (its marker commit reverted on origin), ${cliInvocation()} sync works again: it checks origin first`,
       },
       help: checkout
-        ? `${String(checkout)} --dir <new folder>   (then use that folder; this one stays as it is); if checkout says not found, ask ${who} to share it: ${String(share)}`
+        ? `${String(checkout)} --dir <new folder>   (then use that folder; this one stays as it is); if checkout says not found, ask ${who} or a workspace admin to give you access on the web Access page (https://<workspace host>/settings/access)`
         : `ask whoever moved the board for the hosted bundle's checkout command (the marker at ${movedMarkerPath(root)} is unreadable)`,
     },
   );

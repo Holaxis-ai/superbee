@@ -1,11 +1,12 @@
-// `superbee access list|grant|revoke` — who reaches a hosted bundle, and sharing it with a named
-// member of its workspace from the CLI (superbee-hosted lane share-retire, `/sync/v1/access-*`).
+// `superbee access list|grant|revoke` — who reaches a hosted bundle (superbee-hosted lane
+// share-retire, `/sync/v1/access-*`).
 //
-// `list` reads: your own level and admin standing, and, for an admin, everyone with access.
-// `grant` and `revoke` preview without --yes (no request, the command to run in `help`), as
-// `publish` does; with --yes each is one identified request (`X-Superbee-Write-Request`). Only a
-// workspace admin may change access, never above their own level. The person must already be a
-// member of the workspace: inviting someone stays in the app.
+// `list` reads your own level. Hosted keeps sharing administration on the web Access page
+// (superbee-hosted docs/share-and-retire-bundles.md): its sync routes report `admin: false` and
+// answer `grant` and `revoke` with `admin_on_web` and, when it has one, the page's address. The
+// verbs stay so an older host and a script keep their shape: without --yes they preview (no
+// request), and with --yes they send one identified request (`X-Superbee-Write-Request`), which
+// today's hosted refuses with nothing changed.
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 
@@ -17,14 +18,14 @@ import { commandFragment, commandToken, type CommandText } from "../command-text
 import { CliError } from "../errors.js";
 import type { HostedTarget } from "../hosted-auth/discovery.js";
 import { defaultHostedAuthDeps, hostArgument, requireHostedBundleHost, workspaceForNamedHost, type HostedAuthDeps } from "../hosted-auth/session.js";
-import { accessRefusal, accessRequestId, postRoute, settleAccessRequest } from "../hosted/access.js";
+import { accessPageUrl, accessRefusal, accessRequestId, postRoute, settleAccessRequest } from "../hosted/access.js";
 import { connectHostedAccount, resolveBundleReference } from "../hosted/account.js";
 import type { HostedSyncClient } from "../hosted/client.js";
 import { hostedBundleReferenceText, parseHostedBundleReference, type HostedBundleReference } from "../hosted/reference.js";
 import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 
-export const ACCESS_USAGE = `superbee access — who can reach a hosted bundle, and sharing it with a member of its workspace
+export const ACCESS_USAGE = `superbee access — who can reach a hosted bundle
 
 Usage:
   superbee access list <bundle> [--host <url>] [--workspace <id>] [--json]
@@ -32,33 +33,34 @@ Usage:
   superbee access revoke <bundle> <email-or-principal> [--host <url>] [--workspace <id>] [--yes] [--json]
 
 Commands:
-  list      Your own access to the bundle; for a workspace admin, everyone with access and their level
-  grant     Give a member of the bundle's workspace read or write access (or change their level)
-  revoke    Take a person's access to the bundle away
+  list      Your own access to the bundle, and the workspace's Access page when the host names it
+  grant     Hosted Superbee refuses this (admin_on_web): give access on the web Access page
+  revoke    Hosted Superbee refuses this (admin_on_web): take access away on the web Access page
+
+Sharing is managed on the web, not from the CLI: a workspace admin opens the workspace's Access
+page in the Superbee app (https://<workspace host>/settings/access) and gives a member read or
+write on the bundle there, or takes it away. A new bundle is readable only by the person who
+created it until an admin does that. The person must already be a member of the workspace: invite
+them from the Members page first. 'access list' reports admin: false from hosted Superbee, which
+lists only your own access over the CLI.
+
+grant and revoke keep their shape for scripts: without --yes they only preview, with no request;
+with --yes they send one request, which hosted Superbee answers with admin_on_web (nothing
+changed) and the Access page's address when it has one.
 
 <bundle> is a hosted bundle id, or <workspace>/<bundle-id> for an id more than one of your
-workspaces holds. A person is named by their email (any case) or by the principal id 'access list'
-shows (person:...), needed when two members share an email.
-
-Without --yes, grant and revoke only preview, with no request: what will change, and the command
-that does it. With --yes they sign in if needed and send one request. Only a workspace admin may
-change access, and never above their own level on the bundle. The person must already be a member
-of the workspace: invite them from the Members page in the Superbee app first. Granting the level a
-person already has, or revoking someone with no access, succeeds and changes nothing, so a re-run is
-always safe; after an unknown outcome (TRANSIENT) a re-run within the hour re-sends the same request.
+workspaces holds. A person is named by their email (any case) or by a principal id (person:...).
 
 Options:
   --level read|write  With grant: the access to give
   --host <url>        Hosted Superbee URL (default: your last sign-in)
   --workspace <id>    Your workspace that holds the bundle, by id or slug
-  --yes               With grant or revoke: make the change (default: preview only)
+  --yes               With grant or revoke: send the request (default: preview only)
   --json              Emit compact JSON instead of TOON
   -h, --help          Show this help
 
 Examples:
   superbee access list team.notes
-  superbee access grant team.notes ana@example.com --level write --yes
-  superbee access revoke team.notes ana@example.com --yes
 `;
 
 export interface AccessDeps {
@@ -172,6 +174,7 @@ async function accessList(argv: string[], deps: AccessDeps): Promise<void> {
       })
     : null;
   const grant = commandFragment`${cliInvocation()} access grant ${commandToken(reached.reference)} <email> --level read${hostFlag(target)}`;
+  const accessPage = accessPageUrl(data.accessUrl);
   deps.stdout(
     render(
       {
@@ -185,7 +188,8 @@ async function accessList(argv: string[], deps: AccessDeps): Promise<void> {
           : data.complete === false
             ? { note: `the host listed the first ${rows.length} people with access, not all of them` }
             : {}),
-        help: you.admin ? [String(grant)] : [],
+        ...(accessPage ? { access_page: accessPage } : {}),
+        help: you.admin ? [String(grant)] : accessPage ? [`a workspace admin gives or takes access on ${accessPage}`] : [],
       },
       resolveMode(values),
     ),
@@ -284,7 +288,7 @@ async function accessChange(action: "grant" | "revoke", argv: string[], deps: Ac
   const answer = await postRoute({ client: reached.client, resume: yesCommand, reference: reached.reference }, route, body, requestId);
   // Settled either way: the host made the change, or refused it before writing anything.
   await settleAccessRequest(home, target.origin, reached.reference, person);
-  if (!answer.ok) throw accessRefusal(answer.code, answer.message, { reference: reached.reference, host: target, person, again: yesCommand });
+  if (!answer.ok) throw accessRefusal(answer.code, answer.message, { reference: reached.reference, host: target, person, again: yesCommand, ...(answer.accessUrl ? { accessUrl: answer.accessUrl } : {}) });
   const data = answer.data;
   const after = level(data.level);
   const before = level(data.before);
