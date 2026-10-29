@@ -114,6 +114,15 @@ export interface RefusalSubject {
   readonly accessUrl?: string;
 }
 
+/** From the CLI only a bundle's owner retires it; a workspace admin retires it in the web app. */
+export function retireOwnerOnlyRefusal(reference: string, origin: string, accessUrl: string | undefined, details: Record<string, unknown>): CliError {
+  const page = accessUrl ?? `the Access page of the workspace's Superbee app (https://<workspace host>/settings/access)`;
+  return new CliError("FORBIDDEN", `you may not retire '${reference}' on ${origin} from the CLI: only the bundle's owner can; a workspace admin retires it in the web app; nothing was retired`, {
+    details: { ...details, ...(accessUrl ? { access_url: accessUrl } : {}) },
+    help: `a workspace admin retires it in the web app: ${page}`,
+  });
+}
+
 /** One refusal of the access and retire routes, as the CLI taxonomy names it. */
 export function accessRefusal(code: string, hostMessage: string, subject: RefusalSubject): CliError {
   const { reference, person } = subject;
@@ -124,10 +133,7 @@ export function accessRefusal(code: string, hostMessage: string, subject: Refusa
   switch (code) {
     case "access_denied":
       if (subject.retire) {
-        return new CliError("FORBIDDEN", `you may not retire '${reference}' on ${origin}: only a workspace admin, or the bundle's owner, may`, {
-          details,
-          help: "ask a workspace admin to retire it",
-        });
+        return retireOwnerOnlyRefusal(reference, origin, subject.accessUrl, details);
       }
       return new CliError("FORBIDDEN", `you may not change who reaches '${reference}' on ${origin}: only a workspace admin may (and the bundle's owner may retire it)`, {
         details,

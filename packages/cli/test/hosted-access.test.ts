@@ -409,8 +409,23 @@ test("bundle retire: a person the preview does not allow is refused before being
   const error = await rejects(runRetire(h, [ACCESS_BUNDLE, "--host", HOST], terminal));
   assert.equal(error.code, "FORBIDDEN");
   assert.equal(error.details?.reason, "not_allowed");
+  assert.match(error.message, /only the bundle's owner can; a workspace admin retires it in the web app/);
+  assert.match(error.help ?? "", /web app: the Access page .*\/settings\/access/);
   assert.equal(terminal.prompts.length, 0, "nobody is asked to confirm what they may not do");
   assert.deepEqual(routed(h).map((r) => r.route), ["bundle-retire-preview"]);
+});
+
+test("bundle retire: a non-owner refused before the prompt is pointed at the host's web Access page", async () => {
+  const h = await harness();
+  h.host.retire.allowed = null;
+  h.host.hook = (request) =>
+    request.route === "bundle-retire-preview"
+      ? Response.json({ ok: true, data: { bundleId: ACCESS_BUNDLE, workspace: "tenant-a", name: "Team knowledge", state: "ready", people: 2, pendingInvitations: 1, allowed: null, statement: "Retires it.", accessUrl: "https://north.example/settings/access" } })
+      : undefined;
+  const error = await rejects(runRetire(h, [ACCESS_BUNDLE, "--host", HOST], personAtTerminal(() => `${ACCESS_BUNDLE}\n`)));
+  assert.equal(error.code, "FORBIDDEN");
+  assert.equal(error.details?.access_url, "https://north.example/settings/access");
+  assert.equal(error.help, "a workspace admin retires it in the web app: https://north.example/settings/access");
 });
 
 test("bundle retire takes no flag that skips the typed id: --yes is USAGE before any request", async () => {
@@ -427,7 +442,8 @@ test("bundle retire: an admin refused names who may retire, not who may change a
   h.host.hook = (request) => (request.route === "bundle-retire" ? Response.json(refused("access_denied")) : undefined);
   const error = await rejects(runRetire(h, [ACCESS_BUNDLE, "--host", HOST], personAtTerminal(() => ACCESS_BUNDLE)));
   assert.equal(error.code, "FORBIDDEN");
-  assert.match(error.message, /may not retire .*only a workspace admin, or the bundle's owner/);
+  assert.match(error.message, /from the CLI: only the bundle's owner can; a workspace admin retires it in the web app/);
+  assert.doesNotMatch(error.help ?? "", /ask a workspace admin to retire/);
 });
 
 test("access grant: a re-run naming the person in another case is a new request, not a request_conflict", async () => {
