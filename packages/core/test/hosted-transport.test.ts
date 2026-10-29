@@ -823,6 +823,77 @@ test("intent-kind guard: document.create and document.replace that agree with th
 
 // ── the fetch carrier ──────────────────────────────────────────────────────────────────────
 
+test("fetch carrier: downstream processing does not consume the upstream idle budget", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const fullyQueued of [true, false]) {
+    let aborted = false;
+    let source!: ReadableStreamDefaultController<Uint8Array>;
+    const fetcher = (async (_url: URL, init: RequestInit) => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        source = controller;
+        controller.enqueue(new Uint8Array([0]));
+        if (fullyQueued) {
+          for (let value = 1; value < 6; value++) controller.enqueue(new Uint8Array([value]));
+          controller.close();
+        }
+        init.signal!.addEventListener("abort", () => {
+          aborted = true;
+          controller.error(new DOMException("aborted", "AbortError"));
+        }, { once: true });
+      },
+    }))) as typeof fetch;
+    const carrier = createFetchCarrier({ baseUrl: "https://host.example", fetch: fetcher, deadlineMs: 50, credentials: async () => ({}) });
+    const answer = await carrier.stream("/sync/v1/snapshot", {}, new AbortController().signal);
+    assert.equal(answer.ok, true);
+    if (!answer.ok) return;
+    const reader = answer.body.getReader();
+    const values = [(await reader.read()).value![0]];
+    // A checkout can persist a batch before asking for more bytes, including after draining its buffer.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(150);
+    assert.equal(aborted, false, `fullyQueued=${fullyQueued}`);
+    if (!fullyQueued) {
+      source.enqueue(new Uint8Array([1]));
+      source.close();
+    }
+    for (;;) {
+      const step = await reader.read();
+      if (step.done) break;
+      values.push(step.value[0]);
+    }
+    assert.deepEqual(values, fullyQueued ? [0, 1, 2, 3, 4, 5] : [0, 1]);
+  }
+});
+
+test("fetch carrier: waiting for missing upstream bytes still aborts at the idle limit", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let pending!: () => void;
+  const waiting = new Promise<void>((resolve) => { pending = resolve; });
+  let aborted = false;
+  const fetcher = (async (_url: URL, init: RequestInit) => new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array([1]));
+      init.signal!.addEventListener("abort", () => {
+        aborted = true;
+        controller.error(new DOMException("aborted", "AbortError"));
+      }, { once: true });
+    },
+    pull() { pending(); },
+  }))) as typeof fetch;
+  const carrier = createFetchCarrier({ baseUrl: "https://host.example", fetch: fetcher, deadlineMs: 50, credentials: async () => ({}) });
+  const answer = await carrier.stream("/sync/v1/snapshot", {}, new AbortController().signal);
+  assert.equal(answer.ok, true);
+  if (!answer.ok) return;
+  const reader = answer.body.getReader();
+  assert.deepEqual((await reader.read()).value, new Uint8Array([1]));
+  const next = reader.read();
+  await waiting;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(50);
+  await assert.rejects(next, { name: "AbortError" });
+  assert.equal(aborted, true);
+});
+
 test("fetch carrier: a stream that is cancelled or fails mid-body leaves no idle timer behind", async () => {
   const timers = () => process.getActiveResourcesInfo().filter((name) => name === "Timeout").length;
   const bodies = [
@@ -838,8 +909,11 @@ test("fetch carrier: a stream that is cancelled or fails mid-body leaves no idle
   assert.equal(cancelled.ok, true);
   const reader = (cancelled.body as ReadableStream<Uint8Array>).getReader();
   assert.deepEqual((await reader.read()).value, new Uint8Array([1]));
+  const pending = reader.read();
+  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(timers(), before + 1);
   await reader.cancel("too large");
+  assert.deepEqual(await pending, { value: undefined, done: true });
   assert.equal(timers(), before);
 
   const failed = await carrier.stream("/sync/v1/export", {}, new AbortController().signal);

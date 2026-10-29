@@ -1,6 +1,6 @@
 {
   "name": "superbee",
-  "version": "0.4.4-pre.7",
+  "version": "0.4.4-pre.8",
   "type": "module",
   "description": "Agent-facing Superbee CLI for reading and writing local OKF knowledge bundles: context notes, docs, cross-links, and live bundle Views.",
   "keywords": [
@@ -41,6 +41,10 @@
     "./portable-export": {
       "types": "./dist/portable-export.d.ts",
       "default": "./dist/portable-export.mjs"
+    },
+    "./publication/site-manifest": {
+      "types": "./dist/publication/site-manifest-entry.d.ts",
+      "default": "./dist/publication-site-manifest.mjs"
     }
   },
   "files": [

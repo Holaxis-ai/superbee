@@ -130,17 +130,18 @@ export async function buildCliBundle(outfile, options) {
 
 /** Bundle the stable `superbee/publication` subpath with zero runtime dependencies. */
 export async function buildPublicationBundle(outfile, surface = "full", options) {
-  if (surface !== "full" && surface !== "bridge") throw new Error("unknown publication bundle surface");
+  if (surface !== "full" && surface !== "bridge" && surface !== "site-manifest") throw new Error("unknown publication bundle surface");
   return build({
     metafile: options?.metafile ?? false,
     absWorkingDir: pkgRoot,
-    entryPoints: [r(surface === "bridge" ? "../publication/src/bridge-entry.ts" : "../publication/src/index.ts")],
+    entryPoints: [r(surface === "bridge" ? "../publication/src/bridge-entry.ts" : surface === "site-manifest" ? "../publication/src/site-manifest-entry.ts" : "../publication/src/index.ts")],
     outfile,
     bundle: true,
-    platform: "node",
+    platform: surface === "site-manifest" ? "neutral" : "node",
     format: "esm",
-    target: "node22",
+    target: surface === "site-manifest" ? "es2022" : "node22",
     alias: {
+      "@superbee/core/site-manifest": r("../core/src/site-manifest.ts"),
       "@superbee/core/document-field-actions": r("../core/src/document-field-actions.ts"),
       "@superbee/core/document-mutation": r("../core/src/document-mutation.ts"),
       "@superbee/core/kinds": r("../core/src/kinds.ts"),
@@ -157,7 +158,7 @@ export async function buildPublicationBundle(outfile, surface = "full", options)
       "@superbee/view-runtime": r("../view-runtime/src/index.ts"),
       "@superbee/view-runtime/bridge": r("../view-runtime/src/bridge.ts"),
     },
-    banner: {
+    banner: surface === "site-manifest" ? undefined : {
       js: [
         "import { createRequire as ___createRequire } from 'node:module';",
         surface === "full"
