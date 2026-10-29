@@ -146,8 +146,8 @@ async function readReleaseConfig(cwd: string): Promise<ReleaseConfig> {
     if (name !== bundle)
       throw usage(`${CONFIG_FILE} reconcile.site must be the content bundle ${commandQuoted(bundle)}: a hosted site is its bundle's`, "release_config_site");
     // The registration page's site name grammar (superbee-hosted `site_name_invalid`).
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) || name.length < 3 || name.length > 32)
-      throw usage(`the bundle ${commandQuoted(name)} can't be a hosted site's name: 3 to 32 lowercase letters, digits and single hyphens`, "release_config_site_name");
+    if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(name) || name.length < 3 || name.length > 32)
+      throw usage(`the bundle ${commandQuoted(name)} can't be a hosted site's name: 3 to 32 lowercase letters, digits and single hyphens, starting with a letter`, "release_config_site_name");
     site = { name, environment: text(reconcile.environment), app: text(reconcile.app) };
   }
   return {
