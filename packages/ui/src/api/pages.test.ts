@@ -61,7 +61,7 @@ describe("listPages", () => {
     ] }), { status: 200, headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
     const pages = await listPages();
-    expect(fetchMock).toHaveBeenCalledWith("/__ui/views", { credentials: "same-origin" });
+    expect(fetchMock).toHaveBeenCalledWith("/__ui/views", expect.objectContaining({ credentials: "same-origin", signal: expect.any(AbortSignal) }));
     expect(pages.map((p) => p.id)).toEqual(["pages-registry/legacy", "views-registry/board"]);
     expect(pages[1]).toMatchObject({ bridge: "bundle-read", presentation: "workspace" });
     vi.unstubAllGlobals();
@@ -78,9 +78,10 @@ describe("fetchDocumentOpenCommand", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     await expect(fetchDocumentOpenCommand("docs/a b")).resolves.toBe("superbee doc open 'docs/a b'");
-    expect(fetchMock).toHaveBeenCalledWith("/__ui/document-open-command?id=docs%2Fa+b", {
+    expect(fetchMock).toHaveBeenCalledWith("/__ui/document-open-command?id=docs%2Fa+b", expect.objectContaining({
       credentials: "same-origin",
-    });
+      signal: expect.any(AbortSignal),
+    }));
     vi.unstubAllGlobals();
   });
 });

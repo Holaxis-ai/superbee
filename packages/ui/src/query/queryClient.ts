@@ -32,7 +32,7 @@ export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       retry: false,
-      refetchInterval: () => (getInterceptorStatus() === "ok" ? POLL_INTERVAL_MS : false),
+      refetchInterval: (query) => (getInterceptorStatus() === "ok" && query.state.status !== "error" ? POLL_INTERVAL_MS : false),
     },
     mutations: {
       retry: false,

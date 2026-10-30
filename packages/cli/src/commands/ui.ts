@@ -1,3 +1,4 @@
+import { offerManagedDocument } from "../ui/managed-authority.js";
 import { currentHost, captureRuntimeCallback } from "../runtime-context.js";
 // `superbee ui [--dir <path> | --remote <url>] [--port <n>] [--open]` — boot the local
 // web UI (plans/ui-v1.md rev 3.2): the SPA plus a same-origin `/v0/*` surface, either the
@@ -162,6 +163,7 @@ const UI_PARSE_OPTIONS = {
   port: { type: "string" },
   actor: { type: "string" },
   open: { type: "boolean" },
+  "new-tab": { type: "boolean" },
   status: { type: "boolean" },
   stop: { type: "boolean" },
   abandon: { type: "boolean" },
@@ -177,6 +179,7 @@ interface ParsedUiArgs {
     port?: string;
     actor?: string;
     open?: boolean;
+    "new-tab"?: boolean;
     status?: boolean;
     stop?: boolean;
     abandon?: boolean;
@@ -196,6 +199,7 @@ export async function ui(argv: string[], deps: Partial<UiCliDeps> = {}): Promise
     (deps.stdout ?? ((s: string) => void process.stdout.write(s)))(UI_USAGE);
     return;
   }
+  if (parsed.values["new-tab"]) throw new CliError("USAGE", "--new-tab is available only with doc open");
   if (parsed.values.abandon && !parsed.values.stop) {
     throw new CliError("USAGE", "--abandon is available only with ui --stop");
   }
@@ -283,10 +287,15 @@ export async function presentManagedLocalDocument(
     ...deps.managedController,
     launchIdentity: deps.managedController?.launchIdentity ?? await captureManagedUiLaunchIdentity(authority),
   });
+  const offer = values["new-tab"] ? null : await offerManagedDocument(receipt.record, documentId, deps.managedController?.fetch);
+  const presentation = offer && !offer.openBrowser
+    ? { state: "offered" as const, expiresAt: offer.expiresAt, observation }
+    : { state: "open_requested" as const, observation };
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
   const openBrowser = deps.openBrowser ?? defaultOpenBrowser;
   stdout(render({
     ui: "managed",
+    presentation: presentation.state,
     state: receipt.state,
     url: receipt.url,
     mode: "dir",
@@ -294,16 +303,19 @@ export async function presentManagedLocalDocument(
     document: documentId,
     actor: authority.actor,
     actor_present: authority.actor !== null,
-    help: [`open ${receipt.url} in a browser`, `${cliInvocation()} ui --status --dir ${commandToken(target.canonicalRoot)}`],
+    help: [presentation.state === "offered"
+      ? "Choose Open in the existing Superbee viewer; use --new-tab only if you want a separate tab."
+      : "Browser opening was requested; use the printed URL only if no viewer appeared.",
+      `${cliInvocation()} ui --status --dir ${commandToken(target.canonicalRoot)}`],
   }, resolveMode(values)));
-  openBrowser(receipt.url);
+  if (presentation.state === "open_requested") openBrowser(receipt.url);
   const presented = decodePresentDocumentReceiptV1({
     schemaVersion: "superbee.present-document-receipt.v1",
     operation: "present_document",
     invocationId: request.invocationId,
     target: request.target,
     ok: true,
-    presentation: { state: "open_requested", observation },
+    presentation,
   }, request);
   if (!presented.ok) throw new Error("Invalid managed local presentation evidence");
   return presented.value;

@@ -10,6 +10,7 @@ import type { HostedAccountDeps } from "../../hosted/account.js";
 
 /** The common flags every `doc` verb accepts — appended to each verb's focused help (§10). */
 const COMMON_OPTIONS = `Common options:
+  --new-tab            Open a separate browser tab instead of offering it to the current viewer
   --dir <path>         Bundle directory (default: discovered from the cwd)
   --remote <url>       Talk to a wire-protocol server instead of a local bundle
                        (mutually exclusive with --dir; remote access is always explicit)
@@ -54,7 +55,8 @@ Usage:
 The command verifies the document exists and opens its trusted DocPage route in the existing local web UI.
 It uses the same bounded Markdown renderer as the rest of Superbee; it does not export
 a second HTML copy or introduce another rendering path. Local launches return promptly and reuse one
-managed UI per exact bundle + actor. Explicit remote launches stay in the foreground. Use
+managed UI per exact bundle + actor. An already-open viewer offers the document without replacing
+what you are reading. Use --new-tab to request a separate tab. Explicit remote launches stay in the foreground. Use
 'superbee ui --status' or 'superbee ui --stop' to inspect or stop a managed local UI.
 
 Options:

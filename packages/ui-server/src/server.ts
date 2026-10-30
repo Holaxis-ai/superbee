@@ -1,3 +1,4 @@
+import { DocumentOffers } from "./document-offers.js";
 // The reusable loopback UI node:http listener: one server, same origin, either mode. Every request
 // passes the Host allowlist, then the token/cookie session check, then
 // (for a mutation) the `X-Requested-With` check, before it ever reaches the router / proxy /
@@ -202,6 +203,7 @@ export interface UiServerHandle {
 /** Per-run mutable state the request handler closes over: the page-nonce registry, the SSE fan-out, the change watcher, and the shutdown signal (aborts remote-mode upstream requests at close()). */
 interface UiRuntime {
   browserLaunches: BrowserLaunchTickets;
+  documentOffers: DocumentOffers;
   launches: PageLaunchRegistry;
   /** Launches whose single nonce response to the shell reached Node's completed-response boundary. */
   deliveredLaunches: WeakSet<PageLaunch>;
@@ -311,6 +313,37 @@ async function handleManagementRequest(
       state: runtime.management.state,
       active_clients: runtime.sse.size(),
     }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }));
+    return true;
+  }
+  if (url.pathname === "/__manage/document-offer" && req.method === "POST") {
+    if (runtime.management.state !== "adopted") {
+      await writeResponseToServerResponse(res, jsonError(409, "CONFLICT", "managed UI is not adopted"));
+      return true;
+    }
+    let target;
+    try {
+      const request = await requestFromIncomingMessage(req, url.origin, { maxBodyBytes: BROWSER_LAUNCH_MAX_BODY_BYTES });
+      target = parseBrowserLaunchTarget(await request.json());
+    } catch {
+      await writeResponseToServerResponse(res, jsonError(400, "USAGE", "a document offer requires one bounded exact document target"));
+      return true;
+    }
+    if (!target || target.kind !== "document" || runtime.management.state !== "adopted") {
+      await writeResponseToServerResponse(res, jsonError(400, "USAGE", "a document offer requires an adopted exact document target"));
+      return true;
+    }
+    const offer = runtime.documentOffers.offer(target.id, runtime.sse.size());
+    if (!offer) {
+      await writeResponseToServerResponse(res, jsonError(429, "BUSY", "the viewer has too many pending document offers"));
+      return true;
+    }
+    runtime.sse.broadcast(offer.snapshot, "document-offers");
+    await writeResponseToServerResponse(res, new Response(JSON.stringify({
+      launch_nonce: options.management.identity.launch_nonce,
+      documentId: target.id,
+      openBrowser: offer.openBrowser,
+      expiresAt: offer.snapshot.offers.find((item) => item.documentId === target.id)!.expiresAt,
+    }), { headers: { "content-type": "application/json", "cache-control": "no-store" } }));
     return true;
   }
   if (url.pathname === "/__manage/browser-launch" && req.method === "POST") {
@@ -1047,7 +1080,9 @@ async function handleRequest(
   }
 
   let response: Response;
-  if (url.pathname === "/__page/mint" && request.method === "POST") {
+  if (url.pathname === "/__ui/document-offers" && request.method === "GET") {
+    response = actionJson(runtime.documentOffers.snapshot());
+  } else if (url.pathname === "/__page/mint" && request.method === "POST") {
     response = await handleMint(request, runtime, options);
   } else if (url.pathname === "/__ui/views/authorize" && request.method === "POST") {
     response = await authorizeView(request, options, runtime);
@@ -1131,6 +1166,7 @@ export async function bootUiServer(options: UiServerOptions): Promise<UiServerHa
   const bridgeAuthority = new PageBridgeLaunchAuthority(options.bundle, launches, authorizations);
   const runtime: UiRuntime = {
     browserLaunches: new BrowserLaunchTickets(),
+    documentOffers: new DocumentOffers(),
     launches,
     deliveredLaunches: new WeakSet(),
     authorizations,

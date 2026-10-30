@@ -290,13 +290,17 @@ test("the focused modeling reference calibrates structure and pins a verified de
   assert.match(reference, /Run `superbee status`, read the new record, and inspect its links/);
 });
 
-test("npm Skill makes authoritative presentation a first-class delivery step", () => {
+test("npm Skill separates quiet artifact delivery from explicit display", () => {
   assert.match(renderedNpm, /## Make the value visible/);
   assert.match(renderedNpm, /what the\s+user or a later agent no longer needs to reconstruct/);
-  assert.match(renderedNpm, /Never return only a Markdown link or local filesystem path/);
+  assert.match(renderedNpm, /Finish delivery in the conversation with that summary and a reference/);
   assert.match(renderedNpm, /When the user\s+asks to see it, invoke/);
   assert.match(renderedNpm, /`show_document` or `show_view`/);
   assert.match(renderedNpm, /`superbee doc open <id>`/);
+  assert.match(renderedNpm, /its title and document ID or an existing safe link/);
+  assert.match(renderedNpm, /For an explicit user request to open the result in a browser, use/);
+  assert.match(renderedNpm, /If the embedded reader is unavailable, offer browser display and wait for the user's choice/);
+  assert.doesNotMatch(renderedNpm, /MCP Apps host; otherwise invoke/);
 });
 
 test("the npm Skill keeps the AXI setup conductor and mutation boundary eager", () => {

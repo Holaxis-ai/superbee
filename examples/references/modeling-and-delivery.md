@@ -47,8 +47,9 @@ instance together is appropriate.
 5. Relate the new record to its actual evidence, policies, decisions, or dependencies.
 6. Run `superbee status`, read the new record, and inspect its links. Repair only defects caused by
    this change.
-7. Remove temporary authoring or staging directories, present the authoritative result, and give a
-   brief value receipt.
+7. Remove temporary authoring or staging directories, summarize the value, and identify the
+   authoritative result by title and document reference. Follow the eager Skill's "Make the value
+   visible" guidance for explicit display requests.
 
 Use `--body-file` for multiline Markdown. Use `superbee new "<Kind>" --help` for the exact fields
 of an installed Kind. Prefer semantic no-ops, actor attribution, and version-aware updates when the

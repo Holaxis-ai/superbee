@@ -109,11 +109,11 @@ function renderSkill(input: {packageName:string;binName:string}, internal: boole
   lines.push("");
   lines.push("## Make the value visible");
   lines.push("");
-  lines.push("At a tangible result, say in one or two sentences what became durable or structured and what the");
-  lines.push("user or a later agent no longer needs to reconstruct. Show or offer the most useful authoritative");
-  lines.push("document or View once. Never return only a Markdown link or local filesystem path. When the user");
-  lines.push("asks to see it, invoke `show_document` or `show_view` in an MCP Apps host; otherwise invoke");
-  lines.push("`superbee doc open <id>` for documents or `superbee view open <viewId>` for local registered Views; read `$REFS/views/references/view-authoring-v0.md` for private browser handoff guidance. Never share handoffs; opening never approves executable bytes.");
+  lines.push("At a tangible result, say in one or two sentences what became durable or structured and what the user or a later agent no longer needs to reconstruct.");
+  lines.push("Finish delivery in the conversation with that summary and a reference to the result: its title and document ID or an existing safe link.");
+  lines.push("When the user asks to see it, invoke `show_document` or `show_view` in an MCP Apps host. If the embedded reader is unavailable, offer browser display and wait for the user's choice.");
+  lines.push("For an explicit user request to open the result in a browser, use `superbee doc open <id>` for documents or `superbee view open <viewId>` for local registered Views.");
+  lines.push("Read `$REFS/views/references/view-authoring-v0.md` for private browser handoff guidance. Never share handoffs; opening never approves executable bytes.");
   lines.push("When the tone fits, a single 🐝 may mark a successful Superbee outcome.");
   lines.push("");
   lines.push("## Hosted checkouts");

@@ -36,6 +36,11 @@ async function fixture() {
         const pathname = new URL(String(target)).pathname;
         if (pathname.endsWith("/status")) return Response.json({ protocol: worker!.authority.protocol, mode: "dir", authority_key: worker!.authority.key, bundle_root: worker!.authority.bundle_root, launch_root: worker!.authority.launch_root, actor: worker!.authority.actor, launch_nonce: `launch-${spawns}`, state: "ready", active_clients: 0 });
         assert.equal(init?.method, "POST");
+        if (pathname.endsWith("/document-offer")) {
+          const target = JSON.parse(String(init?.body)) as { kind: string; id: string };
+          assert.equal(target.kind, "document");
+          return Response.json({ launch_nonce: `launch-${spawns}`, documentId: target.id, openBrowser: true, expiresAt: Date.now() + 60_000 });
+        }
         return Response.json({ adopted: true, launch_nonce: `launch-${spawns}` });
       }) as typeof fetch,
     },
@@ -59,7 +64,7 @@ for (const [raw, id] of [["x", "x"], ["x.md", "x.md"], ["./x.md", "x"], ["./x.md
       assert.deepEqual(result.presentation.observation?.lifecycle, { state: "unverified" });
       const legacy = JSON.parse(f.out);
       const url = `http://127.0.0.1:49152/?token=browser-secret&view=doc&id=${encodeURIComponent(id!).replaceAll('%20', '+')}`;
-      assert.deepEqual(legacy, { ui: "managed", state: "started", url, mode: "dir", root: await realpath(f.dir), document: id, actor: "human:mike", actor_present: true, help: [`open ${url} in a browser`, `${cliInvocation()} ui --status --dir ${await realpath(f.dir)}`] });
+      assert.deepEqual(legacy, { ui: "managed", presentation: "open_requested", state: "started", url, mode: "dir", root: await realpath(f.dir), document: id, actor: "human:mike", actor_present: true, help: ["Browser opening was requested; use the printed URL only if no viewer appeared.", `${cliInvocation()} ui --status --dir ${await realpath(f.dir)}`] });
       assert.equal(f.opened, legacy.url);
       assert.deepEqual(f.events, ["start", "stdout", "browser"]);
       assert.equal(f.worker?.authority.actor, "human:mike");
@@ -84,7 +89,7 @@ test("public open returns void, keeps TOON output, and start/reuse/restart remai
     assert.equal(JSON.parse(f.out).state, "started"); assert.equal(f.spawns, 2);
     f.reset();
     assert.equal(await docOpen(["./x.md", "--dir", f.dir], f.deps), undefined);
-    assert.match(f.out, /^ui: managed\nstate: reused\nurl:/);
+    assert.match(f.out, /^ui: managed\npresentation: open_requested\nstate: reused\nurl:/);
     assert.match(f.out, /\ndocument: x\n/);
   } finally { await f.cleanup(); }
 });

@@ -94,7 +94,7 @@ test("doc open --help: teaches the exact-document browser path and does not boot
   assert.equal(booted, false);
 });
 
-test("doc open verifies and opens one exact document through the existing DocPage route", async () => {
+for (const scenario of ["legacy", "offered", "new-tab"] as const) test(`doc open verifies its target and respects ${scenario} presentation`, async () => {
   const { dir, cleanup } = await makeFixtureBundle();
   const home = await mkdtemp(path.join(tmpdir(), "superbee-managed-ui-home-"));
   await writeDoc(
@@ -105,7 +105,7 @@ test("doc open verifies and opens one exact document through the existing DocPag
     let out = "";
     let opened: string | undefined;
     let workerInput: import("../src/ui/managed-authority.js").ManagedUiWorkerInput | undefined;
-    await docOpen(["docs/review", "--dir", dir, "--port", "0", "--json"], {
+    await docOpen(["docs/review", "--dir", dir, "--port", "0", "--json", ...(scenario === "new-tab" ? ["--new-tab"] : [])], {
       stdout: (s) => (out += s),
       openBrowser: (url) => {
         opened = url;
@@ -139,6 +139,11 @@ test("doc open verifies and opens one exact document through the existing DocPag
             });
           }
           assert.equal(init?.method, "POST");
+          if (pathname.endsWith("/document-offer")) {
+            assert.notEqual(scenario, "new-tab");
+            assert.deepEqual(JSON.parse(String(init?.body)), { kind: "document", id: "docs/review" });
+            return scenario === "legacy" ? new Response(null, { status: 404 }) : Response.json({ launch_nonce: "launch-one", documentId: "docs/review", openBrowser: false, expiresAt: Date.now() + 60_000 });
+          }
           return Response.json({ adopted: true, launch_nonce: "launch-one" });
         }) as typeof fetch,
       },
@@ -151,7 +156,8 @@ test("doc open verifies and opens one exact document through the existing DocPag
     assert.equal(url.searchParams.get("view"), "doc");
     assert.equal(url.searchParams.get("id"), "docs/review");
     assert.ok(url.searchParams.get("token"));
-    assert.equal(opened, receipt.url, "doc open opens without a redundant --open flag");
+    assert.equal(opened, scenario === "offered" ? undefined : receipt.url);
+    assert.equal(receipt.presentation, scenario === "offered" ? "offered" : "open_requested");
     assert.equal(workerInput!.authority.bundle_root, await realpath(dir));
     assert.equal(workerInput!.authority.launch_root, path.resolve(dir));
     assert.equal(workerInput!.launch_identity.canonical_root, await realpath(dir));
@@ -233,6 +239,7 @@ test("managed authority converges canonically while preserving the selected lexi
           };
         },
         fetch: (async (target, init) => {
+          if (new URL(String(target)).pathname.endsWith("/document-offer")) return new Response(null, { status: 404 });
           if (new URL(String(target)).pathname.endsWith("/status")) {
             return Response.json({
               protocol: 1,

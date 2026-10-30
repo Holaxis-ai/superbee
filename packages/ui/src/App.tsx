@@ -1,3 +1,4 @@
+import { DocumentOffers } from "./views/DocumentOffers.js";
 /**
  * App shell: mounts the ONE global interceptor gate (plans/ui-v1.md rev 3.2) in front of whichever
  * view the URL names. The pages-spike (tasks/ui-pages-spike) makes the LAUNCHER the SOLE surface:
@@ -14,6 +15,7 @@ import { Launcher } from "./views/Launcher.js";
 import { PageFrame } from "./views/PageFrame.js";
 import { DocPage } from "./views/DocPage.js";
 import { BrandMark } from "./BrandMark.js";
+import { LiveUpdateStatus } from "./views/LiveUpdateStatus.js";
 
 export function App() {
   const interceptorStatus = useInterceptorStatus();
@@ -39,6 +41,8 @@ export function App() {
           Superbee
         </button>
       </header>
+      <DocumentOffers />
+      <LiveUpdateStatus />
       <main>{view}</main>
     </div>
   );

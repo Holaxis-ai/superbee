@@ -751,3 +751,25 @@ export async function stopManagedUi(
     return { stopped: true, abandoned: false, authority };
   });
 }
+
+/** A stored offer is not a navigation receipt. Unknown responses never authorize a duplicate browser launch. */
+export async function offerManagedDocument(
+  record: ManagedUiRecord,
+  documentId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ openBrowser: boolean; expiresAt: number } | null> {
+  const response = await boundedFetch(fetchImpl, `http://127.0.0.1:${record.port}/__manage/document-offer`, {
+    method: "POST", headers: { ...managementHeaders(record), "content-type": "application/json" },
+    body: JSON.stringify({ kind: "document", id: documentId }),
+  });
+  if (response.status === 404) return null;
+  const value = response.value;
+  if (!response.ok || !object(value) || !exactKeys(value, ["launch_nonce", "documentId", "openBrowser", "expiresAt"]) ||
+      value.launch_nonce !== record.launch_nonce || value.documentId !== documentId ||
+      typeof value.openBrowser !== "boolean" || !Number.isSafeInteger(value.expiresAt) || (value.expiresAt as number) < 0) {
+    throw new CliError("TRANSIENT", "could not confirm the document offer; no additional browser tab was opened", {
+      help: "Inspect the existing Superbee viewer or explicitly reopen with --new-tab.",
+    });
+  }
+  return { openBrowser: value.openBrowser, expiresAt: value.expiresAt as number };
+}

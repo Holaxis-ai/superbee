@@ -328,3 +328,87 @@ test("served bootstrap scrubs its private fragment before the exchange and navig
     assert.equal(calls, 1);
   } finally { await server.close(); }
 });
+
+test("managed document offers coalesce concurrent opens and require the exact controller/session", async () => {
+  const server = await boot();
+  const other = await boot();
+  try {
+    await fetch(url(server, "/__manage/adopt"), { method: "POST", headers: managementHeaders });
+    const send = (id: string, headers = managementHeaders) => fetch(url(server, "/__manage/document-offer"), {
+      method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ kind: "document", id }),
+    });
+    assert.equal((await send("docs/a", {} as typeof managementHeaders)).status, 403);
+    assert.equal((await send("../outside")).status, 400);
+    const replies = await Promise.all([send("docs/a"), send("docs/b"), send("docs/a")]);
+    const results = await Promise.all(replies.map((response) => response.json()));
+    assert.equal(results.filter((result) => result.openBrowser).length, 1);
+    assert.equal((await fetch(url(server, "/__ui/document-offers"))).status, 403);
+    const snapshot = await (await fetch(url(server, "/__ui/document-offers"), { headers: { cookie: `${COOKIE}=${SESSION}` } })).json();
+    assert.deepEqual(snapshot.offers.map((item: { documentId: string }) => item.documentId), ["docs/a", "docs/b"]);
+    const otherSnapshot = await (await fetch(url(other, "/__ui/document-offers"), { headers: { cookie: `${COOKIE}=${SESSION}` } })).json();
+    assert.deepEqual(otherSnapshot.offers, []);
+    const controller = new AbortController();
+    const stream = await fetch(url(server, "/events"), { headers: { cookie: `${COOKIE}=${SESSION}` }, signal: controller.signal });
+    try {
+      const offered = await (await send("docs/c")).json();
+      assert.equal(offered.openBrowser, false);
+      const reader = stream.body!.getReader();
+      let text = "";
+      while (!text.includes('"documentId":"docs/c"')) {
+        const part = await reader.read();
+        assert.equal(part.done, false);
+        text += new TextDecoder().decode(part.value);
+      }
+      assert.match(text, /event: document-offers/);
+    } finally { controller.abort(); }
+  } finally { await server.close(); await other.close(); }
+});
+
+test("document offer expiry, capacity and pending-open recovery are finite", async () => {
+  const { DocumentOffers } = await import("../src/document-offers.js");
+  let now = 1_000;
+  const offers = new DocumentOffers(() => now);
+  assert.equal(offers.offer("docs/a", 0)!.openBrowser, true);
+  assert.equal(offers.offer("docs/b", 0)!.openBrowser, false);
+  now += 10_000;
+  assert.equal(offers.offer("docs/c", 0)!.openBrowser, true);
+  for (let i = 3; i < 20; i++) assert.ok(offers.offer(`docs/${i}`, 1));
+  assert.equal(offers.offer("docs/overflow", 1), null);
+  assert.ok(offers.offer("docs/a", 1), "a duplicate coalesces at capacity");
+  const oldRevision = offers.snapshot().revision;
+  now += 60_000;
+  assert.deepEqual(offers.snapshot().offers, []);
+  assert.ok(offers.snapshot().revision > oldRevision);
+  assert.equal(offers.offer("docs/new", 0)!.openBrowser, true);
+});
+
+test("live-update streams reserve a browser connection for page loads and recover capacity on close", async () => {
+  const server = await boot();
+  const controllers: AbortController[] = [];
+  const headers = { cookie: `${COOKIE}=${SESSION}` };
+  try {
+    for (let i = 0; i < 5; i++) {
+      const controller = new AbortController();
+      controllers.push(controller);
+      assert.equal((await fetch(url(server, "/events"), { headers, signal: controller.signal })).status, 200);
+    }
+    const overflow = await fetch(url(server, "/events"), { headers });
+    assert.equal(overflow.status, 204);
+    assert.equal(overflow.headers.get("cache-control"), "no-store");
+    assert.equal(await overflow.text(), "");
+    assert.equal((await fetch(url(server, "/"), { headers })).status, 200);
+    assert.equal((await fetch(url(server, "/events"))).status, 403);
+    controllers[0]!.abort();
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const status = await (await fetch(url(server, "/__manage/status"), { headers: managementHeaders })).json() as { active_clients: number };
+      if (status.active_clients === 4) break;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const replacement = new AbortController();
+    controllers.push(replacement);
+    assert.equal((await fetch(url(server, "/events"), { headers, signal: replacement.signal })).status, 200);
+  } finally {
+    for (const controller of controllers) controller.abort();
+    await server.close();
+  }
+});
