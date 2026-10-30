@@ -28,6 +28,12 @@ const ROADMAP: OfferRow = {
   command: `${INVOKE} recipe add roadmap`,
 };
 
+const SITE: OfferRow = {
+  recipe: "site",
+  offer: "describe a private content site using a shared presentation",
+  command: `${INVOKE} recipe add site`,
+};
+
 const ROWS: Array<{
   name: string;
   byType: Record<string, number>;
@@ -35,14 +41,14 @@ const ROWS: Array<{
   expected: OfferRow[];
 }> = [
   {
-    // AC1: the applied context-notes Convention excludes its own recipe; the other two derive.
+    // AC1: the applied context-notes Convention excludes itself; the other three fill the cap.
     name: "fresh-default (context-notes applied, no instances)",
     byType: { Convention: 1 },
     conventionIds: ["conventions/context-note"],
-    expected: [WORK_TRACKING, ROADMAP],
+    expected: [WORK_TRACKING, ROADMAP, SITE],
   },
   {
-    // AC3 + cap + ordering: nothing applied, nothing governed — all three, builtin order, at the cap.
+    // AC3 + cap + ordering: four capabilities are unused; only the first three fill the cap.
     name: "recipe-none-empty (0 docs)",
     byType: {},
     conventionIds: [],
@@ -52,26 +58,26 @@ const ROWS: Array<{
     name: "applied-with-instances (work-tracking + Task docs): only unapplied recipes derive",
     byType: { Convention: 2, "Context Note": 3, Task: 4 },
     conventionIds: ["conventions/context-note", "conventions/task"],
-    expected: [ROADMAP],
+    expected: [ROADMAP, SITE],
   },
   {
     name: "applied-without-instances: an applied recipe never re-offers",
     byType: { Convention: 2 },
     conventionIds: ["conventions/context-note", "conventions/task"],
-    expected: [ROADMAP],
+    expected: [ROADMAP, SITE],
   },
   {
     // AC3: hand-authored governed instances suppress the recipe even when it is not applied.
     name: "instances-without-recipe (Task docs, no conventions)",
     byType: { Task: 2 },
     conventionIds: [],
-    expected: [CONTEXT_NOTES, ROADMAP],
+    expected: [CONTEXT_NOTES, ROADMAP, SITE],
   },
   {
     name: "one governed type of several suffices (Roadmap Item docs suppress roadmap)",
     byType: { "Roadmap Item": 1 },
     conventionIds: [],
-    expected: [CONTEXT_NOTES, WORK_TRACKING],
+    expected: [CONTEXT_NOTES, WORK_TRACKING, SITE],
   },
   {
     name: "partial application still counts as unapplied (roadmap convention without roadmap-item)",
@@ -80,13 +86,26 @@ const ROWS: Array<{
     expected: [CONTEXT_NOTES, WORK_TRACKING, ROADMAP],
   },
   {
-    name: "all capabilities in use: no offers at all",
+    name: "older mature bundle still offers missing Site authoring scaffolding",
     byType: { Convention: 4, Task: 1 },
+    conventionIds: ["conventions/context-note", "conventions/task", "conventions/roadmap", "conventions/roadmap-item"],
+    expected: [SITE],
+  },
+  {
+    name: "a Site instance suppresses missing Site scaffolding without an installed convention",
+    byType: { Convention: 4, Site: 1 },
+    conventionIds: ["conventions/context-note", "conventions/task", "conventions/roadmap", "conventions/roadmap-item"],
+    expected: [],
+  },
+  {
+    name: "all capabilities in use: no offers at all",
+    byType: { Convention: 5, Task: 1 },
     conventionIds: [
       "conventions/context-note",
       "conventions/task",
       "conventions/roadmap",
       "conventions/roadmap-item",
+      "conventions/site",
     ],
     expected: [],
   },

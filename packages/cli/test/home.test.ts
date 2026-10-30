@@ -74,6 +74,7 @@ const ALL_APPLIED_CONVENTION_IDS = [
   "conventions/task",
   "conventions/roadmap",
   "conventions/roadmap-item",
+  "conventions/site",
 ];
 const BUILT_CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../superbee/dist/superbee.mjs");
 
@@ -149,7 +150,7 @@ test("A1.1c governed instances suppress a recipe's offer even when it is not app
   const offers = bundle.offers as Array<{ recipe: string }>;
   assert.deepEqual(
     offers.map(({ recipe }) => recipe),
-    ["context-notes", "roadmap"],
+    ["context-notes", "roadmap", "site"],
   );
   assert.equal(bundle.next, undefined);
 });
