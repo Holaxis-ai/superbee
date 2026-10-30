@@ -41,6 +41,9 @@ test('packed Markdown renderer is a CLI-free browser and static library', async 
 
     const entry = path.join(scratch, 'consumer.ts');
     await writeFile(entry, `import { renderMarkdown, type RenderOptions } from '@superbee/markdown-renderer';
+import type { StaticRenderOptions } from '@superbee/markdown-renderer/static';
+const staticOptions: StaticRenderOptions = { fromId: 'slides/a', imageAssets: ['/assets/screens/example.png'] };
+void staticOptions;
 const options: RenderOptions = { fromId: 'tasks/a', onNavigateDoc: () => {},
   hrefForDoc: id => '/bundles/one/documents/' + encodeURIComponent(id) };
 export const rendered = renderMarkdown('See [target](../docs/b.md).', options);
@@ -62,6 +65,11 @@ const result = renderMarkdownToStaticHtml('# Hello\\n\\n<script>alert(1)</script
 assert.match(result.html, /<h1>Hello<\\/h1>/);
 assert.ok(!result.html.includes('<script>'));
 assert.equal(result.bounded, false);
+const image = renderMarkdownToStaticHtml('![Example](/assets/screens/example.png)', {
+  fromId: 'slides/a', imageAssets: ['/assets/screens/example.png'],
+});
+assert.ok(image.html.includes('src="/assets/screens/example.png"'));
+assert.ok(image.html.includes('alt="Example"'));
 `);
     await exec(process.execPath, [probe], { cwd: scratch });
   } finally {

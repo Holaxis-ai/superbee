@@ -23,7 +23,7 @@
  * allowlist admitted ({@link admitExternalLink}), never the raw string. Everything else the
  * resolver rejects (external URLs off the allowlist or with no allowlist, `javascript:`/`data:`/any
  * scheme, non-`.md`, reserved files) renders as inert text.
- * Images are inert in v1.
+ * Images are inert by default; a trusted inert/static host may admit exact local asset paths.
  *
  * RESOURCE BOUNDS: body bytes capped ({@link MAX_BODY_CHARS}, with an honest truncation notice —
  * the AXI `read` truncation's human analog) and the walk bounded ({@link MAX_NODES} nodes,
@@ -84,6 +84,10 @@ export interface RenderOptions {
    * {@link admitExternalLink} for the full refusal set; both profiles honor the option.
    */
   externalLinkHosts?: readonly string[];
+  /** Exact canonical /assets image paths admitted by a trusted static-presentation host.
+   * Honored only by the inert profile. The host owns frozen bytes, MIME and serving policy;
+   * this renderer performs no loading and never treats SVG bytes as inline markup. */
+  imageAssets?: readonly string[];
   /** Resolve a concept id to its title, for the inline "verb → title" edge rows (falls back to the id). */
   titleFor?: (conceptId: string) => string | undefined;
   /**
@@ -110,6 +114,26 @@ export interface RenderOptions {
 function resolveBound(requested: number | undefined, max: number): number {
   if (requested === undefined || !Number.isFinite(requested) || requested < 1) return max;
   return Math.min(Math.floor(requested), max);
+}
+
+const MAX_STATIC_IMAGE_ASSETS = 4_096;
+const STATIC_IMAGE_PATH = /^\/assets\/(?:[A-Za-z0-9][A-Za-z0-9._-]*\/)*[A-Za-z0-9][A-Za-z0-9._-]*\.(?:png|jpe?g|gif|webp|avif|svg)$/;
+
+/** The lookup contains only caller-admitted canonical paths. A Markdown target may select an
+ * exact entry but can never supply an alternate URL, query, fragment or traversal spelling. */
+function staticImageLookup(options: RenderOptions): ReadonlyMap<string, string> {
+  const lookup = new Map<string, string>();
+  if (options.profile !== "inert" || options.imageAssets === undefined) return lookup;
+  if (!Array.isArray(options.imageAssets) || options.imageAssets.length > MAX_STATIC_IMAGE_ASSETS) {
+    throw new TypeError("static image asset inventory must be a bounded array");
+  }
+  for (const path of options.imageAssets) {
+    if (typeof path !== "string" || path.length > 2_048 || path.trim() !== path || !STATIC_IMAGE_PATH.test(path)) {
+      throw new TypeError("static image asset paths must be canonical local image paths");
+    }
+    lookup.set(path, path);
+  }
+  return lookup;
 }
 
 /** Flatten a node's text content — the inert fallback for unknown/rejected constructs. */
@@ -264,6 +288,7 @@ interface WalkState {
   count: number;
   bounded: boolean;
   options: RenderOptions;
+  imageAssets: ReadonlyMap<string, string>;
   maxNodes: number;
 }
 
@@ -403,8 +428,12 @@ function renderNode(node: RootContent | Node, state: WalkState, depth: number, i
         </a>
       );
     }
-    case "image":
-      // v1: images are inert (figures are the next unit PR; raster images a recorded deferral).
+    case "image": {
+      const source = state.imageAssets.get((node as { url?: string }).url ?? "");
+      if (source !== undefined) {
+        return <img key={index} src={source} alt={(node as { alt?: string }).alt ?? ""}
+          loading="lazy" decoding="async" referrerPolicy="no-referrer" />;
+      }
       return (
         <span
           key={index}
@@ -414,6 +443,7 @@ function renderNode(node: RootContent | Node, state: WalkState, depth: number, i
           [image{(node as { alt?: string }).alt ? `: ${(node as { alt?: string }).alt}` : ""}]
         </span>
       );
+    }
     case "table": {
       const align = ((node as { align?: (AlignType | null)[] }).align ?? []) as AlignType[];
       const rows = (node as Parent).children;
@@ -508,7 +538,7 @@ export function renderMarkdown(body: string, options: RenderOptions): RenderedMa
     extensions: [gfm()],
     mdastExtensions: [gfmFromMarkdown()],
   });
-  const state: WalkState = { count: 0, bounded: false, options, maxNodes };
+  const state: WalkState = { count: 0, bounded: false, options, maxNodes, imageAssets: staticImageLookup(options) };
   // Render a run of bare concept-link paragraphs inline as one "verb → target" edge list (authors
   // write one edge per line, so merge the consecutive run). Non-bare paragraphs and inline links
   // render normally through renderNode.

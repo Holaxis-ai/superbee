@@ -21,7 +21,7 @@ it, links retain the local reader's `?view=doc&id=...` route. Modified clicks us
 normal browser navigation; ordinary clicks invoke `onNavigateDoc`. Every target
 read still needs the host's authorization check.
 
-Raw HTML is literal text. External links and images are inert; Mermaid remains
+Raw HTML is literal text. External links and images are inert by default; Mermaid remains
 a code block. A host may opt in to real external links with `externalLinkHosts`,
 a list of bare host names. A link renders as an anchor only when its target
 parses with the WHATWG `URL` constructor to `https:` with no userinfo, no IP
@@ -42,6 +42,31 @@ For static inert HTML use `renderMarkdownToStaticHtml` or
 `renderDocumentToStaticHtml` from `@superbee/markdown-renderer/static`.
 The static adapter has no interactive routing. It shares the same parser and
 closed element construction as the interactive entrypoint.
+
+A trusted static presentation may opt in to local images with an exact asset inventory:
+
+```ts
+renderMarkdownToStaticHtml(body, {
+  fromId: documentId,
+  imageAssets: ['/assets/screens/example.png', '/assets/screens/model.svg'],
+});
+```
+
+Only a Markdown image whose target exactly matches an inventory entry becomes a React-constructed
+`img` element. Entries must be canonical root-relative `/assets/` image paths, at most 2048 characters,
+with ASCII alphanumeric-leading segments and a PNG, JPEG, GIF, WebP, AVIF or SVG suffix. The inventory
+has at most 4096 entries. Schemes, protocol-relative URLs, queries/fragments, encoded paths,
+backslashes, whitespace, dot segments and other suffixes are refused. Unlisted images retain the
+inert alt-text fallback. React escapes the alt text and attributes; SVG remains an image URL and is
+never inserted as markup. Images are lazy-loaded with a no-referrer policy.
+
+The caller must derive this inventory from already-admitted immutable presentation assets and own
+their bytes, MIME, response headers and access checks. This renderer does not load, authorize or
+inspect the image bytes, widen asset publication rules, or make arbitrary SVG safe for other
+embedding contexts. Never populate the inventory directly from bundle-authored renderer options.
+Interactive rendering ignores this option. The bridge-shaped `renderDocumentToStaticHtml` adapter
+does not accept or forward it; its image behavior remains inert. Existing body/node/depth bounds
+also apply when the static image option is enabled.
 
 ## Package preparation
 
