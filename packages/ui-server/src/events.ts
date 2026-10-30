@@ -44,8 +44,8 @@ export class SseHub {
   }
 
   /** Serialize `payload` as one `data:` frame and write it to every live client (dropping any whose write throws). */
-  broadcast(payload: unknown): void {
-    const frame = `data: ${JSON.stringify(payload)}\n\n`;
+  broadcast(payload: unknown, event?: "document-offers"): void {
+    const frame = `${event ? `event: ${event}\n` : ""}data: ${JSON.stringify(payload)}\n\n`;
     for (const res of this.clients) {
       try {
         res.write(frame);

@@ -147,7 +147,7 @@ export function Launcher() {
   const configQuery = useQuery({
     queryKey: ["ui-config"],
     queryFn: fetchConfig,
-    refetchInterval: (query) => sharingRefreshDelay(query.state.data?.sharing),
+    refetchInterval: (query) => query.state.status === "error" ? false : sharingRefreshDelay(query.state.data?.sharing),
   });
   const pagesQuery = useQuery({ queryKey: ["pages"], queryFn: listPages });
   const [orientationDismissed, setOrientationDismissed] = useState<boolean | null>(null);
@@ -259,6 +259,8 @@ export function Launcher() {
                 </button>
               )}
             </>
+          ) : configQuery.isError ? (
+            <span role="alert">Could not load this bundle: {(configQuery.error as Error).message} <button type="button" onClick={() => void configQuery.refetch()}>Retry</button></span>
           ) : (
             "Loading bundle…"
           )}

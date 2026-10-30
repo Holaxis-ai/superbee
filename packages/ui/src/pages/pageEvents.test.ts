@@ -13,6 +13,8 @@ class FakeEventSource implements EventSourceLike {
   onopen: (() => void) | null = null;
   onmessage: ((ev: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
+  readonly eventListeners = new Map<string, (event: { data: string }) => void>();
+  addEventListener(event: string, listener: (event: { data: string }) => void): void { this.eventListeners.set(event, listener); }
   readyState = 0; // CONNECTING
   closed = false;
   constructor(readonly url: string) {}
@@ -57,6 +59,22 @@ describe("createChangeStream", () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("dispatches validated offers separately from document changes", () => {
+    const s = stream();
+    const changes = vi.fn();
+    const offers = vi.fn();
+    s.subscribeToChanges(changes);
+    const stop = s.subscribeToDocumentOffers(offers);
+    sources[0]!.eventListeners.get("document-offers")!({ data: JSON.stringify({ revision: 2, offers: [{ documentId: "docs/new", expiresAt: 10000 }] }) });
+    expect(offers).toHaveBeenCalledOnce();
+    expect(changes).not.toHaveBeenCalled();
+    sources[0]!.eventListeners.get("document-offers")!({ data: JSON.stringify({ revision: 3, offers: [{ documentId: null, expiresAt: 10000 }] }) });
+    expect(offers).toHaveBeenCalledOnce();
+    sources[0]!.emit(CHANGE);
+    expect(changes).toHaveBeenCalledWith(CHANGE);
+    stop();
   });
 
   it("fans change frames to subscribers; the first open fires NO resync", () => {

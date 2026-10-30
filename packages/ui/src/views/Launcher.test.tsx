@@ -133,6 +133,20 @@ describe("home surface", () => {
     }
   }
 
+  it("shows configuration failure and recovers on explicit Retry", async () => {
+    vi.mocked(fetchConfig).mockRejectedValueOnce(new TypeError("Connection unavailable"));
+    await render();
+    expect(container.textContent).toContain("Could not load this bundle: Connection unavailable");
+    expect(container.textContent).not.toContain("Loading bundle…");
+    vi.mocked(fetchConfig).mockResolvedValue({ ...BASE_CONFIG, name: "Recovered bundle" });
+    const retry = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Retry");
+    expect(retry).toBeDefined();
+    await act(async () => { retry!.click(); await flush(); });
+    await act(flush);
+    expect(container.textContent).toContain("Recovered bundle");
+    expect(container.textContent).not.toContain("Could not load this bundle");
+  });
+
   it("empty state is a short pointer to the agent ask — the orientation panels own the full Views explanation", async () => {
     storage.setItem(orientationStorageKey(BUNDLE_ROOT), "dismissed");
     await render();

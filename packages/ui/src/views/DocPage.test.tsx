@@ -1,3 +1,5 @@
+import { queryClient as runtimeQueryClient, POLL_INTERVAL_MS } from "../query/queryClient.js";
+import { ReadTimeoutError } from "../api/read.js";
 /**
  * DocPage pins (designs/doc-reader rev 2): header card renders kind + KIND-DECLARED chips only
  * (mechanism in the shell, meaning from the bundle), body renders through the bounded pipeline,
@@ -103,6 +105,27 @@ describe("DocPage", () => {
       });
     }
   }
+
+  it("keeps a timed-out initial read recoverable instead of polling back into loading", async () => {
+    vi.useFakeTimers();
+    runtimeQueryClient.clear();
+    vi.mocked(getDoc).mockRejectedValue(new ReadTimeoutError());
+    try {
+      await act(async () => {
+        root.render(<QueryClientProvider client={runtimeQueryClient}><DocPage docId="docs/timed" /></QueryClientProvider>);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 4); });
+      expect(container.textContent).toContain("did not respond in time");
+      expect(container.textContent).not.toContain("Loading doc…");
+      expect(getDoc).toHaveBeenCalledTimes(1);
+      vi.mocked(getDoc).mockResolvedValue({ doc: { id: "docs/timed", frontmatter: { type: "Doc", title: "Recovered" }, body: "Recovered body" }, version: "sha256:recovered" });
+      const retry = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Retry")!;
+      await act(async () => { retry.click(); await vi.advanceTimersByTimeAsync(0); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(container.textContent).toContain("Recovered body");
+    } finally { runtimeQueryClient.clear(); vi.useRealTimers(); }
+  });
 
   it("renders header (kind pill + declared chips only), body, and backlinks", async () => {
     vi.mocked(getDoc).mockResolvedValue({

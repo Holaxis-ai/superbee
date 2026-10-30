@@ -1573,3 +1573,6 @@ body {
 }
 
 .action-body-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 16rem; overflow: auto; margin: 0; }
+
+.document-offers { margin: 1rem; padding: .75rem 1rem; border: 1px solid var(--border, #aaa); border-radius: .5rem; }
+.document-offers li { margin-block: .4rem; overflow-wrap: anywhere; }

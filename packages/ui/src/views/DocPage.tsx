@@ -137,6 +137,7 @@ export function DocPage({ docId }: { docId: string }) {
               ? `No doc '${docId}' exists in this bundle${docQuery.isRefetchError ? " — it may have been removed" : ""}.`
               : `Could not load '${docId}': ${err instanceof Error ? err.message : String(err)}`}
           </p>
+          {!gone && <button type="button" onClick={() => void docQuery.refetch()}>Retry</button>}
           <button type="button" className="page-back" onClick={() => navigate({ view: "launcher" })}>
             Back to home
           </button>

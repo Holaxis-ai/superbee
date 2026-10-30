@@ -1,3 +1,4 @@
+import { withReadDeadline } from "./read.js";
 /**
  * Pages-spike API surface (tasks/ui-pages-spike), layered on the same-origin `/v0/*` client
  * (`client.ts`) plus two shell-only local endpoints the pages server adds:
@@ -16,6 +17,15 @@ import type { Edge, EdgesResponse, Frontmatter } from "./types.js";
 import type { KindConvention } from "@superbee/core/kinds";
 import type { ActionConfirmation, ActionPrepareResult, ActionTerminalResult, DocumentAction, SharingSummary, WorkspaceSummaryEntry } from "@superbee/ui-server";
 import { parseRegisteredPage, type BridgeCapability } from "../pages/registry.js";
+
+/** One bounded owner for replayable shell metadata reads. */
+export function readShellJson<T>(url: string): Promise<T> {
+  return withReadDeadline(async (signal) => {
+    const res = await fetch(url, { credentials: "same-origin", signal });
+    if (!res.ok) throw await parseErrorEnvelope(res);
+    return await res.json() as T;
+  });
+}
 
 /** `/__ui/config` shape (server `configResponse`). `sharing`/`workspaces` are ui-server's plain data shapes (type-only import — no runtime dependency), CLI-injected in dir mode. */
 export interface UiConfig {
@@ -41,17 +51,13 @@ export interface PageEntry {
 }
 
 export async function fetchConfig(): Promise<UiConfig> {
-  const res = await fetch("/__ui/config", { credentials: "same-origin" });
-  if (!res.ok) throw await parseErrorEnvelope(res);
-  return (await res.json()) as UiConfig;
+  return readShellJson<UiConfig>("/__ui/config");
 }
 
 /** CLI-rendered, host-shell-safe recovery command for one document. */
 export async function fetchDocumentOpenCommand(documentId: string): Promise<string> {
   const query = new URLSearchParams({ id: documentId });
-  const res = await fetch(`/__ui/document-open-command?${query.toString()}`, { credentials: "same-origin" });
-  if (!res.ok) throw await parseErrorEnvelope(res);
-  const payload = (await res.json()) as { command: string };
+  const payload = await readShellJson<{ command: string }>(`/__ui/document-open-command?${query.toString()}`);
   return payload.command;
 }
 
@@ -60,9 +66,7 @@ export async function fetchDocumentOpenCommand(documentId: string): Promise<stri
  * the browser: the web launcher, CLI, and MCP all consume the same runtime projection.
  */
 export async function listPages(): Promise<PageEntry[]> {
-  const res = await fetch("/__ui/views", { credentials: "same-origin" });
-  if (!res.ok) throw await parseErrorEnvelope(res);
-  const payload = (await res.json()) as {
+  const payload = await readShellJson<{
     views?: Array<{
       id: string;
       version: string;
@@ -73,7 +77,7 @@ export async function listPages(): Promise<PageEntry[]> {
       timestamp?: string;
       presentation?: "workspace" | "inline" | "adaptive";
     }>;
-  };
+  }>("/__ui/views");
   return (payload.views ?? []).map((entry) => ({
     id: entry.id,
     version: entry.version,
@@ -128,9 +132,7 @@ let kindsCache: Promise<KindContext> | null = null;
 export function fetchKindContext(): Promise<KindContext> {
   kindsCache ??= (async () => {
     try {
-      const res = await fetch("/__ui/kinds", { credentials: "same-origin" });
-      if (!res.ok) return { kinds: [], okfVersion: "0.1" };
-      const body = (await res.json()) as { kinds?: KindConvention[]; okfVersion?: string };
+      const body = await readShellJson<{ kinds?: KindConvention[]; okfVersion?: string }>("/__ui/kinds");
       return {
         kinds: Array.isArray(body.kinds) ? body.kinds : [],
         okfVersion: typeof body.okfVersion === "string" ? body.okfVersion : "0.1",
@@ -165,9 +167,7 @@ export async function fetchEdges(params: { from?: string | string[]; to?: string
   for (const from of toArray(params.from)) query.append("from", from);
   for (const to of toArray(params.to)) query.append("to", to);
   if (params.text) query.set("text", params.text);
-  const res = await fetch(`/__ui/edges?${query.toString()}`, { credentials: "same-origin" });
-  if (!res.ok) throw await parseErrorEnvelope(res);
-  const body = (await res.json()) as EdgesResponse;
+  const body = await readShellJson<EdgesResponse>(`/__ui/edges?${query.toString()}`);
   return Array.isArray(body.edges) ? body.edges : [];
 }
 

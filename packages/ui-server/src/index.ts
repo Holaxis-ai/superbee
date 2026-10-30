@@ -55,3 +55,5 @@ export {
   type Snapshot,
   type WatcherHandle,
 } from "./watch.js";
+
+export type { DocumentOffer, DocumentOffersSnapshot } from "./document-offers.js";

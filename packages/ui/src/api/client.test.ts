@@ -1,3 +1,4 @@
+import { READ_TIMEOUT_MS, ReadTimeoutError } from "./read.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, getDoc, listAllHeads, listHeadsPage, putDoc } from "./client.js";
 
@@ -15,6 +16,43 @@ describe("client", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it.each(["headers", "body"])("bounds an unanswered document read through %s without retrying", async (phase) => {
+    vi.useFakeTimers();
+    try {
+      const never = new Promise<never>(() => {});
+      if (phase === "headers") fetchMock.mockReturnValue(never);
+      else {
+        const response = jsonResponse(200, {}, { "X-Version": "sha256:abc" });
+        vi.spyOn(response, "json").mockReturnValue(never);
+        fetchMock.mockResolvedValue(response);
+      }
+      let outcome: unknown;
+      void getDoc("tasks/a").catch((error) => { outcome = error; });
+      await vi.advanceTimersByTimeAsync(READ_TIMEOUT_MS);
+      expect(outcome).toBeInstanceOf(ReadTimeoutError);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]![1].signal.aborted).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does not turn an uncertain write into a read timeout or retry", async () => {
+    vi.useFakeTimers();
+    try {
+      let reply!: (response: Response) => void;
+      fetchMock.mockReturnValue(new Promise<Response>((resolve) => { reply = resolve; }));
+      let settled = false;
+      const writing = putDoc("tasks/a", { frontmatter: { type: "Task" }, body: "updated" }, "sha256:old").then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(READ_TIMEOUT_MS * 2);
+      expect(settled).toBe(false);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]![1].signal).toBeUndefined();
+      reply(jsonResponse(200, { ok: true }, { "X-Version": "sha256:new" }));
+      await writing;
+      expect(settled).toBe(true);
+    } finally { vi.useRealTimers(); }
   });
 
   it("listHeadsPage hits the bundle-scoped route with fields=frontmatter and the given type filter", async () => {

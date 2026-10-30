@@ -1,3 +1,4 @@
+import { withReadDeadline } from "./read.js";
 /**
  * Hand-written typed API client for the wire-protocol v0 surface, called same-origin against
  * whichever server the `ui` command is proxying/mounting (`--dir` in-process router, or
@@ -71,15 +72,19 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<{
   if (options.ifMatch !== undefined) headers["If-Match"] = options.ifMatch;
   if (method !== "GET" && method !== "HEAD") headers["X-Requested-With"] = "superbee-ui";
 
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers,
-    credentials: "same-origin",
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-  });
-  if (!res.ok) throw await parseErrorEnvelope(res);
-  const data = (await res.json()) as T;
-  return { data, res };
+  const perform = async (signal?: AbortSignal) => {
+    const res = await fetch(`${BASE}${path}`, {
+      method,
+      ...(signal ? { signal } : {}),
+      headers,
+      credentials: "same-origin",
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    });
+    if (!res.ok) throw await parseErrorEnvelope(res);
+    const data = (await res.json()) as T;
+    return { data, res };
+  };
+  return method === "GET" ? withReadDeadline(perform) : perform();
 }
 
 /** Filter facets for {@link listHeadsPage}/{@link listAllHeads} — generic over `type`/`prefix` so no caller (the launcher, a page's bridge query) hardcodes a kind here. */
