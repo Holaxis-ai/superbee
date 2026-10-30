@@ -40,9 +40,15 @@ See [Site authoring](../references/site-authoring.md) for a complete no-View dec
 
 export const SITE_AUTHORING_BODY = `# Site authoring
 
-Install this recipe with \`superbee recipe add site\`. It installs a convention and this reference,
-not a Site instance, builder, reader grant or running site. Writing or syncing a declaration is
+In a local or Git bundle, install this recipe with \`superbee recipe add site\`.
+It installs a convention and this reference, not a Site instance, builder, reader grant or running
+site. Writing or syncing a declaration is
 not, by itself, proof that a builder published it or that a recipient can read it.
+
+Hosted checkouts do not install this recipe: the Site Kind is reserved by the platform, and
+checkout recipes do not install References. A Hosted author instead writes a complete Site
+document and syncs it, without installing a Kind. The host requires current model-write permission;
+recipe installation is not a prerequisite or permission grant.
 
 Author a complete document at \`sites/<site>.md\`, using the site's label and one exact presentation
 version. For example, a declaration at \`sites/example.md\` can contain:
@@ -59,8 +65,12 @@ options: {}
 ---
 \`\`\`
 
-Use the existing complete-document import or pull/promote authoring path when structured YAML is
-needed. Do not pass \`[]\` as a string-list CLI flag: that is a string item, not an empty list.
+For Hosted, write this complete YAML to the canonical checkout file, then run \`superbee sync\`.
+Alternatively use \`superbee promote <file.md> --doc-key sites/<site>.md\` in the selected checkout,
+then sync. A new promote is create-only; for updates use the observed expected-version token or
+edit the tracked checkout file through its existing sync conflict flow. Pull/promote also preserves
+structured YAML. \`doc import\` transfers between local/Git bundles and refuses Hosted targets.
+Do not pass \`[]\` as a string-list CLI flag: that is a string item, not an empty list.
 The convention leaves views optional because generic Kind-required arrays must be nonempty;
 the trusted Site validator still requires an explicit list, including \`views: []\` for no Views.
 

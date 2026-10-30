@@ -6,7 +6,7 @@
 // refusal, conventions held), or `allowed` (the Kind commands run and sync sends `conventions/`).
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readdir, readFile, realpath, rm, unlink, writeFile, mkdir } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, realpath, rm, unlink, writeFile, mkdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -17,11 +17,14 @@ import { CliError, toExit } from "../src/errors.js";
 import { checkout } from "../src/commands/checkout.js";
 import { kind } from "../src/commands/kind.js";
 import { recipe } from "../src/commands/recipe.js";
+import { promote } from "../src/commands/promote.js";
+import { defaultSummarizeBundle } from "../src/commands/home.js";
+import { builtinNames, resolveBuiltinSync } from "../src/recipe-source-builtin.js";
 import { sync } from "../src/commands/sync.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { bindingForPath } from "../src/hosted/binding.js";
 import { openBundle } from "../src/bundle.js";
-import { assertAllowedInHostedCheckout, assertRecipeAllowedInHostedCheckout } from "../src/hosted/refusals.js";
+import { assertAllowedInHostedCheckout, assertRecipeAllowedInHostedCheckout, hostedRecipeRefusal } from "../src/hosted/refusals.js";
 import { servedBundle } from "../src/hosted/served-bundle.js";
 import { heldPathReason, unsendable } from "../src/hosted/sync-scan.js";
 import { renderErrorEnvelope } from "../src/output.js";
@@ -467,7 +470,7 @@ test("T11 refused: recipe evolve is refused before any stamp exists", async () =
   await rm(h.home, { recursive: true, force: true });
 });
 
-test("T11: a conventions-only recipe governing View or Convention is refused in a checkout before any write, naming it", async () => {
+test("T11: a conventions-only recipe governing a reserved model Kind is refused before any write, naming it", async () => {
   const h = await harness("allowed");
   const recipeOf = (docs: Array<{ id: string; governs: string }>) => ({
     id: "reserved",
@@ -475,14 +478,14 @@ test("T11: a conventions-only recipe governing View or Convention is refused in 
     pages: [],
     references: [],
   }) as unknown as Parameters<typeof assertRecipeAllowedInHostedCheckout>[2];
-  for (const governs of ["View", "Convention"]) {
+  for (const governs of ["View", "Convention", "Connector", "Site"]) {
     const error = await assertRecipeAllowedInHostedCheckout("recipe evolve", h.folder, recipeOf([{ id: "conventions/idea", governs: "Idea" }, { id: `conventions/${governs.toLowerCase()}`, governs }]), { home: h.home, cwd: h.cwd }).then(
       () => assert.fail(`a recipe governing ${governs} was not refused`),
       (caught: unknown) => caught as CliError,
     );
     assert.equal(error.code, "FORBIDDEN");
     assert.equal(error.details?.conventions, `conventions/${governs.toLowerCase()}`);
-    assert.match(error.message, /declares 1 Kind\(s\) governing View or Convention/);
+    assert.match(error.message, /declares 1 Kind\(s\) governing/);
   }
   // End to end, before anything is written.
   const source = await noteRecipeFolder("1", "View");
@@ -653,3 +656,90 @@ for (const rights of [undefined, "refused", "allowed"] as const) {
     await rm(h.home, { recursive: true, force: true });
   });
 }
+
+
+test("Hosted recipe availability agrees with command admission for the complete builtin catalog", async () => {
+  for (const permission of ["allowed", "refused", undefined] as const) {
+    const h = await harness(permission);
+    try {
+      for (const name of builtinNames()) {
+        const loaded = resolveBuiltinSync(name);
+        const refusal = hostedRecipeRefusal("recipe add", loaded, permission ?? null);
+        assert.equal(refusal === null, permission === "allowed" && name !== "site", name);
+        const attempt = assertRecipeAllowedInHostedCheckout("recipe add", h.folder, loaded, { home: h.home, cwd: h.cwd });
+        if (refusal) await assert.rejects(attempt, (error: unknown) => error instanceof CliError && error.code === "FORBIDDEN");
+        else await attempt;
+      }
+      assert.equal(h.host.writes.length, 0);
+      const previousHome = process.env.HOME;
+      process.env.HOME = h.home;
+      try {
+        const summary = await defaultSummarizeBundle(h.folder);
+        assert.ok(summary && "docs" in summary);
+        assert.equal(summary.home, "hosted");
+        assert.equal(summary.hostedDefinitionWrites, permission ?? null);
+        assert.equal(h.host.requests.length, 0, "offline availability does not contact the host");
+      } finally {
+        if (previousHome === undefined) delete process.env.HOME;
+        else process.env.HOME = previousHome;
+      }
+    } finally { await rm(h.home, { recursive: true, force: true }); await rm(h.cwd, { recursive: true, force: true }); }
+  }
+});
+
+test("Hosted add/evolve of the Site builtin and reference-free reserved model recipes refuse before writes", async () => {
+  const h = await harness("allowed");
+  const sources: string[] = [];
+  const snapshot = async () => {
+    const rows: [string,string][] = [];
+    for (const relative of await readdir(h.folder, { recursive: true })) {
+      const file = path.join(h.folder, relative);
+      if ((await stat(file)).isFile()) rows.push([relative, await readFile(file, "utf8")]);
+    }
+    return rows.sort(([a],[b]) => a.localeCompare(b));
+  };
+  try {
+    const before = await snapshot();
+    for (const command of ["add", "evolve"]) {
+      await assert.rejects(runRecipe(h, [command, "site"]), (error: unknown) => error instanceof CliError && error.code === "FORBIDDEN");
+      assert.deepEqual(await snapshot(), before);
+    }
+    for (const governs of ["Site", "Connector"]) {
+      const source = await noteRecipeFolder("1", governs); sources.push(source);
+      // The owning recipe parser refuses a Connector convention even earlier; neither path writes.
+      await assert.rejects(runRecipe(h, ["add", source]), (error: unknown) => error instanceof CliError && (
+        governs === "Connector" ? error.code === "USAGE" && /declare connectors/.test(error.message)
+          : error.code === "FORBIDDEN" && String(error.details?.conventions).includes("conventions/site")
+      ));
+      assert.deepEqual(await snapshot(), before);
+    }
+    assert.equal(h.host.writes.length, 0);
+  } finally {
+    for (const source of sources) await rm(source, { recursive: true, force: true });
+    await rm(h.home, { recursive: true, force: true }); await rm(h.cwd, { recursive: true, force: true });
+  }
+});
+
+test("transport only: full Site promote and sync preserve structured YAML without installing a Kind", async () => {
+  // This FakeHost checks whole-document transfer, not Hosted C's real model/grant authorization.
+  const h = await harness("allowed", {});
+  const id = "sites/investor", file = path.join(h.cwd, "site.md");
+  const body = (title: string) => `---\ntype: Site\ntitle: ${title}\npresentation: "@superbee/portal-document@0.1.1"\naudience: restricted\nviews: []\noptions:\n  layout: compact\n---\n# Site\n`;
+  try {
+    for (const title of ["Investor", "Updated"]) {
+      await writeFile(file, body(title));
+      const bundle = await openBundle(h.folder);
+      const previous = h.host.docs.has(id) ? await bundle.backend!.read(id) : undefined;
+      await promote([file, "--doc-key", `${id}.md`, "--dir", h.folder, ...(previous ? ["--expected-version", previous.version] : [])], { stdout: () => {}, cwd: h.cwd, home: h.home });
+      const result = await runSync(h);
+      assert.equal(result.error, null, JSON.stringify(result.rows));
+      const stored = h.host.docs.get(id)!;
+      assert.equal(stored.frontmatter.title, title);
+      assert.equal(stored.frontmatter.presentation, "@superbee/portal-document@0.1.1");
+      assert.equal(stored.frontmatter.audience, "restricted");
+      assert.deepEqual(stored.frontmatter.views, []);
+      assert.deepEqual(stored.frontmatter.options, { layout: "compact" });
+      assert.equal(h.host.docs.has("conventions/site"), false);
+    }
+  } finally { await rm(h.home, { recursive: true, force: true }); await rm(h.cwd, { recursive: true, force: true }); }
+});

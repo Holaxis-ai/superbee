@@ -75,6 +75,9 @@ import { trustCountsRow, type TrustCountsRow } from "../trust.js";
 import { resolveActor } from "../actor.js";
 import { describeResolvedActor } from "../actor-guidance.js";
 import { deriveOffers, OFFERS_HELP, type OfferRow } from "../offers.js";
+import { resolveBuiltinSync } from "../recipe-source-builtin.js";
+import { hostedRecipeRefusal } from "../hosted/refusals.js";
+import type { DefinitionWrites } from "../hosted/binding.js";
 import { parseArgs } from "node:util";
 import path from "node:path";
 import { realpath } from "node:fs/promises";
@@ -197,6 +200,8 @@ export interface BundleSummary {
   okfVersion?: string | null;
   /** Where the bundle lives (`bundle-home.ts`); injected test fakes may omit it (the block omits the field then). */
   home?: BundleHome;
+  /** Internal offline capability hint from the binding already read; never rendered as authority. */
+  hostedDefinitionWrites?: DefinitionWrites | null;
   /** A hosted checkout marker with no binding here: what it says and the adopt command (`bundle-home.ts`). */
   copyOfCheckout?: Record<string, unknown>;
   /**
@@ -425,6 +430,7 @@ export async function defaultSummarizeBundle(
     const copy = unboundCopyOf(facts).copy_of_checkout as Record<string, unknown> | undefined;
     return {
       name, nameSource: source, ...summarizeDocs(docs, collapseHomeDirectory(bundle.root), { okfVersion }), home: facts.home,
+      ...(facts.home === "hosted" ? { hostedDefinitionWrites: facts.binding.definition_writes ?? null } : {}),
       ...(copy ? { copyOfCheckout: copy } : {}),
       ...(malformed.length > 0 ? { malformed: malformed.sort((a, b) => a.id.localeCompare(b.id)) } : {}),
     };
@@ -831,7 +837,10 @@ function bundleOffers(
     const dirSuffix: CommandText = deps.targetDir
       ? commandFragment` --dir ${commandQuoted(deps.targetDir)}`
       : commandLiteral("");
-    return deriveOffers(summary.byType, summary.conventionIds ?? [], deps.invocation(), dirSuffix);
+    const offers = deriveOffers(summary.byType, summary.conventionIds ?? [], deps.invocation(), dirSuffix);
+    return summary.home === "hosted"
+      ? offers.filter(({ recipe }) => hostedRecipeRefusal("recipe add", resolveBuiltinSync(recipe), summary.hostedDefinitionWrites ?? null) === null)
+      : offers;
   } catch {
     return [];
   }

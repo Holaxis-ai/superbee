@@ -155,6 +155,26 @@ test("A1.1c governed instances suppress a recipe's offer even when it is not app
   assert.equal(bundle.next, undefined);
 });
 
+test("home projects Hosted recipe availability without changing local or Git offers", () => {
+  const summary = {
+    ...summaryWithDocs([row("notes/a", "2026-07-02T00:00:00.000Z")]),
+    conventionIds: ALL_APPLIED_CONVENTION_IDS.filter(id => id !== "conventions/site"),
+  };
+  for (const home of ["local", "git"] as const) {
+    const bundle = buildHomeView(BASE_DEPS, { ...summary, home }).bundle as Record<string, unknown>;
+    assert.deepEqual((bundle.offers as Array<{recipe: string}>).map(row => row.recipe), ["site"]);
+  }
+  const hosted = buildHomeView(BASE_DEPS, { ...summary, home: "hosted", hostedDefinitionWrites: "allowed" });
+  assert.equal((hosted.bundle as Record<string, unknown>).offers, undefined);
+  assert.ok(!JSON.stringify(hosted).includes("hostedDefinitionWrites"));
+  for (const hostedDefinitionWrites of [undefined, null, "refused"] as const) {
+    const bundle = buildHomeView(BASE_DEPS, { ...EMPTY_BUNDLE, home: "hosted", hostedDefinitionWrites }).bundle as Record<string, unknown>;
+    assert.equal(bundle.offers, undefined);
+  }
+  const allowed = buildHomeView(BASE_DEPS, { ...EMPTY_BUNDLE, home: "hosted", hostedDefinitionWrites: "allowed" }).bundle as Record<string, unknown>;
+  assert.deepEqual(allowed.offers, ALL_OFFERS);
+});
+
 test("board-state gate: any firstContact line (unprovisioned/window/conflict) suppresses offers entirely", () => {
   const summary = summaryWithDocs([row("notes/a", "2026-07-02T00:00:00.000Z")]);
   for (const firstContact of [
