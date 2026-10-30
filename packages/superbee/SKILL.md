@@ -79,10 +79,10 @@ Read only what the accepted work requires.
 
 ## Make the value visible
 
-At a tangible result, say in one or two sentences what became durable or structured and what the user or a later agent no longer needs to reconstruct. Identify the result by title and document ID or an existing safe link. Never return only a Markdown link or local filesystem path.
-Finish quietly by default. Completing, saving, or summarizing work must not automatically open a browser, start a viewer, or invoke an OS opener or browser automation.
-When the user asks to see it, invoke `show_document` or `show_view` in an MCP Apps host. If unavailable, offer browser display without opening it.
-Use `superbee doc open <id>` for documents or `superbee view open <viewId>` for local registered Views only when the user explicitly requests browser display. Do not start a viewer merely to obtain a link.
+At a tangible result, say in one or two sentences what became durable or structured and what the user or a later agent no longer needs to reconstruct.
+Finish delivery in the conversation with that summary and a reference to the result: its title and document ID or an existing safe link.
+When the user asks to see it, invoke `show_document` or `show_view` in an MCP Apps host. If the embedded reader is unavailable, offer browser display and wait for the user's choice.
+For an explicit user request to open the result in a browser, use `superbee doc open <id>` for documents or `superbee view open <viewId>` for local registered Views.
 Read `$REFS/views/references/view-authoring-v0.md` for private browser handoff guidance. Never share handoffs; opening never approves executable bytes.
 When the tone fits, a single 🐝 may mark a successful Superbee outcome.
 
