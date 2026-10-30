@@ -381,3 +381,34 @@ test("document offer expiry, capacity and pending-open recovery are finite", asy
   assert.ok(offers.snapshot().revision > oldRevision);
   assert.equal(offers.offer("docs/new", 0)!.openBrowser, true);
 });
+
+test("live-update streams reserve a browser connection for page loads and recover capacity on close", async () => {
+  const server = await boot();
+  const controllers: AbortController[] = [];
+  const headers = { cookie: `${COOKIE}=${SESSION}` };
+  try {
+    for (let i = 0; i < 5; i++) {
+      const controller = new AbortController();
+      controllers.push(controller);
+      assert.equal((await fetch(url(server, "/events"), { headers, signal: controller.signal })).status, 200);
+    }
+    const overflow = await fetch(url(server, "/events"), { headers });
+    assert.equal(overflow.status, 204);
+    assert.equal(overflow.headers.get("cache-control"), "no-store");
+    assert.equal(await overflow.text(), "");
+    assert.equal((await fetch(url(server, "/"), { headers })).status, 200);
+    assert.equal((await fetch(url(server, "/events"))).status, 403);
+    controllers[0]!.abort();
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const status = await (await fetch(url(server, "/__manage/status"), { headers: managementHeaders })).json() as { active_clients: number };
+      if (status.active_clients === 4) break;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const replacement = new AbortController();
+    controllers.push(replacement);
+    assert.equal((await fetch(url(server, "/events"), { headers, signal: replacement.signal })).status, 200);
+  } finally {
+    for (const controller of controllers) controller.abort();
+    await server.close();
+  }
+});

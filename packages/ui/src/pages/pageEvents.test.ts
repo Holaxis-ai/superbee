@@ -77,6 +77,31 @@ describe("createChangeStream", () => {
     stop();
   });
 
+  it("reports refused live updates until retry reconnects and resyncs missed content", () => {
+    const s = stream();
+    const notify = vi.fn();
+    const resync = vi.fn();
+    const stopStatus = s.subscribeToStatus(notify);
+    const stopResync = s.subscribeToResync(resync);
+    expect(s.getStatus()).toBe("connecting");
+    // A capacity 204 is fatal to native EventSource, but not to the shell's retry policy.
+    sources[0]!.dropFatal();
+    expect(s.getStatus()).toBe("disconnected");
+    vi.advanceTimersByTime(3_000);
+    expect(sources).toHaveLength(2);
+    expect(s.getStatus()).toBe("disconnected");
+    sources[1]!.open();
+    expect(s.getStatus()).toBe("live");
+    expect(resync).toHaveBeenCalledOnce();
+    expect(notify).toHaveBeenCalledTimes(2);
+    stopResync();
+    stopStatus();
+    expect(sources[1]!.closed).toBe(true);
+    expect(s.getStatus()).toBe("connecting");
+    vi.advanceTimersByTime(6_000);
+    expect(sources).toHaveLength(2);
+  });
+
   it("fans change frames to subscribers; the first open fires NO resync", () => {
     const s = stream();
     const changes: ChangeEvent[] = [];

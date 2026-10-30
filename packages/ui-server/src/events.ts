@@ -10,6 +10,10 @@ import type { ServerResponse } from "node:http";
 /** How often to emit an SSE comment heartbeat, keeping intermediaries from idling the stream shut and surfacing a dead client promptly via a failed write. */
 const HEARTBEAT_MS = 25_000;
 
+// HTTP/1.1 browsers normally allow six connections to this origin. Permanent streams must
+// leave one free for HTML, assets and API reads, even when many document tabs are open.
+const MAX_STREAMS = 5;
+
 export class SseHub {
   private readonly clients = new Set<ServerResponse>();
   private heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -27,6 +31,13 @@ export class SseHub {
   add(res: ServerResponse, extraHeaders: Record<string, string> = {}): void {
     if (this.closed) {
       res.destroy();
+      return;
+    }
+    if (this.clients.size >= MAX_STREAMS) {
+      // EventSource treats 204 as a fatal close. The shell's existing bounded reconnect
+      // policy retries later and resyncs missed changes when capacity becomes available.
+      res.writeHead(204, { "cache-control": "no-store", ...extraHeaders });
+      res.end();
       return;
     }
     res.writeHead(200, {

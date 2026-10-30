@@ -41,6 +41,7 @@ export function parseDocumentOffers(value: unknown): DocumentOffersSnapshot | nu
 type OfferListener = (snapshot: DocumentOffersSnapshot) => void;
 type ChangeListener = (e: ChangeEvent) => void;
 type ResyncListener = () => void;
+export type StreamStatus = "connecting" | "live" | "disconnected";
 
 /** The slice of `EventSource` the stream needs — injectable so the reconnect state machine is unit-testable without a real network (jsdom ships no EventSource). */
 export interface EventSourceLike {
@@ -59,6 +60,8 @@ const RECONNECT_DELAY_MS = 3_000;
 const READY_STATE_CLOSED = 2;
 
 export interface ChangeStream {
+  getStatus(): StreamStatus;
+  subscribeToStatus(listener: () => void): () => void;
   subscribeToDocumentOffers(listener: OfferListener): () => void;
   /** Subscribe to change deltas. Returns an unsubscribe that closes the shared stream once no one is listening. */
   subscribeToChanges(listener: ChangeListener): () => void;
@@ -81,13 +84,21 @@ export function createChangeStream(
   const changeListeners = new Set<ChangeListener>();
   const offerListeners = new Set<OfferListener>();
   const resyncListeners = new Set<ResyncListener>();
+  const statusListeners = new Set<() => void>();
+  let status: StreamStatus = "connecting";
   let source: EventSourceLike | null = null;
   let dropped = false;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let probeController: AbortController | null = null;
   let recoveryGeneration = 0;
 
-  const anySubscriber = (): boolean => changeListeners.size + resyncListeners.size + offerListeners.size > 0;
+  const anySubscriber = (): boolean => changeListeners.size + resyncListeners.size + offerListeners.size + statusListeners.size > 0;
+
+  function setStatus(next: StreamStatus): void {
+    if (status === next) return;
+    status = next;
+    for (const listener of statusListeners) listener();
+  }
 
   function advanceRecoveryGeneration(): void {
     recoveryGeneration += 1;
@@ -122,6 +133,7 @@ export function createChangeStream(
     source = es;
     es.onopen = () => {
       if (source !== es) return;
+      setStatus("live");
       advanceRecoveryGeneration();
       if (!dropped) return; // first-ever open: subscribers are loading fresh anyway
       dropped = false;
@@ -148,6 +160,7 @@ export function createChangeStream(
     };
     es.onerror = () => {
       if (source !== es) return;
+      setStatus("disconnected");
       dropped = true;
       probeCurrentSession();
       // CONNECTING: the browser is auto-retrying this same EventSource — onopen will fire on
@@ -177,10 +190,17 @@ export function createChangeStream(
     source?.close();
     source = null;
     dropped = false;
+    setStatus("connecting");
     advanceRecoveryGeneration();
   }
 
   return {
+    getStatus: () => status,
+    subscribeToStatus(listener: () => void): () => void {
+      statusListeners.add(listener);
+      connect();
+      return () => { statusListeners.delete(listener); teardownIfIdle(); };
+    },
     subscribeToDocumentOffers(listener: OfferListener): () => void {
       offerListeners.add(listener);
       connect();
@@ -206,6 +226,9 @@ export function createChangeStream(
 }
 
 const defaultStream = createChangeStream();
+
+export const getStreamStatus = (): StreamStatus => defaultStream.getStatus();
+export const subscribeToStreamStatus = (listener: () => void): (() => void) => defaultStream.subscribeToStatus(listener);
 
 /** Subscribe to change events on the app's shared stream. */
 export const subscribeToChanges: ChangeStream["subscribeToChanges"] = (listener) => defaultStream.subscribeToChanges(listener);

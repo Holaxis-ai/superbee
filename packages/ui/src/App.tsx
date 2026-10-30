@@ -15,6 +15,7 @@ import { Launcher } from "./views/Launcher.js";
 import { PageFrame } from "./views/PageFrame.js";
 import { DocPage } from "./views/DocPage.js";
 import { BrandMark } from "./BrandMark.js";
+import { LiveUpdateStatus } from "./views/LiveUpdateStatus.js";
 
 export function App() {
   const interceptorStatus = useInterceptorStatus();
@@ -41,6 +42,7 @@ export function App() {
         </button>
       </header>
       <DocumentOffers />
+      <LiveUpdateStatus />
       <main>{view}</main>
     </div>
   );
