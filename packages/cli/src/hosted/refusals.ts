@@ -63,8 +63,8 @@ const KINDS_INSTEAD = "to design Kinds, work in a local or Git bundle and publis
 /** No publish advice: publishing would deliver the Connector to the host as an ordinary document. */
 const CONNECTORS_INSTEAD = "keep this recipe for local and Git bundles until hosted workspaces can enable Connections";
 
-/** Kinds the host never lets a checkout change (a View or Convention governing convention). */
-const RESERVED_GOVERNS: ReadonlySet<string> = new Set(["View", CONVENTION_TYPE]);
+/** Kinds reserved by the host model policy, regardless of model-write permission. */
+const RESERVED_GOVERNS: ReadonlySet<string> = new Set(["View", CONVENTION_TYPE, "Connector", "Site"]);
 
 
 /** The `--doc-key` value in argv, in either spelling; the last one wins, as the parser takes it. */
@@ -215,8 +215,8 @@ export async function assertAllowedInHostedCheckout(command: string, args: reado
  * model-change refusal the up-front check deferred, exactly as that row reads; then, for a person
  * the host allows, a recipe that installs anything but Kind conventions
  * (designs/hosted-model-evolution.md section 8: Views, their pages, References or any other
- * document, which are published with the bundle), or a convention governing `View` or
- * `Convention`, whose definition write the host refuses, so its recipe stamp would land locally
+ * document, which are published with the bundle), or a convention governing a reserved platform Kind
+ * (`View`, `Convention`, `Connector` or `Site`), whose write the host refuses, so its recipe stamp would land locally
  * and fail at sync. Resolves for any other target.
  */
 export async function assertRecipeAllowedInHostedCheckout(
@@ -227,38 +227,39 @@ export async function assertRecipeAllowedInHostedCheckout(
 ): Promise<void> {
   const binding = await checkoutFor("recipe", dir, context.home ?? homedir(), context.cwd ?? process.cwd());
   if (!binding) return;
+  const refusal = hostedRecipeRefusal(words, recipe, binding.definition_writes ?? null);
+  if (refusal) throw hostedCheckoutRefusal(refusal.row, words, binding, refusal.extra);
+}
+
+/** Pure projection of the command's Hosted recipe admission, reused by offline home offers.
+ * Capability facts are last-known hints only; the command and host still enforce current rights. */
+export function hostedRecipeRefusal(
+  words: string,
+  recipe: Pick<LoadedRecipe, "id" | "docs" | "pages" | "references" | "connectors">,
+  definitionWrites: CheckoutBinding["definition_writes"] | null,
+): { readonly row: RefusalRow; readonly extra?: Readonly<Record<string, string>> } | null {
   const connectors = (recipe.connectors ?? []).map((connector) => connector.doc.id);
-  if (connectors.length > 0) {
-    throw hostedCheckoutRefusal(
-      { words: words.split(" "), reason: "connectors", why: `recipe '${recipe.id}' declares ${connectors.length} Connector(s), which need a Connection, and hosted workspaces cannot enable one yet`, instead: CONNECTORS_INSTEAD },
-      words,
-      binding,
-      { recipe: recipe.id, connectors: connectors.slice(0, 20).join(", "), connectors_total: String(connectors.length) },
-    );
-  }
+  if (connectors.length > 0) return {
+    row: { words: words.split(" "), reason: "connectors", why: `recipe '${recipe.id}' declares ${connectors.length} Connector(s), which need a Connection, and hosted workspaces cannot enable one yet`, instead: CONNECTORS_INSTEAD },
+    extra: { recipe: recipe.id, connectors: connectors.slice(0, 20).join(", "), connectors_total: String(connectors.length) },
+  };
   const deferred = HOSTED_CHECKOUT_REFUSALS.find((row) => row.deferred && row.words.join(" ") === words);
-  if (deferred && binding.definition_writes !== "allowed") throw hostedCheckoutRefusal(deferred, words, binding);
+  if (deferred && definitionWrites !== "allowed") return { row: deferred };
   const artifacts = [...recipe.docs.map((doc) => doc.id), ...recipe.pages.flatMap((page) => [page.registry.id, page.entry]), ...recipe.references.map((reference) => reference.doc.id)];
   const outside = artifacts.filter((id) => !isConventionId(id));
   const reserved = recipe.docs.filter((doc) => {
     const governs = doc.frontmatter?.governs;
     return typeof governs === "string" && RESERVED_GOVERNS.has(governs.trim());
   }).map((doc) => doc.id);
-  if (outside.length === 0 && reserved.length === 0) return;
-  if (outside.length === 0) {
-    throw hostedCheckoutRefusal(
-      { words: words.split(" "), reason: "not_syncable", why: `recipe '${recipe.id}' declares ${reserved.length} Kind(s) governing View or Convention, which the host does not let a checkout change`, instead: KINDS_INSTEAD },
-      words,
-      binding,
-      { recipe: recipe.id, conventions: reserved.slice(0, 20).join(", "), conventions_total: String(reserved.length) },
-    );
-  }
-  throw hostedCheckoutRefusal(
-    { words: words.split(" "), reason: "not_syncable", why: `recipe '${recipe.id}' installs ${outside.length} artifact(s) outside conventions/, such as Views and References, and a checkout sends Kind conventions only`, instead: KINDS_INSTEAD },
-    words,
-    binding,
-    { recipe: recipe.id, artifacts: outside.slice(0, 20).join(", "), artifacts_total: String(outside.length) },
-  );
+  if (outside.length === 0 && reserved.length === 0) return null;
+  if (outside.length === 0) return {
+    row: { words: words.split(" "), reason: "not_syncable", why: `recipe '${recipe.id}' declares ${reserved.length} Kind(s) governing View, Convention, Connector or Site, which the host does not let a checkout change`, instead: KINDS_INSTEAD },
+    extra: { recipe: recipe.id, conventions: reserved.slice(0, 20).join(", "), conventions_total: String(reserved.length) },
+  };
+  return {
+    row: { words: words.split(" "), reason: "not_syncable", why: `recipe '${recipe.id}' installs ${outside.length} artifact(s) outside conventions/, such as Views and References, and a checkout sends Kind conventions only`, instead: KINDS_INSTEAD },
+    extra: { recipe: recipe.id, artifacts: outside.slice(0, 20).join(", "), artifacts_total: String(outside.length) },
+  };
 }
 
 /** What to do instead of a write sync would hold, by the reason the scan records. */

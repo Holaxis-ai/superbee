@@ -3,6 +3,7 @@
 import { kindConventionDoc } from "./kinds.js";
 import { stringifyDoc } from "./frontmatter.js";
 import { parseRecipeFiles, type LoadedRecipe, type RecipeFile } from "./recipes.js";
+import { SITE_KIND, SITE_CONVENTION_BODY, SITE_AUTHORING_BODY } from "./builtin-recipes/site.js";
 import {
   CONTEXT_NOTE_KIND,
   CONTEXT_NOTE_SEED_BODY_LOGICAL,
@@ -94,10 +95,35 @@ function buildRoadmapFiles(): RecipeFile[] {
   ];
 }
 
+function buildSiteFiles(): RecipeFile[] {
+  const convention = unstampedConvention(SITE_KIND, SITE_CONVENTION_BODY);
+  return [
+    {
+      path: "recipe.md",
+      bytes: stringifyDoc(
+        {
+          type: "Recipe",
+          id: "site",
+          title: "Site",
+          version: "1",
+          summary: "Declares a private content site's presentation and publication inputs",
+          offer: "describe a private content site using a shared presentation",
+          content_policy: "definitions-only",
+          references: ["references/site-authoring.md"],
+        },
+        "# Site\n\nInstalls Site authoring scaffolding; publication and access remain separately authorized.\n",
+      ),
+    },
+    { path: "conventions/site.md", bytes: stringifyDoc(convention.frontmatter, convention.body) },
+    { path: "references/site-authoring.md", bytes: stringifyDoc({ type: "Reference", title: "Site authoring" }, SITE_AUTHORING_BODY) },
+  ];
+}
+
 const BUILTIN_FILES: Record<string, RecipeFile[]> = {
   "context-notes": buildContextNotesFiles(),
   "work-tracking": buildWorkTrackingFiles(),
   roadmap: buildRoadmapFiles(),
+  site: buildSiteFiles(),
 };
 
 export function builtinNames(): string[] {

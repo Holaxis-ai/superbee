@@ -19,7 +19,7 @@ async function fixture(backend = new MemoryBackend(), edition = "0.2") {
 const refusal = (reason: string) => (error: unknown) => error instanceof KindAuthoringError && error.reason === reason;
 
 test("builtins are opt-in, own-name only and freshly detached", async () => {
-  assert.deepEqual(builtinNames(), ["context-notes", "work-tracking", "roadmap"]);
+  assert.deepEqual(builtinNames(), ["context-notes", "work-tracking", "roadmap", "site"]);
   for (const name of ["unknown", "constructor", "toString", "__proto__", "hasOwnProperty"]) {
     assert.equal(loadBuiltinRecipe(name), null); assert.equal(builtinRecipeFiles(name), undefined);
   }

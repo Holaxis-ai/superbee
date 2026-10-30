@@ -66,7 +66,7 @@ test("builtinRecipeSource: returns null (not addressed to me) for an unknown nam
 });
 
 test("builtinNames / DEFAULT_RECIPE_REF / CONTEXT_NOTES_RECIPE stay consistent", () => {
-  assert.deepEqual(builtinNames(), ["context-notes", "work-tracking", "roadmap"]);
+  assert.deepEqual(builtinNames(), ["context-notes", "work-tracking", "roadmap", "site"]);
   assert.equal(DEFAULT_RECIPE_REF, "context-notes");
   assert.equal(CONTEXT_NOTES_RECIPE.id, "context-notes");
 });
