@@ -2,6 +2,34 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parseRecipeFiles, type RecipeFile } from "../src/recipes.js";
 import { MalformedDocumentError } from "../src/document-codec.js";
+import { loadBuiltinRecipe } from "../src/builtin-recipes.js";
+import { parseConventionDoc, validateAgainstKind } from "../src/kinds.js";
+import { parseMarkdown } from "../src/frontmatter.js";
+import { parseSiteManifestDoc } from "../src/site-manifest.js";
+
+test("the built-in Site authoring example satisfies both its convention and trusted declaration grammar", () => {
+  const loaded = loadBuiltinRecipe("site");
+  assert.ok(loaded?.ok);
+  if (!loaded?.ok) throw new Error("expected Site recipe");
+  assert.deepEqual(loaded.recipe.governs, ["Site"]);
+  assert.deepEqual(loaded.recipe.pages, []);
+  const declaration = parseConventionDoc(loaded.recipe.docs[0]!);
+  assert.ok(declaration.ok);
+  if (!declaration.ok) throw new Error("expected Site convention");
+  const authoring = loaded.recipe.references[0]!.doc;
+  const example = /```yaml\n([\s\S]*?)```/.exec(authoring.body)?.[1];
+  assert.ok(example);
+  const parsed = parseMarkdown(example!);
+  const site = { id: "sites/example", frontmatter: parsed.frontmatter, body: parsed.body };
+  assert.deepEqual(validateAgainstKind(site, declaration.kind), []);
+  assert.ok(parseSiteManifestDoc(site).ok);
+  // Optional in the convention does not weaken the independent trusted grammar.
+  delete site.frontmatter.views;
+  assert.deepEqual(validateAgainstKind(site, declaration.kind), []);
+  assert.equal(parseSiteManifestDoc(site).ok, false);
+  const invalidAudience = { ...site, frontmatter: { ...site.frontmatter, audience: "public" } };
+  assert.ok(validateAgainstKind(invalidAudience, declaration.kind).some(warning => warning.field === "audience"));
+});
 
 const VALID_MANIFEST: RecipeFile = {
   path: "recipe.md",

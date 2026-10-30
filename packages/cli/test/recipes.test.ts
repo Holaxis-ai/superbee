@@ -322,9 +322,9 @@ test("recipes: lists context-notes with applied:false on a bare bundle, applied:
   try {
     await initBundle(dir);
     const before = await runJson(recipes, ["--dir", dir]);
-    assert.equal(before.count, 3);
+    assert.equal(before.count, 4);
     const rowsBefore = before.recipes as Array<Record<string, unknown>>;
-    assert.equal(rowsBefore.length, 3);
+    assert.equal(rowsBefore.length, 4);
     assert.equal(rowsBefore[0]!.name, "context-notes");
     assert.equal(rowsBefore[0]!.version, "1");
     assert.equal(rowsBefore[0]!.applied, false);
@@ -365,7 +365,7 @@ test("recipes: no-bundle inventory succeeds without opening or creating a bundle
 
   assert.equal(opened, false);
   const result = JSON.parse(out) as Record<string, unknown>;
-  assert.equal(result.count, 3);
+  assert.equal(result.count, 4);
   const rows = result.recipes as Array<Record<string, unknown>>;
   const contextNotes = rows.find((row) => row.name === "context-notes");
   assert.ok(contextNotes);
@@ -444,15 +444,45 @@ test("recipe inventory derives Reference and View identities from any loaded man
 
 // ── work-tracking: the second built-in recipe (first DOMAIN recipe) ───────────────────────────
 
-test("recipes: lists ALL THREE built-ins — context-notes, work-tracking, roadmap", async () => {
+test("recipes: discovers the shipped built-ins including Site authoring", async () => {
   const dir = await tempDir();
   try {
     await initBundle(dir);
     const result = await runJson(recipes, ["--dir", dir]);
-    assert.equal(result.count, 3);
+    assert.equal(result.count, 4);
     const rows = result.recipes as Array<Record<string, unknown>>;
     const names = rows.map((r) => r.name).sort();
-    assert.deepEqual(names, ["context-notes", "roadmap", "work-tracking"]);
+    assert.deepEqual(names, ["context-notes", "roadmap", "site", "work-tracking"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("recipe add site: installs authoring scaffolding without creating or publishing a Site", async () => {
+  const dir = await tempDir();
+  try {
+    await init(["--dir", dir, "--recipe", "none"], { stdout: () => {} });
+    const first = await runJson(recipe, ["add", "site", "--dir", dir]);
+    assert.equal(first.changed, true);
+    const registry = await loadKinds({ root: dir });
+    const site = registry.kinds.get("Site");
+    assert.ok(site);
+    assert.equal(site.path, "sites/");
+    assert.deepEqual(site.fields.values.audience, ["restricted"]);
+    const reference = await readDoc({ root: dir }, "references/site-authoring");
+    assert.equal(reference.frontmatter.type, "Reference");
+    const before = await readFile(path.join(dir, "conventions/site.md"), "utf8");
+    const second = await runJson(recipe, ["add", "site", "--dir", dir]);
+    assert.equal(second.changed, false);
+    assert.equal(await readFile(path.join(dir, "conventions/site.md"), "utf8"), before);
+    const instances = await runJson(list, ["--type", "Site", "--dir", dir]);
+    assert.equal(instances.count, 0);
+    await assert.rejects(
+      newCommand(["Site", "example", "--title", "Example", "--presentation", "p@1.0.0", "--audience", "public", "--dir", dir], { stdout: () => {} }),
+      (error: unknown) => error instanceof CliError,
+    );
+    const after = await runJson(list, ["--type", "Site", "--dir", dir]);
+    assert.equal(after.count, 0);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
