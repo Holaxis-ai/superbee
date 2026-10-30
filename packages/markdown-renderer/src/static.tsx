@@ -11,6 +11,9 @@ export interface StaticRenderOptions {
   limits?: RenderOptions["limits"];
   /** Same allowlist rules as the interactive profile; absent keeps every external target inert. */
   externalLinkHosts?: RenderOptions["externalLinkHosts"];
+  /** Trusted presentation inventory, never bundle-authored renderer configuration.
+   * Omit to keep images inert. The bridge-shaped document adapter does not forward this. */
+  imageAssets?: RenderOptions["imageAssets"];
 }
 
 /** The subset of {@link StaticRenderOptions} the bridge-shaped document adapter accepts. */
