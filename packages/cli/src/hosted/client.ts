@@ -17,7 +17,7 @@ import {
   syncRoutePrefix as coreSyncRoutePrefix,
   type HostedClient,
 } from "@superbee/core/hosted-client";
-import type { HostedOperationListingAnswer, HostedOperationRun, JsonObject } from "@superbee/core/hosted-transport";
+import { HostedReadAdapterError, type HostedOperationListingAnswer, type HostedOperationRun, type JsonObject } from "@superbee/core/hosted-transport";
 
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
@@ -48,7 +48,7 @@ export interface HostedSyncClient
   extends Omit<
     HostedClient,
     | "target" | "within" | "listOperations" | "runOperation" | "write" | "lookupWrite" | "settleWrite" | "heldWrites"
-    | "writeBlob" | "deleteBlob" | "lookupBlobWrite" | "settleBlobWrite" | "forgetBlobWrite" | "heldBlobWrites" | "blobHeads" | "blobHead" | "readBlob"
+    | "writeBlob" | "deleteBlob" | "lookupBlobWrite" | "settleBlobWrite" | "forgetBlobWrite" | "heldBlobWrites" | "blobHeads"
   > {
   readonly target: HostedTarget;
   /** The same client, naming its bundles in the workspace with this slug. */
@@ -96,6 +96,9 @@ function wording(client: HostedClient, target: HostedTarget, resume: string | un
    * an outage: a non-retryable RUNTIME.
    */
   const readFailure = (error: unknown, route: string, missing: { message: string; help: string }) => {
+    if (error instanceof HostedReadAdapterError && error.code === "unsupported") {
+      return new CliError("NOT_IMPLEMENTED", missing.message, { details: { host: target.origin, route, reason: "unsupported" }, help: missing.help });
+    }
     if (isRouteNotServed(error)) {
       return new CliError("NOT_IMPLEMENTED", missing.message, { details: { host: target.origin, route: error.route, status: 404 }, help: missing.help });
     }
@@ -143,6 +146,26 @@ function wording(client: HostedClient, target: HostedTarget, resume: string | un
     },
     reader(bundleId) {
       return client.reader(bundleId);
+    },
+    async blobHead(bundleId, key, options) {
+      try {
+        return await client.blobHead(bundleId, key, options);
+      } catch (error) {
+        throw readFailure(error, `${prefix}/blob-heads`, {
+          message: `${target.origin} does not serve blob reads yet`,
+          help: "a later release of the host serves them",
+        });
+      }
+    },
+    async readBlob(bundleId, key, options) {
+      try {
+        return await client.readBlob(bundleId, key, options);
+      } catch (error) {
+        throw readFailure(error, `${prefix}/blob-read`, {
+          message: `${target.origin} does not serve blob reads yet`,
+          help: "a later release of the host serves them",
+        });
+      }
     },
     within(slug) {
       return wording(client.within(slug), target, resume);

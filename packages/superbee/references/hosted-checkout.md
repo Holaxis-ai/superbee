@@ -370,6 +370,15 @@ superbee sync --resolve keep --doc index.md     # the next sync sends yours over
 
 ## Ordinary files (SVGs, images, `data/*.json`)
 
+`pull --doc-key <key> --out <path> --from-host --dir <checkout>` reads one blob's bytes and stored
+content type directly from the bound host, using its version and content type together as the
+read pin. It checks the checkout's signed-in person and workspace and verifies the returned bytes.
+A changed pin, denied access or unsupported host refuses without falling back to local bytes.
+It does not sync, send edits or refresh the working copy; only the requested output is written.
+Use `--out -` for raw stdout with the receipt on stderr. Ordinary `pull` still reads the local
+working copy, including unsent edits; its content type is inferred from the filename. The explicit
+host option is for blobs only and cannot be combined with `--remote`.
+
 Files other than `.md` documents are ordinary files. Sync sends and refreshes only **tracked**
 ones. Treat an edit to a tracked file as a publish: the next `superbee sync` sends it to the hosted
 bundle for everyone.

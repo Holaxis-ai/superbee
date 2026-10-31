@@ -36,6 +36,7 @@ import { renderUsage } from "../output.js";
 import { parseArgs } from "node:util";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { homedir } from "node:os";
 import {
   readDocVersioned,
   readBlob,
@@ -53,7 +54,10 @@ import { cliInvocation } from "../invocation.js";
 import { assertPathOutsidePrivateState } from "../private-state-bundle-boundary.js";
 import { readErrorToCliError } from "./doc.js";
 import { inBundlePollutionWarning } from "./egress.js";
-import { commandToken } from "../command-text.js";
+import { commandToken, commandFragment } from "../command-text.js";
+import { bindingForPath } from "../hosted/binding.js";
+import { openCheckoutConnection } from "../hosted/checkout-connection.js";
+import type { HostedAccountDeps } from "../hosted/account.js";
 
 export const PULL_USAGE = `superbee pull — pull a doc or blob's bytes out of the store (the reverse of 'promote')
 
@@ -70,6 +74,12 @@ Routes by the --doc-key's target (case-insensitive), symmetric with 'promote':
   Any OTHER key is a BLOB: raw bytes, self-verified against the returned version (a real integrity
   check — catches transport corruption over --remote too, not just a local tautology).
 
+In a hosted checkout, the default still reads the local working copy; its blob content_type is
+inferred from the filename. --from-host explicitly reads the bound host's current blob instead,
+using its stored content type and version together as the byte-read pin. It requires sign-in as
+the checkout's person and refuses a changed pin rather than mixing observations or falling back
+to local bytes. It does not sync, place host changes, or send edits; only --out is written.
+
 --out - streams raw bytes to stdout; the receipt goes to STDERR instead (the byte stream stays
 pure), and any error also routes to stderr in that mode. --out <path> writes the file and prints the
 receipt to stdout. A destination path landing INSIDE an open LOCAL bundle carries a loud 'warning'
@@ -82,6 +92,8 @@ Options:
   --doc-key <key>       Source key (required)
   --out <path>          Write bytes to this local path
   --out -               Stream raw bytes to stdout; receipt -> stderr
+  --from-host           Read a blob's verified bytes and stored MIME from a bound hosted checkout's
+                         host (not documents, a local/Git bundle, or --remote)
   --dir <path>          Bundle directory (default: discovered from the cwd)
   --remote <url>        Talk to a wire-protocol server instead of a local bundle (mutually
                          exclusive with --dir; remote access is always explicit)
@@ -93,6 +105,27 @@ export interface PullCliDeps {
   stdout: (s: string) => void;
   stderr: (s: string) => void;
   writeStdoutBytes: (data: Uint8Array) => void;
+  hosted?: HostedAccountDeps;
+}
+
+async function pullHostedBlob(bundle: Bundle, key: string, out: string, json: boolean, deps: Partial<PullCliDeps>): Promise<PullResult> {
+  const home = deps.hosted?.auth?.home ?? homedir();
+  const binding = await bindingForPath(home, await fs.realpath(bundle.root));
+  if (!binding) throw new CliError("USAGE", "--from-host requires a bound hosted checkout", {
+    help: "pass --dir with the original checkout folder; ordinary pull reads a local working copy",
+  });
+  const resume = commandFragment`${cliInvocation()} pull --doc-key ${commandToken(key)} --out ${commandToken(out)} --from-host --dir ${commandToken(binding.path)}${json ? commandFragment` --json` : commandFragment``}`;
+  const { client } = await openCheckoutConnection(binding, deps.hosted, resume, home);
+  const head = await client.blobHead(binding.bundle_id, key);
+  if (!head) throw new CliError("NOT_FOUND", `no hosted blob at key '${key}'`);
+  const result = await client.readBlob(binding.bundle_id, key, { pin: head });
+  if (!result) throw new CliError("CONFLICT", `hosted blob '${key}' changed during readback`, {
+    help: "retry the same pull to read a fresh version and content type",
+  });
+  return {
+    bytes: result.bytes,
+    fields: { route: "blob", source: "hosted", content_type: result.contentType, version: result.version, size_bytes: result.bytes.byteLength },
+  };
 }
 
 /** True when `key`'s final segment ends `.md`, checked CASE-INSENSITIVELY (B6) — mirrors `promote`. */
@@ -173,6 +206,7 @@ export async function pull(argv: string[], deps: Partial<PullCliDeps> = {}): Pro
         options: {
           "doc-key": { type: "string" },
           out: { type: "string" },
+          "from-host": { type: "boolean" },
           dir: { type: "string" },
           remote: { type: "string" },
           json: { type: "boolean" },
@@ -203,13 +237,17 @@ export async function pull(argv: string[], deps: Partial<PullCliDeps> = {}): Pro
   // through a plain 0644 write, and brick every later private-state command — reached by a READ.
   if (out !== "-") assertPathOutsidePrivateState(path.resolve(out));
 
+  if (values["from-host"] && (values.remote !== undefined || isDocRouteKey(key))) {
+    throw new CliError("USAGE", "--from-host reads blobs from a bound hosted checkout; it cannot be used with --remote or a .md key");
+  }
   const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
   const mode: OutputMode = resolveMode(values);
   const streamMode = out === "-";
   const docRoute = isDocRouteKey(key);
 
   const runToTarget = async (): Promise<void> => {
-    const result = docRoute ? await pullDoc(bundle, key, values.remote) : await pullBlob(bundle, key, values.remote);
+    const result = values["from-host"] ? await pullHostedBlob(bundle, key, out, !!values.json, deps)
+      : docRoute ? await pullDoc(bundle, key, values.remote) : await pullBlob(bundle, key, values.remote);
     const receipt: Record<string, unknown> = { pull: "read", key, ...result.fields, out };
 
     // A10: pull's receipt hints a ready-to-paste `promote --expected-version <token>` with the

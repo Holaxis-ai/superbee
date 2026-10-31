@@ -448,7 +448,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "pull",
         leaves: [publicLeaf("pull", "pull", zero, 6, DIR_OUT_SURFACE)],
-        usage: "pull --doc-key <key> --out (<path> | -) [--dir <path>] [--remote <url>]",
+        usage: "pull --doc-key <key> --out (<path> | -) [--from-host] [--dir <path>] [--remote <url>]",
         summary: "Pull a doc's canonical form or a blob's raw bytes out of the store (the reverse of promote)",
       },
       {
