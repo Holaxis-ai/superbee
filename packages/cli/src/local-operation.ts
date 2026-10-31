@@ -21,9 +21,10 @@ export const LOCAL_OPERATION_PROFILES = Object.freeze({
 });
 type ProfileName = keyof typeof LOCAL_OPERATION_PROFILES;
 type Resource = {path:string;logicalRef:string};
-type VersionFlag = '--version' | '-version';
-type ToolSelection = {path:string;versionFlag:VersionFlag};
-type Tool = {path:string;sha256:string;version:string;versionFlag?:VersionFlag};
+type VersionFlag = '--version' | '-version' | '-v';
+type VersionChannel = 'stdout' | 'stderr';
+type ToolSelection = {path:string;versionFlag:VersionFlag;versionChannel?:VersionChannel};
+type Tool = {path:string;sha256:string;version:string;versionFlag?:VersionFlag;versionChannel?:VersionChannel};
 export interface LocalBindingConfig {resources:Record<string,Resource>;tools:Record<string,string|ToolSelection>;outputRoot:string;profile:ProfileName;}
 interface Binding {v:1;bundle:string;operation:string;pluginDigest:string;generation:string;capability:unknown;resources:Record<string,Resource>;tools:Record<string,Tool>;outputRoot:string;outputRootIdentity:{dev:number;ino:number};profile:ProfileName;}
 const record = (value:unknown):value is Record<string,any> => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -57,37 +58,40 @@ function toolSelections(values:LocalBindingConfig['tools'],home:UserStateInput):
     let selected:ToolSelection;
     if(typeof value==='string')selected={path:value,versionFlag:'--version'};
     else{
-      if(!record(value)||Object.keys(value).length!==2||!Object.hasOwn(value,'path')||!Object.hasOwn(value,'versionFlag')||typeof value.path!=='string'||(value.versionFlag!=='--version'&&value.versionFlag!=='-version'))throw refuse('tool_selection');
-      selected={path:value.path,versionFlag:value.versionFlag};
+      if(!record(value)||Object.keys(value).some(field=>!['path','versionFlag','versionChannel'].includes(field))||!Object.hasOwn(value,'path')||!Object.hasOwn(value,'versionFlag')||typeof value.path!=='string'||!['--version','-version','-v'].includes(value.versionFlag))throw refuse('tool_selection');
+      const versionChannel=Object.hasOwn(value,'versionChannel')?value.versionChannel:'stdout';
+      if(versionChannel!=='stdout'&&versionChannel!=='stderr')throw refuse('tool_selection');
+      selected={path:value.path,versionFlag:value.versionFlag,versionChannel};
     }
     if(!path.isAbsolute(selected.path))throw refuse('absolute_tool_required');
     assertPathOutsidePrivateState(selected.path,home);selections[handle]=selected;
   }
   return selections;
 }
-const toolEvidence=(tools:Record<string,Tool>)=>Object.fromEntries(Object.entries(tools).map(([name,t])=>[name,{sha256:t.sha256,version:t.version,versionFlag:t.versionFlag??'--version'}]));
-async function toolIdentity({path:file,versionFlag}:ToolSelection):Promise<Tool>{
+const toolEvidence=(tools:Record<string,Tool>)=>Object.fromEntries(Object.entries(tools).map(([name,t])=>[name,{sha256:t.sha256,version:t.version,versionFlag:t.versionFlag??'--version',versionChannel:t.versionChannel??'stdout'}]));
+async function toolIdentity({path:file,versionFlag,versionChannel='stdout'}:ToolSelection):Promise<Tool>{
   const resolved=await realpath(file); const bytes=await localFileBytes(resolved,256*1024*1024);
   const magic=bytes.subarray(0,4).toString('hex');
   const native=process.platform==='linux'?magic==='7f454c46':['feedface','cefaedfe','feedfacf','cffaedfe','cafebabe','bebafeca','cafebabf','bfbafeca'].includes(magic);
   if(!native)throw refuse('native_tool_binary_required');
   // Availability is deliberately probed only during explicit binding, with a finite timeout.
-  const version=await probeToolVersion(resolved,versionFlag);
+  const version=await probeToolVersion(resolved,versionFlag,versionChannel);
   if(await realpath(resolved)!==resolved||hash(await localFileBytes(resolved,256*1024*1024))!==hash(bytes))throw refuse('tool_changed_rebind_required');
-  return {path:resolved,sha256:hash(bytes),version,versionFlag};
+  // Omitted channel remains stdout so existing accepted default bindings keep their digest.
+  return {path:resolved,sha256:hash(bytes),version,versionFlag,...versionChannel==='stderr'?{versionChannel}:{}};
 }
-async function probeToolVersion(file:string,versionFlag:VersionFlag):Promise<string>{
+async function probeToolVersion(file:string,versionFlag:VersionFlag,versionChannel:VersionChannel):Promise<string>{
   return new Promise((resolve,reject)=>{
     const child=spawn(file,[versionFlag],{detached:true,env:{PATH:'/usr/bin:/bin'},stdio:['ignore','pipe','pipe']});
-    let settled=false,stdout='',bytes=0,failureReason:string|undefined;
+    let settled=false,selectedOutput='',bytes=0,failureReason:string|undefined;
     const finish=async(reason?:string)=>{
       failureReason??=reason;if(settled)return;settled=true;clearTimeout(timer);
       const stopped=child.pid===undefined||await stopGroup(child.pid,300);
       child.stdout.destroy();child.stderr.destroy();child.unref();
-      if(!stopped)reject(refuse('tool_probe_interrupted_unconfirmed'));else if(failureReason)reject(refuse(failureReason));else resolve(stdout.trim().slice(0,1024));
+      if(!stopped)reject(refuse('tool_probe_interrupted_unconfirmed'));else if(failureReason)reject(refuse(failureReason));else resolve(selectedOutput.trim().slice(0,1024));
     };
     const timer=setTimeout(()=>void finish('tool_probe_timed_out'),5000);
-    const capture=(chunk:Buffer,isStdout:boolean)=>{bytes+=chunk.length;if(bytes>4096){void finish('tool_probe_log_limit');return;}if(isStdout)stdout+=chunk.toString();};
+    const capture=(chunk:Buffer,isStdout:boolean)=>{bytes+=chunk.length;if(bytes>4096){void finish('tool_probe_log_limit');return;}if(isStdout===(versionChannel==='stdout'))selectedOutput+=chunk.toString();};
     child.stdout.on('data',chunk=>capture(chunk,true));child.stderr.on('data',chunk=>capture(chunk,false));
     child.once('error',()=>void finish('tool_probe_failed'));
     child.once('exit',(code)=>void finish(code===0?undefined:'tool_probe_failed'));

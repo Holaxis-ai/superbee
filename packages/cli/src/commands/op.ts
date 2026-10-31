@@ -64,7 +64,7 @@ Execution status and retained outputs remain intact; export and outputExport rep
 Trusted code has ambient local authority; process supervision is not an OS sandbox.
 
 Local binding resources JSON contains resources (role -> {path, logicalRef}), tools (handle ->
-absolute executable path or exact {path, versionFlag}), outputRoot (existing ordinary directory outside the bundle/private
+absolute executable path or {path, versionFlag, versionChannel?}), outputRoot (existing ordinary directory outside the bundle/private
 state), and profile (synthetic-v1: 16 MiB inputs/32 MiB outputs/30 seconds, or comparison-v1:
 128 MiB inputs/128 MiB outputs/120 seconds). Inputs are finite individual regular files; adapters
 must refuse unclosed dependencies. Preview returns expectedInputs hashes. Run input JSON contains
@@ -72,10 +72,13 @@ must refuse unclosed dependencies. Preview returns expectedInputs hashes. Run in
 Tool paths resolve to native physical binaries; executable scripts/wrappers are refused.
 Symlink launcher/virtual-environment semantics are not
 preserved. Use a copied interpreter when needed. String tool paths probe with --version; explicit
-versionFlag accepts only --version or -version. All selections are validated before any probe;
-there is no flag fallback or arbitrary probe argv. Bind pins executable bytes, version output
-and the selected flag, not arbitrary installed libraries or OS dependencies. Existing stored
-bindings without a flag retain --version in new run evidence; earlier receipts are unchanged. These profiles are not qualified private-pilot
+versionFlag accepts only --version, -version or -v. Optional versionChannel selects stdout
+(the default) or stderr; there is no channel fallback. Both streams share the finite log bound.
+All selections are validated before any probe; there is no flag fallback or arbitrary probe argv.
+Bind pins executable bytes, selected diagnostic output, flag and channel, not arbitrary installed
+libraries or OS dependencies. Version text is a self-reported diagnostic, not a fidelity guarantee.
+Existing stored bindings without a flag/channel retain --version/stdout in new run evidence;
+earlier bindings and receipts are unchanged. These profiles are not qualified private-pilot
 limits or CPU/RAM/disk isolation.
 
 Without --local, a local or Git bundle has no host operations: op list answers none, and op run is refused
