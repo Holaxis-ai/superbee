@@ -196,6 +196,7 @@ export const BEHAVIOR_ASSIGNMENTS = [
   ordinary("accessRevoke", 2),
   ordinary("bundleRetire", 1),
   ordinary("workloadRegister", 0),
+  ordinary("workloadExec", 1, { arityKind: "bounded" }),
   ordinary("bundleIdSet", 1),
   ordinary("depsAdd", 1),
   ordinary("depsRemove", 1),

@@ -8,6 +8,7 @@
 // form-urlencoded pairs keyed by the form's field names, `v=1` first, one pair per line of a
 // multi-line field and one per checked event.
 import { execFile } from "node:child_process";
+import { workloadExec, WORKLOAD_EXEC_USAGE, type WorkloadExecDeps } from "./workload-exec.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -77,7 +78,7 @@ function defaultGh(args: readonly string[]): Promise<string> {
   });
 }
 
-export async function workload(argv: string[], partial: Partial<WorkloadDeps> = {}): Promise<void> {
+export async function workload(argv: string[], partial: Partial<WorkloadDeps & WorkloadExecDeps> = {}): Promise<void> {
   const deps: WorkloadDeps = {
     stdout: partial.stdout ?? ((text: string) => void process.stdout.write(text)),
     cwd: partial.cwd ?? process.cwd(),
@@ -86,11 +87,12 @@ export async function workload(argv: string[], partial: Partial<WorkloadDeps> = 
   };
   const sub = argv[0];
   if (sub === "register") return register(argv.slice(1), deps);
+  if (sub === "exec") return workloadExec(argv.slice(1), partial);
   if (sub === undefined || sub === "-h" || sub === "--help") {
-    deps.stdout(renderUsage(WORKLOAD_USAGE));
+    deps.stdout(renderUsage(WORKLOAD_USAGE + "\n" + WORKLOAD_EXEC_USAGE));
     return;
   }
-  throw new CliError("USAGE", `unknown workload subcommand: ${sub} (expected register)`, { help: `${cliInvocation()} workload --help` });
+  throw new CliError("USAGE", `unknown workload subcommand: ${sub} (expected register or exec)`, { help: `${cliInvocation()} workload --help` });
 }
 
 const usage = (message: string, reason: string, help?: string) =>

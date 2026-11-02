@@ -193,3 +193,155 @@ test("a hosted site refuses a missing or different environment and a site that i
     assert.deepEqual(opened, [], name);
   }
 });
+
+// The app-free GitHub lane is independent of Portal configuration and local person sign-in.
+const WORKSPACE_ORIGIN = "https://team.example.com";
+const GATEWAY_ORIGIN = "https://mcp.example.com";
+const APPROVED_APP = "58ce99af-f79d-4795-99a0-baf54a68d0ec";
+const OIDC = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJzaWduZWQtY2FsbGVyIn0.signature";
+const BEARER = "sbw_" + "b".repeat(40);
+const CLOCK = 1793650000000;
+const REQUEST = { version: 1, displayName: "Civic research", events: ["workflow_dispatch"], bundles: { "civic-research": "write" } };
+const workflowEnv = () => ({ GITHUB_ACTIONS: "true", ACTIONS_ID_TOKEN_REQUEST_URL: "https://pipelines.actions.githubusercontent.com/job/idtoken?api-version=2", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "github-request-token", SUPERBEE_ACCESS_TOKEN: "person-token-must-not-be-used", SUPERBEE_HOST: "https://wrong.invalid" });
+const approved = () => ({ version: 1, appId: APPROVED_APP, token: BEARER, expiresAt: CLOCK + 900000, workspace: { slug: "team", origin: WORKSPACE_ORIGIN }, bundles: { "civic-research": "write" }, sites: [] });
+const pending = () => ({ refused: "workload_approval_pending", requestId: APPROVED_APP, state: "pending", expiresAt: CLOCK + 7 * 86400000, reviewUrl: WORKSPACE_ORIGIN + "/settings/workload-apps" });
+
+async function execFixture(t: import("node:test").TestContext, value: unknown = REQUEST) {
+  const root = await mkdtemp(path.join(tmpdir(), "sb-workload-exec-"));
+  const { rm } = await import("node:fs/promises");
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, "home"));
+  const file = path.join(root, "request.json");
+  await writeFile(file, JSON.stringify(value));
+  const argv = ["exec", "--request-file", file, "--url", WORKSPACE_ORIGIN, "--workspace", "team", "--", "node", "--help"];
+  const calls: { url: string; init?: RequestInit }[] = [], out: string[] = [], children: { argv: readonly string[]; env: NodeJS.ProcessEnv }[] = [], exits: number[] = [];
+  let result: unknown = approved(), status = 200;
+  const request = async (url: string, init?: RequestInit) => {
+    calls.push({ url, init });
+    if (url === WORKSPACE_ORIGIN + "/.well-known/oauth-protected-resource/mcp") return new Response("", { status: 404 });
+    if (url === WORKSPACE_ORIGIN + "/.well-known/superbee-workspace") return Response.json({ schema_version: 1, workspace_slug: "team", resource: GATEWAY_ORIGIN + "/mcp" });
+    if (url === GATEWAY_ORIGIN + "/.well-known/oauth-protected-resource/mcp") return Response.json({ resource: GATEWAY_ORIGIN + "/mcp", authorization_servers: ["https://issuer.example.com"] });
+    if (url === "https://issuer.example.com/.well-known/openid-configuration") return Response.json({ issuer: "https://issuer.example.com", token_endpoint: "https://issuer.example.com/oauth/token" });
+    if (url.startsWith("https://pipelines.actions.githubusercontent.com/")) return Response.json({ value: OIDC });
+    assert.equal(url, GATEWAY_ORIGIN + "/sync/v1/workload-exchange");
+    return Response.json(result, { status });
+  };
+  const deps = { cwd: root, home: path.join(root, "home"), env: workflowEnv(), fetch: request, now: () => CLOCK, stdout: (text: string) => { out.push(text); }, child: async (args: readonly string[], env: NodeJS.ProcessEnv) => { children.push({ argv: args, env }); return 17; }, exit: (n: number) => { exits.push(n); } };
+  return { root, file, argv, calls, out, children, exits, deps, answer: (body: unknown, code = 200) => { result = body; status = code; } };
+}
+
+test("workload exec resolves exact approved access without Portal config or app UUID and strips OIDC minting env", async t => {
+  const f = await execFixture(t);
+  await workload(f.argv, f.deps);
+  assert.equal(f.children.length, 1); assert.deepEqual(f.children[0]!.argv, ["node", "--help"]); assert.deepEqual(f.exits, [17]);
+  assert.equal(f.children[0]!.env.SUPERBEE_HOST, GATEWAY_ORIGIN); assert.equal(f.children[0]!.env.SUPERBEE_ACCESS_TOKEN, BEARER);
+  assert.equal(f.children[0]!.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN, undefined); assert.equal(f.children[0]!.env.ACTIONS_ID_TOKEN_REQUEST_URL, undefined);
+  const exchange = f.calls.find(x => x.url.endsWith("/workload-exchange"))!;
+  assert.deepEqual(JSON.parse(String(exchange.init!.body)), { workspace: "team", request: REQUEST });
+  assert.equal(new Headers(exchange.init!.headers).get("authorization"), "Bearer " + OIDC); assert.equal(exchange.init!.redirect, "error");
+  const oidc = f.calls.find(x => x.url.startsWith("https://pipelines.actions.githubusercontent.com/"))!;
+  assert.equal(new URL(oidc.url).searchParams.get("audience"), WORKSPACE_ORIGIN);
+  assert.equal(new Headers(oidc.init!.headers).get("authorization"), "Bearer github-request-token");
+  assert.deepEqual(f.out, [`::add-mask::${OIDC}\n`, `::add-mask::${BEARER}\n`]);
+});
+
+test("workload exec pending contains only bounded review status, never starts the child or polls", async t => {
+  const f = await execFixture(t); f.answer(pending(), 403);
+  await assert.rejects(workload(f.argv, f.deps), error => {
+    assert.ok(error instanceof CliError); assert.equal(error.code, "FORBIDDEN");
+    assert.deepEqual(error.details, { reason: "workload_approval_pending", request_id: APPROVED_APP, state: "pending", expires_at: CLOCK + 7 * 86400000, review_url: WORKSPACE_ORIGIN + "/settings/workload-apps", child_started: false }); return true;
+  });
+  assert.equal(f.children.length, 0); assert.equal(f.calls.filter(x => x.url.endsWith("workload-exchange")).length, 1);
+  assert.equal(f.out.join("").includes(BEARER), false);
+});
+
+test("workload exec denied, expired, foreign review links and arbitrary failure prose do not leak or start work", async t => {
+  for (const [response, status] of [
+    [{ refused: "workload_approval_denied", message: "private-body-canary" }, 403],
+    [{ refused: "workload_approval_expired" }, 403],
+    [{ ...pending(), reviewUrl: "https://attacker.invalid/?token=private-body-canary" }, 403],
+    [{ ...pending(), expiresAt: CLOCK - 1 }, 403],
+    [{ ...pending(), requestId: "not-an-id" }, 403],
+    [{ refused: "evil\nprivate-body-canary", token: BEARER, prose: "private-body-canary" }, 500],
+  ] as const) {
+    const f = await execFixture(t); f.answer(response, status);
+    await assert.rejects(workload(f.argv, f.deps), e => { assert.ok(e instanceof CliError); assert.doesNotMatch(JSON.stringify(e) + e.message, /private-body-canary|attacker\.invalid/); return true; });
+    assert.equal(f.children.length, 0);
+  }
+});
+
+test("workload exec refuses incomplete or wider exchange scope, bad expiry and unknown answer bytes", async t => {
+  for (const answer of [
+    { ...approved(), appId: undefined }, { ...approved(), token: "bad" }, { ...approved(), expiresAt: CLOCK + 20000 }, { ...approved(), expiresAt: CLOCK + 4000000 },
+    { ...approved(), workspace: { slug: "other", origin: WORKSPACE_ORIGIN } }, { ...approved(), bundles: { "civic-research": "read" } },
+    { ...approved(), bundles: { "civic-research": "write", secret: "read" } }, { ...approved(), sites: ["other"] },
+    { ...approved(), unrelated: "x".repeat(70000) },
+  ]) {
+    const f = await execFixture(t); f.answer(answer);
+    await assert.rejects(workload(f.argv, f.deps), e => e instanceof CliError); assert.equal(f.children.length, 0);
+  }
+});
+
+test("workload exec strict finite intent refuses claim fields, unknown keys, malformed JSON and unsafe files before discovery", async t => {
+  for (const request of [
+    { ...REQUEST, repositoryId: "123" }, { ...REQUEST, environment: "main" }, { ...REQUEST, version: 2 }, { ...REQUEST, displayName: " bad " },
+    { ...REQUEST, events: ["push"] }, { ...REQUEST, events: ["schedule", "schedule"] }, { ...REQUEST, bundles: {} }, { ...REQUEST, bundles: { "../../private": "write" } },
+    { ...REQUEST, sites: ["not-in-bundles"] }, { ...REQUEST, displayName: "x".repeat(17000) },
+  ]) {
+    const f = await execFixture(t, request); await assert.rejects(workload(f.argv, f.deps), e => e instanceof CliError && e.code === "USAGE"); assert.equal(f.calls.length, 0); assert.equal(f.children.length, 0);
+  }
+  const f = await execFixture(t); await writeFile(f.file, '{"version":1,"version":1,"displayName":"Civic","events":["workflow_dispatch"],"bundles":{"civic-research":"read","civic-research":"write"}}');
+  await assert.rejects(workload(f.argv, f.deps), e => e instanceof CliError && e.code === "USAGE"); assert.equal(f.calls.length, 0);
+  await writeFile(f.file, '{"version":1,');
+  await assert.rejects(workload(f.argv, f.deps), e => e instanceof CliError && e.code === "USAGE"); assert.equal(f.calls.length, 0);
+  const { symlink } = await import("node:fs/promises"); const link = path.join(f.root, "link.json"); await symlink(f.file, link); f.argv[2] = link;
+  await assert.rejects(workload(f.argv, f.deps), e => e instanceof CliError && e.code === "USAGE"); assert.equal(f.calls.length, 0);
+});
+
+test("workload exec requires GitHub OIDC and refuses untrusted discovery before sending credentials", async t => {
+  const f = await execFixture(t); f.deps.env = { ...workflowEnv(), ACTIONS_ID_TOKEN_REQUEST_TOKEN: "" };
+  await assert.rejects(workload(f.argv, f.deps), e => e instanceof CliError && e.code === "AUTH_REQUIRED"); assert.equal(f.calls.length, 0);
+  f.deps.env = workflowEnv(); const ordinaryFetch = f.deps.fetch;
+  f.deps.fetch = async (url, init) => url.endsWith("/.well-known/superbee-workspace") ? Response.json({ schema_version: 1, workspace_slug: "team", resource: "https://attacker.invalid/mcp" }) : ordinaryFetch(url, init);
+  await assert.rejects(workload(f.argv, f.deps), e => e instanceof CliError); assert.equal(f.children.length, 0);
+  assert.ok(f.calls.every(x => new Headers(x.init?.headers).get("authorization") === null));
+});
+
+test("workload exec preserves child argv boundaries and exit status in a real spawned process", async t => {
+  const f = await execFixture(t); const result = path.join(f.root, "child-result.json");
+  const code = `require('node:fs').writeFileSync(process.argv[1],JSON.stringify({token:process.env.SUPERBEE_ACCESS_TOKEN,host:process.env.SUPERBEE_HOST,mintUrl:process.env.ACTIONS_ID_TOKEN_REQUEST_URL,mintToken:process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,args:process.argv.slice(2)}));process.exit(23)`;
+  f.argv = [...f.argv.slice(0, -2), process.execPath, "-e", code, result, "literal $(do-not-execute)", "--help"];
+  const { child: _mock, ...deps } = f.deps;
+  await workload(f.argv, deps);
+  const { readFile } = await import("node:fs/promises"); const actual = JSON.parse(await readFile(result, "utf8"));
+  assert.deepEqual(actual, { token: BEARER, host: GATEWAY_ORIGIN, args: ["literal $(do-not-execute)", "--help"] }); assert.deepEqual(f.exits, [23]);
+});
+
+test("workload exec requires the entire fixed Site read profile without repeated or extra Sites", async t => {
+  const f = await execFixture(t, { version: 1, displayName: "Documentation publisher", events: ["schedule"], bundles: { documentation: "read" }, sites: ["documentation"] });
+  f.answer({ ...approved(), bundles: { documentation: "read" }, sites: ["documentation"] });
+  await workload(f.argv, f.deps); assert.equal(f.children.length, 1);
+  for (const sites of [[], ["documentation", "documentation"], ["documentation", "other-site"], undefined]) {
+    const other = await execFixture(t, { version: 1, displayName: "Documentation publisher", events: ["schedule"], bundles: { documentation: "read" }, sites: ["documentation"] });
+    other.answer({ ...approved(), bundles: { documentation: "read" }, sites });
+    await assert.rejects(workload(other.argv, other.deps), e => e instanceof CliError); assert.equal(other.children.length, 0);
+  }
+});
+
+test("built workload exec preserves child help/argv and pending exit before any child effect", async t => {
+  const f = await execFixture(t); const { spawnSync } = await import("node:child_process"); const { fileURLToPath } = await import("node:url"); const { readFile, access } = await import("node:fs/promises");
+  const cli = fileURLToPath(new URL("../../superbee/dist/superbee.mjs", import.meta.url));
+  const preload = path.join(f.root, "fetch-fixture.mjs"), result = path.join(f.root, "native-child.json");
+  await writeFile(preload, `globalThis.fetch=async(input,init)=>{const url=String(input);if(url===${JSON.stringify(WORKSPACE_ORIGIN + "/.well-known/oauth-protected-resource/mcp")})return new Response('',{status:404});if(url===${JSON.stringify(WORKSPACE_ORIGIN + "/.well-known/superbee-workspace")})return Response.json({schema_version:1,workspace_slug:'team',resource:${JSON.stringify(GATEWAY_ORIGIN + "/mcp")}});if(url===${JSON.stringify(GATEWAY_ORIGIN + "/.well-known/oauth-protected-resource/mcp")})return Response.json({resource:${JSON.stringify(GATEWAY_ORIGIN + "/mcp")},authorization_servers:['https://issuer.example.com']});if(url==='https://issuer.example.com/.well-known/openid-configuration')return Response.json({issuer:'https://issuer.example.com',token_endpoint:'https://issuer.example.com/oauth/token'});if(url.startsWith('https://pipelines.actions.githubusercontent.com/'))return Response.json({value:${JSON.stringify(OIDC)}});if(url===${JSON.stringify(GATEWAY_ORIGIN + "/sync/v1/workload-exchange")})return process.env.WORKLOAD_TEST_PENDING==='1'?Response.json(${JSON.stringify(pending())},{status:403}):Response.json({...${JSON.stringify(approved())},expiresAt:Date.now()+900000});throw Error('unexpected fixture request');};`);
+  const code = `require('node:fs').writeFileSync(process.argv[1],JSON.stringify({host:process.env.SUPERBEE_HOST,token:process.env.SUPERBEE_ACCESS_TOKEN,mint:process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,args:process.argv.slice(2)}));process.exit(23)`;
+  const nativeArgs = ["--import", preload, cli, "workload", ...f.argv.slice(0, -2), process.execPath, "-e", code, result, "--help", "literal $(never-executed)"];
+  const env = { ...process.env, ...workflowEnv(), HOME: f.deps.home, USERPROFILE: f.deps.home, SUPERBEE_NO_AUTOPULL: "1", ASLITE_NO_UPDATE_CHECK: "1" };
+  const done = spawnSync(process.execPath, nativeArgs, { env, cwd: f.root, encoding: "utf8", timeout: 30000 });
+  assert.equal(done.status, 23, done.stdout + done.stderr);
+  assert.deepEqual(JSON.parse(await readFile(result, "utf8")), { host: GATEWAY_ORIGIN, token: BEARER, args: ["--help", "literal $(never-executed)"] });
+  const stoppedFile = path.join(f.root, "must-not-exist"); const pendingArgs = ["--import", preload, cli, "workload", ...f.argv.slice(0, -2), process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'bad')", stoppedFile];
+  // This native process uses the same fake authority, with an expiry relative to its actual clock.
+  const pendingPreload = (await readFile(preload, "utf8")).replace(JSON.stringify(pending()), JSON.stringify({ ...pending(), expiresAt: Date.now() + 86400000 })); await writeFile(preload, pendingPreload);
+  const stopped = spawnSync(process.execPath, pendingArgs, { env: { ...env, WORKLOAD_TEST_PENDING: "1" }, cwd: f.root, encoding: "utf8", timeout: 30000 });
+  assert.equal(stopped.status, 2, stopped.stdout + stopped.stderr); assert.match(stopped.stdout, /workload_approval_pending/); assert.equal(stopped.stderr, ""); await assert.rejects(access(stoppedFile));
+});

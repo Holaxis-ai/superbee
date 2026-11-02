@@ -5,7 +5,7 @@ import type { ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { getNodeValue, parseTree, type Node as JsoncNode, type ParseError } from "jsonc-parser";
+import { parseUniqueJsonObject } from "./json-object.js";
 import {
   HOST_CONFIG_ROOTS,
   resolveClaudeUserConfigFile,
@@ -232,27 +232,9 @@ export function openCodeConfigCandidates(input: McpStatusEnvironment): string[] 
   return candidates;
 }
 
-function assertUniqueObjectKeys(node: JsoncNode): void {
-  if (node.type === "object") {
-    const seen = new Set<string>();
-    for (const property of node.children ?? []) {
-      const key = property.children?.[0]?.value;
-      if (typeof key !== "string") continue;
-      if (seen.has(key)) throw new Error(`configuration contains duplicate key '${key}'`);
-      seen.add(key);
-    }
-  }
-  for (const child of node.children ?? []) assertUniqueObjectKeys(child);
-}
-
 /** Parse one host JSON/JSONC file without accepting ambiguous duplicate-key ownership. */
 export function parseMcpConfigRoot(text: string): Record<string, unknown> {
-  const errors: ParseError[] = [];
-  const tree = parseTree(text, errors, { allowTrailingComma: true, disallowComments: false });
-  if (errors.length > 0) throw new Error(`configuration is not valid JSON/JSONC (error ${errors[0]?.error})`);
-  if (!tree || tree.type !== "object") throw new Error("configuration root is not an object");
-  assertUniqueObjectKeys(tree);
-  return getNodeValue(tree) as Record<string, unknown>;
+  return parseUniqueJsonObject(text, { allowTrailingComma: true, disallowComments: false });
 }
 
 export function parseClaudeMcpEntries(

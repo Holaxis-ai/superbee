@@ -104,6 +104,7 @@ const zero = exactPositionalArity(0);
 const one = exactPositionalArity(1);
 const two = exactPositionalArity(2);
 const fieldValueArity: BoundedPositionalArity = Object.freeze({ kind: "bounded", count: 2, max: 3 });
+const workloadCommandArity: BoundedPositionalArity = Object.freeze({ kind: "bounded", count: 1, max: 128 });
 const zeroOrOne: BoundedPositionalArity = Object.freeze({ kind: "bounded", count: 0, max: 1 });
 const oneOrTwo: BoundedPositionalArity = Object.freeze({ kind: "bounded", count: 1, max: 2 });
 
@@ -784,6 +785,12 @@ export const CLI_COMMAND_GROUPS = [
         usage: "workload register [--name <name>] [--environment <name>] [--url <workspace-url>] [--no-open] [--json]",
         summary:
           "In a site repository, open the hosted workspace's workload app registration page filled in: the repository and owner ids and default branch from your local gh, the workflow, workspace and bundle from release.config.json, events schedule, repository_dispatch and workflow_dispatch, the bundle at read and, for a site that publishes to hosted, its <bundle> site line and reconcile.environment (else no environment); nothing is registered until a workspace administrator reviews the page and clicks Register; --no-open prints the link; then the App id goes in release.config.json reconcile.app (a site that only reads hosted content: the printed gh variable set HOSTED_APP_ID command)",
+      },
+      {
+        id: "workloadExec",
+        leaves: [publicLeaf("workloadExec", "workload exec", workloadCommandArity, undefined, { flags: pathFlags({ flag: "request-file", role: "ingress" }) })],
+        usage: "workload exec --request-file <file> --url <HTTPS workspace origin> --workspace <slug> -- <command> [args...]",
+        summary: "In GitHub Actions, request or discover exactly the access in a bounded version1 intent file, without Portal config or an app ID; pending approval returns FORBIDDEN (exit 2) with a workspace administrator review link before the child starts; approved access passes a fresh masked bearer only to the child and removes its GitHub OIDC minting environment",
       },
       {
         id: "bundleRetire",
