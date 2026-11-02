@@ -1233,8 +1233,8 @@ test("trimTrailingSlashes strips only trailing slashes and stays linear on long 
   assert.equal(trimTrailingSlashes(hostile), `${"/".repeat(200_000)}x`);
   assert.ok(performance.now() - started < 500, "linear time on a hostile slash run");
   const noRegex = /\.replace\(\/\\\/\+\$\//;
-  for (const file of ["discovery.ts", "session.ts"]) {
-    const text = readFileSync(path.resolve(here, "../src/hosted-auth", file), "utf8");
+  for (const file of ["hosted/discovery.ts", "hosted-auth/session.ts"]) {
+    const text = readFileSync(path.resolve(here, "../src", file), "utf8");
     assert.doesNotMatch(text, noRegex, `${file} must use trimTrailingSlashes`);
   }
 });

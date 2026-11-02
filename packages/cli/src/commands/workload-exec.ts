@@ -9,7 +9,7 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { CliError } from "../errors.js";
 import { readExternalFileBytesNoFollowWithin } from "../external-file.js";
-import { discoverHosted, followWorkspaceOrigin, resolveHostedTarget, type FetchLike } from "../hosted-auth/discovery.js";
+import { discoverHosted, followWorkspaceOrigin, resolveHostedTarget, type FetchLike } from "../hosted/discovery.js";
 import { isWorkspaceSlug } from "../hosted/reference.js";
 import { cliInvocation } from "../invocation.js";
 import { parseUniqueJsonObject } from "../json-object.js";
