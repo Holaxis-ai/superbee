@@ -258,14 +258,25 @@ test("finalizer fresh registry observations converge only on the exact package a
       assert.equal(options.headers.authorization, undefined);
       appendFileSync("calls", "fetch\\n");
       const row = rows[Math.min(attempt++, rows.length - 1)];
-      if (row.networkError) throw new Error("fixture network failure");
-      return new Response(row.invalidJson ? "{" : JSON.stringify(row.body), {
+      if (row.networkError) throw new Error(row.error ?? "fixture network failure");
+      if (row.oversized) {
+        let chunks = 0;
+        const stream = new ReadableStream({
+          pull(controller) { if (chunks++ < 10) controller.enqueue(new Uint8Array(1024 * 1024)); else controller.close(); },
+          cancel() { appendFileSync("cancelled", "cancelled\\n"); },
+        });
+        return new Response(stream);
+      }
+      const response = new Response(row.invalidJson ? "{" : JSON.stringify(row.body), {
         status: row.status ?? 200, headers: { "cf-cache-status": "REVALIDATED", "set-cookie": "do-not-log" },
       });
+      return { ok: response.ok, status: response.status, body: response.body,
+        headers: { get: (key) => row.header ?? response.headers.get(key) } };
     };
   `);
   const version = "1.0.0-pre.1";
   const good = { versions: { [version]: { name: "superbee", version, engines: { node: ">=20" } } }, "dist-tags": { next: version } };
+  const hostile = "provider\r\nfixture-command\u001b[31m" + "x".repeat(1000);
   const rows = [
     { name: "immediate", observations: [{ body: good }], allow: true, calls: 1 },
     { name: "delayed", observations: [{ body: { versions: {}, "dist-tags": { next: "old" } } }, { body: good }], allow: true, calls: 2 },
@@ -278,6 +289,12 @@ test("finalizer fresh registry observations converge only on the exact package a
     { name: "wrong-package", observations: [{ body: { ...good, versions: { [version]: { name: "other", version } } } }], allow: false },
     { name: "http-unavailable", observations: [{ status: 503 }], allow: false },
     { name: "network-unavailable", observations: [{ networkError: true }], allow: false },
+    { name: "hostile-version", observations: [{ body: { ...good, versions: { [version]: { name: "superbee", version: hostile } } } }], allow: false },
+    { name: "hostile-channel", observations: [{ body: { ...good, "dist-tags": { next: hostile } } }], allow: false },
+    { name: "hostile-input", version: hostile, observations: [{ body: good }], allow: false },
+    { name: "hostile-header", observations: [{ body: good, header: hostile }], allow: true, calls: 1 },
+    { name: "hostile-error", observations: [{ networkError: true, error: hostile }], allow: false },
+    { name: "oversized-stream", observations: [{ oversized: true }], allow: false, cancelled: true },
     { name: "malformed", observations: [{ invalidJson: true }], allow: false },
   ];
   for (const row of rows) {
@@ -290,7 +307,16 @@ test("finalizer fresh registry observations converge only on the exact package a
     });
     assert.equal(result.status, row.allow ? 0 : 1, `${row.name}: ${result.stderr}`);
     assert.equal(readFileSync(path.join(cwd, "calls"), "utf8").trim().split("\n").length, row.calls ?? 12, row.name);
-    assert.doesNotMatch(result.stdout + result.stderr, /do-not-log/);
+    assert.doesNotMatch(result.stdout + result.stderr, /do-not-log|[\r\u001b]/);
+    for (const line of result.stdout.trim().split("\n")) {
+      assert.match(line, /^registry observation \d+(?::| unavailable:)/, `${row.name}: standalone provider line`);
+      assert.ok(line.length < 4200, `${row.name}: bounded diagnostic line`);
+    }
+    assert.ok(result.stderr.length < 1200, `${row.name}: bounded refusal diagnostic`);
+    if (row.cancelled) {
+      assert.equal(readFileSync(path.join(cwd, "cancelled"), "utf8").trim().split("\n").length, 12);
+      assert.match(result.stdout, /8 MiB decoded-byte limit/);
+    }
     if (row.allow) {
       assert.deepEqual(JSON.parse(readFileSync(path.join(cwd, "out/registry-package.json"))), row.observations.at(-1).body.versions[row.version ?? version]);
       assert.deepEqual(JSON.parse(readFileSync(path.join(cwd, "out/registry-tags.json"))), row.observations.at(-1).body["dist-tags"]);

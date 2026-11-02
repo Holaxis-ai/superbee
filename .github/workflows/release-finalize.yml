@@ -47,6 +47,10 @@ jobs:
           import { writeFile } from "node:fs/promises";
           import { setTimeout as sleep } from "node:timers/promises";
           const { V: version, T: tag } = process.env;
+          // Diagnostics cross the Actions command channel; encode controls and bound each value.
+          const display = (value) => JSON.stringify(String(value).slice(0, 160)).replace(/[\u007f-\uffff]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+          // Keep full metadata for the README/platform proof, with a decoded-byte budget.
+          const maxBytes = 8 * 1024 * 1024;
           let accepted = false;
           for (let attempt = 1; attempt <= 12; attempt++) {
             const url = new URL("https://registry.npmjs.org/superbee");
@@ -58,13 +62,21 @@ jobs:
                 redirect: "error",
                 signal: AbortSignal.timeout(10_000),
               });
-              const diagnostic = ["age", "date", "etag", "cf-cache-status"].map((key) => `${key}=${response.headers.get(key) ?? "absent"}`).join(" ");
+              const diagnostic = ["age", "date", "etag", "cf-cache-status"].map((key) => `${key}=${display(response.headers.get(key) ?? "absent")}`).join(" ");
               console.log(`registry observation ${attempt}: HTTP ${response.status} ${diagnostic}`);
               if (!response.ok) throw new Error(`HTTP ${response.status}`);
-              const document = await response.json();
+              const chunks = [];
+              let bytes = 0;
+              // Async iteration cancels the stream on an oversized response or read failure.
+              for await (const chunk of response.body) {
+                bytes += chunk.byteLength;
+                if (bytes > maxBytes) throw new Error("registry document exceeds the 8 MiB decoded-byte limit");
+                chunks.push(chunk);
+              }
+              const document = JSON.parse(Buffer.concat(chunks, bytes).toString("utf8"));
               const registry = document.versions?.[version];
               const tags = document["dist-tags"];
-              console.log(`registry observation ${attempt}: version=${registry?.version ?? "missing"} ${tag}=${tags?.[tag] ?? "missing"}`);
+              console.log(`registry observation ${attempt}: version=${display(registry?.version ?? "missing")} ${display(tag)}=${display(tags?.[tag] ?? "missing")}`);
               if (registry?.name === "superbee" && registry?.version === version && tags?.[tag] === version) {
                 await writeFile("out/registry-package.json", JSON.stringify(registry));
                 await writeFile("out/registry-tags.json", JSON.stringify(tags));
@@ -72,12 +84,12 @@ jobs:
                 break;
               }
             } catch (error) {
-              console.log(`registry observation ${attempt} unavailable: ${error.message}`);
+              console.log(`registry observation ${attempt} unavailable: ${display(error.message)}`);
             }
             if (attempt < 12) await sleep(10_000);
           }
           if (!accepted) {
-            console.error(`::error::npm did not serve superbee@${version} on ${tag} within 12 fresh observations; confirm publication or stage approval, then rerun this finalizer. No release was created.`);
+            console.error(`::error::npm did not serve superbee@${display(version)} on ${display(tag)} within 12 fresh observations; confirm publication or stage approval, then rerun this finalizer. No release was created.`);
             process.exitCode = 1;
           }
           NODE
