@@ -39,17 +39,48 @@ jobs:
           set -euo pipefail
           case "$V" in v*) echo "::error::pass the bare version, not the tag"; exit 1 ;; esac
           case "$V" in *-*) T=next ;; *) T=latest ;; esac
-          # Registry reads lag writes by seconds (commit d6e4f6f), and an automatic dispatch arrives
-          # right after publish; retry for up to two minutes, then fail with the command still owed.
-          # Unreachable and mismatch both stop here; nothing has been mutated.
-          for attempt in $(seq 1 12); do
-            SEEN="$(npm view "superbee@$V" version 2>/dev/null || true)"
-            TAGGED="$(npm view superbee "dist-tags.$T" 2>/dev/null || true)"
-            [ "$SEEN" = "$V" ] && [ "$TAGGED" = "$V" ] && break
-            echo "registry not settled yet (attempt $attempt): version=$SEEN $T=$TAGGED"; sleep 10
-          done
-          test "$SEEN" = "$V" || { echo "::error::npm does not serve superbee@$V. If release.yml fell back to staging, a human must approve that stage first"; exit 1; }
-          test "$TAGGED" = "$V" || { echo "::error::the npm $T tag points at $TAGGED, expected $V"; exit 1; }
+          mkdir -p out
+          # Read one fresh anonymous document so version and channel share an observation. A
+          # distinct URL and revalidation hints reduce cached replay; provider convergence still
+          # has a bounded wait and must fail closed before any GitHub release mutation.
+          T="$T" node --input-type=module <<'NODE'
+          import { writeFile } from "node:fs/promises";
+          import { setTimeout as sleep } from "node:timers/promises";
+          const { V: version, T: tag } = process.env;
+          let accepted = false;
+          for (let attempt = 1; attempt <= 12; attempt++) {
+            const url = new URL("https://registry.npmjs.org/superbee");
+            url.searchParams.set("observation", `${Date.now()}-${attempt}`);
+            try {
+              const response = await fetch(url, {
+                headers: { accept: "application/json", "cache-control": "no-cache" },
+                cache: "no-store",
+                redirect: "error",
+                signal: AbortSignal.timeout(10_000),
+              });
+              const diagnostic = ["age", "date", "etag", "cf-cache-status"].map((key) => `${key}=${response.headers.get(key) ?? "absent"}`).join(" ");
+              console.log(`registry observation ${attempt}: HTTP ${response.status} ${diagnostic}`);
+              if (!response.ok) throw new Error(`HTTP ${response.status}`);
+              const document = await response.json();
+              const registry = document.versions?.[version];
+              const tags = document["dist-tags"];
+              console.log(`registry observation ${attempt}: version=${registry?.version ?? "missing"} ${tag}=${tags?.[tag] ?? "missing"}`);
+              if (registry?.name === "superbee" && registry?.version === version && tags?.[tag] === version) {
+                await writeFile("out/registry-package.json", JSON.stringify(registry));
+                await writeFile("out/registry-tags.json", JSON.stringify(tags));
+                accepted = true;
+                break;
+              }
+            } catch (error) {
+              console.log(`registry observation ${attempt} unavailable: ${error.message}`);
+            }
+            if (attempt < 12) await sleep(10_000);
+          }
+          if (!accepted) {
+            console.error(`::error::npm did not serve superbee@${version} on ${tag} within 12 fresh observations; confirm publication or stage approval, then rerun this finalizer. No release was created.`);
+            process.exitCode = 1;
+          }
+          NODE
           echo "dist_tag=$T" >> "$GITHUB_OUTPUT"
       - name: Download the exact published bytes from npm and verify the build attestation
         env:
@@ -71,8 +102,6 @@ jobs:
           T: ${{ steps.registry.outputs.dist_tag }}
         run: |
           set -euo pipefail
-          npm view "superbee@$V" version readmeFilename engines os --json > out/registry-package.json
-          npm view superbee dist-tags --json > out/registry-tags.json
           tar -xOf "out/superbee-$V.tgz" package/package.json > out/tarball-package.json
           tar -xOf "out/superbee-$V.tgz" package/README.md > out/tarball-readme.md
           node --input-type=module <<'NODE'
