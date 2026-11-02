@@ -92,6 +92,33 @@ must already be a member of the workspace (invited from the Members page first).
 bundle id in their own terminal. If it refuses with `needs_person_at_terminal`, show the person
 the host's statement and give them the command; do not try to work around it.
 
+## Requesting GitHub workload access
+
+A GitHub Actions job can use `superbee workload exec` with a bounded version1 JSON intent, an
+explicit HTTPS workspace origin and workspace slug, followed by its command after `--`.
+Run its `--help` for exact syntax. The intent contains a display name, supported events, exact
+bundle read/write capabilities and optional fixed sites. It contains no repository IDs, workflow
+refs, environment, credentials or app UUID. Each requested site must have its matching Read bundle
+capability. A protected main-only GitHub environment and `id-token: write` are required by the host.
+This works for custom research or documentation workflows without `release.config.json`.
+
+The existing exchange verifies the job's GitHub identity and resolves exactly approved access.
+Pending approval is `FORBIDDEN` (exit 2) with `details.reason: workload_approval_pending`, an opaque
+request id, expiry and `review_url`. No child starts and no Superbee bearer is returned. A workspace
+administrator reviews the permissions at that URL and approves or denies them; an agent must not
+approve its own request. Run the workflow again after approval. There is no polling, implicit grant,
+UUID fallback or copied app-ID variable. Denied or expired requests remain terminal.
+
+On success only the child receives the short-lived bearer, resolved gateway host, and
+`SUPERBEE_WORKLOAD_APP_ID` from the validated response, replacing any inherited app ID. The latter
+is temporary identity metadata for a native principal check, never a grant; nothing is written to
+`GITHUB_ENV`, a file or a persistent GitHub variable. Its GitHub OIDC minting variables are removed. The command is spawned directly with its argument boundaries,
+not through a shell, and its exit status is preserved. Tokens are masked in GitHub Actions logs;
+do not print or upload the child's environment. A changed capability declaration needs its own
+approval and cannot silently inherit broader access. The host must serve this request mode before
+using it; merged client source alone does not establish deployment, registration or production
+qualification. Existing explicit app-ID clients and the registration fallback below remain supported.
+
 ## Registering a site's CI: `workload register`
 
 A site whose content lives in hosted Superbee reads it in CI as a registered workload app. In the

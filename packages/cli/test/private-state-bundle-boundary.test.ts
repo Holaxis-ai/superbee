@@ -604,6 +604,17 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
   { leaf:"opRegistered",surface:"--dir",argv:(t)=>["op","registered","--local","--dir",t,"--json"] },
   { leaf:"opUnregister",surface:"--dir",argv:(t)=>["op","unregister","fixture","--local","--dir",t,"--json"] },
   { leaf:"opBind",surface:"--dir",argv:(t)=>["op","bind","local.fixture.compare.v1","--local","--resources-file","input.json","--dir",t,"--json"],controlSkip:"local-operation.test.ts supplies accepted operation/resource configuration; bundle guarding precedes that input" },
+  {
+    leaf: "workloadExec", surface: "--request-file",
+    argv: (target) => ["workload", "exec", "--request-file", target, "--url", "https://team.example.com", "--workspace", "team", "--", "node"],
+    control: (fixture) => {
+      const file = path.join(fixture.outside, "workload-request.json");
+      writeFileSync(file, JSON.stringify({ version: 1, displayName: "Boundary fixture", events: ["workflow_dispatch"], bundles: { "team.knowledge": "read" } }));
+      return file;
+    },
+    // A valid ordinary intent reaches the missing GitHub OIDC permission, not person sign-in.
+    controlExit: 4,
+  },
   { leaf:"opBind",surface:"--resources-file",argv:(t)=>["op","bind","local.fixture.compare.v1","--local","--resources-file",t,"--dir",".superbee","--json"],controlSkip:"the benign boundary fixture is not resource JSON; local-operation.test.ts proves a complete binding preview and acceptance" },
   { leaf:"opRegister",surface:"<0>",argv:(t)=>["op","register",t,"--local","--dir",".superbee","--json"],controlSkip:"local-operation.test.ts supplies the operation-specific manifest; registration guards private paths before metadata reads" },
   { leaf:"opRun",surface:"--export-html",skip:"Requires a registered operation and accepted machine binding; local-operation.test.ts proves explicit export containment, private-state refusal, expected absence and facade failure exit with a complete operation fixture" },
