@@ -29,7 +29,8 @@ Pending approval returns FORBIDDEN (exit 2), details.reason workload_approval_pe
 workspace administrator's review URL; no child starts and no bearer is emitted. Run the workflow
 again after approval. Denied or expired requests remain terminal; there is no polling or retry.
 Approved access starts the command directly, without a shell, with SUPERBEE_HOST and its temporary
-SUPERBEE_ACCESS_TOKEN. GitHub OIDC minting variables are removed from the child's environment.
+SUPERBEE_ACCESS_TOKEN. SUPERBEE_WORKLOAD_APP_ID identifies the resolved app for native principal
+verification; it is not a grant or a persistent app-ID variable. GitHub OIDC minting variables are removed from the child's environment.
 Tokens are masked in GitHub Actions logs; do not print or upload the child's environment.
 The child exit status is preserved. At most 128 command/argument tokens are accepted.
 
@@ -170,7 +171,7 @@ export async function workloadExec(argv: string[], partial: Partial<WorkloadExec
       !object(b.workspace) || b.workspace.slug !== values.workspace || b.workspace.origin !== selected.requestedOrigin || !exactCapabilities(b.bundles, requested.bundles) ||
       (!Array.isArray(b.sites) || b.sites.length !== (requested.sites ?? []).length || new Set(b.sites).size !== b.sites.length || !(requested.sites ?? []).every(s => (b.sites as unknown[]).includes(s)))) throw unavailable("workload_exchange_invalid");
   deps.stdout(`::add-mask::${b.token}\n`);
-  const env: NodeJS.ProcessEnv = { ...deps.env, SUPERBEE_HOST: selected.target.origin, SUPERBEE_ACCESS_TOKEN: b.token };
+  const env: NodeJS.ProcessEnv = { ...deps.env, SUPERBEE_HOST: selected.target.origin, SUPERBEE_ACCESS_TOKEN: b.token, SUPERBEE_WORKLOAD_APP_ID: b.appId };
   delete env.ACTIONS_ID_TOKEN_REQUEST_URL;
   delete env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
   const code = await deps.child(positionals, env, deps.cwd);

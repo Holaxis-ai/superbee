@@ -109,8 +109,10 @@ administrator reviews the permissions at that URL and approves or denies them; a
 approve its own request. Run the workflow again after approval. There is no polling, implicit grant,
 UUID fallback or copied app-ID variable. Denied or expired requests remain terminal.
 
-On success only the child receives the short-lived bearer and resolved gateway host; its GitHub
-OIDC minting variables are removed. The command is spawned directly with its argument boundaries,
+On success only the child receives the short-lived bearer, resolved gateway host, and
+`SUPERBEE_WORKLOAD_APP_ID` from the validated response, replacing any inherited app ID. The latter
+is temporary identity metadata for a native principal check, never a grant; nothing is written to
+`GITHUB_ENV`, a file or a persistent GitHub variable. Its GitHub OIDC minting variables are removed. The command is spawned directly with its argument boundaries,
 not through a shell, and its exit status is preserved. Tokens are masked in GitHub Actions logs;
 do not print or upload the child's environment. A changed capability declaration needs its own
 approval and cannot silently inherit broader access. The host must serve this request mode before
