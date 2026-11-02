@@ -47,12 +47,12 @@ test("no release workflow restores a dependency cache", () => {
   assert.ok(names.length >= 6, `expected every release workflow, found ${names.join(", ")}`);
   for (const name of names) {
     const text = read(name);
-    assert.doesNotMatch(text, /^\s+cache(-dependency-path)?:/m, `${name} setup-node must not restore a package-manager cache`);
     assert.doesNotMatch(text, /actions\/cache(\/restore)?@/, `${name} must not restore an Actions cache`);
     // setup-node also caches on its own when package.json declares an npm packageManager.
     const setups = text.match(/- uses: actions\/setup-node@[^\n]*\n {8}with:\n(?: {10}[^\n]*\n)*/g) ?? [];
     assert.equal(setups.length, (text.match(/actions\/setup-node@/g) ?? []).length, `${name} must write every setup-node step in the checked shape`);
     for (const setup of setups) {
+      assert.doesNotMatch(setup, /^\s+cache(-dependency-path)?:/m, `${name} setup-node must not restore a package-manager cache`);
       assert.match(setup, /^ {10}package-manager-cache: false$/m, `${name} setup-node must disable automatic package-manager caching`);
     }
   }
@@ -225,13 +225,115 @@ test("the committed verdict gate allows only a newest genuine success", { skip: 
   }
 });
 
+test("finalizer fresh registry observations converge only on the exact package and channel", () => {
+  const start = finalize.indexOf("T=\"$T\" node --input-type=module <<'NODE'");
+  assert.notEqual(start, -1);
+  const scriptStart = finalize.indexOf("\n", start) + 1;
+  const scriptEnd = finalize.indexOf("\n          NODE", scriptStart);
+  const script = finalize.slice(scriptStart, scriptEnd).split("\n").map((line) => line.slice(10)).join("\n");
+  const dir = mkdtempSync(path.join(os.tmpdir(), "release-registry-"));
+  const step = path.join(dir, "step.mjs");
+  const mock = path.join(dir, "mock.mjs");
+  writeFileSync(step, script);
+  writeFileSync(mock, `
+    import assert from "node:assert/strict";
+    import { appendFileSync, readFileSync } from "node:fs";
+    import timers from "node:timers/promises";
+    import { syncBuiltinESMExports } from "node:module";
+    timers.setTimeout = async (ms) => { assert.equal(ms, 10_000); };
+    syncBuiltinESMExports();
+    const rows = JSON.parse(readFileSync(process.env.ROWS, "utf8"));
+    let attempt = 0;
+    const urls = new Set();
+    globalThis.fetch = async (url, options) => {
+      assert.equal(url.origin, "https://registry.npmjs.org");
+      assert.equal(url.pathname, "/superbee");
+      assert.ok(url.searchParams.get("observation"));
+      assert.ok(!urls.has(url.href)); urls.add(url.href);
+      assert.equal(options.headers["cache-control"], "no-cache");
+      assert.equal(options.headers.accept, "application/json");
+      assert.equal(options.cache, "no-store");
+      assert.equal(options.redirect, "error");
+      assert.ok(options.signal instanceof AbortSignal);
+      assert.equal(options.headers.authorization, undefined);
+      appendFileSync("calls", "fetch\\n");
+      const row = rows[Math.min(attempt++, rows.length - 1)];
+      if (row.networkError) throw new Error(row.error ?? "fixture network failure");
+      if (row.oversized) {
+        let chunks = 0;
+        const stream = new ReadableStream({
+          pull(controller) { if (chunks++ < 10) controller.enqueue(new Uint8Array(1024 * 1024)); else controller.close(); },
+          cancel() { appendFileSync("cancelled", "cancelled\\n"); },
+        });
+        return new Response(stream);
+      }
+      const response = new Response(row.invalidJson ? "{" : JSON.stringify(row.body), {
+        status: row.status ?? 200, headers: { "cf-cache-status": "REVALIDATED", "set-cookie": "do-not-log" },
+      });
+      return { ok: response.ok, status: response.status, body: response.body,
+        headers: { get: (key) => row.header ?? response.headers.get(key) } };
+    };
+  `);
+  const version = "1.0.0-pre.1";
+  const good = { versions: { [version]: { name: "superbee", version, engines: { node: ">=20" } } }, "dist-tags": { next: version } };
+  const hostile = "provider\r\nfixture-command\u001b[31m" + "x".repeat(1000);
+  const rows = [
+    { name: "immediate", observations: [{ body: good }], allow: true, calls: 1 },
+    { name: "delayed", observations: [{ body: { versions: {}, "dist-tags": { next: "old" } } }, { body: good }], allow: true, calls: 2 },
+    { name: "last-attempt", observations: [...Array(11).fill({ body: { versions: {}, "dist-tags": {} } }), { body: good }], allow: true, calls: 12 },
+    { name: "stable", version: "1.0.0", tag: "latest", observations: [{ body: { versions: { "1.0.0": { name: "superbee", version: "1.0.0" } }, "dist-tags": { latest: "1.0.0" } } }], allow: true, calls: 1 },
+    { name: "missing", observations: [{ body: { versions: {}, "dist-tags": { next: version } } }], allow: false },
+    { name: "split-observations", observations: [{ body: { ...good, "dist-tags": { next: "old" } } }, { body: { versions: {}, "dist-tags": { next: version } } }], allow: false },
+    { name: "wrong-channel", observations: [{ body: { ...good, "dist-tags": { next: "1.0.0-pre.2" } } }], allow: false },
+    { name: "wrong-version", observations: [{ body: { ...good, versions: { [version]: { name: "superbee", version: "other" } } } }], allow: false },
+    { name: "wrong-package", observations: [{ body: { ...good, versions: { [version]: { name: "other", version } } } }], allow: false },
+    { name: "http-unavailable", observations: [{ status: 503 }], allow: false },
+    { name: "network-unavailable", observations: [{ networkError: true }], allow: false },
+    { name: "hostile-version", observations: [{ body: { ...good, versions: { [version]: { name: "superbee", version: hostile } } } }], allow: false },
+    { name: "hostile-channel", observations: [{ body: { ...good, "dist-tags": { next: hostile } } }], allow: false },
+    { name: "hostile-input", version: hostile, observations: [{ body: good }], allow: false },
+    { name: "hostile-header", observations: [{ body: good, header: hostile }], allow: true, calls: 1 },
+    { name: "hostile-error", observations: [{ networkError: true, error: hostile }], allow: false },
+    { name: "oversized-stream", observations: [{ oversized: true }], allow: false, cancelled: true },
+    { name: "malformed", observations: [{ invalidJson: true }], allow: false },
+  ];
+  for (const row of rows) {
+    const cwd = path.join(dir, row.name);
+    mkdirSync(path.join(cwd, "out"), { recursive: true });
+    const fixture = path.join(cwd, "rows.json");
+    writeFileSync(fixture, JSON.stringify(row.observations));
+    const result = spawnSync(process.execPath, ["--import", mock, step], {
+      cwd, env: { ...process.env, V: row.version ?? version, T: row.tag ?? "next", ROWS: fixture }, encoding: "utf8",
+    });
+    assert.equal(result.status, row.allow ? 0 : 1, `${row.name}: ${result.stderr}`);
+    assert.equal(readFileSync(path.join(cwd, "calls"), "utf8").trim().split("\n").length, row.calls ?? 12, row.name);
+    assert.doesNotMatch(result.stdout + result.stderr, /do-not-log|[\r\u001b]/);
+    for (const line of result.stdout.trim().split("\n")) {
+      assert.match(line, /^registry observation \d+(?::| unavailable:)/, `${row.name}: standalone provider line`);
+      assert.ok(line.length < 4200, `${row.name}: bounded diagnostic line`);
+    }
+    assert.ok(result.stderr.length < 1200, `${row.name}: bounded refusal diagnostic`);
+    if (row.cancelled) {
+      assert.equal(readFileSync(path.join(cwd, "cancelled"), "utf8").trim().split("\n").length, 12);
+      assert.match(result.stdout, /8 MiB decoded-byte limit/);
+    }
+    if (row.allow) {
+      assert.deepEqual(JSON.parse(readFileSync(path.join(cwd, "out/registry-package.json"))), row.observations.at(-1).body.versions[row.version ?? version]);
+      assert.deepEqual(JSON.parse(readFileSync(path.join(cwd, "out/registry-tags.json"))), row.observations.at(-1).body["dist-tags"]);
+    } else {
+      assert.match(result.stderr, /No release was created/);
+      assert.throws(() => readFileSync(path.join(cwd, "out/registry-package.json")), { code: "ENOENT" });
+    }
+  }
+});
+
 test("finalize holds no npm credential, verifies provider state, and creates the release once", () => {
   const { finalize: job } = jobs(finalize);
   assert.ok(job, "release-finalize.yml declares the finalize job");
   assert.match(job, /^ {4}permissions:\n {6}contents: write$/m, "finalize needs only contents: write");
   assert.doesNotMatch(job, /id-token|registry-url|NODE_AUTH_TOKEN/, "finalize must not be able to authenticate to npm");
-  assert.match(job, /npm view "superbee@\$V" version/, "finalize proves the registry serves the version");
-  assert.match(job, /npm view "superbee@\$V" version readmeFilename engines os --json/, "finalize reads the exact supported npm metadata");
+  assert.match(job, /registry\?\.version === version && tags\?\.\[tag\] === version/, "one registry observation must prove exact version and channel");
+  assert.doesNotMatch(job, /npm view/, "later metadata proof reuses the accepted observation");
   assert.doesNotMatch(job, /assert\.(?:equal|deepEqual)\(registry\.readme\s*,/, "staged publishing does not populate registry readme bytes");
   assert.match(job, /manifest\.readme, readme/, "finalize proves the attested tarball carries the installed README bytes");
   assert.match(job, /registry\.engines, manifest\.engines/, "finalize proves npm exposes the installed Node requirement");
