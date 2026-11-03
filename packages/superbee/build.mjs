@@ -66,6 +66,11 @@ export async function prepareDistributionTypes(compiledWorkspaces = [], compile 
 
 async function buildPublicationTypes() {
   await copyDeclarationTree(r("../publication/dist"), r("dist/publication"));
+  // Publication's public options use only this type from the private View runtime.
+  await cp(r("../view-runtime/dist/bridge-host-kind.d.ts"), r("dist/publication/bridge-host-kind.d.ts"));
+  const bridgeTypes = r("dist/publication/bridge.d.ts");
+  await writeFile(bridgeTypes, (await readFile(bridgeTypes, "utf8"))
+    .replaceAll('"@superbee/view-runtime/bridge"', '"./bridge-host-kind.js"'));
   // The Core declaration is standalone; keep its one owner without a consumer Core dependency.
   await cp(r("../core/dist/site-manifest.d.ts"), r("dist/publication/site-manifest-core.d.ts"));
   for (const file of ["index.d.ts", "site-manifest.d.ts", "site-manifest-entry.d.ts"]) {

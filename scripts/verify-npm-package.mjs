@@ -37,6 +37,7 @@ const publicationExpectedFiles = [
   "dist/publication/site-manifest-core.d.ts",
   "dist/publication.mjs",
   "dist/publication/bridge-entry.d.ts",
+  "dist/publication/bridge-host-kind.d.ts",
   "dist/publication/bridge.d.ts",
   "dist/publication/canonical-json.d.ts",
   "dist/publication/capture.d.ts",
@@ -563,6 +564,10 @@ async function runInstalledProof(spec) {
       await mkdir(path.join(typeConsumer, "node_modules"), { recursive: true });
       await symlink(installedRoot, path.join(typeConsumer, "node_modules", "superbee"), "dir");
       await writeFile(path.join(typeConsumer, "proof.mts"), [
+        'import { createPublicationBridge, type CreatePublicationBridgeOptionsV1 } from "superbee/publication/bridge";',
+        'const host: CreatePublicationBridgeOptionsV1["host"] = { kind: "portal" };',
+        'declare const options: CreatePublicationBridgeOptionsV1;',
+        'createPublicationBridge({ ...options, host });',
         'import { parseSiteManifestDoc, readPublicationSiteManifest, type SiteManifest } from "superbee/publication/site-manifest";',
         'const parsed = parseSiteManifestDoc({id:"sites/example",frontmatter:{type:"Site",title:"Example",audience:"restricted",presentation:"p@1.0.0",views:[]}});',
         'if (parsed.ok) { const manifest: SiteManifest = parsed.manifest; const title: string = manifest.title; }',

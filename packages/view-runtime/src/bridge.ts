@@ -16,6 +16,8 @@ import {
 import { isAnyRegistryId, parseRegistration, type BridgeCapability } from "@superbee/core/page";
 import { sortByMeaningfulChange } from "@superbee/core/query-order";
 
+import type { BridgeHostKind } from "./bridge-host-kind.js";
+
 export const BRIDGE_PROTOCOL = "v0";
 export const ACTION_BRIDGE_PROTOCOL = "v1";
 
@@ -43,7 +45,7 @@ const HOST_CAPABILITY_NAME = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/;
 export const BRIDGE_ERROR_CODES = ["USAGE", "FORBIDDEN", "REVOKED", "TOO_LARGE", "RUNTIME", "NOT_FOUND"] as const;
 export type BridgeErrorCode = (typeof BRIDGE_ERROR_CODES)[number];
 
-export type BridgeHostKind = "oss" | "portal" | "hosted";
+export type { BridgeHostKind } from "./bridge-host-kind.js";
 
 /** Host-declared ceilings. Zero means the host does not offer the request at all. */
 export interface BridgeHostLimits {
