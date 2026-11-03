@@ -101,6 +101,13 @@ bundle read/write capabilities and optional fixed sites. It contains no reposito
 refs, environment, credentials or app UUID. Each requested site must have its matching Read bundle
 capability. A protected main-only GitHub environment and `id-token: write` are required by the host.
 This works for custom research or documentation workflows without `release.config.json`.
+By default, the workspace pointer must name its own parent-domain gateway. Optional explicit
+`--host <HTTPS gateway origin>` selects the receiving service through ordinary protected-resource
+and issuer discovery, without pointer or environment fallback. That service receives the signed
+job token. In explicit mode, `--url` is the logical browser approval/audience origin (including a
+shared neutral origin), and `--workspace` independently names the exact workspace: no first-label
+inference is made. The server still decides current authority, and the CLI still checks returned
+workspace, exact capabilities and expiry. Selecting a service grants no access.
 
 The existing exchange verifies the job's GitHub identity and resolves exactly approved access.
 Pending approval is `FORBIDDEN` (exit 2) with `details.reason: workload_approval_pending`, an opaque
