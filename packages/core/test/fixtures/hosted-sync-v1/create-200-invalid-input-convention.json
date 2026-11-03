@@ -20,7 +20,7 @@
       "content-type": "application/json; charset=utf-8",
       "x-superbee-write-settled": "4a2f9c1e-8b3d-4e6f-9a1b-000000000283"
     },
-    "body": "{\"ok\":false,\"operationId\":\"documents.create.v1\",\"error\":{\"code\":\"invalid_input\",\"message\":\"The write input is invalid. Use fieldAction alone for collection changes; do not mix it with setFields, removeFields or body changes. Retained-candidate edit/replace-all requires expectedCandidateVersion from candidates.read.\",\"retryable\":false,\"writeState\":\"not_applied\"}}",
+    "body": "{\"ok\":false,\"operationId\":\"documents.create.v1\",\"error\":{\"code\":\"invalid_input\",\"message\":\"The create input is invalid. For a new document, use bundleId, documentId, expectAbsent: true, frontmatter and body. Omit managed frontmatter such as actor, timestamp and okf_version. For retained-candidate edit or replace-all, supply expectedCandidateVersion from candidates.read.\",\"retryable\":false,\"writeState\":\"not_applied\"}}",
     "truncated": false
   }
 }
