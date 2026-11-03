@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { FRONTMATTER_LIMITS, loadBoundedYaml } from "../src/bounded-yaml.js";
 import { FrontmatterLimitError, MalformedDocumentError } from "../src/frontmatter-contract.js";
 import { parseFrontmatter, parseMarkdown, stringifyDoc } from "../src/frontmatter.js";
+import { FrontmatterRefusedError } from "../src/errors.js";
 import { parseLeadingFrontmatter } from "../src/portable-frontmatter.js";
 import type { Frontmatter } from "../src/types.js";
 
@@ -68,7 +69,7 @@ test("aliases to scalars count against the alias cap", () => {
 });
 
 test("aliases to a long scalar are refused past the expanded character cap", () => {
-  const length = 1000;
+  const length = 2000;
   const uses = Math.floor(FRONTMATTER_LIMITS.expandedChars / length) + 1;
   assert.ok(uses <= FRONTMATTER_LIMITS.aliases);
   const source = `s: &s ${"x".repeat(length)}\nlist: [${Array(uses).fill("*s").join(",")}]`;
@@ -80,7 +81,7 @@ test("aliases to a long scalar are refused past the expanded character cap", () 
 });
 
 test("aliases to a binary scalar count against the expanded character cap", () => {
-  const bytes = 1000;
+  const bytes = 2000;
   const uses = Math.floor(FRONTMATTER_LIMITS.expandedChars / bytes) + 1;
   assert.ok(uses <= FRONTMATTER_LIMITS.aliases);
   const encoded = Buffer.alloc(bytes, 7).toString("base64");
@@ -103,20 +104,27 @@ test("aliases used inside mapping keys are charged while parsing", () => {
   for (const [name, load] of loadSites) assert.equal((load(within_cap).b as unknown[]).length, 100, name);
 });
 
-test("an alias to an enclosing collection used as a mapping key is charged its current extent", () => {
-  const size = 5000;
-  const uses = 300;
-  assert.ok(size * uses > FRONTMATTER_LIMITS.expandedNodes);
-  const flow = `a: &a [${Array(size).fill(1).join(",")},${Array(uses).fill("{? *a : 1}").join(",")}]`;
-  const block = `a: &a\n${"- 1\n".repeat(size)}${"- {? *a : 1}\n".repeat(uses)}`;
+test("frontmatter whose YAML aliases form a cycle is refused at every load site", () => {
+  const cases = [
+    "loop: &l\n  - *l",
+    "self: &m {k: *m}",
+    "merge: &m {<<: *m}",
+    "key: &a [1, {? *a : 1}]",
+    `nested: &n\n  inner:\n    back: *n`,
+  ];
+  for (const source of cases) {
+    for (const [name, load] of loadSites) {
+      within(1000, name, () => assert.throws(() => load(source), refusedWith("FRONTMATTER_CYCLE"), `${name}: ${source}`));
+    }
+  }
+  const block = `a: &a\n${"- 1\n".repeat(5000)}${"- {? *a : 1}\n".repeat(300)}`;
   for (const [name, load] of loadSites) {
-    within(1000, `${name} flow`, () => assert.throws(() => load(flow), refusedWith("FRONTMATTER_ALIAS_LIMIT"), name));
-    within(1000, `${name} block`, () => assert.throws(() => load(block), refusedWith("FRONTMATTER_ALIAS_LIMIT"), name));
+    within(1000, name, () => assert.throws(() => load(block), refusedWith("FRONTMATTER_CYCLE"), name));
   }
 });
 
 test("mapping keys count toward the expanded character cap", () => {
-  const key = "k".repeat(1000);
+  const key = "k".repeat(2000);
   const uses = Math.floor(FRONTMATTER_LIMITS.expandedChars / key.length) + 1;
   assert.ok(uses <= FRONTMATTER_LIMITS.aliases);
   const source = `m: &m {${key}: 1}\nlist: [${Array(uses).fill("*m").join(",")}]`;
@@ -126,9 +134,16 @@ test("mapping keys count toward the expanded character cap", () => {
 });
 
 test("merge keys past the parser's merge cap are refused with the alias limit code", () => {
-  const source = `a: &a {k1: 1, k2: 2, k3: 3}\nb:\n${Array(2600).fill("- <<: *a").join("\n")}`;
+  const keys = Array.from({ length: 20 }, (_, i) => `k${i}: ${i}`).join(", ");
+  const merges = 600;
+  assert.ok(merges <= FRONTMATTER_LIMITS.aliases);
+  const source = `a: &a {${keys}}\nb:\n${Array(merges).fill("- <<: *a").join("\n")}`;
   for (const [name, load] of loadSites) {
-    within(1000, name, () => assert.throws(() => load(source), refusedWith("FRONTMATTER_ALIAS_LIMIT"), name));
+    within(1000, name, () => assert.throws(
+      () => load(source),
+      (error: unknown) => refusedWith("FRONTMATTER_ALIAS_LIMIT")(error) && /merge keys/.test((error as Error).message),
+      name,
+    ));
   }
 });
 
@@ -147,14 +162,13 @@ test("the depth cap counts block and flow collections alike", () => {
   }
 });
 
-test("frontmatter with a few YAML aliases, a merge key and a cycle still parses", () => {
+test("frontmatter with a few YAML aliases and a merge key still parses", () => {
   const source = [
     "base: &b { k: v }",
     "copy: *b",
     "child:\n  <<: *b\n  extra: 1",
     "small: &s [1, 2]",
     "pair: [*s, *s]",
-    "loop: &l\n  - *l",
     "title: &t Hello",
     "again: *t",
     nestedAliases(3),
@@ -164,22 +178,36 @@ test("frontmatter with a few YAML aliases, a merge key and a cycle still parses"
     assert.deepEqual(value.copy, { k: "v" }, name);
     assert.deepEqual(value.child, { k: "v", extra: 1 }, name);
     assert.equal(value.again, "Hello", name);
-    const loop = value.loop as unknown[];
-    assert.equal(loop[0], loop, name);
     assert.equal((value.a3 as unknown[]).length, 9, name);
   }
 });
 
-test("frontmatter the serializer writes with shared and circular values reads back", () => {
+test("frontmatter the serializer writes with shared values reads back", () => {
   const shared = { value: "shared" };
-  const cycle: Record<string, unknown> = { value: "cycle" };
-  cycle.self = cycle;
-  const written = stringifyDoc({ type: "Note", first: shared, second: shared, cycle } as unknown as Frontmatter, "body\n");
+  const written = stringifyDoc({ type: "Note", first: shared, second: shared } as unknown as Frontmatter, "body\n");
   assert.match(written, /&ref_/);
   const { frontmatter } = parseMarkdown(written, "notes/a");
   assert.equal(frontmatter.first, frontmatter.second);
-  const readCycle = frontmatter.cycle as Record<string, unknown>;
-  assert.equal(readCycle.self, readCycle);
+});
+
+function writeRefusedWith(code: string) {
+  return (error: unknown): boolean => error instanceof FrontmatterRefusedError && error.code === code;
+}
+
+test("the serializer refuses frontmatter the reader would refuse", () => {
+  const cycle: Record<string, unknown> = { value: "cycle" };
+  cycle.self = cycle;
+  assert.throws(() => stringifyDoc({ type: "Note", cycle } as unknown as Frontmatter, ""), writeRefusedWith("FRONTMATTER_CYCLE"));
+  const long = { type: "Note", description: "v".repeat(FRONTMATTER_LIMITS.sourceChars) } as unknown as Frontmatter;
+  assert.throws(() => stringifyDoc(long, ""), writeRefusedWith("FRONTMATTER_TOO_LARGE"));
+  const text = "w".repeat(1000);
+  const repeated = { type: "Note", list: Array(300).fill(text) } as unknown as Frontmatter;
+  assert.throws(() => stringifyDoc(repeated, ""), writeRefusedWith("FRONTMATTER_TOO_LARGE"), "repeated strings are written out in full");
+  let deep: unknown = 1;
+  for (let i = 0; i < FRONTMATTER_LIMITS.depth; i++) deep = { a: deep };
+  assert.throws(() => stringifyDoc({ type: "Note", deep } as unknown as Frontmatter, ""), writeRefusedWith("FRONTMATTER_TOO_DEEP"));
+  const ok = stringifyDoc({ type: "Note", title: "fine", tags: ["a", "b"] } as unknown as Frontmatter, "body\n");
+  assert.deepEqual(parseMarkdown(ok).frontmatter, { type: "Note", title: "fine", tags: ["a", "b"] });
 });
 
 test("an alias with no anchor stays an ordinary malformed frontmatter error", () => {

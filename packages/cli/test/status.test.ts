@@ -471,7 +471,7 @@ test("status: standard timestamp findings count fields, preserve imports, ignore
   }
 });
 
-test("status: non-JSON stale_after YAML values remain reportable in JSON and TOON", async () => {
+test("status: non-JSON stale_after YAML values remain reportable in JSON and TOON, and a cyclic value is malformed", async () => {
   const dir = await tempDir();
   try {
     await initBundle(dir, { okfVersion: "0.2" });
@@ -479,13 +479,14 @@ test("status: non-JSON stale_after YAML values remain reportable in JSON and TOO
       await writeFile(path.join(dir, `${id}.md`), `---\ntype: Note\nstale_after: ${value}\n---\n`);
     }
     const result = await runJson(["--dir", dir]);
-    assert.equal(result.invalid_stale_after, 3);
+    assert.equal(result.invalid_stale_after, 2);
     const diagnostic = result.invalid_stale_after_docs as { rows: Record<string, unknown>[] };
     assert.deepEqual(diagnostic.rows, [
-      { id: "cycle", type: "Note", value: "<non-JSON array: circular or too deeply nested>" },
       { id: "infinity", type: "Note", value: "<Infinity>" },
       { id: "nan", type: "Note", value: "<NaN>" },
     ]);
+    // A cyclic value is refused by the frontmatter reader, so the document is reported as malformed.
+    assert.deepEqual((result.malformed_docs as { rows: unknown[] }).rows, [{ id: "cycle", reason: "YAML aliases form a cycle" }]);
     assert.deepEqual(decode(await runToon(["--dir", dir])), result);
   } finally {
     await rm(dir, { recursive: true, force: true });

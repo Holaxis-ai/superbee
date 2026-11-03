@@ -1,3 +1,5 @@
+import { MalformedDocumentError } from "@superbee/core";
+import { CliError, frontmatterDetails } from "./errors.js";
 import { registeredRecipe } from "./source-plugins.js";
 import { builtinNames, builtinRecipeSource } from "./recipe-source-builtin.js";
 import { filesRecipeSource } from "./recipe-source-filesystem.js";
@@ -12,7 +14,14 @@ export const DEFAULT_RECIPE_REF = "context-notes";
 
 export async function resolveRecipe(ref: string, sources: RecipeSource[] = DEFAULT_SOURCES): Promise<LoadResult> {
   for (const source of sources) {
-    const result = await source.resolve(ref);
+    let result: LoadResult | undefined | null;
+    try {
+      result = await source.resolve(ref);
+    } catch (error) {
+      // A recipe folder is caller input, so frontmatter it cannot parse is a usage error.
+      if (error instanceof MalformedDocumentError) throw new CliError("USAGE", error.message, { details: frontmatterDetails(error) });
+      throw error;
+    }
     if (result) return result;
   }
   return {

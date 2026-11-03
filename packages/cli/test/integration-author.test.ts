@@ -54,6 +54,18 @@ test("recipe validation is inert and an unavailable profile is an explicit refus
   } finally { await rm(w.root, { recursive: true, force: true }); }
 });
 
+test("recipe validation names the frontmatter code of a file the reader refuses", async () => {
+  const w = await workspace();
+  try {
+    await writeFile(path.join(w.recipe, "conventions", "cyclic.md"), "---\ntype: Convention\nloop: &l [*l]\n---\n");
+    const result = await validateRecipeForAuthor(w.recipe, {});
+    assert.equal(result.ok, false);
+    const diagnostic = result.diagnostics.find((d) => d.file === "conventions/cyclic.md");
+    assert.equal(diagnostic?.code, "AUTHOR_MARKDOWN_INVALID");
+    assert.equal(diagnostic?.frontmatter_code, "FRONTMATTER_CYCLE");
+  } finally { await rm(w.root, { recursive: true, force: true }); }
+});
+
 test("author package scan refuses README and hidden credential containers without disclosure", async () => {
   for (const filename of ["README.md", ".env", ".env.production"]) {
     const w = await workspace();

@@ -1,7 +1,23 @@
 /** Runtime-neutral error and predicates shared by storage adapters and the engine. */
 
 /** Stable codes for YAML the bounded loader refuses before or while parsing. */
-export type FrontmatterLimitCode = "FRONTMATTER_TOO_LARGE" | "FRONTMATTER_TOO_DEEP" | "FRONTMATTER_ALIAS_LIMIT";
+export type FrontmatterLimitCode =
+  | "FRONTMATTER_TOO_LARGE"
+  | "FRONTMATTER_TOO_DEEP"
+  | "FRONTMATTER_ALIAS_LIMIT"
+  | "FRONTMATTER_CYCLE";
+
+const FRONTMATTER_LIMIT_CODES: ReadonlySet<string> = new Set<FrontmatterLimitCode>([
+  "FRONTMATTER_TOO_LARGE",
+  "FRONTMATTER_TOO_DEEP",
+  "FRONTMATTER_ALIAS_LIMIT",
+  "FRONTMATTER_CYCLE",
+]);
+
+/** Whether a value names one of the {@link FrontmatterLimitCode}s. */
+export function isFrontmatterLimitCode(value: unknown): value is FrontmatterLimitCode {
+  return typeof value === "string" && FRONTMATTER_LIMIT_CODES.has(value);
+}
 
 /** Stable codes a {@link MalformedDocumentError} carries. */
 export type MalformedDocumentCode = "FRONTMATTER_MALFORMED" | FrontmatterLimitCode;

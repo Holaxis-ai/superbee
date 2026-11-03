@@ -8,15 +8,15 @@ import { FrontmatterLimitError } from "./frontmatter-contract.js";
  * Limits every YAML load applies, all measured on the loaded value with aliases expanded.
  * `sourceChars` counts UTF-16 code units of the YAML source. `depth` counts nested mappings and
  * sequences, the root included, whether written in block or flow style. `aliases` counts alias
- * uses of any node. `expandedNodes` counts every node and `expandedChars` the string characters a
- * full traversal visits.
+ * uses of any node. `expandedNodes` counts every node and `expandedChars` the string and mapping
+ * key characters a full traversal visits. A loaded value never contains a cycle.
  */
 export const FRONTMATTER_LIMITS = Object.freeze({
-  sourceChars: 1024 * 1024,
-  depth: 64,
-  aliases: 10_000,
-  expandedNodes: 1_000_000,
-  expandedChars: 8 * 1024 * 1024,
+  sourceChars: 256 * 1024,
+  depth: 32,
+  aliases: 1_000,
+  expandedNodes: 100_000,
+  expandedChars: 1024 * 1024,
 });
 
 /** Parser nesting allowed before the value can be measured; a stack guard, not the depth rule. */
@@ -49,6 +49,10 @@ function tooLarge(): FrontmatterLimitError {
   );
 }
 
+function cycle(): FrontmatterLimitError {
+  return new FrontmatterLimitError("FRONTMATTER_CYCLE", "YAML aliases form a cycle");
+}
+
 function scalarExtent(value: unknown): Extent {
   // Binary scalars serialize at least one character per byte, so they count against the same cap.
   const chars = typeof value === "string" ? value.length : ArrayBuffer.isView(value) ? value.byteLength : 0;
@@ -65,8 +69,7 @@ function isCollection(value: unknown): value is object {
 /**
  * Measures values with aliases expanded, reusing the extent of a collection that is referenced
  * more than once. Mapping keys count toward characters. A reference to a collection on the current
- * path, or to an anchored collection the parser is still filling, is a cycle; within a measurement
- * it counts as one node, since readers detect cycles rather than unroll them.
+ * path, or to an anchored collection the parser is still filling, is a cycle and is refused.
  */
 class ExtentMeter {
   private readonly known = new Map<object, Extent>();
@@ -82,18 +85,11 @@ class ExtentMeter {
     if (!isCollection(value)) return scalarExtent(value);
     const known = this.known.get(value);
     if (known !== undefined) return known;
-    if (this.path.has(value) || this.unfinished.has(value)) return { nodes: 1, chars: 0, depth: 1 };
-    return this.walk(value, true);
+    if (this.path.has(value) || this.unfinished.has(value)) throw cycle();
+    return this.walk(value);
   }
 
-  /** The current extent of a collection the parser is still filling; never remembered, as it grows. */
-  measureUnfinished(value: unknown): Extent {
-    if (!isCollection(value)) return scalarExtent(value);
-    if (this.path.has(value)) return { nodes: 1, chars: 0, depth: 1 };
-    return this.walk(value, false);
-  }
-
-  private walk(value: object, remember: boolean): Extent {
+  private walk(value: object): Extent {
     if (this.path.size >= FRONTMATTER_LIMITS.depth) throw tooDeep();
     this.path.add(value);
     const keyed = !Array.isArray(value);
@@ -107,7 +103,7 @@ class ExtentMeter {
       if (extent.depth > FRONTMATTER_LIMITS.depth) throw tooDeep();
     }
     this.path.delete(value);
-    if (remember) this.known.set(value, extent);
+    this.known.set(value, extent);
     return extent;
   }
 }
@@ -156,9 +152,9 @@ class AliasBudget {
         `YAML aliases are used more than ${FRONTMATTER_LIMITS.aliases} times`,
       );
     }
-    // An alias to an anchor still being filled is charged its current extent, which the parser may
-    // copy (as a mapping key, for example) before the anchor closes.
-    const extent = this.finished.has(name) ? this.meter.measure(value) : this.meter.measureUnfinished(value);
+    // An alias to an anchor still being filled names one of its own ancestors.
+    if (!this.finished.has(name) && isCollection(value)) throw cycle();
+    const extent = this.meter.measure(value);
     this.nodes += extent.nodes;
     this.chars += extent.chars;
     if (this.nodes > FRONTMATTER_LIMITS.expandedNodes || this.chars > FRONTMATTER_LIMITS.expandedChars) throw tooLarge();

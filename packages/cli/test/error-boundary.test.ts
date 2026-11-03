@@ -28,6 +28,7 @@ import {
   writeDoc,
   InvalidInputError,
   FrontmatterLimitError,
+  FrontmatterRefusedError,
   MalformedDocumentError,
   MemoryBackend,
   RemoteError,
@@ -99,6 +100,7 @@ const MATRIX: MatrixRow[] = [
   { name: "RemoteError unknown code on a 4xx -> USAGE", make: () => new RemoteError("nope", "TEAPOT", 418), code: "USAGE", exit: 2 },
   // Corrupt stored bytes: a valid invocation hitting bad data is RUNTIME, not USAGE.
   { name: "MalformedDocumentError -> RUNTIME", make: () => new MalformedDocumentError("a.md", "unparseable YAML"), code: "RUNTIME", exit: 1 },
+  { name: "FrontmatterRefusedError -> USAGE", make: () => new FrontmatterRefusedError("FRONTMATTER_TOO_LARGE", "too large"), code: "USAGE", exit: 2 },
   { name: "MalformedDocumentError from a frontmatter limit -> RUNTIME", make: () => new MalformedDocumentError("a.md", new FrontmatterLimitError("FRONTMATTER_ALIAS_LIMIT", "limit")), code: "RUNTIME", exit: 1 },
   // Local I/O failures and anything unexpected -> RUNTIME, exit 1 — never USAGE.
   { name: "ENOSPC -> RUNTIME", make: () => errnoError("ENOSPC", "ENOSPC: no space left on device"), code: "RUNTIME", exit: 1 },

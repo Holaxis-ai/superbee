@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { bundleHealth, type BundleHealthReport } from "../src/bundle-health/index.js";
 import { QUALIFIED_EDGE_CASES } from "./fixtures/qualified-edge-cases.js";
 import type { BundleBinding, PinCheck } from "../src/cross-bundle.js";
-import { InvalidInputError } from "../src/errors.js";
+import { FrontmatterRefusedError, InvalidInputError } from "../src/errors.js";
 import { MalformedDocumentError } from "../src/frontmatter-contract.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import type { Bundle, OkfDocument, StorageBackend } from "../src/types.js";
@@ -298,21 +298,28 @@ test("bundle health: bound copies get the resolver's verdicts, unbound aliases c
   assert.deepEqual(wrong.crossBundle?.dependencies[0], { alias: "beers", bundle_id: "beer-bundle", state: "bundle_unavailable", bound: "copy:impostor", pin: null });
 });
 
-test("bundle health: diagnostic values are JSON-safe, including non-finite numbers and an alias cycle", async () => {
-  const cycle: Record<string, unknown> = {};
-  cycle.self = cycle;
+test("bundle health: diagnostic values are JSON-safe, including non-finite numbers", async () => {
   const { backend } = await store("0.2", {
     "notes/infinite": { frontmatter: { type: "Note", generated: { at: Number.POSITIVE_INFINITY } }, body: "" },
-    "notes/cycle": { frontmatter: { type: "Note", stale_after: cycle }, body: "" },
+    "notes/nan": { frontmatter: { type: "Note", stale_after: Number.NaN }, body: "" },
     "notes/legacy": { frontmatter: { type: "Note", timestamp: [Number.NaN] }, body: "" },
   });
   const report = await bundleHealth({ root: "memory://values", backend });
   const fields = [...report.invalidStaleAfter, ...report.invalidTimestamps, ...report.invalidLegacyTimestamps];
   assert.ok(fields.length >= 3);
   assert.doesNotThrow(() => JSON.stringify(fields));
-  assert.deepEqual(report.invalidStaleAfter, [{ id: "notes/cycle", type: "Note", value: "<non-JSON object: circular or too deeply nested>" }]);
+  assert.deepEqual(report.invalidStaleAfter, [{ id: "notes/nan", type: "Note", value: "<NaN>" }]);
   assert.ok(report.invalidTimestamps.some((row) => row.id === "notes/infinite" && row.value === "<Infinity>"));
   assert.deepEqual(report.invalidLegacyTimestamps, [{ id: "notes/legacy", type: "Note", field: "timestamp", value: ["<NaN>"] }]);
+});
+
+test("bundle health: cyclic frontmatter is refused before it is stored", async () => {
+  const cycle: Record<string, unknown> = {};
+  cycle.self = cycle;
+  await assert.rejects(
+    store("0.2", { "notes/cycle": { frontmatter: { type: "Note", stale_after: cycle }, body: "" } }),
+    (error: unknown) => error instanceof FrontmatterRefusedError && error.code === "FRONTMATTER_CYCLE",
+  );
 });
 
 test("bundle health: the report reads only, and a backend-less bundle in a runtime without a default throws InvalidInputError", async () => {

@@ -9,7 +9,8 @@
 
 import yaml from "js-yaml";
 import { loadBoundedYaml } from "./bounded-yaml.js";
-import { isUsableTimestamp, MalformedDocumentError } from "./frontmatter-contract.js";
+import { FrontmatterRefusedError } from "./errors.js";
+import { FrontmatterLimitError, isUsableTimestamp, MalformedDocumentError } from "./frontmatter-contract.js";
 import { splitLeadingFrontmatter } from "./frontmatter-splitter.js";
 import type { Frontmatter } from "./types.js";
 
@@ -123,9 +124,21 @@ export function parseFrontmatter(
   return normalizeFrontmatter(parsed as Record<string, unknown>, options);
 }
 
-/** The metadata bytes shared by document serialization and parsed-object stores. */
+/**
+ * The metadata bytes shared by document serialization and parsed-object stores. Every writer goes
+ * through here, and it refuses with {@link FrontmatterRefusedError} any bytes the frontmatter
+ * reader would refuse, so a write never stores frontmatter that later reads cannot load.
+ */
 export function stringifyFrontmatter(data: Record<string, unknown>): string {
-  return yaml.safeDump(data).trim();
+  const dumped = yaml.safeDump(data).trim();
+  try {
+    yamlEngine.parse(dumped);
+  } catch (error) {
+    if (error instanceof FrontmatterLimitError) throw new FrontmatterRefusedError(error.code, error.message);
+    const detail = (error instanceof Error ? error.message : String(error)).split("\n")[0] ?? "";
+    throw new FrontmatterRefusedError("FRONTMATTER_MALFORMED", detail);
+  }
+  return dumped;
 }
 
 /** Match the exact body shape emitted by the document serializer. */

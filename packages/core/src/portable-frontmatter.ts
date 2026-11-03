@@ -1,6 +1,7 @@
 /** Browser/Worker-safe parsing for the bundle-root OKF edition marker. */
 
 import { loadBoundedYaml } from "./bounded-yaml.js";
+import { FrontmatterRefusedError } from "./errors.js";
 import { MalformedDocumentError } from "./frontmatter-contract.js";
 import { splitLeadingFrontmatter } from "./frontmatter-splitter.js";
 import type { Frontmatter } from "./types.js";
@@ -23,5 +24,18 @@ export function parseLeadingFrontmatter(raw: string, context?: string): Frontmat
   } catch (error) {
     if (error instanceof MalformedDocumentError) throw error;
     throw new MalformedDocumentError(context, error);
+  }
+}
+
+/**
+ * Refuse markdown whose leading frontmatter the reader would refuse, before it is stored as is.
+ * Throws {@link FrontmatterRefusedError} carrying the reader's code.
+ */
+export function assertStorableFrontmatter(raw: string): void {
+  try {
+    parseLeadingFrontmatter(raw);
+  } catch (error) {
+    if (error instanceof MalformedDocumentError) throw new FrontmatterRefusedError(error.code, error.detail);
+    throw error;
   }
 }

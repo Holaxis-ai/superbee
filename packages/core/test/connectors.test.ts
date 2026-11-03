@@ -344,8 +344,10 @@ const timed = <T>(run: () => T): { value: T; ms: number } => {
 };
 
 test("a YAML alias is a typed refusal, and neither a circular alias nor an alias expansion can stall the parser", () => {
-  const loop = timed(() => parseYaml(withYaml("x_loop: &loop\n  - *loop")));
-  assert.deepEqual(errorsOf(loop.value).map((e) => [e.code, e.path]), [["CONNECTOR_MALFORMED", "/x_loop/0"]]);
+  const loop = timed(() => assert.throws(
+    () => parseYaml(withYaml("x_loop: &loop\n  - *loop")),
+    (e: unknown) => e instanceof MalformedDocumentError && e.code === "FRONTMATTER_CYCLE",
+  ));
   assert.ok(loop.ms < 1000, `${loop.ms}ms`);
   const levels = ["x_b0: &a0 [x,x,x,x,x,x,x,x,x]"];
   for (let i = 1; i <= 9; i++) levels.push(`x_b${i}: &a${i} [${Array(9).fill(`*a${i - 1}`).join(",")}]`);

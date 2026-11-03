@@ -116,8 +116,12 @@ losing it. `RemoteBackend.queryHeads` reports those rows through the scan's
 `onSkip`, and without one keeps the scan's fail-loud contract by raising `MalformedDocumentError`;
 `RemoteBackend.list` still lists their ids, since the documents exist. Reading such a document, or
 any route that cannot leave it out (heads and snapshot, where a missing id means a deletion),
-answers `500 RUNTIME` with `details.malformed: { id, reason }`, which `RemoteBackend` raises as
-`MalformedDocumentError` without retrying.
+answers `500 RUNTIME` with `details.malformed: { id, reason, code }`, which `RemoteBackend` raises
+as `MalformedDocumentError` without retrying. `code` is `FRONTMATTER_MALFORMED` or the frontmatter
+limit that refused the document. A write whose frontmatter the reader would refuse (a document
+`PUT`, or a reserved-file `PUT` whose leading frontmatter is refused) is `400 USAGE` with
+`details.frontmatter.code` and stores nothing; `RemoteBackend` raises it as
+`FrontmatterRefusedError`.
 
 Blob list accepts `prefix`, `limit`, and `cursor` with the same page-size and envelope semantics.
 Both cursors are the last returned ID/key. Document lists and their vanished-cursor fallback use

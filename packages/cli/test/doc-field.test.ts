@@ -91,6 +91,34 @@ test("doc field --from-file YAML whose aliases expand past the cap is refused as
   assert.deepEqual((await readDocVersioned(f.bundle, "notes/a")).doc.frontmatter.tags, ["R&D", "*star*", "&amp"]);
 });
 
+test("doc field set refuses a value whose frontmatter the reader would refuse, and stores nothing", async t => {
+  const f = await fixture(t);
+  const before = await readDocVersioned(f.bundle, "notes/a");
+  const long = await f.file(JSON.stringify("v".repeat(300_000)), "long.json");
+  await assert.rejects(
+    f.run("set", "notes/a", "description", "--from-file", long),
+    err => usage(err) && (err as CliError).details?.frontmatter !== undefined && ((err as CliError).details!.frontmatter as { code: string }).code === "FRONTMATTER_TOO_LARGE",
+  );
+  assert.deepEqual(await readDocVersioned(f.bundle, "notes/a"), before);
+  const cyclic = await f.file("&a {k: *a}\n", "cyclic.yaml");
+  await assert.rejects(f.run("set", "notes/a", "description", "--from-file", cyclic), err => usage(err) && /cycle/.test((err as Error).message));
+  assert.deepEqual(await readDocVersioned(f.bundle, "notes/a"), before);
+});
+
+test("doc update refuses to write frontmatter that grows past the reader's limits when written out", async t => {
+  const f = await fixture(t);
+  const text = "y".repeat(2000);
+  await writeFile(join(f.dir, "notes", "wide.md"), `---\ntype: Note\ntitle: wide\ns: &s "${text}"\nl: [${Array(200).fill("*s").join(",")}]\n---\nbody\n`);
+  const before = await readDocVersioned(f.bundle, "notes/wide");
+  let output = "";
+  await assert.rejects(
+    doc(["update", "notes/wide", "--title", "wider", "--dir", f.dir, "--json"], { stdout: text => { output += text; } }),
+    err => usage(err) && ((err as CliError).details?.frontmatter as { code?: string } | undefined)?.code === "FRONTMATTER_TOO_LARGE",
+  );
+  assert.equal(output, "");
+  assert.deepEqual(await readDocVersioned(f.bundle, "notes/wide"), before);
+});
+
 test("doc field sources support JSON/YAML add, first-ID edit, and exact empty-ID remove", async t => {
   const f = await fixture(t);
   const input = await f.file('{"id":"","resource":"empty id report"}', "source.json");
