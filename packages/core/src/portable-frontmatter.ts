@@ -28,14 +28,17 @@ export function parseLeadingFrontmatter(raw: string, context?: string): Frontmat
 }
 
 /**
- * Refuse markdown whose leading frontmatter the reader would refuse, before it is stored as is.
- * Throws {@link FrontmatterRefusedError} carrying the reader's code.
+ * Refuse markdown whose leading frontmatter a frontmatter limit refuses, before it is stored as
+ * is. Throws {@link FrontmatterRefusedError} carrying the limit's code. Invalid YAML is not refused
+ * here: readers of reserved files already treat it as an unreadable marker and fall back.
  */
 export function assertStorableFrontmatter(raw: string): void {
   try {
     parseLeadingFrontmatter(raw);
   } catch (error) {
-    if (error instanceof MalformedDocumentError) throw new FrontmatterRefusedError(error.code, error.detail);
-    throw error;
+    if (error instanceof MalformedDocumentError && error.code !== "FRONTMATTER_MALFORMED") {
+      throw new FrontmatterRefusedError(error.code, error.detail);
+    }
+    if (!(error instanceof MalformedDocumentError)) throw error;
   }
 }

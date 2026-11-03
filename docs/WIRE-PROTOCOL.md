@@ -119,7 +119,7 @@ any route that cannot leave it out (heads and snapshot, where a missing id means
 answers `500 RUNTIME` with `details.malformed: { id, reason, code }`, which `RemoteBackend` raises
 as `MalformedDocumentError` without retrying. `code` is `FRONTMATTER_MALFORMED` or the frontmatter
 limit that refused the document. A write whose frontmatter the reader would refuse (a document
-`PUT`, or a reserved-file `PUT` whose leading frontmatter is refused) is `400 USAGE` with
+`PUT`, or a reserved-file `PUT` whose leading frontmatter a frontmatter limit refuses) is `400 USAGE` with
 `details.frontmatter.code` and stores nothing; `RemoteBackend` raises it as
 `FrontmatterRefusedError`.
 

@@ -41,6 +41,7 @@ import {
   pathFromConceptId,
   toPosix,
 } from "./paths.js";
+import { assertStorableReservedWrite } from "./reserved-write.js";
 import { InvalidInputError } from "./errors.js";
 import {
   mutateExact,
@@ -392,8 +393,7 @@ export class FilesystemBackend implements StorageBackend {
     content: string,
     options: WriteOptions = {},
   ): Promise<Version> {
-    assertSafeReservedDir(dir);
-    assertSafeReservedFilename(name);
+    assertStorableReservedWrite(dir, name, content);
     const rel = reservedPath(dir, name);
     // Same identity-keyed critical section as `write()`. A reserved-file read-modify-write
     // depends on a genuine `VersionConflict` under contention.

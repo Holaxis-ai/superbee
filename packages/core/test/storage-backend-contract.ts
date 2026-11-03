@@ -226,6 +226,25 @@ export function registerFrontmatterReadContract(
       await assert.rejects(backend.read(id));
     });
   });
+
+  test(`${name} reserved write contract: refused frontmatter in a reserved markdown file is refused and nothing is stored`, async () => {
+    await withFixture(create, async (backend) => {
+      const cases: Array<[string, string]> = [
+        ["FRONTMATTER_CYCLE", "---\nloop: &l [*l]\n---\n# Notes\n"],
+        ["FRONTMATTER_TOO_LARGE", `---\ndescription: ${"v".repeat(FRONTMATTER_LIMITS.sourceChars)}\n---\n`],
+      ];
+      for (const [code, content] of cases) {
+        await assert.rejects(
+          backend.writeReserved("notes", "index.md", content),
+          (error: unknown) => error instanceof FrontmatterRefusedError && error.code === code,
+          code,
+        );
+        assert.equal(await backend.readReserved("notes", "index.md"), null, code);
+      }
+      await backend.writeReserved("notes", "index.md", "---\ntitle: Notes\n---\n# Notes\n");
+      assert.equal((await backend.readReserved("notes", "index.md"))?.content, "---\ntitle: Notes\n---\n# Notes\n");
+    });
+  });
 }
 
 /** Shared by conforming fixtures and deliberately nonconforming remote-server controls. */

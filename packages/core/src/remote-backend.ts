@@ -50,6 +50,7 @@ import { encodeRemoteDocument } from "./remote-document-codec.js";
 import { RemoteError, malformed } from "./remote-error.js";
 import { SNAPSHOT_TRUNCATED, parseHeadsAnswer, readSnapshotStream, type HeadsResult, type RemoteSnapshot } from "./remote-parsers.js";
 import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, assertSafeReservedFilename, compareStorageKeys, trimTrailingSlashes } from "./paths.js";
+import { assertStorableReservedWrite } from "./reserved-write.js";
 import { isRequestIdentity, mintRequestId, type Outcome } from "./uncertain-write.js";
 import { VersionConflict, isContentVersion, stripETagWrapper } from "./version-transport.js";
 import type {
@@ -747,8 +748,7 @@ export class RemoteBackend implements StorageBackend {
     content: string,
     options: WriteOptions = {},
   ): Promise<Version> {
-    assertSafeReservedDir(dir);
-    assertSafeReservedFilename(name);
+    assertStorableReservedWrite(dir, name, content);
     assertValidExpectedVersion(options.expectedVersion);
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (options.expectedVersion === null) headers["If-None-Match"] = "*";

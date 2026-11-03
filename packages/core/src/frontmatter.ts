@@ -125,9 +125,10 @@ export function parseFrontmatter(
 }
 
 /**
- * The metadata bytes shared by document serialization and parsed-object stores. Every writer goes
- * through here, and it refuses with {@link FrontmatterRefusedError} any bytes the frontmatter
- * reader would refuse, so a write never stores frontmatter that later reads cannot load.
+ * The metadata bytes shared by document serialization and parsed-object stores. Every document
+ * write serializes its frontmatter here, and this refuses with {@link FrontmatterRefusedError} any
+ * bytes the frontmatter reader would refuse. Reserved files are stored as given, so each backend
+ * checks them with `assertStorableReservedWrite` instead.
  */
 export function stringifyFrontmatter(data: Record<string, unknown>): string {
   const dumped = yaml.safeDump(data).trim();

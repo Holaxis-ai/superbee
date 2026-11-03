@@ -110,6 +110,7 @@ import {
 } from "./journaled-backend.js";
 import { mutationActorFromFrontmatter } from "./mutation-attribution.js";
 import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, assertSafeReservedFilename, compareStorageKeys, pathFromConceptId } from "./paths.js";
+import { assertStorableReservedWrite } from "./reserved-write.js";
 import { parseLeadingFrontmatter } from "./portable-frontmatter.js";
 import { sha256HexOfBytes } from "./sha256.js";
 import type { OperationState } from "./uncertain-write.js";
@@ -1053,8 +1054,7 @@ export class FileJournaledBackend implements JournaledBackend, BlobJournaledBack
   }
 
   async writeReserved(dir: string, name: ReservedFilename, content: string, options: WriteOptions = {}): Promise<Version> {
-    assertSafeReservedDir(dir);
-    assertSafeReservedFilename(name);
+    assertStorableReservedWrite(dir, name, content);
     const key = reservedKey(dir, name);
     const version = versionOfBytes(content);
     const expected = options.expectedVersion;
