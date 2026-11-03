@@ -106,6 +106,7 @@ test("recipe add --index installs one verified recipe and names the index and di
     assert.equal(receipt.source_digest, digestOf("context-notes"));
     assert.deepEqual(receipt.index, { source: "alpha", location: index });
     assert.deepEqual([receipt.designation, receipt.maintainer], ["supported", "Holaxis-ai"]);
+    assert.match(String(receipt.designation_note), /not verified/);
     const installed = await readDoc({ root: bundle }, "conventions/context-note");
     assert.equal((installed.frontmatter.x_recipe as Record<string, unknown>).source_digest, receipt.source_digest);
 
@@ -510,6 +511,7 @@ test("a community cookbook may hold community recipes and the receipt shows each
     await initBundle(bundle);
     const receipt = await run(["add", "mixed", "--cookbook", "--index", index, "--dir", bundle]);
     assert.deepEqual([receipt.designation, receipt.maintainer], ["community", "octo-cook"]);
+    assert.match(String(receipt.designation_note), /not verified/);
     assert.deepEqual((receipt.recipes as Array<Record<string, unknown>>).map((row) => [row.id, row.designation, row.maintainer]), [
       ["context-notes", "supported", "Holaxis-ai"],
       ["work-tracking", "community", "octo-cook"],

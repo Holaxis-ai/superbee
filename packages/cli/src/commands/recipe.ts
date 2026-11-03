@@ -418,6 +418,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void, indexDeps:
       title: indexed.cookbook.title,
       designation: indexed.cookbook.designation,
       maintainer: indexed.cookbook.maintainer,
+      designation_note: INDEX_DESIGNATION_NOTE,
       changed,
       index: { source: indexed.source, location: indexed.location },
       recipes: rows,
@@ -431,13 +432,15 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void, indexDeps:
   const receipt = await installReceipt(bundle, recipes[0]!, actor, evolve);
   if (indexed) {
     const entry = indexed.recipes[0]!;
-    stdout(render({ ...receipt, source_digest: entry.source_digest, designation: entry.designation, maintainer: entry.maintainer, index: { source: indexed.source, location: indexed.location } }, resolveMode(values)));
+    stdout(render({ ...receipt, source_digest: entry.source_digest, designation: entry.designation, maintainer: entry.maintainer, designation_note: INDEX_DESIGNATION_NOTE, index: { source: indexed.source, location: indexed.location } }, resolveMode(values)));
     return;
   }
   stdout(render(receipt, resolveMode(values)));
 }
 
 const COOKBOOK_INSTALL_NOTE = "every member was verified against its pinned files_digest and source_digest before the first write; installs are create-only and idempotent per document, so rerunning this command after a partial failure converges";
+
+const INDEX_DESIGNATION_NOTE = "designation and maintainer are stated by the index publisher and are not verified; only files_digest and source_digest are checked";
 
 const INDEX_EVOLUTION_HELP = "installed definitions differ from this index's recipe; recipe evolve does not read --index, so run it against a local copy of the recipe folder to plan the upgrade";
 
