@@ -1,6 +1,7 @@
 // The CLI acquisition adapter for a published recipe index. Core owns the index format and the
 // digest verification; this module only supplies bytes, from a local path or an HTTPS URL, under
 // size and time bounds. Nothing here is persisted: the index is named per command.
+import { realpath } from "node:fs/promises";
 import path from "node:path";
 import {
   parseRecipeIndex,
@@ -134,17 +135,23 @@ export async function acquireRecipeIndex(raw: string, deps: RecipeIndexDeps = {}
     if (loaded === null) throw indexUsage(`the recipe index '${raw}' exceeds ${RECIPE_INDEX_MAX_BYTES} bytes`, "RECIPE_INDEX_READ_FAILED");
     text = loaded;
     const dir = path.dirname(file);
+    let rootReal: string | undefined;
     read = async (relative) => {
       let bytes: string | null;
       try {
-        bytes = await readExternalTextFileWithin(path.join(dir, ...relative.split("/")), RECIPE_FILE_MAX_BYTES, deps.home);
+        // Every byte is pinned, but containment is still decided on the real path: an index must not
+        // be able to point the reader at local files outside its own directory, matching bytes or not.
+        rootReal ??= await realpath(dir);
+        const real = await realpath(path.join(dir, ...relative.split("/")));
+        if (!real.startsWith(rootReal + path.sep)) throw new Error("resolves outside the index directory");
+        bytes = await readExternalTextFileWithin(real, RECIPE_FILE_MAX_BYTES, deps.home);
       } catch (error) {
         if (error instanceof CliError) {
           boundary = error;
           throw error;
         }
         const code = (error as NodeJS.ErrnoException).code;
-        throw new Error(code === "ENOENT" ? "no such file" : code ?? "unreadable");
+        throw new Error(code === "ENOENT" ? "no such file" : code ?? (error instanceof Error ? error.message : "unreadable"));
       }
       if (bytes === null) throw new Error(`exceeds ${RECIPE_FILE_MAX_BYTES} bytes`);
       return bytes;

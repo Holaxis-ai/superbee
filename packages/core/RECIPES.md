@@ -85,7 +85,8 @@ A published index is one JSON document, `recipe-index/v1`:
   "title": "Example recipes",
   "recipes": [
     { "id": "context-notes", "version": "1", "source_digest": "sha256:<64 hex>",
-      "root": "recipes/context-notes", "files": ["recipe.md", "conventions/context-note.md"] }
+      "files_digest": "sha256:<64 hex>", "root": "recipes/context-notes",
+      "files": ["recipe.md", "conventions/context-note.md"] }
   ],
   "offerings": [
     { "id": "starter", "title": "Starter", "summary": "Notes for agents.", "recipes": ["context-notes"] }
@@ -100,17 +101,25 @@ offerings that name a recipe the index does not list. Its codes are `RECIPE_INDE
 `RECIPE_INDEX_FORMAT_UNSUPPORTED`, `RECIPE_INDEX_PATH_INVALID`, `RECIPE_INDEX_DUPLICATE` and
 `RECIPE_INDEX_OFFERING_INVALID`.
 
-`resolveIndexRecipe(index, id, read)` and `createIndexRecipeSource(index, read)` take a
-host-supplied async reader. Core reads the listed files through it, parses them, and compares
-`recipeSourceDigest` with the pin. A difference is `RECIPE_INDEX_DIGEST_MISMATCH`, and no recipe is
-returned. A reader that throws is `RECIPE_INDEX_READ_FAILED`. `resolveOffering(index, id, read)`
-verifies every member in order and returns either all of them or a refusal naming the failed
-member, never a partial set.
+Each recipe carries two pins. `files_digest` is `recipeFilesDigest` of the exact listed files:
+`sha256:` and the hex SHA-256 of the UTF-8 JSON array of `{"bytes": ..., "path": ...}` objects
+(keys in that order, `path` recipe-relative), sorted by path in code-unit order. JSON string
+quoting delimits every path and body, so concatenation cannot collide, and listing order does not
+matter. This is the same encoding the CLI uses to pin source plugin bytes. `source_digest` is
+`recipeSourceDigest` of the parsed recipe, the value install stamps record.
 
-`source_digest` is the value install stamps record. It covers the recipe id, version and every
-installable definition, and it does not cover the manifest's title, summary, offer or prose body,
-or README files. The digest proves that installed content matches the pin. It does not
-authenticate a publisher. Bound the reader's sizes and times in the host.
+`resolveIndexRecipe(index, id, read)` and `createIndexRecipeSource(index, read)` take a
+host-supplied async reader. Core reads the listed files through it and checks `files_digest` on the
+raw bytes before parsing, then `source_digest` after parsing. Either difference is
+`RECIPE_INDEX_DIGEST_MISMATCH`, with `digest` naming the pin that failed, and no recipe is returned.
+A reader that throws is `RECIPE_INDEX_READ_FAILED`. `resolveOffering(index, id, read)` verifies
+every member in order and returns either all of them or a refusal naming the failed member, never a
+partial set.
+
+`files_digest` covers every listed byte, including the manifest's title, summary, offer and prose
+and any listed README. `source_digest` covers what install writes. Neither authenticates a
+publisher. Bound the reader's sizes and times in the host, and keep local reads inside the index
+directory.
 
 ## Deprecating declarations
 

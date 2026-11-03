@@ -257,10 +257,12 @@ Connector rows in `packages/cli/test/hosted-definition-writes.test.ts` and
 `--index`, `recipe add` is unchanged. The CLI reads a local path through the guarded ingress read or
 fetches an https: URL with redirects refused and bounded size and time; any other scheme is `USAGE`
 with `details.reason` `RECIPE_INDEX_SCHEME_REFUSED`. Core verifies each recipe against its pinned
-`source_digest` before the bundle is opened, and an offering is verified whole before its first
+`files_digest` and `source_digest` before the bundle is opened, and an offering is verified whole before its first
 write. Refusals keep the taxonomy: a digest mismatch is `INTEGRITY_MISMATCH` (exit 1), an
 unreadable file or index URL is `TRANSIENT` (exit 1), and index format, path and lookup refusals are
-`USAGE` (exit 2), each with the Core code in `details.reason`. A single-recipe receipt adds
+`USAGE` (exit 2), each with the Core code in `details.reason`; a digest mismatch also names the
+failed pin in `details.digest` (`files_digest` or `source_digest`). A local file whose real path
+leaves the index directory is refused as unreadable. A single-recipe receipt adds
 `source_digest` and `index` (`source`, `location`) to the existing receipt. An offering receipt is
 `offering`, `title`, `changed`, `index`, one `recipes` row per member (`id`, `version`,
 `source_digest`, `recipe`, `changed`, `counts`, and `warnings`, `foreign_ids` or `evolution_help`

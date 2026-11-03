@@ -41,6 +41,7 @@ import { isolatedUserEnv } from "./support/user-env.js";
 import { syncExportsRoot } from "../src/cursor.js";
 import { builtinRecipeFiles, loadBuiltinRecipe } from "@superbee/core/builtin-recipes";
 import { recipeSourceDigest } from "@superbee/core/recipe-lifecycle";
+import { recipeFilesDigest } from "@superbee/core/recipe-sources";
 import {
   canonicalUserStateDir,
   ensureUserStateRoot,
@@ -688,7 +689,7 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
       const loaded = loadBuiltinRecipe("context-notes");
       assert.ok(loaded?.ok);
       const index = path.join(fixture.outside, "index", "index.json");
-      writeFileSync(index, JSON.stringify({ format: "recipe-index/v1", source: "probe", offerings: [], recipes: [{ id: "context-notes", version: "1", source_digest: recipeSourceDigest(loaded.recipe), files: files.map((file) => file.path) }] }));
+      writeFileSync(index, JSON.stringify({ format: "recipe-index/v1", source: "probe", offerings: [], recipes: [{ id: "context-notes", version: "1", source_digest: recipeSourceDigest(loaded.recipe), files_digest: recipeFilesDigest(files), files: files.map((file) => file.path) }] }));
       return index;
     },
   },

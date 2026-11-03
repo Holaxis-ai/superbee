@@ -7,7 +7,9 @@ import path from "node:path";
 import { initBundle, readDoc } from "@superbee/core";
 import { builtinRecipeFiles, loadBuiltinRecipe } from "@superbee/core/builtin-recipes";
 import { recipeSourceDigest } from "@superbee/core/recipe-lifecycle";
-import { RECIPE_INDEX_FORMAT } from "@superbee/core/recipe-sources";
+import { RECIPE_INDEX_FORMAT, recipeFilesDigest } from "@superbee/core/recipe-sources";
+import { symlink } from "node:fs/promises";
+import { sourceDigest } from "../src/source-local/state.js";
 
 import { recipe } from "../src/commands/recipe.js";
 import { CliError } from "../src/errors.js";
@@ -31,7 +33,7 @@ async function writeIndex(root: string, source: string, indexDir: string, layout
       await mkdir(path.dirname(target), { recursive: true });
       await writeFile(target, file.bytes);
     }
-    recipes.push({ id: name, version: "1", source_digest: digestOf(name), root: layout(name), files: files.map((file) => file.path) });
+    recipes.push({ id: name, version: "1", source_digest: digestOf(name), files_digest: recipeFilesDigest(files), root: layout(name), files: files.map((file) => file.path) });
   }
   const indexPath = path.join(root, indexDir, "index.json");
   await mkdir(path.dirname(indexPath), { recursive: true });
@@ -157,6 +159,7 @@ test("offering atomicity: one tampered member means zero writes, even for member
     assert.equal(error.code, "INTEGRITY_MISMATCH");
     assert.equal(error.details?.reason, "RECIPE_INDEX_DIGEST_MISMATCH");
     assert.equal(error.details?.recipe, "work-tracking");
+    assert.equal(error.details?.digest, "files_digest");
     assert.deepEqual(await snapshot(bundle), before);
   });
 });
@@ -209,6 +212,54 @@ test("recipe add --index refuses other schemes, --offering without --index and u
   });
 });
 
+test("a changed title is refused at the CLI and names files_digest", async () => {
+  await withScratch(async (root) => {
+    const index = await writeIndex(root, "alpha", "alpha", (name) => `recipes/${name}`, ["context-notes"], []);
+    const manifest = path.join(root, "alpha/recipes/context-notes/recipe.md");
+    await writeFile(manifest, (await readFile(manifest, "utf8")).replace("title: Context Notes", "title: Free Money"));
+    const bundle = path.join(root, "bundle");
+    await initBundle(bundle);
+    const before = await snapshot(bundle);
+    const error = await refusal(["add", "context-notes", "--index", index, "--dir", bundle]);
+    assert.equal(error.code, "INTEGRITY_MISMATCH");
+    assert.equal(error.details?.digest, "files_digest");
+    assert.deepEqual(await snapshot(bundle), before);
+  });
+});
+
+test("red probe: a listed local file whose real path leaves the index directory is refused, even with matching bytes", async () => {
+  await withScratch(async (root) => {
+    const index = await writeIndex(root, "alpha", "alpha", (name) => `recipes/${name}`, ["context-notes"], []);
+    const note = path.join(root, "alpha/recipes/context-notes/conventions/context-note.md");
+    const outside = path.join(root, "outside-context-note.md");
+    await writeFile(outside, await readFile(note, "utf8"));
+    await rm(note);
+    await symlink(outside, note);
+    const bundle = path.join(root, "bundle");
+    await initBundle(bundle);
+    const before = await snapshot(bundle);
+    const error = await refusal(["add", "context-notes", "--index", index, "--dir", bundle]);
+    assert.equal(error.details?.reason, "RECIPE_INDEX_READ_FAILED");
+    assert.match(error.message, /outside the index directory/);
+    assert.deepEqual(await snapshot(bundle), before);
+
+    // A symlink that stays inside the index directory is honored.
+    const inside = path.join(root, "alpha/shared-context-note.md");
+    await writeFile(inside, await readFile(outside, "utf8"));
+    await rm(note);
+    await symlink(inside, note);
+    assert.equal((await run(["add", "context-notes", "--index", index, "--dir", bundle])).recipe, "added");
+  });
+});
+
+test("files_digest uses the source plugin byte encoding exactly", () => {
+  for (const name of ["context-notes", "roadmap", "site"]) {
+    const files = builtinRecipeFiles(name)!;
+    const sorted = [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    assert.equal(recipeFilesDigest(files), sourceDigest(sorted), name);
+  }
+});
+
 // ── HTTPS acquisition, with an injected transport; nothing reaches the network ────────────────
 
 function servedFetch(files: Map<string, string | { status: number }>, calls: Array<{ url: string; redirect: string }>): FetchLike {
@@ -226,7 +277,7 @@ function servedIndex(base: string, names: string[]): Map<string, string | { stat
   const recipes = names.map((name) => {
     const recipeFiles = builtinRecipeFiles(name)!;
     for (const file of recipeFiles) files.set(`${base}r/${name}/${file.path}`, file.bytes);
-    return { id: name, version: "1", source_digest: digestOf(name), root: `r/${name}`, files: recipeFiles.map((file) => file.path) };
+    return { id: name, version: "1", source_digest: digestOf(name), files_digest: recipeFilesDigest(recipeFiles), root: `r/${name}`, files: recipeFiles.map((file) => file.path) };
   });
   files.set(`${base}index.json`, JSON.stringify({ format: RECIPE_INDEX_FORMAT, source: "remote", recipes, offerings: [OFFERING] }));
   return files;

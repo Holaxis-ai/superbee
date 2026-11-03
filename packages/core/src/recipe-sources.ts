@@ -6,11 +6,12 @@
  * list: built-ins live in `@superbee/core/builtin-recipes`, and sources that need a filesystem or a
  * network stay in their host.
  *
- * A published index (`recipe-index/v1`) lists recipes, each pinned by Core's `recipeSourceDigest`,
- * and offerings that name an ordered set of those recipes. This module parses the index and verifies
+ * A published index (`recipe-index/v1`) lists recipes, each pinned twice: `files_digest` over the
+ * exact listed bytes and Core's `recipeSourceDigest` over the parsed definitions. It also lists offerings that name an ordered set of those recipes. This module parses the index and verifies
  * every recipe against its pin through a reader the host supplies. It performs no I/O of its own.
  */
 import { recipeSourceDigest } from "./recipe-lifecycle/stamp.js";
+import { sha256Hex } from "./versioning.js";
 import {
   parseRecipeFiles,
   type LoadedRecipe,
@@ -68,6 +69,8 @@ export interface RecipeIndexRecipe {
   readonly version: string;
   /** Core's `recipeSourceDigest` of the parsed recipe; the same value recipe stamps record. */
   readonly source_digest: string;
+  /** `recipeFilesDigest` of the exact listed files, so presentation text and READMEs are pinned too. */
+  readonly files_digest: string;
   /** Recipe root relative to the index location; absent means the index's own directory. */
   readonly root?: string;
   /** Recipe-relative file paths. A reader fetches exactly these and nothing else. */
@@ -167,11 +170,14 @@ function relativePath(value: unknown, where: string): string {
 
 function parseRecipeEntry(value: unknown, where: string): RecipeIndexRecipe {
   if (!isRecord(value)) refuse("RECIPE_INDEX_MALFORMED", `${where} must be an object`);
-  exactKeys(value, ["id", "version", "source_digest", "files"], ["root"], where);
+  exactKeys(value, ["id", "version", "source_digest", "files_digest", "files"], ["root"], where);
   const entryId = id(value.id, `${where}.id`);
   const version = text(value.version, `${where}.version`, 64);
   if (typeof value.source_digest !== "string" || !DIGEST.test(value.source_digest)) {
     refuse("RECIPE_INDEX_MALFORMED", `${where}.source_digest must be 'sha256:' and 64 lowercase hex digits`);
+  }
+  if (typeof value.files_digest !== "string" || !DIGEST.test(value.files_digest)) {
+    refuse("RECIPE_INDEX_MALFORMED", `${where}.files_digest must be 'sha256:' and 64 lowercase hex digits`);
   }
   const root = value.root === undefined ? undefined : relativePath(value.root, `${where}.root`);
   const files = list(value.files, `${where}.files`, RECIPE_INDEX_LIMITS.filesPerRecipe).map((file, i) =>
@@ -189,6 +195,7 @@ function parseRecipeEntry(value: unknown, where: string): RecipeIndexRecipe {
     id: entryId,
     version,
     source_digest: value.source_digest,
+    files_digest: value.files_digest,
     ...(root === undefined ? {} : { root }),
     files: Object.freeze(files),
   });
@@ -266,7 +273,18 @@ export function parseRecipeIndex(input: unknown): RecipeIndexParseResult {
   }
 }
 
-/** A recipe whose parsed content matched its pinned digest. */
+/**
+ * Byte digest of a recipe's files: `sha256:` and the hex SHA-256 of the UTF-8 JSON array of
+ * `{"bytes","path"}` objects sorted by path in code-unit order. JSON string quoting delimits every
+ * path and body, so no two file sets share an encoding. This is the encoding the CLI already uses to
+ * pin source plugin bytes (`sourceDigest` over sorted plugin files), reproduced without node:crypto.
+ */
+export function recipeFilesDigest(files: readonly RecipeFile[]): string {
+  const sorted = [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return `sha256:${sha256Hex(JSON.stringify(sorted.map((file) => ({ bytes: file.bytes, path: file.path }))))}`;
+}
+
+/** A recipe whose bytes and parsed content matched both pins. */
 export interface VerifiedIndexRecipe {
   recipe: LoadedRecipe;
   source_digest: string;
@@ -301,27 +319,31 @@ export async function resolveIndexRecipe(index: RecipeIndex, recipeId: string, r
     }
     files.push({ path: file, bytes });
   }
-  const mismatch = (detail: string): IndexRecipeResult => ({
+  const mismatch = (digest: "files_digest" | "source_digest", detail: string): IndexRecipeResult => ({
     ok: false,
     error: {
       code: "RECIPE_INDEX_DIGEST_MISMATCH",
-      message: `recipe '${entry.id}' from index '${index.source}' does not match its pinned source_digest: ${detail}`,
+      message: `recipe '${entry.id}' from index '${index.source}' does not match its pinned ${digest}: ${detail}`,
+      digest,
     },
   });
+  // Bytes first: nothing unpinned reaches the parser.
+  const filesDigest = recipeFilesDigest(files);
+  if (filesDigest !== entry.files_digest) return mismatch("files_digest", `expected ${entry.files_digest}, computed ${filesDigest}`);
   let parsed: LoadResult;
   try {
     parsed = parseRecipeFiles(files, `index:${index.source}`, { okfVersion: "0.2" });
   } catch (error) {
-    // The pin was taken from a recipe that parsed, so bytes that no longer parse are not those bytes.
-    return mismatch(`its files no longer parse (${error instanceof Error ? error.message : String(error)})`);
+    // A source_digest is only ever taken from a recipe that parsed, so pinned bytes that do not parse cannot match it.
+    return mismatch("source_digest", `its files do not parse (${error instanceof Error ? error.message : String(error)})`);
   }
-  if (!parsed.ok) return mismatch(`its files no longer parse (${parsed.error.code}: ${parsed.error.message})`);
+  if (!parsed.ok) return mismatch("source_digest", `its files do not parse (${parsed.error.code}: ${parsed.error.message})`);
   const recipe = parsed.recipe;
   if (recipe.id !== entry.id || recipe.version !== entry.version) {
-    return mismatch(`the files declare '${recipe.id}' version '${recipe.version}', the index pins '${entry.id}' version '${entry.version}'`);
+    return mismatch("source_digest", `the files declare '${recipe.id}' version '${recipe.version}', the index pins '${entry.id}' version '${entry.version}'`);
   }
   const actual = recipeSourceDigest(recipe);
-  if (actual !== entry.source_digest) return mismatch(`expected ${entry.source_digest}, computed ${actual}`);
+  if (actual !== entry.source_digest) return mismatch("source_digest", `expected ${entry.source_digest}, computed ${actual}`);
   return { ok: true, verified: { recipe, source_digest: actual } };
 }
 

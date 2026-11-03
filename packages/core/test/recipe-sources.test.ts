@@ -7,6 +7,7 @@ import {
   RECIPE_INDEX_FORMAT,
   createIndexRecipeSource,
   parseRecipeIndex,
+  recipeFilesDigest,
   resolveIndexRecipe,
   resolveOffering,
   resolveRecipe,
@@ -27,7 +28,7 @@ function servedTree(layout: (name: string) => string, names: readonly string[]) 
   const entries = names.map((name) => {
     const recipeFiles = builtinRecipeFiles(name)!;
     for (const file of recipeFiles) files.set(`${layout(name)}/${file.path}`, file.bytes);
-    return { id: name, version: "1", source_digest: builtinDigest(name), root: layout(name), files: recipeFiles.map((file) => file.path) };
+    return { id: name, version: "1", source_digest: builtinDigest(name), files_digest: recipeFilesDigest(recipeFiles), root: layout(name), files: recipeFiles.map((file) => file.path) };
   });
   const reads: string[] = [];
   const read: RecipeIndexReader = async (path) => {
@@ -46,7 +47,7 @@ function indexOf(source: string, entries: unknown[], offerings: unknown[] = []):
 }
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
-const ENTRY = { id: "notes", version: "1", source_digest: DIGEST, files: ["recipe.md"] };
+const ENTRY = { id: "notes", version: "1", source_digest: DIGEST, files_digest: DIGEST, files: ["recipe.md"] };
 const VALID = { format: RECIPE_INDEX_FORMAT, source: "example", title: "Example", recipes: [ENTRY], offerings: [] };
 
 function refusalCode(value: unknown): string {
@@ -80,6 +81,8 @@ test("parseRecipeIndex: RECIPE_INDEX_MALFORMED for every shape refusal", () => {
     { ...VALID, recipes: {} },
     { ...VALID, recipes: [{ ...ENTRY, extra: 1 }] },
     { ...VALID, recipes: [{ ...ENTRY, source_digest: "sha256:XYZ" }] },
+    { ...VALID, recipes: [{ ...ENTRY, files_digest: "sha256:XYZ" }] },
+    (() => { const { files_digest: _pin, ...unpinned } = ENTRY; return { ...VALID, recipes: [unpinned] }; })(),
     { ...VALID, recipes: [{ ...ENTRY, version: "" }] },
     { ...VALID, recipes: [{ ...ENTRY, files: [] }] },
     { ...VALID, recipes: [{ ...ENTRY, id: "../x" }] },
@@ -166,23 +169,62 @@ test("red probe: a changed byte in any listed file that carries installed conten
   }
 });
 
-test("source_digest scope: manifest identity is pinned, manifest prose is not", async () => {
-  // recipeSourceDigest covers id, version and every installable definition, not the manifest's
-  // title, summary, offer or body. A change there leaves installed content identical.
-  const tree = servedTree((n) => n, ["context-notes"]);
-  const manifest = tree.files.get("context-notes/recipe.md")!;
-  tree.files.set("context-notes/recipe.md", manifest.replace("title: Context Notes", "title: Something Else"));
-  const prose = await resolveIndexRecipe(indexOf("alpha", tree.entries), "context-notes", tree.read);
-  assert.ok(prose.ok);
-  assert.equal(prose.verified.recipe.title, "Something Else");
-  const builtin = loadBuiltinRecipe("context-notes");
-  assert.ok(builtin?.ok);
-  assert.deepEqual(prose.verified.recipe.docs, builtin.recipe.docs);
+test("files_digest pins manifest prose and READMEs that source_digest does not cover", async () => {
+  const cases: Array<[string, (bytes: string) => string]> = [
+    ["title", (bytes) => bytes.replace("title: Context Notes", "title: Something Else")],
+    ["offer", (bytes) => bytes.replace("offer: give agents", "offer: give everyone")],
+    ["body", (bytes) => `${bytes}\nAn extra sentence.\n`],
+  ];
+  for (const [what, change] of cases) {
+    const tree = servedTree((n) => n, ["context-notes"]);
+    const before = tree.files.get("context-notes/recipe.md")!;
+    tree.files.set("context-notes/recipe.md", change(before));
+    assert.notEqual(tree.files.get("context-notes/recipe.md"), before, what);
+    const result = await resolveIndexRecipe(indexOf("alpha", tree.entries), "context-notes", tree.read);
+    assert.equal(result.ok, false, what);
+    if (result.ok) continue;
+    assert.equal(result.error.code, "RECIPE_INDEX_DIGEST_MISMATCH", what);
+    assert.equal(result.error.digest, "files_digest", what);
+  }
 
-  tree.files.set("context-notes/recipe.md", manifest.replace("version: '1'", "version: '9'").replace('version: "1"', 'version: "9"'));
-  assert.notEqual(tree.files.get("context-notes/recipe.md"), manifest);
-  const version = await resolveIndexRecipe(indexOf("alpha", tree.entries), "context-notes", tree.read);
-  assert.equal(version.ok ? "" : version.error.code, "RECIPE_INDEX_DIGEST_MISMATCH");
+  // A README is outside source_digest; once listed, files_digest pins it.
+  const tree = servedTree((n) => n, ["context-notes"]);
+  tree.files.set("context-notes/README.md", "# Context Notes\n\nInstall me.\n");
+  const listed = { ...tree.entries[0]!, files: [...tree.entries[0]!.files, "README.md"] };
+  const pinned = { ...listed, files_digest: recipeFilesDigest([...builtinRecipeFiles("context-notes")!, { path: "README.md", bytes: "# Context Notes\n\nInstall me.\n" }]) };
+  const ok = await resolveIndexRecipe(indexOf("alpha", [pinned]), "context-notes", tree.read);
+  assert.ok(ok.ok, ok.ok ? "" : ok.error.message);
+  assert.equal(ok.verified.source_digest, builtinDigest("context-notes"));
+  tree.files.set("context-notes/README.md", "# Context Notes\n\nInstall something else.\n");
+  const readme = await resolveIndexRecipe(indexOf("alpha", [pinned]), "context-notes", tree.read);
+  assert.equal(readme.ok ? "" : readme.error.digest, "files_digest");
+});
+
+test("source_digest still refuses when the byte pin was taken from different definitions", async () => {
+  // A publisher error, not an attack: files_digest matches the served bytes but source_digest is stale.
+  const tree = servedTree((n) => n, ["context-notes"]);
+  const key = "context-notes/conventions/context-note.md";
+  tree.files.set(key, tree.files.get(key)!.replace("# ", "# Changed "));
+  const served = builtinRecipeFiles("context-notes")!.map((file) => ({ path: file.path, bytes: tree.files.get(`context-notes/${file.path}`)! }));
+  const entry = { ...tree.entries[0]!, files_digest: recipeFilesDigest(served) };
+  const result = await resolveIndexRecipe(indexOf("alpha", [entry]), "context-notes", tree.read);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "RECIPE_INDEX_DIGEST_MISMATCH");
+  assert.equal(result.error.digest, "source_digest");
+});
+
+test("recipeFilesDigest ignores listing order and separates paths from bytes", async () => {
+  const files = builtinRecipeFiles("roadmap")!;
+  assert.equal(recipeFilesDigest(files), recipeFilesDigest([...files].reverse()));
+  assert.notEqual(recipeFilesDigest([{ path: "a", bytes: "bc" }]), recipeFilesDigest([{ path: "ab", bytes: "c" }]));
+  assert.notEqual(recipeFilesDigest([{ path: "a", bytes: "b" }, { path: "c", bytes: "d" }]), recipeFilesDigest([{ path: "a", bytes: "b\",\"path\":\"c\"},{\"bytes\":\"d" }]));
+
+  const tree = servedTree((n) => `r/${n}`, ["roadmap"]);
+  const reordered = { ...tree.entries[0]!, files: [...tree.entries[0]!.files].reverse() };
+  assert.equal(reordered.files_digest, tree.entries[0]!.files_digest);
+  const result = await resolveIndexRecipe(indexOf("alpha", [reordered]), "roadmap", tree.read);
+  assert.ok(result.ok);
 });
 
 test("red probe: a file present beside the recipe but not listed is never read", async () => {

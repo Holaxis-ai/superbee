@@ -107,6 +107,8 @@ export interface RecipeError {
   message: string;
   /** `RECIPE_CONNECTOR_INVALID`: the first refusal of the connector named, and how many it had. */
   connector?: { id: string; code: ConnectorErrorCode; path: string; count: number };
+  /** `RECIPE_INDEX_DIGEST_MISMATCH`: which pin the recipe failed. */
+  digest?: "files_digest" | "source_digest";
 }
 
 /** The connectors a recipe carries; empty when its manifest declares none. */

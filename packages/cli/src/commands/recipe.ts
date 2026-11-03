@@ -448,6 +448,7 @@ async function verifiedFromIndex(raw: string, ref: string, offering: boolean, fe
         reason: error.code,
         index_source: index.source,
         ...(member ? { recipe: member } : {}),
+        ...(error.digest ? { digest: error.digest } : {}),
         ...(error.connector ? { connector: error.connector } : {}),
       },
       help: error.code === "RECIPE_NOT_FOUND"
