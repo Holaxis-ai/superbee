@@ -133,7 +133,8 @@ export function parseFrontmatter(
 export function stringifyFrontmatter(data: Record<string, unknown>): string {
   const dumped = yaml.safeDump(data).trim();
   try {
-    yamlEngine.parse(dumped);
+    // Check the exact text a reader will see between the fences, including the framing newline.
+    yamlEngine.parse(`${dumped}\n`);
   } catch (error) {
     if (error instanceof FrontmatterLimitError) throw new FrontmatterRefusedError(error.code, error.message);
     const detail = (error instanceof Error ? error.message : String(error)).split("\n")[0] ?? "";

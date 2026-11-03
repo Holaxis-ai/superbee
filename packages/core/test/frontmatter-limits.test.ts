@@ -258,3 +258,19 @@ test("syntax errors keep the FRONTMATTER_MALFORMED code", () => {
     assert.throws(() => load("tags: [a, b"), refusedWith("FRONTMATTER_MALFORMED"), name);
   }
 });
+
+test("a document the serializer accepts at the source cap boundary always reads back", () => {
+  const probe = stringifyDoc({ type: "Note", title: "t", description: "" } as Frontmatter, "body\n");
+  const overhead = probe.split("---\n")[1]!.length;
+  for (const delta of [-2, -1, 0, 1, 2]) {
+    const description = "x".repeat(FRONTMATTER_LIMITS.sourceChars - overhead + delta);
+    let written: string | undefined;
+    try {
+      written = stringifyDoc({ type: "Note", title: "t", description } as Frontmatter, "body\n");
+    } catch (error) {
+      assert.ok(error instanceof MalformedDocumentError || (error as { code?: string }).code === "FRONTMATTER_TOO_LARGE", String(error));
+      continue;
+    }
+    assert.doesNotThrow(() => parseMarkdown(written!, "notes/a"), `delta ${delta}`);
+  }
+});
