@@ -26,7 +26,7 @@ import { render, resolveMode } from "../output.js";
 import { cliInvocation, exactCliInvocation } from "../invocation.js";
 import { applyRecipeEvolution, installRecipe, planRecipeEvolution, planRecipeDeclarationRetirement, planRecipeDeclarationRetirementApply, applyRecipeDeclarationRetirement, RecipeRetirementApplyError } from "@superbee/core/recipe-lifecycle";
 import { resolveRecipe, type LoadedRecipe, type RecipeError } from "../recipe-source.js";
-import { resolveIndexRecipe, resolveOffering, type VerifiedIndexRecipe } from "@superbee/core/recipe-sources";
+import { resolveIndexRecipe, resolveCookbook, type VerifiedIndexRecipe } from "@superbee/core/recipe-sources";
 import { acquireRecipeIndex, type FetchLike, type RecipeIndexLimits } from "../recipe-source-index.js";
 import { assertRecipeAllowedInHostedCheckout } from "../hosted/refusals.js";
 import { commandFragment, commandLiteral, commandQuoted, commandToken, type CommandText } from "../command-text.js";
@@ -36,7 +36,7 @@ export const RECIPE_USAGE = `superbee recipe — apply a recipe to this bundle
 Usage:
   superbee recipe validate <path> [--readme] [--json]
   superbee recipe add <name-or-path> [--actor <name>] [--dir <path>] [--remote <url>]
-  superbee recipe add <recipe-or-offering-id> --index <path-or-https-url> [--offering] [options]
+  superbee recipe add <recipe-or-cookbook-id> --index <path-or-https-url> [--cookbook] [options]
   superbee recipe evolve <name-or-path> [--apply <plan-token>] [--actor <name>] [options]
   superbee recipe evolve <name-or-path> --retirement-scan [--retirement-evidence <json>] [options]
   superbee recipe evolve <name-or-path> --remove-deprecated --retirement-scope cooperating-local-writers-v1 [--retirement-definition <id>] [--apply <token>] [options]
@@ -62,17 +62,19 @@ recipe is fully applied or clobbers a bundle author's own hand-edit. See 'superb
 list built-ins and which are already applied, and 'superbee kinds' for the resulting live
 per-bundle registry.
 
-With --index, <recipe-or-offering-id> names an entry in a published 'recipe-index/v1' JSON index,
+With --index, <recipe-or-cookbook-id> names an entry in a published 'recipe-index/v1' JSON index,
 read from a local path or an https: URL. Other schemes, URLs with credentials, redirects, files
 outside the index directory, oversize files and slow answers are refused; one command reads at
 most 16 MiB within 60 s. The index pins each recipe twice: files_digest over the exact listed
 bytes and source_digest, the value recipe stamps record. The CLI reads exactly the files the index
 lists for that recipe and refuses any difference from either pin before anything reaches the
-bundle. --offering installs every recipe an offering names, in order, after verifying all of
+bundle. --cookbook installs every recipe a cookbook names, in order, after verifying all of
 them; one failed member means nothing is written. Installs stay create-only and idempotent per
 document, so if a write fails partway, rerunning the same command converges. The receipt names
-the index source, and each recipe's id, version and verified source_digest. Nothing about the
-index is saved; pass --index each time.
+the index source, and each recipe's id, version, verified source_digest, designation and
+maintainer. A designation ('supported' by Holaxis or 'community') and a maintainer are what the
+index publisher states; they are not verified and carry no trust. Nothing about the index is
+saved; pass --index each time.
 
 Valid deprecated fields/values/links metadata can be added only with an unchanged same-recipe
 ownership baseline. Existing records stay readable; admitted-registry writes preserve/remove
@@ -105,7 +107,7 @@ Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
   --index <path-or-https-url>
                         Install from a published recipe index instead of built-ins or folders (add only)
-  --offering            Treat the positional as an offering id in --index (add only)
+  --cookbook            Treat the positional as a cookbook id in --index (add only)
   --remote <url>        Talk to a wire-protocol server instead of a local bundle
                          (mutually exclusive with --dir; remote access is always explicit)
   --retirement-scan   Read-only local declaration retirement evidence. Reports observed concepts,
@@ -314,7 +316,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void, indexDeps:
           remote: { type: "string" },
           actor: { type: "string" },
           index: { type: "string" },
-          offering: { type: "boolean" },
+          cookbook: { type: "boolean" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -333,8 +335,8 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void, indexDeps:
       help: `${cliInvocation()} recipes`,
     });
   }
-  if (values.offering && values.index === undefined) {
-    throw new CliError("USAGE", "--offering requires --index <path-or-https-url>", { help: `${cliInvocation()} recipe add --help` });
+  if (values.cookbook && values.index === undefined) {
+    throw new CliError("USAGE", "--cookbook requires --index <path-or-https-url>", { help: `${cliInvocation()} recipe add --help` });
   }
   if (values.index !== undefined && values.index.trim() === "") {
     throw new CliError("USAGE", "--index requires a local path or an https: URL", { help: `${cliInvocation()} recipe add --help` });
@@ -347,7 +349,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void, indexDeps:
       ? commandFragment` --remote ${commandQuoted(values.remote)}`
       : commandLiteral("");
   const indexed = values.index !== undefined
-    ? await verifiedFromIndex(values.index, ref, values.offering === true, requestedTarget, indexDeps)
+    ? await verifiedFromIndex(values.index, ref, values.cookbook === true, requestedTarget, indexDeps)
     : undefined;
   let recipes: LoadedRecipe[];
   if (indexed) {
@@ -364,7 +366,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void, indexDeps:
   }
 
   // Before anything reads the bundle: in a hosted checkout, the recipe decides which refusal applies.
-  // Every offering member is checked before the first write.
+  // Every cookbook member is checked before the first write.
   if (values.remote === undefined) {
     for (const recipe of recipes) await assertRecipeAllowedInHostedCheckout("recipe add", values.dir, recipe);
   }
@@ -377,7 +379,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void, indexDeps:
       ? commandFragment` --remote ${commandQuoted(remote)}`
       : commandLiteral("");
 
-  if (indexed?.offering) {
+  if (indexed?.cookbook) {
     const rows: Record<string, unknown>[] = [];
     let changed = false;
     for (const [position, entry] of indexed.recipes.entries()) {
@@ -389,11 +391,11 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void, indexDeps:
         throw new CliError(error.code, error.message, {
           details: {
             ...(error.details ?? {}),
-            offering: indexed.offering.id,
+            cookbook: indexed.cookbook.id,
             failed_recipe: entry.recipe.id,
             installed_before_failure: indexed.recipes.slice(0, position).map((done) => done.recipe.id),
           },
-          help: `${cliInvocation()} recipe add ${commandQuoted(ref)} --index ${commandQuoted(values.index!)} --offering${target}`,
+          help: `${cliInvocation()} recipe add ${commandQuoted(ref)} --index ${commandQuoted(values.index!)} --cookbook${target}`,
         });
       }
       changed ||= receipt.changed === true;
@@ -401,6 +403,8 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void, indexDeps:
         id: entry.recipe.id,
         version: entry.recipe.version,
         source_digest: entry.source_digest,
+        designation: entry.designation,
+        maintainer: entry.maintainer,
         recipe: receipt.recipe,
         changed: receipt.changed,
         counts: receipt.counts,
@@ -410,12 +414,14 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void, indexDeps:
       });
     }
     stdout(render({
-      offering: indexed.offering.id,
-      title: indexed.offering.title,
+      cookbook: indexed.cookbook.id,
+      title: indexed.cookbook.title,
+      designation: indexed.cookbook.designation,
+      maintainer: indexed.cookbook.maintainer,
       changed,
       index: { source: indexed.source, location: indexed.location },
       recipes: rows,
-      install_note: OFFERING_INSTALL_NOTE,
+      install_note: COOKBOOK_INSTALL_NOTE,
       help: [`${cliInvocation()} recipes`, `${cliInvocation()} kinds`],
     }, resolveMode(values)));
     return;
@@ -425,13 +431,13 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void, indexDeps:
   const receipt = await installReceipt(bundle, recipes[0]!, actor, evolve);
   if (indexed) {
     const entry = indexed.recipes[0]!;
-    stdout(render({ ...receipt, source_digest: entry.source_digest, index: { source: indexed.source, location: indexed.location } }, resolveMode(values)));
+    stdout(render({ ...receipt, source_digest: entry.source_digest, designation: entry.designation, maintainer: entry.maintainer, index: { source: indexed.source, location: indexed.location } }, resolveMode(values)));
     return;
   }
   stdout(render(receipt, resolveMode(values)));
 }
 
-const OFFERING_INSTALL_NOTE = "every member was verified against its pinned files_digest and source_digest before the first write; installs are create-only and idempotent per document, so rerunning this command after a partial failure converges";
+const COOKBOOK_INSTALL_NOTE = "every member was verified against its pinned files_digest and source_digest before the first write; installs are create-only and idempotent per document, so rerunning this command after a partial failure converges";
 
 const INDEX_EVOLUTION_HELP = "installed definitions differ from this index's recipe; recipe evolve does not read --index, so run it against a local copy of the recipe folder to plan the upgrade";
 
@@ -446,12 +452,12 @@ const INDEX_IDS_SHOWN = 10;
 interface IndexedRecipes {
   source: string;
   location: string;
-  offering?: { id: string; title: string };
+  cookbook?: { id: string; title: string; designation: string; maintainer: string };
   recipes: VerifiedIndexRecipe[];
 }
 
-/** Acquires the index and verifies the named recipe, or every member of the named offering, before any bundle access. */
-async function verifiedFromIndex(raw: string, ref: string, offering: boolean, target: CommandText, deps: IndexDeps): Promise<IndexedRecipes> {
+/** Acquires the index and verifies the named recipe, or every member of the named cookbook, before any bundle access. */
+async function verifiedFromIndex(raw: string, ref: string, cookbook: boolean, target: CommandText, deps: IndexDeps): Promise<IndexedRecipes> {
   const acquired = await acquireRecipeIndex(raw, deps);
   const { index } = acquired;
   const fail = (error: RecipeError, member?: string): never => {
@@ -461,7 +467,7 @@ async function verifiedFromIndex(raw: string, ref: string, offering: boolean, ta
     const cliCode = error.code === "RECIPE_INDEX_DIGEST_MISMATCH"
       ? "INTEGRITY_MISMATCH"
       : error.code === "RECIPE_INDEX_READ_FAILED" && acquired.lastFailure()?.kind !== "publisher" ? "TRANSIENT" : "USAGE";
-    const ids = (offering ? index.offerings : index.recipes).map((entry) => entry.id);
+    const ids = (cookbook ? index.cookbooks : index.recipes).map((entry) => entry.id);
     const first = ids[0];
     throw new CliError(cliCode, error.message, {
       details: {
@@ -471,21 +477,21 @@ async function verifiedFromIndex(raw: string, ref: string, offering: boolean, ta
         ...(error.digest ? { digest: error.digest } : {}),
         ...(error.connector ? { connector: error.connector } : {}),
         ...(error.code === "RECIPE_NOT_FOUND"
-          ? { available: { [offering ? "offerings" : "recipes"]: ids.slice(0, INDEX_IDS_SHOWN), shown: Math.min(ids.length, INDEX_IDS_SHOWN), total: ids.length } }
+          ? { available: { [cookbook ? "cookbooks" : "recipes"]: ids.slice(0, INDEX_IDS_SHOWN), shown: Math.min(ids.length, INDEX_IDS_SHOWN), total: ids.length } }
           : {}),
       },
       help: error.code === "RECIPE_NOT_FOUND" && first !== undefined
-        ? `${cliInvocation()} recipe add ${commandQuoted(first)} --index ${commandQuoted(raw)}${offering ? commandLiteral(" --offering") : commandLiteral("")}${target}`
+        ? `${cliInvocation()} recipe add ${commandQuoted(first)} --index ${commandQuoted(raw)}${cookbook ? commandLiteral(" --cookbook") : commandLiteral("")}${target}`
         : `${cliInvocation()} recipe add --help`,
     });
   };
-  if (offering) {
-    const result = await resolveOffering(index, ref, acquired.read);
+  if (cookbook) {
+    const result = await resolveCookbook(index, ref, acquired.read);
     if (!result.ok) return fail(result.error, result.recipe);
     return {
       source: index.source,
       location: acquired.location,
-      offering: { id: result.offering.id, title: result.offering.title },
+      cookbook: { id: result.cookbook.id, title: result.cookbook.title, designation: result.cookbook.designation, maintainer: result.cookbook.maintainer },
       recipes: result.recipes,
     };
   }

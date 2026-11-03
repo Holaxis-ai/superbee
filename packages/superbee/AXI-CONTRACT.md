@@ -253,7 +253,7 @@ Connector rows in `packages/cli/test/hosted-definition-writes.test.ts` and
 ## Recipe index installs
 
 `recipe add <id> --index <path-or-https-url>` installs a recipe listed in a published
-`recipe-index/v1` index, and `--offering` installs every recipe an offering names. Without
+`recipe-index/v1` index, and `--cookbook` installs every recipe a cookbook names. Without
 `--index`, `recipe add` is unchanged. The CLI reads raw bytes from a local path through the guarded
 ingress read, refusing a listed file whose real path leaves the index directory, or from an https:
 URL with redirects refused. Each read has its own size and time cap, and one command has one 60 s
@@ -261,17 +261,20 @@ deadline and one 16 MiB byte budget across the index and every file. Any other s
 URL carrying a username or password, is `USAGE` with `details.reason` `RECIPE_INDEX_SCHEME_REFUSED`
 before any request; credentials are never echoed. Core verifies each recipe against its pinned
 `files_digest` and `source_digest` and decodes it as strict UTF-8 before the bundle is opened, and an
-offering is verified whole before its first write. Refusals keep the taxonomy, with the Core code in
+cookbook is verified whole before its first write. Refusals keep the taxonomy, with the Core code in
 `details.reason`: a digest mismatch is `INTEGRITY_MISMATCH` (exit 1) and names the failed pin in
 `details.digest` (`files_digest` or `source_digest`); a timeout, a network failure, an HTTP 5xx or the
 deadline is `TRANSIENT` (exit 1); a missing file, an HTTP 4xx, an escape, a budget overrun, invalid
 UTF-8 (`RECIPE_INDEX_ENCODING_INVALID`) and index format, path and lookup refusals are `USAGE`
 (exit 2). An unknown id's `help` is one runnable `recipe add` for the first listed id, and
 `details.available` lists up to ten ids with `shown` and `total`. A single-recipe receipt adds
-`source_digest` and `index` (`source`, `location`) to the existing receipt. An offering receipt is
-`offering`, `title`, `changed`, `index`, one `recipes` row per member (`id`, `version`,
-`source_digest`, `recipe`, `changed`, `counts`, and `warnings`, `foreign_ids` or `evolution_help`
-when present), `install_note` and `help`. Nothing about the index is persisted. Evidence:
+`source_digest`, `designation`, `maintainer` and `index` (`source`, `location`) to the existing
+receipt. A cookbook receipt is `cookbook`, `title`, `designation`, `maintainer`, `changed`, `index`,
+one `recipes` row per member (`id`, `version`, `source_digest`, `designation`, `maintainer`,
+`recipe`, `changed`, `counts`, and `warnings`, `foreign_ids` or `evolution_help` when present),
+`install_note` and `help`. `designation` (`supported` or `community`) and `maintainer` are the index
+publisher's statements, shown for discovery and never verified. Nothing about the index is
+persisted. Evidence:
 `packages/core/test/recipe-sources.test.ts`, `packages/cli/test/recipe-index.test.ts` and the
 `--index` row in `packages/cli/test/private-state-bundle-boundary.test.ts`.
 

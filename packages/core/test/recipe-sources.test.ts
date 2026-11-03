@@ -9,12 +9,15 @@ import {
   parseRecipeIndex,
   recipeFilesDigest,
   resolveIndexRecipe,
-  resolveOffering,
+  resolveCookbook,
   resolveRecipe,
   type RecipeIndex,
   type RecipeIndexReader,
   type RecipeSource,
 } from "../src/recipe-sources.js";
+
+const HOLAXIS = { designation: "supported", maintainer: "Holaxis-ai" } as const;
+const COMMUNITY = { designation: "community", maintainer: "octo-cook" } as const;
 
 function builtinDigest(name: string): string {
   const loaded = loadBuiltinRecipe(name);
@@ -35,7 +38,7 @@ function servedTree(layout: (name: string) => string, names: readonly string[]) 
   const entries = names.map((name) => {
     const recipeFiles = builtinRecipeFiles(name)!;
     for (const file of recipeFiles) files.set(`${layout(name)}/${file.path}`, file.bytes);
-    return { id: name, version: "1", source_digest: builtinDigest(name), files_digest: pin(recipeFiles), root: layout(name), files: recipeFiles.map((file) => file.path) };
+    return { id: name, version: "1", ...HOLAXIS, source_digest: builtinDigest(name), files_digest: pin(recipeFiles), root: layout(name), files: recipeFiles.map((file) => file.path) };
   });
   const reads: string[] = [];
   const read: RecipeIndexReader = async (path) => {
@@ -47,15 +50,15 @@ function servedTree(layout: (name: string) => string, names: readonly string[]) 
   return { files, entries, reads, read };
 }
 
-function indexOf(source: string, entries: unknown[], offerings: unknown[] = []): RecipeIndex {
-  const parsed = parseRecipeIndex({ format: RECIPE_INDEX_FORMAT, source, recipes: entries, offerings });
+function indexOf(source: string, entries: unknown[], cookbooks: unknown[] = []): RecipeIndex {
+  const parsed = parseRecipeIndex({ format: RECIPE_INDEX_FORMAT, source, recipes: entries, cookbooks });
   assert.ok(parsed.ok, parsed.ok ? "" : parsed.error.message);
   return parsed.index;
 }
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
-const ENTRY = { id: "notes", version: "1", source_digest: DIGEST, files_digest: DIGEST, files: ["recipe.md"] };
-const VALID = { format: RECIPE_INDEX_FORMAT, source: "example", title: "Example", recipes: [ENTRY], offerings: [] };
+const ENTRY = { id: "notes", version: "1", ...HOLAXIS, source_digest: DIGEST, files_digest: DIGEST, files: ["recipe.md"] };
+const VALID = { format: RECIPE_INDEX_FORMAT, source: "example", title: "Example", recipes: [ENTRY], cookbooks: [] };
 
 function refusalCode(value: unknown): string {
   const parsed = parseRecipeIndex(value);
@@ -95,8 +98,8 @@ test("parseRecipeIndex: RECIPE_INDEX_MALFORMED for every shape refusal", () => {
     { ...VALID, recipes: [{ ...ENTRY, id: "../x" }] },
     { ...VALID, recipes: new Array(1) },
     { ...VALID, recipes: Array.from({ length: 257 }, (_, i) => ({ ...ENTRY, id: `r${i}` })) },
-    { ...VALID, offerings: [{ id: "o", title: "O", summary: "S", recipes: ["notes"], extra: 1 }] },
-    { ...VALID, offerings: [{ id: "o", title: "", summary: "S", recipes: ["notes"] }] },
+    { ...VALID, cookbooks: [{ id: "o", title: "O", summary: "S", ...HOLAXIS, recipes: ["notes"], extra: 1 }] },
+    { ...VALID, cookbooks: [{ id: "o", title: "", summary: "S", ...HOLAXIS, recipes: ["notes"] }] },
   ];
   for (const value of cases) assert.equal(refusalCode(value), "RECIPE_INDEX_MALFORMED", JSON.stringify(value)?.slice(0, 120));
 });
@@ -117,19 +120,38 @@ test("parseRecipeIndex: RECIPE_INDEX_PATH_INVALID for absolute, escaping, backsl
   }
 });
 
-test("parseRecipeIndex: RECIPE_INDEX_DUPLICATE for repeated recipes, offerings and files", () => {
+test("parseRecipeIndex: RECIPE_INDEX_DUPLICATE for repeated recipes, cookbooks and files", () => {
   assert.equal(refusalCode({ ...VALID, recipes: [ENTRY, ENTRY] }), "RECIPE_INDEX_DUPLICATE");
   assert.equal(refusalCode({ ...VALID, recipes: [{ ...ENTRY, files: ["recipe.md", "recipe.md"] }] }), "RECIPE_INDEX_DUPLICATE");
   assert.equal(refusalCode({ ...VALID, recipes: [{ ...ENTRY, files: ["recipe.md", "Recipe.md"] }] }), "RECIPE_INDEX_DUPLICATE");
-  const offering = { id: "o", title: "O", summary: "S", recipes: ["notes"] };
-  assert.equal(refusalCode({ ...VALID, offerings: [offering, offering] }), "RECIPE_INDEX_DUPLICATE");
+  const cookbook = { id: "o", title: "O", summary: "S", ...HOLAXIS, recipes: ["notes"] };
+  assert.equal(refusalCode({ ...VALID, cookbooks: [cookbook, cookbook] }), "RECIPE_INDEX_DUPLICATE");
 });
 
-test("parseRecipeIndex: RECIPE_INDEX_OFFERING_INVALID for unknown, repeated or missing members", () => {
-  const offering = { id: "o", title: "O", summary: "S" };
-  assert.equal(refusalCode({ ...VALID, offerings: [{ ...offering, recipes: ["missing"] }] }), "RECIPE_INDEX_OFFERING_INVALID");
-  assert.equal(refusalCode({ ...VALID, offerings: [{ ...offering, recipes: ["notes", "notes"] }] }), "RECIPE_INDEX_OFFERING_INVALID");
-  assert.equal(refusalCode({ ...VALID, offerings: [{ ...offering, recipes: [] }] }), "RECIPE_INDEX_OFFERING_INVALID");
+test("parseRecipeIndex: RECIPE_INDEX_COOKBOOK_INVALID for unknown, repeated or missing members", () => {
+  const cookbook = { id: "o", title: "O", summary: "S", ...HOLAXIS };
+  assert.equal(refusalCode({ ...VALID, cookbooks: [{ ...cookbook, recipes: ["missing"] }] }), "RECIPE_INDEX_COOKBOOK_INVALID");
+  assert.equal(refusalCode({ ...VALID, cookbooks: [{ ...cookbook, recipes: ["notes", "notes"] }] }), "RECIPE_INDEX_COOKBOOK_INVALID");
+  assert.equal(refusalCode({ ...VALID, cookbooks: [{ ...cookbook, recipes: [] }] }), "RECIPE_INDEX_COOKBOOK_INVALID");
+});
+
+test("designation: required on recipes and cookbooks, closed vocabulary, supported cookbooks hold supported recipes", () => {
+  const { designation: _d, ...undesignated } = ENTRY;
+  const { maintainer: _m, ...unmaintained } = ENTRY;
+  for (const recipe of [undesignated, unmaintained, { ...ENTRY, designation: "official" }, { ...ENTRY, designation: "Supported" }, { ...ENTRY, maintainer: "" }]) {
+    assert.equal(refusalCode({ ...VALID, recipes: [recipe] }), "RECIPE_INDEX_MALFORMED", JSON.stringify(recipe));
+  }
+  const cookbook = { id: "o", title: "O", summary: "S", recipes: ["notes"] };
+  assert.equal(refusalCode({ ...VALID, cookbooks: [cookbook] }), "RECIPE_INDEX_MALFORMED");
+  assert.equal(refusalCode({ ...VALID, cookbooks: [{ ...cookbook, designation: "verified", maintainer: "x" }] }), "RECIPE_INDEX_MALFORMED");
+
+  const community = { ...ENTRY, id: "pantry", ...COMMUNITY };
+  const mixed = { ...cookbook, recipes: ["notes", "pantry"] };
+  assert.equal(refusalCode({ ...VALID, recipes: [ENTRY, community], cookbooks: [{ ...mixed, ...HOLAXIS }] }), "RECIPE_INDEX_COOKBOOK_INVALID");
+  const parsed = parseRecipeIndex({ ...VALID, recipes: [ENTRY, community], cookbooks: [{ ...mixed, ...COMMUNITY }] });
+  assert.ok(parsed.ok, parsed.ok ? "" : parsed.error.message);
+  assert.deepEqual([parsed.index.recipes[1]!.designation, parsed.index.recipes[1]!.maintainer], ["community", "octo-cook"]);
+  assert.deepEqual([parsed.index.cookbooks[0]!.designation, parsed.index.cookbooks[0]!.maintainer], ["community", "octo-cook"]);
 });
 
 // ── Verifier ──────────────────────────────────────────────────────────────────────────────────
@@ -141,6 +163,7 @@ test("resolveIndexRecipe returns a recipe only when Core's source digest matches
   assert.ok(result.ok);
   assert.equal(result.verified.source_digest, builtinDigest("context-notes"));
   assert.equal(result.verified.recipe.source, "index:alpha");
+  assert.deepEqual([result.verified.designation, result.verified.maintainer], ["supported", "Holaxis-ai"]);
   assert.deepEqual(tree.reads, tree.entries[0]!.files.map((file) => `recipes/context-notes/${file}`));
 });
 
@@ -258,7 +281,7 @@ test("red probe: a listed file that is omitted from the pin's recipe changes the
 
 test("red probe: a path escape in files never reaches the reader", async () => {
   const tree = servedTree((name) => `r/${name}`, ["context-notes"]);
-  const parsed = parseRecipeIndex({ format: RECIPE_INDEX_FORMAT, source: "alpha", recipes: [{ ...tree.entries[0], files: ["recipe.md", "../../secret.md"] }], offerings: [] });
+  const parsed = parseRecipeIndex({ format: RECIPE_INDEX_FORMAT, source: "alpha", recipes: [{ ...tree.entries[0], files: ["recipe.md", "../../secret.md"] }], cookbooks: [] });
   assert.equal(parsed.ok, false);
   if (!parsed.ok) assert.equal(parsed.error.code, "RECIPE_INDEX_PATH_INVALID");
   assert.deepEqual(tree.reads, []);
@@ -305,22 +328,22 @@ test("parseRecipeIndex decodes raw index bytes strictly", () => {
   assert.equal(refusalCode(new Uint8Array([0x7b, 0xff, 0x7d])), "RECIPE_INDEX_ENCODING_INVALID");
 });
 
-test("resolveOffering verifies every member in order and returns nothing when one fails", async () => {
+test("resolveCookbook verifies every member in order and returns nothing when one fails", async () => {
   const tree = servedTree((name) => `r/${name}`, ["context-notes", "work-tracking", "roadmap"]);
-  const offerings = [{ id: "plan", title: "Plan", summary: "Plan the work.", recipes: ["roadmap", "work-tracking"] }];
-  const ok = await resolveOffering(indexOf("alpha", tree.entries, offerings), "plan", tree.read);
+  const cookbooks = [{ id: "plan", title: "Plan", summary: "Plan the work.", ...HOLAXIS, recipes: ["roadmap", "work-tracking"] }];
+  const ok = await resolveCookbook(indexOf("alpha", tree.entries, cookbooks), "plan", tree.read);
   assert.ok(ok.ok);
   assert.deepEqual(ok.recipes.map((entry) => entry.recipe.id), ["roadmap", "work-tracking"]);
 
   tree.files.set("r/work-tracking/conventions/task.md", `${tree.files.get("r/work-tracking/conventions/task.md")}\nTampered.\n`);
-  const bad = await resolveOffering(indexOf("alpha", tree.entries, offerings), "plan", tree.read);
+  const bad = await resolveCookbook(indexOf("alpha", tree.entries, cookbooks), "plan", tree.read);
   assert.equal(bad.ok, false);
   if (bad.ok) return;
   assert.equal(bad.error.code, "RECIPE_INDEX_DIGEST_MISMATCH");
   assert.equal(bad.recipe, "work-tracking");
   assert.equal("recipes" in bad, false);
 
-  const unknown = await resolveOffering(indexOf("alpha", tree.entries, offerings), "nope", tree.read);
+  const unknown = await resolveCookbook(indexOf("alpha", tree.entries, cookbooks), "nope", tree.read);
   assert.equal(unknown.ok ? "" : unknown.error.code, "RECIPE_NOT_FOUND");
 });
 

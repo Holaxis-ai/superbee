@@ -689,7 +689,7 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
       const loaded = loadBuiltinRecipe("context-notes");
       assert.ok(loaded?.ok);
       const index = path.join(fixture.outside, "index", "index.json");
-      writeFileSync(index, JSON.stringify({ format: "recipe-index/v1", source: "probe", offerings: [], recipes: [{ id: "context-notes", version: "1", source_digest: recipeSourceDigest(loaded.recipe), files_digest: recipeFilesDigest(files.map((file) => ({ path: file.path, bytes: new TextEncoder().encode(file.bytes) }))), files: files.map((file) => file.path) }] }));
+      writeFileSync(index, JSON.stringify({ format: "recipe-index/v1", source: "probe", cookbooks: [], recipes: [{ id: "context-notes", version: "1", designation: "supported", maintainer: "Holaxis-ai", source_digest: recipeSourceDigest(loaded.recipe), files_digest: recipeFilesDigest(files.map((file) => ({ path: file.path, bytes: new TextEncoder().encode(file.bytes) }))), files: files.map((file) => file.path) }] }));
       return index;
     },
   },

@@ -7,7 +7,7 @@
  * network stay in their host.
  *
  * A published index (`recipe-index/v1`) lists recipes, each pinned twice: `files_digest` over the
- * exact listed bytes and Core's `recipeSourceDigest` over the parsed definitions. It also lists offerings that name an ordered set of those recipes. This module parses the index and verifies
+ * exact listed bytes and Core's `recipeSourceDigest` over the parsed definitions. It also lists cookbooks that name an ordered set of those recipes. This module parses the index and verifies
  * every recipe against its pin through a reader the host supplies. It performs no I/O of its own.
  */
 import { recipeSourceDigest } from "./recipe-lifecycle/stamp.js";
@@ -60,9 +60,9 @@ export const RECIPE_INDEX_FORMAT = "recipe-index/v1" as const;
 /** Count bounds keep a hostile index from asking a reader for unbounded work. */
 export const RECIPE_INDEX_LIMITS = Object.freeze({
   recipes: 256,
-  offerings: 256,
+  cookbooks: 256,
   filesPerRecipe: 256,
-  recipesPerOffering: 32,
+  recipesPerCookbook: 32,
 });
 
 export interface RecipeIndexRecipe {
@@ -76,10 +76,25 @@ export interface RecipeIndexRecipe {
   readonly root?: string;
   /** Recipe-relative file paths. A reader fetches exactly these and nothing else. */
   readonly files: readonly string[];
+  readonly designation: RecipeDesignation;
+  /** Who maintains the recipe, for example a GitHub org or handle. */
+  readonly maintainer: string;
 }
 
-export interface RecipeIndexOffering {
+/**
+ * Who stands behind an entry, as the index publisher states it: `supported` (maintained by Holaxis)
+ * or `community`. Discovery metadata only. Core does not verify it and it carries no trust; the
+ * digests are the only integrity guarantee.
+ */
+export type RecipeDesignation = "supported" | "community";
+
+export const RECIPE_DESIGNATIONS: readonly RecipeDesignation[] = Object.freeze(["supported", "community"]);
+
+export interface RecipeIndexCookbook {
   readonly id: string;
+  readonly designation: RecipeDesignation;
+  /** Who maintains the cookbook, for example a GitHub org or handle. */
+  readonly maintainer: string;
   readonly title: string;
   readonly summary: string;
   /** Ordered recipe ids, each present in the index's `recipes`. */
@@ -92,7 +107,7 @@ export interface RecipeIndex {
   readonly source: string;
   readonly title?: string;
   readonly recipes: readonly RecipeIndexRecipe[];
-  readonly offerings: readonly RecipeIndexOffering[];
+  readonly cookbooks: readonly RecipeIndexCookbook[];
 }
 
 export interface RecipeIndexError {
@@ -179,9 +194,11 @@ function relativePath(value: unknown, where: string): string {
 
 function parseRecipeEntry(value: unknown, where: string): RecipeIndexRecipe {
   if (!isRecord(value)) refuse("RECIPE_INDEX_MALFORMED", `${where} must be an object`);
-  exactKeys(value, ["id", "version", "source_digest", "files_digest", "files"], ["root"], where);
+  exactKeys(value, ["id", "version", "designation", "maintainer", "source_digest", "files_digest", "files"], ["root"], where);
   const entryId = id(value.id, `${where}.id`);
   const version = text(value.version, `${where}.version`, 64);
+  const designation = designationOf(value.designation, where);
+  const maintainer = text(value.maintainer, `${where}.maintainer`, 200);
   if (typeof value.source_digest !== "string" || !DIGEST.test(value.source_digest)) {
     refuse("RECIPE_INDEX_MALFORMED", `${where}.source_digest must be 'sha256:' and 64 lowercase hex digits`);
   }
@@ -207,26 +224,41 @@ function parseRecipeEntry(value: unknown, where: string): RecipeIndexRecipe {
     files_digest: value.files_digest,
     ...(root === undefined ? {} : { root }),
     files: Object.freeze(files),
+    designation,
+    maintainer,
   });
 }
 
-function parseOffering(value: unknown, where: string, recipeIds: ReadonlySet<string>): RecipeIndexOffering {
+function designationOf(value: unknown, where: string): RecipeDesignation {
+  if (typeof value !== "string" || !(RECIPE_DESIGNATIONS as readonly string[]).includes(value)) {
+    refuse("RECIPE_INDEX_MALFORMED", `${where}.designation must be one of ${RECIPE_DESIGNATIONS.join(", ")}`);
+  }
+  return value as RecipeDesignation;
+}
+
+function parseCookbook(value: unknown, where: string, recipes: ReadonlyMap<string, RecipeIndexRecipe>): RecipeIndexCookbook {
   if (!isRecord(value)) refuse("RECIPE_INDEX_MALFORMED", `${where} must be an object`);
-  exactKeys(value, ["id", "title", "summary", "recipes"], [], where);
-  const offeringId = id(value.id, `${where}.id`);
+  exactKeys(value, ["id", "title", "summary", "designation", "maintainer", "recipes"], [], where);
+  const cookbookId = id(value.id, `${where}.id`);
+  const designation = designationOf(value.designation, where);
+  const maintainer = text(value.maintainer, `${where}.maintainer`, 200);
   const title = text(value.title, `${where}.title`, 200);
   const summary = text(value.summary, `${where}.summary`, 1000);
-  const members = list(value.recipes, `${where}.recipes`, RECIPE_INDEX_LIMITS.recipesPerOffering).map((member, i) =>
+  const members = list(value.recipes, `${where}.recipes`, RECIPE_INDEX_LIMITS.recipesPerCookbook).map((member, i) =>
     id(member, `${where}.recipes[${i}]`),
   );
-  if (members.length === 0) refuse("RECIPE_INDEX_OFFERING_INVALID", `offering '${offeringId}' names no recipes`);
+  if (members.length === 0) refuse("RECIPE_INDEX_COOKBOOK_INVALID", `cookbook '${cookbookId}' names no recipes`);
   const seen = new Set<string>();
   for (const member of members) {
-    if (!recipeIds.has(member)) refuse("RECIPE_INDEX_OFFERING_INVALID", `offering '${offeringId}' names recipe '${member}', which the index does not list`);
-    if (seen.has(member)) refuse("RECIPE_INDEX_OFFERING_INVALID", `offering '${offeringId}' names recipe '${member}' more than once`);
+    const recipe = recipes.get(member);
+    if (!recipe) refuse("RECIPE_INDEX_COOKBOOK_INVALID", `cookbook '${cookbookId}' names recipe '${member}', which the index does not list`);
+    if (designation === "supported" && recipe.designation !== "supported") {
+      refuse("RECIPE_INDEX_COOKBOOK_INVALID", `supported cookbook '${cookbookId}' names community recipe '${member}'; a supported cookbook holds supported recipes only`);
+    }
+    if (seen.has(member)) refuse("RECIPE_INDEX_COOKBOOK_INVALID", `cookbook '${cookbookId}' names recipe '${member}' more than once`);
     seen.add(member);
   }
-  return Object.freeze({ id: offeringId, title, summary, recipes: Object.freeze(members) });
+  return Object.freeze({ id: cookbookId, title, summary, designation, maintainer, recipes: Object.freeze(members) });
 }
 
 const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
@@ -264,24 +296,24 @@ export function parseRecipeIndex(input: unknown): RecipeIndexParseResult {
     if (value.format !== RECIPE_INDEX_FORMAT) {
       refuse("RECIPE_INDEX_FORMAT_UNSUPPORTED", `the recipe index format must be '${RECIPE_INDEX_FORMAT}'`);
     }
-    exactKeys(value, ["format", "source", "recipes", "offerings"], ["title"], "the recipe index");
+    exactKeys(value, ["format", "source", "recipes", "cookbooks"], ["title"], "the recipe index");
     const source = id(value.source, "source");
     const title = value.title === undefined ? undefined : text(value.title, "title", 200);
     const recipes = list(value.recipes, "recipes", RECIPE_INDEX_LIMITS.recipes).map((entry, i) =>
       parseRecipeEntry(entry, `recipes[${i}]`),
     );
-    const recipeIds = new Set<string>();
+    const recipeIds = new Map<string, RecipeIndexRecipe>();
     for (const entry of recipes) {
       if (recipeIds.has(entry.id)) refuse("RECIPE_INDEX_DUPLICATE", `recipe '${entry.id}' is listed more than once`);
-      recipeIds.add(entry.id);
+      recipeIds.set(entry.id, entry);
     }
-    const offerings = list(value.offerings, "offerings", RECIPE_INDEX_LIMITS.offerings).map((entry, i) =>
-      parseOffering(entry, `offerings[${i}]`, recipeIds),
+    const cookbooks = list(value.cookbooks, "cookbooks", RECIPE_INDEX_LIMITS.cookbooks).map((entry, i) =>
+      parseCookbook(entry, `cookbooks[${i}]`, recipeIds),
     );
-    const offeringIds = new Set<string>();
-    for (const offering of offerings) {
-      if (offeringIds.has(offering.id)) refuse("RECIPE_INDEX_DUPLICATE", `offering '${offering.id}' is listed more than once`);
-      offeringIds.add(offering.id);
+    const cookbookIds = new Set<string>();
+    for (const cookbook of cookbooks) {
+      if (cookbookIds.has(cookbook.id)) refuse("RECIPE_INDEX_DUPLICATE", `cookbook '${cookbook.id}' is listed more than once`);
+      cookbookIds.add(cookbook.id);
     }
     return {
       ok: true,
@@ -290,7 +322,7 @@ export function parseRecipeIndex(input: unknown): RecipeIndexParseResult {
         source,
         ...(title === undefined ? {} : { title }),
         recipes: Object.freeze(recipes),
-        offerings: Object.freeze(offerings),
+        cookbooks: Object.freeze(cookbooks),
       }),
     };
   } catch (error) {
@@ -317,6 +349,9 @@ export function recipeFilesDigest(files: readonly RecipeIndexFileBytes[]): strin
 export interface VerifiedIndexRecipe {
   recipe: LoadedRecipe;
   source_digest: string;
+  /** The index's statement about the recipe, carried for display; never verified. */
+  designation: RecipeDesignation;
+  maintainer: string;
 }
 
 export type IndexRecipeResult = { ok: true; verified: VerifiedIndexRecipe } | { ok: false; error: RecipeError };
@@ -384,7 +419,7 @@ export async function resolveIndexRecipe(index: RecipeIndex, recipeId: string, r
   }
   const actual = recipeSourceDigest(recipe);
   if (actual !== entry.source_digest) return mismatch("source_digest", `expected ${entry.source_digest}, computed ${actual}`);
-  return { ok: true, verified: { recipe, source_digest: actual } };
+  return { ok: true, verified: { recipe, source_digest: actual, designation: entry.designation, maintainer: entry.maintainer } };
 }
 
 /** A `RecipeSource` over one parsed index: it addresses exactly the recipe ids the index lists. */
@@ -399,24 +434,24 @@ export function createIndexRecipeSource(index: RecipeIndex, read: RecipeIndexRea
   };
 }
 
-export type OfferingResult =
-  | { ok: true; offering: RecipeIndexOffering; recipes: VerifiedIndexRecipe[] }
+export type CookbookResult =
+  | { ok: true; cookbook: RecipeIndexCookbook; recipes: VerifiedIndexRecipe[] }
   | { ok: false; error: RecipeError; recipe?: string };
 
 /**
- * Resolves and verifies every member of an offering, in order. One failed member fails the whole
- * offering and nothing is returned, so a caller can verify the full set before writing anything.
+ * Resolves and verifies every member of a cookbook, in order. One failed member fails the whole
+ * cookbook and nothing is returned, so a caller can verify the full set before writing anything.
  */
-export async function resolveOffering(index: RecipeIndex, offeringId: string, read: RecipeIndexReader): Promise<OfferingResult> {
-  const offering = index.offerings.find((candidate) => candidate.id === offeringId);
-  if (!offering) {
-    return { ok: false, error: { code: "RECIPE_NOT_FOUND", message: `index '${index.source}' lists no offering '${offeringId}'` } };
+export async function resolveCookbook(index: RecipeIndex, cookbookId: string, read: RecipeIndexReader): Promise<CookbookResult> {
+  const cookbook = index.cookbooks.find((candidate) => candidate.id === cookbookId);
+  if (!cookbook) {
+    return { ok: false, error: { code: "RECIPE_NOT_FOUND", message: `index '${index.source}' lists no cookbook '${cookbookId}'` } };
   }
   const recipes: VerifiedIndexRecipe[] = [];
-  for (const member of offering.recipes) {
+  for (const member of cookbook.recipes) {
     const result = await resolveIndexRecipe(index, member, read);
     if (!result.ok) return { ok: false, error: result.error, recipe: member };
     recipes.push(result.verified);
   }
-  return { ok: true, offering, recipes };
+  return { ok: true, cookbook, recipes };
 }

@@ -16,7 +16,9 @@ import { recipe } from "../src/commands/recipe.js";
 import { CliError } from "../src/errors.js";
 import { fetchHttpsBytes, type FetchLike, type RecipeIndexLimits } from "../src/recipe-source-index.js";
 
-const OFFERING = { id: "starter", title: "Starter", summary: "Notes and tasks.", recipes: ["context-notes", "work-tracking"] };
+const HOLAXIS = { designation: "supported", maintainer: "Holaxis-ai" } as const;
+const COMMUNITY = { designation: "community", maintainer: "octo-cook" } as const;
+const COOKBOOK = { id: "starter", title: "Starter", summary: "Notes and tasks.", ...HOLAXIS, recipes: ["context-notes", "work-tracking"] };
 
 const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
 
@@ -32,7 +34,7 @@ function digestOf(name: string): string {
 }
 
 /** Writes built-in recipe bytes under `layout(name)` and an index naming them; returns the index path. */
-async function writeIndex(root: string, source: string, indexDir: string, layout: (name: string) => string, names: string[], offerings: unknown[] = [OFFERING]): Promise<string> {
+async function writeIndex(root: string, source: string, indexDir: string, layout: (name: string) => string, names: string[], cookbooks: unknown[] = [COOKBOOK], designations: Record<string, typeof HOLAXIS | typeof COMMUNITY> = {}): Promise<string> {
   const recipes = [];
   for (const name of names) {
     const files = builtinRecipeFiles(name)!;
@@ -41,11 +43,11 @@ async function writeIndex(root: string, source: string, indexDir: string, layout
       await mkdir(path.dirname(target), { recursive: true });
       await writeFile(target, file.bytes);
     }
-    recipes.push({ id: name, version: "1", source_digest: digestOf(name), files_digest: pin(files), root: layout(name), files: files.map((file) => file.path) });
+    recipes.push({ id: name, version: "1", ...(designations[name] ?? HOLAXIS), source_digest: digestOf(name), files_digest: pin(files), root: layout(name), files: files.map((file) => file.path) });
   }
   const indexPath = path.join(root, indexDir, "index.json");
   await mkdir(path.dirname(indexPath), { recursive: true });
-  await writeFile(indexPath, JSON.stringify({ format: RECIPE_INDEX_FORMAT, source, title: `${source} recipes`, recipes, offerings }, null, 2));
+  await writeFile(indexPath, JSON.stringify({ format: RECIPE_INDEX_FORMAT, source, title: `${source} recipes`, recipes, cookbooks }, null, 2));
   return indexPath;
 }
 
@@ -103,6 +105,7 @@ test("recipe add --index installs one verified recipe and names the index and di
     assert.equal(receipt.source, "index:alpha");
     assert.equal(receipt.source_digest, digestOf("context-notes"));
     assert.deepEqual(receipt.index, { source: "alpha", location: index });
+    assert.deepEqual([receipt.designation, receipt.maintainer], ["supported", "Holaxis-ai"]);
     const installed = await readDoc({ root: bundle }, "conventions/context-note");
     assert.equal((installed.frontmatter.x_recipe as Record<string, unknown>).source_digest, receipt.source_digest);
 
@@ -120,7 +123,7 @@ test("swap: two index sources with different ids and layouts install identical d
     const receipts = [];
     for (const [i, index] of [a, b].entries()) {
       await initBundle(bundles[i]!);
-      receipts.push(await run(["add", "starter", "--offering", "--index", index, "--dir", bundles[i]!]));
+      receipts.push(await run(["add", "starter", "--cookbook", "--index", index, "--dir", bundles[i]!]));
     }
     const rows = receipts.map((receipt) => (receipt.recipes as Array<Record<string, unknown>>).map((row) => [row.id, row.source_digest]));
     assert.deepEqual(rows[0], rows[1]);
@@ -131,14 +134,15 @@ test("swap: two index sources with different ids and layouts install identical d
   });
 });
 
-test("recipe add --index --offering verifies every member, installs in order and reports each digest", async () => {
+test("recipe add --index --cookbook verifies every member, installs in order and reports each digest", async () => {
   await withScratch(async (root) => {
     const index = await writeIndex(root, "alpha", "alpha", (name) => `recipes/${name}`, ["context-notes", "work-tracking"]);
     const bundle = path.join(root, "bundle");
     await initBundle(bundle);
-    const receipt = await run(["add", "starter", "--offering", "--index", index, "--dir", bundle]);
-    assert.equal(receipt.offering, "starter");
+    const receipt = await run(["add", "starter", "--cookbook", "--index", index, "--dir", bundle]);
+    assert.equal(receipt.cookbook, "starter");
     assert.equal(receipt.title, "Starter");
+    assert.deepEqual([receipt.designation, receipt.maintainer], ["supported", "Holaxis-ai"]);
     assert.equal(receipt.changed, true);
     assert.deepEqual(receipt.index, { source: "alpha", location: index });
     const rows = receipt.recipes as Array<Record<string, unknown>>;
@@ -149,13 +153,13 @@ test("recipe add --index --offering verifies every member, installs in order and
     assert.match(String(receipt.install_note), /verified .* before the first write/);
     assert.match(String(receipt.install_note), /rerunning this command .* converges/);
 
-    const again = await run(["add", "starter", "--offering", "--index", index, "--dir", bundle]);
+    const again = await run(["add", "starter", "--cookbook", "--index", index, "--dir", bundle]);
     assert.equal(again.changed, false);
     assert.deepEqual((again.recipes as Array<Record<string, unknown>>).map((row) => row.recipe), ["already applied", "already applied"]);
   });
 });
 
-test("offering atomicity: one tampered member means zero writes, even for members before it", async () => {
+test("cookbook atomicity: one tampered member means zero writes, even for members before it", async () => {
   await withScratch(async (root) => {
     const index = await writeIndex(root, "alpha", "alpha", (name) => `recipes/${name}`, ["context-notes", "work-tracking"]);
     const task = path.join(root, "alpha/recipes/work-tracking/conventions/task.md");
@@ -163,7 +167,7 @@ test("offering atomicity: one tampered member means zero writes, even for member
     const bundle = path.join(root, "bundle");
     await initBundle(bundle);
     const before = await snapshot(bundle);
-    const error = await refusal(["add", "starter", "--offering", "--index", index, "--dir", bundle]);
+    const error = await refusal(["add", "starter", "--cookbook", "--index", index, "--dir", bundle]);
     assert.equal(error.code, "INTEGRITY_MISMATCH");
     assert.equal(error.details?.reason, "RECIPE_INDEX_DIGEST_MISMATCH");
     assert.equal(error.details?.recipe, "work-tracking");
@@ -201,7 +205,7 @@ test("red probes at the CLI: unlisted files are ignored, path escapes and tamper
   });
 });
 
-test("recipe add --index refuses other schemes, --offering without --index and unknown ids", async () => {
+test("recipe add --index refuses other schemes, --cookbook without --index and unknown ids", async () => {
   await withScratch(async (root) => {
     const index = await writeIndex(root, "alpha", "alpha", (name) => `recipes/${name}`, ["context-notes"], []);
     const bundle = path.join(root, "bundle");
@@ -211,13 +215,13 @@ test("recipe add --index refuses other schemes, --offering without --index and u
       assert.equal(error.code, "USAGE", location);
       assert.equal(error.details?.reason, "RECIPE_INDEX_SCHEME_REFUSED", location);
     }
-    assert.equal((await refusal(["add", "starter", "--offering", "--dir", bundle])).code, "USAGE");
+    assert.equal((await refusal(["add", "starter", "--cookbook", "--dir", bundle])).code, "USAGE");
     const unknown = await refusal(["add", "nope", "--index", index, "--dir", bundle]);
     assert.equal(unknown.details?.reason, "RECIPE_NOT_FOUND");
     assert.match(String(unknown.help), /recipe add 'context-notes' --index /);
     assert.deepEqual(unknown.details?.available, { recipes: ["context-notes"], shown: 1, total: 1 });
-    const unknownOffering = await refusal(["add", "context-notes", "--offering", "--index", index, "--dir", bundle]);
-    assert.equal(unknownOffering.details?.reason, "RECIPE_NOT_FOUND");
+    const unknownCookbook = await refusal(["add", "context-notes", "--cookbook", "--index", index, "--dir", bundle]);
+    assert.equal(unknownCookbook.details?.reason, "RECIPE_NOT_FOUND");
   });
 });
 
@@ -289,9 +293,9 @@ function servedIndex(base: string, names: string[]): Map<string, string | Uint8A
   const recipes = names.map((name) => {
     const recipeFiles = builtinRecipeFiles(name)!;
     for (const file of recipeFiles) files.set(`${base}r/${name}/${file.path}`, file.bytes);
-    return { id: name, version: "1", source_digest: digestOf(name), files_digest: pin(recipeFiles), root: `r/${name}`, files: recipeFiles.map((file) => file.path) };
+    return { id: name, version: "1", ...HOLAXIS, source_digest: digestOf(name), files_digest: pin(recipeFiles), root: `r/${name}`, files: recipeFiles.map((file) => file.path) };
   });
-  files.set(`${base}index.json`, JSON.stringify({ format: RECIPE_INDEX_FORMAT, source: "remote", recipes, offerings: [OFFERING] }));
+  files.set(`${base}index.json`, JSON.stringify({ format: RECIPE_INDEX_FORMAT, source: "remote", recipes, cookbooks: [COOKBOOK] }));
   return files;
 }
 
@@ -302,7 +306,7 @@ test("recipe add --index <https-url> resolves files against the index URL and re
     const fetch = servedFetch(servedIndex(base, ["context-notes", "work-tracking"]), calls);
     const bundle = path.join(root, "bundle");
     await initBundle(bundle);
-    const receipt = await run(["add", "starter", "--offering", "--index", `${base}index.json`, "--dir", bundle], fetch);
+    const receipt = await run(["add", "starter", "--cookbook", "--index", `${base}index.json`, "--dir", bundle], fetch);
     assert.deepEqual(receipt.index, { source: "remote", location: `${base}index.json` });
     assert.ok(calls.every((call) => call.redirect === "error" && call.url.startsWith(base)));
     assert.ok(calls.some((call) => call.url === `${base}r/work-tracking/conventions/task.md`));
@@ -358,8 +362,8 @@ test("HTTPS failures: non-200, oversize and invalid UTF-8 refuse; a tampered ser
 async function publishBoth(root: string, name: string, change: (path: string, bytes: Uint8Array) => Uint8Array) {
   const files = builtinRecipeFiles(name)!.map((file) => ({ path: file.path, bytes: change(file.path, utf8(file.bytes)) }));
   const index = JSON.stringify({
-    format: RECIPE_INDEX_FORMAT, source: "both", offerings: [],
-    recipes: [{ id: name, version: "1", source_digest: digestOf(name), files_digest: recipeFilesDigest(files), root: `r/${name}`, files: files.map((file) => file.path) }],
+    format: RECIPE_INDEX_FORMAT, source: "both", cookbooks: [],
+    recipes: [{ id: name, version: "1", ...HOLAXIS, source_digest: digestOf(name), files_digest: recipeFilesDigest(files), root: `r/${name}`, files: files.map((file) => file.path) }],
   });
   const base = "https://recipes.example.test/both/";
   const served = new Map<string, string | Uint8Array | { status: number }>([[`${base}index.json`, index]]);
@@ -435,13 +439,13 @@ test("one byte budget spans the index and every file", async () => {
     await initBundle(bundle);
     const before = await snapshot(bundle);
     const indexSize = (await readFile(index)).byteLength;
-    const local = await refusal(["add", "starter", "--offering", "--index", index, "--dir", bundle], undefined, { totalBytes: indexSize + 200 });
+    const local = await refusal(["add", "starter", "--cookbook", "--index", index, "--dir", bundle], undefined, { totalBytes: indexSize + 200 });
     assert.equal(local.code, "USAGE");
     assert.equal(local.details?.reason, "RECIPE_INDEX_READ_FAILED");
     assert.match(local.message, /exceed the \d+ byte total/);
 
     const base = "https://recipes.example.test/budget/";
-    const remote = await refusal(["add", "starter", "--offering", "--index", `${base}index.json`, "--dir", bundle], servedFetch(servedIndex(base, ["context-notes", "work-tracking"]), []), { totalBytes: 2000 });
+    const remote = await refusal(["add", "starter", "--cookbook", "--index", `${base}index.json`, "--dir", bundle], servedFetch(servedIndex(base, ["context-notes", "work-tracking"]), []), { totalBytes: 2000 });
     assert.match(remote.message, /exceed the 2000 byte total/);
     assert.deepEqual(await snapshot(bundle), before);
   });
@@ -460,7 +464,7 @@ test("one deadline spans every read of the command", async () => {
     const bundle = path.join(root, "bundle");
     await initBundle(bundle);
     const before = await snapshot(bundle);
-    const error = await refusal(["add", "starter", "--offering", "--index", `${base}index.json`, "--dir", bundle], slow, { deadlineMs: 100, requestMs: 1000 });
+    const error = await refusal(["add", "starter", "--cookbook", "--index", `${base}index.json`, "--dir", bundle], slow, { deadlineMs: 100, requestMs: 1000 });
     assert.equal(error.code, "TRANSIENT");
     assert.match(error.message, /deadline/);
     assert.deepEqual(await snapshot(bundle), before);
@@ -493,5 +497,46 @@ test("a missing local file is the publisher's error, not a retry", async () => {
     assert.equal(error.code, "USAGE");
     assert.equal(error.details?.reason, "RECIPE_INDEX_READ_FAILED");
     assert.match(error.message, /no such file/);
+  });
+});
+
+// ── Designation is discovery metadata ────────────────────────────────────────────────────────
+
+test("a community cookbook may hold community recipes and the receipt shows each designation and maintainer", async () => {
+  await withScratch(async (root) => {
+    const cookbook = { ...COOKBOOK, id: "mixed", ...COMMUNITY };
+    const index = await writeIndex(root, "alpha", "alpha", (name) => `recipes/${name}`, ["context-notes", "work-tracking"], [cookbook], { "work-tracking": COMMUNITY });
+    const bundle = path.join(root, "bundle");
+    await initBundle(bundle);
+    const receipt = await run(["add", "mixed", "--cookbook", "--index", index, "--dir", bundle]);
+    assert.deepEqual([receipt.designation, receipt.maintainer], ["community", "octo-cook"]);
+    assert.deepEqual((receipt.recipes as Array<Record<string, unknown>>).map((row) => [row.id, row.designation, row.maintainer]), [
+      ["context-notes", "supported", "Holaxis-ai"],
+      ["work-tracking", "community", "octo-cook"],
+    ]);
+  });
+});
+
+test("a supported cookbook naming a community recipe, or a missing designation, is refused before any write", async () => {
+  await withScratch(async (root) => {
+    const bundle = path.join(root, "bundle");
+    await initBundle(bundle);
+    const before = await snapshot(bundle);
+    const mixed = await writeIndex(root, "mixed", "mixed", (name) => `recipes/${name}`, ["context-notes", "work-tracking"], [COOKBOOK], { "work-tracking": COMMUNITY });
+    const refused = await refusal(["add", "context-notes", "--index", mixed, "--dir", bundle]);
+    assert.equal(refused.code, "USAGE");
+    assert.equal(refused.details?.reason, "RECIPE_INDEX_COOKBOOK_INVALID");
+
+    const plain = await writeIndex(root, "plain", "plain", (name) => `recipes/${name}`, ["context-notes"], []);
+    const parsed = JSON.parse(await readFile(plain, "utf8"));
+    delete parsed.recipes[0].designation;
+    await writeFile(plain, JSON.stringify(parsed));
+    const missing = await refusal(["add", "context-notes", "--index", plain, "--dir", bundle]);
+    assert.equal(missing.details?.reason, "RECIPE_INDEX_MALFORMED");
+    assert.match(missing.message, /designation/);
+    parsed.recipes[0].designation = "official";
+    await writeFile(plain, JSON.stringify(parsed));
+    assert.equal((await refusal(["add", "context-notes", "--index", plain, "--dir", bundle])).details?.reason, "RECIPE_INDEX_MALFORMED");
+    assert.deepEqual(await snapshot(bundle), before);
   });
 });

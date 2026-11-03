@@ -84,22 +84,34 @@ A published index is one JSON document, `recipe-index/v1`:
   "source": "example",
   "title": "Example recipes",
   "recipes": [
-    { "id": "context-notes", "version": "1", "source_digest": "sha256:<64 hex>",
-      "files_digest": "sha256:<64 hex>", "root": "recipes/context-notes",
+    { "id": "context-notes", "version": "1", "designation": "supported", "maintainer": "Holaxis-ai",
+      "source_digest": "sha256:<64 hex>", "files_digest": "sha256:<64 hex>", "root": "recipes/context-notes",
       "files": ["recipe.md", "conventions/context-note.md"] }
   ],
-  "offerings": [
-    { "id": "starter", "title": "Starter", "summary": "Notes for agents.", "recipes": ["context-notes"] }
+  "cookbooks": [
+    { "id": "starter", "title": "Starter", "summary": "Notes for agents.", "designation": "supported",
+      "maintainer": "Holaxis-ai", "recipes": ["context-notes"] }
   ]
 }
 ```
 
-`root` is relative to the index location and optional. `files` are relative to `root`, and a
+A cookbook is a named, ordered group of recipes the index lists. `root` is relative to the index
+location and optional. `files` are relative to `root`, and a
 reader fetches exactly those files. `parseRecipeIndex` refuses unknown keys and formats, absolute
 paths, `..`, backslashes, dot entries, duplicates (file paths compare case-insensitively), and
-offerings that name a recipe the index does not list. Its codes are `RECIPE_INDEX_MALFORMED`,
+cookbooks that name a recipe the index does not list or, for a `supported` cookbook, a `community`
+recipe. Its codes are `RECIPE_INDEX_MALFORMED`,
 `RECIPE_INDEX_FORMAT_UNSUPPORTED`, `RECIPE_INDEX_PATH_INVALID`, `RECIPE_INDEX_DUPLICATE` and
-`RECIPE_INDEX_OFFERING_INVALID`.
+`RECIPE_INDEX_COOKBOOK_INVALID`.
+
+Every recipe and cookbook carries a required `designation`, `supported` (maintained by Holaxis) or
+`community`, and a required nonempty `maintainer`, for example a GitHub org or handle. Any other
+designation is refused. A `supported` cookbook may hold only `supported` recipes; a `community`
+cookbook may hold either. The designation is set by whoever controls the published index; for
+superbee-plugins, that is Holaxis maintainers through review. Core does not verify it, it is not a
+security property, and it promises no service level. It exists for discovery. The digests below are
+the only integrity guarantee, and verified results carry the designation and maintainer only so a
+host can display them.
 
 Each recipe carries two pins. `files_digest` is `recipeFilesDigest` of the exact listed files as
 raw bytes. Each file becomes a row `{"digest": "sha256:<hex of its bytes>", "path": <recipe-relative
@@ -116,7 +128,7 @@ dropped), parses, and checks `source_digest`. A difference in either pin is
 `RECIPE_INDEX_DIGEST_MISMATCH`, with `digest` naming the pin that failed, and no recipe is returned.
 Bytes that are not UTF-8 are `RECIPE_INDEX_ENCODING_INVALID`. A reader that throws is
 `RECIPE_INDEX_READ_FAILED`. `parseRecipeIndex` also accepts the index as raw bytes and decodes it
-the same way. `resolveOffering(index, id, read)` verifies every member in order and returns either
+the same way. `resolveCookbook(index, id, read)` verifies every member in order and returns either
 all of them or a refusal naming the failed member, never a partial set.
 
 `files_digest` covers every listed byte, including the manifest's title, summary, offer and prose
