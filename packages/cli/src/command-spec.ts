@@ -789,7 +789,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "workloadExec",
         leaves: [publicLeaf("workloadExec", "workload exec", workloadCommandArity, undefined, { flags: pathFlags({ flag: "request-file", role: "ingress" }) })],
-        usage: "workload exec --request-file <file> --url <HTTPS workspace origin> --workspace <slug> -- <command> [args...]",
+        usage: "workload exec --request-file <file> --url <HTTPS workspace origin> --workspace <slug> [--host <HTTPS gateway origin>] -- <command> [args...]",
         summary: "In GitHub Actions, request or discover exactly the access in a bounded version1 intent file, without Portal config or an app ID; pending approval returns FORBIDDEN (exit 2) with a workspace administrator review link before the child starts; approved access passes a fresh masked bearer only to the child and removes its GitHub OIDC minting environment",
       },
       {

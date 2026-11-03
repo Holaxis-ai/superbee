@@ -18,12 +18,17 @@ import { renderUsage } from "../output.js";
 export const WORKLOAD_EXEC_USAGE = `superbee workload exec — run with exactly the workload access requested
 
 Usage:
-  superbee workload exec --request-file <file> --url <HTTPS workspace origin> --workspace <slug> -- <command> [args...]
+  superbee workload exec --request-file <file> --url <HTTPS workspace origin> --workspace <slug> [--host <HTTPS gateway origin>] -- <command> [args...]
 
 GitHub Actions only: the existing exchange derives identity from the job's signed GitHub token.
 The UTF-8 JSON intent is at most 16 KiB: {version:1,displayName,events,bundles,sites?}. It contains
 only requested capabilities, never repository IDs, workflow refs, environment or credentials.
 No release.config.json, person login, app UUID or copied GitHub variable is required.
+
+Without --host, the workspace pointer must name its own parent-domain gateway. An explicit --host
+selects the receiving gateway after its normal protected-resource and issuer discovery; no pointer
+or environment fallback is used. That selected host receives the signed job token. --url remains
+the exact workspace audience and returned workspace authority; selecting a host grants no access.
 
 Pending approval returns FORBIDDEN (exit 2), details.reason workload_approval_pending and the
 workspace administrator's review URL; no child starts and no bearer is emitted. Run the workflow
@@ -37,7 +42,8 @@ The child exit status is preserved. At most 128 command/argument tokens are acce
 Options:
   --request-file <file>  Required bounded version1 JSON capability intent
   --url <origin>         Required canonical HTTPS workspace origin, no path/query/fragment
-  --workspace <slug>     Required workspace slug matching the origin's discovery
+  --workspace <slug>     Required workspace slug, matched by the hosted exchange
+  --host <origin>        Optional explicit canonical HTTPS receiving gateway, no path/query/fragment
   -h, --help             Show this help`;
 
 export interface WorkloadExecDeps {
@@ -64,6 +70,15 @@ const EVENTS = new Set(["schedule", "repository_dispatch", "workflow_dispatch"])
 const site = (x: unknown): x is string => typeof x === "string" && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(x) && x.length >= 3 && x.length <= 32;
 const usage = (reason: string, message: string) => new CliError("USAGE", message, { details: { reason }, help: `${cliInvocation()} workload exec --help` });
 const unavailable = (reason: string) => new CliError("RUNTIME", "workload access could not be established; no child started", { details: { reason, child_started: false } });
+
+function canonicalHttpsOrigin(value: string, flag: "url" | "host"): URL {
+  const reason = flag === "url" ? "workload_origin_invalid" : "workload_host_invalid";
+  let origin: URL;
+  try { origin = new URL(value); } catch { throw usage(reason, `--${flag} must be one canonical HTTPS origin`); }
+  if (origin.protocol !== "https:" || origin.username || origin.password || origin.port || origin.origin !== value || origin.pathname !== "/")
+    throw usage(reason, `--${flag} must be one canonical HTTPS origin`);
+  return origin;
+}
 
 function intent(value: unknown): WorkloadIntent {
   if (!object(value) || Object.keys(value).some(k => !["version", "displayName", "events", "bundles", "sites"].includes(k)) || value.version !== 1 ||
@@ -126,15 +141,14 @@ export async function workloadExec(argv: string[], partial: Partial<WorkloadExec
     exit: partial.exit ?? (code => { process.exitCode = code; }),
   };
   const { values, positionals } = parseLeafOrUsage(() => parseArgs({ args: argv, strict: true, allowPositionals: true, options: {
-    "request-file": { type: "string" }, url: { type: "string" }, workspace: { type: "string" }, help: { type: "boolean", short: "h" },
+    "request-file": { type: "string" }, url: { type: "string" }, host: { type: "string" }, workspace: { type: "string" }, help: { type: "boolean", short: "h" },
   } }), CLI_LEAVES.workloadExec);
   if (values.help) { deps.stdout(renderUsage(WORKLOAD_EXEC_USAGE)); return; }
   const separator = argv.indexOf("--");
   if (separator < 0 || positionals.length !== argv.length - separator - 1 || !positionals[0] || positionals.some(x => x.includes("\0"))) throw usage("workload_command_invalid", "place the command and its arguments after --");
   if (!values["request-file"] || !values.url || !isWorkspaceSlug(values.workspace)) throw usage("workload_arguments_missing", "--request-file, --url and --workspace are required");
-  let origin: URL;
-  try { origin = new URL(values.url); } catch { throw usage("workload_origin_invalid", "--url must be one canonical HTTPS workspace origin"); }
-  if (origin.protocol !== "https:" || origin.username || origin.password || origin.port || origin.origin !== values.url || origin.pathname !== "/") throw usage("workload_origin_invalid", "--url must be one canonical HTTPS workspace origin");
+  const origin = canonicalHttpsOrigin(values.url, "url");
+  const explicitHost = values.host === undefined ? undefined : canonicalHttpsOrigin(values.host, "host");
   const acquired = await readExternalFileBytesNoFollowWithin(path.resolve(deps.cwd, values["request-file"]), 16 * 1024, deps.home);
   if (acquired.state !== "present") throw usage("workload_request_unreadable", "request file must be an ordinary readable file of at most 16 KiB outside private state");
   let parsed: unknown;
@@ -145,11 +159,16 @@ export async function workloadExec(argv: string[], partial: Partial<WorkloadExec
   let oidcUrl: URL;
   try { oidcUrl = new URL(rawOidcUrl); } catch { throw unavailable("github_oidc_invalid"); }
   if (oidcUrl.protocol !== "https:" || oidcUrl.username || oidcUrl.password || oidcUrl.hash) throw unavailable("github_oidc_invalid");
-  // Discovery carries no credential. A caller-selected origin may point only to its own parent's gateway.
+  // Automatic pointer trust is unchanged; only an explicit CLI flag selects a different receiver.
+  // Neither discovery path carries credentials or changes the workspace's signed audience.
   let selected;
   try {
-    selected = await followWorkspaceOrigin(deps.fetch, resolveHostedTarget(origin.origin));
-    if (!selected || selected.requestedOrigin !== origin.origin || selected.workspaceSlug !== values.workspace) throw unavailable("workspace_discovery_mismatch");
+    if (explicitHost) {
+      selected = { requestedOrigin: origin.origin, workspaceSlug: values.workspace, target: resolveHostedTarget(explicitHost.origin) };
+    } else {
+      selected = await followWorkspaceOrigin(deps.fetch, resolveHostedTarget(origin.origin));
+      if (!selected || selected.requestedOrigin !== origin.origin || selected.workspaceSlug !== values.workspace) throw unavailable("workspace_discovery_mismatch");
+    }
     await discoverHosted(deps.fetch, selected.target);
   } catch { throw unavailable("workspace_discovery_unavailable"); }
   oidcUrl.searchParams.set("audience", selected.requestedOrigin);
