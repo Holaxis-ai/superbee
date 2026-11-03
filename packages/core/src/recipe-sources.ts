@@ -492,8 +492,11 @@ function installTargets(recipe: LoadedRecipe): Map<string, string> {
     prepared = recipe;
   }
   const targets = new Map<string, string>();
+  // Lower-cased like the parser's own duplicate check, since targets differing only by case are one
+  // file on a case-insensitive filesystem.
   const add = (key: string, id: string): void => {
-    if (!targets.has(key)) targets.set(key, id);
+    const folded = key.toLowerCase();
+    if (!targets.has(folded)) targets.set(folded, id);
   };
   for (const doc of prepared.docs) add(doc.id, doc.id);
   for (const page of prepared.pages) {

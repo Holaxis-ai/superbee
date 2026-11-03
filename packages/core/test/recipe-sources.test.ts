@@ -491,3 +491,19 @@ test("builtinRecipeSource addresses built-in names only", async () => {
   const result = await source.resolve("context-notes");
   assert.ok(result?.ok);
 });
+
+test("cookbook conflict: targets that differ only by case collide", async () => {
+  const { entries, read } = customTree([
+    { id: "upper", files: viewRecipe("upper", "Alpha", "views-registry/Board", "views/Board.html") },
+    { id: "lower", files: viewRecipe("lower", "Beta", "views-registry/board", "views/board.html") },
+  ]);
+  const cookbooks = [{ id: "cb", title: "t", summary: "s", ...HOLAXIS, recipes: ["upper", "lower"] }];
+  const result = await resolveCookbook(indexOf("alpha", entries, cookbooks), "cb", read);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "RECIPE_INDEX_COOKBOOK_CONFLICT");
+  assert.deepEqual(result.error.conflict, {
+    recipes: ["upper", "lower"],
+    ids: ["views-registry/Board", "views-registry/board", "views/Board.html", "views/board.html"],
+  });
+});
