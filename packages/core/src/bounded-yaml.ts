@@ -50,7 +50,9 @@ function tooLarge(): FrontmatterLimitError {
 }
 
 function scalarExtent(value: unknown): Extent {
-  return { nodes: 1, chars: typeof value === "string" ? value.length : 0, depth: 0 };
+  // Binary scalars serialize at least one character per byte, so they count against the same cap.
+  const chars = typeof value === "string" ? value.length : ArrayBuffer.isView(value) ? value.byteLength : 0;
+  return { nodes: 1, chars, depth: 0 };
 }
 
 function isCollection(value: unknown): value is object {

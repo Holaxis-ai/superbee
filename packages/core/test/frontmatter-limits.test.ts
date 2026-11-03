@@ -79,6 +79,17 @@ test("aliases to a long scalar are refused past the expanded character cap", () 
   for (const [name, load] of loadSites) assert.equal((load(fewer).list as unknown[]).length, 100, name);
 });
 
+test("aliases to a binary scalar count against the expanded character cap", () => {
+  const bytes = 1000;
+  const uses = Math.floor(FRONTMATTER_LIMITS.expandedChars / bytes) + 1;
+  assert.ok(uses <= FRONTMATTER_LIMITS.aliases);
+  const encoded = Buffer.alloc(bytes, 7).toString("base64");
+  const source = `b: &b !!binary ${encoded}\nlist: [${Array(uses).fill("*b").join(",")}]`;
+  for (const [name, load] of loadSites) {
+    within(1000, name, () => assert.throws(() => load(source), refusedWith("FRONTMATTER_ALIAS_LIMIT"), name));
+  }
+});
+
 test("aliases used inside mapping keys are charged while parsing", () => {
   const size = 200;
   const uses = Math.floor(FRONTMATTER_LIMITS.expandedNodes / size) + 1;
