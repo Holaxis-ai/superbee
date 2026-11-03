@@ -478,6 +478,7 @@ async function verifiedFromIndex(raw: string, ref: string, cookbook: boolean, ta
         index_source: index.source,
         ...(member ? { recipe: member } : {}),
         ...(error.digest ? { digest: error.digest } : {}),
+        ...(error.conflict ? { conflict: error.conflict } : {}),
         ...(error.connector ? { connector: error.connector } : {}),
         ...(error.code === "RECIPE_NOT_FOUND"
           ? { available: { [cookbook ? "cookbooks" : "recipes"]: ids.slice(0, INDEX_IDS_SHOWN), shown: Math.min(ids.length, INDEX_IDS_SHOWN), total: ids.length } }

@@ -265,8 +265,9 @@ cookbook is verified whole before its first write. Refusals keep the taxonomy, w
 `details.reason`: a digest mismatch is `INTEGRITY_MISMATCH` (exit 1) and names the failed pin in
 `details.digest` (`files_digest` or `source_digest`); a timeout, a network failure, an HTTP 5xx or the
 deadline is `TRANSIENT` (exit 1); a missing file, an HTTP 4xx, an escape, a budget overrun, invalid
-UTF-8 (`RECIPE_INDEX_ENCODING_INVALID`) and index format, path and lookup refusals are `USAGE`
-(exit 2). An unknown id's `help` is one runnable `recipe add` for the first listed id, and
+UTF-8 (`RECIPE_INDEX_ENCODING_INVALID`), a cookbook whose members install the same target
+(`RECIPE_INDEX_COOKBOOK_CONFLICT`, with `details.conflict` naming both members and the shared ids)
+and index format, path and lookup refusals are `USAGE` (exit 2). An unknown id's `help` is one runnable `recipe add` for the first listed id, and
 `details.available` lists up to ten ids with `shown` and `total`. A single-recipe receipt adds
 `source_digest`, `designation`, `maintainer` and `index` (`source`, `location`) to the existing
 receipt. A cookbook receipt is `cookbook`, `title`, `designation`, `maintainer`, `changed`, `index`,

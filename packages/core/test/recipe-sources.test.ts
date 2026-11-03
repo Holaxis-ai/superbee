@@ -3,6 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { builtinRecipeFiles, builtinRecipeSource, loadBuiltinRecipe } from "../src/builtin-recipes.js";
 import { recipeSourceDigest } from "../src/recipe-lifecycle/stamp.js";
+import { parseRecipeFiles } from "../src/recipes.js";
 import {
   RECIPE_INDEX_FORMAT,
   createIndexRecipeSource,
@@ -345,6 +346,44 @@ test("resolveCookbook verifies every member in order and returns nothing when on
 
   const unknown = await resolveCookbook(indexOf("alpha", tree.entries, cookbooks), "nope", tree.read);
   assert.equal(unknown.ok ? "" : unknown.error.code, "RECIPE_NOT_FOUND");
+});
+
+/** A served variant of context-notes under a new id, with `change` applied to its convention body. */
+function variantTree(change: (body: string) => string) {
+  const tree = servedTree((n) => `r/${n}`, ["context-notes", "work-tracking"]);
+  const files = builtinRecipeFiles("context-notes")!.map((file) => ({
+    path: file.path,
+    bytes: file.path === "recipe.md"
+      ? file.bytes.replace("id: context-notes", "id: cn-alt").replace("title: Context Notes", "title: CN Alt")
+      : change(file.bytes),
+  }));
+  for (const file of files) tree.files.set(`r/cn-alt/${file.path}`, file.bytes);
+  const parsed = parseRecipeFiles(files, "test", { okfVersion: "0.2" });
+  assert.ok(parsed.ok);
+  const entry = { id: "cn-alt", version: "1", ...HOLAXIS, source_digest: recipeSourceDigest(parsed.recipe), files_digest: pin(files), root: "r/cn-alt", files: files.map((file) => file.path) };
+  return { tree, entries: [...tree.entries, entry] };
+}
+
+test("resolveCookbook refuses two members that install the same document, differing or identical", async () => {
+  for (const [what, change] of [
+    ["different definitions", (body: string) => body.replace("24h", "48h")],
+    ["byte-identical definitions", (body: string) => body],
+  ] as const) {
+    const { tree, entries } = variantTree(change);
+    const cookbooks = [{ id: "cb", title: "t", summary: "s", ...HOLAXIS, recipes: ["context-notes", "cn-alt"] }];
+    const result = await resolveCookbook(indexOf("alpha", entries, cookbooks), "cb", tree.read);
+    assert.equal(result.ok, false, what);
+    if (result.ok) continue;
+    assert.equal(result.error.code, "RECIPE_INDEX_COOKBOOK_CONFLICT", what);
+    assert.deepEqual(result.error.conflict, { recipes: ["context-notes", "cn-alt"], ids: ["conventions/context-note"] }, what);
+    assert.match(result.error.message, /'conventions\/context-note' from both 'context-notes' and 'cn-alt'/, what);
+    assert.equal("recipes" in result, false, what);
+  }
+
+  // Members with disjoint targets still resolve.
+  const { tree, entries } = variantTree((body) => body);
+  const disjoint = [{ id: "ok", title: "t", summary: "s", ...HOLAXIS, recipes: ["cn-alt", "work-tracking"] }];
+  assert.ok((await resolveCookbook(indexOf("alpha", entries, disjoint), "ok", tree.read)).ok);
 });
 
 // ── Source contract ───────────────────────────────────────────────────────────────────────────

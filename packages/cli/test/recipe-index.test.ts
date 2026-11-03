@@ -542,3 +542,48 @@ test("a supported cookbook naming a community recipe, or a missing designation, 
     assert.deepEqual(await snapshot(bundle), before);
   });
 });
+
+// ── Cookbook members that install the same target ─────────────────────────────────────────────
+
+test("a cookbook whose members install the same convention is refused before any write (QA P15 shape)", async () => {
+  await withScratch(async (root) => {
+    const { parseRecipeFiles } = await import("@superbee/core/recipes");
+    for (const [what, change] of [
+      ["different definitions", (bytes: string) => bytes.replace("24h", "48h")],
+      ["byte-identical definitions", (bytes: string) => bytes],
+    ] as const) {
+      const dir = path.join(root, what.replace(/\W+/g, "-"));
+      const index = await writeIndex(dir, "alpha", "alpha", (name) => `recipes/${name}`, ["context-notes"], []);
+      const variant = builtinRecipeFiles("context-notes")!.map((file) => ({
+        path: file.path,
+        bytes: file.path === "recipe.md"
+          ? file.bytes.replace("id: context-notes", "id: cn-alt").replace("title: Context Notes", "title: CN Alt")
+          : change(file.bytes),
+      }));
+      for (const file of variant) {
+        const target = path.join(dir, "alpha/recipes/cn-alt", file.path);
+        await mkdir(path.dirname(target), { recursive: true });
+        await writeFile(target, file.bytes);
+      }
+      const parsed = parseRecipeFiles(variant, "test", { okfVersion: "0.2" });
+      assert.ok(parsed.ok);
+      const json = JSON.parse(await readFile(index, "utf8"));
+      json.recipes.push({ id: "cn-alt", version: "1", ...HOLAXIS, source_digest: recipeSourceDigest(parsed.recipe), files_digest: pin(variant), root: "recipes/cn-alt", files: variant.map((file) => file.path) });
+      json.cookbooks = [{ id: "cb", title: "t", summary: "s", ...HOLAXIS, recipes: ["context-notes", "cn-alt"] }];
+      await writeFile(index, JSON.stringify(json));
+
+      const bundle = path.join(dir, "bundle");
+      await initBundle(bundle);
+      const before = await snapshot(bundle);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const error = await refusal(["add", "cb", "--cookbook", "--index", index, "--dir", bundle]);
+        assert.equal(error.code, "USAGE", what);
+        assert.equal(error.details?.reason, "RECIPE_INDEX_COOKBOOK_CONFLICT", what);
+        assert.deepEqual(error.details?.conflict, { recipes: ["context-notes", "cn-alt"], ids: ["conventions/context-note"] }, what);
+        assert.deepEqual(await snapshot(bundle), before, what);
+      }
+      // Each member alone still installs.
+      assert.equal((await run(["add", "cn-alt", "--index", index, "--dir", bundle])).recipe, "added");
+    }
+  });
+});

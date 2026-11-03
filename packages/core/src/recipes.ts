@@ -99,6 +99,7 @@ export type RecipeIndexErrorCode =
   | "RECIPE_INDEX_PATH_INVALID"
   | "RECIPE_INDEX_DUPLICATE"
   | "RECIPE_INDEX_COOKBOOK_INVALID"
+  | "RECIPE_INDEX_COOKBOOK_CONFLICT"
   | "RECIPE_INDEX_READ_FAILED"
   | "RECIPE_INDEX_ENCODING_INVALID"
   | "RECIPE_INDEX_DIGEST_MISMATCH";
@@ -110,6 +111,8 @@ export interface RecipeError {
   connector?: { id: string; code: ConnectorErrorCode; path: string; count: number };
   /** `RECIPE_INDEX_DIGEST_MISMATCH`: which pin the recipe failed. */
   digest?: "files_digest" | "source_digest";
+  /** `RECIPE_INDEX_COOKBOOK_CONFLICT`: the first two members that write the same targets, and those targets. */
+  conflict?: { recipes: [string, string]; ids: string[] };
 }
 
 /** The connectors a recipe carries; empty when its manifest declares none. */

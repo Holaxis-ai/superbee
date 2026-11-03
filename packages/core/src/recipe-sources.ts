@@ -440,7 +440,8 @@ export type CookbookResult =
 
 /**
  * Resolves and verifies every member of a cookbook, in order. One failed member fails the whole
- * cookbook and nothing is returned, so a caller can verify the full set before writing anything.
+ * cookbook and nothing is returned, so a caller can verify the full set before writing anything. Two
+ * members that install the same target are `RECIPE_INDEX_COOKBOOK_CONFLICT`.
  */
 export async function resolveCookbook(index: RecipeIndex, cookbookId: string, read: RecipeIndexReader): Promise<CookbookResult> {
   const cookbook = index.cookbooks.find((candidate) => candidate.id === cookbookId);
@@ -453,5 +454,47 @@ export async function resolveCookbook(index: RecipeIndex, cookbookId: string, re
     if (!result.ok) return { ok: false, error: result.error, recipe: member };
     recipes.push(result.verified);
   }
+  const conflict = firstSharedTargets(recipes);
+  if (conflict) {
+    return {
+      ok: false,
+      error: {
+        code: "RECIPE_INDEX_COOKBOOK_CONFLICT",
+        message:
+          `cookbook '${cookbook.id}' installs ${conflict.ids.map((id) => `'${id}'`).join(", ")} from both ` +
+          `'${conflict.recipes[0]}' and '${conflict.recipes[1]}'; create-only installs would keep the first and never converge on the second`,
+        conflict,
+      },
+      recipe: conflict.recipes[1],
+    };
+  }
   return { ok: true, cookbook, recipes };
+}
+
+/**
+ * Every document id and View entry key a recipe installs. Install is create-only per target, so two
+ * members writing one target cannot both land; identical bytes count too, since ownership would
+ * still go to whichever member wrote first.
+ */
+function installTargets(recipe: LoadedRecipe): string[] {
+  return [
+    ...recipe.docs.map((doc) => doc.id),
+    ...recipe.pages.flatMap((page) => [page.registry.id, `blob:${page.entry}`]),
+    ...recipe.references.map((reference) => reference.doc.id),
+    ...(recipe.connectors ?? []).map((connector) => connector.doc.id),
+  ];
+}
+
+function firstSharedTargets(recipes: readonly VerifiedIndexRecipe[]): { recipes: [string, string]; ids: string[] } | null {
+  const owners = new Map<string, string>();
+  for (const { recipe } of recipes) {
+    const targets = [...new Set(installTargets(recipe))];
+    const clash = targets.filter((target) => owners.has(target));
+    if (clash.length > 0) {
+      const first = owners.get(clash[0]!)!;
+      return { recipes: [first, recipe.id], ids: clash.filter((target) => owners.get(target) === first).sort() };
+    }
+    for (const target of targets) owners.set(target, recipe.id);
+  }
+  return null;
 }
