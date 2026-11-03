@@ -101,25 +101,28 @@ offerings that name a recipe the index does not list. Its codes are `RECIPE_INDE
 `RECIPE_INDEX_FORMAT_UNSUPPORTED`, `RECIPE_INDEX_PATH_INVALID`, `RECIPE_INDEX_DUPLICATE` and
 `RECIPE_INDEX_OFFERING_INVALID`.
 
-Each recipe carries two pins. `files_digest` is `recipeFilesDigest` of the exact listed files:
-`sha256:` and the hex SHA-256 of the UTF-8 JSON array of `{"bytes": ..., "path": ...}` objects
-(keys in that order, `path` recipe-relative), sorted by path in code-unit order. JSON string
-quoting delimits every path and body, so concatenation cannot collide, and listing order does not
-matter. This is the same encoding the CLI uses to pin source plugin bytes. `source_digest` is
+Each recipe carries two pins. `files_digest` is `recipeFilesDigest` of the exact listed files as
+raw bytes. Each file becomes a row `{"digest": "sha256:<hex of its bytes>", "path": <recipe-relative
+path>}`, the row shape the CLI reports for source plugin files. The rows are sorted by path in
+code-unit order, and `files_digest` is `sha256:` and the hex SHA-256 of the UTF-8 JSON array of rows,
+keys in that order. Every file is hashed to a fixed length and JSON quoting delimits every path, so
+concatenation cannot collide, and listing order does not matter. `source_digest` is
 `recipeSourceDigest` of the parsed recipe, the value install stamps record.
 
 `resolveIndexRecipe(index, id, read)` and `createIndexRecipeSource(index, read)` take a
-host-supplied async reader. Core reads the listed files through it and checks `files_digest` on the
-raw bytes before parsing, then `source_digest` after parsing. Either difference is
+host-supplied async reader that returns raw bytes (`Uint8Array`) and never decodes. Core checks
+`files_digest` on those bytes, then decodes each file once as strict UTF-8 (one leading BOM is
+dropped), parses, and checks `source_digest`. A difference in either pin is
 `RECIPE_INDEX_DIGEST_MISMATCH`, with `digest` naming the pin that failed, and no recipe is returned.
-A reader that throws is `RECIPE_INDEX_READ_FAILED`. `resolveOffering(index, id, read)` verifies
-every member in order and returns either all of them or a refusal naming the failed member, never a
-partial set.
+Bytes that are not UTF-8 are `RECIPE_INDEX_ENCODING_INVALID`. A reader that throws is
+`RECIPE_INDEX_READ_FAILED`. `parseRecipeIndex` also accepts the index as raw bytes and decodes it
+the same way. `resolveOffering(index, id, read)` verifies every member in order and returns either
+all of them or a refusal naming the failed member, never a partial set.
 
 `files_digest` covers every listed byte, including the manifest's title, summary, offer and prose
 and any listed README. `source_digest` covers what install writes. Neither authenticates a
 publisher. Bound the reader's sizes and times in the host, and keep local reads inside the index
-directory.
+directory. Path segments may not start or end with `.`.
 
 ## Deprecating declarations
 

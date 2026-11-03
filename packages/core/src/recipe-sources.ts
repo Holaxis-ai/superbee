@@ -11,6 +11,7 @@
  * every recipe against its pin through a reader the host supplies. It performs no I/O of its own.
  */
 import { recipeSourceDigest } from "./recipe-lifecycle/stamp.js";
+import { sha256HexOfBytes } from "./sha256.js";
 import { sha256Hex } from "./versioning.js";
 import {
   parseRecipeFiles,
@@ -102,10 +103,17 @@ export interface RecipeIndexError {
 export type RecipeIndexParseResult = { ok: true; index: RecipeIndex } | { ok: false; error: RecipeIndexError };
 
 /**
- * Reads one file named by the index, relative to the index location, as UTF-8 text. The host owns
- * transport, size and time bounds; a throw becomes `RECIPE_INDEX_READ_FAILED`.
+ * Reads one file named by the index, relative to the index location, as raw bytes. Readers never
+ * decode: Core pins and decodes the bytes itself, so every transport yields the same result. The host
+ * owns transport, size and time bounds; a throw becomes `RECIPE_INDEX_READ_FAILED`.
  */
-export type RecipeIndexReader = (path: string) => Promise<string>;
+export type RecipeIndexReader = (path: string) => Promise<Uint8Array>;
+
+/** One file as fetched, before decoding: a recipe-relative path and its exact bytes. */
+export interface RecipeIndexFileBytes {
+  path: string;
+  bytes: Uint8Array;
+}
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -162,8 +170,9 @@ function relativePath(value: unknown, where: string): string {
   if (value.startsWith("/") || /^[A-Za-z]:/.test(value)) refuse("RECIPE_INDEX_PATH_INVALID", `${where} '${value}' is absolute`);
   const segments = value.split("/");
   if (segments.some((segment) => segment === "..")) refuse("RECIPE_INDEX_PATH_INVALID", `${where} '${value}' escapes its root with '..'`);
-  if (segments.length > 16 || !segments.every((segment) => SEGMENT.test(segment))) {
-    refuse("RECIPE_INDEX_PATH_INVALID", `${where} '${value}' must be plain segments of letters, digits, '.', '_' or '-', none starting with '.'`);
+  // A trailing dot is dropped by Windows path normalization, so `a.` and `a` would alias one file.
+  if (segments.length > 16 || !segments.every((segment) => SEGMENT.test(segment) && !segment.endsWith("."))) {
+    refuse("RECIPE_INDEX_PATH_INVALID", `${where} '${value}' must be plain segments of letters, digits, '.', '_' or '-', none starting or ending with '.'`);
   }
   return value;
 }
@@ -220,16 +229,33 @@ function parseOffering(value: unknown, where: string, recipeIds: ReadonlySet<str
   return Object.freeze({ id: offeringId, title, summary, recipes: Object.freeze(members) });
 }
 
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
+
+/** Strict UTF-8, with one leading BOM dropped; null when the bytes are not UTF-8. */
+function decodeUtf8(bytes: Uint8Array): string | null {
+  try {
+    return STRICT_UTF8.decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Strict parse of a `recipe-index/v1` document. Accepts the JSON text or an already parsed value;
- * unknown keys, unknown formats and unsafe paths refuse rather than being ignored.
+ * Strict parse of a `recipe-index/v1` document. Accepts raw bytes (decoded as strict UTF-8), JSON
+ * text, or an already parsed value; unknown keys, unknown formats and unsafe paths refuse rather than
+ * being ignored.
  */
 export function parseRecipeIndex(input: unknown): RecipeIndexParseResult {
   try {
     let value = input;
-    if (typeof input === "string") {
+    if (input instanceof Uint8Array) {
+      const decoded = decodeUtf8(input);
+      if (decoded === null) refuse("RECIPE_INDEX_ENCODING_INVALID", "the recipe index is not valid UTF-8");
+      value = decoded;
+    }
+    if (typeof value === "string") {
       try {
-        value = JSON.parse(input);
+        value = JSON.parse(value);
       } catch {
         refuse("RECIPE_INDEX_MALFORMED", "the recipe index is not valid JSON");
       }
@@ -274,14 +300,17 @@ export function parseRecipeIndex(input: unknown): RecipeIndexParseResult {
 }
 
 /**
- * Byte digest of a recipe's files: `sha256:` and the hex SHA-256 of the UTF-8 JSON array of
- * `{"bytes","path"}` objects sorted by path in code-unit order. JSON string quoting delimits every
- * path and body, so no two file sets share an encoding. This is the encoding the CLI already uses to
- * pin source plugin bytes (`sourceDigest` over sorted plugin files), reproduced without node:crypto.
+ * Byte digest of a recipe's files. Each file becomes a row `{digest, path}`, where `digest` is
+ * `sha256:` and the hex SHA-256 of its exact bytes (the row shape the CLI reports for source plugin
+ * files). Rows are sorted by path in code-unit order; the digest is `sha256:` and the hex SHA-256 of
+ * the UTF-8 JSON array of rows with keys in that order. JSON string quoting delimits every path, and
+ * each file is fixed-length hashed first, so no two file sets share an encoding.
  */
-export function recipeFilesDigest(files: readonly RecipeFile[]): string {
-  const sorted = [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  return `sha256:${sha256Hex(JSON.stringify(sorted.map((file) => ({ bytes: file.bytes, path: file.path }))))}`;
+export function recipeFilesDigest(files: readonly RecipeIndexFileBytes[]): string {
+  const rows = files
+    .map((file) => ({ digest: `sha256:${sha256HexOfBytes(file.bytes)}`, path: file.path }))
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return `sha256:${sha256Hex(JSON.stringify(rows))}`;
 }
 
 /** A recipe whose bytes and parsed content matched both pins. */
@@ -301,10 +330,10 @@ export async function resolveIndexRecipe(index: RecipeIndex, recipeId: string, r
   if (!entry) {
     return { ok: false, error: { code: "RECIPE_NOT_FOUND", message: `index '${index.source}' lists no recipe '${recipeId}'` } };
   }
-  const files: RecipeFile[] = [];
+  const raw: RecipeIndexFileBytes[] = [];
   for (const file of entry.files) {
     const location = entry.root === undefined ? file : `${entry.root}/${file}`;
-    let bytes: string;
+    let bytes: Uint8Array;
     try {
       bytes = await read(location);
     } catch (error) {
@@ -314,10 +343,10 @@ export async function resolveIndexRecipe(index: RecipeIndex, recipeId: string, r
         error: { code: "RECIPE_INDEX_READ_FAILED", message: `could not read '${location}' for recipe '${entry.id}' from index '${index.source}': ${reason}` },
       };
     }
-    if (typeof bytes !== "string") {
-      return { ok: false, error: { code: "RECIPE_INDEX_READ_FAILED", message: `the reader returned no text for '${location}'` } };
+    if (!(bytes instanceof Uint8Array)) {
+      return { ok: false, error: { code: "RECIPE_INDEX_READ_FAILED", message: `the reader returned no bytes for '${location}'` } };
     }
-    files.push({ path: file, bytes });
+    raw.push({ path: file, bytes });
   }
   const mismatch = (digest: "files_digest" | "source_digest", detail: string): IndexRecipeResult => ({
     ok: false,
@@ -328,8 +357,19 @@ export async function resolveIndexRecipe(index: RecipeIndex, recipeId: string, r
     },
   });
   // Bytes first: nothing unpinned reaches the parser.
-  const filesDigest = recipeFilesDigest(files);
+  const filesDigest = recipeFilesDigest(raw);
   if (filesDigest !== entry.files_digest) return mismatch("files_digest", `expected ${entry.files_digest}, computed ${filesDigest}`);
+  const files: RecipeFile[] = [];
+  for (const file of raw) {
+    const decoded = decodeUtf8(file.bytes);
+    if (decoded === null) {
+      return {
+        ok: false,
+        error: { code: "RECIPE_INDEX_ENCODING_INVALID", message: `recipe '${entry.id}' from index '${index.source}' has '${file.path}', which is not valid UTF-8` },
+      };
+    }
+    files.push({ path: file.path, bytes: decoded });
+  }
   let parsed: LoadResult;
   try {
     parsed = parseRecipeFiles(files, `index:${index.source}`, { okfVersion: "0.2" });

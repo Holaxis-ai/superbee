@@ -27,7 +27,7 @@ import { cliInvocation, exactCliInvocation } from "../invocation.js";
 import { applyRecipeEvolution, installRecipe, planRecipeEvolution, planRecipeDeclarationRetirement, planRecipeDeclarationRetirementApply, applyRecipeDeclarationRetirement, RecipeRetirementApplyError } from "@superbee/core/recipe-lifecycle";
 import { resolveRecipe, type LoadedRecipe, type RecipeError } from "../recipe-source.js";
 import { resolveIndexRecipe, resolveOffering, type VerifiedIndexRecipe } from "@superbee/core/recipe-sources";
-import { acquireRecipeIndex, type FetchLike } from "../recipe-source-index.js";
+import { acquireRecipeIndex, type FetchLike, type RecipeIndexLimits } from "../recipe-source-index.js";
 import { assertRecipeAllowedInHostedCheckout } from "../hosted/refusals.js";
 import { commandFragment, commandLiteral, commandQuoted, commandToken, type CommandText } from "../command-text.js";
 
@@ -63,14 +63,16 @@ list built-ins and which are already applied, and 'superbee kinds' for the resul
 per-bundle registry.
 
 With --index, <recipe-or-offering-id> names an entry in a published 'recipe-index/v1' JSON index,
-read from a local path or an https: URL (other schemes, redirects, oversize files and slow
-answers are refused). The index pins each recipe to its source_digest, the value recipe stamps
-record. The CLI reads exactly the files the index lists for that recipe and refuses any
-difference from the pin before anything reaches the bundle. --offering installs every recipe an
-offering names, in order, after verifying all of them; one failed member means nothing is
-written. Installs stay create-only and idempotent per document, so if a write fails partway,
-rerunning the same command converges. The receipt names the index source, and each recipe's id,
-version and verified source_digest. Nothing about the index is saved; pass --index each time.
+read from a local path or an https: URL. Other schemes, URLs with credentials, redirects, files
+outside the index directory, oversize files and slow answers are refused; one command reads at
+most 16 MiB within 60 s. The index pins each recipe twice: files_digest over the exact listed
+bytes and source_digest, the value recipe stamps record. The CLI reads exactly the files the index
+lists for that recipe and refuses any difference from either pin before anything reaches the
+bundle. --offering installs every recipe an offering names, in order, after verifying all of
+them; one failed member means nothing is written. Installs stay create-only and idempotent per
+document, so if a write fails partway, rerunning the same command converges. The receipt names
+the index source, and each recipe's id, version and verified source_digest. Nothing about the
+index is saved; pass --index each time.
 
 Valid deprecated fields/values/links metadata can be added only with an unchanged same-recipe
 ownership baseline. Existing records stay readable; admitted-registry writes preserve/remove
@@ -134,6 +136,8 @@ export interface RecipeCliDeps {
   stdout: (s: string) => void;
   /** HTTPS transport for `recipe add --index <url>`; tests inject one so nothing reaches the network. */
   fetch: FetchLike;
+  /** Overrides of the acquisition bounds, for tests of the deadline and the byte budget. */
+  indexLimits: Partial<RecipeIndexLimits>;
 }
 
 export async function recipe(argv: string[], deps: Partial<RecipeCliDeps> = {}): Promise<void> {
@@ -142,7 +146,7 @@ export async function recipe(argv: string[], deps: Partial<RecipeCliDeps> = {}):
   const rest = argv.slice(1);
 
   if (sub === "validate") return recipeValidate(rest, { stdout });
-  if (sub === "add") return recipeAdd(rest, stdout, deps.fetch);
+  if (sub === "add") return recipeAdd(rest, stdout, { ...(deps.fetch ? { fetch: deps.fetch } : {}), ...(deps.indexLimits ? { limits: deps.indexLimits } : {}) });
   if (sub === "evolve") return recipeEvolve(rest, stdout);
   if (sub === "-h" || sub === "--help" || sub === undefined) {
     stdout(renderUsage(RECIPE_USAGE));
@@ -300,7 +304,7 @@ const RETIREMENT_WRITER_SCOPE = "Exact-root cooperating local writers only; raw 
 
 const ORPHANED_HELP = "orphaned_definitions are retained documents stamped by this recipe that the selected source no longer declares; evolve never changes or removes them, and a zero-write plan does not resolve them; inspect them before deciding whether to keep or remove them";
 
-async function recipeAdd(argv: string[], stdout: (s: string) => void, fetchImpl?: FetchLike): Promise<void> {
+async function recipeAdd(argv: string[], stdout: (s: string) => void, indexDeps: IndexDeps = {}): Promise<void> {
   const { values, positionals } = parseLeafOrUsage(
     () =>
       parseArgs({
@@ -337,8 +341,13 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void, fetchImpl?
   }
 
   const actor = resolveActor(values.actor);
+  const requestedTarget: CommandText = values.dir !== undefined
+    ? commandFragment` --dir ${commandQuoted(values.dir)}`
+    : values.remote !== undefined
+      ? commandFragment` --remote ${commandQuoted(values.remote)}`
+      : commandLiteral("");
   const indexed = values.index !== undefined
-    ? await verifiedFromIndex(values.index, ref, values.offering === true, fetchImpl)
+    ? await verifiedFromIndex(values.index, ref, values.offering === true, requestedTarget, indexDeps)
     : undefined;
   let recipes: LoadedRecipe[];
   if (indexed) {
@@ -422,9 +431,17 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void, fetchImpl?
   stdout(render(receipt, resolveMode(values)));
 }
 
-const OFFERING_INSTALL_NOTE = "every member was verified against its pinned source_digest before the first write; installs are create-only and idempotent per document, so rerunning this command after a partial failure converges";
+const OFFERING_INSTALL_NOTE = "every member was verified against its pinned files_digest and source_digest before the first write; installs are create-only and idempotent per document, so rerunning this command after a partial failure converges";
 
 const INDEX_EVOLUTION_HELP = "installed definitions differ from this index's recipe; recipe evolve does not read --index, so run it against a local copy of the recipe folder to plan the upgrade";
+
+interface IndexDeps {
+  fetch?: FetchLike;
+  limits?: Partial<RecipeIndexLimits>;
+}
+
+/** How many ids a not-found refusal lists before it counts the rest. */
+const INDEX_IDS_SHOWN = 10;
 
 interface IndexedRecipes {
   source: string;
@@ -434,15 +451,18 @@ interface IndexedRecipes {
 }
 
 /** Acquires the index and verifies the named recipe, or every member of the named offering, before any bundle access. */
-async function verifiedFromIndex(raw: string, ref: string, offering: boolean, fetchImpl: FetchLike | undefined): Promise<IndexedRecipes> {
-  const acquired = await acquireRecipeIndex(raw, fetchImpl ? { fetch: fetchImpl } : {});
+async function verifiedFromIndex(raw: string, ref: string, offering: boolean, target: CommandText, deps: IndexDeps): Promise<IndexedRecipes> {
+  const acquired = await acquireRecipeIndex(raw, deps);
   const { index } = acquired;
   const fail = (error: RecipeError, member?: string): never => {
     const boundary = acquired.boundaryRefusal();
     if (boundary) throw boundary;
+    // A missing file or an HTTP 4xx is the publisher's error and does not change on retry.
     const cliCode = error.code === "RECIPE_INDEX_DIGEST_MISMATCH"
       ? "INTEGRITY_MISMATCH"
-      : error.code === "RECIPE_INDEX_READ_FAILED" ? "TRANSIENT" : "USAGE";
+      : error.code === "RECIPE_INDEX_READ_FAILED" && acquired.lastFailure()?.kind !== "publisher" ? "TRANSIENT" : "USAGE";
+    const ids = (offering ? index.offerings : index.recipes).map((entry) => entry.id);
+    const first = ids[0];
     throw new CliError(cliCode, error.message, {
       details: {
         reason: error.code,
@@ -450,9 +470,12 @@ async function verifiedFromIndex(raw: string, ref: string, offering: boolean, fe
         ...(member ? { recipe: member } : {}),
         ...(error.digest ? { digest: error.digest } : {}),
         ...(error.connector ? { connector: error.connector } : {}),
+        ...(error.code === "RECIPE_NOT_FOUND"
+          ? { available: { [offering ? "offerings" : "recipes"]: ids.slice(0, INDEX_IDS_SHOWN), shown: Math.min(ids.length, INDEX_IDS_SHOWN), total: ids.length } }
+          : {}),
       },
-      help: error.code === "RECIPE_NOT_FOUND"
-        ? `${index.source} lists recipes ${index.recipes.map((entry) => entry.id).join(", ") || "(none)"} and offerings ${index.offerings.map((entry) => entry.id).join(", ") || "(none)"}`
+      help: error.code === "RECIPE_NOT_FOUND" && first !== undefined
+        ? `${cliInvocation()} recipe add ${commandQuoted(first)} --index ${commandQuoted(raw)}${offering ? commandLiteral(" --offering") : commandLiteral("")}${target}`
         : `${cliInvocation()} recipe add --help`,
     });
   };

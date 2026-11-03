@@ -254,15 +254,20 @@ Connector rows in `packages/cli/test/hosted-definition-writes.test.ts` and
 
 `recipe add <id> --index <path-or-https-url>` installs a recipe listed in a published
 `recipe-index/v1` index, and `--offering` installs every recipe an offering names. Without
-`--index`, `recipe add` is unchanged. The CLI reads a local path through the guarded ingress read or
-fetches an https: URL with redirects refused and bounded size and time; any other scheme is `USAGE`
-with `details.reason` `RECIPE_INDEX_SCHEME_REFUSED`. Core verifies each recipe against its pinned
-`files_digest` and `source_digest` before the bundle is opened, and an offering is verified whole before its first
-write. Refusals keep the taxonomy: a digest mismatch is `INTEGRITY_MISMATCH` (exit 1), an
-unreadable file or index URL is `TRANSIENT` (exit 1), and index format, path and lookup refusals are
-`USAGE` (exit 2), each with the Core code in `details.reason`; a digest mismatch also names the
-failed pin in `details.digest` (`files_digest` or `source_digest`). A local file whose real path
-leaves the index directory is refused as unreadable. A single-recipe receipt adds
+`--index`, `recipe add` is unchanged. The CLI reads raw bytes from a local path through the guarded
+ingress read, refusing a listed file whose real path leaves the index directory, or from an https:
+URL with redirects refused. Each read has its own size and time cap, and one command has one 60 s
+deadline and one 16 MiB byte budget across the index and every file. Any other scheme, and an https:
+URL carrying a username or password, is `USAGE` with `details.reason` `RECIPE_INDEX_SCHEME_REFUSED`
+before any request; credentials are never echoed. Core verifies each recipe against its pinned
+`files_digest` and `source_digest` and decodes it as strict UTF-8 before the bundle is opened, and an
+offering is verified whole before its first write. Refusals keep the taxonomy, with the Core code in
+`details.reason`: a digest mismatch is `INTEGRITY_MISMATCH` (exit 1) and names the failed pin in
+`details.digest` (`files_digest` or `source_digest`); a timeout, a network failure, an HTTP 5xx or the
+deadline is `TRANSIENT` (exit 1); a missing file, an HTTP 4xx, an escape, a budget overrun, invalid
+UTF-8 (`RECIPE_INDEX_ENCODING_INVALID`) and index format, path and lookup refusals are `USAGE`
+(exit 2). An unknown id's `help` is one runnable `recipe add` for the first listed id, and
+`details.available` lists up to ten ids with `shown` and `total`. A single-recipe receipt adds
 `source_digest` and `index` (`source`, `location`) to the existing receipt. An offering receipt is
 `offering`, `title`, `changed`, `index`, one `recipes` row per member (`id`, `version`,
 `source_digest`, `recipe`, `changed`, `counts`, and `warnings`, `foreign_ids` or `evolution_help`
