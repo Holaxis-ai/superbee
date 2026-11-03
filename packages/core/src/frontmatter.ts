@@ -8,6 +8,7 @@
  */
 
 import yaml from "js-yaml";
+import { loadBoundedYaml } from "./bounded-yaml.js";
 import { isUsableTimestamp, MalformedDocumentError } from "./frontmatter-contract.js";
 import { splitLeadingFrontmatter } from "./frontmatter-splitter.js";
 import type { Frontmatter } from "./types.js";
@@ -52,7 +53,7 @@ const losslessDateSchema = new yaml.Schema({
 
 const yamlEngine = {
   parse(input: string): object {
-    return (yaml.safeLoad(input, { schema: losslessDateSchema }) ?? {}) as object;
+    return (loadBoundedYaml(input, { schema: losslessDateSchema }) ?? {}) as object;
   },
 };
 

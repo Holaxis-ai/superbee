@@ -384,6 +384,10 @@ export {
 } from "./frontmatter.js";
 
 export type { ParseDocumentOptions } from "./frontmatter.js";
+export { FRONTMATTER_LIMITS, loadBoundedYaml } from "./bounded-yaml.js";
+export type { BoundedYamlOptions } from "./bounded-yaml.js";
+export { FrontmatterLimitError } from "./frontmatter-contract.js";
+export type { FrontmatterLimitCode, MalformedDocumentCode } from "./frontmatter-contract.js";
 
 // Typed input-validation rejection — consumer boundaries branch on the TYPE (CLI: USAGE/exit 2),
 // never on message prose. `FilesystemIdentityAliasError` is the alias verdict of the filesystem

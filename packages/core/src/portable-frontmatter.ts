@@ -1,7 +1,6 @@
 /** Browser/Worker-safe parsing for the bundle-root OKF edition marker. */
 
-import yaml from "js-yaml";
-
+import { loadBoundedYaml } from "./bounded-yaml.js";
 import { MalformedDocumentError } from "./frontmatter-contract.js";
 import { splitLeadingFrontmatter } from "./frontmatter-splitter.js";
 import type { Frontmatter } from "./types.js";
@@ -15,7 +14,7 @@ export function parseLeadingFrontmatter(raw: string, context?: string): Frontmat
   if (!("yamlSource" in split)) return {} as Frontmatter;
 
   try {
-    const parsed = yaml.safeLoad(split.yamlSource);
+    const parsed = loadBoundedYaml(split.yamlSource);
     if (parsed === undefined || parsed === null) return {} as Frontmatter;
     if (typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new TypeError("YAML frontmatter must be a mapping");

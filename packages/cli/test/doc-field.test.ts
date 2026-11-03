@@ -76,6 +76,21 @@ test("doc field tag membership preserves body and siblings, no-op preserves vers
   assert.equal(after.doc.body, before.doc.body);
 });
 
+test("doc field --from-file YAML whose aliases expand past the cap is refused as usage without changing the document", async t => {
+  const f = await fixture(t);
+  const levels = ["- &a0 [x,x,x,x,x,x,x,x,x]"];
+  for (let i = 1; i <= 9; i++) levels.push(`- &a${i} [${Array(9).fill(`*a${i - 1}`).join(",")}]`);
+  const input = await f.file(`${levels.join("\n")}\n`);
+  const before = await readDocVersioned(f.bundle, "notes/a");
+  const started = performance.now();
+  await assert.rejects(f.run("replace-all", "notes/a", "tags", "--from-file", input, "--expected-version", before.version), err => usage(err) && /aliases expand/.test((err as Error).message));
+  assert.ok(performance.now() - started < 1000);
+  assert.deepEqual(await readDocVersioned(f.bundle, "notes/a"), before);
+  const quoted = await f.file(`["R&D", "*star*", '&amp']\n`);
+  await f.run("replace-all", "notes/a", "tags", "--from-file", quoted, "--expected-version", before.version);
+  assert.deepEqual((await readDocVersioned(f.bundle, "notes/a")).doc.frontmatter.tags, ["R&D", "*star*", "&amp"]);
+});
+
 test("doc field sources support JSON/YAML add, first-ID edit, and exact empty-ID remove", async t => {
   const f = await fixture(t);
   const input = await f.file('{"id":"","resource":"empty id report"}', "source.json");

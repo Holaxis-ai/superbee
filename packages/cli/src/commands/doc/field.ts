@@ -1,7 +1,6 @@
 import { renderUsage } from "../../output.js";
 import { parseArgs } from "node:util";
-import yaml from "js-yaml";
-import { isStandardDocumentSetField, kindFieldInputValue, loadKinds, readBundleOkfVersion, resolveKindFieldCoordinate, type FieldActionErrorDetails, type FieldAction, type SourceSelector } from "@superbee/core";
+import { FrontmatterLimitError, isStandardDocumentSetField, kindFieldInputValue, loadBoundedYaml, loadKinds, readBundleOkfVersion, resolveKindFieldCoordinate, type FieldActionErrorDetails, type FieldAction, type SourceSelector } from "@superbee/core";
 import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
 import { commandFragment, commandToken, commandWords } from "../../command-text.js";
@@ -109,8 +108,8 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
   if (fromFile !== undefined) {
     const source = await readExternalTextFile(fromFile);
     if (!source.trim()) fail("--from-file must contain one complete JSON/YAML value; the file is empty.");
-    try { value = /\.json$/i.test(fromFile) ? JSON.parse(source) : yaml.safeLoad(source, { schema: yaml.JSON_SCHEMA }); }
-    catch { fail("--from-file must contain one complete valid JSON/YAML value."); }
+    try { value = /\.json$/i.test(fromFile) ? JSON.parse(source) : loadBoundedYaml(source, { schema: "json" }); }
+    catch (error) { fail(error instanceof FrontmatterLimitError ? `--from-file was refused: ${error.message}.` : "--from-file must contain one complete valid JSON/YAML value."); }
     if (value === undefined) fail("--from-file must contain one complete JSON/YAML value.");
   }
   const selector: SourceSelector | undefined = values.id !== undefined ? { id: values.id } : values.resource !== undefined ? { resource: values.resource } : undefined;
