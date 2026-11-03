@@ -3,7 +3,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { builtinRecipeFiles, builtinRecipeSource, loadBuiltinRecipe } from "../src/builtin-recipes.js";
 import { recipeSourceDigest } from "../src/recipe-lifecycle/stamp.js";
-import { parseRecipeFiles } from "../src/recipes.js";
+import { parseRecipeFiles, type RecipeFile } from "../src/recipes.js";
+import { prepareRecipeInstall } from "../src/recipe-lifecycle/install.js";
 import {
   RECIPE_INDEX_FORMAT,
   createIndexRecipeSource,
@@ -384,6 +385,77 @@ test("resolveCookbook refuses two members that install the same document, differ
   const { tree, entries } = variantTree((body) => body);
   const disjoint = [{ id: "ok", title: "t", summary: "s", ...HOLAXIS, recipes: ["cn-alt", "work-tracking"] }];
   assert.ok((await resolveCookbook(indexOf("alpha", entries, disjoint), "ok", tree.read)).ok);
+});
+
+/** Serves arbitrary recipes under `r/<id>/`, pinned exactly as a publisher would pin them. */
+function customTree(recipes: ReadonlyArray<{ id: string; files: RecipeFile[] }>) {
+  const files = new Map<string, Uint8Array>();
+  const entries = recipes.map(({ id, files: recipeFiles }) => {
+    for (const file of recipeFiles) files.set(`r/${id}/${file.path}`, utf8(file.bytes));
+    const parsed = parseRecipeFiles(recipeFiles, "test", { okfVersion: "0.2" });
+    assert.ok(parsed.ok, parsed.ok ? "" : parsed.error.message);
+    return { id, version: "1", ...HOLAXIS, source_digest: recipeSourceDigest(parsed.recipe), files_digest: pin(recipeFiles), root: `r/${id}`, files: recipeFiles.map((file) => file.path) };
+  });
+  const read: RecipeIndexReader = async (path) => {
+    const bytes = files.get(path);
+    if (!bytes) throw new Error("no such file");
+    return bytes;
+  };
+  return { entries, read };
+}
+
+function viewRecipe(id: string, kind: string, registry: string, entry: string): RecipeFile[] {
+  return [
+    {
+      path: "recipe.md",
+      bytes: `---\ntype: Recipe\nid: ${id}\ntitle: ${id}\nversion: "1"\nsummary: A board.\ncontent_policy: definitions-only\n` +
+        `pages:\n  - registry: ${registry}.md\n    entry: ${entry}\n---\n`,
+    },
+    { path: `conventions/${kind.toLowerCase()}.md`, bytes: `---\ntype: Convention\ngoverns: ${kind}\n---\n# ${kind}\n\nA ${kind}.\n` },
+    { path: `${registry}.md`, bytes: `---\ntype: View\ntitle: Board\nentry: ${entry}\naccess: bundle-read\n---\nA board view (${id}).\n` },
+    { path: entry, bytes: `<!doctype html><title>Board ${id}</title>` },
+  ];
+}
+
+test("cookbook conflict: legacy pages-registry and current views-registry spellings of one View collide", async () => {
+  for (const order of [["fresh", "legacy"], ["legacy", "fresh"]] as const) {
+    const recipes = {
+      fresh: { id: "fresh", files: viewRecipe("fresh", "Alpha", "views-registry/board", "views/board.html") },
+      legacy: { id: "legacy", files: viewRecipe("legacy", "Beta", "pages-registry/board", "pages/board.html") },
+    };
+    const { entries, read } = customTree(order.map((name) => recipes[name]));
+    const cookbooks = [{ id: "cb", title: "t", summary: "s", ...HOLAXIS, recipes: [...order] }];
+    const result = await resolveCookbook(indexOf("alpha", entries, cookbooks), "cb", read);
+    assert.equal(result.ok, false, order.join(","));
+    if (result.ok) continue;
+    assert.equal(result.error.code, "RECIPE_INDEX_COOKBOOK_CONFLICT");
+    assert.deepEqual(result.error.conflict, {
+      recipes: [...order],
+      ids: ["pages-registry/board", "pages/board.html", "views-registry/board", "views/board.html"],
+    });
+  }
+
+  // Different View names do not collide.
+  const { entries, read } = customTree([
+    { id: "fresh", files: viewRecipe("fresh", "Alpha", "views-registry/board", "views/board.html") },
+    { id: "other", files: viewRecipe("other", "Beta", "pages-registry/plan", "pages/plan.html") },
+  ]);
+  const cookbooks = [{ id: "cb", title: "t", summary: "s", ...HOLAXIS, recipes: ["fresh", "other"] }];
+  assert.ok((await resolveCookbook(indexOf("alpha", entries, cookbooks), "cb", read)).ok);
+});
+
+test("prepared install target ids do not depend on the edition or the preparation time", () => {
+  for (const name of ["context-notes", "work-tracking", "roadmap", "site"]) {
+    const loaded = loadBuiltinRecipe(name);
+    assert.ok(loaded?.ok);
+    const ids = (okfVersion: "0.1" | "0.2", now: string) => {
+      const prepared = prepareRecipeInstall(loaded.recipe, { okfVersion, now });
+      return [...prepared.docs.map((d) => d.id), ...prepared.pages.flatMap((p) => [p.registry.id, p.entry]), ...prepared.references.map((r) => r.doc.id), ...prepared.connectors.map((c) => c.doc.id)];
+    };
+    const reference = ids("0.2", "1970-01-01T00:00:00.000Z");
+    assert.deepEqual(ids("0.1", "2026-11-03T12:00:00.000Z"), reference, name);
+    assert.deepEqual(reference, [...loaded.recipe.docs.map((d) => d.id), ...loaded.recipe.pages.flatMap((p) => [p.registry.id, p.entry]), ...loaded.recipe.references.map((r) => r.doc.id)], name);
+  }
 });
 
 // ── Source contract ───────────────────────────────────────────────────────────────────────────

@@ -130,9 +130,11 @@ Bytes that are not UTF-8 are `RECIPE_INDEX_ENCODING_INVALID`. A reader that thro
 `RECIPE_INDEX_READ_FAILED`. `parseRecipeIndex` also accepts the index as raw bytes and decodes it
 the same way. `resolveCookbook(index, id, read)` verifies every member in order and returns either
 all of them or a refusal naming the failed member, never a partial set. It then refuses with
-`RECIPE_INDEX_COOKBOOK_CONFLICT` when two members would install the same target (a document id
-or a View entry), whether or not their bytes agree, because create-only installs keep the first
-and never converge on the second; `conflict` names both members and the shared ids.
+`RECIPE_INDEX_COOKBOOK_CONFLICT` when two members would install the same target, whether or not
+their bytes agree, because create-only installs keep the first and never converge on the second.
+Targets are the ids `prepareRecipeInstall` produces, and a View's legacy `pages-registry/` and
+`pages/` spellings count as the same target as `views-registry/` and `views/`, as they do at
+install. `conflict` names both members and the shared ids in each member's spelling.
 
 `files_digest` covers every listed byte, including the manifest's title, summary, offer and prose
 and any listed README. `source_digest` covers what install writes. Neither authenticates a

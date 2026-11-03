@@ -10,6 +10,8 @@
  * exact listed bytes and Core's `recipeSourceDigest` over the parsed definitions. It also lists cookbooks that name an ordered set of those recipes. This module parses the index and verifies
  * every recipe against its pin through a reader the host supplies. It performs no I/O of its own.
  */
+import { prepareRecipeInstall } from "./recipe-lifecycle/install.js";
+import { legacyEntryAlias, legacyRegistryAlias } from "./recipe-lifecycle/legacy-aliases.js";
 import { recipeSourceDigest } from "./recipe-lifecycle/stamp.js";
 import { sha256HexOfBytes } from "./sha256.js";
 import { sha256Hex } from "./versioning.js";
@@ -471,30 +473,50 @@ export async function resolveCookbook(index: RecipeIndex, cookbookId: string, re
   return { ok: true, cookbook, recipes };
 }
 
+/** Any fixed time: preparation stamps clocks with it, but target ids never depend on it. */
+const PREPARATION_TIME = "1970-01-01T00:00:00.000Z";
+
 /**
- * Every document id and View entry key a recipe installs. Install is create-only per target, so two
- * members writing one target cannot both land; identical bytes count too, since ownership would
- * still go to whichever member wrote first.
+ * Every target a recipe installs, keyed the way install decides that two artifacts are one. Ids come
+ * from `prepareRecipeInstall`, the owner of final placement, and a View's legacy `pages-registry/`
+ * and `pages/` spellings fold onto the same key through the install path's own legacy aliases, since
+ * install treats either spelling as satisfying the other. Values are the ids as this recipe spells
+ * them. Identical bytes still count: ownership would go to whichever member wrote first.
  */
-function installTargets(recipe: LoadedRecipe): string[] {
-  return [
-    ...recipe.docs.map((doc) => doc.id),
-    ...recipe.pages.flatMap((page) => [page.registry.id, `blob:${page.entry}`]),
-    ...recipe.references.map((reference) => reference.doc.id),
-    ...(recipe.connectors ?? []).map((connector) => connector.doc.id),
-  ];
+function installTargets(recipe: LoadedRecipe): Map<string, string> {
+  let prepared: Pick<LoadedRecipe, "docs" | "pages" | "references" | "connectors">;
+  try {
+    prepared = prepareRecipeInstall(recipe, { okfVersion: "0.2", now: PREPARATION_TIME });
+  } catch {
+    // A recipe the edition refuses fails at install either way; its parsed ids are the same ids.
+    prepared = recipe;
+  }
+  const targets = new Map<string, string>();
+  const add = (key: string, id: string): void => {
+    if (!targets.has(key)) targets.set(key, id);
+  };
+  for (const doc of prepared.docs) add(doc.id, doc.id);
+  for (const page of prepared.pages) {
+    add(legacyRegistryAlias(page.registry.id) ?? page.registry.id, page.registry.id);
+    add(`blob:${legacyEntryAlias(page.entry) ?? page.entry}`, page.entry);
+  }
+  for (const reference of prepared.references) add(reference.doc.id, reference.doc.id);
+  for (const connector of prepared.connectors ?? []) add(connector.doc.id, connector.doc.id);
+  return targets;
 }
 
 function firstSharedTargets(recipes: readonly VerifiedIndexRecipe[]): { recipes: [string, string]; ids: string[] } | null {
-  const owners = new Map<string, string>();
+  const owners = new Map<string, { recipe: string; id: string }>();
   for (const { recipe } of recipes) {
-    const targets = [...new Set(installTargets(recipe))];
-    const clash = targets.filter((target) => owners.has(target));
+    const targets = installTargets(recipe);
+    const clash = [...targets.keys()].filter((key) => owners.has(key));
     if (clash.length > 0) {
-      const first = owners.get(clash[0]!)!;
-      return { recipes: [first, recipe.id], ids: clash.filter((target) => owners.get(target) === first).sort() };
+      const first = owners.get(clash[0]!)!.recipe;
+      const shared = clash.filter((key) => owners.get(key)!.recipe === first);
+      const ids = new Set(shared.flatMap((key) => [owners.get(key)!.id, targets.get(key)!]));
+      return { recipes: [first, recipe.id], ids: [...ids].sort() };
     }
-    for (const target of targets) owners.set(target, recipe.id);
+    for (const [key, id] of targets) owners.set(key, { recipe: recipe.id, id });
   }
   return null;
 }
