@@ -89,7 +89,18 @@ export type RecipeErrorCode =
   | "RECIPE_MALFORMED"
   | "RECIPE_EMPTY"
   | "RECIPE_UNSAFE_PATH"
-  | "RECIPE_CONNECTOR_INVALID";
+  | "RECIPE_CONNECTOR_INVALID"
+  | RecipeIndexErrorCode;
+
+/** Refusals of a published recipe index (`@superbee/core/recipe-sources`). */
+export type RecipeIndexErrorCode =
+  | "RECIPE_INDEX_MALFORMED"
+  | "RECIPE_INDEX_FORMAT_UNSUPPORTED"
+  | "RECIPE_INDEX_PATH_INVALID"
+  | "RECIPE_INDEX_DUPLICATE"
+  | "RECIPE_INDEX_OFFERING_INVALID"
+  | "RECIPE_INDEX_READ_FAILED"
+  | "RECIPE_INDEX_DIGEST_MISMATCH";
 
 export interface RecipeError {
   code: RecipeErrorCode;

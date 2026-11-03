@@ -68,6 +68,50 @@ The package proof installs core alone, typechecks the public subpaths, runs pars
 checks in Node, and executes a browser-target bundle without Node globals. This is not a live
 browser or Worker integration guarantee. No CLI runtime dependency or new package is required.
 
+## Recipe sources and published indexes
+
+`@superbee/core/recipe-sources` owns the source contract every host composes. A `RecipeSource`
+has a `kind` (`builtin`, `files` or `index`) and `resolve(ref)`, which returns `null` when the
+source does not address the reference. `resolveRecipe(ref, sources)` asks each source in order and
+returns the first answer, or `RECIPE_NOT_FOUND`. `builtinRecipeSource()` lives in
+`@superbee/core/builtin-recipes`; sources that need a filesystem or a network stay in their host.
+
+A published index is one JSON document, `recipe-index/v1`:
+
+```json
+{
+  "format": "recipe-index/v1",
+  "source": "example",
+  "title": "Example recipes",
+  "recipes": [
+    { "id": "context-notes", "version": "1", "source_digest": "sha256:<64 hex>",
+      "root": "recipes/context-notes", "files": ["recipe.md", "conventions/context-note.md"] }
+  ],
+  "offerings": [
+    { "id": "starter", "title": "Starter", "summary": "Notes for agents.", "recipes": ["context-notes"] }
+  ]
+}
+```
+
+`root` is relative to the index location and optional. `files` are relative to `root`, and a
+reader fetches exactly those files. `parseRecipeIndex` refuses unknown keys and formats, absolute
+paths, `..`, backslashes, dot entries, duplicates (file paths compare case-insensitively), and
+offerings that name a recipe the index does not list. Its codes are `RECIPE_INDEX_MALFORMED`,
+`RECIPE_INDEX_FORMAT_UNSUPPORTED`, `RECIPE_INDEX_PATH_INVALID`, `RECIPE_INDEX_DUPLICATE` and
+`RECIPE_INDEX_OFFERING_INVALID`.
+
+`resolveIndexRecipe(index, id, read)` and `createIndexRecipeSource(index, read)` take a
+host-supplied async reader. Core reads the listed files through it, parses them, and compares
+`recipeSourceDigest` with the pin. A difference is `RECIPE_INDEX_DIGEST_MISMATCH`, and no recipe is
+returned. A reader that throws is `RECIPE_INDEX_READ_FAILED`. `resolveOffering(index, id, read)`
+verifies every member in order and returns either all of them or a refusal naming the failed
+member, never a partial set.
+
+`source_digest` is the value install stamps record. It covers the recipe id, version and every
+installable definition, and it does not cover the manifest's title, summary, offer or prose body,
+or README files. The digest proves that installed content matches the pin. It does not
+authenticate a publisher. Bound the reader's sizes and times in the host.
+
 ## Deprecating declarations
 
 A convention can keep a declaration readable while preventing new admitted usage:

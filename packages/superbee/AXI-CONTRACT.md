@@ -250,6 +250,24 @@ Connector rows in `packages/cli/test/hosted-definition-writes.test.ts` and
 `packages/cli/test/error-boundary.test.ts`, and the unchanged
 `packages/cli/test/recipe-evolve-golden.test.ts`.
 
+## Recipe index installs
+
+`recipe add <id> --index <path-or-https-url>` installs a recipe listed in a published
+`recipe-index/v1` index, and `--offering` installs every recipe an offering names. Without
+`--index`, `recipe add` is unchanged. The CLI reads a local path through the guarded ingress read or
+fetches an https: URL with redirects refused and bounded size and time; any other scheme is `USAGE`
+with `details.reason` `RECIPE_INDEX_SCHEME_REFUSED`. Core verifies each recipe against its pinned
+`source_digest` before the bundle is opened, and an offering is verified whole before its first
+write. Refusals keep the taxonomy: a digest mismatch is `INTEGRITY_MISMATCH` (exit 1), an
+unreadable file or index URL is `TRANSIENT` (exit 1), and index format, path and lookup refusals are
+`USAGE` (exit 2), each with the Core code in `details.reason`. A single-recipe receipt adds
+`source_digest` and `index` (`source`, `location`) to the existing receipt. An offering receipt is
+`offering`, `title`, `changed`, `index`, one `recipes` row per member (`id`, `version`,
+`source_digest`, `recipe`, `changed`, `counts`, and `warnings`, `foreign_ids` or `evolution_help`
+when present), `install_note` and `help`. Nothing about the index is persisted. Evidence:
+`packages/core/test/recipe-sources.test.ts`, `packages/cli/test/recipe-index.test.ts` and the
+`--index` row in `packages/cli/test/private-state-bundle-boundary.test.ts`.
+
 ## Evidence map
 
 Every numbered row has one help/source anchor and one behavioral test anchor. The repository test

@@ -1044,8 +1044,9 @@ module instances; modified handles are refused. This surface requires Node, not 
 
 `@superbee/core/builtin-recipes` is an opt-in catalog: `builtinNames()` lists names,
 `builtinRecipeFiles(name)` returns detached source files, and `loadBuiltinRecipe(name)` returns
-the existing parser's result or `null` for an unknown name. The generic parser, package root,
-and `initBundle` do not import the catalog or install recipes.
+the existing parser's result or `null` for an unknown name. `builtinRecipeSource()` offers the
+same catalog as a `RecipeSource` (see [recipe sources](RECIPES.md#recipe-sources-and-published-indexes)).
+The generic parser, package root, and `initBundle` do not import the catalog or install recipes.
 
 `@superbee/core/kind-authoring` provides inference, forecasts, dismissal classification, templates,
 and guarded draft/apply/dismiss operations on a caller-selected `Bundle` backend. An outside app
