@@ -49,6 +49,10 @@ function tooLarge(): FrontmatterLimitError {
   );
 }
 
+function scalarExtent(value: unknown): Extent {
+  return { nodes: 1, chars: typeof value === "string" ? value.length : 0, depth: 0 };
+}
+
 function isCollection(value: unknown): value is object {
   if (Array.isArray(value)) return true;
   if (value === null || typeof value !== "object") return false;
@@ -58,9 +62,9 @@ function isCollection(value: unknown): value is object {
 
 /**
  * Measures values with aliases expanded, reusing the extent of a collection that is referenced
- * more than once. A reference to a collection on the current path, or to an anchored collection
- * the parser is still filling, is a cycle; it counts as one node, since readers detect cycles
- * rather than unroll them.
+ * more than once. Mapping keys count toward characters. A reference to a collection on the current
+ * path, or to an anchored collection the parser is still filling, is a cycle; within a measurement
+ * it counts as one node, since readers detect cycles rather than unroll them.
  */
 class ExtentMeter {
   private readonly known = new Map<object, Extent>();
@@ -73,23 +77,35 @@ class ExtentMeter {
   }
 
   measure(value: unknown): Extent {
-    if (!isCollection(value)) return { nodes: 1, chars: typeof value === "string" ? value.length : 0, depth: 0 };
+    if (!isCollection(value)) return scalarExtent(value);
     const known = this.known.get(value);
     if (known !== undefined) return known;
     if (this.path.has(value) || this.unfinished.has(value)) return { nodes: 1, chars: 0, depth: 1 };
+    return this.walk(value, true);
+  }
+
+  /** The current extent of a collection the parser is still filling; never remembered, as it grows. */
+  measureUnfinished(value: unknown): Extent {
+    if (!isCollection(value)) return scalarExtent(value);
+    if (this.path.has(value)) return { nodes: 1, chars: 0, depth: 1 };
+    return this.walk(value, false);
+  }
+
+  private walk(value: object, remember: boolean): Extent {
     if (this.path.size >= FRONTMATTER_LIMITS.depth) throw tooDeep();
     this.path.add(value);
+    const keyed = !Array.isArray(value);
     const extent: Extent = { nodes: 1, chars: 0, depth: 1 };
-    for (const child of Object.values(value)) {
+    for (const [key, child] of Object.entries(value)) {
       const inner = this.measure(child);
       extent.nodes += inner.nodes;
-      extent.chars += inner.chars;
+      extent.chars += inner.chars + (keyed ? key.length : 0);
       extent.depth = Math.max(extent.depth, inner.depth + 1);
       if (extent.nodes > FRONTMATTER_LIMITS.expandedNodes || extent.chars > FRONTMATTER_LIMITS.expandedChars) throw tooLarge();
       if (extent.depth > FRONTMATTER_LIMITS.depth) throw tooDeep();
     }
     this.path.delete(value);
-    this.known.set(value, extent);
+    if (remember) this.known.set(value, extent);
     return extent;
   }
 }
@@ -138,7 +154,9 @@ class AliasBudget {
         `YAML aliases are used more than ${FRONTMATTER_LIMITS.aliases} times`,
       );
     }
-    const extent = this.finished.has(name) ? this.meter.measure(value) : { nodes: 1, chars: 0 };
+    // An alias to an anchor still being filled is charged its current extent, which the parser may
+    // copy (as a mapping key, for example) before the anchor closes.
+    const extent = this.finished.has(name) ? this.meter.measure(value) : this.meter.measureUnfinished(value);
     this.nodes += extent.nodes;
     this.chars += extent.chars;
     if (this.nodes > FRONTMATTER_LIMITS.expandedNodes || this.chars > FRONTMATTER_LIMITS.expandedChars) throw tooLarge();

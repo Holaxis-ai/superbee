@@ -92,6 +92,28 @@ test("aliases used inside mapping keys are charged while parsing", () => {
   for (const [name, load] of loadSites) assert.equal((load(within_cap).b as unknown[]).length, 100, name);
 });
 
+test("an alias to an enclosing collection used as a mapping key is charged its current extent", () => {
+  const size = 5000;
+  const uses = 300;
+  assert.ok(size * uses > FRONTMATTER_LIMITS.expandedNodes);
+  const flow = `a: &a [${Array(size).fill(1).join(",")},${Array(uses).fill("{? *a : 1}").join(",")}]`;
+  const block = `a: &a\n${"- 1\n".repeat(size)}${"- {? *a : 1}\n".repeat(uses)}`;
+  for (const [name, load] of loadSites) {
+    within(1000, `${name} flow`, () => assert.throws(() => load(flow), refusedWith("FRONTMATTER_ALIAS_LIMIT"), name));
+    within(1000, `${name} block`, () => assert.throws(() => load(block), refusedWith("FRONTMATTER_ALIAS_LIMIT"), name));
+  }
+});
+
+test("mapping keys count toward the expanded character cap", () => {
+  const key = "k".repeat(1000);
+  const uses = Math.floor(FRONTMATTER_LIMITS.expandedChars / key.length) + 1;
+  assert.ok(uses <= FRONTMATTER_LIMITS.aliases);
+  const source = `m: &m {${key}: 1}\nlist: [${Array(uses).fill("*m").join(",")}]`;
+  for (const [name, load] of loadSites) {
+    within(1000, name, () => assert.throws(() => load(source), refusedWith("FRONTMATTER_ALIAS_LIMIT"), name));
+  }
+});
+
 test("merge keys past the parser's merge cap are refused with the alias limit code", () => {
   const source = `a: &a {k1: 1, k2: 2, k3: 3}\nb:\n${Array(2600).fill("- <<: *a").join("\n")}`;
   for (const [name, load] of loadSites) {
