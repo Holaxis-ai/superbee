@@ -5,7 +5,7 @@ import { FRONTMATTER_LIMITS, loadBoundedYaml } from "../src/bounded-yaml.js";
 import { FrontmatterLimitError, MalformedDocumentError } from "../src/frontmatter-contract.js";
 import { parseFrontmatter, parseMarkdown, stringifyDoc } from "../src/frontmatter.js";
 import { FrontmatterRefusedError } from "../src/errors.js";
-import { parseLeadingFrontmatter } from "../src/portable-frontmatter.js";
+import { assertStorableFrontmatter, parseLeadingFrontmatter } from "../src/portable-frontmatter.js";
 import type { Frontmatter } from "../src/types.js";
 
 /** `levels` levels of nine aliases each; the source stays small. */
@@ -273,4 +273,15 @@ test("a document the serializer accepts at the source cap boundary always reads 
     }
     assert.doesNotThrow(() => parseMarkdown(written!, "notes/a"), `delta ${delta}`);
   }
+});
+
+test("a reserved file is refused when either frontmatter schema would refuse it", () => {
+  // The document schema keeps timestamps as their source text; the default schema makes Dates.
+  const stamp = `2001-12-14t21:59:43.${"1".repeat(2000)}-05:00`;
+  const anchors = Array.from({ length: 100 }, (_, i) => `t${i}: &t${i} ${stamp}`);
+  const uses = Array.from({ length: 100 }, (_, i) => `u${i}: [${Array(5).fill(`*t${i}`).join(",")}]`);
+  const raw = `---\n${[...anchors, ...uses].join("\n")}\n---\n`;
+  assert.doesNotThrow(() => parseLeadingFrontmatter(raw, "notes/a"));
+  assert.throws(() => parseMarkdown(raw, "notes/a"), refusedWith("FRONTMATTER_ALIAS_LIMIT"));
+  assert.throws(() => assertStorableFrontmatter(raw), (error: unknown) => (error as { code?: string }).code === "FRONTMATTER_ALIAS_LIMIT");
 });

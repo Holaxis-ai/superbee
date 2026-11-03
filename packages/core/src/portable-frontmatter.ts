@@ -3,6 +3,7 @@
 import { loadBoundedYaml } from "./bounded-yaml.js";
 import { FrontmatterRefusedError } from "./errors.js";
 import { MalformedDocumentError } from "./frontmatter-contract.js";
+import { parseFrontmatter } from "./frontmatter.js";
 import { splitLeadingFrontmatter } from "./frontmatter-splitter.js";
 import type { Frontmatter } from "./types.js";
 
@@ -35,6 +36,10 @@ export function parseLeadingFrontmatter(raw: string, context?: string): Frontmat
 export function assertStorableFrontmatter(raw: string): void {
   try {
     parseLeadingFrontmatter(raw);
+    // Reserved files are also read with the document schema, which keeps timestamps as strings
+    // and so measures them differently; refuse whatever either reader would refuse.
+    const split = splitLeadingFrontmatter(raw);
+    if ("yamlSource" in split) parseFrontmatter(split.yamlSource);
   } catch (error) {
     if (error instanceof MalformedDocumentError && error.code !== "FRONTMATTER_MALFORMED") {
       throw new FrontmatterRefusedError(error.code, error.detail);
