@@ -291,6 +291,7 @@ test("the expected tarball set is the fixed base plus the references tree", () =
     "dist/publication-site-manifest.mjs",
     "dist/publication.mjs",
     "dist/publication/bridge-entry.d.ts",
+    "dist/publication/bridge-host-kind.d.ts",
     "dist/publication/bridge.d.ts",
     "dist/publication/canonical-json.d.ts",
     "dist/publication/capture.d.ts",
