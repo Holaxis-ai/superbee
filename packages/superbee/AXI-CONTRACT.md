@@ -250,6 +250,16 @@ Connector rows in `packages/cli/test/hosted-definition-writes.test.ts` and
 `packages/cli/test/error-boundary.test.ts`, and the unchanged
 `packages/cli/test/recipe-evolve-golden.test.ts`.
 
+## Frontmatter limits
+
+Core parses all frontmatter and YAML field input through one bounded loader. Stored frontmatter it
+cannot accept fails with `RUNTIME` and `details.frontmatter.code`: `FRONTMATTER_MALFORMED` for
+invalid YAML, or `FRONTMATTER_TOO_LARGE`, `FRONTMATTER_TOO_DEEP` or `FRONTMATTER_ALIAS_LIMIT` when
+a limit refuses it, plus `details.frontmatter.document` when the document is known. YAML given to
+`doc field --from-file` that a limit refuses is `USAGE`. Evidence:
+`packages/core/test/frontmatter-limits.test.ts` and the `MalformedDocumentError` rows in
+`packages/cli/test/error-boundary.test.ts`.
+
 ## Evidence map
 
 Every numbered row has one help/source anchor and one behavioral test anchor. The repository test

@@ -356,6 +356,18 @@ test("a YAML alias is a typed refusal, and neither a circular alias nor an alias
     "the frontmatter parser refuses the expansion before the Connector scan",
   ));
   assert.ok(bomb.ms < 1000, `${bomb.ms}ms`);
+  const base = parseMarkdown(CONNECTOR_MD);
+  const sharedLevels: Record<string, unknown> = {};
+  let level: unknown = Array(9).fill("x");
+  for (let i = 0; i <= 9; i++) {
+    sharedLevels[`x_b${i}`] = level;
+    level = Array(9).fill(level);
+  }
+  const scan = timed(() => parseConnectorDoc({ id: CONNECTOR_ID, frontmatter: { ...base.frontmatter, ...sharedLevels }, body: base.body }));
+  assert.equal(scan.value.ok, false);
+  assert.ok(errorsOf(scan.value).every((e) => e.code === "CONNECTOR_MALFORMED" && /aliases/.test(e.message)));
+  assert.ok(errorsOf(scan.value).length <= 81, "the Connector scan reports each shared value once, never each expanded leaf");
+  assert.ok(scan.ms < 1000, `${scan.ms}ms`);
   const shared = parseYaml(withYaml("x_shared: &shared { from: summary }").replace("      title: summary", "      title: *shared"));
   assert.deepEqual(errorsOf(shared).map((e) => [e.code, e.path]), [["CONNECTOR_MALFORMED", "/record_sources/0/fields/title"]], "inside a closed block too");
   const scalar = parseYaml(withYaml("x_kind: &k Event").replace("    target_kind: Event", "    target_kind: *k"));

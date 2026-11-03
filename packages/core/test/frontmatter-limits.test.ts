@@ -60,6 +60,60 @@ test("frontmatter whose YAML aliases nest past the depth cap is refused", () => 
   }
 });
 
+test("aliases to scalars count against the alias cap", () => {
+  const source = `s: &s x\nlist: [${Array(FRONTMATTER_LIMITS.aliases + 1).fill("*s").join(",")}]`;
+  for (const [name, load] of loadSites) {
+    within(1000, name, () => assert.throws(() => load(source), refusedWith("FRONTMATTER_ALIAS_LIMIT"), name));
+  }
+});
+
+test("aliases to a long scalar are refused past the expanded character cap", () => {
+  const length = 1000;
+  const uses = Math.floor(FRONTMATTER_LIMITS.expandedChars / length) + 1;
+  assert.ok(uses <= FRONTMATTER_LIMITS.aliases);
+  const source = `s: &s ${"x".repeat(length)}\nlist: [${Array(uses).fill("*s").join(",")}]`;
+  for (const [name, load] of loadSites) {
+    within(1000, name, () => assert.throws(() => load(source), refusedWith("FRONTMATTER_ALIAS_LIMIT"), name));
+  }
+  const fewer = `s: &s ${"x".repeat(length)}\nlist: [${Array(100).fill("*s").join(",")}]`;
+  for (const [name, load] of loadSites) assert.equal((load(fewer).list as unknown[]).length, 100, name);
+});
+
+test("aliases used inside mapping keys are charged while parsing", () => {
+  const size = 200;
+  const uses = Math.floor(FRONTMATTER_LIMITS.expandedNodes / size) + 1;
+  assert.ok(uses <= FRONTMATTER_LIMITS.aliases);
+  const items = Array(uses).fill("- {? *a : 1}").join("\n");
+  const source = `a: &a [${Array(size).fill(1).join(",")}]\nb:\n${items}`;
+  for (const [name, load] of loadSites) {
+    within(1000, name, () => assert.throws(() => load(source), refusedWith("FRONTMATTER_ALIAS_LIMIT"), name));
+  }
+  const within_cap = `a: &a [1, 2]\nb:\n${Array(100).fill("- {? *a : 1}").join("\n")}`;
+  for (const [name, load] of loadSites) assert.equal((load(within_cap).b as unknown[]).length, 100, name);
+});
+
+test("merge keys past the parser's merge cap are refused with the alias limit code", () => {
+  const source = `a: &a {k1: 1, k2: 2, k3: 3}\nb:\n${Array(2600).fill("- <<: *a").join("\n")}`;
+  for (const [name, load] of loadSites) {
+    within(1000, name, () => assert.throws(() => load(source), refusedWith("FRONTMATTER_ALIAS_LIMIT"), name));
+  }
+});
+
+test("the depth cap counts block and flow collections alike", () => {
+  const flow = (levels: number): string => `${"{a: ".repeat(levels)}1${"}".repeat(levels)}`;
+  const block = (levels: number): string =>
+    Array.from({ length: levels }, (_, i) => `${" ".repeat(i)}a:${i === levels - 1 ? " 1" : ""}`).join("\n");
+  const cap = FRONTMATTER_LIMITS.depth;
+  for (const [name, load] of loadSites) {
+    load(flow(cap));
+    load(block(cap));
+    load(`x: ${flow(cap - 1)}`);
+    assert.throws(() => load(flow(cap + 1)), refusedWith("FRONTMATTER_TOO_DEEP"), `${name} flow`);
+    assert.throws(() => load(block(cap + 1)), refusedWith("FRONTMATTER_TOO_DEEP"), `${name} block`);
+    assert.throws(() => load(`x: ${flow(cap)}`), refusedWith("FRONTMATTER_TOO_DEEP"), `${name} nested flow`);
+  }
+});
+
 test("frontmatter with a few YAML aliases, a merge key and a cycle still parses", () => {
   const source = [
     "base: &b { k: v }",

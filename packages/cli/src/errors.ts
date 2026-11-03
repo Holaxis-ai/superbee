@@ -232,7 +232,8 @@ export function toEnvelope(err: CliError): ErrorEnvelope {
  *    empty type, bad option values) -> USAGE (2). This TYPE is the only path by which a
  *    non-`CliError` throw reaches USAGE — "fix your input" is a claim about the input, so it
  *    must be provably input-derived, never a fallback bucket.
- *  - `MalformedDocumentError` (corrupt STORED bytes; the invocation was valid) -> RUNTIME (1).
+ *  - `MalformedDocumentError` (corrupt STORED bytes; the invocation was valid) -> RUNTIME (1),
+ *    with `details.frontmatter` carrying its stable `code` and the `document` when known.
  *  - `VersionConflict` that escaped a call site's own translation -> STALE_HEAD (5), with
  *    `{expected, actual}` details.
  *  - `RemoteError` -> by ITS server-derived `code`: AUTH_REQUIRED -> exit 4 with an
@@ -266,7 +267,11 @@ export function classifyBundleError(err: unknown, remoteUrl?: string): CliError 
   }
   if (err instanceof FieldActionError) return new CliError("USAGE", err.message, { details: { ...err.details } });
   if (err instanceof InvalidInputError) return new CliError("USAGE", err.message);
-  if (err instanceof MalformedDocumentError) return new CliError("RUNTIME", err.message);
+  if (err instanceof MalformedDocumentError) {
+    return new CliError("RUNTIME", err.message, {
+      details: { frontmatter: { code: err.code, ...(err.context !== undefined ? { document: err.context } : {}) } },
+    });
+  }
   if (err instanceof VersionConflict) {
     return new CliError("STALE_HEAD", err.message, {
       details: { expected: err.expected, actual: err.actual },
