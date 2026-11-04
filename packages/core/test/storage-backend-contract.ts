@@ -25,7 +25,8 @@ import type {
 } from "../src/types.js";
 import { blobVersion, contentVersion, VersionConflict } from "../src/versioning.js";
 import { normalizeDocumentBodyForStorage } from "../src/frontmatter.js";
-import { FilesystemIdentityAliasError, InvalidInputError } from "../src/errors.js";
+import { FilesystemIdentityAliasError, FrontmatterRefusedError, InvalidInputError } from "../src/errors.js";
+import { FRONTMATTER_LIMITS } from "../src/bounded-yaml.js";
 import { mutateDocument } from "../src/document-mutation.js";
 import { PreconditionFailed } from "../src/document-precondition.js";
 import { parseMarkdown, stringifyDoc } from "../src/frontmatter.js";
@@ -189,14 +190,12 @@ export function registerFrontmatterReadContract(
     await withFixture(create, async (backend) => {
       await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n");
       const shared = { value: "original" };
-      const cycle: Record<string, unknown> = { value: "cycle" };
-      cycle.self = cycle;
       const value: OkfDocument = {
         id: "metadata/yaml",
         frontmatter: {
           type: "ContractFixture", timestamp: TIMESTAMP,
           nan: NaN, positive: Infinity, negative: -Infinity, binary: Buffer.from([0, 127, 255]),
-          first: shared, second: shared, cycle,
+          first: shared, second: shared,
         },
         body: "body\n",
       };
@@ -204,18 +203,46 @@ export function registerFrontmatterReadContract(
       const version = await backend.write(value.id, value);
       assert.equal(version, contentVersion(value));
       shared.value = "caller changed input";
-      cycle.value = "caller changed input";
       for (const read of [await backend.read(value.id), ...(await backend.readMany([value.id, value.id]))]) {
         assert.equal(read.version, version);
         assert.deepEqual(read.doc.frontmatter, expected.frontmatter);
         assert.equal(read.doc.frontmatter.first, read.doc.frontmatter.second);
-        const readCycle = read.doc.frontmatter.cycle as Record<string, unknown>;
-        assert.equal(readCycle.self, readCycle);
         (read.doc.frontmatter.first as Record<string, unknown>).value = "caller changed read";
-        readCycle.value = "caller changed read";
         (read.doc.frontmatter.binary as Uint8Array)[0] = 100;
       }
       assert.deepEqual((await backend.read(value.id)).doc.frontmatter, expected.frontmatter);
+    });
+  });
+
+  test(`${name} frontmatter write contract: frontmatter the reader would refuse is refused and nothing is stored`, async () => {
+    await withFixture(create, async (backend) => {
+      await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n");
+      const id = "metadata/oversized";
+      const oversized: OkfDocument = { id, frontmatter: { type: "ContractFixture", description: "v".repeat(FRONTMATTER_LIMITS.sourceChars) }, body: "" };
+      await assert.rejects(
+        backend.write(id, oversized),
+        (error: unknown) => error instanceof FrontmatterRefusedError && error.code === "FRONTMATTER_TOO_LARGE",
+      );
+      await assert.rejects(backend.read(id));
+    });
+  });
+
+  test(`${name} reserved write contract: refused frontmatter in a reserved markdown file is refused and nothing is stored`, async () => {
+    await withFixture(create, async (backend) => {
+      const cases: Array<[string, string]> = [
+        ["FRONTMATTER_CYCLE", "---\nloop: &l [*l]\n---\n# Notes\n"],
+        ["FRONTMATTER_TOO_LARGE", `---\ndescription: ${"v".repeat(FRONTMATTER_LIMITS.sourceChars)}\n---\n`],
+      ];
+      for (const [code, content] of cases) {
+        await assert.rejects(
+          backend.writeReserved("notes", "index.md", content),
+          (error: unknown) => error instanceof FrontmatterRefusedError && error.code === code,
+          code,
+        );
+        assert.equal(await backend.readReserved("notes", "index.md"), null, code);
+      }
+      await backend.writeReserved("notes", "index.md", "---\ntitle: Notes\n---\n# Notes\n");
+      assert.equal((await backend.readReserved("notes", "index.md"))?.content, "---\ntitle: Notes\n---\n# Notes\n");
     });
   });
 }

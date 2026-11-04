@@ -27,6 +27,8 @@ import {
   initBundle,
   writeDoc,
   InvalidInputError,
+  FrontmatterLimitError,
+  FrontmatterRefusedError,
   MalformedDocumentError,
   MemoryBackend,
   RemoteError,
@@ -98,6 +100,8 @@ const MATRIX: MatrixRow[] = [
   { name: "RemoteError unknown code on a 4xx -> USAGE", make: () => new RemoteError("nope", "TEAPOT", 418), code: "USAGE", exit: 2 },
   // Corrupt stored bytes: a valid invocation hitting bad data is RUNTIME, not USAGE.
   { name: "MalformedDocumentError -> RUNTIME", make: () => new MalformedDocumentError("a.md", "unparseable YAML"), code: "RUNTIME", exit: 1 },
+  { name: "FrontmatterRefusedError -> USAGE", make: () => new FrontmatterRefusedError("FRONTMATTER_TOO_LARGE", "too large"), code: "USAGE", exit: 2 },
+  { name: "MalformedDocumentError from a frontmatter limit -> RUNTIME", make: () => new MalformedDocumentError("a.md", new FrontmatterLimitError("FRONTMATTER_ALIAS_LIMIT", "limit")), code: "RUNTIME", exit: 1 },
   // Local I/O failures and anything unexpected -> RUNTIME, exit 1 — never USAGE.
   { name: "ENOSPC -> RUNTIME", make: () => errnoError("ENOSPC", "ENOSPC: no space left on device"), code: "RUNTIME", exit: 1 },
   { name: "EACCES -> RUNTIME", make: () => errnoError("EACCES", "EACCES: permission denied"), code: "RUNTIME", exit: 1 },
@@ -134,6 +138,13 @@ for (const row of MATRIX) {
     assert.equal(exit.handled, false);
   });
 }
+
+test("error matrix: malformed frontmatter carries its stable code and document in details", () => {
+  const limit = classifyBundleError(new MalformedDocumentError("notes/a", new FrontmatterLimitError("FRONTMATTER_ALIAS_LIMIT", "limit")));
+  assert.deepEqual(limit.details, { frontmatter: { code: "FRONTMATTER_ALIAS_LIMIT", document: "notes/a" } });
+  const syntax = classifyBundleError(new MalformedDocumentError(undefined, new Error("bad indentation")));
+  assert.deepEqual(syntax.details, { frontmatter: { code: "FRONTMATTER_MALFORMED" } });
+});
 
 test("error matrix: recipe lifecycle errors keep their messages and details verbatim", () => {
   const conflict = classifyBundleError(new RecipeAssetConflict("review-workflow", "views/review-workflow/reviews.html"));

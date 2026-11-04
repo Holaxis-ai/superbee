@@ -8,7 +8,9 @@
  */
 
 import yaml from "js-yaml";
-import { isUsableTimestamp, MalformedDocumentError } from "./frontmatter-contract.js";
+import { loadBoundedYaml } from "./bounded-yaml.js";
+import { FrontmatterRefusedError } from "./errors.js";
+import { FrontmatterLimitError, MalformedDocumentError } from "./frontmatter-contract.js";
 import { splitLeadingFrontmatter } from "./frontmatter-splitter.js";
 import type { Frontmatter } from "./types.js";
 
@@ -52,7 +54,7 @@ const losslessDateSchema = new yaml.Schema({
 
 const yamlEngine = {
   parse(input: string): object {
-    return (yaml.safeLoad(input, { schema: losslessDateSchema }) ?? {}) as object;
+    return (loadBoundedYaml(input, { schema: losslessDateSchema }) ?? {}) as object;
   },
 };
 
@@ -122,9 +124,23 @@ export function parseFrontmatter(
   return normalizeFrontmatter(parsed as Record<string, unknown>, options);
 }
 
-/** The metadata bytes shared by document serialization and parsed-object stores. */
+/**
+ * The metadata bytes shared by document serialization and parsed-object stores. Every document
+ * write serializes its frontmatter here, and this refuses with {@link FrontmatterRefusedError} any
+ * bytes the frontmatter reader would refuse. Reserved files are stored as given, so each backend
+ * checks them with `assertStorableReservedWrite` instead.
+ */
 export function stringifyFrontmatter(data: Record<string, unknown>): string {
-  return yaml.safeDump(data).trim();
+  const dumped = yaml.safeDump(data).trim();
+  try {
+    // Check the exact text a reader will see between the fences, including the framing newline.
+    yamlEngine.parse(`${dumped}\n`);
+  } catch (error) {
+    if (error instanceof FrontmatterLimitError) throw new FrontmatterRefusedError(error.code, error.message);
+    const detail = (error instanceof Error ? error.message : String(error)).split("\n")[0] ?? "";
+    throw new FrontmatterRefusedError("FRONTMATTER_MALFORMED", detail);
+  }
+  return dumped;
 }
 
 /** Match the exact body shape emitted by the document serializer. */

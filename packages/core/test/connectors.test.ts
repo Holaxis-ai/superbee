@@ -26,7 +26,7 @@ import {
 } from "../src/connectors.js";
 import { isStandardDocumentSetField } from "../src/document-field-actions.js";
 import { mutateDocument } from "../src/document-mutation.js";
-import { parseMarkdown } from "../src/frontmatter.js";
+import { MalformedDocumentError, parseMarkdown } from "../src/frontmatter.js";
 import { buildKindRegistry, type KindRegistry } from "../src/kinds.js";
 import { isManagedDocumentMetadataField } from "../src/managed-document-metadata.js";
 import { MemoryBackend } from "../src/memory-backend.js";
@@ -344,17 +344,32 @@ const timed = <T>(run: () => T): { value: T; ms: number } => {
 };
 
 test("a YAML alias is a typed refusal, and neither a circular alias nor an alias expansion can stall the parser", () => {
-  const loop = timed(() => parseYaml(withYaml("x_loop: &loop\n  - *loop")));
-  assert.deepEqual(errorsOf(loop.value).map((e) => [e.code, e.path]), [["CONNECTOR_MALFORMED", "/x_loop/0"]]);
+  const loop = timed(() => assert.throws(
+    () => parseYaml(withYaml("x_loop: &loop\n  - *loop")),
+    (e: unknown) => e instanceof MalformedDocumentError && e.code === "FRONTMATTER_CYCLE",
+  ));
   assert.ok(loop.ms < 1000, `${loop.ms}ms`);
   const levels = ["x_b0: &a0 [x,x,x,x,x,x,x,x,x]"];
   for (let i = 1; i <= 9; i++) levels.push(`x_b${i}: &a${i} [${Array(9).fill(`*a${i - 1}`).join(",")}]`);
   assert.ok(levels.join("\n").length <= 500, "a document under 500 bytes that expands to nine to the ninth leaves");
-  const bomb = timed(() => parseYaml(withYaml(levels.join("\n"))));
-  assert.equal(bomb.value.ok, false);
-  assert.ok(errorsOf(bomb.value).every((e) => e.code === "CONNECTOR_MALFORMED" && /aliases/.test(e.message)));
-  assert.ok(errorsOf(bomb.value).length <= 81, "one refusal per alias written, never per expanded leaf");
+  const bomb = timed(() => assert.throws(
+    () => parseYaml(withYaml(levels.join("\n"))),
+    (e: unknown) => e instanceof MalformedDocumentError && e.code === "FRONTMATTER_ALIAS_LIMIT",
+    "the frontmatter parser refuses the expansion before the Connector scan",
+  ));
   assert.ok(bomb.ms < 1000, `${bomb.ms}ms`);
+  const base = parseMarkdown(CONNECTOR_MD);
+  const sharedLevels: Record<string, unknown> = {};
+  let level: unknown = Array(9).fill("x");
+  for (let i = 0; i <= 9; i++) {
+    sharedLevels[`x_b${i}`] = level;
+    level = Array(9).fill(level);
+  }
+  const scan = timed(() => parseConnectorDoc({ id: CONNECTOR_ID, frontmatter: { ...base.frontmatter, ...sharedLevels }, body: base.body }));
+  assert.equal(scan.value.ok, false);
+  assert.ok(errorsOf(scan.value).every((e) => e.code === "CONNECTOR_MALFORMED" && /aliases/.test(e.message)));
+  assert.ok(errorsOf(scan.value).length <= 81, "the Connector scan reports each shared value once, never each expanded leaf");
+  assert.ok(scan.ms < 1000, `${scan.ms}ms`);
   const shared = parseYaml(withYaml("x_shared: &shared { from: summary }").replace("      title: summary", "      title: *shared"));
   assert.deepEqual(errorsOf(shared).map((e) => [e.code, e.path]), [["CONNECTOR_MALFORMED", "/record_sources/0/fields/title"]], "inside a closed block too");
   const scalar = parseYaml(withYaml("x_kind: &k Event").replace("    target_kind: Event", "    target_kind: *k"));

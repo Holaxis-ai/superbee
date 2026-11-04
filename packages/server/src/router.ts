@@ -44,7 +44,7 @@ import {
 } from "@superbee/core/storage";
 import { queryHeads, writeDocVersionedGuarded, BodyReplaceError, captureBodyReplacePosture } from "@superbee/core/engine";
 import { isRequestIdentity } from "@superbee/core/storage";
-import { captureRemoteFrontmatter, RemoteDocumentValueError } from "@superbee/core/document-codec";
+import { assertStorableFrontmatter, captureRemoteFrontmatter, FrontmatterRefusedError, RemoteDocumentValueError } from "@superbee/core/document-codec";
 
 import type {
   OperationOutcomeStore,
@@ -244,6 +244,9 @@ function errorFromCaught(err: unknown): Response {
   if (err instanceof BodyReplaceError) {
     return errorResponse(400, "USAGE", err.message, { id: err.id, ...err.finding });
   }
+  if (err instanceof FrontmatterRefusedError) {
+    return errorResponse(400, "USAGE", err.message, { frontmatter: { code: err.code } });
+  }
   if (err instanceof InvalidInputError) {
     return errorResponse(400, "USAGE", err.message);
   }
@@ -256,7 +259,7 @@ function errorFromCaught(err: unknown): Response {
     // Backends attribute the error to the document's path or its id; the wire names the id.
     const id = err.context === undefined ? undefined : err.context.endsWith(".md") ? err.context.slice(0, -3) : err.context;
     return errorResponse(500, "RUNTIME", err.message, {
-      malformed: { ...(id === undefined ? {} : { id }), reason: err.detail },
+      malformed: { ...(id === undefined ? {} : { id }), reason: err.detail, code: err.code },
     });
   }
   return errorResponse(500, "RUNTIME", "internal server error");
@@ -1229,6 +1232,7 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
       return errorResponse(400, "USAGE", "request body must include a content: string field");
     }
     const writeOptions = writeOptionsFromRequest(req, attribution);
+    assertStorableFrontmatter(payload.content);
     const version = await backend.writeReserved(dir, name, payload.content, writeOptions);
     const status = writeOptions.expectedVersion === null ? 201 : 200;
     return jsonResponse(status, { version }, versionHeaders(version));

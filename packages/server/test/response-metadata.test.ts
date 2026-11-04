@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MemoryBackend, RemoteBackend, type ConceptId, type Frontmatter } from "@superbee/core";
+import { FrontmatterRefusedError, MemoryBackend, RemoteBackend, type ConceptId, type Frontmatter } from "@superbee/core";
 import { REMOTE_LOSSY_METADATA } from "../../core/test/remote-metadata-fixtures.ts";
 import { createRouterForBackend } from "../src/legacy-router.js";
 
@@ -71,7 +71,7 @@ test("selected metadata accessors and serialization hooks are refused without ex
 });
 
 test("locally stored YAML values remain readable locally but cannot be silently changed by a response", async () => {
-  for (const extra of [Infinity, NaN, Buffer.from([1]), (() => { const a: unknown[] = []; a.push(a); return a; })()]) {
+  for (const extra of [Infinity, NaN, Buffer.from([1])]) {
     const backend = new MemoryBackend();
     await backend.write("notes/a", { id: "notes/a", frontmatter: { type: "Note", extra }, body: "hello" });
     const before = await backend.read("notes/a");
@@ -79,4 +79,14 @@ test("locally stored YAML values remain readable locally but cannot be silently 
     assert.equal((await router(routes[0]!())).status, 500);
     assert.deepEqual(await backend.read("notes/a"), before);
   }
+});
+
+test("cyclic frontmatter is refused before it is stored locally", async () => {
+  const cycle: unknown[] = [];
+  cycle.push(cycle);
+  const backend = new MemoryBackend();
+  await assert.rejects(
+    backend.write("notes/a", { id: "notes/a", frontmatter: { type: "Note", extra: cycle }, body: "hello" }),
+    (error: unknown) => error instanceof FrontmatterRefusedError && error.code === "FRONTMATTER_CYCLE",
+  );
 });

@@ -1,3 +1,5 @@
+import type { MalformedDocumentCode } from "./frontmatter-contract.js";
+
 /**
  * Typed rejection for caller-supplied input the engine refuses: unsafe/reserved concept ids,
  * invalid blob keys, missing/empty `frontmatter.type`, malformed option values, and (through
@@ -12,6 +14,19 @@ export class InvalidInputError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "InvalidInputError";
+  }
+}
+
+/**
+ * Frontmatter a write would store that the frontmatter reader refuses. `code` is the reader's
+ * stable code, so a consumer can report the same reason on the write as on a later read.
+ */
+export class FrontmatterRefusedError extends InvalidInputError {
+  readonly code: MalformedDocumentCode;
+  constructor(code: MalformedDocumentCode, detail: string) {
+    super(`frontmatter cannot be stored: ${detail}`);
+    this.name = "FrontmatterRefusedError";
+    this.code = code;
   }
 }
 

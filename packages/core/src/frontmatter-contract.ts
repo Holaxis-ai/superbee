@@ -1,11 +1,46 @@
 /** Runtime-neutral error and predicates shared by storage adapters and the engine. */
 
+/** Stable codes for YAML the bounded loader refuses before or while parsing. */
+export type FrontmatterLimitCode =
+  | "FRONTMATTER_TOO_LARGE"
+  | "FRONTMATTER_TOO_DEEP"
+  | "FRONTMATTER_ALIAS_LIMIT"
+  | "FRONTMATTER_CYCLE";
+
+const FRONTMATTER_LIMIT_CODES: ReadonlySet<string> = new Set<FrontmatterLimitCode>([
+  "FRONTMATTER_TOO_LARGE",
+  "FRONTMATTER_TOO_DEEP",
+  "FRONTMATTER_ALIAS_LIMIT",
+  "FRONTMATTER_CYCLE",
+]);
+
+/** Whether a value names one of the {@link FrontmatterLimitCode}s. */
+export function isFrontmatterLimitCode(value: unknown): value is FrontmatterLimitCode {
+  return typeof value === "string" && FRONTMATTER_LIMIT_CODES.has(value);
+}
+
+/** Stable codes a {@link MalformedDocumentError} carries. */
+export type MalformedDocumentCode = "FRONTMATTER_MALFORMED" | FrontmatterLimitCode;
+
+/** YAML refused by a frontmatter limit. */
+export class FrontmatterLimitError extends Error {
+  override readonly name = "FrontmatterLimitError";
+  readonly code: FrontmatterLimitCode;
+
+  constructor(code: FrontmatterLimitCode, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
 /**
  * A document whose YAML frontmatter could not be parsed. `context` identifies the document when
  * known; `detail` is the first line of the parser error, and `cause` preserves the original error.
+ * `code` is `FRONTMATTER_MALFORMED` unless a frontmatter limit refused the YAML.
  */
 export class MalformedDocumentError extends Error {
   override readonly name = "MalformedDocumentError";
+  readonly code: MalformedDocumentCode;
   readonly context?: string;
   readonly detail: string;
 
@@ -16,6 +51,7 @@ export class MalformedDocumentError extends Error {
       `malformed frontmatter${context ? ` in '${context}'` : ""}: ${detail} — ` +
         `fix the YAML or remove the file`,
     );
+    this.code = cause instanceof FrontmatterLimitError ? cause.code : "FRONTMATTER_MALFORMED";
     if (context !== undefined) this.context = context;
     this.detail = detail;
     if (cause !== undefined) (this as { cause?: unknown }).cause = cause;

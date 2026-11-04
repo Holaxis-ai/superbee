@@ -11,6 +11,7 @@
 import {
   FieldActionError,
   InvalidInputError,
+  FrontmatterRefusedError,
   MalformedDocumentError,
   OkfActorError,
   RemoteError,
@@ -228,11 +229,14 @@ export function toEnvelope(err: CliError): ErrorEnvelope {
  *  - `RecipeLifecycleError` (`@superbee/core/recipe-lifecycle`) -> the code each recipe failure
  *    has always had, through {@link cliErrorFromRecipeLifecycle}, so `recipe add`, `recipe
  *    evolve`, `init`, `kind draft`, `recipes` and the uncaught path agree.
+ *  - `FrontmatterRefusedError` (a write whose frontmatter the reader would refuse) -> USAGE (2),
+ *    with `details.frontmatter.code`.
  *  - `InvalidInputError` (core's typed input-validation rejection: unsafe/reserved ids,
  *    empty type, bad option values) -> USAGE (2). This TYPE is the only path by which a
  *    non-`CliError` throw reaches USAGE — "fix your input" is a claim about the input, so it
  *    must be provably input-derived, never a fallback bucket.
- *  - `MalformedDocumentError` (corrupt STORED bytes; the invocation was valid) -> RUNTIME (1).
+ *  - `MalformedDocumentError` (corrupt STORED bytes; the invocation was valid) -> RUNTIME (1),
+ *    with `details.frontmatter` carrying its stable `code` and the `document` when known.
  *  - `VersionConflict` that escaped a call site's own translation -> STALE_HEAD (5), with
  *    `{expected, actual}` details.
  *  - `RemoteError` -> by ITS server-derived `code`: AUTH_REQUIRED -> exit 4 with an
@@ -252,6 +256,11 @@ export function toEnvelope(err: CliError): ErrorEnvelope {
  *    translate it (NOT_FOUND with the id, USAGE for a missing `promote` source file) before it
  *    ever reaches this fallback — context-free, ENOENT is just a failed syscall.
  */
+/** The structured `details` for a frontmatter refusal: its stable code and, when known, the document. */
+export function frontmatterDetails(err: MalformedDocumentError): Record<string, unknown> {
+  return { frontmatter: { code: err.code, ...(err.context !== undefined ? { document: err.context } : {}) } };
+}
+
 export function classifyBundleError(err: unknown, remoteUrl?: string): CliError {
   if (err instanceof CliError) return err;
   if (isBoardGitError(err)) return cliErrorFromBoardGit(err);
@@ -265,8 +274,9 @@ export function classifyBundleError(err: unknown, remoteUrl?: string): CliError 
     return new CliError("USAGE", refusal.message, { help: refusal.help, details: { actor: err.actor } });
   }
   if (err instanceof FieldActionError) return new CliError("USAGE", err.message, { details: { ...err.details } });
+  if (err instanceof FrontmatterRefusedError) return new CliError("USAGE", err.message, { details: { frontmatter: { code: err.code } } });
   if (err instanceof InvalidInputError) return new CliError("USAGE", err.message);
-  if (err instanceof MalformedDocumentError) return new CliError("RUNTIME", err.message);
+  if (err instanceof MalformedDocumentError) return new CliError("RUNTIME", err.message, { details: frontmatterDetails(err) });
   if (err instanceof VersionConflict) {
     return new CliError("STALE_HEAD", err.message, {
       details: { expected: err.expected, actual: err.actual },

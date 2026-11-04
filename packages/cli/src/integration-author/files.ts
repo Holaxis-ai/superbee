@@ -5,7 +5,11 @@ import { containsCredentialText } from "@superbee/core/connectors";
 
 export const AUTHOR_FILE_LIMITS = Object.freeze({ files: 512, depth: 12, fileBytes: 2 * 1024 * 1024, totalBytes: 8 * 1024 * 1024 });
 
-export interface AuthorDiagnostic { code: string; file: string; path: string; message: string }
+export interface AuthorDiagnostic {
+  code: string; file: string; path: string; message: string;
+  /** The frontmatter reader's stable code when a file's frontmatter was refused. */
+  frontmatter_code?: string;
+}
 export interface AuthorFile { path: string; bytes: string }
 export type AuthorFolder = { ok: true; files: AuthorFile[] } | { ok: false; diagnostics: AuthorDiagnostic[] };
 
