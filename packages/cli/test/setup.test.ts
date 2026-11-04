@@ -53,7 +53,7 @@ function deps(write: (text: string) => void): SetupDeps {
     migrateState: async () => ({
       schema_version: 1, status: "migrated", changed: true,
       records: { catalog: "migrated", credentials: "absent", view_authorizations: 0, sync_state: "left_in_legacy_root", ephemeral_state: "left_in_legacy_root" },
-      legacy_preserved: true, left_behind: { roots: [], conflict_copies: 0, conflict_copies_at: [] }, next: { command: "superbee setup" },
+      legacy_preserved: true, left_behind: { roots: [], conflict_copies: 0, conflict_copies_at: [], scan: "complete", notes: [] }, next: { command: "superbee setup" },
     }),
     hardenState: async () => ({
       schema_version: 1,
