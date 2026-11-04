@@ -11,6 +11,7 @@ import type { ChannelDetection } from "@superbee/board-git";
 import { listCatalogEntries, type CatalogEntryView } from "../catalog.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { CliError } from "../errors.js";
+import { emitDeprecationNotice } from "../deprecation-notices.js";
 import { inspectMcpHosts, MCP_INSTALL_TARGETS, type McpHostStatus, type McpInstallTarget, type McpInstallTargetId } from "../mcp-install-targets.js";
 import { normalizeInstallScope, type InstallScope } from "../install-scope.js";
 import { resolvePersistentInstallAuthority, type PersistentInstallAuthority } from "../install-authority.js";
@@ -266,6 +267,44 @@ async function inspectAll(
   };
 }
 
+/**
+ * An exact recognized hook from the old packages. A bare `superbee` command can also be stale or
+ * path-bound, and is not what this notice is about, so a non-identity state must name an old binary.
+ */
+function usesLegacyHookIdentity(status: Pick<HookStatusInspection["hosts"]["claude_code"], "installed" | "command" | "compatibility">): boolean {
+  if (!status.installed || status.compatibility.state === "current") return false;
+  return status.compatibility.state === "legacy_identity" || /(?:^|[\s/"'])(?:@holaxis\/)?(?:aslite|agentstate-lite)(?:[\s/."']|$)/.test(status.command ?? "");
+}
+
+function legacyHookLocations(inspection: HookStatusInspection | undefined): string[] {
+  if (!inspection) return [];
+  const { hosts, targets } = inspection;
+  return [
+    ...(usesLegacyHookIdentity(hosts.claude_code) ? [targets.claudeSettings] : []),
+    ...(usesLegacyHookIdentity(hosts.codex) ? [targets.codexHooks] : []),
+    ...(usesLegacyHookIdentity(hosts.opencode) ? [targets.legacyOpencodePlugin] : []),
+  ];
+}
+
+/** What only setup can see: old host configuration that no ordinary command ever reads. */
+function emitSetupDeprecationNotices(inspection: SetupInspection): void {
+  const hooks = [...legacyHookLocations(inspection.hook), ...legacyHookLocations(inspection.projectHook)];
+  if (hooks.length) emitDeprecationNotice("DEPRECATED_LEGACY_HOOK", hooks);
+  if (inspection.skill) {
+    const { hosts, legacyTargets } = inspection.skill;
+    const folders = [
+      ...(hosts.claude_code.legacy.state !== "absent" ? [legacyTargets.claude] : []),
+      ...(hosts.codex.legacy.state !== "absent" ? [legacyTargets.codex] : []),
+      ...(hosts.opencode.legacy.state !== "absent" ? [legacyTargets.opencode] : []),
+    ];
+    if (folders.length) emitDeprecationNotice("DEPRECATED_LEGACY_SKILL_FOLDER", folders);
+  }
+  const registrations = inspection.mcp.filter((row) => row.state === "known_legacy");
+  if (registrations.length) {
+    emitDeprecationNotice("DEPRECATED_LEGACY_MCP_REGISTRATION", registrations.map((row) => row.config ?? row.host));
+  }
+}
+
 export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): Promise<void> {
   const stdout = injected.stdout ?? ((text: string) => void process.stdout.write(text));
   // The one setup leaf that signs in: its own flags (a hosted URL, not an agent host id).
@@ -387,10 +426,12 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
   if (requestedHost) {
     const target = MCP_INSTALL_TARGETS.find((candidate) => candidate.id === requestedHost)!;
     const inspection = await inspectAll(scope, [target], deps);
+    emitSetupDeprecationNotices(inspection);
     stdout(render({ setup: planForHost(inspection, requestedHost, scope, deps.invocation().split(/\s+/)) }, resolveMode(values)));
     return;
   }
   const inspection = await inspectAll(scope, MCP_INSTALL_TARGETS, deps);
+  emitSetupDeprecationNotices(inspection);
   const invocation = deps.invocation().split(/\s+/);
   const state = setupStateCapability(inspection.state);
   const stateNext = setupNextForCapability(state, invocation);

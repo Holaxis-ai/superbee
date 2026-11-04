@@ -1,0 +1,248 @@
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import { PROJECT_BINDING_FILE_NAME, SUPERBEE_PROJECT_BINDING_FILE_NAME } from "../src/bundle.js";
+import {
+  DEPRECATION_NOTICES,
+  renderDeprecationNotice,
+  stderrIsReserved,
+  type DeprecationNoticeCode,
+} from "../src/deprecation-notices.js";
+import { canonicalUserStateDir } from "../src/user-state.js";
+import { pluginFixture, registerFixture } from "./source-plugin-fixture.js";
+import { isolatedUserEnv } from "./support/user-env.js";
+
+const CLI = fileURLToPath(new URL("../../superbee/dist/superbee.mjs", import.meta.url));
+
+interface Run {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+/** Without a legacy name in the inherited environment, so each row controls its own trigger. */
+function cleanEnv(home: string, overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env = isolatedUserEnv(home, { SUPERBEE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" });
+  for (const row of DEPRECATION_NOTICES) if (row.env) delete env[row.env];
+  return { ...env, ...overrides };
+}
+
+/** `until` ends a foreground server once its stdout shows it is up. */
+function run(args: string[], cwd: string, env: NodeJS.ProcessEnv, until?: RegExp): Promise<Run> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+      stdout += chunk;
+      if (until?.test(stdout)) child.kill("SIGTERM");
+    });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.once("error", reject);
+    child.once("close", (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+interface Fixture {
+  base: string;
+  home: string;
+  project: string;
+}
+
+async function withFixture(body: (fixture: Fixture) => Promise<void>): Promise<void> {
+  const base = await mkdtemp(join(tmpdir(), "deprecation-notices-"));
+  const home = join(base, "home");
+  const project = join(base, "project");
+  await mkdir(home);
+  await mkdir(project);
+  try {
+    const init = await run(["init", "--dir", "bundle"], project, cleanEnv(home));
+    assert.equal(init.code, 0, init.stdout + init.stderr);
+    await body({ base, home, project });
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+}
+
+async function writeJson(file: string, value: unknown): Promise<void> {
+  await mkdir(join(file, ".."), { recursive: true });
+  await writeFile(file, `${JSON.stringify(value)}\n`);
+}
+
+interface Trigger {
+  args: string[];
+  env?: NodeJS.ProcessEnv;
+  until?: RegExp;
+  /** Where the notice must say it found the old thing. */
+  names?: string;
+  arrange?: (fixture: Fixture) => Promise<void>;
+}
+
+const LOCAL = ["list", "--dir", "bundle", "--json"];
+
+/** Exactly one trigger per table row: the compile-time map is the agreement with the table. */
+const TRIGGERS: Record<DeprecationNoticeCode, Trigger> = {
+  DEPRECATED_ENV_ACTOR: { args: LOCAL, env: { AGENTSTATE_LITE_ACTOR: "process:tester" } },
+  DEPRECATED_ENV_API_KEY: { args: LOCAL, env: { AGENTSTATE_LITE_API_KEY: "secret-value" } },
+  DEPRECATED_ENV_NO_UPDATE_CHECK: { args: LOCAL, env: { ASLITE_NO_UPDATE_CHECK: "1" } },
+  DEPRECATED_ENV_NO_AUTOPULL: { args: LOCAL, env: { AGENTSTATE_LITE_NO_AUTOPULL: "1" } },
+  DEPRECATED_PROJECT_BINDING: {
+    args: ["list", "--json"],
+    names: PROJECT_BINDING_FILE_NAME,
+    arrange: ({ project }) => writeJson(join(project, PROJECT_BINDING_FILE_NAME), { bundle: "./bundle" }),
+  },
+  DEPRECATED_SOURCE_PLUGIN_POINTER: {
+    args: ["source", "plugin", "list", "--json"],
+    arrange: async ({ base, home }) => {
+      const root = await pluginFixture(base);
+      await registerFixture(root, home);
+      const file = join(canonicalUserStateDir(home), "source-plugin-github.json");
+      const row = JSON.parse(await readFile(file, "utf8")).plugins[0];
+      const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+      await writeJson(file, {
+        ...row,
+        package: manifest.name,
+        version: manifest.version,
+        contract: 1,
+        core: manifest.superbeeIntegration.core,
+        profile: { id: "github-issues", version: 1 },
+      });
+    },
+  },
+  DEPRECATED_LEGACY_HOOK: {
+    args: ["setup", "--host", "claude-code", "--json"],
+    names: "settings.json",
+    arrange: ({ home }) => writeJson(join(home, ".claude", "settings.json"), {
+      hooks: { SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "aslite session-start", timeout: 10 }] }] },
+    }),
+  },
+  DEPRECATED_LEGACY_SKILL_FOLDER: {
+    args: ["setup", "--host", "claude-code", "--json"],
+    names: join(".claude", "skills", "aslite"),
+    arrange: async ({ home }) => {
+      await mkdir(join(home, ".claude", "skills", "aslite"), { recursive: true });
+      await writeFile(join(home, ".claude", "skills", "aslite", "SKILL.md"), "old\n");
+    },
+  },
+  DEPRECATED_LEGACY_MCP_REGISTRATION: {
+    args: ["setup", "--host", "opencode", "--json"],
+    names: "opencode.json",
+    arrange: ({ home }) => writeJson(join(home, ".config", "opencode", "opencode.json"), {
+      mcp: { "aslite-views": { type: "local", command: ["aslite", "mcp"] } },
+    }),
+  },
+  DEPRECATED_REMOTE_FLAG: { args: ["list", "--remote", "http://127.0.0.1:9", "--json"] },
+  DEPRECATED_SERVE: { args: ["serve", "--dir", "bundle", "--port", "0", "--json"], until: /listening/ },
+};
+
+test("every row names the old thing, its replacement, a runnable fix and a unique stable code", () => {
+  const codes = DEPRECATION_NOTICES.map((row) => row.code);
+  assert.equal(new Set(codes).size, codes.length);
+  assert.deepEqual([...codes].sort(), Object.keys(TRIGGERS).sort());
+  for (const row of DEPRECATION_NOTICES) {
+    assert.match(row.code, /^DEPRECATED_[A-Z_]+$/);
+    assert.ok(row.old.trim(), row.code);
+    assert.ok(row.replacement.trim(), row.code);
+    assert.ok(row.fix("superbee").trim().length > 10, row.code);
+    const rendered = renderDeprecationNotice(row, "superbee", ["/a\nforged"]);
+    assert.equal(rendered.split("\n").length, 2, "one line, newline terminated");
+    assert.ok(rendered.includes(row.fix("superbee")), row.code);
+    assert.ok(rendered.includes(`[${row.code}]`), row.code);
+  }
+});
+
+test("the binding row spells the same file names bundle.ts resolves", () => {
+  const row = DEPRECATION_NOTICES.find((candidate) => candidate.code === "DEPRECATED_PROJECT_BINDING")!;
+  assert.ok(row.old.includes(PROJECT_BINDING_FILE_NAME));
+  assert.equal(row.replacement, SUPERBEE_PROJECT_BINDING_FILE_NAME);
+});
+
+for (const row of DEPRECATION_NOTICES) {
+  test(`trigger emits ${row.code} once, on stderr only, with its fix`, () => withFixture(async (fixture) => {
+    const trigger = TRIGGERS[row.code];
+    await trigger.arrange?.(fixture);
+    const result = await run(trigger.args, fixture.project, cleanEnv(fixture.home, trigger.env), trigger.until);
+    assert.equal(result.stderr.split(`[${row.code}]`).length - 1, 1, result.stderr);
+    for (const words of row.fix("\0").split("\0")) assert.ok(result.stderr.includes(words), result.stderr);
+    if (trigger.names) assert.ok(result.stderr.includes(trigger.names), result.stderr);
+    assert.ok(!result.stdout.includes(row.code), result.stdout);
+    assert.ok(!result.stderr.includes("secret-value"), "a notice never prints a value");
+  }));
+}
+
+test("a clean run emits no notice", () => withFixture(async ({ home, project }) => {
+  const result = await run(LOCAL, project, cleanEnv(home));
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(result.stderr, "");
+}));
+
+test("a notice in --json mode leaves stdout parseable and identical, with the same exit code", () => withFixture(async ({ home, project }) => {
+  const clean = await run(LOCAL, project, cleanEnv(home));
+  const noticed = await run(LOCAL, project, cleanEnv(home, { AGENTSTATE_LITE_ACTOR: "process:tester" }));
+  assert.ok(noticed.stderr.includes("[DEPRECATED_ENV_ACTOR]"), "the notice must fire for this proof to mean anything");
+  assert.equal(noticed.code, clean.code);
+  assert.equal(noticed.stdout, clean.stdout);
+  assert.equal(typeof JSON.parse(noticed.stdout), "object");
+}));
+
+test("a failing command keeps its exit code and error envelope under a notice", () => withFixture(async ({ home, project }) => {
+  const args = ["doc", "read", "missing/doc", "--dir", "bundle"];
+  const clean = await run(args, project, cleanEnv(home));
+  const noticed = await run(args, project, cleanEnv(home, { AGENTSTATE_LITE_ACTOR: "process:tester" }));
+  assert.notEqual(clean.code, 0);
+  assert.equal(noticed.code, clean.code);
+  assert.equal(noticed.stdout, clean.stdout);
+}));
+
+test("hook commands stay silent on stderr even with a legacy variable and binding", () => withFixture(async ({ home, project }) => {
+  await writeJson(join(project, PROJECT_BINDING_FILE_NAME), { bundle: "./bundle" });
+  const result = await run(["session-start"], project, cleanEnv(home, { AGENTSTATE_LITE_ACTOR: "process:tester" }));
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(result.stderr, "");
+}));
+
+test("a byte channel keeps its stderr receipt parseable and its stdout raw", () => withFixture(async ({ home, project }) => {
+  const env = cleanEnv(home, { AGENTSTATE_LITE_ACTOR: "process:tester" });
+  const write = await run(["doc", "write", "notes/raw", "--dir", "bundle", "--type", "Note", "--body", "payload", "--actor", "process:tester"], project, cleanEnv(home));
+  assert.equal(write.code, 0, write.stdout);
+  const result = await run(["doc", "read", "notes/raw", "--dir", "bundle", "--out", "-", "--json"], project, env);
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(result.stdout.includes("payload"));
+  assert.equal(typeof JSON.parse(result.stderr), "object");
+}));
+
+test("commands whose stderr is a contract are reserved, in every flag spelling", () => {
+  for (const argv of [
+    ["session-start"],
+    ["turn-end", "--json"],
+    ["publish", "--json"],
+    ["doc", "read", "a", "--out", "-"],
+    ["doc", "read", "a", "--body-out=-"],
+    ["pull", "a", "--out=-"],
+    ["doc", "read", "a", "--rendered-out", "-"],
+  ]) assert.equal(stderrIsReserved(argv), true, argv.join(" "));
+  for (const argv of [["publish"], ["doc", "read", "a", "--out", "file"], ["list", "--json"], ["mcp"], []]) {
+    assert.equal(stderrIsReserved(argv), false, argv.join(" "));
+  }
+});
+
+test("a closed stderr reader costs the notice and never changes the exit code", () => withFixture(async ({ home, project }) => {
+  const code = await new Promise<number | null>((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI, ...LOCAL], {
+      cwd: project,
+      env: cleanEnv(home, { AGENTSTATE_LITE_ACTOR: "process:tester" }),
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    child.stderr.destroy();
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  assert.equal(code, 0);
+}));

@@ -51,6 +51,16 @@ return unstructured prose.
     running Superbee artifact before live data. Top-level help is an index; each leaf's `--help`
     describes that leaf and does not dump unrelated family commands.
 
+## Deprecation notices
+
+A path that will be removed warns first, through one owner: `packages/cli/src/deprecation-notices.ts`.
+Each table row names the old thing, its replacement, the exact fix and a stable `DEPRECATED_*` code.
+A notice is one prose line on stderr, shown at most once per process. It never touches stdout, a
+structured record or an exit code. Commands whose stderr is itself a contract carry no notice:
+`session-start` and `turn-end` (the host owns their streams), byte channels such as `doc read --out -`
+(their receipt and errors are on stderr) and `publish --json` (JSON progress lines). See
+`packages/cli/test/deprecation-notices.test.ts`.
+
 ## Standing mutation invariant
 
 All public mutations are idempotent at their advertised semantic boundary. Repeating a request that

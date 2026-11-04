@@ -82,6 +82,7 @@ import {
   type FilesystemMutationLockOptions,
 } from "@superbee/core";
 import { CliError } from "./errors.js";
+import { emitDeprecationNotice } from "./deprecation-notices.js";
 import { cliInvocation } from "./invocation.js";
 import { normalizeServer } from "./config.js";
 import { getApiKeyForOrigin } from "./credentials.js";
@@ -382,6 +383,7 @@ function parseProjectBinding(file: string, raw: string): ProjectBinding {
       { help: `${cliInvocation()} <command> --remote ${commandToken(remote)}` },
     );
   }
+  if (path.basename(file) === PROJECT_BINDING_FILE_NAME) emitDeprecationNotice("DEPRECATED_PROJECT_BINDING", [file]);
   return { file, target: path.resolve(path.dirname(file), value) };
 }
 
@@ -574,6 +576,7 @@ export function resolveApiKeyEnv(env: Readonly<Record<string, string | undefined
  * is required — an ungated bundle (the reference `serve()`) ignores the header either way.
  */
 async function openRemoteBundle(remoteFlag: string): Promise<Bundle> {
+  emitDeprecationNotice("DEPRECATED_REMOTE_FLAG");
   let base: string;
   let origin: string;
   try {

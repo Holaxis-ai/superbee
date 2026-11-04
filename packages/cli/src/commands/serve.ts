@@ -25,6 +25,7 @@ import { parseArgs } from "node:util";
 import { serve as bootServerDefault, type ServeOptions, type ServerHandle } from "@superbee/server";
 import { openBundle } from "../bundle.js";
 import { CliError } from "../errors.js";
+import { emitDeprecationNotice } from "../deprecation-notices.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
@@ -98,6 +99,7 @@ export async function serve(argv: string[], deps: Partial<ServeCliDeps> = {}): P
     stdout(renderUsage(SERVE_USAGE));
     return;
   }
+  emitDeprecationNotice("DEPRECATED_SERVE");
 
   let port = DEFAULT_SERVE_PORT;
   if (values.port !== undefined) {
