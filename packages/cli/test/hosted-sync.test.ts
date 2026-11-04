@@ -2604,3 +2604,35 @@ test("catalog remove refuses a journaled unsent change in the checkout's folder,
   assert.deepEqual((await loadCatalog(h.home)).entries, []);
   assert.ok((await stat(checkoutStoreDir(h.home, (await import("../src/hosted/binding.js").then((m) => m.indexedBindingForPath(h.home, canonical)))!.checkout_id))).isDirectory(), "the store is kept");
 });
+
+test("hosted blob promote keeps ambient actor outside frozen identity and refuses explicit actor before admission", async () => {
+  const h = await harness(), saved = { canonical: process.env.SUPERBEE_ACTOR, legacy: process.env.AGENTSTATE_LITE_ACTOR };
+  try {
+    for (const [index, env] of [
+      { canonical: "process:ambient", legacy: undefined },
+      { canonical: "", legacy: undefined },
+      { canonical: "process:canonical", legacy: "process:conflicting-legacy" },
+    ].entries()) {
+      process.env.SUPERBEE_ACTOR = env.canonical;
+      if (env.legacy === undefined) delete process.env.AGENTSTATE_LITE_ACTOR; else process.env.AGENTSTATE_LITE_ACTOR = env.legacy;
+      const key = `actor-${index}.bin`, file = path.join(h.folder, key);
+      await writeFile(file, "frozen actor boundary");
+      const wire = blobAuthority(h), output: string[] = [], deps = commandDeps(h, wire, output);
+      const before = await retainedBlobRows(h);
+      await assert.rejects(promote([file, "--doc-key", key, "--dir", h.folder, "--actor", "process:explicit"], deps), /hosted blob promote does not support --actor/);
+      assert.deepEqual(await retainedBlobRows(h), before);
+      assert.equal(wire.calls.length, 0);
+      await promote([file, "--doc-key", key, "--dir", h.folder, "--json"], deps);
+      assert.equal(JSON.parse(output.at(-1)!).promote, "committed");
+      assert.equal(wire.calls.length, 1);
+      const rows = await retainedBlobRows(h);
+      assert.equal(rows.length, index + 1);
+      assert.equal(Object.hasOwn(decodePreparedBlobIntent(rows.at(-1)!.prepared).identity, "actor"), false);
+      assert.deepEqual(wire.objects.get(key)?.bytes, Buffer.from("frozen actor boundary"));
+    }
+  } finally {
+    if (saved.canonical === undefined) delete process.env.SUPERBEE_ACTOR; else process.env.SUPERBEE_ACTOR = saved.canonical;
+    if (saved.legacy === undefined) delete process.env.AGENTSTATE_LITE_ACTOR; else process.env.AGENTSTATE_LITE_ACTOR = saved.legacy;
+    await rm(h.home, { recursive: true, force: true }); await rm(h.cwd, { recursive: true, force: true });
+  }
+});
