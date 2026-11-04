@@ -11,7 +11,7 @@
 // Nothing here fetches, commits or pushes: the next plain `sync` shares keep and revise.
 import { constants as fsConstants, existsSync, promises as fs } from "node:fs";
 import path from "node:path";
-import { assertSafeConceptId, conceptIdFromPath, isReservedFile, parseMarkdown, pathFromConceptId, versionOfBytes } from "@superbee/core";
+import { assertSafeConceptId, conceptIdFromPath, isReservedFile, MalformedDocumentError, parseMarkdown, pathFromConceptId, versionOfBytes } from "@superbee/core";
 import { boardRefOf, bundleDirNameForProject, readDocBytesAtRef, repoTopLevel, resolveBundleKey, retargetBoardInterior, runGit } from "@superbee/board-git";
 import { resolveLocalBundleRoute } from "../../bundle.js";
 import { commandFragment, commandToken, type CommandText } from "../../command-text.js";
@@ -24,6 +24,7 @@ import type { SyncCliDeps } from "../../sync-cli.js";
 import { docUpdate } from "../doc/update.js";
 import { docWrite } from "../doc/write.js";
 import { CLAIM_LOST_KEY, claimLostStatement, ENGINE_STAMPED_FIELDS, loadClaimPolicy, recordedOwner } from "./claim-conflict.js";
+import { copyOverHelp } from "./converge.js";
 import { parseSyncArgs } from "./orchestrate.js";
 import { syncVerbNotApplicable } from "../../sync-outcomes.js";
 
@@ -263,6 +264,17 @@ async function divergenceOf(board: Board, local: Buffer, remote: Buffer | null):
   return { differs: rest, claim: { ...(statement !== undefined ? { statement } : {}), only: rest.length === 0 && localDoc.body === remoteDoc.body } };
 }
 
+/** The code that refuses the kept version's frontmatter: `doc update` cannot patch such a document. */
+function keptRefusalCode(remote: Buffer | null, relPath: string): string | null {
+  if (remote === null) return null;
+  try {
+    parseMarkdown(remote.toString("utf8"), relPath);
+    return null;
+  } catch (error) {
+    return error instanceof MalformedDocumentError ? error.code : null;
+  }
+}
+
 function claimFields(divergence: Divergence): Record<string, unknown> {
   return divergence.claim?.statement !== undefined ? { [CLAIM_LOST_KEY]: divergence.claim.statement } : {};
 }
@@ -315,6 +327,7 @@ async function runInspect(args: ConflictArgs, board: Board, cwd: string): Promis
   const deleted = remote === null;
   // A lost claim with nothing else to carry offers no keep: keeping would only retake ownership.
   const claimOnly = divergence.claim?.only === true;
+  const keptRefused = keptRefusalCode(remote, board.relPath);
   return {
     conflict: args.id,
     file: board.file,
@@ -335,14 +348,19 @@ async function runInspect(args: ConflictArgs, board: Board, cwd: string): Promis
             take: "keep the teammate's version: your saved copy is discarded",
             revise: "edit the document to the result you want first, then record it",
           }
-        : {
+        : keptRefused !== null
+          ? {
+              take: "restore the teammate's version: your saved copy is discarded",
+              revise: `doc update cannot read the teammate's version (${keptRefused}): copy your saved version over the document, then record it`,
+            }
+          : {
             keep: "write your saved body over the teammate's with doc update",
             take: "restore the teammate's version: your saved copy is discarded",
             revise: "edit the document to the result you want first, then record it",
           },
     help: deleted
       ? [commandFor(args, "take"), commandFor(args, "keep"), commandFor(args, "revise")]
-      : claimOnly
+      : claimOnly || keptRefused !== null
         ? [commandFor(args, "take"), commandFor(args, "revise")]
         : [commandFor(args, "keep"), commandFor(args, "take"), commandFor(args, "revise")],
   };
@@ -379,6 +397,13 @@ async function runResolve(args: ConflictArgs, choice: Choice, board: Board, cwd:
       throw new CliError("CONFLICT", `'${args.id}' differs only by a claim the teammate's version won, so there is nothing of yours to keep`, {
         details: { id: args.id, claim_only: true, ...claimFields(divergence) },
         help: commandFor(args, "take"),
+      });
+    }
+    const keptRefused = keptRefusalCode(remote, board.relPath);
+    if (keptRefused !== null) {
+      throw new CliError("CONFLICT", `doc update cannot read the teammate's version of '${args.id}' (${keptRefused}), so keep cannot write yours over it; your saved copy was kept`, {
+        details: { id: args.id, saved_at: board.exportPath, reason: keptRefused },
+        help: copyOverHelp(inv, board.exportPath, board.file),
       });
     }
     if (!(await isFile(board.bodyExportPath))) {

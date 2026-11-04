@@ -2,7 +2,8 @@
 // converge strings and help chains, row projection, the push/post-commit failure framing, and
 // the sync receipt + awareness-cache builders.
 import { readFileSync } from "node:fs";
-import { parseMarkdown } from "@superbee/core";
+import path from "node:path";
+import { MalformedDocumentError, parseMarkdown, type MalformedDocumentCode } from "@superbee/core";
 import {
   annotateLanded,
   classifyGitError,
@@ -161,6 +162,7 @@ export function entryLabel(c: Pick<ResolvedConflict, "entry" | "isDoc">): string
 export function convergeDocLine(
   c: Pick<LandedConflict, "entry" | "isDoc" | "exportPath" | "bodyExportPath" | "landed">,
   claim?: ClaimDivergence,
+  keptRefused?: KeptRefusal,
 ): string {
   if (claim?.only && claim.statement !== undefined) return `${CLAIM_LOST_KEY}: ${c.entry} — ${claim.statement}`;
   const label = entryLabel(c);
@@ -177,7 +179,7 @@ export function convergeDocLine(
       const recreate = fixingVerb ? " — re-create with doc write" : "";
       return `${label} — teammate's deletion kept; yours saved at ${c.exportPath}${recreate}`;
     }
-    const reconcile = fixingVerb ? " — reconcile with doc update" : "";
+    const reconcile = fixingVerb ? (keptRefused ? `; doc update cannot read the kept version (${keptRefused.code}), so copy yours over it to reconcile` : " — reconcile with doc update") : "";
     return `${label} — teammate's version kept; yours saved at ${c.exportPath}${reconcile}`;
   })();
   return claim?.statement !== undefined ? `${line}; ${CLAIM_LOST_KEY}: ${claim.statement}` : line;
@@ -192,7 +194,7 @@ export function buildConvergeMessage(
   conflicts: Array<Pick<LandedConflict, "entry" | "isDoc" | "exportPath" | "bodyExportPath" | "landed">>,
   analyses: readonly ConflictAnalysis[],
 ): string {
-  return conflicts.map((c, i) => convergeDocLine(c, analyses[i]?.claim)).join("; ");
+  return conflicts.map((c, i) => convergeDocLine(c, analyses[i]?.claim, analyses[i]?.keptRefused)).join("; ");
 }
 
 /**
@@ -205,6 +207,14 @@ export function convergeHelp(inv: CommandPrefix, id: string, bodyExportPath: str
   return (
     `${inv} sync --show-incoming ${commandToken(id)} → ${inv} doc update ${commandToken(id)} --body-file ${commandToken(bodyExportPath)} → ${inv} sync`
   );
+}
+
+/**
+ * The reconcile chain when the kept version's frontmatter cannot be read: `doc update` has to read
+ * the document it patches, so it refuses. The full-fidelity export replaces the file instead.
+ */
+export function copyOverHelp(inv: CommandPrefix, exportPath: string, file: string): string {
+  return `cp ${commandToken(exportPath)} ${commandToken(file)} → ${inv} sync`;
 }
 
 /** The re-create chain for a doc DELETED upstream: `doc write` (a fresh doc), then sync. */
@@ -230,8 +240,14 @@ export function pickHelp(
 ): string | undefined {
   const usable = (c: LandedConflict, i: number): boolean =>
     c.isDoc && c.bodyExportPath !== null && analyses[i]?.claim?.only !== true;
-  const reconcilable = conflicts.find((c, i) => usable(c, i) && c.landed);
-  if (reconcilable) return convergeHelp(inv, reconcilable.entry, reconcilable.bodyExportPath!);
+  const index = conflicts.findIndex((c, i) => usable(c, i) && c.landed);
+  if (index >= 0) {
+    const reconcilable = conflicts[index]!;
+    const keptRefused = analyses[index]?.keptRefused;
+    return keptRefused && reconcilable.exportPath !== null
+      ? copyOverHelp(inv, reconcilable.exportPath, keptRefused.file)
+      : convergeHelp(inv, reconcilable.entry, reconcilable.bodyExportPath!);
+  }
   const recreatable = conflicts.find(usable);
   if (recreatable) return recreateHelp(inv, recreatable.entry, recreatable.bodyExportPath!);
   return undefined;
@@ -260,12 +276,19 @@ export interface ClaimDivergence {
  * the doc's kind DECLARES claim coordinates that disagree — the ownership statement that replaces
  * the re-apply guidance for exactly those fields.
  */
+/** Why the kept version's frontmatter cannot be read, and the file that holds it. */
+export interface KeptRefusal {
+  code: MalformedDocumentCode;
+  file: string;
+}
+
 export interface ConflictAnalysis {
   /** `{kind, title}` from the kept (HEAD) content; empty when absent or malformed. */
   meta: { kind?: string; title?: string };
   /** Non-claim local frontmatter keys that differ from the kept version's, sorted. */
   frontmatterDiffers: string[];
   claim?: ClaimDivergence;
+  keptRefused?: KeptRefusal;
 }
 
 const EMPTY_ANALYSIS: ConflictAnalysis = { meta: {}, frontmatterDiffers: [] };
@@ -311,8 +334,8 @@ function analyzeConflict(boardPath: string, c: LandedConflict, policy: ClaimPoli
   let kept: ReturnType<typeof parseMarkdown>;
   try {
     kept = parseMarkdown(shown.stdout, c.relPath);
-  } catch {
-    return EMPTY_ANALYSIS;
+  } catch (error) {
+    return error instanceof MalformedDocumentError ? { ...EMPTY_ANALYSIS, keptRefused: { code: error.code, file: path.join(boardPath, c.relPath) } } : EMPTY_ANALYSIS;
   }
   const keptFm = kept.frontmatter as Record<string, unknown>;
   const meta = keptDocMeta(keptFm);
@@ -396,6 +419,7 @@ export function toConflictRows(
     if (c.bodyExportPath !== null && analysis.claim?.only !== true) row.yours_body = c.bodyExportPath;
     if (analysis.frontmatterDiffers.length > 0) row.frontmatter_differs = analysis.frontmatterDiffers;
     row.theirs = c.landed ? "kept" : "kept (deleted upstream)";
+    if (analysis.keptRefused) row.theirs_refused = analysis.keptRefused.code;
     return row;
   });
 }
