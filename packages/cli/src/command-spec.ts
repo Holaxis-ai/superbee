@@ -443,7 +443,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "promote",
         leaves: [publicLeaf("promote", "promote", one, 5, DIR_INGRESS_FILE_SURFACE)],
-        usage: "promote <file> --doc-key <key> [--content-type <mime>] [--expected-version <v>] [--dir <path>] [--remote <url>]",
+        usage: "promote <file> --doc-key <key> [--actor <actor>] [--content-type <mime>] [--expected-version <v>] [--dir <path>] [--remote <url>]",
         summary: "Move a local file's bytes into the store (a .md key routes through the engine; else a blob). In a hosted checkout, promote the canonical target path: the exact bytes and MIME are recorded before authentication, then only that request is submitted; an unchanged retry resumes it",
       },
       {

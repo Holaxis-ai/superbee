@@ -495,13 +495,15 @@ export interface OfflineBlobAdmission {
 export async function admitOfflineBlob(options: {
   operation: "promote" | "delete"; key: string; dir?: string; source?: string;
   expectedVersion?: string; contentType?: string; home: string; cwd: string;
+  /** Transient CLI policy only; never part of the frozen blob request. */
+  explicitActor?: string;
 }, locked?: { store: import("@superbee/core/file-journaled-backend").FileJournaledBackend; meta: { key: string; value: (requestId: string, prepared: string) => unknown } }): Promise<OfflineBlobAdmission | null> {
   const { resolveLocalBundleTarget } = await import("../bundle.js");
   const { bindingForPath, checkoutBindingDigest } = await import("./binding.js");
   const { readCheckoutMarker } = await import("./marker.js");
   const { withIdleCheckoutStore } = await import("./checkout-store.js");
   const { CliError } = await import("../errors.js");
-  const input = captureJournalValue(options);
+  const { explicitActor, ...input } = captureJournalValue(options);
   const target = await resolveLocalBundleTarget(input.dir, input.cwd);
   const binding = await bindingForPath(input.home, target.canonicalRoot);
   if (!binding) {
@@ -511,6 +513,15 @@ export async function admitOfflineBlob(options: {
       throw unboundCopyRefusal({ folder: target.canonicalRoot, marker }, "FORBIDDEN", "this copied or moved checkout must be adopted before ordinary-file admission");
     }
     return null;
+  }
+  // Classification and route-specific refusal belong together, before opening the store.
+  // Ambient OKF actor variables never label hosted blob requests or affect admission.
+  if (explicitActor !== undefined) {
+    const { resolveActor } = await import("../actor.js");
+    resolveActor(explicitActor);
+    throw new CliError("USAGE", "hosted blob promote does not support --actor; the signed-in person is the writer", {
+      help: "omit --actor to promote this hosted blob; actor environment variables do not label hosted blob requests",
+    });
   }
   const refuse = (message: string, reason = "blob_admission_held") => new CliError("CONFLICT", message, { details: { reason, key: input.key, submitted: false }, help: "preserve the file and resolve its checkout state before promoting or deleting it" });
   if (!isOrdinaryBlobKey(input.key)) throw refuse("ordinary-file admission refuses this reserved, document, model, View or publisher-owned key");
