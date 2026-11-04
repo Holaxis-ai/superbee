@@ -2636,3 +2636,17 @@ test("hosted blob promote keeps ambient actor outside frozen identity and refuse
     await rm(h.home, { recursive: true, force: true }); await rm(h.cwd, { recursive: true, force: true });
   }
 });
+
+test("blob admission owns explicit actor refusal after its own hosted classification", async () => {
+  const h = await harness(), key = "admission-actor.bin", file = path.join(h.folder, key);
+  try {
+    await writeFile(file, "must not be admitted");
+    const before = await retainedBlobRows(h);
+    // Call the owner directly: a caller's earlier classification cannot authorize this admission.
+    const request = { operation: "promote" as const, key, source: file, dir: h.folder, home: h.home, cwd: h.cwd, explicitActor: "process:explicit" };
+    await assert.rejects(admitOfflineBlob(request), /hosted blob promote does not support --actor/);
+    assert.deepEqual(await retainedBlobRows(h), before);
+    assert.equal(h.host.writes.length, 0);
+    assert.equal(await readFile(file, "utf8"), "must not be admitted");
+  } finally { await rm(h.home, { recursive: true, force: true }); await rm(h.cwd, { recursive: true, force: true }); }
+});

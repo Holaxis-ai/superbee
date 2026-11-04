@@ -111,8 +111,9 @@ Options:
                             key's extension, else application/octet-stream (hosted replacement preserves observed MIME)
   --expected-version <v>   Compare-and-swap token from a prior pull/promote receipt (omit = expect-
                             absent create; see CAS above)
-  --actor <actor>          Revision attribution: --actor > SUPERBEE_ACTOR > legacy
-                            AGENTSTATE_LITE_ACTOR > absent. Blank values are refused. In v0.2, use
+  --actor <actor>          Revision attribution: --actor overrides environment; SUPERBEE_ACTOR and
+                            legacy AGENTSTATE_LITE_ACTOR must agree when both are set. Blank values
+                            are refused. With neither set, attribution is absent. In v0.2, use
                             human:<id>, process:<id>, or <producer>/<version>. Local/wire blobs
                             forward attribution to storage; filesystem blobs have no actor history.
                             Hosted blobs use the signed-in writer: explicit --actor is unsupported,
@@ -221,20 +222,7 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
   const home = deps.hosted?.auth?.home ?? deps.home ?? homedir(), cwd = deps.cwd ?? deps.hosted?.cwd ?? process.cwd();
   if (deps.home !== undefined && deps.hosted?.auth !== undefined && deps.home !== deps.hosted.auth.home) throw new CliError("USAGE", "offline admission and hosted delivery must use the same private-state home");
   if (!remote && !docRoute) {
-    // Hosted blob requests carry the signed-in writer, not an OKF actor. Refuse the explicit
-    // option before admission rather than silently dropping it or changing frozen request identity.
-    if (values.actor !== undefined) {
-      const { resolveLocalBundleTarget } = await import("../bundle.js");
-      const { bindingForPath } = await import("../hosted/binding.js");
-      const target = await resolveLocalBundleTarget(values.dir, cwd);
-      if (await bindingForPath(home, target.canonicalRoot)) {
-        resolveActor(values.actor);
-        throw new CliError("USAGE", "hosted blob promote does not support --actor; the signed-in person is the writer", {
-          help: "omit --actor to promote this hosted blob; actor environment variables do not label hosted blob requests",
-        });
-      }
-    }
-    const pending = await admitOfflineBlob({ operation: "promote", key, ...(values.dir === undefined ? {} : { dir: values.dir }), source: file, ...(values["expected-version"] === undefined ? {} : { expectedVersion: values["expected-version"] }), ...(values["content-type"] === undefined ? {} : { contentType: values["content-type"] }), home, cwd });
+    const pending = await admitOfflineBlob({ operation: "promote", key, ...(values.actor === undefined ? {} : { explicitActor: values.actor }), ...(values.dir === undefined ? {} : { dir: values.dir }), source: file, ...(values["expected-version"] === undefined ? {} : { expectedVersion: values["expected-version"] }), ...(values["content-type"] === undefined ? {} : { contentType: values["content-type"] }), home, cwd });
     if (pending) {
       const { finishAdmittedBlob } = await import("../hosted/sync.js");
       const resume = commandFragment`${cliInvocation()} promote ${commandToken(file)} --doc-key ${commandToken(key)} --dir ${commandToken(pending.binding.path)}${values["expected-version"] === undefined ? commandFragment`` : commandFragment` --expected-version ${commandToken(values["expected-version"])}`}${values["content-type"] === undefined ? commandFragment`` : commandFragment` --content-type ${commandToken(values["content-type"])}`}`;
