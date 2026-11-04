@@ -212,6 +212,7 @@ test("bundle creation and catalog templates remain distinguishable to the agent"
     hook: { installed: false, compatibility: { state: "absent", reason: "absent" } },
     workspace: { bundle: "selected", catalog: "empty", selected_registered: false },
   })));
+  assert.match(buildSetupPlan(input({ workspace: { bundle: "selected", catalog: "empty", selected_registered: false } })).capabilities.find(capability => capability.id === "catalog")!.reason, /catalog relocate.*sameness is not inferred/);
   assert.equal(uncataloged.action, "choose_value");
   assert.equal(uncataloged.command, undefined);
   assert.equal(uncataloged.command_template, "superbee catalog add <label>");

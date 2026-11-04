@@ -2,7 +2,7 @@ import test, { before } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -145,4 +145,30 @@ test("built CLI: concurrent catalog removes and adds lose no update and remove e
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+
+test("built CLI: explicit relocation of a renamed conventional project preserves its identity", async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "superbee-relocate-cli-")));
+  try {
+    const home = path.join(root, "home");
+    const project = path.join(root, "project");
+    await mkdir(home);
+    await initBundle(path.join(project, ".superbee"));
+    const added = await run(home, ["catalog", "add", "moved-project", "--dir", project, "--json"]);
+    assert.equal(added.status, 0, childDiagnostics([added]));
+    const original = JSON.parse(added.stdout);
+    const moved = path.join(root, "moved-project");
+    await rename(project, moved);
+    const relocated = await run(home, ["catalog", "relocate", "moved-project", "--dir", moved, "--json"]);
+    assert.equal(relocated.status, 0, childDiagnostics([relocated]));
+    const receipt = JSON.parse(relocated.stdout);
+    assert.equal(receipt.id, original.id);
+    assert.equal(receipt.label, original.label);
+    assert.equal(receipt.previous.available, false);
+    assert.equal(receipt.locator.path, path.join(moved, ".superbee"));
+    const resolved = await run(home, ["catalog", "resolve", original.id, "--field", "path"]);
+    assert.equal(resolved.status, 0, childDiagnostics([resolved]));
+    assert.equal(resolved.stdout, path.join(moved, ".superbee") + "\n");
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
