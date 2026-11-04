@@ -582,6 +582,7 @@ async function assertSourceUnchanged(input: UserStateInput, expected: MigrationR
 
 const MAX_CONFLICT_COPY_FILES = 10_000;
 const MAX_CONFLICT_COPY_DIRECTORIES = 2_000;
+const MAX_LEFT_BEHIND_NOTES = 20;
 
 interface ConflictScan {
   files: number;
@@ -594,6 +595,7 @@ interface ConflictScan {
 async function countConflictFiles(directory: string, label: string, scan: ConflictScan): Promise<void> {
   if (scan.limited) return;
   if (scan.directories >= MAX_CONFLICT_COPY_DIRECTORIES) {
+    scan.limited = true;
     scan.notes.push(`${label} not scanned: directory limit of ${MAX_CONFLICT_COPY_DIRECTORIES} reached`);
     return;
   }
@@ -606,6 +608,7 @@ async function countConflictFiles(directory: string, label: string, scan: Confli
     return;
   }
   for (const entry of entries) {
+    if (scan.limited) return;
     if (entry.isDirectory()) {
       await countConflictFiles(join(directory, entry.name), `${label}/${entry.name}`, scan);
     } else if (entry.isFile()) {
@@ -666,7 +669,9 @@ async function leftBehind(input: UserStateInput): Promise<UserStateMigrationRece
       copiesAt.push(label);
     }
   }
-  return { roots, conflict_copies: copies, conflict_copies_at: copiesAt, scan: notes.length === 0 ? "complete" : "partial", notes };
+  const omitted = notes.length - MAX_LEFT_BEHIND_NOTES;
+  const shown = omitted > 0 ? [...notes.slice(0, MAX_LEFT_BEHIND_NOTES), `${omitted} more notes omitted`] : notes;
+  return { roots, conflict_copies: copies, conflict_copies_at: copiesAt, scan: notes.length === 0 ? "complete" : "partial", notes: shown };
 }
 
 async function receipt(

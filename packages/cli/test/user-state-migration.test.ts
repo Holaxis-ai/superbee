@@ -622,6 +622,28 @@ test("the receipt names truncation, unreadable data, symlinks, and a second root
   }
 });
 
+test("left_behind stays bounded under a flood of directories or symlinks", async () => {
+  const root = await home();
+  try {
+    const [first, second] = migrationSourceRoots(root) as [string, string];
+    for (const source of [first, second]) {
+      await mkdir(join(source, "sync", "exports"), { recursive: true, mode: 0o700 });
+      await chmod(dirname(source), 0o700);
+      await chmod(source, 0o700);
+    }
+    await writeLegacy(join(first, "catalog.json"), `${JSON.stringify({ schema_version: 1, entries: [] })}\n`);
+    for (let index = 0; index < 2_100; index += 1) await mkdir(join(first, "sync", "exports", `d${index}`));
+    for (let index = 0; index < 40; index += 1) await symlink(join(first, "catalog.json"), join(second, "sync", "exports", `l${index}`));
+    const receipt = await migrateUserState(root);
+    assert.equal(receipt.left_behind.scan, "partial");
+    assert.ok(receipt.left_behind.notes.length <= 21, `${receipt.left_behind.notes.length} notes`);
+    assert.equal(receipt.left_behind.notes.filter((note) => /directory limit/.test(note)).length, 1);
+    assert.match(receipt.left_behind.notes.at(-1) ?? "", /^\d+ more notes omitted$/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a symlinked sync directory is not followed, and nothing to migrate reports no legacy state", async () => {
   const empty = await home();
   const linked = await home();
