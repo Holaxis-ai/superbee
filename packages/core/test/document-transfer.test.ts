@@ -20,6 +20,7 @@ import { extractMarkdownLinkSpans, extractMarkdownLinks, resolveConceptId, rewri
 import { MemoryBackend } from "../src/memory-backend.js";
 import { parseQualifiedHref } from "../src/qualified-links.js";
 import { InvalidInputError } from "../src/errors.js";
+import { MalformedDocumentError } from "../src/frontmatter-contract.js";
 import type { BundleBinding } from "../src/cross-bundle.js";
 import type { ConceptId, DeleteOptions, Frontmatter, OkfDocument, Version, WriteOptions } from "../src/types.js";
 
@@ -318,6 +319,40 @@ test("conflict selection_empty, source_missing, source_malformed", async () => {
   assert.ok((await conflictsOf(fx, { select: { ids: ["docs/bundle"] } })).includes("source_missing"));
   await put(fx.source, "themes/c", { type: "Theme", title: "C", sources: "not a list" });
   assert.ok((await conflictsOf(fx)).includes("source_malformed"));
+});
+
+/** A source whose `themes/bad` lists but cannot be read, so its type is unknowable. */
+function withUnreadable(source: MemoryBackend, badId: ConceptId): MemoryBackend {
+  const bad = () => new MalformedDocumentError(badId, new Error("unreadable frontmatter"));
+  const override: Record<string, unknown> = {
+    list: async (prefix?: string) => [...(await source.list(prefix)), badId],
+    read: async (id: ConceptId) => { if (id === badId) throw bad(); return source.read(id); },
+    readMany: async (ids: ConceptId[]) => { if (ids.includes(badId)) throw bad(); return source.readMany(ids); },
+  };
+  return new Proxy(source, {
+    get: (target, key) => (key in override ? override[key as string] : typeof (target as never)[key] === "function" ? ((target as never)[key] as Function).bind(target) : (target as never)[key]),
+  });
+}
+
+test("a type selection reports an unreadable source document instead of skipping it", async () => {
+  const fx = await fixture();
+  const broken = withUnreadable(fx.source, "themes/bad");
+  const binding = { ...fx.binding, backend: broken };
+  for (const select of [{ types: ["Theme"] }, { types: ["Theme"], ids: ["memo"] }]) {
+    const overrides = { from: { alias: "wave", binding }, select };
+    const plan = await planDocumentTransfer(fx.request(overrides));
+    assert.equal(plan.ready, false);
+    assert.equal(plan.plan_token, undefined);
+    const malformed = plan.conflicts.filter((c) => c.code === "source_malformed");
+    assert.deepEqual(malformed.map((c) => c.source), ["themes/bad"]);
+    await assert.rejects(applyDocumentTransfer(fx.request(overrides), "document-transfer/v1:sha256:00"), TransferConflictError);
+  }
+  // Selecting by id names the document once, not twice.
+  const byId = await planDocumentTransfer(fx.request({ from: { alias: "wave", binding }, select: { types: ["Theme"], ids: ["themes/bad"] } }));
+  assert.equal(byId.conflicts.filter((c) => c.code === "source_malformed").length, 1);
+  // Without a type selector nothing is claimed about the unreadable document.
+  const idsOnly = await planDocumentTransfer(fx.request({ from: { alias: "wave", binding }, select: { ids: ["memo"] } }));
+  assert.equal(idsOnly.ready, true);
 });
 
 test("conflict target_exists and record_exists", async () => {

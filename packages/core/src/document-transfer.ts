@@ -824,8 +824,11 @@ async function computeTransfer(request: TransferRequest): Promise<Computed> {
     if (SOURCE_SELF_DOCS.has(id)) continue;
     if (types.has(String(doc.frontmatter.type)) || underPrefix(id)) selected.add(id);
   }
+  // An unreadable document's type is unknowable, so a type selection cannot rule it out: report it
+  // rather than let the copy look complete. Ids already reported above are not repeated.
+  const namedIds = new Set(request.select.ids ?? []);
   for (const [id, reason] of source.malformed) {
-    if (!SOURCE_SELF_DOCS.has(id) && underPrefix(id)) {
+    if (!SOURCE_SELF_DOCS.has(id) && (underPrefix(id) || (types.size > 0 && !namedIds.has(id)))) {
       conflicts.push({ code: "source_malformed", source: id, detail: `'${id}' is malformed in the source: ${reason}` });
     }
   }
