@@ -157,10 +157,8 @@ is invalid, cannot be read:
   `FRONTMATTER_TOO_DEEP`, `FRONTMATTER_ALIAS_LIMIT`, `FRONTMATTER_CYCLE` or
   `FRONTMATTER_MALFORMED`, and `details.frontmatter.document` names the file.
 - To find every affected document, run `superbee status` (the `malformed` count and rows) or
-  `superbee list` (the `skipped` rows). `query`, `view list` and `kinds --coverage` also skip it and
-  keep working.
-- **Known limitation:** until it is fixed, `search`, `index generate`, `link list` and `link show`
-  fail for the whole bundle with that same error.
+  `superbee list` (the `skipped` rows). `search`, `query`, `index generate`, `link list`,
+  `link show`, `view list` and `kinds --coverage` also skip it, say so, and keep working.
 - To fix it, edit the lines between the `---` markers in a text editor, or remove the document with
   `superbee doc delete <id>`. `doc update` and `doc field` cannot change a document they cannot read.
 

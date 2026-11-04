@@ -84,11 +84,11 @@ stored. A stored document over a limit, or with invalid YAML, fails `doc read` w
 `details.frontmatter.code` (`FRONTMATTER_TOO_LARGE`, `FRONTMATTER_TOO_DEEP`,
 `FRONTMATTER_ALIAS_LIMIT`, `FRONTMATTER_CYCLE` or `FRONTMATTER_MALFORMED`).
 
-`superbee status` and `superbee list` name affected documents. Until one is fixed, `search`,
-`index generate`, `link list` and `link show` fail for the whole bundle; `list`, `query`, `status`
-and `view list` skip it. `doc update` and `doc field` cannot change it. Editing the frontmatter in
-the file or running `superbee doc delete <id>` restores those commands. Removing or rewriting
-someone's document is the person's call, so ask first.
+`superbee status` and `superbee list` name affected documents. `search`, `query`, `index generate`,
+`link list`, `link show` and `view list` skip it, say so, and keep working. `doc update` and
+`doc field` cannot change it. To clear it, edit the frontmatter in the file or run
+`superbee doc delete <id>`. Removing or rewriting someone's document is the person's call, so ask
+first.
 
 ## Evolve from use
 

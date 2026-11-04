@@ -285,10 +285,10 @@ export over the document. Evidence: `packages/cli/test/hosted-sync-unstorable.te
 `packages/browser-local/test/pull-unstorable.test.ts` and
 `packages/cli/test/sync-git-conflict-verbs.test.ts`.
 
-Known limitation in a local bundle or Git board: one unreadable document fails `search`,
-`index generate`, `link list` and `link show` for the whole bundle with the same `RUNTIME` error.
-`list`, `query`, `status`, `view list` and `kinds --coverage` skip and report it. Editing its
-frontmatter in the file or `doc delete <id>` restores them; `doc update` and `doc field` refuse it.
+In a local bundle or Git board, one unreadable document does not stop whole-bundle reads: `list`,
+`query`, `search`, `index generate`, `link list`, `link show`, `status`, `view list` and
+`kinds --coverage` skip and report it. `doc read`, `doc update` and `doc field` on that document fail
+with the same `RUNTIME` error. Editing its frontmatter in the file or `doc delete <id>` clears it.
 
 ## Document import
 
