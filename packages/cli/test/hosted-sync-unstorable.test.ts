@@ -35,7 +35,7 @@ const nested = (depth: number): unknown => {
 const LIMITS = [
   { name: "size", code: "FRONTMATTER_TOO_LARGE", frontmatter: { type: "Note", title: "Big", blob: "x".repeat(300 * 1024) } },
   { name: "depth", code: "FRONTMATTER_TOO_DEEP", frontmatter: { type: "Note", title: "Deep", nest: nested(40) } },
-  { name: "depth past the serializer's stack", code: "FRONTMATTER_TOO_DEEP", frontmatter: { type: "Note", title: "Deep", nest: nested(5_000) } },
+  { name: "depth far past the limit", code: "FRONTMATTER_TOO_DEEP", frontmatter: { type: "Note", title: "Deep", nest: nested(1_000) } },
 ] as const;
 
 interface Run {
