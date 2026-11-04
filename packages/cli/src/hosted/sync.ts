@@ -2395,7 +2395,7 @@ function bindingBlobScope(binding: CheckoutBinding): BlobTargetScope {
 function withLocalStore<T>(binding: CheckoutBinding, deps: HostedSyncDeps, body: (store: FileJournaledBackend) => Promise<T>, readOnly = true): Promise<T> {
   return filesystemPushRoleLocks(deps.lockWaitMs !== undefined ? { waitMs: deps.lockWaitMs } : {})
     .request(checkoutLockName(binding.path), {}, async () => {
-      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id), readOnly });
+      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id), readOnly }).catch((error: unknown) => { throw storeOpenFailure(error, binding); });
       try { return await body(store); } finally { await store.close(); }
     })
     .catch((error: unknown) => { throw lockFailure(error, binding.path); });

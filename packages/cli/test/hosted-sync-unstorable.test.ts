@@ -606,4 +606,29 @@ test("a corrupt store log is refused the same way, and a held lock reports busy 
   await writeFile(log, bytes);
   assert.equal((await h.checkout()).err?.details?.reason, "store_damaged");
   assert.equal((await h.sync()).err?.details?.reason, "store_damaged");
+  assert.equal((await h.sync("--inspect", "--doc", "notes/alpha")).err?.details?.reason, "store_damaged");
+});
+
+test("a document whose stored form would not read back is held, and the checkout keeps working", async () => {
+  const h = await harness();
+  const body = "---\nSome prose after a rule\n";
+  const serve = () => h.host.docs.set("notes/rule", { frontmatter: {}, body, version: versionOfBytes(`rule${body}`), raw: body } as never);
+  serve();
+
+  const created = await h.checkout();
+  assert.equal(created.err?.exitCode, 5);
+  assert.equal(heldRow(created, "notes/rule").reason, "FRONTMATTER_MALFORMED");
+
+  await h.edit("notes/alpha", "alpha edited\n");
+  const writes = h.host.writes.length;
+  const synced = await h.sync();
+  assert.equal(synced.err?.exitCode, 5, "held, never store_damaged");
+  assert.equal(synced.err?.details?.reason, undefined);
+  assert.equal(heldRow(synced, "notes/rule").reason, "FRONTMATTER_MALFORMED");
+  assert.equal(h.host.writes.length, writes + 1, "the valid edit elsewhere is sent");
+  assert.equal(existsSync(h.file("notes/rule")), false);
+
+  h.host.put("notes/rule", { type: "Note", title: "Fixed" }, "fixed\n");
+  assert.equal((await h.sync()).err, undefined);
+  assert.match(await readFile(h.file("notes/rule"), "utf8"), /fixed/);
 });

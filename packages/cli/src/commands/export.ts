@@ -50,6 +50,7 @@ import { bundleAbsent } from "../hosted/refusals.js";
 import { hostedBundleReferenceText, parseHostedBundleReference } from "../hosted/reference.js";
 import { hostedCheckoutFor } from "../hosted/sync.js";
 import { classifyCheckout, hostedStatus } from "../hosted/status.js";
+import { storeOpenFailure } from "../hosted/sync-rows.js";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 import { bindingHostArgument, CHECKOUT_MARKER_DIR, readCheckoutMarker, removeCheckoutMarker } from "../hosted/marker.js";
 import {
@@ -812,7 +813,7 @@ async function exportInPlace(dirArg: string | undefined, git: boolean, keepUnsen
         throw new CliError("CONFLICT", `the checkout at ${folder} changed while it was exported`, { details: { reason: "checkout_changed", folder }, help: "retry the same command" });
       }
       // Under the lock no sync or edit through Superbee can move the folder's state: decide here.
-      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id), readOnly: true });
+      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id), readOnly: true }).catch((error: unknown) => { throw storeOpenFailure(error, binding); });
       let pending: Set<string>;
       let unstorable: Set<string>;
       try {

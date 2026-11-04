@@ -62,7 +62,7 @@ import { captureBodyReplacePosture, type BodyReplacePosture } from "@superbee/co
  */
 
 import type { Bundle, ConceptId, OkfDocument, ReadResult, StorageBackend, Version, WriteOptions } from "@superbee/core";
-import { FrontmatterRefusedError, isStackExhaustion, stringifyDoc } from "@superbee/core/document-codec";
+import { FrontmatterRefusedError, isStackExhaustion, MalformedDocumentError, parseMarkdown, stringifyDoc } from "@superbee/core/document-codec";
 import { BODY_DELIVERY_LIMITS, performBodyDelivery, prepareBodyDelivery, reconcileBodyReceipt, assertSameBodyDelivery, type BodyDeliveryTransport } from "@superbee/core/governed-body-write";
 import { parseIsoInstant } from "@superbee/core/verification";
 import { versionOfBytes } from "@superbee/core/versioning";
@@ -266,6 +266,19 @@ function unstorableWrite(error: unknown, doc: OkfDocument): UnstorableDocument |
     return null;
   } catch (refusal) {
     return refusal instanceof FrontmatterRefusedError ? unstorableDocument(doc.id, refusal) : null;
+  }
+}
+
+/**
+ * Refuses a document whose stored form this client could not read back, such as a body opening
+ * with a fence under empty frontmatter, so the pull holds it instead of damaging the store.
+ */
+function assertReadsBack(doc: OkfDocument): void {
+  try {
+    parseMarkdown(stringifyDoc(doc.frontmatter, doc.body ?? ""), doc.id);
+  } catch (error) {
+    if (error instanceof MalformedDocumentError) throw new FrontmatterRefusedError("FRONTMATTER_MALFORMED", error.message);
+    throw error;
   }
 }
 
@@ -658,6 +671,7 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
     if (bodyMode) await assertBodyRemoteEdition(remote, bodyMode);
     const id = head.doc.id;
     try {
+      assertReadsBack(head.doc);
       const { version } = await backend.writeJournaled(id, head.doc, {
         ...(premises ? { guard: premises.guard(id) } : {}),
         requireSettled: true,
@@ -2201,6 +2215,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
     }
     const expectedVersion = fenced ? fenced.version : await localVersion(backend, id);
     try {
+      assertReadsBack(head.doc);
       await backend.writeJournaled(id, head.doc, {
         ...(premises ? { guard: premises.guard(id) } : fenced ? { guard: fenced.guard } : {}),
         expectedVersion,
