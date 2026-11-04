@@ -69,7 +69,7 @@ import {
   withUpstreamHelp,
   writeAwarenessCache,
 } from "./converge.js";
-import { removeCarriedCopies, unsettledConflicts, unsettledMessage, unsettledRow } from "../../saved-conflicts.js";
+import { removeCarriedCopies, unsettledConflicts, unsettledRow } from "../../saved-conflicts.js";
 import { showIncoming } from "./show-incoming.js";
 import { SYNC_GATE_CONFIG, declaredSyncGate, runSyncGate } from "./gate.js";
 import { ffSwallowToError, syncOutcomeError, syncOutcomeLine, withSharingDetails } from "../../sync-outcomes.js";
@@ -161,13 +161,14 @@ YOUR version is saved to an export file named in the receipt, and the sync compl
 board is never left mid-state; non-conflicted local changes still land). The run exits 5 with
 one row per conflicted doc and the reconcile chain: \`sync --show-incoming <id>\` to view the kept
 incoming version, \`doc update <id> --body-file <export-file>\` to write your merged version on
-top, \`sync --resolve revise --doc <id>\` to record it, then \`sync\` again to share it.
+top, then \`sync\` again to share it. The saved copy stays listed until you settle it.
 
 A saved copy stays reported until it is settled: \`status\` reads \`needs_decision\` and names the
-document, and every later \`sync\` does its other work, lists it in \`saved_conflicts\` and exits 5
-(\`--pull-only\` lists it and exits 0). A copy the document already carries is settled by itself:
-the next \`sync\` removes it. A repeat conflict on one document keeps the earlier copy and saves the
-new one beside it, so nothing you saved is overwritten.
+document, and every later \`sync\` lists it in \`saved_conflicts\`, with the command that shows it
+and the one command that discards it. Only a new conflict exits 5; a copy from an earlier run does
+not change the exit code. A copy the document already carries is settled by itself: the next
+\`sync\` removes it. A repeat conflict on one document keeps the earlier copy and saves the new one
+beside it, so nothing you saved is overwritten.
 
 A hosted checkout's conflict verbs work on a saved conflict too, over the same flow (sync still
 keeps the teammate's version first): \`--inspect --doc <id>\` shows your saved version and the
@@ -984,19 +985,15 @@ async function receiptPhase(
   if (pushed.gate) receipt.gate = `passed: ${String(pushed.gate.command)} (attempt ${String(pushed.gate.attempt)})`;
   const unsettled = await unsettledConflicts(board.boardPath, board.key);
   const counts = { sent: pushed.documents, received: delta.originDelta.length };
-  if (unsettled.length === 0) {
-    run.stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", counts)), run.mode));
+  // A copy from an earlier run is listed and does not fail this one: the exit reports what this run
+  // did, and a saved copy can wait as long as the person likes. Exit 5 is for a new conflict.
+  if (unsettled.length > 0) {
+    const rows = unsettled.map((conflict) => unsettledRow(conflict, run.inv, run.dirFlag));
+    receipt.saved_conflicts = cap(rows, run.limit);
+    run.stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", { ...counts, conflicts: unsettled.length, next: rows.map((row) => String(row.next)) })), run.mode));
     return;
   }
-  // Everything else this run could do is done; what is left is the person's decision.
-  const message = unsettledMessage(unsettled);
-  const rows = unsettled.map((conflict) => unsettledRow(conflict, run.inv, run.dirFlag));
-  const next = rows.map((row) => String(row.next));
-  if (receipt.sync === "already up to date") receipt.sync = "nothing to send or pull";
-  receipt.saved_conflicts = cap(rows, run.limit);
-  run.stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", { ...counts, conflicts: unsettled.length, next })), run.mode));
-  // A pull-only run asks for nothing to be sent, so it reports the decision and does not fail on it.
-  if (!run.pullOnly) throw new CliError("CONFLICT", message, { help: next[0]!, details: { saved_conflicts: cap(rows, run.limit) }, handled: true });
+  run.stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", counts)), run.mode));
 }
 
 /**

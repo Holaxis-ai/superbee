@@ -199,14 +199,13 @@ export function buildConvergeMessage(
 
 /**
  * The reconcile HELP CHAIN: view the kept incoming version, write your merged version on top,
- * record that as the resolution, sync again. The recording step is what releases the saved copy: a
- * merged document differs from it, and only the person can say the merge is finished. Only ever built for a conflict whose kept version LANDED (see {@link pickHelp}),
+ * sync again. Only ever built for a conflict whose kept version LANDED (see {@link pickHelp}),
  * and ALWAYS over the BODY-ONLY export: `doc update --body-file` treats its input as a body, so
  * the full-fidelity export would nest YAML into it — the chain must be literally executable.
  */
 export function convergeHelp(inv: CommandPrefix, id: string, bodyExportPath: string): string {
   return (
-    `${inv} sync --show-incoming ${commandToken(id)} → ${inv} doc update ${commandToken(id)} --body-file ${commandToken(bodyExportPath)} → ${inv} sync --resolve revise --doc ${commandToken(id)} → ${inv} sync`
+    `${inv} sync --show-incoming ${commandToken(id)} → ${inv} doc update ${commandToken(id)} --body-file ${commandToken(bodyExportPath)} → ${inv} sync`
   );
 }
 
@@ -221,7 +220,7 @@ export function copyOverHelp(inv: CommandPrefix, exportPath: string, file: strin
 
 /** The re-create chain for a doc DELETED upstream: `doc write` (a fresh doc), then sync. */
 export function recreateHelp(inv: CommandPrefix, id: string, bodyExportPath: string): string {
-  return `${inv} doc write ${commandToken(id)} --type <Type> --body-file ${commandToken(bodyExportPath)} → ${inv} sync --resolve revise --doc ${commandToken(id)} → ${inv} sync`;
+  return `${inv} doc write ${commandToken(id)} --type <Type> --body-file ${commandToken(bodyExportPath)} → ${inv} sync`;
 }
 
 /**
@@ -426,6 +425,9 @@ export function toConflictRows(
   });
 }
 
+/** Only the person can say a merge is finished, so a merged document does not release its copy. */
+export const SAVED_COPIES_NOTE = "each saved copy stays listed until sync --resolve revise (or keep or take) settles it or its file is removed";
+
 /**
  * The CONFLICT(5) terminal's envelope for a CONVERGED rebase. ONE landed probe and ONE analysis
  * per conflict feed the message lines, the rows, AND the help-chain pick. The bundle's own kind
@@ -444,7 +446,7 @@ export async function buildConvergeError(
   const rows = toConflictRows(conflicts, analyses);
   const help = pickHelp(inv, conflicts, analyses);
   return new CliError("CONFLICT", buildConvergeMessage(conflicts, analyses), {
-    details: { conflicts: cap(rows, limit) },
+    details: { conflicts: cap(rows, limit), saved_copies: SAVED_COPIES_NOTE },
     ...(help ? { help } : {}),
   });
 }

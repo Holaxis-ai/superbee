@@ -6,7 +6,7 @@
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { conceptIdFromPath, parseMarkdown } from "@superbee/core";
-import { isConceptDocPath, listSavedCopies, type SavedCopy } from "@superbee/board-git";
+import { boardRefOf, isConceptDocPath, listSavedCopies, readDocBytesAtRef, type SavedCopy } from "@superbee/board-git";
 import { commandFragment, commandToken, type CommandPrefix, type CommandText } from "./command-text.js";
 import { defaultSyncStore } from "./cursor.js";
 
@@ -56,6 +56,11 @@ export interface UnsettledConflict {
   id: string | null;
   /** Oldest first; the verbs settle them in this order, so the newest has the last word. */
   copies: SavedCopy[];
+  /**
+   * The verb that discards a copy and leaves the document as it is: take when the document equals
+   * the upstream version or is absent, revise when it holds local edits a take would undo.
+   */
+  discardWith: "take" | "revise";
 }
 
 async function classify(boardPath: string, key: string): Promise<{ unsettled: UnsettledConflict[]; carried: SavedCopy[] }> {
@@ -69,7 +74,9 @@ async function classify(boardPath: string, key: string): Promise<{ unsettled: Un
       carried.push(copy);
       continue;
     }
-    const entry = byPath.get(copy.relPath) ?? { relPath: copy.relPath, id: isConceptDocPath(copy.relPath) ? conceptIdFromPath(copy.relPath) : null, copies: [] };
+    const upstream = readDocBytesAtRef(boardPath, `refs/remotes/${boardRefOf(boardPath)}`, copy.relPath);
+    const discardWith = current !== null && (upstream === null || !current.equals(upstream)) ? "revise" : "take";
+    const entry = byPath.get(copy.relPath) ?? { relPath: copy.relPath, id: isConceptDocPath(copy.relPath) ? conceptIdFromPath(copy.relPath) : null, copies: [], discardWith };
     entry.copies.push(copy);
     byPath.set(copy.relPath, entry);
   }
@@ -101,6 +108,7 @@ export function inspectCommand(inv: CommandPrefix, id: string, dir: string | und
 /** The row `sync` reports for one unsettled file. */
 export function unsettledRow(conflict: UnsettledConflict, inv: CommandPrefix, dir: string | undefined): Record<string, unknown> {
   const newest = conflict.copies[conflict.copies.length - 1]!;
+  const suffix = dir === undefined ? commandFragment`` : commandFragment` --dir ${commandToken(dir)}`;
   return {
     ...(conflict.id !== null ? { id: conflict.id } : { path: conflict.relPath }),
     saved_at: newest.file,
@@ -109,6 +117,10 @@ export function unsettledRow(conflict: UnsettledConflict, inv: CommandPrefix, di
       conflict.id !== null
         ? String(inspectCommand(inv, conflict.id, dir))
         : `merge what you need into ${conflict.relPath} by hand, then delete the saved file`,
+    discard:
+      conflict.id !== null
+        ? String(commandFragment`${inv} sync --resolve ${commandToken(conflict.discardWith)} --doc ${commandToken(conflict.id)}${suffix}`)
+        : `rm ${commandToken(conflict.copies[0]!.file)}`,
   };
 }
 

@@ -477,7 +477,9 @@ export async function sharedGitBoardAt(dir: string | undefined, home: string = h
   const block = await gitBoardSyncBlock(board);
   return {
     root,
-    changed: block.state !== "clean",
+    // A saved conflict copy alone sends nothing, so it neither syncs nor blocks a turn. A new conflict
+    // still does: its sync exits 5 as any conflict does.
+    changed: block.state === "needs_decision" ? ((block.ahead as number | null) ?? 0) + ((block.uncommitted as number | null) ?? 0) > 0 : block.state !== "clean",
     lastFetch: typeof block.last_fetch === "string" ? block.last_fetch : null,
   };
 }
@@ -510,7 +512,7 @@ function gitReasonFor(root: string, error: CliError): string {
     lines.push(
       error.help
         ? `Next: ${error.help}`
-        : `See the kept version with ${cliInvocation()} sync --show-incoming <id>, write your merged version with doc update <id> --body-file <export-file>, record it with ${cliInvocation()} sync --resolve revise --doc <id>, then run: ${sync}`,
+        : `See the kept version with ${cliInvocation()} sync --show-incoming <id>, write your merged version with doc update <id> --body-file <export-file>, then run: ${sync}`,
     );
   }
   // A board moved to hosted names the work that stays behind in this folder.

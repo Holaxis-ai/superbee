@@ -28,7 +28,8 @@ import { homedir } from "node:os";
 import { realpath } from "node:fs/promises";
 import { bundleHomeAt, gitBoardSyncBlock, unboundCopyOf } from "../bundle-home.js";
 import { commandFragment, commandToken } from "../command-text.js";
-import { inspectCommand } from "../saved-conflicts.js";
+import { resolveBundleKey } from "@superbee/board-git";
+import { unsettledConflicts, unsettledRow } from "../saved-conflicts.js";
 
 export const STATUS_USAGE = `superbee status — read-only whole-bundle health report (bundle lint)
 
@@ -541,12 +542,16 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     const block = await gitBoardSyncBlock(facts.board);
     const record: Record<string, unknown> = { home: "git", sync: block, ...unboundCopyOf(facts), ...out };
     if (block.state !== "clean") {
-      const ids = (block.conflict_ids ?? []) as string[];
+      const first = block.conflicts ? (await unsettledConflicts(facts.board.top, resolveBundleKey(facts.board.top)))[0] : undefined;
+      const row = first ? unsettledRow(first, cliInvocation(), values.dir) : undefined;
+      const onlySaved = block.state === "needs_decision" && !block.ahead && !block.uncommitted;
       record.help = [
-        ...(ids.length > 0 ? [inspectCommand(cliInvocation(), ids[0]!, values.dir)] : []),
-        values.dir === undefined
-          ? `${cliInvocation()} sync`
-          : commandFragment`${cliInvocation()} sync --dir ${commandToken(values.dir)}`,
+        ...(row ? [String(row.next), String(row.discard)] : []),
+        ...(onlySaved
+          ? []
+          : [values.dir === undefined
+              ? `${cliInvocation()} sync`
+              : commandFragment`${cliInvocation()} sync --dir ${commandToken(values.dir)}`]),
       ];
     }
     stdout(render(record, resolveMode(values)));

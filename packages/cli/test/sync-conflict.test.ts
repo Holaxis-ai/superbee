@@ -2,7 +2,7 @@
 // `sync --show-incoming <id>` conflict viewer, over the U0 git harness.
 //
 // The BINDING convergence acceptance test lives here: follow the documented reconcile chain
-// (show-incoming → doc update --body-file → sync --resolve revise → sync) and assert ALL THREE:
+// (show-incoming → doc update --body-file → sync) and assert ALL THREE:
 //   (i)   landed content == origin/board's version,
 //   (ii)  the export file is BYTE-IDENTICAL to the local version,
 //   (iii) the teammate's version is NOT clobbered in a two-founder e2e (their pushed content
@@ -122,7 +122,7 @@ function assertPristine(repo: { name: string; board: string }, topoLabel: string
 
 // ── the BINDING convergence acceptance test ─────────────────────────────────────
 
-test("U3b BINDING: converge → show-incoming → doc update → resolve revise → sync: all three asserts, teammate never clobbered", async () => {
+test("U3b BINDING: converge → show-incoming → doc update → sync — all three asserts, teammate never clobbered", async () => {
   const topo = await makeTwoCloneTopology();
   const { homes, cleanup } = await tempHomes(2);
   const [homeA, homeB] = homes;
@@ -172,11 +172,7 @@ test("U3b BINDING: converge → show-incoming → doc update → resolve revise 
     const updated = await runDoc(["update", "tasks/seed-one", "--body-file", mergedFile, "--dir", topo.b.board]);
     assert.equal(updated.err, undefined, updated.err?.message);
 
-    // Step 3: record the merge as the resolution, which releases the saved copy.
-    const recorded = await runSync(homeB!, ["--resolve", "revise", "--doc", "tasks/seed-one", "--dir", topo.b.root]);
-    assert.equal(recorded.err, undefined, recorded.err?.message);
-
-    // Step 4: sync again. The conflict is CLEARED and the merged version pushes cleanly, exit 0.
+    // Step 3: sync again — the conflict is CLEARED; the merged version pushes cleanly, exit 0.
     const cleared = await runSync(homeB!, ["--dir", topo.b.root]);
     assert.equal(cleared.err, undefined, `the reconcile chain must clear the conflict: ${cleared.err?.message}`);
     assert.match(cleared.out, /committed: 1/);
@@ -290,7 +286,7 @@ test("U3b: a reserved-file (log.md) conflict — kept-upstream, exported, labele
 
 // ── non-conflicted docs in the same sync still land ─────────────────────────────
 
-test("U3b: non-conflicted docs in the SAME sync still land locally, and the NEXT sync pushes them", async () => {
+test("U3b: non-conflicted docs in the SAME sync still land locally, and the NEXT sync pushes them (exit 0)", async () => {
   const topo = await makeTwoCloneTopology();
   const { homes, cleanup } = await tempHomes(2);
   const [homeA, homeB] = homes;
@@ -319,14 +315,10 @@ test("U3b: non-conflicted docs in the SAME sync still land locally, and the NEXT
     // The conflicted run never pushes — origin is untouched until the reconciling sync.
     assert.equal(originBoardHead(topo), originAfterA, "origin untouched by the conflicted run");
 
-    // The NEXT sync pushes the landed work and still names the saved copy, since no decision was made.
+    // The NEXT sync (no new edits — B accepts the kept version) pushes the landed work, exit 0.
     const next = await runSync(homeB!, ["--dir", topo.b.root]);
-    assert.equal(next.err?.exitCode, 5);
+    assert.equal(next.err, undefined, next.err?.message);
     assert.match(next.out, /pushed: 1/);
-    // B accepts the kept version: the run after that is clean.
-    assert.equal((await runSync(homeB!, ["--resolve", "take", "--doc", "tasks/seed-one", "--dir", topo.b.root])).err, undefined);
-    const settled = await runSync(homeB!, ["--dir", topo.b.root]);
-    assert.equal(settled.err, undefined, settled.err?.message);
     assert.match(git(topo.origin, ["show", "board:notes/unrelated.md"]), /no conflict here/);
     assert.equal(
       gitTry(topo.origin, ["merge-base", "--is-ancestor", originAfterA, "board"]).status,
@@ -385,7 +377,6 @@ test("U3b fix 1: a NON-ASCII doc id (tasks/café) converges — no quotepath cor
     await writeFile(mergedFile, "# Café\n\nA's café\n\nB's café\n");
     const updated = await runDoc(["update", "tasks/café", "--body-file", mergedFile, "--dir", topo.b.board]);
     assert.equal(updated.err, undefined, updated.err?.message);
-    assert.equal((await runSync(homeB!, ["--resolve", "revise", "--doc", "tasks/café", "--dir", topo.b.root])).err, undefined);
     const cleared = await runSync(homeB!, ["--dir", topo.b.root]);
     assert.equal(cleared.err, undefined, `the reconcile chain must clear the conflict: ${cleared.err?.message}`);
     assert.match(git(topo.origin, ["show", "board:tasks/café.md"]), /A's café[\s\S]*B's café/);
@@ -439,13 +430,12 @@ test("U3b deletion conflict (upstream deleted, local edited): deletion kept, you
     assert.equal(isMidRebase(topo.b), false);
     assertPristine(topo.b, "B after upstream-deletion converge");
 
-    // The re-create chain clears it: doc write over the BODY-ONLY export (a fresh doc) → revise → sync
+    // The re-create chain clears it: doc write over the BODY-ONLY export (a fresh doc) → sync
     // pushes, exit 0 — and the re-created doc's frontmatter is CLEAN (no nested YAML).
     const recreated = await runDoc([
       "write", "tasks/seed-two", "--type", "Task", "--title", "Seed two", "--body-file", bodyExportPath, "--dir", topo.b.board,
     ]);
     assert.equal(recreated.err, undefined, recreated.err?.message);
-    assert.equal((await runSync(homeB!, ["--resolve", "revise", "--doc", "tasks/seed-two", "--dir", topo.b.root])).err, undefined);
     const cleared = await runSync(homeB!, ["--dir", topo.b.root]);
     assert.equal(cleared.err, undefined, cleared.err?.message);
     const originDoc = git(topo.origin, ["show", "board:tasks/seed-two.md"]);
@@ -1027,7 +1017,6 @@ test("U3b round-2 REQUIRED 2: a DOTTED doc id (notes/v1.2) conflicts as a DOC �
     await writeFile(mergedFile, "# v1.2\n\nA's revision\n\nB's revision\n");
     const updated = await runDoc(["update", "notes/v1.2", "--body-file", mergedFile, "--dir", topo.b.board]);
     assert.equal(updated.err, undefined, updated.err?.message);
-    assert.equal((await runSync(homeB!, ["--resolve", "revise", "--doc", "notes/v1.2", "--dir", topo.b.root])).err, undefined);
     const cleared = await runSync(homeB!, ["--dir", topo.b.root]);
     assert.equal(cleared.err, undefined, cleared.err?.message);
     assert.match(git(topo.origin, ["show", "board:notes/v1.2.md"]), /A's revision[\s\S]*B's revision/);
@@ -1091,7 +1080,7 @@ test("U3b round-2 REQUIRED 3: the emitted help chain executes CHARACTER-FOR-CHAR
     // Constraint (a): execute the emitted chain EXACTLY as printed — every step, verbatim.
     const help = conflicted.err!.help!;
     const steps = help.split(" → ");
-    assert.equal(steps.length, 4, `the chain has four steps: ${help}`);
+    assert.equal(steps.length, 3, `the chain has three steps: ${help}`);
     for (const step of steps) {
       await runChainStep(homeB!, topo.b.root, step);
     }

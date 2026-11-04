@@ -288,9 +288,10 @@ export over the document. Evidence: `packages/cli/test/hosted-sync-unstorable.te
 A Git board's saved conflict copy stays reported until it is settled. The copies themselves are the
 record: there is no separate list. While one is unsettled, `status` reports `sync.state:
 needs_decision` (`behind` and `diverged` keep their names) with `sync.conflicts` and
-`sync.conflict_ids`, `session-start` and `home` carry a `saved_conflicts` line, and `sync` does its
-other work, lists rows in `saved_conflicts` and exits 5 with `conflicts` counted in its receipt
-(`--pull-only` lists them and exits 0). A copy is settled by `--resolve`, by removing the file, or
+`sync.conflict_ids`, `session-start` and `home` carry a `saved_conflicts` line, and `sync` and
+`--pull-only` list rows in `saved_conflicts` with `next` and a one-command `discard`, counting them in
+`conflicts`. Only a new conflict exits 5: a copy from an earlier run does not change the exit code,
+make `publish` refuse, or make turn end sync or block. A copy is settled by `--resolve`, by removing the file, or
 when the document already carries its content, which includes a copy that differs only by a claim
 the teammate's version won; the next full `sync` removes a carried copy. A repeat conflict on one
 document never replaces an earlier copy: the new copy lands beside it, and two racing syncs each keep
@@ -298,8 +299,8 @@ theirs. `--inspect` and `--resolve` take a document's copies oldest first, name 
 `later_copies`, and a `take` while a later copy waits leaves the document alone. `--resolve keep` exits
 5 with `details.frontmatter_differs` and nothing changed when the saved copy differs from the kept
 version in any frontmatter field other than engine stamps and lost-claim fields, because it writes
-only the body; `--resolve revise` exits 5 while the document still equals the teammate's version and
-does not carry the copy. Evidence: `packages/cli/test/sync-git-conflict-visible.test.ts` and
+only the body; `--resolve revise` exits 5 while the document still equals the version the conflict
+kept and does not carry the copy. Evidence: `packages/cli/test/sync-git-conflict-visible.test.ts` and
 `packages/board-git/test/saved-copies.test.ts`.
 
 In a local bundle or Git board, one unreadable document does not stop whole-bundle reads: `list`,

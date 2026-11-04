@@ -406,6 +406,19 @@ async function runDocVerb(verb: typeof docUpdate, argv: string[]): Promise<Recor
   }
 }
 
+/**
+ * True when the upstream version of the document was committed after this copy was saved, which
+ * means it is a later version (a merge already pushed), and not the one the conflict kept. Commit
+ * times have whole seconds, so a commit in the same second as the save reads as the kept version;
+ * that errs toward the refusal, whose take settles the copy just the same.
+ */
+async function upstreamMovedSinceSaved(board: Board): Promise<boolean> {
+  const committed = runGit(board.root, ["log", "-1", "--format=%ct", `refs/remotes/${boardRefOf(board.root)}`, "--", board.relPath]);
+  const seconds = Number.parseInt(committed.stdout.trim(), 10);
+  if (committed.status !== 0 || !Number.isFinite(seconds)) return false;
+  return seconds > Math.floor((await fs.stat(board.exportPath)).mtimeMs / 1000);
+}
+
 async function discardSavedCopy(board: Board): Promise<void> {
   await fs.rm(board.exportPath, { force: true });
   if (board.bodyExportPath !== null) await fs.rm(board.bodyExportPath, { force: true });
@@ -495,7 +508,7 @@ async function runResolve(args: ConflictArgs, choice: Choice, board: Board, cwd:
         help: commandFor(args, "keep"),
       });
     }
-    if (remote !== null && present.equals(remote) && !(await copyIsCarried(board.root, board.relPath, local, present))) {
+    if (remote !== null && present.equals(remote) && !(await copyIsCarried(board.root, board.relPath, local, present)) && !(await upstreamMovedSinceSaved(board))) {
       throw new CliError("CONFLICT", `'${args.id}' still equals the teammate's version, so revise would discard your saved copy with nothing carried; edit it to the result you want first, or use take to discard your copy`, {
         details: { id: args.id, saved_at: board.exportPath },
         help: commandFor(args, "take"),
