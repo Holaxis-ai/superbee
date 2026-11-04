@@ -634,7 +634,7 @@ test("a matched worker refusing browser handoff never falls back to a reusable t
 });
 
 // Guards the default signal disposition only: a worker that installs a handler and stops exiting
-// fails here, while graceful connection shutdown has its own coverage through `ui --stop`.
+// fails here. It says nothing about graceful connection shutdown, which SIGTERM never reaches.
 test("the default SIGTERM disposition ends a managed UI worker promptly with an SSE stream open", { timeout: 60_000 }, async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "superbee-managed-sigterm-")));
   const home = path.join(root, "home");
