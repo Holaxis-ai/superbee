@@ -426,7 +426,9 @@ export async function resolveIndexRecipe(index: RecipeIndex, recipeId: string, r
     if (error instanceof MalformedDocumentError) return refusedFrontmatter(error);
     throw error;
   }
-  if (!parsed.ok) return mismatch("source_digest", `its files do not parse (${parsed.error.code}: ${parsed.error.message})`);
+  if (!parsed.ok) {
+    return { ok: false, error: { ...parsed.error, message: `recipe '${entry.id}' from index '${index.source}' does not parse: ${parsed.error.message}` } };
+  }
   const recipe = parsed.recipe;
   if (recipe.id !== entry.id || recipe.version !== entry.version) {
     return mismatch("source_digest", `the files declare '${recipe.id}' version '${recipe.version}', the index pins '${entry.id}' version '${entry.version}'`);

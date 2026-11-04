@@ -616,3 +616,15 @@ test("cookbook conflict: targets that differ only by case collide", async () => 
     ids: ["views-registry/Board", "views-registry/board", "views/Board.html", "views/board.html"],
   });
 });
+
+test("pinned files that do not parse report the parser's refusal, not a digest mismatch", async () => {
+  const files: RecipeFile[] = [{ path: "recipe.md", bytes: "---\ntype: Recipe\nid: broken\nversion: \"1\"\n---\n" }];
+  const entry = { id: "broken", version: "1", ...HOLAXIS, source_digest: `sha256:${"0".repeat(64)}`, files_digest: pin(files), root: "r/broken", files: ["recipe.md"] };
+  const read: RecipeIndexReader = async () => utf8(files[0]!.bytes);
+  const result = await resolveIndexRecipe(indexOf("alpha", [entry], []), "broken", read);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.notEqual(result.error.code, "RECIPE_INDEX_DIGEST_MISMATCH");
+  assert.equal(result.error.digest, undefined);
+  assert.match(result.error.message, /recipe 'broken' from index 'alpha' does not parse/);
+});
