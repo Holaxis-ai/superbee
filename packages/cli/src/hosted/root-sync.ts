@@ -22,12 +22,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { assertStorableFrontmatter, FrontmatterRefusedError } from "@superbee/core/document-codec";
-import type { JournaledBackend } from "@superbee/core";
+import type { JournaledBackend, MalformedDocumentCode } from "@superbee/core";
 import { RootWriteInputError, rootLanding, rootVersionOf, rootWriteRequest, ROOT_BUSY_CODES, type HostedRootWrites, type RootWriteOutcome } from "@superbee/core/hosted-transport";
 
 import { digestOf, placeNew, replaceGuarded, ROOT_INDEX } from "./projection.js";
 import type { UnstorableDocument } from "@superbee/browser-local";
-import { ACCESS_WITHDRAWN_MESSAGE, READ_ONLY_MESSAGE, unstorableHeld, type SyncRow } from "./sync-rows.js";
+import { ACCESS_WITHDRAWN_MESSAGE, isUnstorableRow, READ_ONLY_MESSAGE, unstorableHeld, type SyncRow } from "./sync-rows.js";
 import { utf8, type ProjectionRecord } from "./sync-scan.js";
 
 /** The host's root as the capabilities answer serves it, or null when the bundle has none. */
@@ -232,6 +232,12 @@ async function settleOutcome(context: RootStepContext, outcome: RootWriteOutcome
  */
 export async function syncRoot(context: RootStepContext): Promise<RootStepReport> {
   const report = await rootStep(context);
+  const held = report.row && isUnstorableRow(report.row) ? { code: report.row.reason as MalformedDocumentCode, message: report.row.message } : null;
+  if (held?.code !== context.projection.rootHeld?.code) {
+    if (held) context.projection.rootHeld = held;
+    else delete context.projection.rootHeld;
+    await context.persist();
+  }
   // Kept for a status preview, which makes no request: a conflict this run reported stands until resolved.
   const conflicted = report.row?.state === "conflict";
   if (conflicted !== (context.projection.rootConflicted === true)) {

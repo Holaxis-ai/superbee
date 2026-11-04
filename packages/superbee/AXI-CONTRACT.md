@@ -269,7 +269,11 @@ a `held` row whose reason is the document's `FRONTMATTER_*` code, `status` is `i
 command exits 5 as for any held row. The document is not placed, the rest of the bundle is, and
 local edits to other documents are sent. It is read again on every later sync, so once it is
 repaired where it is stored the next sync places it. It never reads as a deletion, and an edit of an
-older copy in the folder comes back as a conflict. `sync --inspect` on such a conflict, the root
+older copy in the folder comes back as a conflict. A copy the checkout stored before these limits
+existed is held the same way and is replaced by the host's repair or deletion; a local edit of it
+stays in the folder and is never sent over the host's version. `status`, a repeated `checkout` and
+`publish` name the same holds, and `export --in-place` refuses them as it does other held files
+unless `--keep-unsent` is given. `sync --inspect` on such a conflict, the root
 `index.md` included, carries `remote.unstorable` with the `code` and `message`, and
 `remote.full_version` and `take_unavailable` say what cannot be shown or taken. `--resolve take` is
 refused with exit 5, `details.reason` set to the code, and nothing changed; `keep` sends your version

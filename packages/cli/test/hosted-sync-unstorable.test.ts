@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { cp, mkdtemp, readFile, realpath, unlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -14,6 +14,16 @@ import { CliError } from "../src/errors.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { bindingForPath } from "../src/hosted/binding.js";
 import { hostedPull } from "../src/hosted/sync.js";
+import { hostedStatus } from "../src/hosted/status.js";
+import { publish } from "../src/commands/publish.js";
+import { exportCommand } from "../src/commands/export.js";
+import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
+import { baseKey } from "@superbee/browser-local";
+import { FakeCreateHost } from "./support/fake-hosted-create.js";
+import { plantStoredDocument } from "./support/plant-stored-document.js";
+import { checkoutStoreDir } from "../src/hosted/binding.js";
+import { digestOf } from "../src/hosted/projection.js";
+import { readProjection, writeProjection } from "../src/hosted/sync-scan.js";
 import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
 
 const nested = (depth: number): unknown => {
@@ -401,4 +411,179 @@ test("a pull with no push never sends a kept front page over a held root", async
   const binding = await bindingForPath(h.home, h.folder);
   assert.equal((await hostedPull(binding!, { auth: h.auth, cwd: h.cwd, fetch: h.host.fetch } as never)).state, "pulled");
   assert.equal((h.host as unknown as { storedRoot: { version: string } }).storedRoot.version, version);
+});
+
+
+/**
+ * A checkout that took in an over-limit `notes/old` before the limits existed: the host, the store
+ * and the folder all hold those bytes, and the record says they are in sync.
+ */
+async function storedBeforeTheLimits(): Promise<Harness & { version: string; raw: string }> {
+  const h = await harness();
+  assert.equal((await h.checkout()).err, undefined);
+  const version = h.host.putUnchecked("notes/old", LIMITS[0].frontmatter, "old body\n");
+  const raw = h.host.docs.get("notes/old")!.raw;
+  const binding = (await bindingForPath(h.home, h.folder))!;
+  const directory = checkoutStoreDir(h.home, binding.checkout_id);
+  const store = await FileJournaledBackend.open({ directory });
+  await store.writeMeta(baseKey("notes/old"), { version, content: raw });
+  const projection = await readProjection(h.home, binding.checkout_id, store);
+  projection.files["notes/old"] = { digest: digestOf(Buffer.from(raw, "utf8")), version };
+  await writeProjection(h.home, binding.checkout_id, projection);
+  await store.close();
+  await plantStoredDocument(directory, "notes/old", raw, version);
+  await writeFile(h.file("notes/old"), raw);
+  return { ...h, version, raw };
+}
+
+test("a stored copy from before the limits: named, the rest proceeds, and a host repair places it", async () => {
+  const h = await storedBeforeTheLimits();
+  await h.edit("notes/alpha", "sent anyway\n");
+  const quiet = await h.sync();
+  assert.equal(quiet.err?.exitCode, 5);
+  assert.equal(heldRow(quiet, "notes/old").reason, "FRONTMATTER_TOO_LARGE");
+  assert.match(h.host.docs.get("notes/alpha")!.body, /sent anyway/);
+
+  h.host.put("notes/old", { type: "Note", title: "Fixed" }, "fixed\n");
+  const repaired = await h.sync();
+  assert.equal(repaired.err, undefined, repaired.err?.message);
+  assert.equal(repaired.out.status, "up_to_date");
+  assert.match(await readFile(h.file("notes/old"), "utf8"), /fixed/);
+});
+
+test("a stored copy from before the limits: a host change that is still over the limit stays held", async () => {
+  const h = await storedBeforeTheLimits();
+  await h.edit("notes/alpha", "sent anyway\n");
+  h.host.putUnchecked("notes/old", { ...LIMITS[0].frontmatter, title: "Bigger" }, "new\n");
+  const run = await h.sync();
+  assert.equal(run.err?.exitCode, 5);
+  assert.equal(heldRow(run, "notes/old").reason, "FRONTMATTER_TOO_LARGE");
+  assert.match(h.host.docs.get("notes/alpha")!.body, /sent anyway/);
+});
+
+test("a stored copy from before the limits: a host delete removes it", async () => {
+  const h = await storedBeforeTheLimits();
+  assert.equal((await h.sync()).err?.exitCode, 5, "held while the host still has it");
+  h.host.remove("notes/old");
+  const run = await h.sync();
+  assert.equal(run.err, undefined, run.err?.message);
+  assert.equal(run.out.pulled.removed, 1);
+  assert.equal(existsSync(h.file("notes/old")), false);
+  assert.equal((await h.sync()).err, undefined);
+});
+
+test("a stored copy from before the limits: a local edit is held, never sent, and survives a repair as a conflict", async () => {
+  const h = await storedBeforeTheLimits();
+  const mine = "---\ntype: Note\ntitle: Mine\n---\nmy repair\n";
+  await writeFile(h.file("notes/old"), mine);
+  h.host.writes.length = 0;
+  const held = await h.sync();
+  assert.equal(held.err?.exitCode, 5);
+  assert.equal(heldRow(held, "notes/old").reason, "FRONTMATTER_TOO_LARGE");
+  assert.equal(h.host.writes.length, 0, "nothing is sent over the host's version");
+  assert.equal(h.host.docs.get("notes/old")!.version, h.version);
+  assert.equal(await readFile(h.file("notes/old"), "utf8"), mine);
+
+  // The verbs say what is true instead of failing raw.
+  const taken = await h.sync("--resolve", "take", "--doc", "notes/old");
+  assert.equal(taken.err?.exitCode, 5);
+  assert.equal(taken.err?.details?.reason, "FRONTMATTER_TOO_LARGE");
+  assert.equal(await readFile(h.file("notes/old"), "utf8"), mine);
+
+  const repaired = h.host.put("notes/old", { type: "Note", title: "Fixed" }, "fixed\n");
+  const conflict = await h.sync();
+  assert.equal(conflict.err?.exitCode, 5);
+  assert.equal(heldRow(conflict, "notes/old").state, "conflict");
+  assert.equal(await readFile(h.file("notes/old"), "utf8"), mine, "the unsent edit is not lost");
+  assert.equal(h.host.docs.get("notes/old")!.version, repaired);
+  assert.equal((await h.sync("--inspect", "--doc", "notes/old")).err, undefined);
+});
+
+test("a stored copy from before the limits: a local deletion is held, and take puts the file back", async () => {
+  const h = await storedBeforeTheLimits();
+  await unlink(h.file("notes/old"));
+  h.host.writes.length = 0;
+  const held = await h.sync();
+  assert.equal(held.err?.exitCode, 5);
+  assert.equal(heldRow(held, "notes/old").reason, "FRONTMATTER_TOO_LARGE");
+  assert.equal(h.host.writes.length, 0);
+  assert.equal(h.host.docs.get("notes/old")!.version, h.version);
+  const restored = await h.sync("--resolve", "take", "--doc", "notes/old");
+  assert.equal(restored.err, undefined, restored.err?.message);
+  assert.equal(await readFile(h.file("notes/old"), "utf8"), h.raw);
+});
+
+test("status, a repeated checkout and export --in-place name a hold from the last run", async () => {
+  const h = await harness();
+  h.host.putUnchecked("notes/big", LIMITS[0].frontmatter, "big\n");
+  assert.equal((await h.checkout()).err?.exitCode, 5);
+  const binding = (await bindingForPath(h.home, h.folder))!;
+
+  const { sync: status } = await hostedStatus(binding, h.home);
+  assert.equal(status.state, "needs_decision");
+  assert.equal(status.held_files, 1);
+  assert.deepEqual(status.held_rows, [{ id: "notes/big", reason: "FRONTMATTER_TOO_LARGE" }]);
+
+  const again = await h.checkout();
+  assert.equal(again.err?.exitCode, 5);
+  assert.equal(again.out.checkout, "unchanged");
+  assert.equal(heldRow(again, "notes/big").reason, "FRONTMATTER_TOO_LARGE");
+
+  const out: string[] = [];
+  const refused = await exportCommand(["--dir", h.folder, "--in-place", "--json"], { stdout: (text) => void out.push(text), auth: h.auth, cwd: h.cwd, fetch: h.host.fetch }).then(() => null, (error: unknown) => error as CliError);
+  assert.equal(refused?.exitCode, 5);
+  assert.equal(refused?.details?.reason, "unsent_changes");
+  assert.equal(existsSync(h.file("notes/big")), false);
+  assert.ok((await bindingForPath(h.home, h.folder)) !== null, "the folder is not converted");
+
+  h.host.put("notes/big", { type: "Note", title: "Fixed" }, "fixed\n");
+  assert.equal((await h.sync()).err, undefined);
+  assert.equal((await hostedStatus(binding, h.home)).sync.state, "clean");
+  assert.equal((await h.checkout()).err, undefined, "the hold ends with the repair");
+});
+
+test("status names a held front page and a stored copy from before the limits", async () => {
+  const h = await storedBeforeTheLimits();
+  h.host.putRoot(`---\nokf_version: '0.2'\nblob: ${"x".repeat(300 * 1024)}\n---\nfront\n`);
+  assert.equal((await h.sync()).err?.exitCode, 5);
+  const { sync: status } = await hostedStatus((await bindingForPath(h.home, h.folder))!, h.home);
+  assert.equal(status.state, "needs_decision");
+  assert.deepEqual((status.held_rows as { id: string }[]).map((row) => row.id).sort(), ["index.md", "notes/old"]);
+  h.host.putRoot("---\nokf_version: '0.2'\n---\nrepaired\n");
+  assert.deepEqual(((await h.sync()).out.rows as { id: string }[]).map((row) => row.id), ["notes/old"]);
+  assert.deepEqual(((await hostedStatus((await bindingForPath(h.home, h.folder))!, h.home)).sync.held_rows as { id: string }[]).map((row) => row.id), ["notes/old"]);
+});
+
+test("publish names a document its bind could not store, with the exit of other holds", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "team-notes");
+  await mkdir(path.join(folder, "notes"), { recursive: true });
+  await writeFile(path.join(folder, "index.md"), '---\nokf_version: "0.2"\ntitle: T\n---\n# T\n');
+  await writeFile(path.join(folder, "notes/a.md"), "---\ntype: Note\ntitle: A\n---\na\n");
+  const fake = new FakeCreateHost();
+  fake.onRequest = () => {
+    for (const bundle of fake.bundles.values()) {
+      const stored = bundle.docs.get("notes/a");
+      if (stored) stored.frontmatter = { ...stored.frontmatter, blob: LIMITS[0].frontmatter.blob };
+    }
+  };
+  const out: string[] = [];
+  const failure = await publish(["--to", "hosted", "--dir", folder, "--host", HOST, "--yes", "--json"], { stdout: (text: string) => void out.push(text), stderr: () => {}, auth: h.auth, cwd: h.cwd, fetch: fake.fetch } as never).then(() => null, (error: unknown) => error as CliError);
+  assert.equal(failure?.exitCode, 5, failure?.message);
+  const record = JSON.parse(out.at(-1)!) as Record<string, any>;
+  assert.equal(record.published, "created");
+  assert.equal(record.status, "incomplete");
+  assert.equal(record.rows[0].reason, "FRONTMATTER_TOO_LARGE");
+});
+
+test("--adopt over a held front page says it is held", async () => {
+  const source = await harness();
+  assert.equal((await source.checkout()).err, undefined);
+  const copy = path.join(await realpath(await mkdtemp(path.join(tmpdir(), "sb-unstorable-copy-"))), "team");
+  await cp(source.folder, copy, { recursive: true });
+  source.host.putRoot(`---\nokf_version: '0.2'\nblob: ${"x".repeat(300 * 1024)}\n---\nfront\n`);
+  const out: string[] = [];
+  const failure = await checkout(["--adopt", copy, "--host", HOST, "--json"], { stdout: (text: string) => void out.push(text), auth: source.auth, cwd: source.cwd, fetch: source.host.fetch }).then(() => null, (error: unknown) => error as CliError);
+  assert.equal(failure?.exitCode, 5, failure?.message);
+  assert.match((JSON.parse(out.at(-1)!) as { root_index: string }).root_index, /held: .*FRONTMATTER_TOO_LARGE/);
 });

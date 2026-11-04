@@ -46,6 +46,7 @@ import {
   type HostedWriteHost,
 } from "../hosted-auth/session.js";
 import { unboundCopyRefusal } from "../hosted/refusals.js";
+import { unstorableReceipt } from "../hosted/sync-rows.js";
 import { ACCESS_PAGE_HINT } from "../hosted/access.js";
 import { hostedFailure, type HostedSyncClient } from "../hosted/client.js";
 import { connectHostedAccount, hostedListCommand, workspaceNames } from "../hosted/account.js";
@@ -774,10 +775,12 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
     (entry) => entry.locator.path === canonical,
   );
   const catalog = existing ? { registered: true, label: existing.label, id: existing.id, home: "hosted" } : await registerInCatalog(home, bound.binding);
+  const unstorable = unstorableReceipt(bound.unstorable, `${cliInvocation()} sync --dir ${commandToken(canonical)}`);
   deps.stdout(
     render(
       {
         published: "created",
+        ...unstorable?.fields,
         bundle_id: bundleId,
         name,
         host: target.origin,
@@ -805,6 +808,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
         catalog,
         reverse: `${cliInvocation()} checkout --release ${commandToken(canonical)} leaves a plain local folder; the hosted bundle stays until deleted in the app`,
         help: [
+          ...(unstorable?.help ?? []),
           // A moved board's teammates reach the bundle only once it is shared with them.
           ...(board ? [`share it with the board's teammates: ${ACCESS_PAGE_HINT}`] : []),
           `${cliInvocation()} status --dir ${commandToken(canonical)}`,
@@ -814,4 +818,5 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
       mode,
     ),
   );
+  if (unstorable) throw unstorable.failure;
 }

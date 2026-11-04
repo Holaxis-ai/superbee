@@ -5,7 +5,7 @@
 // held files and held deletions, each tracked ordinary file's state, and how long ago the last
 // pull completed. The folder is classified by the sync scan itself (`scanCheckout` in preview), so
 // status and sync never disagree about what a file is.
-import { UNSETTLED_STATES, openLocalBundle } from "@superbee/browser-local";
+import { syncStatus, UNSETTLED_STATES, openLocalBundle, type UnstorableDocument } from "@superbee/browser-local";
 import type { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
@@ -14,7 +14,8 @@ import { checkoutBindingDigest, type CheckoutBinding } from "./binding.js";
 import { BLOB_SYNC_META_KEY, blobCheckoutStates, type BlobFileState } from "./blob-sync.js";
 import { storeOkfVersion, withIdleCheckoutStore } from "./checkout-store.js";
 import { ageMs, describeAge, HOSTED_STALE_WARNING_MS, readFreshness } from "./freshness.js";
-import { readProjection, scanCheckout, type HeldReason } from "./sync-scan.js";
+import { ROOT_INDEX } from "./projection.js";
+import { readProjection, scanCheckout, type HeldReason, type ProjectionRecord } from "./sync-scan.js";
 
 /** Ids shown per category; the counts are always the totals. */
 export const STATUS_IDS_SHOWN = 5;
@@ -26,6 +27,21 @@ export interface Classified {
   readonly heldDeletions: Set<string>;
   /** Every tracked ordinary file and its state; never counted as a held document. */
   readonly blobs: { key: string; state: BlobFileState }[];
+}
+
+/**
+ * What this checkout holds because this client cannot store it, as the last run left it: what the
+ * last bootstrap or pull could not store, the root the last run held, and stored copies that no
+ * longer parse. Reads only, and no request.
+ */
+export async function checkoutHolds(binding: CheckoutBinding, store: FileJournaledBackend, projection: ProjectionRecord): Promise<UnstorableDocument[]> {
+  const holds = new Map<string, UnstorableDocument>();
+  for (const row of (await syncStatus(openLocalBundle(binding.checkout_id, { backend: store }))).unstorable ?? []) holds.set(row.id, row);
+  if (projection.rootHeld) holds.set(ROOT_INDEX, { id: ROOT_INDEX, ...projection.rootHeld });
+  for (const head of await store.readHeads({ project: (row) => (row.malformed ? { id: row.id, code: row.malformed.code, message: row.malformed.detail } : null) })) {
+    if (head) holds.set(head.id, head);
+  }
+  return [...holds.values()];
 }
 
 /**
@@ -67,6 +83,7 @@ export async function classifyCheckout(binding: CheckoutBinding, home: string, s
     if (row.reason === "bulk_deletion") result.heldDeletions.add(row.id);
     else result.held.set(row.id, row.reason);
   }
+  for (const hold of await checkoutHolds(binding, store, projection)) result.held.set(hold.id, hold.code);
   // The held set also names the deletes the host held: journaled, but a plain sync never sends them.
   for (const id of report.hold?.ids ?? []) result.heldDeletions.add(id);
 

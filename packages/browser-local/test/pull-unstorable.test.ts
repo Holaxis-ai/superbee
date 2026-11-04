@@ -3,7 +3,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { FrontmatterRefusedError } from "@superbee/core/document-codec";
+import { FrontmatterRefusedError, MalformedDocumentError } from "@superbee/core/document-codec";
+import { FrontmatterLimitError } from "@superbee/core";
 import type { ConceptId, OkfDocument, ReadResult, StorageBackend } from "@superbee/core";
 import { headsDigest, sortHeads, type DocumentHead, type RemoteBackend, type WireCapabilities } from "@superbee/core/remote";
 
@@ -207,4 +208,48 @@ test("the browser runtime's sync completes, and its status names the hold until 
   const repaired = await runtime.sync!();
   assert.equal(repaired.lastSync?.unstorable, undefined);
   assert.equal(await local.backend.exists("notes/big"), true);
+});
+
+test("a stored copy the store no longer parses is replaced by a repair and removed by a deletion, unless an edit holds it", async () => {
+  const authority = new Authority();
+  authority.put("notes/old", { type: "Note", title: "Old" });
+  authority.put("notes/gone", { type: "Note", title: "Gone" });
+  authority.put("notes/edited", { type: "Note", title: "Edited" });
+  const backend = new MemoryJournaledBackend();
+  const local = open(backend);
+  await bootstrap(authority.remote, local);
+  await commitLocal(local, "notes/edited", { buildCandidate: (existing: OkfDocument | undefined) => ({ frontmatter: existing!.frontmatter, body: "mine\n" }), now: () => "2026-09-10T12:00:00.000Z" });
+
+  // Reads of these ids fail as a stored copy from before the limits does; heads stay readable.
+  const unreadable = new Set<ConceptId>(["notes/old", "notes/gone", "notes/edited"]);
+  const refuse = (id: ConceptId) => {
+    if (unreadable.has(id)) throw new MalformedDocumentError(id, new FrontmatterLimitError("FRONTMATTER_TOO_LARGE", "too large"));
+  };
+  const readWithJournal = backend.readWithJournal.bind(backend);
+  backend.readWithJournal = (async (id: ConceptId, options?: never) => { refuse(id); return readWithJournal(id, options); }) as typeof backend.readWithJournal;
+  const read = backend.read.bind(backend);
+  backend.read = (async (id: ConceptId) => { refuse(id); return read(id); }) as typeof backend.read;
+
+  authority.put("notes/old", { type: "Note", title: "Fixed" });
+  authority.docs.delete("notes/gone");
+  authority.put("notes/edited", { type: "Note", title: "Moved" });
+  const report = await pull(local, authority.remote);
+  unreadable.clear();
+  assert.deepEqual(report.refreshed, ["notes/old"]);
+  assert.deepEqual(report.deleted, ["notes/gone"]);
+  assert.deepEqual(report.held, ["notes/edited"]);
+  assert.equal((await local.backend.read("notes/old")).doc.frontmatter.title, "Fixed");
+  assert.equal(await local.backend.exists("notes/gone"), false);
+  assert.equal((await local.backend.read("notes/edited")).doc.body, "mine\n", "an unsent edit is never replaced");
+});
+
+test("any other error from the local read still throws", async () => {
+  const authority = new Authority();
+  authority.put("notes/a", { type: "Note", title: "A" });
+  const backend = new MemoryJournaledBackend();
+  const local = open(backend);
+  await bootstrap(authority.remote, local);
+  authority.put("notes/a", { type: "Note", title: "A2" });
+  backend.readWithJournal = (async () => { throw new RangeError("disk says no"); }) as typeof backend.readWithJournal;
+  await assert.rejects(pull(local, authority.remote), RangeError);
 });

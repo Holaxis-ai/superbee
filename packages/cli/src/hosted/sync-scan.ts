@@ -146,6 +146,8 @@ export interface ProjectionEntry {
 export interface ProjectionRecord {
   /** Document id to its entry. */
   files: Record<string, ProjectionEntry>;
+  /** Why the last run held the host's root, kept for a status preview, which makes no request. */
+  rootHeld?: { code: MalformedDocumentCode; message: string };
   /** The digest of the root `index.md` as exported, or null without one. */
   root: string | null;
   /**
@@ -204,6 +206,20 @@ export interface HeldFile {
   readonly message: string;
   /** The message is the whole statement: the host's document may have no file in the folder to speak of. */
   readonly standalone?: true;
+}
+
+/**
+ * The held row for a document whose copy in the private store no longer parses (one stored before
+ * a frontmatter limit existed). Nothing can be journaled against it, and it does not stop the run.
+ */
+function storedUnreadable(id: string, rel: string, error: MalformedDocumentError): HeldFile {
+  return {
+    id,
+    path: rel,
+    reason: error.code,
+    standalone: true,
+    message: `The copy of '${id}' this checkout stored cannot be read by this client (${error.code}: ${error.detail}). The file stays as it is and nothing is sent for it. It has to be repaired where it is stored: the next sync then brings in the repaired version with no extra step, and an edit made here comes back as a conflict, never over the host's version.`,
+  };
 }
 
 /** A document whose file was deleted and whose deletion this scan journaled, with the documents that still link to it. */
@@ -463,6 +479,11 @@ async function readProjectionJson(home: string, checkoutId: string): Promise<unk
   }
 }
 
+function rootHeldOf(value: unknown): { rootHeld?: { code: MalformedDocumentCode; message: string } } {
+  const held = value as { code?: unknown; message?: unknown } | null | undefined;
+  return typeof held?.code === "string" && typeof held.message === "string" ? { rootHeld: { code: held.code as MalformedDocumentCode, message: held.message } } : {};
+}
+
 /**
  * The checkout's projection record. A checkout written before sync (schema 1) recorded only the
  * exported digests; each such document was exported from the store as it still is, so its
@@ -498,6 +519,7 @@ export async function readProjection(home: string, checkoutId: string, store: Jo
       ...(sent && typeof sent.version === "string" && (sent.base === null || typeof sent.base === "string") ? { rootSent: { version: sent.version, base: sent.base } } : {}),
       ...(raw.rootWrites === "allowed" ? { rootWrites: "allowed" as const } : {}),
       ...((value as { rootConflicted?: unknown }).rootConflicted === true ? { rootConflicted: true as const } : {}),
+      ...rootHeldOf((value as { rootHeld?: unknown }).rootHeld),
       ...(Object.keys(discarded).length > 0 ? { discarded } : {}),
       ...(Object.keys(extras).length > 0 ? { extras } : {}),
     };
@@ -539,7 +561,7 @@ export async function folderMatchesProjection(folder: string, projection: Projec
 
 export async function writeProjection(home: string, checkoutId: string, record: ProjectionRecord): Promise<void> {
   const sorted = Object.fromEntries(Object.entries(record.files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
-  await writeUserStateFileAtomic0600(home, checkoutDir(home, checkoutId), PROJECTION_FILE, `${JSON.stringify({ schema: PROJECTION_SCHEMA, files: sorted, root: record.root, ...(record.rootBase !== undefined ? { rootBase: record.rootBase } : {}), ...(record.rootSent ? { rootSent: record.rootSent } : {}), ...(record.rootWrites === "allowed" ? { rootWrites: "allowed" } : {}), ...(record.rootConflicted ? { rootConflicted: true } : {}), ...(record.discarded && Object.keys(record.discarded).length > 0 ? { discarded: record.discarded } : {}), ...(record.extras && Object.keys(record.extras).length > 0 ? { extras: record.extras } : {}) })}\n`);
+  await writeUserStateFileAtomic0600(home, checkoutDir(home, checkoutId), PROJECTION_FILE, `${JSON.stringify({ schema: PROJECTION_SCHEMA, files: sorted, root: record.root, ...(record.rootBase !== undefined ? { rootBase: record.rootBase } : {}), ...(record.rootSent ? { rootSent: record.rootSent } : {}), ...(record.rootWrites === "allowed" ? { rootWrites: "allowed" } : {}), ...(record.rootConflicted ? { rootConflicted: true } : {}), ...(record.rootHeld ? { rootHeld: record.rootHeld } : {}), ...(record.discarded && Object.keys(record.discarded).length > 0 ? { discarded: record.discarded } : {}), ...(record.extras && Object.keys(record.extras).length > 0 ? { extras: record.extras } : {}) })}\n`);
 }
 
 /** Every file under the folder, relative and POSIX-spelled; dot-files and dot-folders are skipped. */
@@ -820,7 +842,14 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     const digest = digestOf(bytes);
     const entry = projection.files[id];
     if (entry && !entry.deleted && entry.digest === digest) continue;
-    const stored = await local.backend.readWithJournal(id);
+    let stored;
+    try {
+      stored = await local.backend.readWithJournal(id);
+    } catch (error) {
+      if (!(error instanceof MalformedDocumentError)) throw error;
+      report.held.push(storedUnreadable(id, rel, error));
+      continue;
+    }
     // The file already says what the store holds (a crash after placing it, or a managed-only
     // edit): nothing to send; the record catches up.
     if (stored.document && sameAsStored(bytes, id, stored.document.doc, context.okfVersion)) {
@@ -893,7 +922,14 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     if (seen.has(id) || (context.only && !context.only.has(id))) continue;
     const rel = `${id}.md`;
     if ((await readIfPresent(path.join(folder, rel))) !== null) continue;
-    const stored = await local.backend.readWithJournal(id);
+    let stored;
+    try {
+      stored = await local.backend.readWithJournal(id);
+    } catch (error) {
+      if (!(error instanceof MalformedDocumentError)) throw error;
+      report.held.push(storedUnreadable(id, rel, error));
+      continue;
+    }
     if (entry.deleted || !stored.document) {
       // Deleted on both sides: nothing is left to decide.
       delete projection.files[id];
@@ -1071,12 +1107,13 @@ export async function exportCheckout(
 ): Promise<ExportReport> {
   const report: ExportReport = { placed: [], removed: [], kept: [], held: [] };
   const unsettled = new Set((await store.listIntents(UNSETTLED_STATES)).map((row) => row.target));
-  const heads = await store.readHeads({ project: (head) => ({ id: head.id, version: head.version, raw: head.raw }) });
+  const heads = await store.readHeads({ project: (head) => ({ id: head.id, version: head.version, raw: head.raw, malformed: head.malformed }) });
   const twins = await caseTwins(store, projection);
   const present = new Set<string>();
   for (const head of heads) {
     present.add(head.id);
     if (options.only && !options.only.has(head.id)) continue;
+    if (head.malformed) report.held.push(storedUnreadable(head.id, `${head.id}.md`, head.malformed));
     if (unsettled.has(head.id)) continue;
     const entry = projection.files[head.id];
     if (entry && !entry.deleted && entry.version === head.version) continue;
@@ -1208,7 +1245,14 @@ export async function folderConflictFor(
 ): Promise<FolderConflictReason | null> {
   if (bytes === null) return null;
   if (entry && !entry.deleted && digestOf(bytes) === entry.digest) return null;
-  const read = await store.readWithJournal(id);
+  let read;
+  try {
+    read = await store.readWithJournal(id);
+  } catch (error) {
+    // Held with its own row: the host's version is not known here, and nothing is sent over it.
+    if (error instanceof MalformedDocumentError) return null;
+    throw error;
+  }
   if (read.intents.some((row) => row.state !== "acknowledged")) return null;
   if (!read.document) return entry ? "deleted_remotely" : null;
   // A file that already says what the store holds is in sync, whatever its record says.

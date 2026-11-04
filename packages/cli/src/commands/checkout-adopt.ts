@@ -525,7 +525,8 @@ export async function bindFolderInPlace(input: {
       // The host's version the folder's root matches; null when it differs (an edit made against no
       // version the host had, which sync reports as a conflict rather than sending over the host's).
       let rootBase: string | null = null;
-      let rootIndex: string = "none on the host";
+      const rootRefused = unstorable?.find((row) => row.id === ROOT_INDEX);
+      let rootIndex: string = rootRefused ? `held: this client cannot store the host's (${rootRefused.code})` : "none on the host";
       const index = await store.readReserved("", "index.md");
       if (index) {
         const hostRoot = Buffer.from(index.content, "utf8");

@@ -66,7 +66,9 @@ import { createHostedSyncClient, hostedFailure, syncRoutePrefix, type HostedSync
 import { ambiguousBundle, HOSTED_CHECKOUT_REFUSALS, unboundCopyRefusal } from "../hosted/refusals.js";
 import { digestOf, ensureParentInside, exportFresh, findPathCollision, parentUnsafe, placeNew, ROOT_INDEX, UnsafePlacementError } from "../hosted/projection.js";
 import { seedInitialBlobBaselines } from "../hosted/blob-sync.js";
-import { writeProjection } from "../hosted/sync-scan.js";
+import { readProjection, writeProjection } from "../hosted/sync-scan.js";
+import { withIdleCheckoutStore } from "../hosted/checkout-store.js";
+import { checkoutHolds } from "../hosted/status.js";
 import { unstorableReceipt } from "../hosted/sync-rows.js";
 import { addCatalogEntry, assertCatalogLabel, loadCatalog, removeCatalogEntry } from "../catalog.js";
 import { checkoutMarkerBytes, readCheckoutMarker, removeCheckoutMarker, writeCheckoutMarker } from "../hosted/marker.js";
@@ -492,7 +494,11 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
       workspaceFlag === undefined || workspaceFlag === existing?.workspace_slug || workspaceFlag === existing?.workspace;
     const asked = typed.slug === null && sameWorkspace ? { slug: existing?.workspace_slug ?? null, bundleId } : typed;
     if (existing && bindsBundle(existing, target, asked)) {
-      deps.stdout(render({ checkout: "unchanged", ...bindingView(existing), help: nextSteps(existing.path) }, mode));
+      // The rerun makes no request: it names what the last run left held, as that run did.
+      const holds = await withIdleCheckoutStore(existing, deps.auth.home, async (store) => checkoutHolds(existing, store, await readProjection(deps.auth.home, existing.checkout_id, store)));
+      const unstorable = unstorableReceipt(holds ?? undefined, `${cliInvocation()} sync --dir ${commandToken(existing.path)}`);
+      deps.stdout(render({ checkout: "unchanged", ...unstorable?.fields, ...bindingView(existing), help: [...(unstorable?.help ?? []), ...nextSteps(existing.path)] }, mode));
+      if (unstorable) throw unstorable.failure;
       return;
     }
     const marker = existing ? null : readCheckoutMarker(folder);
