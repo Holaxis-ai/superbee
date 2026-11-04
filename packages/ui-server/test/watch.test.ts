@@ -8,7 +8,6 @@ import { setImmediate, setTimeout as sleep } from "node:timers/promises";
 import {
   FilesystemBackend,
   MemoryBackend,
-  classifyWalkPath,
   deleteDoc,
   initBundle,
   toPosix,
@@ -18,15 +17,18 @@ import {
 } from "@superbee/core";
 import { createRouter } from "@superbee/server";
 import { bootUiServer } from "../src/server.js";
-import { startWatcher, watchDirectory, type ChangeEvent } from "../src/watch.js";
+import { HELD_HINT_MAX_WAIT_MS, startWatcher, watchDirectory, type ChangeEvent } from "../src/watch.js";
 
 const REGISTRY = "views-registry/board";
 const POLL_MS = 2_000;
 
+// Memory documents with the real walk rule; the constructor touches no filesystem.
+const WALK_RULE = new FilesystemBackend("/superbee-watch-test-walk-rule");
+
 class ScanBackend extends MemoryBackend {
   scans = 0;
   beforeScan?: () => Promise<void>;
-  classifyChangedPath = classifyWalkPath;
+  classifyChangedPath = (relPath: string) => WALK_RULE.classifyChangedPath(relPath);
   override async list(prefix?: string) {
     this.scans++;
     await this.beforeScan?.();
@@ -283,7 +285,7 @@ function scanCost(cost: number): () => number {
 for (const cost of [0, 4_000]) {
   test(`a sustained stream of document hints scans once per rest at ${cost}ms a scan`, async (t) => {
     const f = await fixture(t, undefined, scanCost(cost));
-    const rest = Math.max(POLL_MS, 10 * cost);
+    const rest = Math.min(Math.max(POLL_MS, 10 * cost), HELD_HINT_MAX_WAIT_MS);
     const rests = 5;
     for (let elapsed = 0; elapsed < rest * rests; elapsed += 200) {
       f.native.notify("docs/hot.md");
@@ -296,18 +298,45 @@ for (const cost of [0, 4_000]) {
 }
 
 test("a document change during a rest is seen when the rest ends, without a further hint", async (t) => {
-  const f = await fixture(t, undefined, scanCost(4_000));
+  const f = await fixture(t, undefined, scanCost(1_000));
   f.native.notify("docs/first.md");
   await f.advance(150);
   assert.equal(f.backend.scans, 2, "the leading hint scans at once");
   await deleteDoc(f.bundle, REGISTRY);
   f.native.notify(`${REGISTRY}.md`);
-  await f.advance(39_999);
+  await f.advance(9_999);
   assert.equal(f.backend.scans, 2, "the deletion waits out the rest");
   assert.deepEqual(f.events, []);
   await f.advance(1);
   assert.equal(f.backend.scans, 3);
   assert.deepEqual(f.events.map((e) => e.docs.removed), [[REGISTRY]]);
+});
+
+test("a stalled hint-answering scan holds a later deletion no longer than the cap, and the periodic rest stays uncapped", async (t) => {
+  const stall = 60_000;
+  const f = await fixture(t, undefined, scanCost(stall));
+  const held = deferred();
+  f.backend.beforeScan = async () => { await held.promise; };
+  f.native.notify("docs/first.md");
+  await f.advance(150);
+  assert.equal(f.backend.scans, 2);
+  await deleteDoc(f.bundle, REGISTRY);
+  f.native.notify(`${REGISTRY}.md`);
+  await f.advance(stall);
+  assert.equal(f.backend.scans, 2, "no scan overlaps the stalled one");
+  f.backend.beforeScan = undefined;
+  held.resolve();
+  await setImmediate();
+  await f.advance(HELD_HINT_MAX_WAIT_MS - 1);
+  assert.equal(f.backend.scans, 2);
+  await f.advance(1);
+  assert.equal(f.backend.scans, 3);
+  assert.deepEqual(f.events.map((e) => e.docs.removed), [[REGISTRY]]);
+
+  await f.advance(10 * stall - 1);
+  assert.equal(f.backend.scans, 3, "with no hints, a costly scan still earns its full periodic rest");
+  await f.advance(1);
+  assert.equal(f.backend.scans, 4);
 });
 
 test("a hint during a hint-answering scan waits for the rest instead of chaining a scan", async (t) => {
@@ -365,6 +394,25 @@ test("hints for paths the walk cannot see, and for plain files outside the snaps
   f.native.notify("views/board.html");
   await f.advance(150);
   assert.equal(f.backend.scans, 2, "a page blob is inside the snapshot");
+});
+
+test("a plain file that replaced a directory the last snapshot read still scans", async (t) => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "superbee-watch-replaced-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, "archive"), "x");
+  await writeFile(path.join(root, "archive-notes"), "x");
+  const f = await fixture(t, undefined, () => 0, root);
+  await writeDoc(f.bundle, { id: "archive/old", frontmatter: { type: "Doc" }, body: "" });
+  await f.advance();
+  assert.equal(f.backend.scans, 2, "the snapshot now reads archive/old");
+  f.native.notify("archive-notes");
+  await sleep(50);
+  await f.advance(150);
+  assert.equal(f.backend.scans, 2, "a shared name prefix is not a parent directory");
+  f.native.notify("archive");
+  await sleep(50);
+  await f.advance(150);
+  assert.equal(f.backend.scans, 3);
 });
 
 for (const [label, hint] of [["no filename", null], ["no argument", undefined], ["a Windows path", "docs\\win.md"]] as const) {
@@ -448,5 +496,5 @@ test("native notifications name the changed path relative to the root, including
   assert.ok(events.some((e) => e.docs.changed.some((d) => d.id === "docs/native")), "the document change was reported");
   for (let waited = 0; waited < 5_000 && !seen.some((f) => typeof f === "string" && toPosix(f) === "docs/native.md"); waited += 50) await sleep(50);
   assert.ok(seen.some((f) => typeof f === "string" && toPosix(f) === "docs/native.md"), `native paths: ${JSON.stringify(seen)}`);
-  assert.equal(seen.filter((f): f is string => typeof f === "string" && toPosix(f).startsWith(".git")).every((f) => classifyWalkPath(f) === "hidden"), true);
+  assert.equal(seen.filter((f): f is string => typeof f === "string" && toPosix(f).startsWith(".git")).every((f) => bundle.backend!.classifyChangedPath!(f) === "hidden"), true);
 });

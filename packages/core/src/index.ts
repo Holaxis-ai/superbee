@@ -245,7 +245,6 @@ export type {
 // Pure, unit-testable path / link / note / freshness helpers.
 export {
   RESERVED_FILENAMES,
-  classifyWalkPath,
   isReservedFile,
   conceptIdFromPath,
   pathFromConceptId,
@@ -257,7 +256,7 @@ export {
   toPosix,
   nonCanonicalDocumentId,
 } from "./paths.js";
-export type { NonCanonicalDocumentId } from "./paths.js";
+export type { NonCanonicalDocumentId, WalkPathClass } from "./paths.js";
 
 export {
   extractMarkdownLinks,

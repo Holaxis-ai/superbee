@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { FilesystemBackend, classifyWalkPath, initBundle } from "../src/index.js";
+import { FilesystemBackend, initBundle } from "../src/index.js";
 
 // The class a watcher acts on must agree with what the walk actually returns, row by row.
 const ROWS = [
@@ -35,8 +35,9 @@ test("classifyChangedPath agrees with what the filesystem walk lists", async (t)
   }
 });
 
-test("classifyWalkPath normalizes a Windows separator and leaves an empty path visible", () => {
-  assert.equal(classifyWalkPath(".git\\index"), "hidden");
-  assert.equal(classifyWalkPath("docs\\a.md"), "markdown");
-  assert.equal(classifyWalkPath(""), "other");
+test("classifyChangedPath normalizes a Windows separator and leaves an empty path visible", () => {
+  const backend = new FilesystemBackend("/superbee-walk-class-test");
+  assert.equal(backend.classifyChangedPath(".git\\index"), "hidden");
+  assert.equal(backend.classifyChangedPath("docs\\a.md"), "markdown");
+  assert.equal(backend.classifyChangedPath(""), "other");
 });

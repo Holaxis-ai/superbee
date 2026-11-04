@@ -122,12 +122,30 @@ export const watchDirectory: WatchDirectory = (root, onChange) =>
   fsWatch(root, { recursive: true }, (_event, filename) => onChange(filename));
 
 /**
+ * Longest a held hint waits once the scan before it settles. The rest scales with measured scan
+ * cost, so without this bound one stalled scan would hold every later update for ten times the
+ * stall. Periodic reconciliation keeps the uncapped rest.
+ */
+export const HELD_HINT_MAX_WAIT_MS = 20_000;
+
+function hasEntriesBeneath(snapshot: Snapshot, relPath: string): boolean {
+  const prefix = `${relPath}/`;
+  for (const id of snapshot.docs.keys()) if (id.startsWith(prefix)) return true;
+  for (const key of snapshot.blobs.keys()) if (key.startsWith(prefix)) return true;
+  return false;
+}
+
+/**
  * Whether a native notification can change what {@link snapshotBundle} reads. The backend owns what
  * its walk sees; this adds only the snapshot's own blob scope. Anything it cannot rule out counts,
- * including a platform that names no path: a false positive costs one rested scan, while a false
- * negative leaves the change waiting for periodic reconciliation.
+ * including a platform that names no path. A false positive costs one rested scan. A false negative
+ * delays the change until periodic reconciliation, which remains the delivery guarantee.
  */
-function hintCanChangeSnapshot(bundle: Bundle, filename: string | null | undefined): boolean | Promise<boolean> {
+function hintCanChangeSnapshot(
+  bundle: Bundle,
+  filename: string | null | undefined,
+  lastSnapshot: () => Snapshot,
+): boolean | Promise<boolean> {
   if (filename === null || filename === undefined) return true;
   const relPath = toPosix(filename);
   const walkClass = classifyChangedPath(bundle, relPath);
@@ -135,8 +153,12 @@ function hintCanChangeSnapshot(bundle: Bundle, filename: string | null | undefin
   if (walkClass !== "other" || PAGE_BLOB_PREFIXES.some((prefix) => relPath.startsWith(prefix))) return true;
   // A plain file here is outside the snapshot. A directory is not, whatever its name: renaming or
   // removing one moves every document beneath it, and the platform may report only the directory.
-  // A path already gone cannot say which it was.
-  return lstat(path.join(bundle.root, relPath)).then((entry) => !entry.isFile(), () => true);
+  // A path already gone cannot say which it was, and a plain file may have just replaced a
+  // directory the last snapshot read.
+  return lstat(path.join(bundle.root, relPath)).then(
+    (entry) => !entry.isFile() || hasEntriesBeneath(lastSnapshot(), relPath),
+    () => true,
+  );
 }
 
 interface CommonWatcherOptions {
@@ -176,8 +198,10 @@ async function takeSnapshot(opts: WatcherOptions, signal?: AbortSignal): Promise
  * a baseline snapshot before resolving, so the first change is diffed against real state.
  *
  * A `--dir` hint the snapshot can see scans at once unless the last hint-answering scan is still
- * resting, so a lone edit stays prompt while a sustained stream scans once per rest. A hint held
- * by a rest or an active scan is answered when that ends, never dropped.
+ * resting, so a lone edit stays prompt while a sustained stream scans once per rest, or once per
+ * {@link HELD_HINT_MAX_WAIT_MS} when the rest is longer. A hint held by a rest or an active scan is
+ * answered when that ends, never dropped. A hint may scan straight after a periodic scan, so one
+ * scan per rest can follow another without a pause.
  *
  * Snapshot runs are SERIALIZED (tasks/ui-pages-spike P1 — remote concurrency): two overlapping
  * runs could complete out of order — the LATER-started (fresher) one lands first, then the
@@ -243,9 +267,11 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
     // A relevant hint no started scan has covered yet.
     let hintPending = false;
     let scanAnswersHint = false;
-    // The last scan answered a hint and its rest has not elapsed.
-    let resting = false;
+    // Running from a hint-answering scan's settlement; later hints wait for it.
+    let hintRest: ReturnType<typeof setTimeout> | undefined;
     const startScan = (): void => {
+      if (hintRest) clearTimeout(hintRest);
+      hintRest = undefined;
       scanAnswersHint = hintPending;
       hintPending = false;
       void emitDiff();
@@ -256,13 +282,13 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
       timer = setTimeout(() => {
         timer = undefined;
         hintPending = true;
-        if (!running && !resting) startScan();
+        if (!running && !hintRest) startScan();
       }, debounceMs);
       timer.unref?.();
     };
     const trigger = (filename?: string | null): void => {
       if (stopped) return;
-      const relevant = hintCanChangeSnapshot(bundle, filename);
+      const relevant = hintCanChangeSnapshot(bundle, filename, () => last);
       if (relevant === true) armDebounce();
       else if (relevant !== false) void relevant.then((answer) => { if (answer) armDebounce(); });
     };
@@ -271,6 +297,7 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
     // A successful native watch is not a delivery guarantee. Keep the same serialized snapshot
     // path running even without hints, including after a transient scan error or attachment gap.
     let reconciliation: ReturnType<typeof setTimeout> | undefined;
+    const restMs = (): number => Math.max(2000, 10 * lastScanMs);
     const scheduleReconciliation = (): void => {
       if (stopped) return;
       if (reconciliation) clearTimeout(reconciliation);
@@ -278,19 +305,27 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
         reconciliation = undefined;
         // Periodic ticks must not keep a large, unchanged bundle scanning without a pause.
         if (running) return; // the active scan rearms on settlement
-        resting = false;
         startScan();
-      }, Math.max(2000, 10 * lastScanMs));
+      }, restMs());
       reconciliation.unref?.();
     };
-    // Every scan, failed or not, earns the same rest. Scaling with measured cost keeps large
-    // bundles from spending most of their time taking snapshots. Only a hint-answering scan makes
-    // later hints wait out that rest; a periodic scan's rest does not, or a lone edit would wait
-    // for up to a whole rest on a watcher that had seen no other change.
+    // Every scan, failed or not, pushes the next periodic scan a full rest away. Scaling with
+    // measured cost keeps large bundles from spending most of their time taking snapshots. Only a
+    // hint-answering scan makes later hints wait, and for at most the cap; a periodic scan does not,
+    // or a lone edit would wait for up to a whole rest on a watcher that had seen no other change.
+    // Each wait is a timer armed at settlement, so a stall or a machine sleep before that point
+    // cannot use it up, and nothing compares timestamps taken on either side of one.
     onSettled = (): void => {
-      resting = scanAnswersHint;
+      if (stopped) return;
+      if (scanAnswersHint) {
+        hintRest = setTimeout(() => {
+          hintRest = undefined;
+          if (hintPending && !running) startScan();
+        }, Math.min(restMs(), HELD_HINT_MAX_WAIT_MS));
+        hintRest.unref?.();
+      }
       scheduleReconciliation();
-      if (hintPending && !resting) startScan();
+      if (hintPending && !hintRest) startScan();
     };
     scheduleReconciliation();
     try {
@@ -307,6 +342,7 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
       stop: async () => {
         stopped = true;
         if (timer) clearTimeout(timer);
+        if (hintRest) clearTimeout(hintRest);
         watcher?.close();
         watcher = undefined;
         if (reconciliation) clearTimeout(reconciliation);
