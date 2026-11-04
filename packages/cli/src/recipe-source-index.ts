@@ -91,6 +91,9 @@ function indexUrl(raw: string): URL | null {
   if (url.username !== "" || url.password !== "") {
     throw indexUsage("an --index URL must not carry a username or password", "RECIPE_INDEX_SCHEME_REFUSED");
   }
+  if (url.search !== "" || url.hash !== "" || raw.includes("?") || raw.includes("#")) {
+    throw indexUsage("an --index URL must not carry a query string or fragment", "RECIPE_INDEX_SCHEME_REFUSED");
+  }
   return url;
 }
 

@@ -258,7 +258,7 @@ Connector rows in `packages/cli/test/hosted-definition-writes.test.ts` and
 ingress read, refusing a listed file whose real path leaves the index directory, or from an https:
 URL with redirects refused. Each read has its own size and time cap, and one command has one 60 s
 deadline and one 16 MiB byte budget across the index and every file. Any other scheme, and an https:
-URL carrying a username or password, is `USAGE` with `details.reason` `RECIPE_INDEX_SCHEME_REFUSED`
+URL carrying a username, password, query string or fragment, is `USAGE` with `details.reason` `RECIPE_INDEX_SCHEME_REFUSED`
 before any request; credentials are never echoed. Core verifies each recipe against its pinned
 `files_digest` and `source_digest` and decodes it as strict UTF-8 before the bundle is opened, and a
 cookbook is verified whole before its first write. A member can still fail on what the target bundle

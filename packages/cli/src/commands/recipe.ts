@@ -63,7 +63,7 @@ list built-ins and which are already applied, and 'superbee kinds' for the resul
 per-bundle registry.
 
 With --index, <recipe-or-cookbook-id> names an entry in a published 'recipe-index/v1' JSON index,
-read from a local path or an https: URL. Other schemes, URLs with credentials, redirects, files
+read from a local path or an https: URL. Other schemes, URLs with credentials, a query or a fragment, redirects, files
 outside the index directory, oversize files and slow answers are refused; one command reads at
 most 16 MiB within 60 s. The index pins each recipe twice: files_digest over the exact listed
 bytes and source_digest, the value recipe stamps record. The CLI reads exactly the files the index

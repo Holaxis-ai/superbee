@@ -488,6 +488,21 @@ test("an index URL with credentials is refused before any request and the creden
   });
 });
 
+test("an index URL with a query string or fragment is refused before any request and never echoed", async () => {
+  await withScratch(async (root) => {
+    const bundle = path.join(root, "bundle");
+    await initBundle(bundle);
+    const calls: Array<{ url: string; redirect: string }> = [];
+    for (const location of ["https://recipes.example.test/index.json?token=s3cret", "https://recipes.example.test/index.json#s3cret", "https://recipes.example.test/index.json?"]) {
+      const error = await refusal(["add", "context-notes", "--index", location, "--dir", bundle], servedFetch(new Map(), calls));
+      assert.equal(error.code, "USAGE");
+      assert.equal(error.details?.reason, "RECIPE_INDEX_SCHEME_REFUSED");
+      assert.ok(!JSON.stringify({ message: error.message, details: error.details, help: error.help }).includes("s3cret"));
+    }
+    assert.deepEqual(calls, []);
+  });
+});
+
 test("a missing local file is the publisher's error, not a retry", async () => {
   await withScratch(async (root) => {
     const index = await writeIndex(root, "alpha", "alpha", (name) => `recipes/${name}`, ["context-notes"], []);
