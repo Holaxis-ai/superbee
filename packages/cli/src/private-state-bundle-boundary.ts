@@ -259,10 +259,10 @@ export function relateToPrivateState(candidate: string, stateRoot: string): Priv
 }
 
 /**
- * Every private-state root the CLI guards, canonical first. Both the `superbee` and the
- * `@holaxis/aslite` builds guard the WHOLE set unconditionally: which root a given build WRITES is a
- * separate question from which roots a bundle may not collide with. The set only grows — a
- * superseded root stays guarded for as long as it remains a migration source.
+ * Every private-state root the CLI guards, canonical first. The WHOLE set is guarded
+ * unconditionally: which root the CLI WRITES is a separate question from which roots a bundle may
+ * not collide with. The set only grows — a superseded root stays guarded for as long as it remains
+ * a migration source.
  */
 export function guardedStateRoots(input: UserStateInput = homedir()): string[] {
   return [...resolveUserStatePolicy(input).guardedRoots];

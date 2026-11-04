@@ -288,21 +288,6 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     skip: privilegedLinuxSkip(),
     privileged: true,
   },
-  {
-    label: "legacy-bridge build (@holaxis/aslite) root",
-    build: async () => {},
-    record: true,
-    directory: true,
-    inspect: "ready",
-    hardening: "hardened",
-    inspectSync: "ready",
-    readExisting: "ok",
-    readAbsent: "absent",
-    write: "ok",
-    skip: "UNKNOWN (specification P10): readiness on that build is directory existence with no marker, and "
-      + "the package identity is baked in at build time — this row needs a bridge-identity build, not a "
-      + "fixture. Delete this skip when one is available.",
-  },
 ];
 
 async function scratchHome(): Promise<string> {
