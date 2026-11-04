@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { privilegedLinuxSkip, reclaim, sudo } from "./support/privileged-linux.js";
 import {
   canonicalUserStateDir,
   ensureUserStateRoot,
@@ -59,6 +60,8 @@ interface StateClassRow {
   readonly readAbsent: Access;
   readonly write: Access;
   readonly skip?: string;
+  /** Built with root-owned entries; ownership is handed back before cleanup. */
+  readonly privileged?: boolean;
 }
 
 async function withMarker(root: string, mode = 0o600): Promise<void> {
@@ -246,8 +249,16 @@ const STATE_CLASSES: readonly StateClassRow[] = [
   // its records' schemas, never by a marker, so the markerless legacy root (P10) is covered without
   // one. Its rows live in `private-state-publication.test.ts` (the markerless-legacy layout).
   {
-    label: "foreign uid on the root or the marker",
-    build: async () => {},
+    // Specification P9, with a real second uid: root owns the state directory. It is made 0777 so a
+    // product that skipped the ownership check could write into it, which makes `write: denied`
+    // evidence of the check rather than of a permission error.
+    label: "foreign uid on the root (real root-owned directory)",
+    build: async (home) => {
+      await ensureUserStateRoot(home);
+      await withRecord(canonicalUserStateDir(home));
+      sudo(["chown", "0:0", canonicalUserStateDir(home)]);
+      sudo(["chmod", "0777", canonicalUserStateDir(home)]);
+    },
     record: true,
     directory: true,
     inspect: "conflict",
@@ -256,8 +267,26 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     readExisting: "denied",
     readAbsent: "absent",
     write: "denied",
-    skip: "UNKNOWN (specification P9): a second uid is not reachable from a scratch HOME — this needs a CI "
-      + "row, not a local probe. Delete this skip when that job exists.",
+    skip: privilegedLinuxSkip(),
+    privileged: true,
+  },
+  {
+    label: "foreign uid on the marker (real root-owned marker)",
+    build: async (home) => {
+      await ensureUserStateRoot(home);
+      await withRecord(canonicalUserStateDir(home));
+      sudo(["chown", "0:0", join(canonicalUserStateDir(home), USER_STATE_MARKER_FILE_NAME)]);
+    },
+    record: true,
+    directory: true,
+    inspect: "conflict",
+    hardening: "n/a",
+    inspectSync: "conflict",
+    readExisting: "denied",
+    readAbsent: "absent",
+    write: "denied",
+    skip: privilegedLinuxSkip(),
+    privileged: true,
   },
   {
     label: "legacy-bridge build (@holaxis/aslite) root",
@@ -329,6 +358,7 @@ async function observe(row: StateClassRow): Promise<Observation> {
       hardeningAfterWrite: (await inspectDetail(home)).hardening,
     };
   } finally {
+    if (row.privileged === true && row.skip === undefined) reclaim(home);
     await rm(home, { recursive: true, force: true });
   }
 }
