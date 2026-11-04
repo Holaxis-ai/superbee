@@ -108,7 +108,8 @@ test("an unresolved conflict stays named by status, by every later sync, and by 
     const receipt = JSON.parse(again.out) as Record<string, any>;
     assert.equal(receipt.conflicts, 1);
     assert.equal(receipt.saved_conflicts.rows[0].id, ID);
-    assert.ok(receipt.next.some((line: string) => line.includes(`sync --inspect --doc ${ID}`)));
+    assert.match(receipt.saved_conflicts.rows[0].next, new RegExp(`sync --inspect --doc ${ID}`));
+    assert.deepEqual(receipt.next, [], "each row carries its own next, under --limit");
 
     const started = await capture(f.homeB, (stdout) =>
       sessionStart(["--dir", f.topo.b.root, "--json"], { stdout, pull: async () => undefined }),
@@ -388,23 +389,27 @@ test("red probe: a document named like a body companion is its own conflict and 
   }
 });
 
-test("a hand merge pushes and exits 0, its copy stays listed, and revise releases it after the push", async () => {
+test("a hand merge pushes and exits 0, its copy stays listed, and take settles it in one command", async () => {
   const f = await fixture();
   try {
     const first = await f.collide(ID, { body: "# Seed one\n\nA's half.\n" }, { body: "# Seed one\n\nB's half.\n" });
-    assert.match(String(first.err?.details?.saved_copies), /--resolve revise/);
+    assert.match(String(first.err?.details?.saved_copies), /revise before your merge is pushed, take after/);
     await modifyBoardDoc(f.topo.b, ID, { body: "# Seed one\n\nA's half.\n\nB's half.\n" });
     const pushed = await runSync(f.homeB, ["--dir", f.topo.b.root, "--json"]);
     assert.equal(pushed.err, undefined, pushed.err?.message);
     assert.match(git(f.topo.origin, ["show", `board:${ID}.md`]), /A's half[\s\S]*B's half/);
     assert.equal(JSON.parse(pushed.out).saved_conflicts.rows[0].id, ID);
 
-    // The save happened in an earlier second than the push, as it does for anyone but a test.
     const saved = path.join(exportsOf(f.topo, f.homeB), `${ID}.md`);
-    const earlier = new Date(Date.now() - 60_000);
-    await utimes(saved, earlier, earlier);
-    const revised = await runSync(f.homeB, ["--resolve", "revise", "--doc", ID, "--dir", f.topo.b.root]);
-    assert.equal(revised.err, undefined, revised.err?.message);
+    const merged = await readBoardFile(f.topo.b, `${ID}.md`);
+    const refused = await runSync(f.homeB, ["--resolve", "revise", "--doc", ID, "--dir", f.topo.b.root]);
+    assert.equal(refused.err?.exitCode, 5, "the document equals upstream and does not hold the copy");
+    assert.match(refused.err?.help ?? "", /--resolve take/);
+    assert.equal(existsSync(saved), true);
+    const taken = await runSync(f.homeB, ["--resolve", "take", "--doc", ID, "--dir", f.topo.b.root, "--json"]);
+    assert.equal(taken.err, undefined, taken.err?.message);
+    assert.equal(JSON.parse(taken.out).file_state, "unchanged");
+    assert.equal(await readBoardFile(f.topo.b, `${ID}.md`), merged);
     assert.equal(existsSync(saved), false);
     assert.equal((await syncBlock(f.topo, f.homeB)).sync.state, "clean");
   } finally {
@@ -443,6 +448,211 @@ test("an old export settles with the one printed discard command, and an unsent 
     } finally {
       await f.cleanup();
     }
+  }
+});
+
+test("revise refuses on the upstream version whatever the clocks say", async () => {
+  const f = await fixture();
+  try {
+    // The teammate's clock runs ahead.
+    process.env.GIT_COMMITTER_DATE = new Date(Date.now() + 3_600_000).toISOString();
+    try {
+      await modifyBoardDoc(f.topo.a, ID, { body: "# Seed one\n\nA.\n" });
+      assert.equal((await runSync(f.homeA, ["--dir", f.topo.a.root])).err, undefined);
+    } finally {
+      delete process.env.GIT_COMMITTER_DATE;
+    }
+    await modifyBoardDoc(f.topo.b, ID, { body: "# Seed one\n\nB unique.\n" });
+    assert.equal((await runSync(f.homeB, ["--dir", f.topo.b.root])).err?.exitCode, 5);
+    const saved = path.join(exportsOf(f.topo, f.homeB), `${ID}.md`);
+
+    // A restored backup makes the copy look old.
+    const old = new Date(Date.now() - 86_400_000);
+    await utimes(saved, old, old);
+    assert.equal((await runSync(f.homeB, ["--resolve", "revise", "--doc", ID, "--dir", f.topo.b.root])).err?.exitCode, 5);
+    assert.equal(existsSync(saved), true);
+
+    // A teammate's later ordinary edit is an upstream version that holds none of B's words.
+    await modifyBoardDoc(f.topo.a, ID, { body: "# Seed one\n\nA again.\n" });
+    assert.equal((await runSync(f.homeA, ["--dir", f.topo.a.root])).err, undefined);
+    assert.equal((await runSync(f.homeB, ["--dir", f.topo.b.root])).err, undefined);
+    assert.equal((await runSync(f.homeB, ["--resolve", "revise", "--doc", ID, "--dir", f.topo.b.root])).err?.exitCode, 5);
+    assert.equal(existsSync(saved), true);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a raw file conflicting at two stops keeps both versions, and the receipt names the last", async () => {
+  const f = await fixture();
+  try {
+    const file = (repo: TwoCloneTopology["a"]) => path.join(repo.board, "data.json");
+    await writeFile(file(f.topo.a), '{"v":"base"}\n');
+    assert.equal((await runSync(f.homeA, ["--dir", f.topo.a.root])).err, undefined);
+    assert.equal((await runSync(f.homeB, ["--dir", f.topo.b.root])).err, undefined);
+    await writeFile(file(f.topo.a), '{"v":"A"}\n');
+    assert.equal((await runSync(f.homeA, ["--dir", f.topo.a.root])).err, undefined);
+    for (const value of ["B1", "B2"]) {
+      await writeFile(file(f.topo.b), `{"v":"${value}"}\n`);
+      git(f.topo.b.board, ["add", "-A"]);
+      git(f.topo.b.board, ["commit", "-m", value]);
+    }
+    const run = await runSync(f.homeB, ["--dir", f.topo.b.root, "--json"]);
+    assert.equal(run.err?.exitCode, 5);
+    const rows = (run.err?.details?.conflicts as { rows: Record<string, string>[] }).rows;
+    assert.match(await readFile(rows[0]!.yours!, "utf8"), /B2/);
+    assert.match(await readFile(path.join(exportsOf(f.topo, f.homeB), "data.json"), "utf8"), /B1/);
+    assert.equal((await syncBlock(f.topo, f.homeB)).sync.saved_copies, 2);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("an earlier copy whose bytes a later stop matches is not overwritten by that run's next stop", async () => {
+  const f = await fixture();
+  try {
+    await f.collide(ID, { body: "# Seed one\n\nA.\n" }, { body: "# Seed one\n\nX earlier.\n" });
+    const saved = path.join(exportsOf(f.topo, f.homeB), `${ID}.md`);
+    await writeFile(path.join(f.topo.b.board, `${ID}.md`), await readFile(saved));
+    git(f.topo.b.board, ["add", "-A"]);
+    git(f.topo.b.board, ["commit", "-m", "x"]);
+    await modifyBoardDoc(f.topo.b, ID, { body: "# Seed one\n\nY later.\n" });
+    git(f.topo.b.board, ["add", "-A"]);
+    git(f.topo.b.board, ["commit", "-m", "y"]);
+    await modifyBoardDoc(f.topo.a, ID, { body: "# Seed one\n\nA again.\n" });
+    assert.equal((await runSync(f.homeA, ["--dir", f.topo.a.root])).err, undefined);
+    const run = await runSync(f.homeB, ["--dir", f.topo.b.root]);
+    assert.equal(run.err?.exitCode, 5);
+    assert.match(await readFile(saved, "utf8"), /X earlier/);
+    const rows = (run.err?.details?.conflicts as { rows: Record<string, string>[] }).rows;
+    assert.match(await readFile(rows[0]!.yours!, "utf8"), /Y later/);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a copy differing by owner and state is not settled by itself, and take settles it", async () => {
+  const f = await fixture();
+  try {
+    await writeBoardDoc(f.topo.a, "conventions/task", {
+      frontmatter: {
+        type: "Convention",
+        title: "Task",
+        governs: "Task",
+        fields: { required: ["title", "superbee_progress_status"], optional: ["assignee"], values: { superbee_progress_status: ["todo", "in_progress", "done"] } },
+        claim: { owner_field: "assignee", state_field: "progress_status" },
+      } as never,
+      body: "# Task\n",
+    });
+    await modifyBoardDoc(f.topo.a, ID, { frontmatter: { superbee_progress_status: "todo" } as never });
+    assert.equal((await runSync(f.homeA, ["--dir", f.topo.a.root])).err, undefined);
+    assert.equal((await runSync(f.homeB, ["--dir", f.topo.b.root])).err, undefined);
+    await f.collide(ID, { frontmatter: { assignee: "agent-a", superbee_progress_status: "in_progress" } as never }, { frontmatter: { assignee: "agent-b", superbee_progress_status: "done" } as never });
+    const saved = path.join(exportsOf(f.topo, f.homeB), `${ID}.md`);
+    const next = await runSync(f.homeB, ["--dir", f.topo.b.root, "--json"]);
+    assert.equal(next.err, undefined, next.err?.message);
+    assert.equal(existsSync(saved), true, "B's done status is on the board nowhere");
+    assert.equal(JSON.parse(next.out).conflicts, 1);
+    assert.equal((await runSync(f.homeB, ["--resolve", "take", "--doc", ID, "--dir", f.topo.b.root])).err, undefined);
+    assert.equal(existsSync(saved), false);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("keep refuses to overwrite unsent words, and a frontmatter-only edit does not stop it", async () => {
+  const f = await fixture();
+  try {
+    await f.collide(ID, { body: "# Seed one\n\nA.\n" }, { body: "# Seed one\n\nB.\n" });
+    await modifyBoardDoc(f.topo.b, ID, { body: "# Seed one\n\nUnsent merge.\n" });
+    const saved = path.join(exportsOf(f.topo, f.homeB), `${ID}.md`);
+    const refused = await runSync(f.homeB, ["--resolve", "keep", "--doc", ID, "--dir", f.topo.b.root]);
+    assert.equal(refused.err?.exitCode, 5);
+    assert.equal(refused.err?.details?.reason, "unsent_edit");
+    assert.match(await readBoardFile(f.topo.b, `${ID}.md`), /Unsent merge/);
+    assert.equal(existsSync(saved), true);
+    const shown = JSON.parse((await runSync(f.homeB, ["--inspect", "--doc", ID, "--dir", f.topo.b.root, "--json"])).out) as Record<string, any>;
+    assert.deepEqual(Object.keys(shown.choices), ["take", "revise"]);
+
+    await modifyBoardDoc(f.topo.b, ID, { body: "# Seed one\n\nA.\n", frontmatter: { reviewed: "yes" } as never });
+    const kept = await runSync(f.homeB, ["--resolve", "keep", "--doc", ID, "--dir", f.topo.b.root]);
+    assert.equal(kept.err, undefined, kept.err?.message);
+    assert.match(await readBoardFile(f.topo.b, `${ID}.md`), /reviewed: 'yes'[\s\S]*\nB\./);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("removing a document's copy by hand settles it, with no phantom from its body companion", async () => {
+  const f = await fixture();
+  try {
+    await f.collide(ID, { body: "# Seed one\n\nA.\n" }, { body: "# Seed one\n\nB.\n" });
+    await rm(path.join(exportsOf(f.topo, f.homeB), `${ID}.md`));
+    const block = await syncBlock(f.topo, f.homeB);
+    assert.equal(block.sync.state, "clean");
+    assert.equal(block.sync.conflict_ids, undefined);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("--limit bounds the saved conflict rows", async () => {
+  const f = await fixture();
+  try {
+    assert.equal((await runSync(f.homeB, ["--dir", f.topo.b.root])).err, undefined);
+    for (let index = 0; index < 4; index++) {
+      const copy = path.join(exportsOf(f.topo, f.homeB), `old/doc-${index}.md`);
+      await mkdir(path.dirname(copy), { recursive: true });
+      await writeFile(copy, `---\ntype: Note\ntitle: d${index}\n---\nOld ${index}.\n`);
+    }
+    const receipt = JSON.parse((await runSync(f.homeB, ["--dir", f.topo.b.root, "--json", "--limit", "2"])).out) as Record<string, any>;
+    assert.equal(receipt.saved_conflicts.rows.length, 2);
+    assert.equal(receipt.saved_conflicts.total, 4);
+    assert.equal(receipt.conflicts, 4);
+    assert.deepEqual(receipt.next, []);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("the printed discard leaves an unsent deletion in place", async () => {
+  const f = await fixture();
+  try {
+    await f.collide(ID, { body: "# Seed one\n\nA.\n" }, { body: "# Seed one\n\nB.\n" });
+    await rm(path.join(f.topo.b.board, `${ID}.md`));
+    const listed = JSON.parse((await runSync(f.homeB, ["--dir", f.topo.b.root, "--pull-only", "--json"])).out) as Record<string, any>;
+    const discard = listed.saved_conflicts.rows[0].discard as string;
+    assert.match(discard, /^rm /);
+    for (const file of discard.split(" ").slice(1)) await rm(file);
+    assert.equal(existsSync(path.join(f.topo.b.board, `${ID}.md`)), false);
+    assert.equal((await syncBlock(f.topo, f.homeB)).sync.conflicts, undefined);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("in the old layout a dotted document's copy beside its neighbor is its own copy, and keep will not use it as a body", async () => {
+  const f = await fixture();
+  try {
+    for (const id of ["u/foo", "u/foo.body"]) {
+      await writeBoardDoc(f.topo.a, id, { frontmatter: { type: "Note", title: id }, body: "base\n" });
+    }
+    assert.equal((await runSync(f.homeA, ["--dir", f.topo.a.root])).err, undefined);
+    assert.equal((await runSync(f.homeB, ["--dir", f.topo.b.root])).err, undefined);
+    const dir = exportsOf(f.topo, f.homeB);
+    await mkdir(path.join(dir, "u"), { recursive: true });
+    await writeFile(path.join(dir, "u/foo.md"), "---\ntype: Note\ntitle: u/foo\n---\nfoo mine\n");
+    const dotted = path.join(dir, "u/foo.body.md");
+    await writeFile(dotted, "---\ntype: Note\ntitle: u/foo.body\n---\nDOTTED UNIQUE\n");
+
+    const block = await syncBlock(f.topo, f.homeB);
+    assert.deepEqual([...block.sync.conflict_ids].sort(), ["u/foo", "u/foo.body"]);
+    const kept = await runSync(f.homeB, ["--resolve", "keep", "--doc", "u/foo", "--dir", f.topo.b.root]);
+    assert.equal(kept.err?.exitCode, 5, "no body of its own to write");
+    assert.doesNotMatch(await readBoardFile(f.topo.b, "u/foo.md"), /DOTTED/);
+    assert.match(await readFile(dotted, "utf8"), /DOTTED UNIQUE/);
+  } finally {
+    await f.cleanup();
   }
 });
 

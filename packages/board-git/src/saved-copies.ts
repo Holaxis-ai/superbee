@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { parseMarkdown } from "@superbee/core";
 
 const TEMP_PREFIX = ".saving-";
 
@@ -81,6 +82,34 @@ export function saveConflictCopy(exportDir: string, relPath: string, bytes: Buff
   }
 }
 
+/**
+ * Give a saved copy its body companion and return its path, or null when that path already holds
+ * something else. A copy reused for matching bytes already has its companion; the path can also
+ * hold another document's copy from before repeat conflicts were kept apart, and that stays.
+ */
+export function saveBodyCompanion(copyPath: string, body: string): string | null {
+  const companion = bodyCompanionPath(copyPath);
+  try {
+    writeFileSync(companion, body, { mode: 0o600, flag: "wx" });
+    return companion;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  return readIfFile(companion)?.equals(Buffer.from(body, "utf8")) ? companion : null;
+}
+
+/** True when `companion` holds exactly the body of the copy beside it. */
+function isCompanionOf(copy: string, companion: string): boolean {
+  const bytes = readIfFile(copy);
+  const body = readIfFile(companion);
+  if (bytes === null || body === null) return false;
+  try {
+    return body.equals(Buffer.from(parseMarkdown(bytes.toString("utf8"), copy).body, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
 /** One saved copy on disk. */
 export interface SavedCopy {
   relPath: string;
@@ -111,13 +140,22 @@ export function listSavedCopies(exportDir: string): SavedCopy[] {
     const files: string[] = [];
     walk(root, root, files);
     const present = new Set(files);
-    for (const rel of files.sort()) {
-      if (rel.endsWith(".body.md") && present.has(rel.replace(/\.body\.md$/, ".md"))) continue;
+    const paired = (rel: string): boolean => {
       const companion = bodyCompanionPath(rel);
+      return rel.endsWith(".md") && companion !== rel && present.has(companion) && isCompanionOf(path.join(root, rel), path.join(root, companion));
+    };
+    for (const rel of files.sort()) {
+      if (rel.endsWith(".body.md")) {
+        const owner = rel.replace(/\.body\.md$/, ".md");
+        if (present.has(owner) && paired(owner)) continue;
+        // A companion whose copy was removed by hand is no document: every saved document opens
+        // with frontmatter, and a companion is the part after it.
+        if (!present.has(owner) && !readIfFile(path.join(root, rel))?.subarray(0, 3).equals(Buffer.from("---"))) continue;
+      }
       copies.push({
         relPath: rel.split(path.sep).join("/"),
         file: path.join(root, rel),
-        bodyFile: companion !== rel && present.has(companion) ? path.join(root, companion) : null,
+        bodyFile: paired(rel) ? path.join(root, bodyCompanionPath(rel)) : null,
       });
     }
   }

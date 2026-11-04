@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { listSavedCopies, saveConflictCopy } from "../src/saved-copies.js";
+import { listSavedCopies, saveBodyCompanion, saveConflictCopy } from "../src/saved-copies.js";
 
 async function scratch(): Promise<{ exportDir: string; cleanup: () => Promise<void> }> {
   const root = await mkdtemp(path.join(tmpdir(), "sb-saved-copies-"));
@@ -50,6 +50,28 @@ test("a slot left free by a settled copy is not reused ahead of a newer copy", a
     await rm(first);
     const third = saveConflictCopy(exportDir, "a.md", Buffer.from("three"));
     assert.deepEqual(listSavedCopies(exportDir).map((copy) => copy.file), [second, third]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a raw file's copy is its own path, and a companion only pairs with the copy whose body it holds", async () => {
+  const { exportDir, cleanup } = await scratch();
+  try {
+    const raw = saveConflictCopy(exportDir, "data.json", Buffer.from("{}"));
+    assert.deepEqual(listSavedCopies(exportDir).map((copy) => [copy.file, copy.bodyFile]), [[raw, null]]);
+
+    const doc = saveConflictCopy(exportDir, "a.md", Buffer.from("---\ntype: Note\n---\nmine\n"));
+    const body = saveBodyCompanion(doc, "mine\n");
+    assert.equal(listSavedCopies(exportDir).find((copy) => copy.relPath === "a.md")?.bodyFile, body);
+    assert.equal(listSavedCopies(exportDir).some((copy) => copy.relPath === "a.body.md"), false);
+
+    await rm(body!);
+    await writeFile(body!, "---\ntype: Note\n---\nanother document\n");
+    assert.equal(saveBodyCompanion(doc, "mine\n"), null, "what the path holds stays");
+    assert.equal(await readFile(body!, "utf8"), "---\ntype: Note\n---\nanother document\n");
+    assert.equal(listSavedCopies(exportDir).find((copy) => copy.relPath === "a.md")?.bodyFile, null);
+    assert.equal(listSavedCopies(exportDir).some((copy) => copy.relPath === "a.body.md"), true);
   } finally {
     await cleanup();
   }

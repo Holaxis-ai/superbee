@@ -72,7 +72,7 @@ import {
 } from "@superbee/core";
 import { BoardGitError, classifyGitError, isBoardGitError, type GitFailure } from "./errors.js";
 import { normalizeGitLexicalPath } from "./git-path.js";
-import { bodyCompanionPath, saveConflictCopy } from "./saved-copies.js";
+import { saveBodyCompanion, saveConflictCopy } from "./saved-copies.js";
 import {
   PRIVATE_STATE_MAX_RECORD_BYTES,
   privateStateFinding,
@@ -2170,7 +2170,8 @@ export type FetchRebaseResolvingOutcome =
    * Same-doc conflicts were RESOLVED by the converging mechanic (upstream kept, local exported)
    * and the rebase COMPLETED — the worktree is never left mid-state; non-conflicted local commits
    * landed on top of `origin/board`. One entry per conflicted file (deduped across rebase stops:
-   * a doc conflicting at several stops keeps its LAST export — the local FINAL content).
+   * a doc conflicting at several stops reports its LAST export, the local FINAL content, and every
+   * stop's version stays saved).
    */
   | { status: "resolved"; conflicts: ResolvedConflict[] }
   /**
@@ -2269,16 +2270,7 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
         let bodyExportPath: string | null = null;
         const isDoc = isConceptDocPath(relPath);
         if (local.status === 0) {
-          // A later stop of this same rebase replaces this run's own copy: the local FINAL content
-          // is the one being saved. A copy from an earlier run is never touched.
-          const ownCopy = byPath.get(relPath)?.exportPath ?? null;
-          if (ownCopy !== null) {
-            writeFileSync(ownCopy, local.stdout, { mode: 0o600 });
-            rmSync(bodyCompanionPath(ownCopy), { force: true });
-            exportPath = ownCopy;
-          } else {
-            exportPath = saveConflictCopy(exportDir, relPath, local.stdout);
-          }
+          exportPath = saveConflictCopy(exportDir, relPath, local.stdout);
           // The body-only companion is the literally executable
           // `doc update --body-file` input. Only for a concept doc whose blob parses as OKF
           // markdown and whose bytes round-trip utf8 cleanly. A doc that parses after a lossy
@@ -2291,8 +2283,7 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
               const decoded = local.stdout.toString("utf8");
               if (Buffer.from(decoded, "utf8").equals(local.stdout)) {
                 const { body } = parseMarkdown(decoded, relPath);
-                bodyExportPath = bodyCompanionPath(exportPath);
-                writeFileSync(bodyExportPath, body, { mode: 0o600 });
+                bodyExportPath = saveBodyCompanion(exportPath, body);
               }
             } catch {
               bodyExportPath = null;

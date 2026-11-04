@@ -192,7 +192,8 @@ For a Git board, the 'sync' block reads local Git (what the last fetch saw, neve
   uncommitted        Changed files not yet committed to the board
   last_fetch         When this clone last fetched (null when it never has)
   conflicts          Documents whose copy sync saved aside is still unsettled; 'conflict_ids' lists
-                      the first 5. Inspect one with 'sync --inspect --doc <id>'. Omitted at 0.
+                      the first 5, and 'saved_copies' counts their copies. Inspect one with
+                      'sync --inspect --doc <id>'. Omitted at 0.
 
 In a hosted checkout (a folder made by 'checkout'), the 'sync' block reads:
   state              clean | unsent_changes | needs_decision (a conflict or a held item) | busy

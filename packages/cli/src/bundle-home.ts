@@ -265,6 +265,7 @@ export async function gitBoardSyncBlock(board: GitBoardFacts): Promise<Record<st
   if (unsettled.length > 0) {
     block.conflicts = unsettled.length;
     block.conflict_ids = unsettled.slice(0, 5).map((conflict) => conflict.id ?? conflict.relPath);
+    block.saved_copies = unsettled.reduce((total, conflict) => total + conflict.copies.length, 0);
   }
   block.last_fetch = await lastFetch(board.top);
   return block;

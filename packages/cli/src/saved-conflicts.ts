@@ -1,13 +1,13 @@
 // What is still unsettled among a Git board's saved conflict copies, derived each time from the
-// copies and the document as it stands. A copy whose content the document already carries is
-// settled however it got there (`--resolve`, the `doc update --body-file` chain, a matching edit),
-// and so is one that differs only by a claim the teammate's version won: there is nothing of the
-// person's left in it to lose. Everything else stays named until `--resolve` or removing the file.
+// copies and the document as it stands. A copy whose content the document already carries, apart
+// from engine stamps, is settled however it got there. Everything else stays named until `--resolve`
+// or removing the file: any other difference is something the person wrote.
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { conceptIdFromPath, parseMarkdown } from "@superbee/core";
 import { boardRefOf, isConceptDocPath, listSavedCopies, readDocBytesAtRef, type SavedCopy } from "@superbee/board-git";
 import { commandFragment, commandToken, type CommandPrefix, type CommandText } from "./command-text.js";
+import { ENGINE_STAMPED_FIELDS } from "./commands/sync/claim-conflict.js";
 import { defaultSyncStore } from "./cursor.js";
 
 /** Frontmatter keys, engine stamps excluded, whose values differ between two parsed versions. */
@@ -17,7 +17,7 @@ function differingFields(left: Record<string, unknown>, right: Record<string, un
 }
 
 /** True when the document as it stands holds everything the saved copy would add. */
-export async function copyIsCarried(boardPath: string, relPath: string, copy: Buffer, current: Buffer | null): Promise<boolean> {
+export function copyIsCarried(relPath: string, copy: Buffer, current: Buffer | null): boolean {
   if (current === null) return false;
   if (copy.equals(current)) return true;
   if (!isConceptDocPath(relPath)) return false;
@@ -29,16 +29,7 @@ export async function copyIsCarried(boardPath: string, relPath: string, copy: Bu
   } catch {
     return false;
   }
-  if (saved.body !== now.body) return false;
-  // Loaded only here: a board with no saved copy never reads its kinds for this.
-  const { ENGINE_STAMPED_FIELDS, loadClaimPolicy } = await import("./commands/sync/claim-conflict.js");
-  const savedFields = saved.frontmatter as Record<string, unknown>;
-  const nowFields = now.frontmatter as Record<string, unknown>;
-  const differs = differingFields(savedFields, nowFields, ENGINE_STAMPED_FIELDS);
-  if (differs.length === 0) return true;
-  const coordinates = (await loadClaimPolicy(boardPath)).forType(nowFields.type);
-  const owner = coordinates?.ownerField;
-  return owner !== undefined && differs.includes(owner) && differs.every((key) => coordinates!.fields.includes(key));
+  return saved.body === now.body && differingFields(saved.frontmatter as Record<string, unknown>, now.frontmatter as Record<string, unknown>, ENGINE_STAMPED_FIELDS).length === 0;
 }
 
 async function readOrNull(file: string): Promise<Buffer | null> {
@@ -57,10 +48,11 @@ export interface UnsettledConflict {
   /** Oldest first; the verbs settle them in this order, so the newest has the last word. */
   copies: SavedCopy[];
   /**
-   * The verb that discards a copy and leaves the document as it is: take when the document equals
-   * the upstream version or is absent, revise when it holds local edits a take would undo.
+   * What discards a copy and leaves the document as it is: take when the document equals the
+   * upstream version or is absent there too, revise when it holds local edits a take would undo,
+   * and removing the file when the person deleted the document, which a take would restore.
    */
-  discardWith: "take" | "revise";
+  discardWith: "take" | "revise" | "remove";
 }
 
 async function classify(boardPath: string, key: string): Promise<{ unsettled: UnsettledConflict[]; carried: SavedCopy[] }> {
@@ -70,12 +62,12 @@ async function classify(boardPath: string, key: string): Promise<{ unsettled: Un
     const bytes = await readOrNull(copy.file);
     if (bytes === null) continue;
     const current = await readOrNull(path.join(boardPath, copy.relPath));
-    if (await copyIsCarried(boardPath, copy.relPath, bytes, current)) {
+    if (copyIsCarried(copy.relPath, bytes, current)) {
       carried.push(copy);
       continue;
     }
     const upstream = readDocBytesAtRef(boardPath, `refs/remotes/${boardRefOf(boardPath)}`, copy.relPath);
-    const discardWith = current !== null && (upstream === null || !current.equals(upstream)) ? "revise" : "take";
+    const discardWith = current === null ? (upstream === null ? "take" : "remove") : upstream === null || !current.equals(upstream) ? "revise" : "take";
     const entry = byPath.get(copy.relPath) ?? { relPath: copy.relPath, id: isConceptDocPath(copy.relPath) ? conceptIdFromPath(copy.relPath) : null, copies: [], discardWith };
     entry.copies.push(copy);
     byPath.set(copy.relPath, entry);
@@ -105,6 +97,10 @@ export function inspectCommand(inv: CommandPrefix, id: string, dir: string | und
   return commandFragment`${inv} sync --inspect --doc ${commandToken(id)}${suffix}`;
 }
 
+function removeCommand(copy: SavedCopy): string {
+  return `rm ${commandToken(copy.file)}${copy.bodyFile === null ? "" : ` ${commandToken(copy.bodyFile)}`}`;
+}
+
 /** The row `sync` reports for one unsettled file. */
 export function unsettledRow(conflict: UnsettledConflict, inv: CommandPrefix, dir: string | undefined): Record<string, unknown> {
   const newest = conflict.copies[conflict.copies.length - 1]!;
@@ -118,9 +114,9 @@ export function unsettledRow(conflict: UnsettledConflict, inv: CommandPrefix, di
         ? String(inspectCommand(inv, conflict.id, dir))
         : `merge what you need into ${conflict.relPath} by hand, then delete the saved file`,
     discard:
-      conflict.id !== null
+      conflict.id !== null && conflict.discardWith !== "remove"
         ? String(commandFragment`${inv} sync --resolve ${commandToken(conflict.discardWith)} --doc ${commandToken(conflict.id)}${suffix}`)
-        : `rm ${commandToken(conflict.copies[0]!.file)}`,
+        : removeCommand(conflict.copies[0]!),
   };
 }
 

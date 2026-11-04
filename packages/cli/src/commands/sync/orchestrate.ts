@@ -166,17 +166,20 @@ top, then \`sync\` again to share it. The saved copy stays listed until you sett
 A saved copy stays reported until it is settled: \`status\` reads \`needs_decision\` and names the
 document, and every later \`sync\` lists it in \`saved_conflicts\`, with the command that shows it
 and the one command that discards it. Only a new conflict exits 5; a copy from an earlier run does
-not change the exit code. A copy the document already carries is settled by itself: the next
-\`sync\` removes it. A repeat conflict on one document keeps the earlier copy and saves the new one
-beside it, so nothing you saved is overwritten.
+not change the exit code. A copy whose content the document already holds, apart from engine
+stamps, is settled by itself: the next \`sync\` removes it. A repeat conflict on one document keeps
+the earlier copy and saves the new one beside it, unless its bytes match a saved copy, which is
+then that copy. Copies are kept per clone folder, so moving a clone leaves them under its old path.
 
 A hosted checkout's conflict verbs work on a saved conflict too, over the same flow (sync still
 keeps the teammate's version first): \`--inspect --doc <id>\` shows your saved version and the
 teammate's (\`--out <file>\` writes theirs whole); \`--resolve take\` restores theirs (undoing any
 later edit) and discards your saved copy; \`--resolve keep\` writes your saved body over theirs with
 \`doc update\`, and is refused with nothing changed when your copy also differs in frontmatter,
-since keep carries only the body; \`--resolve revise\` records the document as it is now, so edit it
-to the result you want first, and is refused while the document still equals the teammate's version.
+since keep carries only the body, or when the document holds unsent words it would overwrite;
+\`--resolve revise\` records the document as it is now, so edit it to the result you want first, and
+is refused while the document equals its upstream version and does not hold your copy: after a merge
+is pushed, or to drop a lost claim, use take, which then leaves the document unchanged.
 Each removes one saved copy, oldest first; while a later copy waits, take leaves the document
 alone. None commits or pushes: the next \`sync\` shares keep and revise. A raw or reserved file's
 copy has no verbs: merge what you need by hand and delete the saved file.
@@ -990,7 +993,7 @@ async function receiptPhase(
   if (unsettled.length > 0) {
     const rows = unsettled.map((conflict) => unsettledRow(conflict, run.inv, run.dirFlag));
     receipt.saved_conflicts = cap(rows, run.limit);
-    run.stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", { ...counts, conflicts: unsettled.length, next: rows.map((row) => String(row.next)) })), run.mode));
+    run.stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", { ...counts, conflicts: unsettled.length })), run.mode));
     return;
   }
   run.stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", counts)), run.mode));

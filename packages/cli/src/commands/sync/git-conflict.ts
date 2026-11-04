@@ -6,9 +6,10 @@
 //   --inspect          your saved version and the teammate's kept one (origin/board, last fetch)
 //   --resolve take     the teammate's version stays; your saved copy is discarded
 //   --resolve keep     your saved body is written over the teammate's with `doc update`; refused
-//                      when your copy also differs in frontmatter, which a body write cannot carry
+//                      when your copy also differs in frontmatter, which a body write cannot carry,
+//                      or when the document holds unsent words of yours it would overwrite
 //   --resolve revise   the document as it is now (edited to the result first) is the resolution;
-//                      refused while it still equals the teammate's and your copy says otherwise
+//                      refused while it equals its upstream version and does not hold your copy
 //
 // A document conflicted more than once has several copies. The verbs take them oldest first, so
 // the newest has the last word, and a take leaves the document alone until the last one.
@@ -287,6 +288,13 @@ function keepWouldLose(board: Board, local: Buffer, remote: Buffer | null, prese
   return Object.keys(saved ?? {}).filter((key) => !["type", "title", "timestamp", ...ENGINE_STAMPED_FIELDS].includes(key)).sort();
 }
 
+/** True when the document holds an unsent body that is neither the upstream one nor your saved one. */
+function keepWouldOverwrite(board: Board, local: Buffer, remote: Buffer | null, present: Buffer | null): boolean {
+  const now = parsed(present, board.relPath);
+  if (now === null) return false;
+  return now.body !== parsed(remote, board.relPath)?.body && now.body !== parsed(local, board.relPath)?.body;
+}
+
 /** The code that refuses the kept version's frontmatter: `doc update` cannot patch such a document. */
 function keptRefusalCode(remote: Buffer | null, relPath: string): string | null {
   if (remote === null) return null;
@@ -352,7 +360,8 @@ async function runInspect(args: ConflictArgs, board: Board, cwd: string): Promis
   const claimOnly = divergence.claim?.only === true;
   const keptRefused = keptRefusalCode(remote, board.relPath);
   const keepLoses = keepWouldLose(board, local, remote, await readIfPresent(board.file), divergence);
-  const keepOffered = keepLoses.length === 0 && !claimOnly && keptRefused === null;
+  const keepOverwrites = keepWouldOverwrite(board, local, remote, await readIfPresent(board.file));
+  const keepOffered = keepLoses.length === 0 && !keepOverwrites && !claimOnly && keptRefused === null;
   return {
     conflict: args.id,
     file: board.file,
@@ -369,10 +378,12 @@ async function runInspect(args: ConflictArgs, board: Board, cwd: string): Promis
           ...(keepOffered ? { keep: "re-create the document from your saved version with doc write" } : {}),
           revise: "re-create the document as you want it first, then record it",
         }
-      : keepLoses.length > 0 && !claimOnly && keptRefused === null
+      : (keepLoses.length > 0 || keepOverwrites) && !claimOnly && keptRefused === null
         ? {
             take: "restore the teammate's version: your saved copy is discarded",
-            revise: `your saved copy also differs in frontmatter (${keepLoses.join(", ")}), which keep cannot carry: edit the document to the result you want first, then record it`,
+            revise: keepLoses.length > 0
+              ? `your saved copy also differs in frontmatter (${keepLoses.join(", ")}), which keep cannot carry: edit the document to the result you want first, then record it`
+              : "the document holds unsent words that keep would overwrite: edit it to the result you want first, then record it",
           }
       : claimOnly
         ? {
@@ -404,19 +415,6 @@ async function runDocVerb(verb: typeof docUpdate, argv: string[]): Promise<Recor
   } catch {
     throw new CliError("RUNTIME", "the document write gave no readable receipt; your saved copy was kept", { help: `${cliInvocation()} sync --help` });
   }
-}
-
-/**
- * True when the upstream version of the document was committed after this copy was saved, which
- * means it is a later version (a merge already pushed), and not the one the conflict kept. Commit
- * times have whole seconds, so a commit in the same second as the save reads as the kept version;
- * that errs toward the refusal, whose take settles the copy just the same.
- */
-async function upstreamMovedSinceSaved(board: Board): Promise<boolean> {
-  const committed = runGit(board.root, ["log", "-1", "--format=%ct", `refs/remotes/${boardRefOf(board.root)}`, "--", board.relPath]);
-  const seconds = Number.parseInt(committed.stdout.trim(), 10);
-  if (committed.status !== 0 || !Number.isFinite(seconds)) return false;
-  return seconds > Math.floor((await fs.stat(board.exportPath)).mtimeMs / 1000);
 }
 
 async function discardSavedCopy(board: Board): Promise<void> {
@@ -455,6 +453,12 @@ async function runResolve(args: ConflictArgs, choice: Choice, board: Board, cwd:
           present === null
             ? `cp ${commandToken(board.exportPath)} ${commandToken(board.file)} → ${commandFor(args, "revise")}`
             : `edit the document to the result you want with doc update → ${commandFor(args, "revise")}`,
+      });
+    }
+    if (keepWouldOverwrite(board, local, remote, present)) {
+      throw new CliError("CONFLICT", `'${args.id}' holds unsent words that are neither its upstream version nor your saved copy, and keep would overwrite them, so nothing changed and your saved copy stays at ${board.exportPath}`, {
+        details: { id: args.id, saved_at: board.exportPath, reason: "unsent_edit" },
+        help: `edit the document to the result you want with doc update → ${commandFor(args, "revise")}`,
       });
     }
     const bodyFile = board.bodyExportPath;
@@ -508,8 +512,8 @@ async function runResolve(args: ConflictArgs, choice: Choice, board: Board, cwd:
         help: commandFor(args, "keep"),
       });
     }
-    if (remote !== null && present.equals(remote) && !(await copyIsCarried(board.root, board.relPath, local, present)) && !(await upstreamMovedSinceSaved(board))) {
-      throw new CliError("CONFLICT", `'${args.id}' still equals the teammate's version, so revise would discard your saved copy with nothing carried; edit it to the result you want first, or use take to discard your copy`, {
+    if (remote !== null && present.equals(remote) && !copyIsCarried(board.relPath, local, present)) {
+      throw new CliError("CONFLICT", `'${args.id}' equals its upstream version and does not hold your saved copy, so revise would discard the copy with nothing carried; edit the document first, or use take, which discards the copy and leaves this document unchanged`, {
         details: { id: args.id, saved_at: board.exportPath },
         help: commandFor(args, "take"),
       });
