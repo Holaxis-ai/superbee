@@ -380,7 +380,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "docOpen",
         leaves: [publicLeaf("docOpen", "doc open", one, undefined, DIR_SURFACE)],
-        usage: "doc open <id> [--dir <path> | --remote <url>] [--port <n>] [--actor <name>]",
+        usage: "doc open <id> [--new-tab] [--dir <path> | --remote <url>] [--port <n>] [--actor <name>]",
         summary: "Open one exact authoritative document in a reusable managed local browser UI (explicit remote launches remain foreground)",
       },
       {

@@ -44,6 +44,31 @@ option changes body splitting or attributed `MalformedDocumentError` identity.
 This preserves parsed values, not YAML formatting or original document bytes after serialization.
 Backends remain responsible for retaining raw bytes and deriving their revision tokens.
 
+## Frontmatter limits
+
+Every YAML load in Core goes through one bounded loader, `loadBoundedYaml`, and every frontmatter
+write is checked against the same limits. `FRONTMATTER_LIMITS` is the source of the values:
+`sourceChars` (262,144 characters), `depth` (32), `aliases` (1,000), `expandedNodes` (100,000) and
+`expandedChars` (1,048,576 characters).
+
+- Reading stored frontmatter that cannot be accepted throws `MalformedDocumentError`. Its `code` is
+  `FRONTMATTER_MALFORMED` for invalid YAML, or `FRONTMATTER_TOO_LARGE`, `FRONTMATTER_TOO_DEEP`,
+  `FRONTMATTER_ALIAS_LIMIT` or `FRONTMATTER_CYCLE` for a limit.
+- Serializing or writing frontmatter the reader would refuse throws `FrontmatterRefusedError` with
+  the same `code`, and nothing is stored. `assertStorableFrontmatter` from
+  `@superbee/core/document-codec` runs that check on raw document text.
+- Lenient scans skip the document and report it; see Bundle health. Direct calls throw.
+
+## Document transfer
+
+`planDocumentTransfer`, `applyDocumentTransfer` and `resumeDocumentTransfer` copy selected documents
+from a bound bundle into a local bundle or Git board, with new ids, rewritten links, a `sources`
+entry on each and one Promotion record. `planDocumentRefresh` and `applyDocumentRefresh` update those
+copies from their sources. A plan only reads. Applying takes the plan's token, recomputes the plan
+from fresh reads, and throws `TransferPlanChanged` if it differs. `TransferConflictError`,
+`TransferInterrupted` and `TransferResumeConflict` are the other typed refusals. A transfer's writes
+are create-only; a refresh replaces a copy only at the version its plan saw.
+
 ## Document presentation values
 
 The additive `@superbee/core/artifact-contract` subpath provides pure v1 document target,
@@ -72,6 +97,9 @@ only for in-process code from the same reviewed deploy. The module has no Node b
 it runs unchanged in a Worker or a browser.
 
 ## Mutation attribution and local history
+
+`mutateDocument` takes `expectedVersion` only in `patch` and `replace-document` modes. Create-only
+and overwrite modes reject a supplied value instead of ignoring it.
 
 `mutateDocument` and `prepareDocumentMutationCandidate` persist a supplied `actor` by default:
 `actor` in OKF v0.1, `superbee_updated_by` in v0.2 (plus `actor` when the Kind requires it).

@@ -285,6 +285,27 @@ export over the document. Evidence: `packages/cli/test/hosted-sync-unstorable.te
 `packages/browser-local/test/pull-unstorable.test.ts` and
 `packages/cli/test/sync-git-conflict-verbs.test.ts`.
 
+In a local bundle or Git board, one unreadable document does not stop whole-bundle reads: `list`,
+`query`, `search`, `index generate`, `link list`, `link show`, `status`, `view list` and
+`kinds --coverage` skip and report it. `doc read`, `doc update` and `doc field` on that document fail
+with the same `RUNTIME` error. Editing its frontmatter in the file or `doc delete <id>` clears it.
+
+## Document import
+
+`doc import` copies documents from a declared, bound bundle with new ids, rewritten links, a
+`sources` entry on each and one Promotion record. Without `--apply` it reads only and prints the
+plan with a `plan_token`; `--apply <token>` recomputes the plan from fresh reads and writes only if
+the token still matches. Writes are create-only. `--refresh <record-id>` follows the same plan and
+apply steps, writes each copy only if it is still the version the plan saw, and reports a copy edited
+since the record wrote it as a `target_edited` conflict unless named with `--overwrite` or `--skip`.
+`--resume <record-id>` finishes an interrupted run. `--remote` and hosted checkouts are `USAGE`.
+
+Exit 5 codes: `TRANSFER_CONFLICT` (the plan has conflicts, with rows in `details.conflicts`),
+`TRANSFER_PLAN_CHANGED` (the token no longer matches, with `details.expected_plan` and
+`details.current_plan`), `TRANSFER_INTERRUPTED` (another writer created a target id; `--resume`
+finishes the rest) and `TRANSFER_RESUME_CONFLICT`. Evidence: `packages/cli/test/doc-import.test.ts`
+and `packages/core/test/document-transfer.test.ts`.
+
 ## Evidence map
 
 Every numbered row has one help/source anchor and one behavioral test anchor. The repository test

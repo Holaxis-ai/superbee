@@ -10,7 +10,6 @@ import type { HostedAccountDeps } from "../../hosted/account.js";
 
 /** The common flags every `doc` verb accepts — appended to each verb's focused help (§10). */
 const COMMON_OPTIONS = `Common options:
-  --new-tab            Open a separate browser tab instead of offering it to the current viewer
   --dir <path>         Bundle directory (default: discovered from the cwd)
   --remote <url>       Talk to a wire-protocol server instead of a local bundle
                        (mutually exclusive with --dir; remote access is always explicit)
@@ -29,7 +28,7 @@ Usage:
   superbee doc field <action> <id> <field> [options]   Set a field or change explicit collection membership
   superbee doc verify  <id> --actor <a>                 Append an OKF v0.2 verification event
   superbee doc read    <id> [--out <p> | --body-out <p> | --rendered-out <p>] Read/export a doc
-  superbee doc open    <id>                             Open the rendered doc in a browser
+  superbee doc open    <id> [--new-tab]                 Open the rendered doc in a browser
   superbee doc history <id>                             Show versions (local: current only)
   superbee doc delete  <id> [--expected-version <v>]    Hard-delete a doc (idempotent)
   superbee doc import  --from <alias> --select ...      Copy documents from another bundle
@@ -63,6 +62,7 @@ Options:
   --dir <path>         Bundle directory (default: discovered from the cwd)
   --remote <url>       Display a document from an explicit remote bundle
                        (mutually exclusive with --dir; remote access is always explicit)
+  --new-tab            Open a separate browser tab instead of offering it to the current viewer
   --port <p>           Require this port for a new managed UI (default: OS-assigned and then reused)
   --actor <name>       Advisory identity for any later human-confirmed View actions in this UI.
                        On an OKF v0.2 bundle a confirmed write needs an OKF actor: human:<id>,
@@ -109,10 +109,12 @@ Options:
                        explicitly instead). A NEW doc with no body source is always allowed — see
                        'doc update' to patch other fields while preserving the body.
   --replace-links      Required to overwrite an EXISTING doc's body when the new body would silently
-                       DROP one or more of its outbound cross-links (links live in the body — OKF).
-                       Without it, a body replace that drops a link is refused (exit 2, naming the
-                       dropped link(s)); a new body that still contains the same link(s) never needs
-                       this flag. SHORT-TERM guard — see 'link add'/'link show' to manage links.
+                       DROP one or more of its outbound cross-links (links live in the body, per OKF),
+                       whatever their type: links to documents here and okf://<alias>/<path>.md links into another
+                       bundle; web links are not cross-links. Without it, such a replace is refused
+                       (exit 2, naming the dropped link(s)). A new body that still contains the same
+                       link(s) never needs this flag; naming a target in prose does not keep its link.
+                       SHORT-TERM guard: see 'link add'/'link show' to manage links.
   --accept-truncated-body
                        Required to overwrite an EXISTING doc's body with a TRUNCATED 'doc read' body
                        preview — one still carrying the truncated-preview marker, or one that is
@@ -169,11 +171,11 @@ Options:
                          only the given fields and leaves the body untouched.
   --replace-links         Required when a --body/--body-file replace would silently DROP one or more
                          of the doc's existing outbound cross-links (links live in the body — OKF),
-                         whatever its type: links to documents here and okf: links into another
+                         whatever its type: links to documents here and okf://<alias>/<path>.md links into another
                          bundle; web links are not cross-links. Without it, such a replace is refused (exit 2, naming the dropped link(s));
-                         a new body that still contains the same link(s) — the ordinary read-edit-
-                         update cycle — never needs this flag. SHORT-TERM guard — see 'link add'/
-                         'link show' to manage links.
+                         a new body that still contains the same link(s), the ordinary read-edit-
+                         update cycle, never needs this flag; naming a target in prose does not keep
+                         its link. SHORT-TERM guard: see 'link add'/'link show' to manage links.
   --accept-truncated-body
                          Required when a --body/--body-file/stdin replace would write a TRUNCATED
                          'doc read' body preview — one still carrying the truncated-preview marker,
