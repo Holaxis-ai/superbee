@@ -644,7 +644,7 @@ export const CLI_COMMAND_GROUPS = [
         id: "version",
         leaves: [publicLeaf("version", "version", zero, 26)],
         usage: "version [--check] [--tag latest|next] [--json]",
-        summary: "Show the complete local build/runtime identity, or perform one bounded read-only comparison against npm's exact latest/next release policy",
+        summary: "Show the complete local build/runtime identity, or perform one bounded read-only comparison against npm's exact latest/next release policy (published builds currently ship with this disabled: exits 1, policy_disabled, no network request)",
       },
       {
         id: "sessionStart",
