@@ -48,8 +48,8 @@ Backends remain responsible for retaining raw bytes and deriving their revision 
 
 Every YAML load in Core goes through one bounded loader, `loadBoundedYaml`, and every frontmatter
 write is checked against the same limits. `FRONTMATTER_LIMITS` is the source of the values:
-`sourceChars` (256 KiB), `depth` (32), `aliases` (1,000), `expandedNodes` (100,000) and
-`expandedChars` (1 MiB).
+`sourceChars` (262,144 characters), `depth` (32), `aliases` (1,000), `expandedNodes` (100,000) and
+`expandedChars` (1,048,576 characters).
 
 - Reading stored frontmatter that cannot be accepted throws `MalformedDocumentError`. Its `code` is
   `FRONTMATTER_MALFORMED` for invalid YAML, or `FRONTMATTER_TOO_LARGE`, `FRONTMATTER_TOO_DEEP`,

@@ -148,7 +148,7 @@ full reference.
 
 ## When a document cannot be read
 
-Superbee bounds how much frontmatter it parses: 256 KiB of YAML, 32 levels of nesting, and limits on
+Superbee bounds how much frontmatter it parses: 262,144 characters of YAML, 32 levels of nesting, and limits on
 YAML alias use. Ordinary documents are far below these limits. A write over a limit is refused with
 `USAGE` and nothing is stored. A document already in the bundle that is over a limit, or whose YAML
 is invalid, cannot be read:

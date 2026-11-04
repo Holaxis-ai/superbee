@@ -110,7 +110,7 @@ Options:
                        'doc update' to patch other fields while preserving the body.
   --replace-links      Required to overwrite an EXISTING doc's body when the new body would silently
                        DROP one or more of its outbound cross-links (links live in the body, per OKF),
-                       whatever their type: links to documents here and okf: links into another
+                       whatever their type: links to documents here and okf://<alias>/<path>.md links into another
                        bundle; web links are not cross-links. Without it, such a replace is refused
                        (exit 2, naming the dropped link(s)). A new body that still contains the same
                        link(s) never needs this flag; naming a target in prose does not keep its link.
@@ -171,7 +171,7 @@ Options:
                          only the given fields and leaves the body untouched.
   --replace-links         Required when a --body/--body-file replace would silently DROP one or more
                          of the doc's existing outbound cross-links (links live in the body — OKF),
-                         whatever its type: links to documents here and okf: links into another
+                         whatever its type: links to documents here and okf://<alias>/<path>.md links into another
                          bundle; web links are not cross-links. Without it, such a replace is refused (exit 2, naming the dropped link(s));
                          a new body that still contains the same link(s), the ordinary read-edit-
                          update cycle, never needs this flag; naming a target in prose does not keep
