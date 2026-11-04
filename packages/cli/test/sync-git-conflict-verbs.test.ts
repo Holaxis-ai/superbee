@@ -276,7 +276,9 @@ test("--resolve take restores the teammate's version over an edit made since the
     assert.equal(taken.err, undefined, taken.err?.message);
     const record = JSON.parse(taken.out) as Record<string, any>;
     assert.equal(record.file_state, "restored");
-    assert.deepEqual(record.help, [], "nothing of yours is left to push");
+    assert.equal(record.help.length, 1, "nothing to push; the saved edit is what is left to look at");
+    assert.match(record.help[0], /--inspect/);
+    assert.match(await readFile(record.unsent_edit_saved_at, "utf8"), /An edit after the conflict/);
     assert.equal(await readBoardFile(topo.b, "tasks/seed-one.md"), theirs);
   } finally {
     await cleanup();

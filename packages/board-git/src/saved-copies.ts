@@ -68,7 +68,14 @@ export function saveConflictCopy(exportDir: string, relPath: string, bytes: Buff
   for (let slot = highest + 1; ; slot++) {
     const file = path.join(slotDir(exportDir, slot), relPath);
     if (slotTaken(file)) continue;
-    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    // A raw file's copy can sit where this path needs a folder: this slot is taken, the next is not.
+    try {
+      mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EEXIST" || code === "ENOTDIR") continue;
+      throw error;
+    }
     const temp = path.join(path.dirname(file), `${TEMP_PREFIX}${process.pid}-${randomUUID()}`);
     writeFileSync(temp, bytes, { mode: 0o600, flag: "wx" });
     try {
@@ -96,6 +103,23 @@ export function saveBodyCompanion(copyPath: string, body: string): string | null
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
   return readIfFile(companion)?.equals(Buffer.from(body, "utf8")) ? companion : null;
+}
+
+/**
+ * Save a new copy of `relPath` and, for a document whose bytes decode losslessly and parse, its body
+ * companion: the literally executable `doc update --body-file` input. A lossy decode would apply a
+ * corrupted body, so such a copy has none, and a parse failure only means no runnable chain.
+ */
+export function saveCopyWithBody(exportDir: string, relPath: string, bytes: Buffer, isDoc: boolean): { exportPath: string; bodyExportPath: string | null } {
+  const exportPath = saveConflictCopy(exportDir, relPath, bytes);
+  if (!isDoc) return { exportPath, bodyExportPath: null };
+  try {
+    const decoded = bytes.toString("utf8");
+    if (!Buffer.from(decoded, "utf8").equals(bytes)) return { exportPath, bodyExportPath: null };
+    return { exportPath, bodyExportPath: saveBodyCompanion(exportPath, parseMarkdown(decoded, relPath).body) };
+  } catch {
+    return { exportPath, bodyExportPath: null };
+  }
 }
 
 /** True when `companion` holds exactly the body of the copy beside it. */

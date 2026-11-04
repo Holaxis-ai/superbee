@@ -72,7 +72,7 @@ import {
 } from "@superbee/core";
 import { BoardGitError, classifyGitError, isBoardGitError, type GitFailure } from "./errors.js";
 import { normalizeGitLexicalPath } from "./git-path.js";
-import { saveBodyCompanion, saveConflictCopy } from "./saved-copies.js";
+import { saveCopyWithBody } from "./saved-copies.js";
 import {
   PRIVATE_STATE_MAX_RECORD_BYTES,
   privateStateFinding,
@@ -2270,25 +2270,7 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
         let bodyExportPath: string | null = null;
         const isDoc = isConceptDocPath(relPath);
         if (local.status === 0) {
-          exportPath = saveConflictCopy(exportDir, relPath, local.stdout);
-          // The body-only companion is the literally executable
-          // `doc update --body-file` input. Only for a concept doc whose blob parses as OKF
-          // markdown and whose bytes round-trip utf8 cleanly. A doc that parses after a lossy
-          // decode — an invalid byte became U+FFFD — would get a corrupted body
-          // companion while the full export stays exact, and the emitted chain would apply the
-          // corruption; skip the companion, and with it the runnable chain, instead). A parse
-          // failure likewise just means no runnable chain — the full export remains either way.
-          if (isDoc) {
-            try {
-              const decoded = local.stdout.toString("utf8");
-              if (Buffer.from(decoded, "utf8").equals(local.stdout)) {
-                const { body } = parseMarkdown(decoded, relPath);
-                bodyExportPath = saveBodyCompanion(exportPath, body);
-              }
-            } catch {
-              bodyExportPath = null;
-            }
-          }
+          ({ exportPath, bodyExportPath } = saveCopyWithBody(exportDir, relPath, local.stdout, isDoc));
         }
         // 2+3. Keep the UPSTREAM (teammate's) version — explicit ref, never --ours/--theirs. An
         // upstream-side DELETION keeps upstream's state by removing the path instead.

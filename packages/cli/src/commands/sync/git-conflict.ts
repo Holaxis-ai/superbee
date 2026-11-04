@@ -4,7 +4,8 @@
 // these verbs only read that saved copy and finish the reconcile chain the conflict row names:
 //
 //   --inspect          your saved version and the teammate's kept one (origin/board, last fetch)
-//   --resolve take     the teammate's version stays; your saved copy is discarded
+//   --resolve take     the teammate's version stays; your saved copy is discarded, and any unsent
+//                      edit in the document is saved as a new copy before it is restored
 //   --resolve keep     your saved body is written over the teammate's with `doc update`; refused
 //                      when your copy also differs in frontmatter, which a body write cannot carry,
 //                      or when the document holds unsent words of yours it would overwrite
@@ -18,7 +19,7 @@
 import { constants as fsConstants, existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { assertSafeConceptId, conceptIdFromPath, isReservedFile, MalformedDocumentError, parseMarkdown, pathFromConceptId, versionOfBytes } from "@superbee/core";
-import { boardRefOf, bundleDirNameForProject, listSavedCopies, readDocBytesAtRef, repoTopLevel, resolveBundleKey, retargetBoardInterior, runGit } from "@superbee/board-git";
+import { boardRefOf, bundleDirNameForProject, isConceptDocPath, listSavedCopies, readDocBytesAtRef, repoTopLevel, resolveBundleKey, retargetBoardInterior, runGit, saveCopyWithBody } from "@superbee/board-git";
 import { resolveLocalBundleRoute } from "../../bundle.js";
 import { commandFragment, commandToken, type CommandText } from "../../command-text.js";
 import { defaultSyncStore } from "../../cursor.js";
@@ -146,6 +147,7 @@ interface Board {
   bodyExportPath: string | null;
   /** The newer copies of this document, each to be settled after this one. */
   laterCopies: string[];
+  exportDir: string;
 }
 
 async function isFile(file: string | null): Promise<boolean> {
@@ -200,7 +202,8 @@ async function locateBoard(args: ConflictArgs, cwd: string): Promise<Board> {
   }
   const key = route.kind === "bound-board" ? route.owner.stateKey : resolveBundleKey(root);
   const relPath = pathFromConceptId(args.id);
-  const copies = listSavedCopies(defaultSyncStore.exportsDir(key)).filter((copy) => copy.relPath === relPath);
+  const exportDir = defaultSyncStore.exportsDir(key);
+  const copies = listSavedCopies(exportDir).filter((copy) => copy.relPath === relPath);
   const oldest = copies[0];
   if (oldest === undefined) {
     throw new CliError("NOT_FOUND", `'${args.id}' has no saved conflict on this board: sync saves your version only when a teammate changed the same document`, {
@@ -215,6 +218,7 @@ async function locateBoard(args: ConflictArgs, cwd: string): Promise<Board> {
     exportPath: oldest.file,
     bodyExportPath: oldest.bodyFile,
     laterCopies: copies.slice(1).map((copy) => copy.file),
+    exportDir,
   };
 }
 
@@ -295,6 +299,27 @@ function keepWouldOverwrite(board: Board, local: Buffer, remote: Buffer | null, 
   return now.body !== parsed(remote, board.relPath)?.body && now.body !== parsed(local, board.relPath)?.body;
 }
 
+/**
+ * True when restoring the upstream version would erase something: the document differs from upstream
+ * by more than engine stamps, and is not simply the copy this take was asked to discard.
+ */
+function takeWouldErase(board: Board, local: Buffer, remote: Buffer | null, present: Buffer | null): boolean {
+  if (present === null || board.laterCopies.length > 0) return false;
+  if (remote !== null && copyIsCarried(board.relPath, present, remote)) return false;
+  return !copyIsCarried(board.relPath, present, local);
+}
+
+/** The upstream version, or a refusal that names the saved copy and never prints what Git returned. */
+function readUpstream(board: Board, id: string): Buffer | null {
+  try {
+    return readDocBytesAtRef(board.root, `refs/remotes/${boardRefOf(board.root)}`, board.relPath);
+  } catch {
+    throw new CliError("RUNTIME", `the upstream version of '${id}' could not be read, so nothing changed and your saved copy stays at ${board.exportPath}; merge what you need by hand, then delete that file`, {
+      details: { id, saved_at: board.exportPath },
+    });
+  }
+}
+
 /** The code that refuses the kept version's frontmatter: `doc update` cannot patch such a document. */
 function keptRefusalCode(remote: Buffer | null, relPath: string): string | null {
   if (remote === null) return null;
@@ -316,7 +341,7 @@ function commandFor(args: ConflictArgs, choice: Choice): string {
 
 async function runInspect(args: ConflictArgs, board: Board, cwd: string): Promise<Record<string, unknown>> {
   const local = await fs.readFile(board.exportPath);
-  const remote = readDocBytesAtRef(board.root, `refs/remotes/${boardRefOf(board.root)}`, board.relPath);
+  const remote = readUpstream(board, args.id);
   if (args.out !== undefined) {
     if (remote === null) throw new CliError("NOT_FOUND", `the teammate's side has no version of '${args.id}' to write: it was deleted there`, { details: { id: args.id } });
     const outHelp = `${cliInvocation()} sync --inspect --doc ${commandToken(args.id)} --out <file outside the bundle>`;
@@ -360,8 +385,50 @@ async function runInspect(args: ConflictArgs, board: Board, cwd: string): Promis
   const claimOnly = divergence.claim?.only === true;
   const keptRefused = keptRefusalCode(remote, board.relPath);
   const keepLoses = keepWouldLose(board, local, remote, await readIfPresent(board.file), divergence);
-  const keepOverwrites = keepWouldOverwrite(board, local, remote, await readIfPresent(board.file));
+  const present = await readIfPresent(board.file);
+  const keepOverwrites = keepWouldOverwrite(board, local, remote, present);
+  const unsent = takeWouldErase(board, local, remote, present);
+  const takeNote = board.laterCopies.length > 0
+    ? "this copy is discarded and the document left as it is, since a later copy waits"
+    : unsent
+      ? "your unsent edit in the document is saved as a new copy, the teammate's version is restored, and this saved copy is discarded"
+      : null;
   const keepOffered = keepLoses.length === 0 && !keepOverwrites && !claimOnly && keptRefused === null;
+  const offered: Record<string, string> = deleted
+    ? {
+        take: "accept the deletion: the file is removed and your saved copy is discarded",
+        ...(keepOffered ? { keep: "re-create the document from your saved version with doc write" } : {}),
+        revise: "re-create the document as you want it first, then record it",
+      }
+    : (keepLoses.length > 0 || keepOverwrites) && !claimOnly && keptRefused === null
+      ? {
+          take: "restore the teammate's version: your saved copy is discarded",
+          revise: keepLoses.length > 0
+            ? `your saved copy also differs in frontmatter (${keepLoses.join(", ")}), which keep cannot carry: edit the document to the result you want first, then record it`
+            : "the document holds unsent words that keep would overwrite: edit it to the result you want first, then record it",
+        }
+    : claimOnly
+      ? {
+          take: "keep the teammate's version: your saved copy is discarded",
+          revise: "edit the document to the result you want first, then record it",
+        }
+      : keptRefused !== null
+        ? {
+            take: "restore the teammate's version: your saved copy is discarded",
+            revise: `doc update cannot read the teammate's version (${keptRefused}): copy your saved version over the document, which discards the teammate's from your working tree, then record it`,
+          }
+        : {
+          keep: "write your saved body over the teammate's with doc update",
+          take: "restore the teammate's version: your saved copy is discarded",
+          revise: "edit the document to the result you want first, then record it",
+        };
+  if (takeNote !== null) offered.take = takeNote;
+  // With unsent words in the document, recording them comes first: it is the verb that keeps them.
+  const choices = unsent && offered.revise !== undefined ? { revise: offered.revise, ...offered } : offered;
+  const commands: string[] = keepOffered
+    ? (deleted ? [commandFor(args, "take"), commandFor(args, "keep"), commandFor(args, "revise")] : [commandFor(args, "keep"), commandFor(args, "take"), commandFor(args, "revise")])
+    : [commandFor(args, "take"), commandFor(args, "revise")];
+  const help = unsent ? [commandFor(args, "revise"), ...commands.filter((command) => command !== commandFor(args, "revise"))] : commands;
   return {
     conflict: args.id,
     file: board.file,
@@ -372,37 +439,8 @@ async function runInspect(args: ConflictArgs, board: Board, cwd: string): Promis
     ...(differs.length > 0 ? { frontmatter_differs: differs } : {}),
     ...(board.laterCopies.length > 0 ? { later_copies: board.laterCopies } : {}),
     ...(args.out !== undefined ? { remote_written_to: path.resolve(cwd, args.out) } : {}),
-    choices: deleted
-      ? {
-          take: "accept the deletion: the file is removed and your saved copy is discarded",
-          ...(keepOffered ? { keep: "re-create the document from your saved version with doc write" } : {}),
-          revise: "re-create the document as you want it first, then record it",
-        }
-      : (keepLoses.length > 0 || keepOverwrites) && !claimOnly && keptRefused === null
-        ? {
-            take: "restore the teammate's version: your saved copy is discarded",
-            revise: keepLoses.length > 0
-              ? `your saved copy also differs in frontmatter (${keepLoses.join(", ")}), which keep cannot carry: edit the document to the result you want first, then record it`
-              : "the document holds unsent words that keep would overwrite: edit it to the result you want first, then record it",
-          }
-      : claimOnly
-        ? {
-            take: "keep the teammate's version: your saved copy is discarded",
-            revise: "edit the document to the result you want first, then record it",
-          }
-        : keptRefused !== null
-          ? {
-              take: "restore the teammate's version: your saved copy is discarded",
-              revise: `doc update cannot read the teammate's version (${keptRefused}): copy your saved version over the document, which discards the teammate's from your working tree, then record it`,
-            }
-          : {
-            keep: "write your saved body over the teammate's with doc update",
-            take: "restore the teammate's version: your saved copy is discarded",
-            revise: "edit the document to the result you want first, then record it",
-          },
-    help: keepOffered
-      ? (deleted ? [commandFor(args, "take"), commandFor(args, "keep"), commandFor(args, "revise")] : [commandFor(args, "keep"), commandFor(args, "take"), commandFor(args, "revise")])
-      : [commandFor(args, "take"), commandFor(args, "revise")],
+    choices,
+    help,
   };
 }
 
@@ -424,13 +462,14 @@ async function discardSavedCopy(board: Board): Promise<void> {
 
 async function runResolve(args: ConflictArgs, choice: Choice, board: Board, cwd: string): Promise<Record<string, unknown>> {
   const inv = cliInvocation();
-  const remote = readDocBytesAtRef(board.root, `refs/remotes/${boardRefOf(board.root)}`, board.relPath);
+  const remote = readUpstream(board, args.id);
   const bundleDir = conflictBundleDir(args.dir, cwd);
   const dirArgs = bundleDir !== undefined ? ["--dir", bundleDir] : [];
   const local = await fs.readFile(board.exportPath);
   const divergence = await divergenceOf(board, local, remote);
   const present = await readIfPresent(board.file);
   let fileState: string;
+  let unsentSavedAt: string | undefined;
   if (choice === "keep") {
     if (divergence.claim?.only === true) {
       throw new CliError("CONFLICT", `'${args.id}' differs only by a claim the teammate's version won, so there is nothing of yours to keep`, {
@@ -488,6 +527,10 @@ async function runResolve(args: ConflictArgs, choice: Choice, board: Board, cwd:
   } else if (choice === "take") {
     // take means the teammate's version, so any edit made since the converge is put back to it,
     // unless a later copy is still to come: this take then only sets the older copy aside.
+    // Words that are not upstream are saved first, since Git history does not hold them.
+    if (present !== null && takeWouldErase(board, local, remote, present)) {
+      unsentSavedAt = saveCopyWithBody(board.exportDir, board.relPath, present, isConceptDocPath(board.relPath)).exportPath;
+    }
     if (board.laterCopies.length > 0) {
       fileState = "unchanged";
     } else if (remote === null) {
@@ -534,12 +577,15 @@ async function runResolve(args: ConflictArgs, choice: Choice, board: Board, cwd:
     sent: false,
     ...claimFields(divergence),
     ...(board.laterCopies.length > 0 ? { later_copies: board.laterCopies } : {}),
-    next: board.laterCopies.length > 0
+    ...(unsentSavedAt !== undefined ? { unsent_edit_saved_at: unsentSavedAt } : {}),
+    next: unsentSavedAt !== undefined
+      ? `your unsent edit is saved at ${unsentSavedAt} and stays listed until you settle it`
+      : board.laterCopies.length > 0
       ? `this copy is settled; ${board.laterCopies.length} later saved copy of this document remains to settle the same way`
       : sends
         ? `resolved, not pushed yet: run ${sync} to share the document as it is now`
         : "resolved: the document matches the teammate's version, so there is nothing to push for it",
-    help: board.laterCopies.length > 0 ? [inspectCommand(inv, args.id, args.dir)] : sends ? [sync] : [],
+    help: board.laterCopies.length > 0 || unsentSavedAt !== undefined ? [inspectCommand(inv, args.id, args.dir)] : sends ? [sync] : [],
   };
 }
 

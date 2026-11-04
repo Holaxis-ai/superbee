@@ -5,6 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { withIsolatedUserEnv } from "./support/user-env.js";
@@ -572,7 +573,9 @@ test("keep refuses to overwrite unsent words, and a frontmatter-only edit does n
     assert.match(await readBoardFile(f.topo.b, `${ID}.md`), /Unsent merge/);
     assert.equal(existsSync(saved), true);
     const shown = JSON.parse((await runSync(f.homeB, ["--inspect", "--doc", ID, "--dir", f.topo.b.root, "--json"])).out) as Record<string, any>;
-    assert.deepEqual(Object.keys(shown.choices), ["take", "revise"]);
+    assert.deepEqual(Object.keys(shown.choices), ["revise", "take"]);
+    assert.match(shown.help[0], /--resolve revise/);
+    assert.match(shown.choices.take, /unsent edit/);
 
     await modifyBoardDoc(f.topo.b, ID, { body: "# Seed one\n\nA.\n", frontmatter: { reviewed: "yes" } as never });
     const kept = await runSync(f.homeB, ["--resolve", "keep", "--doc", ID, "--dir", f.topo.b.root]);
@@ -651,6 +654,88 @@ test("in the old layout a dotted document's copy beside its neighbor is its own 
     assert.equal(kept.err?.exitCode, 5, "no body of its own to write");
     assert.doesNotMatch(await readBoardFile(f.topo.b, "u/foo.md"), /DOTTED/);
     assert.match(await readFile(dotted, "utf8"), /DOTTED UNIQUE/);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("take saves an unsent merge as a new copy and names it", async () => {
+  const f = await fixture();
+  try {
+    await f.collide(ID, { body: "# Seed one\n\nA.\n" }, { body: "# Seed one\n\nB.\n" });
+    await modifyBoardDoc(f.topo.b, ID, { body: "# Seed one\n\nHour of merging.\n" });
+    const taken = await runSync(f.homeB, ["--resolve", "take", "--doc", ID, "--dir", f.topo.b.root, "--json"]);
+    assert.equal(taken.err, undefined, taken.err?.message);
+    const receipt = JSON.parse(taken.out) as Record<string, any>;
+    assert.equal(receipt.file_state, "restored");
+    assert.match(await readFile(receipt.unsent_edit_saved_at, "utf8"), /Hour of merging/);
+    assert.match(await readBoardFile(f.topo.b, `${ID}.md`), /\nA\./);
+    assert.equal((await syncBlock(f.topo, f.homeB)).sync.saved_copies, 1, "the new copy stays listed");
+
+    // Now the document is upstream's: the next take just settles the copy.
+    const again = await runSync(f.homeB, ["--resolve", "take", "--doc", ID, "--dir", f.topo.b.root, "--json"]);
+    assert.equal(JSON.parse(again.out).unsent_edit_saved_at, undefined);
+    assert.equal(existsSync(receipt.unsent_edit_saved_at), false);
+    assert.equal((await syncBlock(f.topo, f.homeB)).sync.state, "clean");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("keep then take keeps the kept words as a copy", async () => {
+  const f = await fixture();
+  try {
+    await f.collide(ID, { body: "# Seed one\n\nA1.\n" }, { body: "# Seed one\n\nB1 unique.\n" });
+    await f.collide(ID, { body: "# Seed one\n\nA2.\n" }, { body: "# Seed one\n\nB2.\n" });
+    assert.equal((await runSync(f.homeB, ["--resolve", "keep", "--doc", ID, "--dir", f.topo.b.root])).err, undefined);
+    const taken = await runSync(f.homeB, ["--resolve", "take", "--doc", ID, "--dir", f.topo.b.root, "--json"]);
+    assert.equal(taken.err, undefined, taken.err?.message);
+    assert.match(await readFile(JSON.parse(taken.out).unsent_edit_saved_at, "utf8"), /B1 unique/);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a copy whose upstream cannot be read never stops a sync, and stays named without printing bytes", async () => {
+  const f = await fixture();
+  try {
+    const file = (repo: TwoCloneTopology["a"]) => path.join(repo.board, "data.bin");
+    await writeFile(file(f.topo.a), "base");
+    assert.equal((await runSync(f.homeA, ["--dir", f.topo.a.root])).err, undefined);
+    assert.equal((await runSync(f.homeB, ["--dir", f.topo.b.root])).err, undefined);
+    await writeFile(file(f.topo.a), randomBytes(33 * 1024 * 1024));
+    assert.equal((await runSync(f.homeA, ["--dir", f.topo.a.root])).err, undefined);
+    await writeFile(file(f.topo.b), "B words");
+    assert.equal((await runSync(f.homeB, ["--dir", f.topo.b.root])).err?.exitCode, 5);
+
+    await writeBoardDoc(f.topo.b, "tasks/other", { frontmatter: { type: "Task", title: "Other" }, body: "Other.\n" });
+    const later = await runSync(f.homeB, ["--dir", f.topo.b.root, "--json"]);
+    assert.equal(later.err, undefined, String(later.err?.message).slice(0, 80));
+    const receipt = JSON.parse(later.out) as Record<string, any>;
+    assert.equal(receipt.pushed, 1, "the rest of the work still goes");
+    assert.ok(later.out.length < 4000, "no file bytes in the receipt");
+    const row = receipt.saved_conflicts.rows[0];
+    assert.equal(row.path, "data.bin");
+    assert.match(row.note, /could not be compared/);
+    assert.match(row.discard, /^rm /);
+    assert.equal((await syncBlock(f.topo, f.homeB)).sync.conflicts, 1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("different invalid bytes that decode the same are not carried", async () => {
+  const f = await fixture();
+  try {
+    const content = (bytes: number[]): Buffer => Buffer.concat([Buffer.from("---\ntype: Task\ntitle: Seed one\n---\n"), Buffer.from(bytes), Buffer.from("\n")]);
+    await writeFile(path.join(f.topo.a.board, `${ID}.md`), content([0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2]));
+    assert.equal((await runSync(f.homeA, ["--dir", f.topo.a.root])).err, undefined);
+    await writeFile(path.join(f.topo.b.board, `${ID}.md`), content([0xcc, 0xe8, 0xf0, 0xed, 0xfb, 0xe9]));
+    assert.equal((await runSync(f.homeB, ["--dir", f.topo.b.root])).err?.exitCode, 5);
+    const saved = path.join(exportsOf(f.topo, f.homeB), `${ID}.md`);
+    assert.equal((await syncBlock(f.topo, f.homeB)).sync.conflicts, 1);
+    assert.equal((await runSync(f.homeB, ["--dir", f.topo.b.root])).err, undefined);
+    assert.equal(existsSync(saved), true, "the only copy of these bytes survives the next sync");
   } finally {
     await f.cleanup();
   }

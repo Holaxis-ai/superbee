@@ -77,6 +77,18 @@ test("a raw file's copy is its own path, and a companion only pairs with the cop
   }
 });
 
+test("a raw copy where a path needs a folder only moves the next copy to a later slot", async () => {
+  const { exportDir, cleanup } = await scratch();
+  try {
+    saveConflictCopy(exportDir, "a", Buffer.from("raw file named a"));
+    const nested = saveConflictCopy(exportDir, "a/b.md", Buffer.from("nested"));
+    assert.equal(await readFile(nested, "utf8"), "nested");
+    assert.equal(listSavedCopies(exportDir).length, 2);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("racing processes each keep their own copy", async () => {
   const { exportDir, cleanup } = await scratch();
   const here = path.dirname(fileURLToPath(import.meta.url));

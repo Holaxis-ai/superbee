@@ -307,7 +307,12 @@ version in any frontmatter field other than engine stamps and lost-claim fields,
 only the body, and with `details.reason: unsent_edit` when the document holds a body that is neither
 upstream's nor the copy's. `--resolve revise` exits 5 while the document equals its upstream version
 and does not hold the copy, with no clock involved, so after a merge is pushed the copy settles with
-`take`, which then leaves the document unchanged. Evidence: `packages/cli/test/sync-git-conflict-visible.test.ts` and
+`take`, which then leaves the document unchanged. A `take` that would erase a document differing from
+upstream by more than engine stamps first saves it as a new copy, named in `unsent_edit_saved_at`,
+and `--inspect` then offers `revise` first. Text comparison needs a lossless decode on both sides, so
+bytes that decode the same are not treated as equal. A copy that cannot be compared, such as one whose
+upstream version is too large to read, never stops a sync: it stays listed with a `note` and only
+removal offered. Evidence: `packages/cli/test/sync-git-conflict-visible.test.ts` and
 `packages/board-git/test/saved-copies.test.ts`.
 
 In a local bundle or Git board, one unreadable document does not stop whole-bundle reads: `list`,

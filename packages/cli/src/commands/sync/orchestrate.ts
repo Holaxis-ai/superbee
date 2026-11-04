@@ -173,8 +173,8 @@ then that copy. Copies are kept per clone folder, so moving a clone leaves them 
 
 A hosted checkout's conflict verbs work on a saved conflict too, over the same flow (sync still
 keeps the teammate's version first): \`--inspect --doc <id>\` shows your saved version and the
-teammate's (\`--out <file>\` writes theirs whole); \`--resolve take\` restores theirs (undoing any
-later edit) and discards your saved copy; \`--resolve keep\` writes your saved body over theirs with
+teammate's (\`--out <file>\` writes theirs whole); \`--resolve take\` restores theirs and discards your saved copy, first
+saving any unsent edit in the document as a new copy, which it names; \`--resolve keep\` writes your saved body over theirs with
 \`doc update\`, and is refused with nothing changed when your copy also differs in frontmatter,
 since keep carries only the body, or when the document holds unsent words it would overwrite;
 \`--resolve revise\` records the document as it is now, so edit it to the result you want first, and

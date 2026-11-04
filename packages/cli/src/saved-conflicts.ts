@@ -21,6 +21,9 @@ export function copyIsCarried(relPath: string, copy: Buffer, current: Buffer | n
   if (current === null) return false;
   if (copy.equals(current)) return true;
   if (!isConceptDocPath(relPath)) return false;
+  // Different invalid bytes decode to the same text, so only a lossless decode can be compared as text.
+  const lossless = (bytes: Buffer): boolean => Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes);
+  if (!lossless(copy) || !lossless(current)) return false;
   let saved: ReturnType<typeof parseMarkdown>;
   let now: ReturnType<typeof parseMarkdown>;
   try {
@@ -32,11 +35,14 @@ export function copyIsCarried(relPath: string, copy: Buffer, current: Buffer | n
   return saved.body === now.body && differingFields(saved.frontmatter as Record<string, unknown>, now.frontmatter as Record<string, unknown>, ENGINE_STAMPED_FIELDS).length === 0;
 }
 
-async function readOrNull(file: string): Promise<Buffer | null> {
+/** The file's bytes, or null when it is absent. Any other failure is the caller's to report. */
+async function readIfThere(file: string): Promise<Buffer | null> {
   try {
     return await readFile(file);
-  } catch {
-    return null;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    throw error;
   }
 }
 
@@ -53,22 +59,32 @@ export interface UnsettledConflict {
    * and removing the file when the person deleted the document, which a take would restore.
    */
   discardWith: "take" | "revise" | "remove";
+  /** Set when a copy could not be compared: the verbs may fail on it too, so only removing it is offered. */
+  unreadable?: boolean;
 }
 
 async function classify(boardPath: string, key: string): Promise<{ unsettled: UnsettledConflict[]; carried: SavedCopy[] }> {
   const byPath = new Map<string, UnsettledConflict>();
   const carried: SavedCopy[] = [];
   for (const copy of listSavedCopies(defaultSyncStore.exportsDir(key))) {
-    const bytes = await readOrNull(copy.file);
-    if (bytes === null) continue;
-    const current = await readOrNull(path.join(boardPath, copy.relPath));
-    if (copyIsCarried(copy.relPath, bytes, current)) {
-      carried.push(copy);
-      continue;
+    let discardWith: UnsettledConflict["discardWith"] = "remove";
+    let unreadable = false;
+    // Reporting a copy can never stop a sync: what cannot be read stays listed, as unsettled.
+    try {
+      const bytes = await readIfThere(copy.file);
+      if (bytes === null) continue;
+      const current = await readIfThere(path.join(boardPath, copy.relPath));
+      if (copyIsCarried(copy.relPath, bytes, current)) {
+        carried.push(copy);
+        continue;
+      }
+      const upstream = readDocBytesAtRef(boardPath, `refs/remotes/${boardRefOf(boardPath)}`, copy.relPath);
+      discardWith = current === null ? (upstream === null ? "take" : "remove") : upstream === null || !current.equals(upstream) ? "revise" : "take";
+    } catch {
+      unreadable = true;
     }
-    const upstream = readDocBytesAtRef(boardPath, `refs/remotes/${boardRefOf(boardPath)}`, copy.relPath);
-    const discardWith = current === null ? (upstream === null ? "take" : "remove") : upstream === null || !current.equals(upstream) ? "revise" : "take";
     const entry = byPath.get(copy.relPath) ?? { relPath: copy.relPath, id: isConceptDocPath(copy.relPath) ? conceptIdFromPath(copy.relPath) : null, copies: [], discardWith };
+    if (unreadable) entry.unreadable = true;
     entry.copies.push(copy);
     byPath.set(copy.relPath, entry);
   }
@@ -86,8 +102,9 @@ export async function unsettledConflicts(boardPath: string, key: string): Promis
  */
 export async function removeCarriedCopies(boardPath: string, key: string): Promise<void> {
   for (const copy of (await classify(boardPath, key)).carried) {
-    await rm(copy.file, { force: true });
-    if (copy.bodyFile !== null) await rm(copy.bodyFile, { force: true });
+    // A copy that cannot be removed is judged again next time, which costs nothing.
+    await rm(copy.file, { force: true }).catch(() => {});
+    if (copy.bodyFile !== null) await rm(copy.bodyFile, { force: true }).catch(() => {});
   }
 }
 
@@ -109,12 +126,13 @@ export function unsettledRow(conflict: UnsettledConflict, inv: CommandPrefix, di
     ...(conflict.id !== null ? { id: conflict.id } : { path: conflict.relPath }),
     saved_at: newest.file,
     copies: conflict.copies.length,
+    ...(conflict.unreadable ? { note: "this copy could not be compared with the document or its upstream version, so it stays listed" } : {}),
     next:
-      conflict.id !== null
+      conflict.id !== null && !conflict.unreadable
         ? String(inspectCommand(inv, conflict.id, dir))
         : `merge what you need into ${conflict.relPath} by hand, then delete the saved file`,
     discard:
-      conflict.id !== null && conflict.discardWith !== "remove"
+      conflict.id !== null && conflict.discardWith !== "remove" && !conflict.unreadable
         ? String(commandFragment`${inv} sync --resolve ${commandToken(conflict.discardWith)} --doc ${commandToken(conflict.id)}${suffix}`)
         : removeCommand(conflict.copies[0]!),
   };
