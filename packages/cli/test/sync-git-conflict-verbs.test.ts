@@ -407,7 +407,8 @@ test("a kept version over the frontmatter limit: the printed recovery works, and
     assert.equal(kept.err?.help, help, "keep names the same recovery");
 
     // Follow the printed steps, exactly.
-    const steps = /^cp (\S+) (\S+) → .* sync$/.exec(help);
+    assert.match(help, /discards the teammate's version from your working tree/);
+    const steps = /^cp (\S+) (\S+) \(.*\) → .* sync$/.exec(help);
     assert.ok(steps, help);
     assert.equal(steps[1], yours);
     await copyFile(steps[1]!, steps[2]!);

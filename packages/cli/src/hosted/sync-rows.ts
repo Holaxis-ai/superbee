@@ -95,7 +95,7 @@ export function unstorableHeld(documents: readonly UnstorableDocument[] | undefi
     path: id.endsWith(".md") ? id : `${id}.md`,
     reason: code,
     standalone: true,
-    message: `The host's '${id}' cannot be stored by this client (${code}: ${message}). It was not placed or refreshed in this folder, and the rest of the bundle was. It has to be repaired where it is stored, because no edit in this folder can change it; the next sync then places it with no extra step.`,
+    message: `The host's '${id}' cannot be stored by this client (${code}: ${message}). It was not placed or refreshed in this folder, and the rest of the bundle was. To come into this folder it has to be repaired where it is stored, and the next sync then places it with no extra step. Only a conflicting edit resolved with keep replaces the host's copy instead.`,
   }));
 }
 

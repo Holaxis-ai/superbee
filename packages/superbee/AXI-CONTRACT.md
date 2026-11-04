@@ -269,9 +269,15 @@ a `held` row whose reason is the document's `FRONTMATTER_*` code, `status` is `i
 command exits 5 as for any held row. The document is not placed, the rest of the bundle is, and
 local edits to other documents are sent. It is read again on every later sync, so once it is
 repaired where it is stored the next sync places it. It never reads as a deletion, and an edit of an
-older copy in the folder comes back as a conflict. Evidence:
-`packages/cli/test/hosted-sync-unstorable.test.ts` and
-`packages/browser-local/test/pull-unstorable.test.ts`.
+older copy in the folder comes back as a conflict. `sync --inspect` on such a conflict, the root
+`index.md` included, carries `remote.unstorable` with the `code` and `message`, and
+`remote.full_version` and `take_unavailable` say what cannot be shown or taken. `--resolve take` is
+refused with exit 5, `details.reason` set to the code, and nothing changed; `keep` sends your version
+against the version inspected. When a Git board's converged conflict kept a version whose frontmatter
+is refused, its row carries `theirs_refused` with the code, and the help names copying the saved
+export over the document. Evidence: `packages/cli/test/hosted-sync-unstorable.test.ts`,
+`packages/browser-local/test/pull-unstorable.test.ts` and
+`packages/cli/test/sync-git-conflict-verbs.test.ts`.
 
 ## Evidence map
 

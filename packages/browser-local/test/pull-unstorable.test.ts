@@ -194,10 +194,12 @@ test("the browser runtime's sync completes, and its status names the hold until 
   const authority = new Authority();
   authority.put("notes/a", { type: "Note", title: "A" });
   const local = open();
-  await bootstrap(authority.remote, local);
   authority.put("notes/big", BIG);
+  await bootstrap(authority.remote, local);
   const transport = { submit: async () => { throw new Error("nothing to send"); }, lookup: async () => { throw new Error("nothing to send"); } };
   const runtime = createBrowserLocalRuntime({ local, remote: authority.remote, transport: transport as never, write: { sleep: async () => {}, lookupDelayMs: 0 } });
+  const fromBootstrap = await runtime.syncStatus();
+  assert.deepEqual(fromBootstrap.lastSync?.unstorable?.map((row) => row.id), ["notes/big"], "named before the first sync");
   const held = await runtime.sync!();
   assert.equal(held.lastSync?.ok, true);
   assert.deepEqual(held.lastSync?.unstorable?.map((row) => [row.id, row.code]), [["notes/big", "FRONTMATTER_TOO_LARGE"]]);

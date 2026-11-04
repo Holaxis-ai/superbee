@@ -137,7 +137,6 @@ export interface RefusedDeletions {
   digest: string;
 }
 
-/** How the runtime's last sync ended; see {@link PlatformSyncStatus.lastSync}. */
 /** A document the authority serves whose frontmatter the working copy cannot store. */
 export interface UnstorableDocument {
   id: ConceptId;
@@ -145,6 +144,7 @@ export interface UnstorableDocument {
   message: string;
 }
 
+/** How the runtime's last sync ended; see {@link PlatformSyncStatus.lastSync}. */
 export interface PlatformSyncOutcome {
   /** False when the sync rejected (a carrier failure, or an authority answer the runtime could not apply). */
   ok: boolean;
@@ -152,7 +152,7 @@ export interface PlatformSyncOutcome {
   error?: string;
   /** The deletions the last completed pull refused; present until a pull applies or clears them. */
   refusedDeletions?: RefusedDeletions;
-  /** The documents the last completed pull left out; present until a pull can store them. */
+  /** The documents the last bootstrap or completed pull left out; present until a pull can store them. */
   unstorable?: UnstorableDocument[];
 }
 

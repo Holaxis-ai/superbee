@@ -173,6 +173,10 @@ for (const limit of LIMITS) {
     assert.equal(inspected.out.remote.version, version);
     assert.equal(inspected.out.remote.unstorable.code, limit.code);
     assert.deepEqual(Object.keys(inspected.out.choices), ["keep", "revise"]);
+    assert.equal(inspected.out.remote.content, "host body\n", "the body a keep would replace is shown");
+    assert.equal(inspected.out.remote.chars, "host body\n".length);
+    assert.match(inspected.out.remote.full_version, /body only/);
+    assert.match(inspected.out.take_unavailable, /take cannot place/);
     const taken = await h.sync("--resolve", "take", "--doc", "notes/alpha");
     assert.equal(taken.err?.exitCode, 5);
     assert.equal(taken.err?.details?.reason, limit.code);
@@ -182,6 +186,9 @@ for (const limit of LIMITS) {
     const kept = await h.sync("--resolve", "keep", "--doc", "notes/alpha");
     assert.equal(kept.err, undefined, kept.err?.message);
     assert.equal(h.host.docs.get("notes/alpha")!.version, version, "resolving sends nothing");
+    const replaced = await h.sync("--resolve", "take", "--doc", "notes/alpha");
+    assert.equal(replaced.err?.exitCode, 5);
+    assert.match(replaced.err!.message, /kept over cannot be stored/);
     const sent = await h.sync();
     assert.equal(sent.err, undefined, sent.err?.message);
     assert.match(h.host.docs.get("notes/alpha")!.body, /my edit of the old copy/);
@@ -197,6 +204,41 @@ test("a local deletion of the old copy of an over-limit document is a conflict, 
   assert.equal(run.err?.exitCode, 5);
   assert.equal(heldRow(run, "notes/alpha").state, "conflict");
   assert.equal(h.host.docs.get("notes/alpha")?.version, version);
+
+  // Inspect offers what works, and shows what a kept deletion removes.
+  const inspected = await h.sync("--inspect", "--doc", "notes/alpha");
+  assert.equal(inspected.err, undefined, inspected.err?.message);
+  assert.deepEqual(Object.keys(inspected.out.choices), ["keep"]);
+  assert.equal(inspected.out.help.length, 1);
+  assert.equal(inspected.out.remote.content, "host body\n");
+  assert.match(inspected.out.take_unavailable, /repaired where it is stored/);
+  const taken = await h.sync("--resolve", "take", "--doc", "notes/alpha");
+  assert.equal(taken.err?.details?.reason, "FRONTMATTER_TOO_LARGE");
+  assert.equal(h.host.docs.get("notes/alpha")?.version, version);
+
+  // Once it is repaired, take brings it back.
+  h.host.put("notes/alpha", { type: "Note", title: "Fixed" }, "fixed\n");
+  const again = await h.sync("--inspect", "--doc", "notes/alpha");
+  assert.ok(Object.keys(again.out.choices).includes("take"));
+  const restored = await h.sync("--resolve", "take", "--doc", "notes/alpha");
+  assert.equal(restored.err, undefined, restored.err?.message);
+  assert.match(await readFile(h.file("notes/alpha"), "utf8"), /fixed/);
+});
+
+test("keeping a local deletion over an over-limit version takes the inspection, then sends the delete", async () => {
+  const h = await harness();
+  assert.equal((await h.checkout()).err, undefined);
+  h.host.putUnchecked("notes/alpha", LIMITS[0].frontmatter, "host body\n");
+  await unlink(h.file("notes/alpha"));
+  await h.sync();
+  const blind = await h.sync("--resolve", "keep", "--doc", "notes/alpha");
+  assert.equal(blind.err?.details?.reason, "not_inspected");
+  assert.equal((await h.sync("--inspect", "--doc", "notes/alpha")).err, undefined);
+  assert.equal((await h.sync("--resolve", "keep", "--doc", "notes/alpha")).err, undefined);
+  assert.equal(h.host.docs.has("notes/alpha"), true, "resolving sends nothing");
+  const sent = await h.sync();
+  assert.equal(sent.err, undefined, sent.err?.message);
+  assert.equal(h.host.docs.has("notes/alpha"), false);
 });
 
 test("a host deletion of a held document ends the hold", async () => {
@@ -284,4 +326,60 @@ test("a front page the client cannot store is held and named by checkout and syn
   const placed = await fresh.sync();
   assert.equal(placed.err, undefined, placed.err?.message);
   assert.match(await readFile(path.join(fresh.folder, "index.md"), "utf8"), /repaired/);
+});
+
+test("the front-page verbs on a held root: take is refused and the edit survives, keep really sends", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  assert.equal((await h.checkout()).err, undefined);
+  const index = path.join(h.folder, "index.md");
+  const mine = "---\nokf_version: '0.2'\n---\nmy front page\n";
+  await writeFile(index, mine);
+  const big = `---\nokf_version: '0.2'\nblob: ${"x".repeat(300 * 1024)}\n---\nfront\n`;
+  const version = h.host.putRoot(big);
+
+  const held = await h.sync();
+  assert.equal(held.err?.exitCode, 5);
+  assert.equal(heldRow(held, "index.md").reason, "FRONTMATTER_TOO_LARGE");
+  assert.equal(await readFile(index, "utf8"), mine);
+
+  const blindTake = await h.sync("--resolve", "take", "--doc", "index.md");
+  assert.equal(blindTake.err?.exitCode, 5);
+  assert.equal(blindTake.err?.details?.reason, "FRONTMATTER_TOO_LARGE");
+  assert.match(blindTake.err!.message, /nothing changed/);
+  assert.equal(await readFile(index, "utf8"), mine, "the local edit survives");
+
+  const inspected = await h.sync("--inspect", "--doc", "index.md");
+  assert.equal(inspected.err, undefined, inspected.err?.message);
+  assert.deepEqual(Object.keys(inspected.out.choices), ["keep"]);
+  assert.equal(inspected.out.help.length, 1);
+  assert.equal(inspected.out.remote.version, version);
+  assert.equal(inspected.out.remote.unstorable.code, "FRONTMATTER_TOO_LARGE");
+  assert.match(inspected.out.take_unavailable, /take cannot place/);
+
+  const take = await h.sync("--resolve", "take", "--doc", "index.md");
+  assert.equal(take.err?.details?.reason, "FRONTMATTER_TOO_LARGE");
+  assert.equal(await readFile(index, "utf8"), mine, "still there after an inspected take");
+
+  const writes = h.host.writes.length;
+  const kept = await h.sync("--resolve", "keep", "--doc", "index.md");
+  assert.equal(kept.err, undefined, kept.err?.message);
+  assert.equal(h.host.writes.length, writes, "resolving sends nothing");
+  const sent = await h.sync();
+  assert.equal(sent.err, undefined, sent.err?.message);
+  assert.equal(heldRow(sent, "index.md").state, "committed");
+  assert.equal(await readFile(index, "utf8"), mine);
+  assert.equal((h.host as unknown as { storedRoot: { content: string } }).storedRoot.content, mine);
+});
+
+test("a pull with no push never sends a kept front page over a held root", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  assert.equal((await h.checkout()).err, undefined);
+  const index = path.join(h.folder, "index.md");
+  await writeFile(index, "---\nokf_version: '0.2'\n---\nmine\n");
+  const version = h.host.putRoot(`---\nokf_version: '0.2'\nblob: ${"x".repeat(300 * 1024)}\n---\nfront\n`);
+  assert.equal((await h.sync("--inspect", "--doc", "index.md")).err, undefined);
+  assert.equal((await h.sync("--resolve", "keep", "--doc", "index.md")).err, undefined);
+  const binding = await bindingForPath(h.home, h.folder);
+  assert.equal((await hostedPull(binding!, { auth: h.auth, cwd: h.cwd, fetch: h.host.fetch } as never)).state, "pulled");
+  assert.equal((h.host as unknown as { storedRoot: { version: string } }).storedRoot.version, version);
 });

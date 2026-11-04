@@ -351,7 +351,7 @@ async function runInspect(args: ConflictArgs, board: Board, cwd: string): Promis
         : keptRefused !== null
           ? {
               take: "restore the teammate's version: your saved copy is discarded",
-              revise: `doc update cannot read the teammate's version (${keptRefused}): copy your saved version over the document, then record it`,
+              revise: `doc update cannot read the teammate's version (${keptRefused}): copy your saved version over the document, which discards the teammate's from your working tree, then record it`,
             }
           : {
             keep: "write your saved body over the teammate's with doc update",

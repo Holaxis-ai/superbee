@@ -26,6 +26,7 @@ import type { JournaledBackend } from "@superbee/core";
 import { RootWriteInputError, rootLanding, rootVersionOf, rootWriteRequest, ROOT_BUSY_CODES, type HostedRootWrites, type RootWriteOutcome } from "@superbee/core/hosted-transport";
 
 import { digestOf, placeNew, replaceGuarded, ROOT_INDEX } from "./projection.js";
+import type { UnstorableDocument } from "@superbee/browser-local";
 import { ACCESS_WITHDRAWN_MESSAGE, READ_ONLY_MESSAGE, unstorableHeld, type SyncRow } from "./sync-rows.js";
 import { utf8, type ProjectionRecord } from "./sync-scan.js";
 
@@ -99,7 +100,8 @@ export async function adoptHostRoot(projection: ProjectionRecord, store: Journal
  * holds exactly the host's bytes is in sync instead.
  */
 export async function moveRootBase(projection: ProjectionRecord, store: JournaledBackend, host: HostRoot): Promise<void> {
-  if (host && (await store.readReserved("", "index.md"))?.version !== host.version) await store.writeReserved("", "index.md", host.content);
+  // A host root the store refuses is only named as the base: the send is compared against its version.
+  if (host && !unstorableRoot(host.content) && (await store.readReserved("", "index.md"))?.version !== host.version) await store.writeReserved("", "index.md", host.content);
   projection.rootBase = host?.version ?? null;
   projection.root = null;
   delete projection.rootConflicted;
@@ -152,15 +154,14 @@ export interface RootStepReport {
 
 const row = (state: SyncRow["state"], reason: string, message: string, version: string | null = null): SyncRow => ({ id: ROOT_INDEX, state, reason, version, message });
 
-/** The held row for a host root whose frontmatter this client cannot store, or null. */
-function unstorableRootRow(content: string): SyncRow | null {
+/** Why this client cannot store a host root's frontmatter, or null when it can. */
+export function unstorableRoot(content: string): UnstorableDocument | null {
   try {
     assertStorableFrontmatter(content);
     return null;
   } catch (error) {
     if (!(error instanceof FrontmatterRefusedError)) throw error;
-    const [held] = unstorableHeld([{ id: ROOT_INDEX, code: error.code, message: error.message }]);
-    return row("held", held!.reason, held!.message);
+    return { id: ROOT_INDEX, code: error.code, message: error.message };
   }
 }
 
@@ -244,9 +245,16 @@ export async function syncRoot(context: RootStepContext): Promise<RootStepReport
 async function rootStep(context: RootStepContext): Promise<RootStepReport> {
   const { folder, projection, store } = context;
   let host = await context.current();
-  // Held like any document the store refuses: nothing here is written or sent until it is repaired.
-  const refused = host ? unstorableRootRow(host.content) : null;
-  if (refused) return { row: refused, refreshed: false };
+  // Held like any document the store refuses, until it is repaired or the person kept their file
+  // over exactly this version, which is the only way the base comes to name it.
+  const refused = host ? unstorableRoot(host.content) : null;
+  if (refused) {
+    const kept = projection.rootBase === host!.version && projection.root === null && context.rootWrites === "allowed" && context.send !== undefined && (await readRootFile(folder)).kind === "file";
+    if (!kept) {
+      const [held] = unstorableHeld([refused]);
+      return { row: row("held", held!.reason, held!.message), refreshed: false };
+    }
+  }
   const settled = await settleSent(context, host);
   if (settled === "landed") host = await context.current();
   const file = path.join(folder, ROOT_INDEX);

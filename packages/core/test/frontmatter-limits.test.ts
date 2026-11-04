@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { FRONTMATTER_LIMITS, loadBoundedYaml } from "../src/bounded-yaml.js";
 import { FrontmatterLimitError, MalformedDocumentError } from "../src/frontmatter-contract.js";
-import { parseFrontmatter, parseMarkdown, stringifyDoc } from "../src/frontmatter.js";
+import { isStackExhaustion, parseFrontmatter, parseMarkdown, stringifyDoc } from "../src/frontmatter.js";
 import { FrontmatterRefusedError } from "../src/errors.js";
 import { assertStorableFrontmatter, parseLeadingFrontmatter } from "../src/portable-frontmatter.js";
 import type { Frontmatter } from "../src/types.js";
@@ -293,4 +293,13 @@ test("a value nested past what the serializer can recurse through is refused as 
     () => stringifyDoc({ type: "Note", nest } as unknown as Frontmatter, "body\n"),
     (error: unknown) => error instanceof FrontmatterRefusedError && error.code === "FRONTMATTER_TOO_DEEP",
   );
+});
+
+test("only stack exhaustion counts as nesting: another RangeError is not reported as too deep", () => {
+  const exhaust = (): number => exhaust() + 1;
+  let overflow: unknown;
+  try { exhaust(); } catch (error) { overflow = error; }
+  assert.equal(isStackExhaustion(overflow), true);
+  assert.equal(isStackExhaustion(new RangeError("Invalid string length")), false);
+  assert.equal(isStackExhaustion(new Error("Maximum call stack size exceeded")), false);
 });

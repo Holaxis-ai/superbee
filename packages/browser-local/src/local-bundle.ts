@@ -210,6 +210,8 @@ export interface SharedBase {
   refetch?: true;
   /** On a conflict review: why `content` is null while `version` names a document the authority serves. */
   unstorable?: UnstorableDocument;
+  /** With `unstorable`: the served body, so a review can show what a keep would replace. */
+  unstorableBody?: string;
 }
 
 /** Whether the working copy already holds the authority's `version` as its shared base. */
@@ -1225,7 +1227,7 @@ async function readConflictRemote(remote: StorageBackend, id: ConceptId, admitUn
       return { base: { version: read.version, content: stringifyDoc(read.doc.frontmatter, read.doc.body ?? "") }, doc: read.doc };
     } catch (error) {
       if (!admitUnstorable || !(error instanceof FrontmatterRefusedError)) throw error;
-      return { base: { version: read.version, content: null, unstorable: unstorableDocument(id, error) }, doc: read.doc };
+      return { base: { version: read.version, content: null, unstorable: unstorableDocument(id, error), unstorableBody: read.doc.body ?? "" }, doc: read.doc };
     }
   } catch (error) {
     if ((error as { code?: unknown })?.code === "ENOENT") return { base: { version: null, content: null }, doc: null };
@@ -2315,6 +2317,8 @@ export interface SyncStatus {
   bootstrapComplete: boolean;
   generation: number | null;
   lastPull: PullMarker | null;
+  /** What the latest of the last bootstrap and the last pull left out; see {@link UnstorableDocument}. */
+  unstorable?: UnstorableDocument[];
   /**
    * Present only when some document's acknowledged history failed to retire on
    * {@link RETIREMENT_DIAGNOSTIC_FAILURES} consecutive attempts through this opened working copy. Commits and settles
@@ -2334,6 +2338,8 @@ export async function syncStatus(local: LocalTarget): Promise<SyncStatus> {
   const marker = await backend.readMeta<BootstrapMarker>(BOOTSTRAP_KEY);
   const lastPull = await backend.readMeta<PullMarker>(PULL_KEY);
   const retirement = retirementDiagnostics(backendOf(local));
+  const pulledSince = lastPull !== undefined && (marker?.completedAt === undefined || lastPull.startedAt >= marker.completedAt);
+  const unstorable = pulledSince ? lastPull.unstorable : marker?.unstorable;
   return {
     counts,
     paused: control?.paused === true,
@@ -2341,6 +2347,7 @@ export async function syncStatus(local: LocalTarget): Promise<SyncStatus> {
     bootstrapComplete: marker?.complete === true,
     generation: marker?.generation ?? null,
     lastPull: lastPull ?? null,
+    ...(unstorable === undefined ? {} : { unstorable }),
     ...(retirement.length ? { retirementFailures: retirement } : {}),
   };
 }

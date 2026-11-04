@@ -124,6 +124,12 @@ export function parseFrontmatter(
   return normalizeFrontmatter(parsed as Record<string, unknown>, options);
 }
 
+/** Whether an error is the engine running out of stack, as each JavaScript engine reports it. */
+export function isStackExhaustion(error: unknown): boolean {
+  if (error instanceof RangeError) return /call stack/i.test(error.message);
+  return (error as { name?: unknown } | null)?.name === "InternalError" && /recursion/i.test((error as Error).message);
+}
+
 /**
  * The metadata bytes shared by document serialization and parsed-object stores. Every document
  * write serializes its frontmatter here, and this refuses with {@link FrontmatterRefusedError} any
@@ -136,7 +142,7 @@ export function stringifyFrontmatter(data: Record<string, unknown>): string {
     dumped = yaml.safeDump(data).trim();
   } catch (error) {
     // The dumper recurses, so a value nested far past the limit exhausts the stack before the check below.
-    if (error instanceof RangeError) throw new FrontmatterRefusedError("FRONTMATTER_TOO_DEEP", `YAML nesting is deeper than ${FRONTMATTER_LIMITS.depth} levels`);
+    if (isStackExhaustion(error)) throw new FrontmatterRefusedError("FRONTMATTER_TOO_DEEP", `YAML nesting is deeper than ${FRONTMATTER_LIMITS.depth} levels`);
     throw error;
   }
   try {

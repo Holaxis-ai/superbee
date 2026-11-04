@@ -99,7 +99,7 @@ import {
 } from "./sync-scan.js";
 import { digestOf, fold, replaceGuarded, ROOT_INDEX } from "./projection.js";
 import { refuseTreePrivateState } from "../private-state-publication.js";
-import { adoptHostRoot, moveRootBase, readRootFile, rootConflict, settleRootSent, syncRoot, type HostRoot, type RootStepReport } from "./root-sync.js";
+import { unstorableRoot, adoptHostRoot, moveRootBase, readRootFile, rootConflict, settleRootSent, syncRoot, type HostRoot, type RootStepReport } from "./root-sync.js";
 import { declaredHostedSyncGate, runHostedSyncGate, SYNC_GATE_CONFIG, type HostedGateDeclaration } from "../commands/sync/gate.js";
 import { recordPulled, recordSynced } from "./freshness.js";
 import { needsPersonAtTerminal, processTerminal, type HostedTerminal } from "./terminal.js";
@@ -1829,7 +1829,8 @@ async function resolveAgain(session: Session, id: string, choice: "keep" | "take
     });
   if (rows.length !== 1) throw refuse("the file was edited again after it, and that edit is waiting to send too");
   if (row.state !== "pending" || row.attempts !== 0) throw refuse("it may already have been sent");
-  if (row.base === null || row.baseContent === null) throw refuse("it re-creates a document the host deleted");
+  if (row.base === null) throw refuse("it re-creates a document the host deleted");
+  if (row.baseContent === null) throw refuse("the host's version it was kept over cannot be stored by this client");
   const bytes = await readIfPresent(file);
   const entry = projection.files[id];
   if (bytes !== null && digestOf(bytes) !== entry?.digest) {
@@ -1952,6 +1953,16 @@ async function rootConflictFor(session: Session): Promise<{ host: HostRoot; base
   return conflict;
 }
 
+const TAKE_UNAVAILABLE = "take cannot place the host's version, because this client cannot store it; once it is repaired where it is stored, take works again";
+
+/** The answer to `--resolve take` over a host version this client cannot store: nothing moved. */
+function takeRefusal(binding: CheckoutBinding, id: string, file: string, code: string): CliError {
+  return new CliError("CONFLICT", `the host's version of '${id}' cannot be stored by this client (${code}), so take cannot place it; nothing changed`, {
+    details: { reason: code, id, file },
+    help: `repair it where it is stored, or send your version with: ${cliInvocation()} sync --resolve keep --doc ${commandToken(id)} --dir ${commandToken(binding.path)}`,
+  });
+}
+
 /** `--inspect --doc index.md`: the front page's base, your file and the host's version. */
 async function runInspectRoot(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
   const doc = commandToken(ROOT_INDEX);
@@ -1975,19 +1986,27 @@ async function runInspectRoot(binding: CheckoutBinding, values: HostedValues, de
     const stored = await session.store.readReserved("", "index.md");
     const keep = `${cliInvocation()} sync --resolve keep --doc ${doc} --dir ${dir}`;
     const take = `${cliInvocation()} sync --resolve take --doc ${doc} --dir ${dir}`;
+    const unstorable = host ? unstorableRoot(host.content) : null;
     return {
       conflict: ROOT_INDEX,
       file: path.join(binding.path, ROOT_INDEX),
       reason: "changed_remotely",
       base: { version: base, ...preview(stored && stored.version === base ? stored.content : null) },
       local: { version: digestOf(bytes), ...preview(bytes.toString("utf8")) },
-      remote: { version: host?.version ?? null, ...preview(host?.content ?? null) },
-      ...(out !== undefined ? { remote_written_to: out } : {}),
-      choices: {
-        keep: "keep your front page: the next sync sends it over the host's version (edit the file first to combine the two)",
-        take: "replace your front page with the host's",
+      remote: {
+        version: host?.version ?? null,
+        ...(unstorable ? { unstorable: { code: unstorable.code, message: unstorable.message }, full_version: "this client cannot store it; --inspect --out writes it whole to a file outside the folder" } : {}),
+        ...preview(host?.content ?? null),
       },
-      help: [keep, take],
+      ...(out !== undefined ? { remote_written_to: out } : {}),
+      choices: unstorable
+        ? { keep: "keep your front page: the next sync sends it over the host's version, which it replaces there" }
+        : {
+            keep: "keep your front page: the next sync sends it over the host's version (edit the file first to combine the two)",
+            take: "replace your front page with the host's",
+          },
+      ...(unstorable ? { take_unavailable: TAKE_UNAVAILABLE } : {}),
+      help: unstorable ? [keep] : [keep, take],
     };
   });
   deps.stdout(render(record, mode));
@@ -2020,6 +2039,8 @@ async function runResolveRoot(binding: CheckoutBinding, choice: "keep" | "take" 
     await assertInspectedCurrent(session, ROOT_INDEX, host?.version ?? null, choice);
     const file = path.join(binding.path, ROOT_INDEX);
     let fileState = "unchanged";
+    const unstorable = choice === "take" && host ? unstorableRoot(host.content) : null;
+    if (unstorable) throw takeRefusal(session.binding, ROOT_INDEX, file, unstorable.code);
     if (choice === "take") {
       // Recorded before the file moves, so a crash mid-take leaves nothing recovery must keep.
       const key = conceptIdFromPath(ROOT_INDEX);
@@ -2063,7 +2084,9 @@ async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: 
             local: conflict.review.local.deleted
               ? { version: null, deleted: true, ...preview(null) }
               : { version: conflict.review.local.version, ...preview(conflict.review.local.content) },
-            remote: { version: conflict.review.remote.version, ...(tombstone !== null ? { deleted_as: tombstone } : {}), ...(unstorable ? { unstorable: { code: unstorable.code, message: unstorable.message } } : {}), ...preview(conflict.review.remote.content) },
+            remote: { version: conflict.review.remote.version, ...(tombstone !== null ? { deleted_as: tombstone } : {}), ...(unstorable
+              ? { unstorable: { code: unstorable.code, message: unstorable.message }, full_version: "this client cannot store or show the whole version; content below is its body only, without its frontmatter", ...preview(conflict.review.remote.unstorableBody ?? "") }
+              : preview(conflict.review.remote.content)) },
           }
         : {
             base: { version: null, ...preview(null) },
@@ -2091,7 +2114,9 @@ async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: 
       choices: deleting
         ? conflict.deleted
           ? { keep: "keep your deletion: the host has no version left, so nothing is sent", take: "accept the host's state: nothing is sent" }
-          : { keep: "keep your deletion: delete the host's current version", take: "bring the host's version back into the folder" }
+          : unstorable
+            ? { keep: "keep your deletion: delete the host's current version, of which only the body is shown here" }
+            : { keep: "keep your deletion: delete the host's current version", take: "bring the host's version back into the folder" }
         : conflict.deleted
           ? {
               take: "accept the deletion: the file is removed",
@@ -2102,7 +2127,7 @@ async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: 
             }
           : unstorable
             ? {
-                keep: "send your version against the host's current one, which replaces it there",
+                keep: "send your version against the host's current one, which replaces it there; only its body is shown here",
                 revise: "edit the file to the result you want, then send it as it is",
               }
             : {
@@ -2110,7 +2135,8 @@ async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: 
                 take: "replace your version with the host's",
                 revise: "edit the file to the result you want, then send it as it is",
               },
-      help: deleting ? [keep, take] : conflict.deleted ? [take, keep, revise] : unstorable ? [keep, revise] : [keep, take, revise],
+      ...(unstorable ? { take_unavailable: TAKE_UNAVAILABLE } : {}),
+      help: deleting ? (unstorable ? [keep] : [keep, take]) : conflict.deleted ? [take, keep, revise] : unstorable ? [keep, revise] : [keep, take, revise],
     };
   });
   deps.stdout(render(record, mode));
@@ -2246,12 +2272,7 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
       try {
         result = await resolveConflict(local, reader, conflict.review, selected);
       } catch (error) {
-        if (choice === "take" && error instanceof FrontmatterRefusedError) {
-          throw new CliError("CONFLICT", `the host's version of '${id}' cannot be stored by this client (${error.code}), so take cannot place it; nothing changed`, {
-            details: { reason: error.code, id, file },
-            help: `repair it where it is stored, or send your version with: ${cliInvocation()} sync --resolve keep --doc ${commandToken(id)} --dir ${commandToken(binding.path)}`,
-          });
-        }
+        if (choice === "take" && error instanceof FrontmatterRefusedError) throw takeRefusal(binding, id, file, error.code);
         if (error instanceof ConflictReviewStaleError) {
           throw new CliError("CONFLICT", `the conflict on '${id}' changed while resolving it`, {
             details: { reason: "stale_review", id },

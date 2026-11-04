@@ -211,10 +211,11 @@ export function convergeHelp(inv: CommandPrefix, id: string, bodyExportPath: str
 
 /**
  * The reconcile chain when the kept version's frontmatter cannot be read: `doc update` has to read
- * the document it patches, so it refuses. The full-fidelity export replaces the file instead.
+ * the document it patches, so it refuses. The full-fidelity export replaces the file instead, and
+ * the help says what that does to the teammate's version.
  */
 export function copyOverHelp(inv: CommandPrefix, exportPath: string, file: string): string {
-  return `cp ${commandToken(exportPath)} ${commandToken(file)} → ${inv} sync`;
+  return `cp ${commandToken(exportPath)} ${commandToken(file)} (this discards the teammate's version from your working tree, and the sync replaces it on the board; it stays in the board's Git history) → ${inv} sync`;
 }
 
 /** The re-create chain for a doc DELETED upstream: `doc write` (a fresh doc), then sync. */
@@ -270,18 +271,18 @@ export interface ClaimDivergence {
   only: boolean;
 }
 
-/**
- * What one conflicted entry's two sides say, derived from ONE read of each: the kept doc's
- * display meta, the local frontmatter keys the body-merge chain would NOT carry over, and — when
- * the doc's kind DECLARES claim coordinates that disagree — the ownership statement that replaces
- * the re-apply guidance for exactly those fields.
- */
 /** Why the kept version's frontmatter cannot be read, and the file that holds it. */
 export interface KeptRefusal {
   code: MalformedDocumentCode;
   file: string;
 }
 
+/**
+ * What one conflicted entry's two sides say, derived from ONE read of each: the kept doc's
+ * display meta, the local frontmatter keys the body-merge chain would NOT carry over, and, when
+ * the doc's kind DECLARES claim coordinates that disagree, the ownership statement that replaces
+ * the re-apply guidance for exactly those fields.
+ */
 export interface ConflictAnalysis {
   /** `{kind, title}` from the kept (HEAD) content; empty when absent or malformed. */
   meta: { kind?: string; title?: string };
