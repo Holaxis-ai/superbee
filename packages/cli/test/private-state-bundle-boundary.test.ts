@@ -555,6 +555,7 @@ const VIEW_CONTENT_CONTROL = "a local bundle answers view read/update USAGE (not
 const CROSSING_ROWS: readonly CrossingRow[] = [
   // ── Bundle roots (`--dir`): the target BECOMES the bundle. ──────────────────
   { leaf: "bundleLocate", surface: "--dir", argv: (t) => ["bundle", "locate", "--dir", t, "--json"] },
+  { leaf: "catalogRelocate", surface: "--dir", argv: (t) => ["catalog", "relocate", "probe-label", "--dir", t, "--json"], controlExit: 6 },
   { leaf: "catalogAdd", surface: "--dir", argv: (t) => ["catalog", "add", "probe-label", "--dir", t, "--json"] },
   {
     leaf: "init",

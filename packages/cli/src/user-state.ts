@@ -653,11 +653,14 @@ export async function writeReadyUserStateFileAtomic0600(
   input: UserStateInput,
   fileName: string,
   content: string,
+  beforeCommit?: () => Promise<void>,
 ): Promise<void> {
   const root = canonicalUserStateDir(input);
   await assertCanonicalUserStateRootReady(input);
   await publishFileAtomic0600(root, fileName, content, {
     beforeCommit: async () => {
+      await assertCanonicalUserStateRootReady(input);
+      await beforeCommit?.();
       await assertCanonicalUserStateRootReady(input);
       return true;
     },

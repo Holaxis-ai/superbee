@@ -577,7 +577,7 @@ function catalogCapability(input: SetupPlanInput): SetupCapability {
     requirement: "required",
     state: "needs_action",
     reason: input.workspace.bundle === "selected"
-      ? "the selected bundle is not registered for bundle-unbound MCP access"
+      ? "the selected bundle is not registered for bundle-unbound MCP access; if it moved, inspect catalog list --local and explicitly use catalog relocate <label-or-id> --dir <replacement-bundle>; sameness is not inferred"
       : "the private workspace catalog has no available bundles",
     command: input.workspace.bundle === "selected"
       ? "superbee catalog add <label>"

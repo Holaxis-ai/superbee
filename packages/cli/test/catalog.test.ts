@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 
@@ -15,10 +15,11 @@ import {
   loadCatalog,
   parseCatalog,
   removeCatalogEntry,
+  relocateCatalogEntry,
   resolveCatalogEntry,
 } from "../src/catalog.js";
-import { CliError } from "../src/errors.js";
-import { canonicalUserStateDir, ensureUserStateRoot } from "../src/user-state.js";
+import { CliError, toExit } from "../src/errors.js";
+import { canonicalUserStateDir, ensureUserStateRoot, USER_STATE_MARKER_FILE_NAME } from "../src/user-state.js";
 
 async function fixture(): Promise<{ root: string; home: string; first: string; second: string }> {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "agentstate-lite-catalog-test-")));
@@ -339,4 +340,59 @@ test("concurrent in-process removals and additions serialize without a lost upda
   } finally {
     await rm(f.root, { recursive: true, force: true });
   }
+});
+
+
+test("explicit relocation refusal agreement leaves catalog bytes unchanged", async (t) => {
+  const rows = [
+    { name: "old target available", code: "CONFLICT", setup: async (f: Awaited<ReturnType<typeof fixture>>) => f.second },
+    { name: "competing target registration", code: "CONFLICT", setup: async (f: Awaited<ReturnType<typeof fixture>>) => { await addCatalogEntry("two", f.second, { home: f.home }); await rm(f.first, { recursive: true }); return f.second; } },
+    { name: "unavailable replacement", code: "NOT_FOUND", setup: async (f: Awaited<ReturnType<typeof fixture>>) => { await rm(f.first, { recursive: true }); return path.join(f.root, "missing"); } },
+    { name: "malformed catalog", code: "USAGE", setup: async (f: Awaited<ReturnType<typeof fixture>>) => { await writeFile(catalogPath(f.home), "{broken"); return f.second; } },
+    { name: "markerless private root", code: "RUNTIME", setup: async (f: Awaited<ReturnType<typeof fixture>>) => { await rm(path.join(canonicalUserStateDir(f.home), USER_STATE_MARKER_FILE_NAME)); return f.second; } },
+    { name: "malformed checkout marker", code: "CONFLICT", setup: async (f: Awaited<ReturnType<typeof fixture>>) => { await rm(f.first, { recursive: true }); await mkdir(path.join(f.second, ".superbee")); await writeFile(path.join(f.second, ".superbee", "checkout.json"), "{malformed"); return f.second; } },
+    { name: "newer catalog", code: "NOT_IMPLEMENTED", setup: async (f: Awaited<ReturnType<typeof fixture>>) => { await writeFile(catalogPath(f.home), '{"schema_version":2,"entries":[]}'); return f.second; } },
+    { name: "changed selected entry", code: "CONFLICT", setup: async (f: Awaited<ReturnType<typeof fixture>>) => { const state = await loadCatalog(f.home); state.entries[0]!.label = "changed"; await writeFile(catalogPath(f.home), JSON.stringify(state)); await rm(f.first, { recursive: true }); return f.second; } },
+    { name: "old path retargeted through a link", code: "CONFLICT", setup: async (f: Awaited<ReturnType<typeof fixture>>) => { await rm(f.first, { recursive: true }); await symlink(f.second, f.first, "dir"); return f.second; } },
+    { name: "unbound hosted copy", code: "CONFLICT", setup: async (f: Awaited<ReturnType<typeof fixture>>) => { await rm(f.first, { recursive: true }); await mkdir(path.join(f.second, ".superbee")); await writeFile(path.join(f.second, ".superbee", "checkout.json"), JSON.stringify({ superbee_checkout: 1, home: "hosted", host: "https://example.test", bundle_id: "test", workspace: null })); return f.second; } },
+  ];
+  for (const row of rows) await t.test(row.name, async () => {
+    const f = await fixture();
+    try {
+      const { entry } = await addCatalogEntry("one", f.first, { home: f.home });
+      const target = await row.setup(f);
+      const before = await readFile(catalogPath(f.home));
+      await assert.rejects(relocateCatalogEntry(entry, target, { home: f.home }), (error: unknown) => toExit(error).envelope.error.code === row.code);
+      assert.deepEqual(await readFile(catalogPath(f.home)), before);
+    } finally { await rm(f.root, { recursive: true, force: true }); }
+  });
+});
+
+test("explicit relocation revalidates target and entry after waiting for the catalog lock", async (t) => {
+  for (const change of ["target-link", "target-folder", "selected-entry", "old-restored"]) await t.test(change, async () => {
+    const f = await fixture();
+    try {
+      const { entry } = await addCatalogEntry("one", f.first, { home: f.home });
+      await rm(f.first, { recursive: true });
+      const linked = path.join(f.root, "linked");
+      await symlink(f.second, linked, "dir");
+      const lock = catalogLockPath(f.home);
+      await writeFile(lock, JSON.stringify({ pid: process.pid, created_at_ms: Date.now(), token: "waiting" }), { mode: 0o600 });
+      let before = await readFile(catalogPath(f.home));
+      let changed = false;
+      await assert.rejects(relocateCatalogEntry(entry, change === "target-link" ? linked : f.second, {
+        home: f.home,
+        sleep: async () => {
+          assert.equal(changed, false); changed = true;
+          if (change === "target-link") { await rm(linked); await initBundle(f.first); await symlink(f.first, linked, "dir"); }
+          if (change === "target-folder") { await rename(f.second, `${f.second}-away`); await initBundle(f.second); }
+          if (change === "selected-entry") { const state = await loadCatalog(f.home); state.entries[0]!.label = "changed"; await writeFile(catalogPath(f.home), JSON.stringify(state)); before = await readFile(catalogPath(f.home)); }
+          if (change === "old-restored") await initBundle(f.first);
+          await rm(lock);
+        },
+      }), (error: unknown) => error instanceof CliError && error.code === "CONFLICT");
+      assert.equal(changed, true);
+      assert.deepEqual(await readFile(catalogPath(f.home)), before);
+    } finally { await rm(f.root, { recursive: true, force: true }); }
+  });
 });
