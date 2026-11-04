@@ -27,7 +27,7 @@ import { CliError } from "../../errors.js";
 import { cliInvocation } from "../../invocation.js";
 import { render, resolveMode } from "../../output.js";
 import { assertPathOutsidePrivateState } from "../../private-state-bundle-boundary.js";
-import { copyIsCarried, inspectCommand } from "../../saved-conflicts.js";
+import { copyIsCarried, decodesLosslessly, inspectCommand } from "../../saved-conflicts.js";
 import type { SyncCliDeps } from "../../sync-cli.js";
 import { docUpdate } from "../doc/update.js";
 import { docWrite } from "../doc/write.js";
@@ -294,6 +294,7 @@ function keepWouldLose(board: Board, local: Buffer, remote: Buffer | null, prese
 
 /** True when the document holds an unsent body that is neither the upstream one nor your saved one. */
 function keepWouldOverwrite(board: Board, local: Buffer, remote: Buffer | null, present: Buffer | null): boolean {
+  if (present !== null && !decodesLosslessly(present) && !(remote !== null && present.equals(remote)) && !present.equals(local)) return true;
   const now = parsed(present, board.relPath);
   if (now === null) return false;
   return now.body !== parsed(remote, board.relPath)?.body && now.body !== parsed(local, board.relPath)?.body;

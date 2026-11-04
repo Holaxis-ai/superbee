@@ -16,14 +16,17 @@ function differingFields(left: Record<string, unknown>, right: Record<string, un
   return [...keys].filter((key) => !stamped.has(key) && JSON.stringify(left[key]) !== JSON.stringify(right[key])).sort();
 }
 
+/** Different invalid bytes decode to the same text, so only a lossless decode can be compared as text. */
+export function decodesLosslessly(bytes: Buffer): boolean {
+  return Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes);
+}
+
 /** True when the document as it stands holds everything the saved copy would add. */
 export function copyIsCarried(relPath: string, copy: Buffer, current: Buffer | null): boolean {
   if (current === null) return false;
   if (copy.equals(current)) return true;
   if (!isConceptDocPath(relPath)) return false;
-  // Different invalid bytes decode to the same text, so only a lossless decode can be compared as text.
-  const lossless = (bytes: Buffer): boolean => Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes);
-  if (!lossless(copy) || !lossless(current)) return false;
+  if (!decodesLosslessly(copy) || !decodesLosslessly(current)) return false;
   let saved: ReturnType<typeof parseMarkdown>;
   let now: ReturnType<typeof parseMarkdown>;
   try {
