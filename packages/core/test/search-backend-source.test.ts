@@ -48,3 +48,25 @@ test("canonical prefixes are literal, root is omitted, aliases refuse before bac
   for (const prefix of ["", "/", "/notes", "../notes", "notes/../", "notes//", "./notes", "a\\b", "a\u0000b", "C:notes", "a.md/b"])
     assert.throws(() => validateSearchRequest({ query: "alpha", prefix }), { reason: "filter" }, prefix);
 });
+
+test('backend search reports unreadable content, preserves genuine failures and binds omissions into cursors', async () => {
+  const {MalformedDocumentError} = await import('../src/frontmatter-contract.js');
+  const backend = await fixture();
+  const read = backend.read.bind(backend);
+  const readMany = backend.readMany.bind(backend);
+  backend.read = async id => { if(id === 'notes/1')throw new MalformedDocumentError(id,new Error('Unreadable metadata'));return read(id); };
+  backend.readMany = ids => Promise.all(ids.map(id => backend.read(id)));
+  const source = await searchSourceFromBackend(backend);
+  const result = await searchDocuments(source,{query:'alpha',limit:1});
+  assert.equal(result.total,2);
+  assert.deepEqual(result.corpus,{documents:3,indexed:2,skipped:1,reindexPending:0});
+  assert.deepEqual(result.skipped,[{id:'notes/1',reason:'Unreadable metadata'}]);
+  assert.ok(result.nextCursor);
+  backend.read = read;backend.readMany = readMany;
+  await assert.rejects(searchDocuments(await searchSourceFromBackend(backend),{query:'alpha',cursor:result.nextCursor}),{reason:'cursor'});
+  backend.readMany = async()=>{throw new MalformedDocumentError('notes/0',new Error('bad'));};
+  backend.read = async id=>{if(id==='notes/0')throw new MalformedDocumentError(id,new Error('bad'));throw new Error('storage unavailable');};
+  await assert.rejects(searchSourceFromBackend(backend),/storage unavailable/);
+  backend.read = async id=>{if(id==='notes/0')throw new MalformedDocumentError(id,new Error('bad'));throw Object.assign(new Error('gone'),{code:'ENOENT'});};
+  await assert.rejects(searchSourceFromBackend(backend),/incomplete batch/);
+});

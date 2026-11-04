@@ -11,6 +11,7 @@ import {
   type AppliedIndexTarget,
   type IndexProjectionPreparation,
   type PreparedIndexTarget,
+  type SkippedDoc,
 } from "@superbee/core";
 
 import { assertActorAcceptedByBundle, resolveActor } from "../actor.js";
@@ -28,7 +29,8 @@ export const INDEX_USAGE = `superbee index — generate portable Markdown naviga
 Usage:
   superbee index generate [--dir <path>] [--check] [--force] [--actor <name>]
 
-Scans concept metadata once and plans the bundle's complete index.md hierarchy. A normal run
+Scans concept metadata once and plans the bundle's index.md hierarchy.
+Unreadable documents are omitted and reported; generated indexes visibly warn when incomplete. A normal run
 creates missing indexes and refreshes only files carrying AgentState's exact generated marker.
 If any existing target is unmarked or malformed, the whole run refuses before writing anything;
 --force is the explicit one-time adoption path and may replace curated prose.
@@ -108,6 +110,7 @@ function refusalError(
   scanned: number,
   check: boolean,
   dir: string | undefined,
+  skipped: readonly SkippedDoc[] = [],
 ): CliError {
   const details = {
     index: check ? "checked" : "refused",
@@ -116,6 +119,7 @@ function refusalError(
     display_name: displayName,
     scanned,
     ...classificationFields(prepared),
+    ...(skipped.length ? { skipped } : {}),
   };
   return new CliError("CONFLICT", "portable index generation refused: existing index files are not AgentState-owned", {
     details,
@@ -163,19 +167,20 @@ export async function indexCommand(argv: string[], deps: Partial<IndexCliDeps> =
     help: `${cliInvocation()} index generate --actor <name>`,
   });
   const bundle = await openBundle(values.dir);
+  const skipped: SkippedDoc[] = [];
   const [{ name: displayName }, heads] = await Promise.all([
     deriveBundleDisplayName(bundle),
-    queryHeads(bundle),
+    queryHeads(bundle, {}, { onSkip: row => skipped.push(row) }),
   ]);
-  const plan = planIndexProjection(displayName, heads);
+  const plan = planIndexProjection(displayName, heads, skipped);
   const prepared = await prepareIndexProjection(bundle, plan, { force: values.force });
 
   if (!prepared.ready) {
-    throw refusalError(prepared, displayName, heads.length, values.check ?? false, values.dir);
+    throw refusalError(prepared, displayName, heads.length, values.check ?? false, values.dir, skipped);
   }
 
   const wouldChange = plannedChangeCount(prepared);
-  const fields = classificationFields(prepared);
+  const fields = { ...classificationFields(prepared), ...(skipped.length ? { skipped } : {}) };
   if (values.check) {
     const receipt = {
       index: "checked",

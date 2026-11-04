@@ -7,6 +7,7 @@
  * stops the batch instead of silently re-deciding one file outside the global preflight.
  */
 
+import type { SkippedDoc } from "./document-scan.js";
 import { backendFor } from "./bundle.js";
 import { InvalidInputError } from "./errors.js";
 import { parseMarkdown, stringifyWithData } from "./frontmatter.js";
@@ -88,6 +89,7 @@ export class IndexProjectionWriteError extends Error {
 interface DirectoryProjection {
   direct: HeadResult[];
   children: Set<string>;
+  omitted: number;
 }
 
 function displayDir(dir: string): string {
@@ -115,7 +117,7 @@ function hrefSegment(value: string): string {
 function ensureDirectory(map: Map<string, DirectoryProjection>, dir: string): DirectoryProjection {
   const existing = map.get(dir);
   if (existing) return existing;
-  const created = { direct: [], children: new Set<string>() };
+  const created = { direct: [], children: new Set<string>(), omitted: 0 };
   map.set(dir, created);
   return created;
 }
@@ -133,23 +135,26 @@ function compareText(a: string, b: string): number {
  * Plan root + every ancestor directory from ONE complete `queryHeads`-shaped set.
  * The caller supplies the root display name; core never derives it from a local path or URL.
  */
-export function planIndexProjection(displayName: string, heads: readonly HeadResult[]): IndexProjectionPlan {
+export function planIndexProjection(displayName: string, heads: readonly HeadResult[], skipped: readonly SkippedDoc[] = []): IndexProjectionPlan {
   const directories = new Map<string, DirectoryProjection>();
   ensureDirectory(directories, "");
 
-  for (const head of heads) {
+  for (const head of [...heads, ...skipped]) {
     assertSafeConceptId(head.id);
     const normalized = toPosix(head.id).replace(/^\.\//, "");
     const segments = normalized.split("/");
     const conceptName = segments.pop()!;
     let parent = "";
+    const unreadable = !("frontmatter" in head);
+    if (unreadable) ensureDirectory(directories, "").omitted++;
     for (const child of segments) {
       const next = parent === "" ? child : `${parent}/${child}`;
       ensureDirectory(directories, parent).children.add(child);
-      ensureDirectory(directories, next);
+      const directory = ensureDirectory(directories, next);
+      if (unreadable) directory.omitted++;
       parent = next;
     }
-    ensureDirectory(directories, parent).direct.push({ ...head, id: parent === "" ? conceptName : `${parent}/${conceptName}` });
+    if ("frontmatter" in head) ensureDirectory(directories, parent).direct.push({ ...head, id: parent === "" ? conceptName : `${parent}/${conceptName}` });
   }
 
   const rootTitle = inlineText(displayName) ?? "bundle";
@@ -171,6 +176,8 @@ export function planIndexProjection(displayName: string, heads: readonly HeadRes
       }
 
       const sections: string[] = [];
+      const omitted = projection.omitted;
+      if (omitted > 0) sections.push(`> Incomplete index: ${omitted} unreadable document(s) omitted. Inspect bundle status and repair them before relying on this index as complete.\n`);
       for (const type of [...groups.keys()].sort()) {
         sections.push(`# ${type}\n\n${groups.get(type)!.sort().join("\n")}\n`);
       }

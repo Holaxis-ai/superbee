@@ -55,3 +55,25 @@ test("fixed MCP searches only configured bundle and rejects workspace or arbitra
   assert.equal(oversized.isError, true);
   assert.ok(JSON.stringify(oversized).length < 1000);
 });
+
+test('MCP search carries the same unreadable-document diagnostics as Core', async t => {
+  const {mkdtemp,writeFile,rm} = await import('node:fs/promises');
+  const {tmpdir} = await import('node:os');
+  const path = await import('node:path');
+  const {initBundle,writeDoc} = await import('@superbee/core');
+  const {unreadableDocuments} = await import('../../core/test/fixtures/unreadable-documents.js');
+  const root = await mkdtemp(path.join(tmpdir(),'superbee-mcp-unreadable-'));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const selected = await initBundle(root);
+  await writeDoc(selected,{id:'good',frontmatter:{type:'Note'},body:'alpha'});
+  const client = await clientFor({bundle:selected},t);
+  for(const row of unreadableDocuments){
+    await writeFile(path.join(root,'bad.md'),row.source);
+    const result = await client.callTool({name:'search_documents',arguments:{query:'alpha'}});
+    assert.notEqual(result.isError,true,row.name);
+    const expected = await searchDocuments(await searchSourceFromBackend(selected.backend!),{query:'alpha'},{scope:versionOfBytes(root)});
+    assert.deepEqual(result.structuredContent,expected,row.name);
+    assert.equal(expected.total,1);assert.equal(expected.skipped?.[0]?.id,'bad');
+    assert.equal(expected.corpus.documents,2);assert.equal(expected.corpus.skipped,1);
+  }
+});
