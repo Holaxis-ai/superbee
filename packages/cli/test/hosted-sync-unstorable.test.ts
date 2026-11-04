@@ -371,6 +371,25 @@ test("the front-page verbs on a held root: take is refused and the edit survives
   assert.equal((h.host as unknown as { storedRoot: { content: string } }).storedRoot.content, mine);
 });
 
+test("a kept front page holding the host's own over-limit bytes stays held with a receipt", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  assert.equal((await h.checkout()).err, undefined);
+  const index = path.join(h.folder, "index.md");
+  await writeFile(index, "---\nokf_version: '0.2'\n---\nmy front page\n");
+  const big = `---\nokf_version: '0.2'\nblob: ${"x".repeat(300 * 1024)}\n---\nfront\n`;
+  h.host.putRoot(big);
+  assert.equal((await h.sync("--inspect", "--doc", "index.md")).err, undefined);
+  assert.equal((await h.sync("--resolve", "keep", "--doc", "index.md")).err, undefined);
+  await writeFile(index, big);
+
+  const writes = h.host.writes.length;
+  const held = await h.sync();
+  assert.equal(held.err?.exitCode, 5, held.err?.message);
+  assert.equal(heldRow(held, "index.md").reason, "FRONTMATTER_TOO_LARGE");
+  assert.equal(h.host.writes.length, writes);
+  assert.equal(await readFile(index, "utf8"), big);
+});
+
 test("a pull with no push never sends a kept front page over a held root", async () => {
   const h = await harness(new FakeHost({ rootWrites: "allowed" }));
   assert.equal((await h.checkout()).err, undefined);

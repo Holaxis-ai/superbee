@@ -62,7 +62,7 @@ import { captureBodyReplacePosture, type BodyReplacePosture } from "@superbee/co
  */
 
 import type { Bundle, ConceptId, OkfDocument, ReadResult, StorageBackend, Version, WriteOptions } from "@superbee/core";
-import { FrontmatterRefusedError, stringifyDoc } from "@superbee/core/document-codec";
+import { FrontmatterRefusedError, isStackExhaustion, stringifyDoc } from "@superbee/core/document-codec";
 import { BODY_DELIVERY_LIMITS, performBodyDelivery, prepareBodyDelivery, reconcileBodyReceipt, assertSameBodyDelivery, type BodyDeliveryTransport } from "@superbee/core/governed-body-write";
 import { parseIsoInstant } from "@superbee/core/verification";
 import { versionOfBytes } from "@superbee/core/versioning";
@@ -260,7 +260,7 @@ function unstorableDocument(id: ConceptId, error: FrontmatterRefusedError): Unst
  */
 function unstorableWrite(error: unknown, doc: OkfDocument): UnstorableDocument | null {
   if (error instanceof FrontmatterRefusedError) return unstorableDocument(doc.id, error);
-  if (!(error instanceof RangeError)) return null;
+  if (!isStackExhaustion(error)) return null;
   try {
     stringifyDoc(doc.frontmatter, doc.body ?? "");
     return null;

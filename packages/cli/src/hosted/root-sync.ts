@@ -246,10 +246,12 @@ async function rootStep(context: RootStepContext): Promise<RootStepReport> {
   const { folder, projection, store } = context;
   let host = await context.current();
   // Held like any document the store refuses, until it is repaired or the person kept their file
-  // over exactly this version, which is the only way the base comes to name it.
+  // over exactly this version, which is the only way the base comes to name it. A kept file that
+  // holds the host's own bytes has nothing to send, and the store cannot adopt them.
   const refused = host ? unstorableRoot(host.content) : null;
   if (refused) {
-    const kept = projection.rootBase === host!.version && projection.root === null && context.rootWrites === "allowed" && context.send !== undefined && (await readRootFile(folder)).kind === "file";
+    const keptFile = await readRootFile(folder);
+    const kept = projection.rootBase === host!.version && projection.root === null && context.rootWrites === "allowed" && context.send !== undefined && keptFile.kind === "file" && digestOf(keptFile.bytes) !== host!.version;
     if (!kept) {
       const [held] = unstorableHeld([refused]);
       return { row: row("held", held!.reason, held!.message), refreshed: false };
