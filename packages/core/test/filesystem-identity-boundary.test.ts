@@ -165,6 +165,7 @@ test("N2: FilesystemBackend retains one required constructor argument, the contr
   assert.equal(FilesystemBackend.length, 1);
   assert.deepEqual(Object.getOwnPropertyNames(FilesystemBackend.prototype).sort(), [
     "capabilities",
+    "classifyChangedPath",
     "constructor",
     "delete",
     "deleteBlob",
