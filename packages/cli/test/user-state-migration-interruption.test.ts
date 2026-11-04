@@ -113,11 +113,11 @@ const INTERRUPTIONS: readonly InterruptionRow[] = [
       assert.equal(entries.includes(USER_STATE_MARKER_FILE_NAME), false, "an unmarked root blocks everything");
       assert.equal(entries.includes(JOURNAL_FILE_NAME), false, "and carries no migration authority");
     },
-    // A stated, non-lossy exit node — but note it points at the hostless `setup`, which the
-    // recoverability table records as VIOLATED (R5): the screen it reaches has no state row.
+    // A stated, non-lossy exit node: the shared ownership proof refuses a root with no journal
+    // and points at the quarantine that clears it.
     expectedExitNode: {
-      message: /already exists but is not recognized/,
-      help: /superbee setup/,
+      message: /already exists but is not this migration's own staging/,
+      help: /superbee setup quarantine-state/,
     },
     lossy: false,
   },
@@ -168,7 +168,7 @@ const INTERRUPTIONS: readonly InterruptionRow[] = [
     // ownership of every name that matches the temporary pattern. Unrecognized residue stays and
     // the exactness assertion refuses — a stated, non-lossy exit node, never a silent unlink.
     expectedExitNode: {
-      message: /user state changed during migration; legacy state remains preserved/,
+      message: /already exists but is not this migration's own staging/,
       help: /superbee setup quarantine-state/,
     },
     lossy: false,
@@ -211,7 +211,7 @@ const INTERRUPTIONS: readonly InterruptionRow[] = [
       assert.deepEqual(readdirSync(join(canonical, AUTHORIZATION_DIR_NAME)), [FOREIGN_TEMPORARY]);
     },
     expectedExitNode: {
-      message: /user state changed during migration; legacy state remains preserved/,
+      message: /already exists but is not this migration's own staging/,
       help: /superbee setup quarantine-state/,
     },
     lossy: false,

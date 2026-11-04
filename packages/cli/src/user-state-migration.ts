@@ -15,7 +15,7 @@ import {
   unlink,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { parseCatalog } from "./catalog.js";
 import { CATALOG_FILE_NAME } from "./catalog.js";
@@ -42,6 +42,8 @@ import {
   USER_STATE_MARKER_FILE_NAME,
   USER_STATE_QUARANTINE_COMMAND,
 } from "./user-state.js";
+import { SYNC_EXPORTS_DIR_NAME } from "@superbee/board-git";
+import { SYNC_STATE_DIR_NAME } from "./cursor.js";
 import { assertMigratableViewAuthorization } from "./ui/view-authorizations.js";
 
 const VIEW_AUTHORIZATION_DIR_NAME = "view-authorizations";
@@ -74,10 +76,23 @@ export interface UserStateMigrationReceipt {
     catalog: "migrated" | "unchanged" | "absent";
     credentials: "migrated" | "unchanged" | "absent";
     view_authorizations: number;
-    sync_state: "rederived";
-    ephemeral_state: "rederived";
+    sync_state: "left_in_legacy_root" | "absent";
+    ephemeral_state: "left_in_legacy_root" | "absent";
   };
   legacy_preserved: true;
+  /**
+   * Where the legacy state stays, and how many sync conflict copies (the losing versions of
+   * conflicted board documents) sit under it. Migration copies none of them.
+   */
+  left_behind: {
+    roots: string[];
+    /** A lower bound unless `scan` is "complete". */
+    conflict_copies: number;
+    conflict_copies_at: string[];
+    scan: "complete" | "partial";
+    /** Why a scan is partial: truncation, unreadable data, or a symlink that was not followed. */
+    notes: string[];
+  };
   next: { command: "superbee setup" };
 }
 
@@ -287,6 +302,16 @@ function blockedSource(error: unknown): { reason: string; command: string } {
     : { reason: "legacy operational state is not safe to migrate automatically", command: "superbee setup" };
 }
 
+async function interruptedMigrationRecords(input: UserStateInput): Promise<MigrationRecord[] | null> {
+  try {
+    const records = await preflightLegacy(input);
+    await assertOwnedInterruptedStaging(canonicalUserStateDir(input), records, input);
+    return records;
+  } catch {
+    return null;
+  }
+}
+
 export async function inspectUserStateMigration(input: UserStateInput = homedir()): Promise<UserStateMigrationInspection> {
   if (staticBuildIdentity().package.name === LEGACY_BRIDGE_PACKAGE_NAME) {
     return { state: "ready", reason: "the separately published Aslite bridge retains its legacy state root", records: 0 };
@@ -314,6 +339,17 @@ export async function inspectUserStateMigration(input: UserStateInput = homedir(
       : { state: "ready", reason: "the canonical Superbee user-state root is ready", records: 0 };
   }
   if (canonical.state === "conflict") {
+    // A root left by an interrupted migration is this product's own staging, and rerunning
+    // migrate-state resumes it. Only a root that fails the same journal proof the migration
+    // applies is genuinely unrecognized.
+    const interrupted = await interruptedMigrationRecords(input);
+    if (interrupted !== null) {
+      return {
+        state: "migratable",
+        reason: "an interrupted state migration can be resumed; legacy state is intact",
+        records: interrupted.length,
+      };
+    }
     return {
       state: "blocked",
       reason: "the canonical Superbee user-state root is unrecognized",
@@ -460,9 +496,27 @@ async function destinationMatches(root: string, record: MigrationRecord, input: 
   }
 }
 
-async function assertExactStagingTopology(root: string, records: MigrationRecord[], input: UserStateInput): Promise<void> {
+/**
+ * `partial` is the read-only proof's allowance for an interrupted root: a record destination may
+ * not exist yet, and the one derived temporary path per owned name may exist as a regular file,
+ * because the migration sweeps exactly those before it writes. The mutating path asserts after
+ * the sweep and after every record is published, with no allowance.
+ */
+async function assertExactStagingTopology(
+  root: string,
+  records: MigrationRecord[],
+  input: UserStateInput,
+  partial = false,
+): Promise<void> {
   await assertPrivateDirectory(root, input);
-  const rootAllowed = new Set<string>([MIGRATION_JOURNAL_FILE_NAME]);
+  const rootTemporaries = new Set<string>();
+  const authorizationTemporaries = new Set<string>();
+  if (partial) {
+    for (const relative of [MIGRATION_JOURNAL_FILE_NAME, ...records.map((record) => record.relative), USER_STATE_MARKER_FILE_NAME]) {
+      (relative.includes("/") ? authorizationTemporaries : rootTemporaries).add(basename(migrationTemporaryPath(root, relative)));
+    }
+  }
+  const rootAllowed = new Set<string>([MIGRATION_JOURNAL_FILE_NAME, ...rootTemporaries]);
   if (records.some((record) => record.relative === CATALOG_FILE_NAME)) rootAllowed.add(CATALOG_FILE_NAME);
   if (records.some((record) => record.relative === CRED_FILE_NAME)) rootAllowed.add(CRED_FILE_NAME);
   const authorizationNames = new Set(
@@ -475,21 +529,49 @@ async function assertExactStagingTopology(root: string, records: MigrationRecord
   if (rootEntries.some((entry) => !rootAllowed.has(entry.name))) {
     throw new Error("canonical migration root contains an unexpected entry");
   }
+  for (const entry of rootEntries) {
+    if (rootTemporaries.has(entry.name) && (!entry.isFile() || entry.isSymbolicLink())) {
+      throw new Error("canonical migration root has a non-regular staging temporary");
+    }
+  }
+  const present = (name: string): boolean => rootEntries.some((entry) => entry.name === name);
   await assertPrivateRegularFile(join(root, MIGRATION_JOURNAL_FILE_NAME), input);
   for (const record of records.filter((candidate) => !candidate.relative.includes("/"))) {
+    if (partial && !present(record.relative)) continue;
     await assertPrivateRegularFile(join(root, record.relative), input);
   }
-  if (authorizationNames.size > 0) {
+  if (authorizationNames.size > 0 && !(partial && !present(VIEW_AUTHORIZATION_DIR_NAME))) {
     const directory = join(root, VIEW_AUTHORIZATION_DIR_NAME);
     await assertPrivateDirectory(directory, input);
-    const entries = await readdir(directory, { withFileTypes: true });
+    const all = await readdir(directory, { withFileTypes: true });
+    const entries = all.filter((entry) => !authorizationTemporaries.has(entry.name));
     if (
-      entries.length !== authorizationNames.size
+      all.some((entry) => authorizationTemporaries.has(entry.name) && (!entry.isFile() || entry.isSymbolicLink()))
+      || (!partial && entries.length !== authorizationNames.size)
       || entries.some((entry) => !entry.isFile() || entry.isSymbolicLink() || !authorizationNames.has(entry.name))
     ) {
       throw new Error("canonical View authorization staging contains an unexpected entry");
     }
-    for (const name of authorizationNames) await assertPrivateRegularFile(join(directory, name), input);
+    for (const entry of entries) await assertPrivateRegularFile(join(directory, entry.name), input);
+  }
+}
+
+/**
+ * The one read-only proof that a non-recognized canonical root is this migration's own interrupted
+ * staging: a private root, a journal naming exactly the current legacy record set, every present
+ * destination byte-identical to its record, and no entry beyond the exact topology (owned
+ * temporaries tolerated). Inspect and migrate both apply it, so `setup` never offers a command
+ * `migrate-state` will refuse.
+ */
+async function assertOwnedInterruptedStaging(root: string, records: MigrationRecord[], input: UserStateInput): Promise<void> {
+  if (records.length === 0) throw new Error("no legacy records to resume");
+  await assertPrivateDirectory(root, input);
+  const raw = await readPrivateStateFile(join(root, MIGRATION_JOURNAL_FILE_NAME), MAX_CATALOG_BYTES, undefined, input);
+  if (!parseJournal(raw) || raw !== journalBytes(records)) throw new Error("migration journal does not match");
+  await assertExactStagingTopology(root, records, input, true);
+  for (const record of records) {
+    if (!(await lstat(join(root, record.relative)).catch(() => null))) continue;
+    if (!(await destinationMatches(root, record, input))) throw new Error("staged record differs from its source");
   }
 }
 
@@ -498,8 +580,109 @@ async function assertSourceUnchanged(input: UserStateInput, expected: MigrationR
   if (journalBytes(current) !== journalBytes(expected)) throw new Error("legacy operational state changed during migration");
 }
 
-function receipt(status: UserStateMigrationReceipt["status"], changed: boolean, records: MigrationRecord[]): UserStateMigrationReceipt {
+const MAX_CONFLICT_COPY_FILES = 10_000;
+const MAX_CONFLICT_COPY_DIRECTORIES = 2_000;
+const MAX_LEFT_BEHIND_NOTES = 20;
+
+interface ConflictScan {
+  files: number;
+  directories: number;
+  limited: boolean;
+  notes: string[];
+}
+
+/** Counts regular files only. Symlinks are never followed; truncation and unreadable data are named. */
+async function countConflictFiles(directory: string, label: string, scan: ConflictScan): Promise<void> {
+  if (scan.limited) return;
+  if (scan.directories >= MAX_CONFLICT_COPY_DIRECTORIES) {
+    scan.limited = true;
+    scan.notes.push(`${label} not scanned: directory limit of ${MAX_CONFLICT_COPY_DIRECTORIES} reached`);
+    return;
+  }
+  scan.directories += 1;
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if (errno(error) !== "ENOENT") scan.notes.push(`${label} could not be read (${errno(error) ?? "error"}); copies under it are not counted`);
+    return;
+  }
+  for (const entry of entries) {
+    if (scan.limited) return;
+    if (entry.isDirectory()) {
+      await countConflictFiles(join(directory, entry.name), `${label}/${entry.name}`, scan);
+    } else if (entry.isFile()) {
+      if (scan.files >= MAX_CONFLICT_COPY_FILES) {
+        scan.limited = true;
+        scan.notes.push(`${label} not fully counted: file limit of ${MAX_CONFLICT_COPY_FILES} reached`);
+        return;
+      }
+      scan.files += 1;
+    } else if (entry.isSymbolicLink()) {
+      scan.notes.push(`${label}/${entry.name} is a symlink and was not followed`);
+    }
+  }
+}
+
+/** The legacy roots that still exist, and the conflict copies under them that migration leaves in place. */
+async function leftBehind(input: UserStateInput): Promise<UserStateMigrationReceipt["left_behind"]> {
+  const roots: string[] = [];
+  const copiesAt: string[] = [];
+  const notes: string[] = [];
+  let copies = 0;
+  for (const { root, display } of currentPrivateStateHost().migrationSources(userStateEnvironment(input))) {
+    let status;
+    try {
+      status = await lstat(root);
+    } catch (error) {
+      if (errno(error) !== "ENOENT") {
+        roots.push(display);
+        notes.push(`${display} could not be inspected (${errno(error) ?? "error"})`);
+      }
+      continue;
+    }
+    roots.push(display);
+    if (!status.isDirectory()) {
+      notes.push(`${display} is ${status.isSymbolicLink() ? "a symlink" : "not a directory"} and was not scanned`);
+      continue;
+    }
+    // Each root has its own budget so one large root cannot hide another.
+    const scan: ConflictScan = { files: 0, directories: 0, limited: false, notes };
+    let label = display;
+    let directory = root;
+    let blocked = false;
+    for (const name of [SYNC_STATE_DIR_NAME, SYNC_EXPORTS_DIR_NAME]) {
+      directory = join(directory, name);
+      label = `${label}/${name}`;
+      const step = await lstat(directory).catch(() => null);
+      if (!step) { blocked = true; break; }
+      if (!step.isDirectory()) {
+        notes.push(`${label} is ${step.isSymbolicLink() ? "a symlink and was not followed" : "not a directory"}`);
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) continue;
+    await countConflictFiles(directory, label, scan);
+    if (scan.files > 0) {
+      copies += scan.files;
+      copiesAt.push(label);
+    }
+  }
+  const omitted = notes.length - MAX_LEFT_BEHIND_NOTES;
+  const shown = omitted > 0 ? [...notes.slice(0, MAX_LEFT_BEHIND_NOTES), `${omitted} more notes omitted`] : notes;
+  return { roots, conflict_copies: copies, conflict_copies_at: copiesAt, scan: notes.length === 0 ? "complete" : "partial", notes: shown };
+}
+
+async function receipt(
+  status: UserStateMigrationReceipt["status"],
+  changed: boolean,
+  records: MigrationRecord[],
+  input: UserStateInput,
+): Promise<UserStateMigrationReceipt> {
   const present: "unchanged" | "migrated" = status === "already_current" ? "unchanged" : "migrated";
+  const behind = await leftBehind(input);
+  const legacyState = behind.roots.length > 0 ? "left_in_legacy_root" : "absent";
   return {
     schema_version: 1,
     status,
@@ -508,10 +691,11 @@ function receipt(status: UserStateMigrationReceipt["status"], changed: boolean, 
       catalog: records.some((record) => record.relative === CATALOG_FILE_NAME) ? present : "absent",
       credentials: records.some((record) => record.relative === CRED_FILE_NAME) ? present : "absent",
       view_authorizations: records.filter((record) => record.relative.startsWith(`${VIEW_AUTHORIZATION_DIR_NAME}/`)).length,
-      sync_state: "rederived",
-      ephemeral_state: "rederived",
+      sync_state: legacyState,
+      ephemeral_state: legacyState,
     },
     legacy_preserved: true,
+    left_behind: behind,
     next: { command: "superbee setup" },
   };
 }
@@ -535,25 +719,21 @@ export async function migrateUserState(
     });
     await removeStaleJournal(root, input);
     await ensureStateRootGitignore(root, input);
-    return receipt("already_current", false, current);
+    return receipt("already_current", false, current, input);
   }
 
   const records = await preflightLegacy(input).catch((error: unknown) => {
     const blocked = blockedSource(error);
     throw new CliError("CONFLICT", blocked.reason, { help: blocked.command });
   });
-  if (records.length === 0 && canonical === "absent") return receipt("nothing_to_migrate", false, []);
+  if (records.length === 0 && canonical === "absent") return receipt("nothing_to_migrate", false, [], input);
   if (canonical === "conflict") {
-    let raw: string;
     try {
-      await assertPrivateDirectory(root, input);
-      raw = await readPrivateStateFile(join(root, MIGRATION_JOURNAL_FILE_NAME), MAX_CATALOG_BYTES, undefined, input);
+      await assertOwnedInterruptedStaging(root, records, input);
     } catch {
-      throw new CliError("CONFLICT", "canonical Superbee user state already exists but is not recognized", { help: `${distributionBinName()} setup` });
-    }
-    const journal = parseJournal(raw);
-    if (!journal || raw !== journalBytes(records)) {
-      throw new CliError("CONFLICT", "an incomplete or foreign canonical user-state root requires inspection", { help: `${distributionBinName()} setup` });
+      throw new CliError("CONFLICT", "canonical Superbee user state already exists but is not this migration's own staging", {
+        help: `${distributionBinName()} setup quarantine-state`,
+      });
     }
   } else {
     await ensureMigrationParent(input);
@@ -599,5 +779,5 @@ export async function migrateUserState(
   // The exact-topology assertions above are over, so the promised `*` .gitignore can finally be
   // published: a migrated root must be as unstageable as one created by `ensureUserStateRoot`.
   await ensureStateRootGitignore(root, input);
-  return receipt("migrated", true, records);
+  return receipt("migrated", true, records, input);
 }
