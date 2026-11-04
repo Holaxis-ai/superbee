@@ -29,7 +29,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  AGENTSTATE_LITE_NO_AUTOPULL: 1
+  SUPERBEE_NO_AUTOPULL: 1
 
 jobs:
   source-decision:

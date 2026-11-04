@@ -457,9 +457,7 @@ test("built CLI new and doc write remain successful without Git when unbound con
       ...process.env,
       HOME: homeDir,
       PATH: "",
-      ASLITE_NO_UPDATE_CHECK: "1",
       SUPERBEE_NO_UPDATE_CHECK: "1",
-      AGENTSTATE_LITE_NO_AUTOPULL: "1",
       SUPERBEE_NO_AUTOPULL: "1",
     };
     const created = spawnSync(process.execPath, [BUILT_CLI, "new", "Task", "git-free", "--title", "Git free", "--json"], {
@@ -1266,7 +1264,6 @@ for (const state of ["empty directory", "linked worktree"] as const) {
           HOME: homeDir,
           PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ""}`,
           SUPERBEE_NO_UPDATE_CHECK: "1",
-          ASLITE_NO_UPDATE_CHECK: "1",
         },
         encoding: "utf8",
       });

@@ -211,8 +211,8 @@ function createFixture(): FixtureContext {
   mkdirSync(home);
   writeFileSync(artifactFile, "<!doctype html><title>arity</title>\n");
   const env = isolatedUserEnv(home, {
-    ASLITE_NO_UPDATE_CHECK: "1",
-    AGENTSTATE_LITE_NO_AUTOPULL: "1",
+    SUPERBEE_NO_UPDATE_CHECK: "1",
+    SUPERBEE_NO_AUTOPULL: "1",
   });
   const setupCommands = [
     ["init", "--dir", bundle],

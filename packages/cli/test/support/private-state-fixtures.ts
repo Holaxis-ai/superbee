@@ -28,9 +28,7 @@ export function runCli(
   return spawnSync(process.execPath, [BUILT_CLI, ...argv], {
     cwd: options.cwd,
     env: isolatedUserEnv(options.home, {
-      ASLITE_NO_UPDATE_CHECK: "1",
       SUPERBEE_NO_UPDATE_CHECK: "1",
-      AGENTSTATE_LITE_NO_AUTOPULL: "1",
       SUPERBEE_NO_AUTOPULL: "1",
       ...options.env,
     }),
@@ -58,9 +56,7 @@ export function runShell(
   return spawnSync("sh", ["-c", command], {
     cwd: options.cwd,
     env: isolatedUserEnv(options.home, {
-      ASLITE_NO_UPDATE_CHECK: "1",
       SUPERBEE_NO_UPDATE_CHECK: "1",
-      AGENTSTATE_LITE_NO_AUTOPULL: "1",
       SUPERBEE_NO_AUTOPULL: "1",
       PATH: `${options.bin}${path.delimiter}${process.env.PATH ?? ""}`,
     }),

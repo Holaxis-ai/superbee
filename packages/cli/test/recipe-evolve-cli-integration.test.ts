@@ -63,7 +63,7 @@ function runCliJson(launcher: string[], args: string[]): Record<string, unknown>
     encoding: "utf8",
     env: {
       ...process.env,
-      ASLITE_NO_UPDATE_CHECK: "1",
+      SUPERBEE_NO_UPDATE_CHECK: "1",
       SUPERBEE_NO_AUTOPULL: "1",
     },
   });
@@ -114,7 +114,7 @@ async function exerciseExactApply(launcher: string[], expectedPrefix: string): P
       env: {
         ...process.env,
         PATH: "/usr/bin:/bin",
-        ASLITE_NO_UPDATE_CHECK: "1",
+        SUPERBEE_NO_UPDATE_CHECK: "1",
         SUPERBEE_NO_AUTOPULL: "1",
       },
     });

@@ -422,7 +422,7 @@ test("built workload exec preserves child help/argv and pending exit for automat
       throw Error('unexpected fixture request');};`);
     const code = `require('node:fs').writeFileSync(process.argv[1],JSON.stringify({host:process.env.SUPERBEE_HOST,appId:process.env.SUPERBEE_WORKLOAD_APP_ID,token:process.env.SUPERBEE_ACCESS_TOKEN,mint:process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,mintUrl:process.env.ACTIONS_ID_TOKEN_REQUEST_URL,args:process.argv.slice(2)}));process.exit(23)`;
     const nativeArgs = ["--import", preload, cli, "workload", ...f.argv.slice(0, -2), process.execPath, "-e", code, result, "--help", "literal $(never-executed)"];
-    const env = { ...process.env, ...workflowEnv(), HOME: f.deps.home, USERPROFILE: f.deps.home, SUPERBEE_NO_AUTOPULL: "1", ASLITE_NO_UPDATE_CHECK: "1" };
+    const env = { ...process.env, ...workflowEnv(), HOME: f.deps.home, USERPROFILE: f.deps.home, SUPERBEE_NO_AUTOPULL: "1", SUPERBEE_NO_UPDATE_CHECK: "1" };
     const done = spawnSync(process.execPath, nativeArgs, { env, cwd: f.root, encoding: "utf8", timeout: 30000 });
     assert.equal(done.status, 23, done.stdout + done.stderr);
     assert.deepEqual(JSON.parse(await readFile(result, "utf8")), { host: gateway, token: BEARER, appId: approved().appId, args: ["--help", "literal $(never-executed)"] });

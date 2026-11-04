@@ -28,7 +28,7 @@ interface ChildResult {
 function run(home: string, args: string[]): Promise<ChildResult> {
   return new Promise((resolve, reject) => {
     const child = spawn("node", [cliBin, ...args], {
-      env: isolatedUserEnv(home, { AGENTSTATE_LITE_NO_AUTOPULL: "1" }),
+      env: isolatedUserEnv(home, { SUPERBEE_NO_AUTOPULL: "1" }),
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";

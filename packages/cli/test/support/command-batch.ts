@@ -12,8 +12,8 @@ const loader = fileURLToPath(new URL("../ts-loader.mjs", import.meta.url));
 export function commandEnv(home: string, overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return isolatedUserEnv(home, {
     ...overrides,
-    ASLITE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_UPDATE_CHECK: "1",
-    AGENTSTATE_LITE_NO_AUTOPULL: "1", SUPERBEE_NO_AUTOPULL: "1",
+    SUPERBEE_NO_UPDATE_CHECK: "1",
+    SUPERBEE_NO_AUTOPULL: "1",
   });
 }
 

@@ -23,7 +23,7 @@
 //      (The spawned-subprocess default-wiring pin lives in doc-cli-integration.test.ts — the one
 //      file that builds the real CLI.)
 //
-// NOTE the suite-wide knob: packages/cli's test script sets AGENTSTATE_LITE_NO_AUTOPULL=1 so the
+// NOTE the suite-wide knob: packages/cli's test script sets SUPERBEE_NO_AUTOPULL=1 so the
 // DEFAULT trigger is inert for every other suite (hermetic on machines whose own checkout has a
 // provisioned, stale board). Tests here that want the real trigger inject `env: {}` explicitly.
 import test from "node:test";

@@ -379,7 +379,7 @@ function runBuiltCli(args: string[]): { status: number | null; stdout: string } 
   if (!existsSync(builtCli)) execFileSync("node", ["build.mjs", "local-dev"], { cwd: builtCliRoot, stdio: "inherit" });
   const result = spawnSync(process.execPath, [builtCli, ...args], {
     encoding: "utf8",
-    env: { ...process.env, ASLITE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" },
+    env: { ...process.env, SUPERBEE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" },
   });
   return { status: result.status, stdout: result.stdout };
 }

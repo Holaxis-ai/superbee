@@ -502,7 +502,7 @@ test("built CLI: `doc update` with NO field flags and an OPEN-never-written pipe
 // ── the opportunistic-pull DEFAULT-WIRING pin (autopull fix round, MEDIUM 3) ────────────────────
 //
 // Every IN-PROCESS suite either injects the `autoPull` seam or runs under the suite-wide
-// AGENTSTATE_LITE_NO_AUTOPULL=1 knob (packages/cli's test script) — so deleting the default
+// SUPERBEE_NO_AUTOPULL=1 knob (packages/cli's test script) — so deleting the default
 // `deps.autoPull ?? maybeAutoPull` binding in the read commands would still pass all of them.
 // This test spawns the BUILT CLI with the knob explicitly DELETED from the child env, in a real
 // two-clone topology, and requires the read ITSELF to have pulled the teammate's pushed doc —
@@ -524,7 +524,7 @@ test("built CLI: default auto-pull wiring is LIVE — `list` pulls a stale board
     pushBoard(topo.a);
 
     const env = { ...process.env, HOME: childHomeA, USERPROFILE: childHomeA };
-    delete env.AGENTSTATE_LITE_NO_AUTOPULL;
+    delete env.SUPERBEE_NO_AUTOPULL;
     const r = spawnSync("node", [cliBin, "list", "--dir", topo.b.board], {
       env,
       encoding: "utf8",
@@ -550,7 +550,7 @@ test("built CLI: default auto-pull wiring is LIVE — `list` pulls a stale board
       ...process.env,
       HOME: childHomeB,
       USERPROFILE: childHomeB,
-      AGENTSTATE_LITE_NO_AUTOPULL: "0",
+      SUPERBEE_NO_AUTOPULL: "0",
     };
     const r2 = spawnSync("node", [cliBin, "list", "--dir", topo.b.board], {
       env: envZero,
@@ -562,7 +562,7 @@ test("built CLI: default auto-pull wiring is LIVE — `list` pulls a stale board
     assert.doesNotMatch(
       r2.stdout ?? "",
       /tasks\/knob-zero/,
-      "AGENTSTATE_LITE_NO_AUTOPULL='0' must DISABLE the pull — presence is the switch",
+      "SUPERBEE_NO_AUTOPULL='0' must DISABLE the pull — presence is the switch",
     );
   } finally {
     await topo.cleanup();

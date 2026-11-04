@@ -4,8 +4,8 @@ import { selectTestShard } from "./test-shards.mjs";
 const [mode, ...args] = process.argv.slice(2);
 const env = {
   ...process.env,
-  ASLITE_NO_UPDATE_CHECK: "1",
-  AGENTSTATE_LITE_NO_AUTOPULL: "1",
+  SUPERBEE_NO_UPDATE_CHECK: "1",
+  SUPERBEE_NO_AUTOPULL: "1",
   GIT_AUTHOR_NAME: "test-suite",
   GIT_AUTHOR_EMAIL: "test-suite@example.invalid",
   GIT_COMMITTER_NAME: "test-suite",
