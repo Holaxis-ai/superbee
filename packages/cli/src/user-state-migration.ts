@@ -42,6 +42,8 @@ import {
   USER_STATE_MARKER_FILE_NAME,
   USER_STATE_QUARANTINE_COMMAND,
 } from "./user-state.js";
+import { SYNC_EXPORTS_DIR_NAME } from "@superbee/board-git";
+import { SYNC_STATE_DIR_NAME } from "./cursor.js";
 import { assertMigratableViewAuthorization } from "./ui/view-authorizations.js";
 
 const VIEW_AUTHORIZATION_DIR_NAME = "view-authorizations";
@@ -74,10 +76,19 @@ export interface UserStateMigrationReceipt {
     catalog: "migrated" | "unchanged" | "absent";
     credentials: "migrated" | "unchanged" | "absent";
     view_authorizations: number;
-    sync_state: "rederived";
-    ephemeral_state: "rederived";
+    sync_state: "left_in_legacy_root";
+    ephemeral_state: "left_in_legacy_root";
   };
   legacy_preserved: true;
+  /**
+   * Where the legacy state stays, and how many sync conflict copies (the losing versions of
+   * conflicted board documents) sit under it. Migration copies none of them.
+   */
+  left_behind: {
+    roots: string[];
+    conflict_copies: number;
+    conflict_copies_at: string[];
+  };
   next: { command: "superbee setup" };
 }
 
@@ -287,6 +298,22 @@ function blockedSource(error: unknown): { reason: string; command: string } {
     : { reason: "legacy operational state is not safe to migrate automatically", command: "superbee setup" };
 }
 
+/**
+ * The legacy records an interrupted migration would resume with, or null when the canonical root
+ * is not provably this migration's own staging. The proof is the one `migrateUserState` applies.
+ */
+async function interruptedMigrationRecords(input: UserStateInput): Promise<MigrationRecord[] | null> {
+  try {
+    const records = await preflightLegacy(input);
+    const root = canonicalUserStateDir(input);
+    await assertPrivateDirectory(root, input);
+    const raw = await readPrivateStateFile(join(root, MIGRATION_JOURNAL_FILE_NAME), MAX_CATALOG_BYTES, undefined, input);
+    return parseJournal(raw) && raw === journalBytes(records) && records.length > 0 ? records : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function inspectUserStateMigration(input: UserStateInput = homedir()): Promise<UserStateMigrationInspection> {
   if (staticBuildIdentity().package.name === LEGACY_BRIDGE_PACKAGE_NAME) {
     return { state: "ready", reason: "the separately published Aslite bridge retains its legacy state root", records: 0 };
@@ -314,6 +341,17 @@ export async function inspectUserStateMigration(input: UserStateInput = homedir(
       : { state: "ready", reason: "the canonical Superbee user-state root is ready", records: 0 };
   }
   if (canonical.state === "conflict") {
+    // A root left by an interrupted migration is this product's own staging, and rerunning
+    // migrate-state resumes it. Only a root that fails the same journal proof the migration
+    // applies is genuinely unrecognized.
+    const interrupted = await interruptedMigrationRecords(input);
+    if (interrupted !== null) {
+      return {
+        state: "migratable",
+        reason: "an interrupted state migration can be resumed; legacy state is intact",
+        records: interrupted.length,
+      };
+    }
     return {
       state: "blocked",
       reason: "the canonical Superbee user-state root is unrecognized",
@@ -498,7 +536,56 @@ async function assertSourceUnchanged(input: UserStateInput, expected: MigrationR
   if (journalBytes(current) !== journalBytes(expected)) throw new Error("legacy operational state changed during migration");
 }
 
-function receipt(status: UserStateMigrationReceipt["status"], changed: boolean, records: MigrationRecord[]): UserStateMigrationReceipt {
+const MAX_CONFLICT_COPY_SCAN = 10_000;
+
+async function countFiles(directory: string, budget: { left: number }): Promise<number> {
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  let count = 0;
+  for (const entry of entries) {
+    if (budget.left <= 0) break;
+    if (entry.isDirectory()) count += await countFiles(join(directory, entry.name), budget);
+    else if (entry.isFile()) {
+      count += 1;
+      budget.left -= 1;
+    }
+  }
+  return count;
+}
+
+/** The legacy roots that still exist, and the conflict copies under them that migration leaves in place. */
+async function leftBehind(input: UserStateInput): Promise<UserStateMigrationReceipt["left_behind"]> {
+  const roots: string[] = [];
+  const copiesAt: string[] = [];
+  let copies = 0;
+  const budget = { left: MAX_CONFLICT_COPY_SCAN };
+  for (const { root, display } of currentPrivateStateHost().migrationSources(userStateEnvironment(input))) {
+    try {
+      if (!(await lstat(root)).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    roots.push(display);
+    const exportsDir = join(root, SYNC_STATE_DIR_NAME, SYNC_EXPORTS_DIR_NAME);
+    const found = await countFiles(exportsDir, budget);
+    if (found > 0) {
+      copies += found;
+      copiesAt.push(`${display}/${SYNC_STATE_DIR_NAME}/${SYNC_EXPORTS_DIR_NAME}`);
+    }
+  }
+  return { roots, conflict_copies: copies, conflict_copies_at: copiesAt };
+}
+
+async function receipt(
+  status: UserStateMigrationReceipt["status"],
+  changed: boolean,
+  records: MigrationRecord[],
+  input: UserStateInput,
+): Promise<UserStateMigrationReceipt> {
   const present: "unchanged" | "migrated" = status === "already_current" ? "unchanged" : "migrated";
   return {
     schema_version: 1,
@@ -508,10 +595,11 @@ function receipt(status: UserStateMigrationReceipt["status"], changed: boolean, 
       catalog: records.some((record) => record.relative === CATALOG_FILE_NAME) ? present : "absent",
       credentials: records.some((record) => record.relative === CRED_FILE_NAME) ? present : "absent",
       view_authorizations: records.filter((record) => record.relative.startsWith(`${VIEW_AUTHORIZATION_DIR_NAME}/`)).length,
-      sync_state: "rederived",
-      ephemeral_state: "rederived",
+      sync_state: "left_in_legacy_root",
+      ephemeral_state: "left_in_legacy_root",
     },
     legacy_preserved: true,
+    left_behind: await leftBehind(input),
     next: { command: "superbee setup" },
   };
 }
@@ -535,14 +623,14 @@ export async function migrateUserState(
     });
     await removeStaleJournal(root, input);
     await ensureStateRootGitignore(root, input);
-    return receipt("already_current", false, current);
+    return receipt("already_current", false, current, input);
   }
 
   const records = await preflightLegacy(input).catch((error: unknown) => {
     const blocked = blockedSource(error);
     throw new CliError("CONFLICT", blocked.reason, { help: blocked.command });
   });
-  if (records.length === 0 && canonical === "absent") return receipt("nothing_to_migrate", false, []);
+  if (records.length === 0 && canonical === "absent") return receipt("nothing_to_migrate", false, [], input);
   if (canonical === "conflict") {
     let raw: string;
     try {
@@ -599,5 +687,5 @@ export async function migrateUserState(
   // The exact-topology assertions above are over, so the promised `*` .gitignore can finally be
   // published: a migrated root must be as unstageable as one created by `ensureUserStateRoot`.
   await ensureStateRootGitignore(root, input);
-  return receipt("migrated", true, records);
+  return receipt("migrated", true, records, input);
 }

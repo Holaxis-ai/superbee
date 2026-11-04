@@ -19,6 +19,7 @@ import {
   USER_STATE_QUARANTINE_COMMAND,
   userStateDirForPackage,
 } from "../src/user-state.js";
+import { setupStateCapability } from "../src/setup-plan.js";
 import { inspectUserStateMigration, migrateUserState, migrationSourceRoots } from "../src/user-state-migration.js";
 import { isolatedUserEnv } from "./support/user-env.js";
 
@@ -106,7 +107,10 @@ test("setup inspection distinguishes fresh, unknown-only, malformed, and conflic
 
     await mkdir(canonicalUserStateDir(conflicting), { recursive: true, mode: 0o700 });
     await writeFile(join(canonicalUserStateDir(conflicting), "foreign.json"), "{}\n", { mode: 0o600 });
-    assert.equal((await inspectUserStateMigration(conflicting)).state, "blocked");
+    const unrecognized = await inspectUserStateMigration(conflicting);
+    assert.equal(unrecognized.state, "blocked");
+    assert.match((unrecognized as { command: string }).command, /setup quarantine-state$/);
+    assert.equal(setupStateCapability(unrecognized).command, (unrecognized as { command: string }).command);
   } finally {
     await Promise.all([fresh, unknown, malformed, conflicting].map((dir) => rm(dir, { recursive: true, force: true })));
   }
@@ -275,10 +279,20 @@ test("one-shot migration copies only validated durable records, preserves legacy
       catalog: "migrated",
       credentials: "migrated",
       view_authorizations: 1,
-      sync_state: "rederived",
-      ephemeral_state: "rederived",
+      sync_state: "left_in_legacy_root",
+      ephemeral_state: "left_in_legacy_root",
     });
     assert.equal(first.legacy_preserved, true);
+    assert.deepEqual(first.left_behind, {
+      roots: ["~/.agentstate"],
+      conflict_copies: 1,
+      conflict_copies_at: ["~/.agentstate/sync/exports"],
+    });
+    assert.equal(
+      await readFile(join(legacy, "sync", "exports", "recovery.md"), "utf8"),
+      "keep me\n",
+      "the conflict copy the receipt names is really there",
+    );
 
     const canonical = canonicalUserStateDir(root);
     assert.equal(await readFile(join(canonical, "catalog.json"), "utf8"), catalog);
@@ -303,9 +317,10 @@ test("one-shot migration copies only validated durable records, preserves legacy
       catalog: "unchanged",
       credentials: "unchanged",
       view_authorizations: 1,
-      sync_state: "rederived",
-      ephemeral_state: "rederived",
+      sync_state: "left_in_legacy_root",
+      ephemeral_state: "left_in_legacy_root",
     });
+    assert.equal(second.left_behind.conflict_copies, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -390,7 +405,14 @@ test("source drift before completion preserves a resumable copy and a ready root
     assert.equal(await absent(join(canonical, "state.json")), true);
 
     await writeLegacy(catalogFile, original);
+    // The interrupted root is this migration's own staging: setup routes to the resuming command,
+    // not to quarantine.
+    const interrupted = await inspectUserStateMigration(root);
+    assert.equal(interrupted.state, "migratable");
+    assert.match(interrupted.reason, /interrupted/);
+    assert.equal(setupStateCapability(interrupted).command, "superbee setup migrate-state");
     assert.equal((await migrateUserState(root)).status, "migrated", "an exact interrupted migration resumes");
+    assert.equal((await inspectUserStateMigration(root)).state, "ready");
 
     const residue = join(canonical, ".migration.json");
     await writeLegacy(residue, "foreign residue\n");

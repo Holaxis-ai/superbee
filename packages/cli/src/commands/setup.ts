@@ -64,7 +64,9 @@ surfaces. A required state remedy comes first; otherwise the calling agent selec
 
 When setup reports validated legacy operational state, migrate-state copies only the private
 catalog, remote credentials, and immutable View approvals into Superbee's canonical state root.
-It never moves bundles or deletes legacy bytes. The explicit command is the authorization event.
+It never moves bundles or deletes legacy bytes. Sync state and sync conflict copies are not copied;
+they stay in the legacy folder, and the receipt's left_behind names where. The explicit command is
+the authorization event.
 
 A catalog entry preserves a workspace for explicit MCP selection; it never selects that workspace
 as the current project's context. Do not read, write, orient from, or sync a cataloged workspace
