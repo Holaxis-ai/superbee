@@ -169,7 +169,7 @@ function text(value: unknown, where: string, max: number): string {
   return value;
 }
 
-function id(value: unknown, where: string): string {
+function identifier(value: unknown, where: string): string {
   if (typeof value !== "string" || !ID.test(value)) {
     refuse("RECIPE_INDEX_MALFORMED", `${where} must match ${ID.source}`);
   }
@@ -200,7 +200,7 @@ function relativePath(value: unknown, where: string): string {
 function parseRecipeEntry(value: unknown, where: string): RecipeIndexRecipe {
   if (!isRecord(value)) refuse("RECIPE_INDEX_MALFORMED", `${where} must be an object`);
   exactKeys(value, ["id", "version", "designation", "maintainer", "source_digest", "files_digest", "files"], ["root"], where);
-  const entryId = id(value.id, `${where}.id`);
+  const entryId = identifier(value.id, `${where}.id`);
   const version = text(value.version, `${where}.version`, 64);
   const designation = designationOf(value.designation, where);
   const maintainer = text(value.maintainer, `${where}.maintainer`, 200);
@@ -244,13 +244,13 @@ function designationOf(value: unknown, where: string): RecipeDesignation {
 function parseCookbook(value: unknown, where: string, recipes: ReadonlyMap<string, RecipeIndexRecipe>): RecipeIndexCookbook {
   if (!isRecord(value)) refuse("RECIPE_INDEX_MALFORMED", `${where} must be an object`);
   exactKeys(value, ["id", "title", "summary", "designation", "maintainer", "recipes"], [], where);
-  const cookbookId = id(value.id, `${where}.id`);
+  const cookbookId = identifier(value.id, `${where}.id`);
   const designation = designationOf(value.designation, where);
   const maintainer = text(value.maintainer, `${where}.maintainer`, 200);
   const title = text(value.title, `${where}.title`, 200);
   const summary = text(value.summary, `${where}.summary`, 1000);
   const members = list(value.recipes, `${where}.recipes`, RECIPE_INDEX_LIMITS.recipesPerCookbook).map((member, i) =>
-    id(member, `${where}.recipes[${i}]`),
+    identifier(member, `${where}.recipes[${i}]`),
   );
   if (members.length === 0) refuse("RECIPE_INDEX_COOKBOOK_INVALID", `cookbook '${cookbookId}' names no recipes`);
   const seen = new Set<string>();
@@ -302,7 +302,7 @@ export function parseRecipeIndex(input: unknown): RecipeIndexParseResult {
       refuse("RECIPE_INDEX_FORMAT_UNSUPPORTED", `the recipe index format must be '${RECIPE_INDEX_FORMAT}'`);
     }
     exactKeys(value, ["format", "source", "recipes", "cookbooks"], ["title"], "the recipe index");
-    const source = id(value.source, "source");
+    const source = identifier(value.source, "source");
     const title = value.title === undefined ? undefined : text(value.title, "title", 200);
     const recipes = list(value.recipes, "recipes", RECIPE_INDEX_LIMITS.recipes).map((entry, i) =>
       parseRecipeEntry(entry, `recipes[${i}]`),

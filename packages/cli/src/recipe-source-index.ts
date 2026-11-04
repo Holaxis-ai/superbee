@@ -129,42 +129,50 @@ class ReadBudget {
 /** Fetches one https resource as raw bytes, refusing redirects, non-200 answers and oversize bodies. */
 export async function fetchHttpsBytes(url: URL, fetchImpl: FetchLike, maxBytes: number, timeoutMs: number): Promise<Uint8Array> {
   if (url.protocol !== "https:") throw new IndexReadFailure("publisher", "refused a non-https URL");
-  const signal = AbortSignal.timeout(timeoutMs);
-  let response: Awaited<ReturnType<FetchLike>>;
+  // A held timer, unlike AbortSignal.timeout's unreferenced one: the timeout must fire even when
+  // nothing else keeps the event loop alive, or the process would end with this read still pending.
+  const controller = new AbortController();
+  const { signal } = controller;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    response = await fetchImpl(url.href, { redirect: "error", signal, headers: { accept: "application/json, text/markdown, text/plain" } });
-  } catch (error) {
-    throw new IndexReadFailure("transient", signal.aborted ? `timed out after ${timeoutMs} ms` : `request failed (${error instanceof Error ? error.message : String(error)})`);
-  }
-  if (response.status !== 200) {
-    throw new IndexReadFailure(response.status >= 500 ? "transient" : "publisher", `answered HTTP ${response.status}`);
-  }
-  if (!response.body) throw new IndexReadFailure("publisher", "answered with no body");
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      length += value.byteLength;
-      if (length > maxBytes) {
-        await reader.cancel().catch(() => {});
-        throw new IndexReadFailure("publisher", `exceeds ${maxBytes} bytes`);
-      }
-      chunks.push(value);
+    let response: Awaited<ReturnType<FetchLike>>;
+    try {
+      response = await fetchImpl(url.href, { redirect: "error", signal, headers: { accept: "application/json, text/markdown, text/plain" } });
+    } catch (error) {
+      throw new IndexReadFailure("transient", signal.aborted ? `timed out after ${timeoutMs} ms` : `request failed (${error instanceof Error ? error.message : String(error)})`);
     }
-  } catch (error) {
-    if (error instanceof IndexReadFailure) throw error;
-    throw new IndexReadFailure("transient", signal.aborted ? `timed out after ${timeoutMs} ms` : "the response body failed");
+    if (response.status !== 200) {
+      throw new IndexReadFailure(response.status >= 500 ? "transient" : "publisher", `answered HTTP ${response.status}`);
+    }
+    if (!response.body) throw new IndexReadFailure("publisher", "answered with no body");
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        length += value.byteLength;
+        if (length > maxBytes) {
+          await reader.cancel().catch(() => {});
+          throw new IndexReadFailure("publisher", `exceeds ${maxBytes} bytes`);
+        }
+        chunks.push(value);
+      }
+    } catch (error) {
+      if (error instanceof IndexReadFailure) throw error;
+      throw new IndexReadFailure("transient", signal.aborted ? `timed out after ${timeoutMs} ms` : "the response body failed");
+    }
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return bytes;
+  } finally {
+    clearTimeout(timer);
   }
-  const bytes = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
 }
 
 /** Reads and parses the index named by `--index`, and returns a reader scoped to its location. */
