@@ -278,7 +278,8 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
     };
     const armDebounce = (): void => {
       if (stopped) return;
-      if (timer) clearTimeout(timer);
+      // An armed timer stays armed: restarting it would let a stream of close hints starve the scan.
+      if (timer) return;
       timer = setTimeout(() => {
         timer = undefined;
         hintPending = true;

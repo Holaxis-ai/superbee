@@ -339,6 +339,21 @@ test("a stalled hint-answering scan holds a later deletion no longer than the ca
   assert.equal(f.backend.scans, 4);
 });
 
+test("a stream of hints closer than the debounce still reaches a scan within the cap", async (t) => {
+  const stall = 60_000;
+  const f = await fixture(t, undefined, scanCost(stall));
+  f.native.notify("docs/first.md");
+  await f.advance(150);
+  assert.equal(f.backend.scans, 2);
+  await deleteDoc(f.bundle, REGISTRY);
+  for (let elapsed = 0; elapsed < HELD_HINT_MAX_WAIT_MS + 1_000; elapsed += 100) {
+    f.native.notify("docs/hot.md");
+    await f.advance(100);
+  }
+  assert.equal(f.backend.scans, 3);
+  assert.deepEqual(f.events.map((e) => e.docs.removed), [[REGISTRY]]);
+});
+
 test("a hint during a hint-answering scan waits for the rest instead of chaining a scan", async (t) => {
   const f = await fixture(t, undefined, () => 0);
   const held = deferred();
