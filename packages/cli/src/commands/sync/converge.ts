@@ -199,13 +199,14 @@ export function buildConvergeMessage(
 
 /**
  * The reconcile HELP CHAIN: view the kept incoming version, write your merged version on top,
- * sync again. Only ever built for a conflict whose kept version LANDED (see {@link pickHelp}),
+ * record that as the resolution, sync again. The recording step is what releases the saved copy: a
+ * merged document differs from it, and only the person can say the merge is finished. Only ever built for a conflict whose kept version LANDED (see {@link pickHelp}),
  * and ALWAYS over the BODY-ONLY export: `doc update --body-file` treats its input as a body, so
  * the full-fidelity export would nest YAML into it — the chain must be literally executable.
  */
 export function convergeHelp(inv: CommandPrefix, id: string, bodyExportPath: string): string {
   return (
-    `${inv} sync --show-incoming ${commandToken(id)} → ${inv} doc update ${commandToken(id)} --body-file ${commandToken(bodyExportPath)} → ${inv} sync`
+    `${inv} sync --show-incoming ${commandToken(id)} → ${inv} doc update ${commandToken(id)} --body-file ${commandToken(bodyExportPath)} → ${inv} sync --resolve revise --doc ${commandToken(id)} → ${inv} sync`
   );
 }
 
@@ -220,7 +221,7 @@ export function copyOverHelp(inv: CommandPrefix, exportPath: string, file: strin
 
 /** The re-create chain for a doc DELETED upstream: `doc write` (a fresh doc), then sync. */
 export function recreateHelp(inv: CommandPrefix, id: string, bodyExportPath: string): string {
-  return `${inv} doc write ${commandToken(id)} --type <Type> --body-file ${commandToken(bodyExportPath)} → ${inv} sync`;
+  return `${inv} doc write ${commandToken(id)} --type <Type> --body-file ${commandToken(bodyExportPath)} → ${inv} sync --resolve revise --doc ${commandToken(id)} → ${inv} sync`;
 }
 
 /**

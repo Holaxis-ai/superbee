@@ -69,6 +69,7 @@ import {
   withUpstreamHelp,
   writeAwarenessCache,
 } from "./converge.js";
+import { removeCarriedCopies, unsettledConflicts, unsettledMessage, unsettledRow } from "../../saved-conflicts.js";
 import { showIncoming } from "./show-incoming.js";
 import { SYNC_GATE_CONFIG, declaredSyncGate, runSyncGate } from "./gate.js";
 import { ffSwallowToError, syncOutcomeError, syncOutcomeLine, withSharingDetails } from "../../sync-outcomes.js";
@@ -160,15 +161,24 @@ YOUR version is saved to an export file named in the receipt, and the sync compl
 board is never left mid-state; non-conflicted local changes still land). The run exits 5 with
 one row per conflicted doc and the reconcile chain: \`sync --show-incoming <id>\` to view the kept
 incoming version, \`doc update <id> --body-file <export-file>\` to write your merged version on
-top, then \`sync\` again to share it.
+top, \`sync --resolve revise --doc <id>\` to record it, then \`sync\` again to share it.
+
+A saved copy stays reported until it is settled: \`status\` reads \`needs_decision\` and names the
+document, and every later \`sync\` does its other work, lists it in \`saved_conflicts\` and exits 5
+(\`--pull-only\` lists it and exits 0). A copy the document already carries is settled by itself:
+the next \`sync\` removes it. A repeat conflict on one document keeps the earlier copy and saves the
+new one beside it, so nothing you saved is overwritten.
 
 A hosted checkout's conflict verbs work on a saved conflict too, over the same flow (sync still
 keeps the teammate's version first): \`--inspect --doc <id>\` shows your saved version and the
 teammate's (\`--out <file>\` writes theirs whole); \`--resolve take\` restores theirs (undoing any
-later edit) and discards your saved copy; \`--resolve keep\` writes your saved body over theirs with \`doc update\` (frontmatter
-that differs is listed, not carried); \`--resolve revise\` records the document as it is now, so
-edit it to the result you want first. Each removes the saved copy; none commits or pushes: the
-next \`sync\` shares keep and revise.
+later edit) and discards your saved copy; \`--resolve keep\` writes your saved body over theirs with
+\`doc update\`, and is refused with nothing changed when your copy also differs in frontmatter,
+since keep carries only the body; \`--resolve revise\` records the document as it is now, so edit it
+to the result you want first, and is refused while the document still equals the teammate's version.
+Each removes one saved copy, oldest first; while a later copy waits, take leaves the document
+alone. None commits or pushes: the next \`sync\` shares keep and revise. A raw or reserved file's
+copy has no verbs: merge what you need by hand and delete the saved file.
 
 \`sync --show-incoming <id>\` prints the board's incoming (upstream) version of one doc — the
 state of \`origin/board\` as of the last fetch (it never fetches). Full doc-read semantics: large
@@ -325,13 +335,15 @@ interface SyncRun {
   stdout: (s: string) => void; deps: Partial<SyncCliDeps>;
   owner?: BoundBoardOwner;
   route?: ResolvedLocalRoute;
+  /** The `--dir` as typed, for a follow-up command that must run from anywhere the person is. */
+  dirFlag?: string;
 }
 
 /** The arg-parse phase's dispatch decision. */
 type SyncDispatch =
   | { kind: "help" }
   | { kind: "show-incoming"; id: string; values: { out?: string; "body-out"?: string; dir?: string; json?: boolean }; route?: ResolvedLocalRoute }
-  | { kind: "run"; options: Pick<SyncRun, "dir" | "mode" | "limit" | "pullOnly" | "owner" | "route">; establish: boolean; yes: boolean };
+  | { kind: "run"; options: Pick<SyncRun, "dir" | "dirFlag" | "mode" | "limit" | "pullOnly" | "owner" | "route">; establish: boolean; yes: boolean };
 
 /** The provision phase's result: the board checkout this run operates on. */
 interface SyncBoard { boardPath: string; key: string; outcome: ProvisionOutcome }
@@ -654,7 +666,7 @@ async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<
   return {
     kind: "run",
     options: {
-      dir, pullOnly: Boolean(values["pull-only"]), limit, mode: resolveMode(values),
+      dir, ...(values.dir !== undefined ? { dirFlag: values.dir } : {}), pullOnly: Boolean(values["pull-only"]), limit, mode: resolveMode(values),
       ...(owner ? { owner } : {}), ...(route ? { route } : {}),
     },
     establish: Boolean(values.establish),
@@ -970,7 +982,21 @@ async function receiptPhase(
     establishAlreadyNote, reanchorNote: delta.reanchorNote, hookHint,
   });
   if (pushed.gate) receipt.gate = `passed: ${String(pushed.gate.command)} (attempt ${String(pushed.gate.attempt)})`;
-  run.stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", { sent: pushed.documents, received: delta.originDelta.length })), run.mode));
+  const unsettled = await unsettledConflicts(board.boardPath, board.key);
+  const counts = { sent: pushed.documents, received: delta.originDelta.length };
+  if (unsettled.length === 0) {
+    run.stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", counts)), run.mode));
+    return;
+  }
+  // Everything else this run could do is done; what is left is the person's decision.
+  const message = unsettledMessage(unsettled);
+  const rows = unsettled.map((conflict) => unsettledRow(conflict, run.inv, run.dirFlag));
+  const next = rows.map((row) => String(row.next));
+  if (receipt.sync === "already up to date") receipt.sync = "nothing to send or pull";
+  receipt.saved_conflicts = cap(rows, run.limit);
+  run.stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", { ...counts, conflicts: unsettled.length, next })), run.mode));
+  // A pull-only run asks for nothing to be sent, so it reports the decision and does not fail on it.
+  if (!run.pullOnly) throw new CliError("CONFLICT", message, { help: next[0]!, details: { saved_conflicts: cap(rows, run.limit) }, handled: true });
 }
 
 /**
@@ -1100,6 +1126,8 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
     // F8: private state copied into the bundle is refused before anything is staged or committed.
     refuseOutgoingWorktreePrivateState(board.boardPath, "sync", `${run.inv} sync`);
   }
+  // Before anything moves: a pull could change the document these copies were judged against.
+  if (!run.pullOnly) await removeCarriedCopies(board.boardPath, board.key);
   const commitResult = await commitPhase(board, run.pullOnly);
   if (commitResult.held) {
     await heldRun(run, board, baseline, commitResult.held);

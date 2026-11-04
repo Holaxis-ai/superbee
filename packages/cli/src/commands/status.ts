@@ -28,6 +28,7 @@ import { homedir } from "node:os";
 import { realpath } from "node:fs/promises";
 import { bundleHomeAt, gitBoardSyncBlock, unboundCopyOf } from "../bundle-home.js";
 import { commandFragment, commandToken } from "../command-text.js";
+import { inspectCommand } from "../saved-conflicts.js";
 
 export const STATUS_USAGE = `superbee status — read-only whole-bundle health report (bundle lint)
 
@@ -183,11 +184,14 @@ bundle reports 'sync: none (local only)'.
 For a Git board, the 'sync' block reads local Git (what the last fetch saw, never a new fetch):
   channel            branch (the provisioned 'board' worktree) | in-tree (committed with the code)
   branch, upstream   The checked-out branch and its tracking ref (null when there is none)
-  state              clean | unsent_changes | behind | diverged | not_shared (no upstream yet)
+  state              clean | unsent_changes | needs_decision (a saved conflict to settle) | behind |
+                      diverged | not_shared (no upstream yet)
   ahead              Board commits not yet pushed (null without an upstream)
   behind             Upstream board commits not yet pulled, as of the last fetch
   uncommitted        Changed files not yet committed to the board
   last_fetch         When this clone last fetched (null when it never has)
+  conflicts          Documents whose copy sync saved aside is still unsettled; 'conflict_ids' lists
+                      the first 5. Inspect one with 'sync --inspect --doc <id>'. Omitted at 0.
 
 In a hosted checkout (a folder made by 'checkout'), the 'sync' block reads:
   state              clean | unsent_changes | needs_decision (a conflict or a held item) | busy
@@ -537,7 +541,9 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     const block = await gitBoardSyncBlock(facts.board);
     const record: Record<string, unknown> = { home: "git", sync: block, ...unboundCopyOf(facts), ...out };
     if (block.state !== "clean") {
+      const ids = (block.conflict_ids ?? []) as string[];
       record.help = [
+        ...(ids.length > 0 ? [inspectCommand(cliInvocation(), ids[0]!, values.dir)] : []),
         values.dir === undefined
           ? `${cliInvocation()} sync`
           : commandFragment`${cliInvocation()} sync --dir ${commandToken(values.dir)}`,

@@ -105,6 +105,7 @@ import { maybeAutoPull } from "../autopull.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { HOME_LEAF } from "../command-spec.js";
+import { inspectCommand, unsettledConflicts, unsettledMessage, type UnsettledConflict } from "../saved-conflicts.js";
 import { defaultSyncStore, type AwarenessCache, type AwarenessDeltaRow } from "../cursor.js";
 import { hookNeedsUpdate } from "./hook.js";
 import { skillRefreshScopes } from "./skill.js";
@@ -533,6 +534,8 @@ export type BoardStatus =
       /** LIVE local backstop counts (git plumbing against the checkout — network-free). */
       unpushed: number | null;
       uncommitted: number | null;
+      /** Saved conflicts still to settle, from local state and the working tree. */
+      unsettled?: UnsettledConflict[];
     }
   /** An IN-TREE board (board-git PR C): the bundle committed with code on the current branch. */
   | {
@@ -697,6 +700,13 @@ export function buildBoardBlock(
   if (status.cache && !pull?.refreshed && Object.keys(rec).length > 0) {
     rec.as_of = status.cache.updatedAt;
   }
+  // Read live from the saved copies, so it carries no cache age.
+  if (status.state === "provisioned" && status.unsettled && status.unsettled.length > 0) {
+    const first = status.unsettled.find((conflict) => conflict.id !== null);
+    rec.saved_conflicts = first?.id
+      ? `${unsettledMessage(status.unsettled)}; start with ${inspectCommand(inv, first.id, dir)}`
+      : unsettledMessage(status.unsettled);
+  }
   // The quiet in-tree state renders the mode line, not "up to date": a plain in-tree render never
   // fetched, so it cannot claim currency — the mode line is true either way (and doubles as the
   // first-contact copy: board rides this branch; pull normally).
@@ -736,6 +746,7 @@ export async function defaultLoadBoardStatus(dir?: string, route?: ResolvedLocal
         selfActors: state.selfActors ?? [],
         unpushed: unpushedCount(route.owner.bundleRoot),
         uncommitted,
+        unsettled: await unsettledConflicts(route.owner.bundleRoot, route.owner.stateKey).catch(() => []),
       };
     }
     if (route?.kind === "bound-local") return null;
@@ -809,6 +820,7 @@ export async function defaultLoadBoardStatus(dir?: string, route?: ResolvedLocal
       selfActors: state.selfActors ?? [],
       unpushed: unpushedCount(boardPath),
       uncommitted,
+      unsettled: await unsettledConflicts(boardPath, key).catch(() => []),
     };
   } catch (err) {
     if (

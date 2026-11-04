@@ -153,7 +153,7 @@ test("turn-end syncs a Git board only with --git-boards, and then silently", asy
   }
 });
 
-test("a real same-document Git conflict at turn end comes back once, in Git's form", async () => {
+test("a real same-document Git conflict at turn end comes back, stays named while unsettled, then rests", async () => {
   const topo = await makeTwoCloneTopology();
   const home = await tempDir("sb-hab-conflict-home-");
   try {
@@ -169,7 +169,12 @@ test("a real same-document Git conflict at turn end comes back once, in Git's fo
     assert.equal(decision.decision, "block");
     assert.ok(decision.reason.includes(docId), decision.reason);
     assert.match(decision.reason, /Git board/);
-    // The sync converged (teammate's version kept, B's exported), so the next turn has nothing to report.
+    // The sync converged (teammate's version kept, B's saved), and the saved copy is still unsettled.
+    const reminder = JSON.parse(await run()) as { decision: string; reason: string };
+    assert.equal(reminder.decision, "block");
+    assert.ok(reminder.reason.includes(docId), reminder.reason);
+    assert.match(reminder.reason, /sync --inspect --doc/);
+    // The same reminder is handed back once, so an unattended loop cannot be held by it.
     assert.equal(await run(), "");
   } finally {
     await topo.cleanup();

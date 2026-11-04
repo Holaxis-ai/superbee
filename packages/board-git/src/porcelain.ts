@@ -72,6 +72,7 @@ import {
 } from "@superbee/core";
 import { BoardGitError, classifyGitError, isBoardGitError, type GitFailure } from "./errors.js";
 import { normalizeGitLexicalPath } from "./git-path.js";
+import { bodyCompanionPath, saveConflictCopy } from "./saved-copies.js";
 import {
   PRIVATE_STATE_MAX_RECORD_BYTES,
   privateStateFinding,
@@ -2214,8 +2215,9 @@ const MAX_REBASE_STOPS = 1000;
  * never left mid-state on any path.
  *
  * Export files land at `<exportDir>/<relPath>` with the blob's exact bytes and a
- * `<relPath minus .md>.body.md` body-only companion for parseable concept docs. The companion is
- * the `doc update --body-file` input. Created 0700/0600; the caller passes a
+ * `<relPath minus .md>.body.md` body-only companion for parseable concept docs; a repeat conflict
+ * on a path with a saved copy lands beside it without replacing it (`saved-copies.ts`). The
+ * companion is the `doc update --body-file` input. Created 0700/0600; the caller passes a
  * per-bundle dir OUTSIDE the worktree (see cursor.ts `syncExportsDir`).
  */
 export function fetchRebaseResolving(boardPath: string, exportDir: string): FetchRebaseResolvingOutcome {
@@ -2267,9 +2269,16 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
         let bodyExportPath: string | null = null;
         const isDoc = isConceptDocPath(relPath);
         if (local.status === 0) {
-          exportPath = path.join(exportDir, relPath);
-          mkdirSync(path.dirname(exportPath), { recursive: true, mode: 0o700 });
-          writeFileSync(exportPath, local.stdout, { mode: 0o600 });
+          // A later stop of this same rebase replaces this run's own copy: the local FINAL content
+          // is the one being saved. A copy from an earlier run is never touched.
+          const ownCopy = byPath.get(relPath)?.exportPath ?? null;
+          if (ownCopy !== null) {
+            writeFileSync(ownCopy, local.stdout, { mode: 0o600 });
+            rmSync(bodyCompanionPath(ownCopy), { force: true });
+            exportPath = ownCopy;
+          } else {
+            exportPath = saveConflictCopy(exportDir, relPath, local.stdout);
+          }
           // The body-only companion is the literally executable
           // `doc update --body-file` input. Only for a concept doc whose blob parses as OKF
           // markdown and whose bytes round-trip utf8 cleanly. A doc that parses after a lossy
@@ -2282,7 +2291,7 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
               const decoded = local.stdout.toString("utf8");
               if (Buffer.from(decoded, "utf8").equals(local.stdout)) {
                 const { body } = parseMarkdown(decoded, relPath);
-                bodyExportPath = exportPath.replace(/\.md$/, ".body.md");
+                bodyExportPath = bodyCompanionPath(exportPath);
                 writeFileSync(bodyExportPath, body, { mode: 0o600 });
               }
             } catch {

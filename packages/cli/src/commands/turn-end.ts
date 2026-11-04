@@ -510,7 +510,7 @@ function gitReasonFor(root: string, error: CliError): string {
     lines.push(
       error.help
         ? `Next: ${error.help}`
-        : `See the kept version with ${cliInvocation()} sync --show-incoming <id>, write your merged version with doc update <id> --body-file <export-file>, then run: ${sync}`,
+        : `See the kept version with ${cliInvocation()} sync --show-incoming <id>, write your merged version with doc update <id> --body-file <export-file>, record it with ${cliInvocation()} sync --resolve revise --doc <id>, then run: ${sync}`,
     );
   }
   // A board moved to hosted names the work that stays behind in this folder.

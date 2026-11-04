@@ -289,10 +289,10 @@ test("buildConvergeMessage: multiple entries join with '; ', and the DROPPED phr
   assert.ok(!msg.includes("nothing was overwritten"), "the amended pack DROPS this phrase");
 });
 
-test("convergeHelp: the documented reconcile chain — show-incoming → doc update --body-file → sync", () => {
+test("convergeHelp: the documented reconcile chain, show-incoming → doc update --body-file → resolve revise → sync", () => {
   assert.equal(
     convergeHelp(testInvocation("aslite"), "tasks/seed-one", "/x/tasks/seed-one.md"),
-    "aslite sync --show-incoming tasks/seed-one → aslite doc update tasks/seed-one --body-file /x/tasks/seed-one.md → aslite sync",
+    "aslite sync --show-incoming tasks/seed-one → aslite doc update tasks/seed-one --body-file /x/tasks/seed-one.md → aslite sync --resolve revise --doc tasks/seed-one → aslite sync",
   );
 });
 
@@ -318,12 +318,12 @@ test("pickHelp: prefers a LANDED doc; falls back to the doc-write re-create chai
   // BODY-ONLY export (round-2 REQUIRED 3: `--body-file` input, literally executable).
   assert.equal(
     pickHelp(testInvocation("aslite"), [deletedUpstream, landed], []),
-    "aslite sync --show-incoming tasks/a → aslite doc update tasks/a --body-file /x/tasks/a.body.md → aslite sync",
+    "aslite sync --show-incoming tasks/a → aslite doc update tasks/a --body-file /x/tasks/a.body.md → aslite sync --resolve revise --doc tasks/a → aslite sync",
   );
   // Every conflicted doc deleted upstream → the doc-write re-create chain (body export again).
   assert.equal(
     pickHelp(testInvocation("aslite"), [deletedUpstream], []),
-    "aslite doc write tasks/b --type <Type> --body-file /x/tasks/b.body.md → aslite sync",
+    "aslite doc write tasks/b --type <Type> --body-file /x/tasks/b.body.md → aslite sync --resolve revise --doc tasks/b → aslite sync",
   );
   // Nothing usable at all (no export, or no BODY export to feed --body-file) → no help.
   assert.equal(pickHelp(testInvocation("aslite"), [localDeletion], []), undefined);
@@ -346,7 +346,7 @@ test("pickHelp: a claim-only conflict is never the chain's subject — the loser
   // A claim-only doc listed FIRST must not win the pick over a doc that really needs merging.
   assert.equal(
     pickHelp(testInvocation("aslite"), [claimOnly, bodyDiverged], [claimAnalysis, plainAnalysis]),
-    "aslite sync --show-incoming tasks/b → aslite doc update tasks/b --body-file /x/tasks/b.body.md → aslite sync",
+    "aslite sync --show-incoming tasks/b → aslite doc update tasks/b --body-file /x/tasks/b.body.md → aslite sync --resolve revise --doc tasks/b → aslite sync",
   );
 });
 
