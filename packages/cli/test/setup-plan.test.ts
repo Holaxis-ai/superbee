@@ -3,6 +3,7 @@ import test from "node:test";
 import { buildSetupPlan, type SetupAction, type SetupPlanInput } from "../src/setup-plan.js";
 import { USER_STATE_QUARANTINE_COMMAND } from "../src/user-state.js";
 
+const VERSION = "1.2.3-rc.4";
 const CURRENT_SKILL = { canonical: { state: "installed" as const }, legacy: { state: "absent" as const } };
 const CURRENT_HOOK = { installed: true, compatibility: { state: "current" as const, reason: "current" } };
 
@@ -12,7 +13,7 @@ function input(overrides: Partial<SetupPlanInput> = {}): SetupPlanInput {
     distribution: { allowed: true, state: "durable_global", reason: "durable", persistent: true },
     state: { state: "ready", reason: "current", records: 0 }, skill: CURRENT_SKILL, hook: CURRENT_HOOK,
     mcp: { state: "owned_current", reason: "current" },
-    workspace: { bundle: "selected", catalog: "ready", selected_registered: true }, ...overrides,
+    workspace: { bundle: "selected", catalog: "ready", selected_registered: true }, version: VERSION, ...overrides,
   };
 }
 
@@ -100,7 +101,7 @@ test("fallback invocation rewrites executable heads, not operands or private-sta
     invocation,
     distribution: { allowed: false, state: "unknown", reason: "missing", persistent: false },
   })));
-  assert.deepEqual(distribution.command, ["npm", "install", "-g", "superbee"]);
+  assert.deepEqual(distribution.command, ["npm", "install", "-g", `superbee@${VERSION}`]);
 
   const quarantine = next(buildSetupPlan(input({
     invocation,
@@ -163,7 +164,7 @@ test("dependency order still yields exactly one action", () => {
     distribution: { allowed: false, state: "unknown", reason: "transient", persistent: false },
     skill: { canonical: { state: "absent" }, legacy: { state: "absent" } }, mcp: { state: "absent", reason: "absent" },
   })));
-  assert.deepEqual(distribution.command, ["npm", "install", "-g", "superbee"]);
+  assert.deepEqual(distribution.command, ["npm", "install", "-g", `superbee@${VERSION}`]);
   assert.equal(distribution.approval.required, true);
 
   const inspection = next(buildSetupPlan(input({
@@ -218,4 +219,26 @@ test("bundle creation and catalog templates remain distinguishable to the agent"
   assert.equal(uncataloged.command_template, "superbee catalog add <label>");
   assert.equal(uncataloged.mutates, true);
   assert.equal(uncataloged.approval.required, true);
+});
+
+test("the global install action pins the running version and stays approval-gated", () => {
+  const action = next(buildSetupPlan(input({
+    distribution: { allowed: false, state: "unknown", reason: "npm prefix --global did not return one absolute prefix", persistent: false },
+  })));
+  const pinned = action.command?.[3] ?? "";
+  assert.match(pinned, /^superbee@\d+\.\d+\.\d+-rc\.4$/, "an unpinned install could downgrade a prerelease machine");
+  assert.equal(pinned, `superbee@${VERSION}`);
+  assert.equal(action.mutates, true);
+  assert.equal(action.approval.required, true);
+});
+
+test("an unknown running version withholds the global install instead of offering an unpinned one", () => {
+  const plan = buildSetupPlan(input({
+    version: "unknown",
+    distribution: { allowed: false, state: "unknown", reason: "transient", persistent: false },
+  }));
+  const capability = plan.capabilities.find((c) => c.id === "distribution");
+  assert.equal(capability?.state, "blocked");
+  assert.match(capability?.reason ?? "", /running version is unknown/);
+  assert.doesNotMatch(JSON.stringify(plan.next ?? {}), /npm.*install/);
 });

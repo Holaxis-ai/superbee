@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { parseSelectorOrUsage } from "../args.js";
 import { ownConventionalBoardRoot, resolveLocalBundleTarget, resolveProjectBinding, samePhysicalPath, type LocalBundleTarget } from "../bundle.js";
+import { cliVersion } from "../build-identity.js";
 import { detectBoardChannel } from "../board-runtime.js";
 import type { ChannelDetection } from "@superbee/board-git";
 import { listCatalogEntries, type CatalogEntryView } from "../catalog.js";
@@ -162,6 +163,7 @@ function planForHost(
     workspace: inspection.workspace,
     state: inspection.state,
     invocation,
+    version: cliVersion(),
   });
 }
 

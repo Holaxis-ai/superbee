@@ -1750,7 +1750,7 @@ function commitSubject(docs: DocChange[]): string {
  * interactive hook) off the machine-managed board branch — hooks configured for the main worktree
  * are shared config in a linked worktree and could otherwise reject or hang the sync commit.
  */
-export function stageAndCommit(boardPath: string): CommitResult {
+export function stageAndCommit(boardPath: string, options: { deletedBy?: string } = {}): CommitResult {
   mustGit(boardPath, ["add", "-A"]);
   if (runGit(boardPath, ["diff", "--cached", "--quiet"]).status === 0) {
     return { committed: false, docs: [] };
@@ -1771,7 +1771,10 @@ export function stageAndCommit(boardPath: string): CommitResult {
     if (!verb) continue;
     // A pending doc's frontmatter is read from the STAGE (`:0:` — the exact bytes being
     // committed); a deletion's from the outgoing HEAD version.
-    docs.push(enrichDocChange(boardPath, relPath, verb, verb === "deleted" ? "HEAD" : ":0"));
+    const change = enrichDocChange(boardPath, relPath, verb, verb === "deleted" ? "HEAD" : ":0");
+    // The outgoing version names its LAST EDITOR, not whoever is deleting it: credit the actor
+    // sync resolved. With none flowing in, that last editor is the only name known.
+    docs.push(verb === "deleted" && options.deletedBy !== undefined ? { ...change, actor: options.deletedBy } : change);
   }
 
   const subject = commitSubject(docs);

@@ -1,4 +1,5 @@
 import { renderUsage } from "../../output.js";
+import { resolveActor } from "../../actor.js";
 import { detectBoardChannel } from "../../board-runtime.js";
 import { provisionBoardWorktree } from "../../board-runtime.js";
 // `superbee sync` — the entry flow, composed of explicit phases:
@@ -730,7 +731,9 @@ async function baselinePhase(board: SyncBoard, entryOriginRef?: string | null): 
 async function commitPhase(board: SyncBoard, pullOnly: boolean): Promise<CommitResult> {
   let commitResult: CommitResult = { committed: false, docs: [] };
   if (!pullOnly) {
-    commitResult = stageAndCommit(board.boardPath);
+    let deletedBy: string | undefined;
+    try { deletedBy = resolveActor(undefined); } catch { /* a blank actor variable never blocks a sync */ }
+    commitResult = stageAndCommit(board.boardPath, deletedBy === undefined ? {} : { deletedBy });
     if (commitResult.committed && commitResult.docs.length > 0) {
       // The actors THIS clone just committed are recorded per-clone, so the
       // home render can filter self-authored rows out of the human "since" count.
