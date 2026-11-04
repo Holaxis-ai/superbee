@@ -3,8 +3,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { builtinRecipeFiles, builtinRecipeSource, loadBuiltinRecipe } from "../src/builtin-recipes.js";
 import { recipeSourceDigest } from "../src/recipe-lifecycle/stamp.js";
-import { parseRecipeFiles, type RecipeFile } from "../src/recipes.js";
-import { prepareRecipeInstall } from "../src/recipe-lifecycle/install.js";
+import { parseRecipeFiles, type LoadedRecipe, type RecipeFile } from "../src/recipes.js";
+import { assertRecipeStorable, installRecipe, prepareRecipeInstall } from "../src/recipe-lifecycle/install.js";
+import { FRONTMATTER_LIMITS } from "../src/bounded-yaml.js";
+import { FrontmatterRefusedError } from "../src/errors.js";
+import { stringifyFrontmatter } from "../src/frontmatter.js";
+import { MemoryBackend } from "../src/memory-backend.js";
 import {
   RECIPE_INDEX_FORMAT,
   createIndexRecipeSource,
@@ -455,6 +459,111 @@ test("prepared install target ids do not depend on the edition or the preparatio
     const reference = ids("0.2", "1970-01-01T00:00:00.000Z");
     assert.deepEqual(ids("0.1", "2026-11-03T12:00:00.000Z"), reference, name);
     assert.deepEqual(reference, [...loaded.recipe.docs.map((d) => d.id), ...loaded.recipe.pages.flatMap((p) => [p.registry.id, p.entry]), ...loaded.recipe.references.map((r) => r.doc.id)], name);
+  }
+});
+
+// ── Frontmatter limits: refused honestly, and before any write ────────────────────────────────
+
+const inject = (bytes: string, yaml: string): string => bytes.replace(/^---\n/, `---\n${yaml}\n`);
+const EXPANDS_ON_WRITE = `x_s: &s "${"z".repeat(100_000)}"\nx_list: [*s,*s,*s,*s,*s,*s,*s,*s]`;
+
+function withInjected(name: string, victim: string, yaml: string): RecipeFile[] {
+  const files = builtinRecipeFiles(name)!.map((file) => (file.path === victim ? { ...file, bytes: inject(file.bytes, yaml) } : file));
+  assert.ok(files.some((file) => file.bytes.includes(yaml)), victim);
+  return files;
+}
+
+test("frontmatter a limit refuses on read is its own refusal, never a digest mismatch", async () => {
+  const rows: Array<[string, string]> = [
+    ["FRONTMATTER_CYCLE", "loop: &l [*l]"],
+    ["FRONTMATTER_MALFORMED", "bad: [unclosed"],
+    ["FRONTMATTER_TOO_DEEP", `d: ${"[".repeat(40)}${"]".repeat(40)}`],
+    ["FRONTMATTER_TOO_LARGE", `x_big: |\n${`  ${"y".repeat(100)}\n`.repeat(3000)}`],
+    ["FRONTMATTER_ALIAS_LIMIT", `x_a: &a [${"1,".repeat(50)}1]\nx_b: [${Array(1200).fill("*a").join(",")}]`],
+  ];
+  for (const [code, yaml] of rows) {
+    for (const victim of ["recipe.md", "conventions/task.md"]) {
+      const files = withInjected("work-tracking", victim, yaml);
+      const entry = { id: "work-tracking", version: "1", ...HOLAXIS, source_digest: DIGEST, files_digest: pin(files), files: files.map((file) => file.path) };
+      const read: RecipeIndexReader = async (path) => utf8(files.find((file) => file.path === path)!.bytes);
+      const result = await resolveIndexRecipe(indexOf("alpha", [entry]), "work-tracking", read);
+      assert.equal(result.ok, false, code);
+      if (result.ok) continue;
+      assert.equal(result.error.code, "RECIPE_INDEX_FRONTMATTER_REFUSED", code);
+      assert.deepEqual(result.error.frontmatter, { code, document: victim }, code);
+      assert.equal(result.error.digest, undefined, code);
+    }
+  }
+});
+
+test("red probe: an alias that only expands past the limit on write is refused before a recipe verifies", async () => {
+  // Parses within the read limits, so only the write check can see it, on any document kind.
+  const rows: Array<[string, string, string]> = [
+    ["roadmap", "conventions/roadmap.md", "conventions/roadmap.md"],
+    ["roadmap", "conventions/roadmap-item.md", "conventions/roadmap-item.md"],
+    ["site", "references/site-authoring.md", "references/site-authoring.md"],
+  ];
+  for (const [name, victim, document] of rows) {
+    const files = withInjected(name, victim, EXPANDS_ON_WRITE);
+    const { entries, read } = customTree([{ id: name, files }]);
+    const result = await resolveIndexRecipe(indexOf("alpha", entries), name, read);
+    assert.equal(result.ok, false, victim);
+    if (result.ok) continue;
+    assert.equal(result.error.code, "RECIPE_INDEX_FRONTMATTER_REFUSED", victim);
+    assert.deepEqual(result.error.frontmatter, { code: "FRONTMATTER_TOO_LARGE", document }, victim);
+  }
+
+  const view = viewRecipe("board", "Alpha", "views-registry/board", "views/board.html");
+  const expanded = view.map((file) => (file.path === "views-registry/board.md" ? { ...file, bytes: inject(file.bytes, EXPANDS_ON_WRITE) } : file));
+  const { entries, read } = customTree([{ id: "board", files: expanded }]);
+  const refused = await resolveIndexRecipe(indexOf("alpha", entries), "board", read);
+  assert.deepEqual(refused.ok ? null : refused.error.frontmatter, { code: "FRONTMATTER_TOO_LARGE", document: "views-registry/board.md" });
+});
+
+test("a cookbook with a member that cannot be stored fails whole, naming that member", async () => {
+  const { entries, read } = customTree([
+    { id: "context-notes", files: builtinRecipeFiles("context-notes")! },
+    { id: "work-tracking", files: withInjected("work-tracking", "conventions/task.md", EXPANDS_ON_WRITE) },
+  ]);
+  const cookbooks = [{ id: "cb", title: "t", summary: "s", ...HOLAXIS, recipes: ["context-notes", "work-tracking"] }];
+  const result = await resolveCookbook(indexOf("alpha", entries, cookbooks), "cb", read);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "RECIPE_INDEX_FRONTMATTER_REFUSED");
+  assert.equal(result.recipe, "work-tracking");
+  assert.equal("recipes" in result, false);
+});
+
+test("the storable check counts what a write adds: a candidate that only overflows with attribution is refused", async () => {
+  const base = builtinRecipeFiles("context-notes")!;
+  const sized = (padding: number) => base.map((file) => (file.path === "conventions/context-note.md" ? { ...file, bytes: inject(file.bytes, `x_pad: ${"p".repeat(padding)}`) } : file));
+  const preparedChars = (padding: number): number => {
+    const parsed = parseRecipeFiles(sized(padding), "test", { okfVersion: "0.2" });
+    assert.ok(parsed.ok);
+    return stringifyFrontmatter(prepareRecipeInstall(parsed.recipe, { okfVersion: "0.2", now: "1970-01-01T00:00:00.000Z" }).docs[0]!.frontmatter).length;
+  };
+  // Fits on its own and with v0.1's prepared timestamp, but not with the attribution a v0.2 write
+  // adds for a long actor, so only the as-written shape can refuse it.
+  const padding = 1000 + FRONTMATTER_LIMITS.sourceChars - 60 - preparedChars(1000);
+  stringifyFrontmatter(prepareRecipeInstall((parseRecipeFiles(sized(padding), "test", { okfVersion: "0.2" }) as { recipe: LoadedRecipe }).recipe, { okfVersion: "0.2", now: "1970-01-01T00:00:00.000Z" }).docs[0]!.frontmatter);
+
+  const { entries, read } = customTree([{ id: "context-notes", files: sized(padding) }]);
+  const result = await resolveIndexRecipe(indexOf("alpha", entries), "context-notes", read);
+  assert.deepEqual(result.ok ? null : result.error.frontmatter, { code: "FRONTMATTER_TOO_LARGE", document: "conventions/context-note.md" });
+
+  // The real write refuses the same recipe, which is what the check must predict.
+  const backend = new MemoryBackend();
+  await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Probe\n");
+  const parsed = parseRecipeFiles(sized(padding), "test", { okfVersion: "0.2" });
+  assert.ok(parsed.ok);
+  await assert.rejects(installRecipe({ root: "memory://probe", backend }, parsed.recipe, { actor: `process:${"a".repeat(80)}` }), FrontmatterRefusedError);
+});
+
+test("assertRecipeStorable passes every built-in on both editions", () => {
+  for (const name of ["context-notes", "work-tracking", "roadmap", "site"]) {
+    const loaded = loadBuiltinRecipe(name);
+    assert.ok(loaded?.ok);
+    for (const okfVersion of ["0.1", "0.2"] as const) assertRecipeStorable(loaded.recipe, okfVersion);
   }
 });
 

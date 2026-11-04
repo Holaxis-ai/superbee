@@ -5,7 +5,9 @@ import { query, readBlob, readBundleOkfVersion, readDoc, writeBlob } from "../bu
 import { checkConnectorAgainstKinds, CONNECTORS_PREFIX } from "../connectors.js";
 import { resolveContentType } from "../content-type.js";
 import { mutateDocument } from "../document-mutation.js";
-import { InvalidInputError, OkfActorError } from "../errors.js";
+import { FrontmatterRefusedError, InvalidInputError, OkfActorError } from "../errors.js";
+import { stringifyDoc } from "../frontmatter.js";
+import { FrontmatterLimitError, MalformedDocumentError } from "../frontmatter-contract.js";
 import { isOkfActor } from "../okf-actor.js";
 import {
   CONVENTION_TYPE,
@@ -19,7 +21,7 @@ import { okfValuesEqual, type OkfRecord } from "../okf-authored-values.js";
 import { assertAuthoredOkfStandardFields } from "../okf-standard-fields.js";
 import { PAGE_REGISTRY_PREFIX, parseRegistration, VIEW_REGISTRY_PREFIX } from "../page.js";
 import { RECIPE_PROGRESS_STATUS_TOKEN, type LoadedRecipe, type RecipeConnector, type RecipePage, type RecipeReference } from "../recipes.js";
-import type { Bundle, ConceptId, OkfDocument } from "../types.js";
+import type { Frontmatter, Bundle, ConceptId, OkfDocument } from "../types.js";
 import type { ValidationWarning } from "../validation.js";
 import { VersionConflict } from "../versioning.js";
 import { ConnectorTargetUnsatisfied, RecipeAssetConflict, RecipeEditionChanged, RecipeInputError } from "./errors.js";
@@ -615,6 +617,50 @@ function assertReferencesWritable(recipe: LoadedRecipe, okfVersion: string): voi
     } catch (error) {
       if (!(error instanceof InvalidInputError)) throw error;
       throw new RecipeInputError(`recipe '${recipe.id}' cannot install Reference '${doc.id}': ${error.message}; nothing was written`);
+    }
+  }
+}
+
+/** Longer than any real actor, so the check below errs toward refusing. */
+const WRITE_ATTRIBUTION = `process:${"x".repeat(256)}`;
+const WRITE_CLOCK = "1970-01-01T00:00:00.000Z";
+
+/**
+ * Candidate frontmatter as a write stores it: preparation leaves attribution and the seeded clock to
+ * the document mutation, and those bytes count toward the same limits.
+ */
+function frontmatterAsWritten(doc: OkfDocument, okfVersion: "0.1" | "0.2"): Frontmatter {
+  return okfVersion === "0.1"
+    ? { actor: WRITE_ATTRIBUTION, ...doc.frontmatter }
+    : { generated: { by: WRITE_ATTRIBUTION, at: WRITE_CLOCK }, actor: WRITE_ATTRIBUTION, superbee_updated_by: WRITE_ATTRIBUTION, ...doc.frontmatter };
+}
+
+/**
+ * Refuses, without a bundle, what `installRecipe` would refuse for this edition whatever the target
+ * holds: preparation, Connector and Reference authoring admission, and every candidate document
+ * through the real serializer, whose frontmatter limits a parsed recipe can still exceed once its
+ * aliases expand. A caller installing several recipes can run this first so that none of these
+ * refusals lands between two installs. Throws `RecipeInputError` or, for frontmatter,
+ * `MalformedDocumentError` naming the document.
+ */
+export function assertRecipeStorable(recipe: LoadedRecipe, okfVersion: "0.1" | "0.2"): void {
+  const prepared = prepareRecipeInstall(recipe, { okfVersion, now: WRITE_CLOCK });
+  const candidate: LoadedRecipe = { ...recipe, docs: prepared.docs, connectors: prepared.connectors, pages: prepared.pages, references: prepared.references };
+  assertConnectorsWritable(candidate, okfVersion);
+  assertReferencesWritable(candidate, okfVersion);
+  const documents = [
+    ...prepared.docs,
+    ...prepared.connectors.map((connector) => connector.doc),
+    ...prepared.pages.map((page) => page.registry),
+    ...prepared.references.map((reference) => reference.doc),
+  ];
+  for (const doc of documents) {
+    try {
+      stringifyDoc(frontmatterAsWritten(doc, okfVersion), doc.body);
+    } catch (error) {
+      if (!(error instanceof FrontmatterRefusedError)) throw error;
+      const cause = error.code === "FRONTMATTER_MALFORMED" ? new Error(error.message) : new FrontmatterLimitError(error.code, error.message);
+      throw new MalformedDocumentError(`${doc.id}.md`, cause);
     }
   }
 }

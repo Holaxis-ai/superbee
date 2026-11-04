@@ -10,7 +10,10 @@
  * exact listed bytes and Core's `recipeSourceDigest` over the parsed definitions. It also lists cookbooks that name an ordered set of those recipes. This module parses the index and verifies
  * every recipe against its pin through a reader the host supplies. It performs no I/O of its own.
  */
-import { prepareRecipeInstall } from "./recipe-lifecycle/install.js";
+import { parseMarkdown } from "./frontmatter.js";
+import { MalformedDocumentError } from "./frontmatter-contract.js";
+import { RecipeInputError } from "./recipe-lifecycle/errors.js";
+import { assertRecipeStorable, prepareRecipeInstall } from "./recipe-lifecycle/install.js";
 import { legacyEntryAlias, legacyRegistryAlias } from "./recipe-lifecycle/legacy-aliases.js";
 import { recipeSourceDigest } from "./recipe-lifecycle/stamp.js";
 import { sha256HexOfBytes } from "./sha256.js";
@@ -407,12 +410,21 @@ export async function resolveIndexRecipe(index: RecipeIndex, recipeId: string, r
     }
     files.push({ path: file.path, bytes: decoded });
   }
+  const refusedFrontmatter = (error: MalformedDocumentError): IndexRecipeResult => ({
+    ok: false,
+    error: {
+      code: "RECIPE_INDEX_FRONTMATTER_REFUSED",
+      message: `recipe '${entry.id}' from index '${index.source}' cannot be installed: ${error.message}`,
+      frontmatter: { code: error.code, ...documentOf(error, files) },
+    },
+  });
   let parsed: LoadResult;
   try {
     parsed = parseRecipeFiles(files, `index:${index.source}`, { okfVersion: "0.2" });
   } catch (error) {
-    // A source_digest is only ever taken from a recipe that parsed, so pinned bytes that do not parse cannot match it.
-    return mismatch("source_digest", `its files do not parse (${error instanceof Error ? error.message : String(error)})`);
+    // files_digest already matched, so these are the bytes the publisher pinned: nothing was tampered with.
+    if (error instanceof MalformedDocumentError) return refusedFrontmatter(error);
+    throw error;
   }
   if (!parsed.ok) return mismatch("source_digest", `its files do not parse (${parsed.error.code}: ${parsed.error.message})`);
   const recipe = parsed.recipe;
@@ -421,7 +433,32 @@ export async function resolveIndexRecipe(index: RecipeIndex, recipeId: string, r
   }
   const actual = recipeSourceDigest(recipe);
   if (actual !== entry.source_digest) return mismatch("source_digest", `expected ${entry.source_digest}, computed ${actual}`);
+  // A verified recipe must also be storable, so a cookbook cannot pass here and then fail between two
+  // member installs. The target's edition is unknown here, so it must hold for both.
+  try {
+    for (const okfVersion of ["0.2", "0.1"] as const) assertRecipeStorable(recipe, okfVersion);
+  } catch (error) {
+    if (error instanceof MalformedDocumentError) return refusedFrontmatter(error);
+    if (error instanceof RecipeInputError) {
+      return { ok: false, error: { code: "RECIPE_MALFORMED", message: `recipe '${entry.id}' from index '${index.source}' cannot be installed: ${error.message}` } };
+    }
+    throw error;
+  }
   return { ok: true, verified: { recipe, source_digest: actual, designation: entry.designation, maintainer: entry.maintainer } };
+}
+
+/** The parser reports no path for frontmatter it refuses, so find the listed file that refuses alike. */
+function documentOf(error: MalformedDocumentError, files: readonly RecipeFile[]): { document?: string } {
+  if (error.context !== undefined) return { document: error.context };
+  for (const file of files) {
+    if (!file.path.endsWith(".md")) continue;
+    try {
+      parseMarkdown(file.bytes);
+    } catch (refusal) {
+      if (refusal instanceof MalformedDocumentError && refusal.code === error.code) return { document: file.path };
+    }
+  }
+  return {};
 }
 
 /** A `RecipeSource` over one parsed index: it addresses exactly the recipe ids the index lists. */
@@ -484,13 +521,7 @@ const PREPARATION_TIME = "1970-01-01T00:00:00.000Z";
  * them. Identical bytes still count: ownership would go to whichever member wrote first.
  */
 function installTargets(recipe: LoadedRecipe): Map<string, string> {
-  let prepared: Pick<LoadedRecipe, "docs" | "pages" | "references" | "connectors">;
-  try {
-    prepared = prepareRecipeInstall(recipe, { okfVersion: "0.2", now: PREPARATION_TIME });
-  } catch {
-    // A recipe the edition refuses fails at install either way; its parsed ids are the same ids.
-    prepared = recipe;
-  }
+  const prepared = prepareRecipeInstall(recipe, { okfVersion: "0.2", now: PREPARATION_TIME });
   const targets = new Map<string, string>();
   // Lower-cased like the parser's own duplicate check, since targets differing only by case are one
   // file on a case-insensitive filesystem.

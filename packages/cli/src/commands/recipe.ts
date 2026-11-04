@@ -69,11 +69,13 @@ most 16 MiB within 60 s. The index pins each recipe twice: files_digest over the
 bytes and source_digest, the value recipe stamps record. The CLI reads exactly the files the index
 lists for that recipe and refuses any difference from either pin before anything reaches the
 bundle. --cookbook installs every recipe a cookbook names, in order, after verifying all of
-them; one failed member means nothing is written. Installs stay create-only and idempotent per
-document, so if a write fails partway, rerunning the same command converges. The receipt names
-the index source, and each recipe's id, version, verified source_digest, designation and
-maintainer. A designation ('supported' by Holaxis or 'community') and a maintainer are what the
-index publisher states; they are not verified and carry no trust. Nothing about the index is
+them and checking that each can be stored; a member that fails either means nothing is written.
+Installs stay create-only and idempotent per document. A write can still fail partway, for example
+on what the bundle already holds; earlier members stay installed, and rerunning the same command
+converges once the reported cause is fixed. The receipt names the index source, and each recipe's
+id, version, verified source_digest, designation and maintainer. A designation ('supported' by
+Holaxis or 'community') and a maintainer are what the index publisher states; they are not
+verified and carry no trust. Nothing about the index is
 saved; pass --index each time.
 
 Valid deprecated fields/values/links metadata can be added only with an unchanged same-recipe
@@ -438,7 +440,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void, indexDeps:
   stdout(render(receipt, resolveMode(values)));
 }
 
-const COOKBOOK_INSTALL_NOTE = "every member was verified against its pinned files_digest and source_digest before the first write; installs are create-only and idempotent per document, so rerunning this command after a partial failure converges";
+const COOKBOOK_INSTALL_NOTE = "every member was verified against its pinned files_digest and source_digest and checked as storable before the first write; installs are create-only and idempotent per document, so rerunning this command after a partial failure converges once the reported cause is fixed";
 
 const INDEX_DESIGNATION_NOTE = "designation and maintainer are stated by the index publisher and are not verified; only files_digest and source_digest are checked";
 
@@ -479,6 +481,7 @@ async function verifiedFromIndex(raw: string, ref: string, cookbook: boolean, ta
         ...(member ? { recipe: member } : {}),
         ...(error.digest ? { digest: error.digest } : {}),
         ...(error.conflict ? { conflict: error.conflict } : {}),
+        ...(error.frontmatter ? { frontmatter: error.frontmatter } : {}),
         ...(error.connector ? { connector: error.connector } : {}),
         ...(error.code === "RECIPE_NOT_FOUND"
           ? { available: { [cookbook ? "cookbooks" : "recipes"]: ids.slice(0, INDEX_IDS_SHOWN), shown: Math.min(ids.length, INDEX_IDS_SHOWN), total: ids.length } }

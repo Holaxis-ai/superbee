@@ -126,7 +126,12 @@ host-supplied async reader that returns raw bytes (`Uint8Array`) and never decod
 `files_digest` on those bytes, then decodes each file once as strict UTF-8 (one leading BOM is
 dropped), parses, and checks `source_digest`. A difference in either pin is
 `RECIPE_INDEX_DIGEST_MISMATCH`, with `digest` naming the pin that failed, and no recipe is returned.
-Bytes that are not UTF-8 are `RECIPE_INDEX_ENCODING_INVALID`. A reader that throws is
+Bytes that are not UTF-8 are `RECIPE_INDEX_ENCODING_INVALID`. Frontmatter that the bounded loader refuses, on
+read or in the bytes a write would store, is `RECIPE_INDEX_FRONTMATTER_REFUSED`, with `frontmatter`
+carrying the code and document, because nothing was tampered with. Every prepared document, for both
+editions, goes through the real serializer before a recipe counts as verified, so a recipe whose
+aliases expand past the limits fails here and not between two cookbook members. A recipe preparation
+or authoring admission refuses is `RECIPE_MALFORMED`. A reader that throws is
 `RECIPE_INDEX_READ_FAILED`. `parseRecipeIndex` also accepts the index as raw bytes and decodes it
 the same way. `resolveCookbook(index, id, read)` verifies every member in order and returns either
 all of them or a refusal naming the failed member, never a partial set. It then refuses with

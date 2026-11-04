@@ -587,3 +587,99 @@ test("a cookbook whose members install the same convention is refused before any
     }
   });
 });
+
+// ── Frontmatter limits ────────────────────────────────────────────────────────────────────────
+
+const injectYaml = (bytes: string, yaml: string): string => bytes.replace(/^---\n/, `---\n${yaml}\n`);
+const EXPANDS_ON_WRITE = `x_s: &s "${"z".repeat(100_000)}"\nx_list: [*s,*s,*s,*s,*s,*s,*s,*s]`;
+
+/** Rewrites one listed file in a local index and re-pins its files_digest, as a publisher would. */
+async function republish(indexPath: string, root: string, id: string, file: string, yaml: string): Promise<void> {
+  const json = JSON.parse(await readFile(indexPath, "utf8"));
+  const entry = json.recipes.find((candidate: { id: string }) => candidate.id === id);
+  const dir = path.join(root, entry.root);
+  const target = path.join(dir, file);
+  await writeFile(target, injectYaml(await readFile(target, "utf8"), yaml));
+  entry.files_digest = pin(await Promise.all(entry.files.map(async (listed: string) => ({ path: listed, bytes: await readFile(path.join(dir, listed), "utf8") }))));
+  await writeFile(indexPath, JSON.stringify(json));
+}
+
+/** The pin a publisher would compute for a recipe that parses. */
+async function sourceDigestOf(indexPath: string, root: string, id: string): Promise<string> {
+  const { parseRecipeFiles } = await import("@superbee/core/recipes");
+  const entry = JSON.parse(await readFile(indexPath, "utf8")).recipes.find((candidate: { id: string }) => candidate.id === id);
+  const files = await Promise.all(entry.files.map(async (listed: string) => ({ path: listed, bytes: await readFile(path.join(root, entry.root, listed), "utf8") })));
+  const parsed = parseRecipeFiles(files, "test", { okfVersion: "0.2" });
+  assert.ok(parsed.ok);
+  return recipeSourceDigest(parsed.recipe);
+}
+
+test("refused frontmatter is USAGE with details.frontmatter, not an integrity mismatch", async () => {
+  const rows: Array<[string, string]> = [
+    ["FRONTMATTER_CYCLE", "loop: &l [*l]"],
+    ["FRONTMATTER_MALFORMED", "bad: [unclosed"],
+    ["FRONTMATTER_TOO_DEEP", `d: ${"[".repeat(40)}${"]".repeat(40)}`],
+    ["FRONTMATTER_TOO_LARGE", `x_big: |\n${`  ${"y".repeat(100)}\n`.repeat(3000)}`],
+    ["FRONTMATTER_ALIAS_LIMIT", `x_a: &a [${"1,".repeat(50)}1]\nx_b: [${Array(1200).fill("*a").join(",")}]`],
+  ];
+  await withScratch(async (root) => {
+    for (const [code, yaml] of rows) {
+      const dir = path.join(root, code);
+      const index = await writeIndex(dir, "alpha", "alpha", (name) => `recipes/${name}`, ["work-tracking"], []);
+      await republish(index, path.join(dir, "alpha"), "work-tracking", "conventions/task.md", yaml);
+      const bundle = path.join(dir, "bundle");
+      await initBundle(bundle);
+      const before = await snapshot(bundle);
+      const error = await refusal(["add", "work-tracking", "--index", index, "--dir", bundle]);
+      assert.equal(error.code, "USAGE", code);
+      assert.equal(error.details?.reason, "RECIPE_INDEX_FRONTMATTER_REFUSED", code);
+      assert.deepEqual(error.details?.frontmatter, { code, document: "conventions/task.md" }, code);
+      assert.equal(error.details?.digest, undefined, code);
+      assert.deepEqual(await snapshot(bundle), before, code);
+    }
+  });
+});
+
+test("red probe: an alias that expands past the limit on write leaves a multi-document recipe unwritten", async () => {
+  await withScratch(async (root) => {
+    for (const victim of ["conventions/roadmap.md", "conventions/roadmap-item.md"]) {
+      const dir = path.join(root, victim.replace(/\W+/g, "-"));
+      const index = await writeIndex(dir, "alpha", "alpha", (name) => `recipes/${name}`, ["roadmap"], []);
+      await republish(index, path.join(dir, "alpha"), "roadmap", victim, EXPANDS_ON_WRITE);
+      const fresh = await sourceDigestOf(index, path.join(dir, "alpha"), "roadmap");
+      const json = JSON.parse(await readFile(index, "utf8"));
+      json.recipes[0].source_digest = fresh;
+      await writeFile(index, JSON.stringify(json));
+      const bundle = path.join(dir, "bundle");
+      await initBundle(bundle);
+      const before = await snapshot(bundle);
+      const error = await refusal(["add", "roadmap", "--index", index, "--dir", bundle]);
+      assert.equal(error.code, "USAGE", victim);
+      assert.deepEqual(error.details?.frontmatter, { code: "FRONTMATTER_TOO_LARGE", document: victim }, victim);
+      assert.deepEqual(await snapshot(bundle), before, victim);
+    }
+  });
+});
+
+test("red probe: a cookbook whose later member expands on write writes nothing, including earlier members", async () => {
+  await withScratch(async (root) => {
+    const index = await writeIndex(root, "alpha", "alpha", (name) => `recipes/${name}`, ["context-notes", "work-tracking"]);
+    const dir = path.join(root, "alpha");
+    await republish(index, dir, "work-tracking", "conventions/task.md", EXPANDS_ON_WRITE);
+    const json = JSON.parse(await readFile(index, "utf8"));
+    json.recipes[1].source_digest = await sourceDigestOf(index, dir, "work-tracking");
+    await writeFile(index, JSON.stringify(json));
+    const bundle = path.join(root, "bundle");
+    await initBundle(bundle);
+    const before = await snapshot(bundle);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const error = await refusal(["add", "starter", "--cookbook", "--index", index, "--dir", bundle]);
+      assert.equal(error.code, "USAGE");
+      assert.equal(error.details?.reason, "RECIPE_INDEX_FRONTMATTER_REFUSED");
+      assert.equal(error.details?.recipe, "work-tracking");
+      assert.deepEqual(error.details?.frontmatter, { code: "FRONTMATTER_TOO_LARGE", document: "conventions/task.md" });
+      assert.equal(error.details?.installed_before_failure, undefined);
+      assert.deepEqual(await snapshot(bundle), before);
+    }
+  });
+});
