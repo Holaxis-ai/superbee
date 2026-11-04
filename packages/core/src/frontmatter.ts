@@ -10,7 +10,7 @@
 import yaml from "js-yaml";
 import { loadBoundedYaml } from "./bounded-yaml.js";
 import { FrontmatterRefusedError } from "./errors.js";
-import { FrontmatterLimitError, isUsableTimestamp, MalformedDocumentError } from "./frontmatter-contract.js";
+import { FrontmatterLimitError, MalformedDocumentError } from "./frontmatter-contract.js";
 import { splitLeadingFrontmatter } from "./frontmatter-splitter.js";
 import type { Frontmatter } from "./types.js";
 
