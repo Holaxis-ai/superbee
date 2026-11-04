@@ -25,6 +25,6 @@ export const LEGACY_PAGE_MIGRATION_SCRIPT_URL =
 
 /** The remedy sentence shared by every surface that names the recovery. */
 export const LEGACY_PAGE_MIGRATION_HELP =
-  "to migrate existing content in place, build a checkout of tag v0.4.3 and run " +
-  "`node scripts/migrate-legacy-view-names.mjs --dir <bundle-root>` from it: " +
+  "to migrate existing content in place, check out tag v0.4.3, run `npm ci && npm run build` there, then run " +
+  "`node scripts/migrate-legacy-view-names.mjs --dir <bundle-root>` from that checkout: " +
   LEGACY_PAGE_MIGRATION_SCRIPT_URL;

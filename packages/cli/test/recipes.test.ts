@@ -3013,7 +3013,7 @@ test("legacy-alias awareness: reapplying the renamed Review Workflow onto a lega
     assert.equal(await readBlob(bundle, "views/review-workflow/reviews.html"), null);
 
     // 4. Launcher-level: the UNMIGRATED Page-typed doc no longer registers — zero usable cards
-    //    here BY DESIGN; the receipt above and status's legacy_naming finding carry the remedy.
+    //    here BY DESIGN; the receipt warning above carries the remedy.
     assert.equal((await usableRegistrations(bundle)).length, 0);
 
     // 5. A SECOND renamed apply is stable and still non-success in the same way.

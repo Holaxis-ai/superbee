@@ -73,6 +73,7 @@ test("hint: names the migration script at tag v0.4.3 by its full GitHub URL", ()
     ),
   );
   assert.ok(LEGACY_PAGE_TYPE_HINT.includes("--dir <bundle-root>"));
+  assert.ok(LEGACY_PAGE_TYPE_HINT.includes("npm ci && npm run build"), "the tagged script needs a built checkout");
   assert.ok(!LEGACY_PAGE_TYPE_HINT.includes("the repo's scripts/"), "no pointer to a script that is no longer in the tree");
 });
 
