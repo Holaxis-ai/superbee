@@ -70,6 +70,7 @@ import {
   type RetireAcknowledgedOptions,
 } from "./journaled-backend.js";
 import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, assertSafeReservedFilename, compareStorageKeys, pathFromConceptId } from "./paths.js";
+import { assertStorableReservedWrite } from "./reserved-write.js";
 import { parseLeadingFrontmatter } from "./portable-frontmatter.js";
 import type { OperationState } from "./uncertain-write.js";
 import { blobVersion, defaultActor, VersionConflict, versionOfBytes } from "./versioning.js";
@@ -702,8 +703,7 @@ export class IndexedDbBackend implements JournaledBackend {
   }
 
   async writeReserved(dir: string, name: ReservedFilename, content: string, options: WriteOptions = {}): Promise<Version> {
-    assertSafeReservedDir(dir);
-    assertSafeReservedFilename(name);
+    assertStorableReservedWrite(dir, name, content);
     const path = reservedKey(dir, name);
     return this.#compareAndSwap<ReservedRecord>(RESERVED, path, path, options.expectedVersion, () => ({
       record: { path, content, version: versionOfBytes(content) },

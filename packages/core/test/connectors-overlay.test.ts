@@ -245,11 +245,12 @@ test("bindSourceFeed refuses each widening feed value with POLICY_INVALID naming
       label,
     );
   }
-  const yamlFeed = parseMarkdown(`---\ntype: Source Feed\ntitle: Bomb\nconnector: ${CONNECTOR_ID}\nsource: events\nurl: ${FEED_URL}\nx0: &a0 [title,title,title,title,title,title,title,title,title]\n${[1, 2, 3, 4, 5, 6].map((i) => `x${i}: &a${i} [${Array(9).fill(`*a${i - 1}`).join(",")}]`).join("\n")}\nowned_fields: *a6\n---\n`);
+  let level: unknown = Array(9).fill("title");
+  for (let i = 0; i < 6; i++) level = Array(9).fill(level);
   assert.throws(
-    () => bindSourceFeed(w.connector, { id: FEED_ID, frontmatter: yamlFeed.frontmatter }, w.overlay.registry),
+    () => bindSourceFeed(w.connector, { id: FEED_ID, frontmatter: { ...FEED, owned_fields: level } as unknown as Frontmatter }, w.overlay.registry),
     (e: unknown) => e instanceof OverlayRefusal && e.code === "POLICY_INVALID" && e.details.key === "owned_fields",
-    "a YAML alias expansion in a feed is a typed refusal, never a RangeError",
+    "a shared nested value in a feed is a typed refusal, never a RangeError",
   );
   const same = bindSourceFeed(w.connector, { id: FEED_ID, frontmatter: { ...FEED, target_kind: "Event", completeness: "complete", profile: "ics" } as unknown as Frontmatter }, w.overlay.registry);
   const commaList = bindSourceFeed(w.connector, { id: FEED_ID, frontmatter: { ...FEED, owned_fields: "title, start" } as unknown as Frontmatter }, w.overlay.registry);

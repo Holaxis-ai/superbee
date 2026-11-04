@@ -44,12 +44,13 @@
  */
 
 import { DEFAULT_BLOB_CONTENT_TYPE } from "./content-type.js";
-import { InvalidInputError } from "./errors.js";
-import { MalformedDocumentError } from "./frontmatter-contract.js";
+import { FrontmatterRefusedError, InvalidInputError } from "./errors.js";
+import { FrontmatterLimitError, isFrontmatterLimitCode, MalformedDocumentError } from "./frontmatter-contract.js";
 import { encodeRemoteDocument } from "./remote-document-codec.js";
 import { RemoteError, malformed } from "./remote-error.js";
 import { SNAPSHOT_TRUNCATED, parseHeadsAnswer, readSnapshotStream, type HeadsResult, type RemoteSnapshot } from "./remote-parsers.js";
 import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, assertSafeReservedFilename, compareStorageKeys, trimTrailingSlashes } from "./paths.js";
+import { assertStorableReservedWrite } from "./reserved-write.js";
 import { isRequestIdentity, mintRequestId, type Outcome } from "./uncertain-write.js";
 import { VersionConflict, isContentVersion, stripETagWrapper } from "./version-transport.js";
 import type {
@@ -79,7 +80,8 @@ interface ErrorEnvelope {
       expected?: Version | null;
       actual?: Version | null;
       missing?: string[];
-      malformed?: { id?: string; reason?: string };
+      malformed?: { id?: string; reason?: string; code?: string };
+      frontmatter?: { code?: string };
     };
   };
 }
@@ -392,10 +394,15 @@ export class RemoteBackend implements StorageBackend {
     if (malformedDoc && typeof malformedDoc.reason === "string") {
       // The server could read the request but not the stored document: the same failure a local
       // scan raises, so `onSkip` callers can set this one document aside.
+      const code = malformedDoc.code;
       return new MalformedDocumentError(
         typeof malformedDoc.id === "string" ? malformedDoc.id : fallbackId,
-        new Error(malformedDoc.reason),
+        isFrontmatterLimitCode(code) ? new FrontmatterLimitError(code, malformedDoc.reason) : new Error(malformedDoc.reason),
       );
+    }
+    const refused = envelope?.error?.details?.frontmatter?.code;
+    if (res.status === 400 && (refused === "FRONTMATTER_MALFORMED" || isFrontmatterLimitCode(refused))) {
+      return new FrontmatterRefusedError(refused, envelope?.error?.message ?? "frontmatter cannot be stored");
     }
     const message = envelope?.error?.message ?? `wire request failed with status ${res.status}`;
     // The envelope's own `code` wins when present (every route in this repo's servers emits
@@ -741,8 +748,7 @@ export class RemoteBackend implements StorageBackend {
     content: string,
     options: WriteOptions = {},
   ): Promise<Version> {
-    assertSafeReservedDir(dir);
-    assertSafeReservedFilename(name);
+    assertStorableReservedWrite(dir, name, content);
     assertValidExpectedVersion(options.expectedVersion);
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (options.expectedVersion === null) headers["If-None-Match"] = "*";

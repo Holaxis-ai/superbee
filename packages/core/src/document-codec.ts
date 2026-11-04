@@ -13,6 +13,8 @@ export {
 } from "./frontmatter.js";
 export type { ParseDocumentOptions } from "./frontmatter.js";
 export { resolveContentType } from "./content-type.js";
+export { FrontmatterRefusedError } from "./errors.js";
+export { assertStorableFrontmatter } from "./portable-frontmatter.js";
 export { captureRemoteFrontmatter, RemoteDocumentValueError } from "./remote-document-codec.js";
 export type { Frontmatter, OkfDocument, Version } from "./types.js";
 

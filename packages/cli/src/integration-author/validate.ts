@@ -1,5 +1,5 @@
 /** Public recipe/Connector validators, projected for an outside author without installing. */
-import { buildKindRegistry, parseMarkdown, type OkfDocument } from "@superbee/core";
+import { buildKindRegistry, MalformedDocumentError, parseMarkdown, type OkfDocument } from "@superbee/core";
 import { checkConnectorAgainstKinds, connectorPinDigest, credentialHosts, parseConnectorDoc, type Connector, type ConnectorSource } from "@superbee/core/connectors";
 import { parseRecipeFiles, type LoadedRecipe } from "@superbee/core/recipes";
 import { getSourceProfile } from "@superbee/core/source-profiles";
@@ -20,6 +20,11 @@ export interface RecipeValidationReport {
 }
 export type AuthorRecipeLoad = { ok: true; recipe: LoadedRecipe; files: AuthorFile[] } | { ok: false; diagnostics: AuthorDiagnostic[] };
 
+/** The frontmatter code of a parse failure, as an optional diagnostic field. */
+function frontmatterCode(error: unknown): { frontmatter_code?: string } {
+  return error instanceof MalformedDocumentError ? { frontmatter_code: error.code } : {};
+}
+
 function safeDiagnostic(code: string, file: string, pointer: string, message: string): AuthorDiagnostic {
   return { code, file: authorLocation(file), path: authorLocation(pointer), message: authorLocation(message) };
 }
@@ -33,7 +38,7 @@ export async function loadAuthorRecipe(folder: string): Promise<AuthorRecipeLoad
   for (const file of acquired.files) {
     if (!file.path.endsWith(".md")) continue;
     try { docs.push({ id: file.path.slice(0, -3), ...parseMarkdown(file.bytes) }); }
-    catch { diagnostics.push(safeDiagnostic("AUTHOR_MARKDOWN_INVALID", file.path, "", "Invalid Markdown frontmatter; repair this file before validation.")); }
+    catch (error) { diagnostics.push({ ...safeDiagnostic("AUTHOR_MARKDOWN_INVALID", file.path, "", "Invalid Markdown frontmatter; repair this file before validation."), ...frontmatterCode(error) }); }
   }
   if (diagnostics.length) return { ok: false, diagnostics };
   const kinds = buildKindRegistry(docs.filter((doc) => doc.id.startsWith("conventions/")), [], { okfVersion: "0.2" });
@@ -46,7 +51,7 @@ export async function loadAuthorRecipe(folder: string): Promise<AuthorRecipeLoad
   }
   let loaded: ReturnType<typeof parseRecipeFiles>;
   try { loaded = parseRecipeFiles(acquired.files, "local author package", { okfVersion: "0.2" }); }
-  catch { diagnostics.push(safeDiagnostic("RECIPE_MALFORMED", "recipe.md", "", "The recipe could not be parsed; repair its declarations.")); return { ok: false, diagnostics }; }
+  catch (error) { diagnostics.push({ ...safeDiagnostic("RECIPE_MALFORMED", "recipe.md", "", "The recipe could not be parsed; repair its declarations."), ...frontmatterCode(error) }); return { ok: false, diagnostics }; }
   if (!loaded.ok) {
     if (!diagnostics.length || loaded.error.code !== "RECIPE_CONNECTOR_INVALID") diagnostics.push(safeDiagnostic(loaded.error.code, "recipe.md", loaded.error.connector?.path ?? "", loaded.error.message));
     return { ok: false, diagnostics };

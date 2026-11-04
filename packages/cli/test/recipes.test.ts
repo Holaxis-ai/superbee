@@ -202,6 +202,22 @@ test("explicit v0.1 init materializes the legacy context-notes guide and frontma
   }
 });
 
+test("recipe add refuses a recipe folder whose frontmatter the reader refuses as usage, with its code", async () => {
+  const dir = await tempDir();
+  try {
+    await init(["--dir", path.join(dir, "bundle"), "--recipe", "none"], { stdout: () => {} });
+    const folder = path.join(dir, "recipe");
+    await mkdir(folder, { recursive: true });
+    await writeFile(path.join(folder, "recipe.md"), "---\ntype: Recipe\nloop: &l [*l]\n---\n");
+    await assert.rejects(
+      recipe(["add", folder, "--dir", path.join(dir, "bundle")], { stdout: () => {} }),
+      (err: unknown) => err instanceof CliError && err.code === "USAGE" && (err.details?.frontmatter as { code?: string } | undefined)?.code === "FRONTMATTER_CYCLE",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("default init teaches the current workflow field in the in-bundle authoring guide", async () => {
   const dir = await tempDir();
   try {

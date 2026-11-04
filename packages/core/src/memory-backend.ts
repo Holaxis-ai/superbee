@@ -30,6 +30,7 @@ import { resolveContentType } from "./content-type.js";
 import { readBundleOkfVersion } from "./engine.js";
 import { MalformedDocumentError, normalizeDocumentBodyForStorage, parseFrontmatter, stringifyFrontmatter, stringifyWithSerializedFrontmatter } from "./frontmatter.js";
 import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, assertSafeReservedFilename, compareStorageKeys } from "./paths.js";
+import { assertStorableReservedWrite } from "./reserved-write.js";
 import { blobVersion, defaultActor, VersionConflict, versionOfBytes } from "./versioning.js";
 import type {
   BlobKey,
@@ -247,8 +248,7 @@ export class MemoryBackend implements StorageBackend {
     content: string,
     options: WriteOptions = {},
   ): Promise<Version> {
-    assertSafeReservedDir(dir);
-    assertSafeReservedFilename(name);
+    assertStorableReservedWrite(dir, name, content);
     const key = reservedKey(dir, name);
     const existing = this.reserved.get(key);
     const current = existing === undefined ? null : versionOfBytes(existing);

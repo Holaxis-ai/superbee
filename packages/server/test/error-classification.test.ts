@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { MemoryBackend, RemoteBackend, type ConceptId } from "@superbee/core";
+import { FRONTMATTER_LIMITS, FrontmatterRefusedError, MemoryBackend, RemoteBackend, type ConceptId } from "@superbee/core";
 
 import { createRouterForBackend } from "../src/legacy-router.js";
 
@@ -70,6 +70,46 @@ test("a non-string document body is 400 USAGE, not an internal retryable failure
   assert.deepEqual((await res.json()) as ErrorEnvelope, {
     error: { code: "USAGE", message: "request body field body must be a string when present" },
   });
+});
+
+test("a document PUT whose frontmatter the reader would refuse is 400 USAGE with its code, and stores nothing", async () => {
+  const backend = new MemoryBackend();
+  const router = createRouterForBackend(backend);
+  const url = "http://wire.local/v0/bundles/default/docs/concepts/long";
+  const res = await router(
+    new Request(url, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ frontmatter: { type: "Concept", description: "v".repeat(FRONTMATTER_LIMITS.sourceChars) }, body: "" }),
+    }),
+  );
+  assert.equal(res.status, 400);
+  const body = (await res.json()) as ErrorEnvelope & { error: { details?: { frontmatter?: { code?: string } } } };
+  assert.equal(body.error.code, "USAGE");
+  assert.equal(body.error.details?.frontmatter?.code, "FRONTMATTER_TOO_LARGE");
+  assert.equal((await router(new Request(url))).status, 404);
+
+  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "default", fetchImpl: router, maxRetries: 0 });
+  await assert.rejects(
+    remote.write("concepts/long", { id: "concepts/long", frontmatter: { type: "Concept", description: "v".repeat(FRONTMATTER_LIMITS.sourceChars) }, body: "" }),
+    (error: unknown) => error instanceof FrontmatterRefusedError && error.code === "FRONTMATTER_TOO_LARGE",
+  );
+});
+
+test("a reserved-file PUT whose leading frontmatter the reader would refuse is 400 USAGE and stores nothing", async () => {
+  const router = createRouterForBackend(new MemoryBackend());
+  const url = "http://wire.local/v0/bundles/default/reserved/index.md?dir=notes";
+  const res = await router(
+    new Request(url, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: "---\nloop: &l [*l]\n---\n# Notes\n" }),
+    }),
+  );
+  assert.equal(res.status, 400);
+  const body = (await res.json()) as ErrorEnvelope & { error: { details?: { frontmatter?: { code?: string } } } };
+  assert.equal(body.error.details?.frontmatter?.code, "FRONTMATTER_CYCLE");
+  assert.equal((await router(new Request(url))).status, 404);
 });
 
 test("RemoteBackend retries a router-classified runtime failure and succeeds", async () => {
