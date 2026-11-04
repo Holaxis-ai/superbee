@@ -21,11 +21,12 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { assertStorableFrontmatter, FrontmatterRefusedError } from "@superbee/core/document-codec";
 import type { JournaledBackend } from "@superbee/core";
 import { RootWriteInputError, rootLanding, rootVersionOf, rootWriteRequest, ROOT_BUSY_CODES, type HostedRootWrites, type RootWriteOutcome } from "@superbee/core/hosted-transport";
 
 import { digestOf, placeNew, replaceGuarded, ROOT_INDEX } from "./projection.js";
-import { ACCESS_WITHDRAWN_MESSAGE, READ_ONLY_MESSAGE, type SyncRow } from "./sync-rows.js";
+import { ACCESS_WITHDRAWN_MESSAGE, READ_ONLY_MESSAGE, unstorableHeld, type SyncRow } from "./sync-rows.js";
 import { utf8, type ProjectionRecord } from "./sync-scan.js";
 
 /** The host's root as the capabilities answer serves it, or null when the bundle has none. */
@@ -151,6 +152,18 @@ export interface RootStepReport {
 
 const row = (state: SyncRow["state"], reason: string, message: string, version: string | null = null): SyncRow => ({ id: ROOT_INDEX, state, reason, version, message });
 
+/** The held row for a host root whose frontmatter this client cannot store, or null. */
+function unstorableRootRow(content: string): SyncRow | null {
+  try {
+    assertStorableFrontmatter(content);
+    return null;
+  } catch (error) {
+    if (!(error instanceof FrontmatterRefusedError)) throw error;
+    const [held] = unstorableHeld([{ id: ROOT_INDEX, code: error.code, message: error.message }]);
+    return row("held", held!.reason, held!.message);
+  }
+}
+
 /**
  * Settle a root write whose answer was lost, from the host's root version now. While the host still
  * holds the base the write is kept on record (it may yet land late, which a later read then sees);
@@ -231,6 +244,9 @@ export async function syncRoot(context: RootStepContext): Promise<RootStepReport
 async function rootStep(context: RootStepContext): Promise<RootStepReport> {
   const { folder, projection, store } = context;
   let host = await context.current();
+  // Held like any document the store refuses: nothing here is written or sent until it is repaired.
+  const refused = host ? unstorableRootRow(host.content) : null;
+  if (refused) return { row: refused, refreshed: false };
   const settled = await settleSent(context, host);
   if (settled === "landed") host = await context.current();
   const file = path.join(folder, ROOT_INDEX);

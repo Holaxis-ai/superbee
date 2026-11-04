@@ -25,6 +25,7 @@ import path from "node:path";
 
 import { commitLocal, deleteLocal, UNSETTLED_STATES, type LocalBundle } from "@superbee/browser-local";
 import { DOCUMENT_DELETE_KIND, equalJournalValue } from "@superbee/core/journaled-backend";
+import type { MalformedDocumentCode } from "@superbee/core";
 import { assertSafeConceptId, BodyReplaceError, conceptIdFromPath, guardDroppedLinks, CONVENTION_TYPE, InvalidInputError, isConventionId, isReservedFile, MalformedDocumentError, parseLinksFromDoc, parseMarkdown, VersionConflict, type Frontmatter, type JournaledBackend, type OkfDocument } from "@superbee/core";
 import { DELETIONS_HELD_REFUSAL_CODE, MAXIMUM_ACCEPTED_DELETIONS, type HostedDefinitionWrites, type HostedRootWrites, FRONTMATTER_KEY_LIMIT, HOSTED_MANAGED_FIELDS, WHOLE_DOCUMENT_BOUNDS, wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
 import { mintRequestId } from "@superbee/core/uncertain-write";
@@ -192,7 +193,8 @@ export type HeldReason =
   | "not_sendable"
   | "case_collision"
   | "unsafe_id"
-  | "dropped_links";
+  | "dropped_links"
+  | MalformedDocumentCode;
 
 export interface HeldFile {
   /** The document id, or the folder-relative path when the file is not a document. */
@@ -200,6 +202,8 @@ export interface HeldFile {
   readonly path: string;
   readonly reason: HeldReason;
   readonly message: string;
+  /** The message is the whole statement: the host's document may have no file in the folder to speak of. */
+  readonly standalone?: true;
 }
 
 /** A document whose file was deleted and whose deletion this scan journaled, with the documents that still link to it. */

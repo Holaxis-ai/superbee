@@ -313,7 +313,7 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
     if (outcome === undefined) return undefined;
     const kept = keptRefusal !== undefined && marker !== null && marker.completedAt === null && marker.run === keptRefusal.marker.run && marker.startedAt === keptRefusal.marker.startedAt ? keptRefusal.refusal : undefined;
     const refused = marker?.refused ?? kept;
-    return { ...outcome, ...(refused === undefined ? {} : { refusedDeletions: refused }) };
+    return { ...outcome, ...(refused === undefined ? {} : { refusedDeletions: refused }), ...(marker?.unstorable === undefined ? {} : { unstorable: marker.unstorable }) };
   };
 
   const status = async (): Promise<PlatformSyncStatus> => {

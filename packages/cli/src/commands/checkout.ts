@@ -67,6 +67,7 @@ import { ambiguousBundle, HOSTED_CHECKOUT_REFUSALS, unboundCopyRefusal } from ".
 import { digestOf, ensureParentInside, exportFresh, findPathCollision, parentUnsafe, placeNew, ROOT_INDEX, UnsafePlacementError } from "../hosted/projection.js";
 import { seedInitialBlobBaselines } from "../hosted/blob-sync.js";
 import { writeProjection } from "../hosted/sync-scan.js";
+import { unstorableReceipt } from "../hosted/sync-rows.js";
 import { addCatalogEntry, assertCatalogLabel, loadCatalog, removeCatalogEntry } from "../catalog.js";
 import { checkoutMarkerBytes, readCheckoutMarker, removeCheckoutMarker, writeCheckoutMarker } from "../hosted/marker.js";
 import { adopt } from "./checkout-adopt.js";
@@ -602,7 +603,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
         // The checkout is a complete pull: reads start fresh instead of pulling or warning at once.
         await recordPulled(deps.auth.home, ready.checkout_id);
         await indexCheckoutPath(deps.auth.home, ready);
-        return { binding: ready, documents: exported.documents, root: exported.root, unplaced: typeof portable === "string" ? portable : null, reserved: extras.reserved, other: extras.other, digest: marker.headsDigest ?? null };
+        return { binding: ready, documents: exported.documents, root: exported.root, unplaced: typeof portable === "string" ? portable : null, reserved: extras.reserved, other: extras.other, digest: marker.headsDigest ?? null, unstorable: marker.unstorable };
       } catch (error) {
         await store?.close().catch(() => {});
         store = undefined;
@@ -629,10 +630,12 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
   if (blobSeedFailed) throw Object.assign(new CliError("RUNTIME", "checkout is ready, but its blob baselines could not be recorded", { details: { reason: "blob_baseline_failed", checkout_state: "ready", folder: canonical, bundle_id: bundleId }, help: "your files and ready binding are preserved; inspect the reported cause before syncing ordinary files" }), { cause: blobSeedError });
   const replacedBinding = replaced as CheckoutBinding | null;
   const cataloged = await registerInCatalog(deps.auth.home, result.binding);
+  const unstorable = unstorableReceipt(result.unstorable, `${cliInvocation()} sync --dir ${commandToken(result.binding.path)}`);
   deps.stdout(
     render(
       {
         checkout: "created",
+        ...unstorable?.fields,
         ...bindingView(result.binding),
         ...hostOrigin,
         catalog: cataloged,
@@ -648,11 +651,12 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
         ...(replacedBinding ? { replaced_stale_checkout: { bundle_id: replacedBinding.bundle_id, host: replacedBinding.origin } } : {}),
         mode: "sync",
         refused: REFUSED_SUMMARY,
-        help: nextSteps(result.binding.path),
+        help: [...(unstorable?.help ?? []), ...nextSteps(result.binding.path)],
       },
       mode,
     ),
   );
+  if (unstorable) throw unstorable.failure;
 }
 
 /**

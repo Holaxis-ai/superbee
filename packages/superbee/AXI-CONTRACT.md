@@ -264,6 +264,15 @@ diagnostic's `frontmatter_code`. Evidence: `packages/core/test/frontmatter-limit
 `packages/cli/test/doc-field.test.ts` and the frontmatter rows in
 `packages/cli/test/error-boundary.test.ts`.
 
+A hosted document this client cannot store stops neither `checkout` nor `sync`. The receipt carries
+a `held` row whose reason is the document's `FRONTMATTER_*` code, `status` is `incomplete`, and the
+command exits 5 as for any held row. The document is not placed, the rest of the bundle is, and
+local edits to other documents are sent. It is read again on every later sync, so once it is
+repaired where it is stored the next sync places it. It never reads as a deletion, and an edit of an
+older copy in the folder comes back as a conflict. Evidence:
+`packages/cli/test/hosted-sync-unstorable.test.ts` and
+`packages/browser-local/test/pull-unstorable.test.ts`.
+
 ## Evidence map
 
 Every numbered row has one help/source anchor and one behavioral test anchor. The repository test

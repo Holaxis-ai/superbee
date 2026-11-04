@@ -285,3 +285,12 @@ test("a reserved file is refused when either frontmatter schema would refuse it"
   assert.throws(() => parseMarkdown(raw, "notes/a"), refusedWith("FRONTMATTER_ALIAS_LIMIT"));
   assert.throws(() => assertStorableFrontmatter(raw), (error: unknown) => (error as { code?: string }).code === "FRONTMATTER_ALIAS_LIMIT");
 });
+
+test("a value nested past what the serializer can recurse through is refused as too deep", () => {
+  let nest: unknown = 1;
+  for (let level = 0; level < 200_000; level += 1) nest = [nest];
+  assert.throws(
+    () => stringifyDoc({ type: "Note", nest } as unknown as Frontmatter, "body\n"),
+    (error: unknown) => error instanceof FrontmatterRefusedError && error.code === "FRONTMATTER_TOO_DEEP",
+  );
+});

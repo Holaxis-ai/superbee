@@ -51,6 +51,7 @@
  * bundles for the browser (see `test/browser-bundle.test.ts`).
  */
 
+import type { MalformedDocumentCode } from "./frontmatter-contract.js";
 import type { ConceptId, Frontmatter, OkfDocument, QueryFilter, Version } from "./types.js";
 import type { ValidationWarning } from "./validation.js";
 
@@ -137,6 +138,13 @@ export interface RefusedDeletions {
 }
 
 /** How the runtime's last sync ended; see {@link PlatformSyncStatus.lastSync}. */
+/** A document the authority serves whose frontmatter the working copy cannot store. */
+export interface UnstorableDocument {
+  id: ConceptId;
+  code: MalformedDocumentCode;
+  message: string;
+}
+
 export interface PlatformSyncOutcome {
   /** False when the sync rejected (a carrier failure, or an authority answer the runtime could not apply). */
   ok: boolean;
@@ -144,6 +152,8 @@ export interface PlatformSyncOutcome {
   error?: string;
   /** The deletions the last completed pull refused; present until a pull applies or clears them. */
   refusedDeletions?: RefusedDeletions;
+  /** The documents the last completed pull left out; present until a pull can store them. */
+  unstorable?: UnstorableDocument[];
 }
 
 export interface PlatformSyncOptions {

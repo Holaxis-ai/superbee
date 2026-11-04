@@ -22,7 +22,7 @@
 import path from "node:path";
 import { lstat, realpath } from "node:fs/promises";
 
-import { bootstrap, openLocalBundle, UNSETTLED_STATES } from "@superbee/browser-local";
+import { bootstrap, openLocalBundle, UNSETTLED_STATES, type UnstorableDocument } from "@superbee/browser-local";
 import { conceptIdFromPath, isReservedFile, pathFromConceptId } from "@superbee/core";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 import { filesystemPushRoleLocks } from "@superbee/core/filesystem-push-role";
@@ -59,6 +59,7 @@ import { clearPublishedExtras, readPublishedExtras } from "../hosted/publish-sta
 import { bindingHostArgument, readCheckoutMarker, writeCheckoutMarker } from "../hosted/marker.js";
 import { digestOf, ensureParentInside, parentUnsafe, placeNew, ROOT_INDEX } from "../hosted/projection.js";
 import { sameAsStored, walk, writeProjection, type ProjectionEntry } from "../hosted/sync-scan.js";
+import { unstorableReceipt } from "../hosted/sync-rows.js";
 import { seedInitialBlobBaselines } from "../hosted/blob-sync.js";
 import { storeOkfVersion } from "../hosted/checkout-store.js";
 import {
@@ -274,10 +275,12 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
   if (published) await clearPublishedExtras(home, canonical);
   const cataloged = await registerInCatalog(home, result.binding);
   const syncHelp = `${cliInvocation()} sync --dir ${commandToken(canonical)}`;
+  const unstorable = unstorableReceipt(result.unstorable, syncHelp);
   deps.stdout(
     render(
       {
         adopted: "copy",
+        ...unstorable?.fields,
         ...bindingView(result.binding),
         catalog: cataloged,
         documents: { placed: result.placed.length, matched: result.matched.length, conflicts: result.conflicts.length, local_only: result.localOnly.length },
@@ -286,14 +289,17 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
         root_index: result.rootIndex,
         ...(result.otherFiles ? { other_files: result.otherFiles, warning: "files other than documents were not checked against the host" } : {}),
         ...(result.markerWritten ? { marker: "written" } : {}),
-        help:
-          result.conflicts.length > 0
+        help: [
+          ...(unstorable?.help ?? []),
+          ...(result.conflicts.length > 0
             ? [`${cliInvocation()} sync --dir ${commandToken(canonical)} --inspect --doc ${commandToken(result.conflicts[0]!)}`, syncHelp]
-            : [syncHelp, ...nextSteps(canonical)],
+            : [syncHelp, ...nextSteps(canonical)]),
+        ],
       },
       mode,
     ),
   );
+  if (unstorable) throw unstorable.failure;
 }
 
 /**
@@ -377,10 +383,12 @@ async function rebindToWorkspace(canonical: string, bound: CheckoutBinding, opti
   });
   const host = await adoptedExtras(canonical, exportRequestFor(connection, target, bound.bundle_id, resume));
   const result = await bindWithExtras({ canonical, target, bundleId: bound.bundle_id, connection, deps, resume, extras: host.extras, blobSeedExtras: host.extras }, host);
+  const unstorable = unstorableReceipt(result.unstorable, `${cliInvocation()} sync --dir ${commandToken(canonical)}`);
   deps.stdout(
     render(
       {
         adopted: "rebound",
+        ...unstorable?.fields,
         ...bindingView(result.binding),
         previous: {
           reference: bound.bundle_id,
@@ -390,11 +398,12 @@ async function rebindToWorkspace(canonical: string, bound: CheckoutBinding, opti
         documents: { placed: result.placed.length, matched: result.matched.length, conflicts: result.conflicts.length, local_only: result.localOnly.length },
         ...(result.conflicts.length > 0 ? { conflicts: listed(result.conflicts) } : {}),
         ...(result.localOnly.length > 0 ? { local_only: listed(result.localOnly) } : {}),
-        help: [`${cliInvocation()} sync --dir ${commandToken(canonical)}`, ...nextSteps(canonical)],
+        help: [...(unstorable?.help ?? []), `${cliInvocation()} sync --dir ${commandToken(canonical)}`, ...nextSteps(canonical)],
       },
       mode,
     ),
   );
+  if (unstorable) throw unstorable.failure;
   return true;
 }
 
@@ -407,6 +416,7 @@ export interface BindResult {
   readonly localOnly: string[];
   readonly rootIndex: string;
   readonly markerWritten: string | null;
+  readonly unstorable: readonly UnstorableDocument[] | undefined;
 }
 
 /**
@@ -461,8 +471,9 @@ export async function bindFolderInPlace(input: {
     try {
       store = await FileJournaledBackend.open({ directory: checkoutStoreDir(home, binding.checkout_id) });
       const local = openLocalBundle(binding.checkout_id, { backend: store });
+      let unstorable: UnstorableDocument[] | undefined;
       try {
-        await bootstrap(reader, local);
+        unstorable = (await bootstrap(reader, local)).unstorable;
       } catch (error) {
         throw capabilityRefusal(error, bundleId, target, isListed, resume);
       }
@@ -477,7 +488,8 @@ export async function bindFolderInPlace(input: {
       const placed: string[] = [];
       const matched: string[] = [];
       const conflicts: string[] = [];
-      const hostIds = new Set<string>();
+      // A document the host holds and this client cannot store is on the host all the same.
+      const hostIds = new Set<string>(unstorable?.map((row) => row.id));
       for (const head of heads) {
         hostIds.add(head.id);
         const file = path.join(canonical, pathFromConceptId(head.id));
@@ -550,7 +562,7 @@ export async function bindFolderInPlace(input: {
       await recordPulled(home, ready.checkout_id);
       await indexCheckoutPath(home, ready);
       const markerWritten = await writeCheckoutMarker(canonical, ready).catch(() => null);
-      return { binding: ready, placed, matched, conflicts, localOnly, rootIndex, markerWritten };
+      return { binding: ready, placed, matched, conflicts, localOnly, rootIndex, markerWritten, unstorable };
     } catch (error) {
       await store?.close().catch(() => {});
       store = undefined;

@@ -36,6 +36,7 @@ export {
   type BootstrapMarker,
   type DeletionRefusal,
   type DeletionRefusalReason,
+  type UnstorableDocument,
   type SharedBase,
   type SyncControl,
   type PullMarker,

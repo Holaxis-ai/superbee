@@ -11,7 +11,7 @@
 // The exit code is non-zero while any row is not committed.
 import type { IntentRecord } from "@superbee/core/journaled-backend";
 import { CAPACITY_REFUSAL_CODES, DELETIONS_HELD_REFUSAL_CODE } from "@superbee/core/hosted-transport";
-import { BUSY_REFUSAL_CODES } from "@superbee/browser-local";
+import { BUSY_REFUSAL_CODES, type UnstorableDocument } from "@superbee/browser-local";
 
 import { CliError, type CliErrorCode } from "../errors.js";
 import type { FolderConflict, HeldFile } from "./sync-scan.js";
@@ -83,6 +83,31 @@ export const CHANGED_WHILE_DELETED_MESSAGE =
   "The document changed on the host while you deleted it. Nothing was deleted. Inspect it, then keep your deletion (it deletes the host's current version) or take the host's version back.";
 const FOLDER_CHANGED_MESSAGE =
   "The file was edited while the host changed this document (during a sync, or while sync held the file). Nothing was merged or sent. Inspect it, then keep your file, take the host's version, or revise.";
+
+/**
+ * The held rows for the host's documents this client cannot store, shared by sync and checkout.
+ * The row's reason is the limit's code. The pull keeps asking for them, so nothing needs to be
+ * re-run once the host's copy is repaired.
+ */
+export function unstorableHeld(documents: readonly UnstorableDocument[] | undefined): HeldFile[] {
+  return (documents ?? []).map(({ id, code, message }) => ({
+    id,
+    path: id.endsWith(".md") ? id : `${id}.md`,
+    reason: code,
+    standalone: true,
+    message: `The host's '${id}' cannot be stored by this client (${code}: ${message}). It was not placed or refreshed in this folder, and the rest of the bundle was. It has to be repaired where it is stored, because no edit in this folder can change it; the next sync then places it with no extra step.`,
+  }));
+}
+
+/** Whether a row is one {@link unstorableHeld} made: its next step is at the source, not in the folder. */
+export function isUnstorableRow(row: SyncRow): boolean {
+  return row.state === "held" && row.reason.startsWith("FRONTMATTER_");
+}
+
+/** The next step of an {@link unstorableHeld} row, with the sync command that places the document afterward. */
+export function unstorableHelp(sync: string): string {
+  return `repair the documents named in the FRONTMATTER_ rows where they are stored; this client cannot store them. Then: ${sync}`;
+}
 
 export interface RowInputs {
   /** Files edited against a version the host has since changed or deleted (`folderConflicts`). */
@@ -175,7 +200,7 @@ export function buildRows(inputs: RowInputs): SyncRow[] {
   for (const file of inputs.held) {
     const existing = out.get(file.id);
     if (existing && existing.state !== "committed") continue;
-    out.set(file.id, { id: file.id, state: "held", reason: file.reason, version: null, message: `${file.message}. The file stays as it is and nothing is sent.` });
+    out.set(file.id, { id: file.id, state: "held", reason: file.reason, version: null, message: file.standalone ? file.message : `${file.message}. The file stays as it is and nothing is sent.` });
   }
   const order = (row: SyncRow) => (row.state === "committed" ? 1 : 0);
   return [...out.values()].sort((a, b) => order(a) - order(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -199,6 +224,18 @@ export function rowsFailure(rows: readonly SyncRow[], includesBlobs = false): { 
   if (needsPerson.length > 0) return { code: "CONFLICT", message: `${pending.length} ${includesBlobs ? "file(s)" : "document(s)"} not synced; ${needsPerson.length} need your decision` };
   if (pending.some((row) => row.reason === "read_only" || row.reason === "access_withdrawn")) return { code: "FORBIDDEN", message: `${pending.length} ${includesBlobs ? "file(s)" : "document(s)"} not synced: the host refused writes to this bundle` };
   return { code: "TRANSIENT", message: `${pending.length} ${includesBlobs ? "file(s)" : "document(s)"} not synced yet; run sync again` };
+}
+
+/**
+ * What a checkout's receipt says about the documents it could not store, and the exit that goes
+ * with it: the same rows and the same exit as a sync that holds them. Null when it stored them all.
+ */
+export function unstorableReceipt(documents: readonly UnstorableDocument[] | undefined, sync: string): { fields: Record<string, unknown>; help: string[]; failure: CliError } | null {
+  const rows = buildRows({ unsettled: [], acknowledged: new Map(), held: unstorableHeld(documents), notSent: null });
+  const failure = rowsFailure(rows);
+  if (!failure) return null;
+  const counts = countRows(rows);
+  return { fields: { status: "incomplete", counts, rows }, help: [unstorableHelp(sync)], failure: receiptFailure(failure, { counts }) };
 }
 
 /** The exit that goes with an already-printed receipt: the envelope is not printed again. */

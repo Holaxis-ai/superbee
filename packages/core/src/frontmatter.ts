@@ -8,7 +8,7 @@
  */
 
 import yaml from "js-yaml";
-import { loadBoundedYaml } from "./bounded-yaml.js";
+import { FRONTMATTER_LIMITS, loadBoundedYaml } from "./bounded-yaml.js";
 import { FrontmatterRefusedError } from "./errors.js";
 import { FrontmatterLimitError, MalformedDocumentError } from "./frontmatter-contract.js";
 import { splitLeadingFrontmatter } from "./frontmatter-splitter.js";
@@ -131,7 +131,14 @@ export function parseFrontmatter(
  * checks them with `assertStorableReservedWrite` instead.
  */
 export function stringifyFrontmatter(data: Record<string, unknown>): string {
-  const dumped = yaml.safeDump(data).trim();
+  let dumped: string;
+  try {
+    dumped = yaml.safeDump(data).trim();
+  } catch (error) {
+    // The dumper recurses, so a value nested far past the limit exhausts the stack before the check below.
+    if (error instanceof RangeError) throw new FrontmatterRefusedError("FRONTMATTER_TOO_DEEP", `YAML nesting is deeper than ${FRONTMATTER_LIMITS.depth} levels`);
+    throw error;
+  }
   try {
     // Check the exact text a reader will see between the fences, including the framing newline.
     yamlEngine.parse(`${dumped}\n`);
