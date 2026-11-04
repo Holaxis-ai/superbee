@@ -26,7 +26,9 @@ Reports the package version, source commit/dirty state baked at build time, arti
 SHA-256, executable path and launch evidence, compatibility-contract generations, and any adjacent
 package.json version drift. Without --check, this command is entirely local and never contacts npm.
 
---check performs one read-only, two-second comparison against the fixed public npm registry endpoint.
+--check performs one read-only, two-second comparison against the fixed public npm registry endpoint
+when the build enables supported-release checks. Published builds currently ship with them disabled:
+--check then exits 1 with code policy_disabled and makes no network request.
 The selected dist-tag is authoritative even when it names a rollback. It never installs a package,
 changes a dist-tag, writes preferences, or modifies integrations or bundle content.
 

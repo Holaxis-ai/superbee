@@ -124,7 +124,9 @@ Usage:
   superbee home [--dir <path> | --remote <url>] [--json] [--no-update-check]
 
 Default TOON output may display a previously validated latest-track release notice and launch one
-detached refresh at most once per 24-hour attempt window. Rendering never waits for npm. The fixed
+detached refresh at most once per 24-hour attempt window. On builds with supported-release checks
+disabled (currently the published builds) the refresh exits into cooldown and makes no
+network request. Rendering never waits for npm. The fixed
 public npm request names only superbee; it sends no installed version, cwd, bundle, actor, or
 usage data beyond ordinary network metadata.
 

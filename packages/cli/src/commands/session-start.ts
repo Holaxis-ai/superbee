@@ -117,7 +117,8 @@ This is the command \`hook install\` wires as the SessionStart hook for Claude C
 OpenCode. Run it directly to see exactly what a new session will see.
 
 Default TOON may show a cached latest-track release notice and launch one detached refresh per
-24-hour attempt window; rendering never waits for npm. The fixed public request names only
+24-hour attempt window (on builds with supported-release checks disabled, currently the published
+builds, the refresh exits into cooldown and makes no network request); rendering never waits for npm. The fixed public request names only
 superbee and sends no installed version, cwd, bundle, actor, or usage data beyond ordinary
 network metadata. Presence of SUPERBEE_NO_UPDATE_CHECK, legacy ASLITE_NO_UPDATE_CHECK,
 NO_UPDATE_NOTIFIER, or CI disables both display and refresh.

@@ -78,7 +78,7 @@ first-party support promise for native Windows. An older installed version is no
 removed by this source change, and existing bundle files are not migrated by it. Review the affected release's notes before changing an existing
 Windows installation. macOS/Linux users can continue using the normal installation and setup flow.
 
-Run `superbee version --check` to compare your install with the current stable release.
+Run `superbee version` to see which build you have. `superbee version --check` is not available on published builds yet: it exits 1 with `policy_disabled` and makes no network request. Check the npm page or `npm view superbee version` for the current release.
 
 ## First run: let your agent finish setup
 
