@@ -47,7 +47,7 @@ meaningful-change time is counted 'no_timestamp'), and two graph lints over any 
 'kinds --help'): edges violating a declared typed-edge type ('link_type_violations') and kind
 instances missing a declared inbound expectation ('missing_expected_links'), plus two lints over
 the bundle's View surface (legacy locations included; the legacy 'Page' kind name no longer
-registers — see 'legacy_naming'): registered View docs whose entry blob is missing
+registers): registered View docs whose entry blob is missing
 ('dangling_view_entries') and View-typed docs failing the registration grammar
 ('invalid_view_registrations'). Duplicate-id detection is not offered: an id IS its storage path,
 so ids are structurally unique.
@@ -167,16 +167,6 @@ Category semantics (one line each):
   okf_upgrade        Present only when a legacy bundle declares workflow 'status' values that
                       collide with the current standard lifecycle vocabulary. The bundle remains supported;
                       this is migration-readiness guidance, never an automatic rewrite.
-  legacy_naming      FINDING: the legacy View names are no longer accepted by the runtime — a
-                      doc typed 'Page' (the legacy name for the 'View' kind) does not register
-                      at all, and a legacy 'bridge:' capability field grants nothing (the doc
-                      resolves to access: none). Counts + rows name every legacy Page-typed doc,
-                      every View-kind doc carrying an own legacy 'bridge' field, and every
-                      Convention still governing the legacy 'Page' name (silent scaffolding);
-                      run the repo's scripts/migrate-legacy-view-names.mjs to rename them in place. Also
-                      reports (informational) items under the legacy pages-registry//pages/ id
-                      prefixes — those LOCATIONS remain recognized; relocation is a separate
-                      open decision. Omitted when the bundle carries none of the above.
 
 The report leads with the bundle's 'home' (local, git or hosted) and a 'sync' block for it, read
 from local state only: no request, no fetch, and no automatic pull for a hosted checkout. A local
@@ -404,43 +394,6 @@ function statusRecord(
   if (danglingViewEntries.total > 0) out.dangling_view_entries_rows = danglingViewEntries;
   if (invalidViewRegistrations.total > 0) out.invalid_view_registrations_rows = invalidViewRegistrations;
   if (registryLint.total > 0) out.registry_lint = registryLint;
-  // Omitted entirely on a legacy-free bundle (the `terminal_skipped` present-only-when-relevant
-  // idiom) — a clean report stays byte-identical to before this finding existed.
-  const pageTyped = cap(report.legacyNaming.pageTyped, limit);
-  const bridgeField = cap(report.legacyNaming.bridgeField, limit);
-  const pageConvention = cap(report.legacyNaming.pageConvention, limit);
-  const legacyPrefix = cap(report.legacyNaming.legacyPrefix, limit);
-  if (pageTyped.total > 0 || bridgeField.total > 0 || pageConvention.total > 0 || legacyPrefix.total > 0) {
-    // The loud FINDING note (+ the migration-script help) fires only for retired NAMES —
-    // instances, legacy fields, OR a convention still declaring the dead kind name; a migrated
-    // bundle that simply kept its legacy LOCATIONS (fully supported) gets the milder
-    // informational note instead of a call to action it cannot act on.
-    const namesPresent = pageTyped.total > 0 || bridgeField.total > 0 || pageConvention.total > 0;
-    const legacy: Record<string, unknown> = {
-      note: namesPresent
-        ? "FINDING — the legacy View names are no longer accepted: a 'type: Page' doc does not " +
-          "register (the ui launcher ignores it), a legacy 'bridge:' field grants nothing " +
-          "(access resolves to none), and a Convention still governing the legacy 'Page' name " +
-          "scaffolds docs the runtime ignores. Legacy pages-registry//pages/ LOCATIONS remain recognized."
-        : "informational — items under the legacy pages-registry//pages/ id prefixes; these " +
-          "LOCATIONS remain fully recognized (relocation is a separate open decision).",
-      page_typed_docs: pageTyped.total,
-      bridge_field_docs: bridgeField.total,
-      page_convention_docs: pageConvention.total,
-      legacy_prefix_items: legacyPrefix.total,
-    };
-    if (namesPresent) {
-      legacy.help =
-        "run `node scripts/migrate-legacy-view-names.mjs --dir <bundle-root>` (in the " +
-        "Superbee repo) to rename the listed docs in place — types flip to View, " +
-        "bridge renames to access, and the shipped View convention is refreshed";
-    }
-    if (pageTyped.total > 0) legacy.page_typed_rows = pageTyped;
-    if (bridgeField.total > 0) legacy.bridge_field_rows = bridgeField;
-    if (pageConvention.total > 0) legacy.page_convention_rows = pageConvention;
-    if (legacyPrefix.total > 0) legacy.legacy_prefix_rows = legacyPrefix;
-    out.legacy_naming = legacy;
-  }
   return out;
 }
 

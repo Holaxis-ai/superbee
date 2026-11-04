@@ -158,31 +158,3 @@ registry_lint:
     KIND_CONVENTION_MALFORMED,"skipped malformed kind convention 'conventions/broken': missing or empty 'governs' field",conventions/broken,warning
     OKF_WORKFLOW_STATUS_COLLISION,"kind convention 'conventions/release' declares 'fields.values.status' with values outside the OKF v0.2 lifecycle (draft, stable, deprecated); instance authoring rejects those values. Move workflow state to 'superbee_progress_status' (CLI '--progress_status') and migrate its required/optional, descriptions, values, value_descriptions, terminal declarations and instances.",fields.values.status,warning
     KIND_DUPLICATE_GOVERNS,"duplicate kind convention for 'Widget': 'conventions/widget-again' ignored, keeping the first-declared 'conventions/widget'.",Widget,warning
-legacy_naming:
-  note: "FINDING — the legacy View names are no longer accepted: a 'type: Page' doc does not register (the ui launcher ignores it), a legacy 'bridge:' field grants nothing (access resolves to none), and a Convention still governing the legacy 'Page' name scaffolds docs the runtime ignores. Legacy pages-registry//pages/ LOCATIONS remain recognized."
-  page_typed_docs: 1
-  bridge_field_docs: 1
-  page_convention_docs: 1
-  legacy_prefix_items: 2
-  help: "run `node scripts/migrate-legacy-view-names.mjs --dir <bundle-root>` (in the Superbee repo) to rename the listed docs in place — types flip to View, bridge renames to access, and the shipped View convention is refreshed"
-  page_typed_rows:
-    shown: 1
-    total: 1
-    rows[1]{id}:
-      pages-registry/retired
-  bridge_field_rows:
-    shown: 1
-    total: 1
-    rows[1]{id}:
-      views-registry/bridged
-  page_convention_rows:
-    shown: 1
-    total: 1
-    rows[1]{id}:
-      conventions/page
-  legacy_prefix_rows:
-    shown: 2
-    total: 2
-    rows[2]{id,store}:
-      pages-registry/retired,doc
-      pages/retired.html,blob

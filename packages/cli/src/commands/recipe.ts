@@ -374,8 +374,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
         ? "; a Connector another recipe's stamp owns is never taken over: this recipe's evolve plan blocks on it until it is removed by hand"
         : "");
   }
-  const migrationPending = result.docs.some((doc) => doc.migration_required !== undefined);
-  if (sourceDiffers > 0 || result.restamp_ids.length > 0 || migrationPending) {
+  if (sourceDiffers > 0 || result.restamp_ids.length > 0) {
     const target: CommandText = values.dir !== undefined
       ? commandFragment` --dir ${commandQuoted(values.dir)}`
       : remote !== undefined

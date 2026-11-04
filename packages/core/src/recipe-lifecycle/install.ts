@@ -1,6 +1,7 @@
 // Recipe installation: create-only, expect-absent CAS per artifact through the shared document
 // mutation boundary, so a built-in and an external recipe install through the same function and
 // an existing document is never overwritten. Storage-neutral: no Node globals or builtins.
+import { LEGACY_PAGE_MIGRATION_HELP } from "../bundle-health/legacy-page.js";
 import { query, readBlob, readBundleOkfVersion, readDoc, writeBlob } from "../bundle-ops.js";
 import { checkConnectorAgainstKinds, CONNECTORS_PREFIX } from "../connectors.js";
 import { resolveContentType } from "../content-type.js";
@@ -35,21 +36,15 @@ import {
   type RecipeStampState,
   type ConventionStampState,
 } from "./stamp.js";
-import {
-  findLegacyViewConvention,
-  governsKind,
-  legacyEntryAlias,
-  legacyRegistryAlias,
-  VIEW_KIND_NAME,
-} from "./legacy-aliases.js";
+import { legacyEntryAlias, legacyRegistryAlias } from "./legacy-aliases.js";
 
 function materializeRecipeBody(body: string, storageField: string): string {
   return body.replaceAll(RECIPE_PROGRESS_STATUS_TOKEN, storageField);
 }
 
 /** Per-doc apply outcome: `changed: false` means the doc already existed (idempotent no-op), or —
- * when `legacy_present`/`migration_required` names a doc — that a legacy-LOCATED counterpart
- * already occupies the artifact's slot (working, or awaiting migration, respectively). */
+ * when `legacy_present` names a doc — that a legacy-LOCATED counterpart already occupies the
+ * artifact's slot. */
 export interface RecipeDocResult {
   id: ConceptId;
   changed: boolean;
@@ -57,10 +52,6 @@ export interface RecipeDocResult {
   source_differs?: true;
   /** Set when creation was skipped because this existing legacy-located doc satisfies the artifact. */
   legacy_present?: ConceptId;
-  /** NON-SUCCESS skip: the counterpart still carries the RETIRED legacy names, so it
-   * no longer works at runtime — the bundle needs the migration script before this artifact is
-   * genuinely satisfied. Named alongside a receipt-level warning carrying the remedy. */
-  migration_required?: ConceptId;
 }
 
 export interface RecipePageResult {
@@ -71,7 +62,8 @@ export interface RecipePageResult {
   changed: boolean;
   /** Set when creation was skipped because a COMPLETE, still-REGISTERING legacy-located pair satisfies the artifact. */
   legacy_present?: { registry: ConceptId; entry: string };
-  /** See {@link RecipeDocResult.migration_required} — the page-pair variant. */
+  /** NON-SUCCESS skip: the legacy-located counterpart still carries the RETIRED names, so it no
+   * longer registers at runtime. Named alongside a receipt-level warning carrying the remedy. */
   migration_required?: { registry: ConceptId; entry: string };
 }
 
@@ -355,9 +347,6 @@ export async function installRecipe(
   await assertPortableTargetsCompatible(bundle, recipe, okfVersion);
 
   // Legacy-alias probes (see the module comment above the alias helpers): resolved lazily, once.
-  const legacyConventionId = recipe.docs.some((d) => governsKind(d, VIEW_KIND_NAME))
-    ? await findLegacyViewConvention(bundle)
-    : null;
   let legacyRegistryDocs: Map<ConceptId, OkfDocument> | null = null;
   const legacyRegistryDoc = async (id: ConceptId): Promise<OkfDocument | undefined> => {
     legacyRegistryDocs ??= new Map(
@@ -366,29 +355,12 @@ export async function installRecipe(
     return legacyRegistryDocs.get(id);
   };
   const migrationWarnings: ValidationWarning[] = [];
-  const migrationHelp =
-    "run `node scripts/migrate-legacy-view-names.mjs --dir <bundle-root>` from the Superbee repository root to migrate it in place";
 
   const docs: RecipeDocResult[] = [];
   const stamps: RecipeStampState[] = [];
   const restampIds: string[] = [];
   const foreignIds: string[] = [];
   for (const d of recipe.docs) {
-    if (legacyConventionId !== null && governsKind(d, VIEW_KIND_NAME)) {
-      // A convention still governing the RETIRED legacy name is unmigrated state: skip creating
-      // the current-name convention (never two conventions for one kind), but as an explicit
-      // NON-SUCCESS — not a satisfied-looking skip.
-      docs.push({ id: d.id, changed: false, migration_required: legacyConventionId });
-      stamps.push("missing");
-      migrationWarnings.push({
-        code: "MIGRATION_REQUIRED",
-        message:
-          `'${legacyConventionId}' still governs the retired legacy 'Page' kind name — ` +
-          `'${d.id}' was not installed; ${migrationHelp}`,
-        severity: "warning",
-      });
-      continue;
-    }
     // The stamp lands in the convention's own create: it exists exactly when the convention does.
     let doc = d;
     let changed = true;
@@ -493,7 +465,7 @@ export async function installRecipe(
             code: "MIGRATION_REQUIRED",
             message:
               `'${registryAlias}' holds this artifact's slot but still carries the retired legacy names ` +
-              `and does not register — '${page.registry.id}' was not installed; ${migrationHelp}`,
+              `and does not register — '${page.registry.id}' was not installed; ${LEGACY_PAGE_MIGRATION_HELP}`,
             severity: "warning",
           });
         }

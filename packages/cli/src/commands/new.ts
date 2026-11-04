@@ -73,7 +73,7 @@ import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { mutateDoc } from "../mutate.js";
 import { kindDeclaresAnything, kindInstanceCandidate } from "@superbee/core/kind-authoring";
-import { isKnownShippedLegacyPageConvention, isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../legacy-page.js";
+import { isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../legacy-page.js";
 import { boardPostPersistHook } from "../board-attribution.js";
 import { resolveActor } from "../actor.js";
 import { readExternalTextFile } from "../external-file.js";
@@ -466,22 +466,6 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     stdout(renderKindHelp(projectKindForAuthoring(okfVersion, kind), registry, cliInvocation()));
     return;
   }
-  // Scaffolding from the KNOWN SHIPPED
-  // legacy Page convention would produce a doc the runtime ignores — refuse with the remedy. A
-  // genuinely-custom kind that merely reuses the legacy 'Page' name (a different declared
-  // shape) is not matched and scaffolds normally (the write-time hint still fires).
-  if (isKnownShippedLegacyPageConvention(kind)) {
-    throw new CliError(
-      "USAGE",
-      "this bundle's 'Page' convention is the retired legacy form of the 'View' kind — a scaffolded type: Page doc would not register anywhere",
-      {
-        help:
-          "run `node scripts/migrate-legacy-view-names.mjs --dir <bundle-root>` (in the superbee repo) " +
-          `to migrate the bundle in place, then author with: ${cliInvocation()} new "View" <id> --access <none|bundle-read|bundle-propose>`,
-      },
-    );
-  }
-
   // Phase 2 — strict, kind-aware, AUTHORITATIVE parse. Core strips every centrally-reserved kind
   // field before this point (including `body` and `body-file`); only `actor` and `link` remain
   // command controls with intentional kind-aware behavior, so they are excluded here explicitly.
@@ -760,7 +744,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   // The content-addressed token of the FINAL document state after every successful/no-op link
   // attempt. This is the truthful CAS basis for a follow-up `doc update --expected-version`.
   receipt.version = finalVersion;
-  // Legacy-naming nudge (legacy-page.ts): authoring-moment only — never blocks, never on reads.
+  // Retired-kind hint: authoring-moment only, never blocks, never on reads.
   if (isLegacyPageDoc(saved.frontmatter)) receipt.hint = LEGACY_PAGE_TYPE_HINT;
 
   // Point-of-use link teaching (AXI §9): the moment an instance is created is when its declared
