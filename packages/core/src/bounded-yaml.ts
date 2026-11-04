@@ -23,8 +23,11 @@ export const FRONTMATTER_LIMITS = Object.freeze({
 const PARSE_NESTING_GUARD = FRONTMATTER_LIMITS.depth * 4;
 
 export interface BoundedYamlOptions {
-  /** The js-yaml schema, or `json` for the JSON schema; the safe default schema when omitted. */
-  schema?: yaml.Schema | "json";
+  /**
+   * A js-yaml schema, or `json` for the JSON schema; the safe default schema when omitted. Typed
+   * as `object` so the published declarations do not require js-yaml's type package.
+   */
+  schema?: object | "json";
 }
 
 interface Extent {
@@ -174,7 +177,7 @@ export function loadBoundedYaml(source: string, options: BoundedYamlOptions = {}
       `YAML source is longer than ${FRONTMATTER_LIMITS.sourceChars} characters`,
     );
   }
-  const schema = options.schema === "json" ? yaml.JSON_SCHEMA : options.schema;
+  const schema = options.schema === "json" ? yaml.JSON_SCHEMA : (options.schema as yaml.Schema | undefined);
   const budget = new AliasBudget();
   let watched: Record<string, unknown> | undefined;
   let nesting = 0;
