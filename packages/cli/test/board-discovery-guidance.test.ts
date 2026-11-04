@@ -179,3 +179,20 @@ test("setup discovery honors own conventional binding and never borrows a missin
     await topo.cleanup();
   }
 });
+
+test("status on a fresh clone with a shared board points at sync, never init", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  const previousCwd = process.cwd();
+  try {
+    const { status } = await import("../src/commands/status.js");
+    process.chdir(topo.a.root);
+    const failure = await status(["--json"], { stdout: () => {}, autoPull: async () => undefined })
+      .then(() => undefined, (error: unknown) => error as { code: string; help?: string });
+    assert.equal(failure?.code, "NOT_FOUND");
+    assert.match(failure?.help ?? "", /sync/);
+    assert.doesNotMatch(failure?.help ?? "", /init/);
+  } finally {
+    process.chdir(previousCwd);
+    await topo.cleanup();
+  }
+});

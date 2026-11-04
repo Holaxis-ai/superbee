@@ -485,7 +485,19 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   const hostedReport = hosted
     ? await (await import("../hosted/status.js")).hostedStatus(hosted, home, now)
     : null;
-  const bundle = await openBundle(values.dir, remote);
+  let bundle;
+  try {
+    bundle = await openBundle(values.dir, remote);
+  } catch (error) {
+    // A fresh clone of a project that shares a board has no bundle yet; `init` there mints a
+    // divergent second one. Home and setup give the board-aware advice, so status gives theirs.
+    if (error instanceof CliError && error.code === "NOT_FOUND" && values.dir === undefined && !remote) {
+      const { buildBoardBlock, defaultLoadBoardStatus } = await import("./home.js");
+      const firstContact = buildBoardBlock(await defaultLoadBoardStatus(), undefined, cliInvocation()).firstContact;
+      if (firstContact) throw new CliError("NOT_FOUND", error.message, { help: firstContact, ...(error.details ? { details: error.details } : {}) });
+    }
+    throw error;
+  }
 
   // Core calls the binder once, after its own read and its one parse of docs/dependencies, so a
   // malformed declaration stays a finding and every CliError the binder throws keeps its exit code.
