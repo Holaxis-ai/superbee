@@ -491,7 +491,9 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   } catch (error) {
     // A fresh clone of a project that shares a board has no bundle yet; `init` there mints a
     // divergent second one. Home and setup give the board-aware advice, so status gives theirs.
-    if (error instanceof CliError && error.code === "NOT_FOUND" && values.dir === undefined && !remote) {
+    // Only the unbound discovery default is rewritten; a binding's own recovery stays as it is.
+    if (error instanceof CliError && error.code === "NOT_FOUND" && values.dir === undefined && !remote
+      && String(error.help) === `${cliInvocation()} init --create-only --dir .superbee`) {
       const { buildBoardBlock, defaultLoadBoardStatus } = await import("./home.js");
       const firstContact = buildBoardBlock(await defaultLoadBoardStatus(), undefined, cliInvocation()).firstContact;
       if (firstContact) throw new CliError("NOT_FOUND", error.message, { help: firstContact, ...(error.details ? { details: error.details } : {}) });
