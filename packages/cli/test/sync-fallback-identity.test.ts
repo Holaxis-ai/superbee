@@ -186,6 +186,27 @@ test("sync: DoD3 — a resolvable git identity gets NO synthetic override; the c
 
 // ── delete attribution: the deleter, never the document's last editor ──────────
 
+test("sync: with no syncing actor, a deletion keeps the only name known, the last editor", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { home, cleanup } = await tempHome();
+  const previous = process.env.SUPERBEE_ACTOR;
+  delete process.env.SUPERBEE_ACTOR;
+  try {
+    await cliDocWrite(topo.a.board, "u/own", ["--type", "Note", "--title", "Own", "--body", "# x\n", "--actor", "human:alice"]);
+    await runSyncJson(home, ["--dir", topo.a.root]);
+    await doc(["delete", "u/own", "--dir", topo.a.board, "--actor", "human:alice", "--json"], {
+      stdout: () => {},
+      readStdin: async () => undefined,
+    });
+    await runSyncJson(home, ["--dir", topo.a.root]);
+    assert.match(git(topo.a.board, ["log", "-1", "--format=%s"]), /^board: human:alice \u2014 deleted u\/own\s*$/);
+  } finally {
+    if (previous !== undefined) process.env.SUPERBEE_ACTOR = previous;
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
 test("sync: a deletion is credited to the syncing actor, not the document's last editor", async () => {
   const topo = await makeTwoCloneTopology();
   const { home, cleanup } = await tempHome();

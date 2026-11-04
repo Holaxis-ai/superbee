@@ -1773,8 +1773,8 @@ export function stageAndCommit(boardPath: string, options: { deletedBy?: string 
     // committed); a deletion's from the outgoing HEAD version.
     const change = enrichDocChange(boardPath, relPath, verb, verb === "deleted" ? "HEAD" : ":0");
     // The outgoing version names its LAST EDITOR, not whoever is deleting it: credit the actor
-    // sync resolved, or `unknown` when none flows in.
-    docs.push(verb === "deleted" ? { ...change, actor: options.deletedBy ?? UNKNOWN } : change);
+    // sync resolved. With none flowing in, that last editor is the only name known.
+    docs.push(verb === "deleted" && options.deletedBy !== undefined ? { ...change, actor: options.deletedBy } : change);
   }
 
   const subject = commitSubject(docs);
