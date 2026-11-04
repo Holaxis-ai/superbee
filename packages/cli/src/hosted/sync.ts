@@ -38,7 +38,7 @@ import {
   type PullReport,
   type SharedBase,
 } from "@superbee/browser-local";
-import { queryHeads, listBlobs, assertSafeConceptId, conceptIdFromPath, FilesystemMutationLockError, FrontmatterRefusedError, isConventionId, InvalidInputError, MalformedDocumentError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
+import { queryHeads, listBlobs, assertSafeConceptId, conceptIdFromPath, FilesystemMutationLockError, FrontmatterRefusedError, isConventionId, InvalidInputError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
 import { decodePreparedBlobIntent, isOrdinaryBlobKey, type BlobIntentRecord, type BlobTargetScope } from "@superbee/core/storage";
 import { performHostedBlobDelivery } from "@superbee/core/hosted-client";
 import { createHostedBlobReadAdapter, createHostedBlobWriteAdapter } from "@superbee/core/hosted-transport";
@@ -76,7 +76,7 @@ import { hostedFailure, type createHostedSyncClient } from "./client.js";
 import { connectCheckout } from "./account.js";
 import { storeOkfVersion, withIdleCheckoutStore } from "./checkout-store.js";
 import { bundleAbsent } from "./refusals.js";
-import { buildRows, BUSY_REFUSAL_CODES, countRows, isUnstorableRow, receiptFailure, rowsFailure, unstorableHeld, unstorableHelp, type NotSentReason, type SyncRow } from "./sync-rows.js";
+import { buildRows, BUSY_REFUSAL_CODES, countRows, isUnstorableRow, receiptFailure, rowsFailure, storeOpenFailure, assertStoreReadable, unstorableHeld, unstorableHelp, type NotSentReason, type SyncRow } from "./sync-rows.js";
 import {
   walk,
   exportCheckout,
@@ -506,10 +506,13 @@ async function withSession<T>(
       // Sign-in first: AUTH_REQUIRED passes through unchanged with its one link, before any request.
       const { client } = await connectCheckout(binding, { resume: resumeCommand, ...(options.signIn === false ? { signIn: false } : {}) }, deps);
       const unsafeIds = new Map<string, string>();
-      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id) });
+      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id) }).catch((error: unknown) => {
+        throw storeOpenFailure(error, binding);
+      });
       const reader = withoutUnsafeIds(client.reader(binding.bundle_id), unsafeIds, store, deps.idRule);
       let projection: ProjectionRecord | undefined;
       try {
+        await assertStoreReadable(store, binding);
         const local = openLocalBundle(binding.checkout_id, { backend: store });
         const unsent = async () => (await store.listIntents(UNSETTLED_STATES)).length + (await store.listBlobIntents()).filter(row => !row.receipt).length;
         let capabilities: HostedCapabilities;
@@ -1655,7 +1658,7 @@ async function pullOnly(binding: CheckoutBinding, session: Session, deps: Hosted
     }
     await recordPulled(deps.auth.home, binding.checkout_id);
     const blobHolds = scan.blobHeld !== undefined || Boolean(blobs?.held.length);
-    const heldIds = [...(blobHolds ? scan.held.map(row => row.id) : []), ...(blobs?.held.map(row => row.key) ?? []), ...(report.unstorable?.map(row => row.id) ?? []), ...placed.held.filter(row => row.reason.startsWith("FRONTMATTER_")).map(row => row.id)];
+    const heldIds = [...(blobHolds ? scan.held.map(row => row.id) : []), ...(blobs?.held.map(row => row.key) ?? []), ...(report.unstorable?.map(row => row.id) ?? [])];
     return { state: "pulled", refreshed: placed.placed.length + (root.refreshed ? 1 : 0), removed: placed.removed.length, kept: placed.kept.length, ...(blobHolds || heldIds.length > 0 ? { held: new Set(heldIds).size } : {}), ...(blobs ? { blobs: blobPulledView(blobs) } : {}) };
   }
 }
@@ -1702,12 +1705,6 @@ async function conflictFor(session: Session, id: string, resumeCommand: CommandT
     const review = await inspectConflict(session.local, session.reader, id);
     return { kind: "journal", review, deleted: review.remote.version === null };
   } catch (error) {
-    if (error instanceof MalformedDocumentError) {
-      throw new CliError("CONFLICT", `the copy of '${id}' this checkout stored cannot be read by this client (${error.code}), so there is nothing to inspect or resolve yet; nothing changed`, {
-        details: { reason: error.code, id, folder: session.binding.path },
-        help: `repair it where it is stored, then: ${syncCommand(session.binding)}`,
-      });
-    }
     if (error instanceof InvalidInputError || error instanceof JournalSnapshotConflict) {
       const intents = (await session.store.readWithJournal(id)).intents.filter((row) => row.state !== "acknowledged");
       const states = intents.map((row) => row.state);
@@ -2335,7 +2332,7 @@ async function restoreDeletions(session: Session, only?: ReadonlySet<string>): P
   for (const [id, entry] of Object.entries(projection.files)) {
     if ((only && !only.has(id)) || entry.deleted || unsettled.some((row) => row.target === id)) continue;
     if ((await readIfPresent(path.join(binding.path, `${id}.md`))) !== null) continue;
-    if (!(await store.exists(id))) continue;
+    if (!(await store.readWithJournal(id)).document) continue;
     delete projection.files[id];
     candidates.add(id);
   }

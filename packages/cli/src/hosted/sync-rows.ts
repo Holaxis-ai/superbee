@@ -12,6 +12,12 @@
 import type { IntentRecord } from "@superbee/core/journaled-backend";
 import { CAPACITY_REFUSAL_CODES, DELETIONS_HELD_REFUSAL_CODE } from "@superbee/core/hosted-transport";
 import { BUSY_REFUSAL_CODES, type UnstorableDocument } from "@superbee/browser-local";
+import type { JournaledBackend } from "@superbee/core";
+import { FileJournalCorruptError } from "@superbee/core/file-journaled-backend";
+import { commandToken } from "../command-text.js";
+import { cliInvocation } from "../invocation.js";
+import { bindingReference, type CheckoutBinding } from "./binding.js";
+import { hostedBundleReferenceText } from "./reference.js";
 
 import { CliError, type CliErrorCode } from "../errors.js";
 import type { FolderConflict, HeldFile } from "./sync-scan.js";
@@ -236,6 +242,30 @@ export function unstorableReceipt(documents: readonly UnstorableDocument[] | und
   if (!failure) return null;
   const counts = countRows(rows);
   return { fields: { status: "incomplete", counts, rows }, help: [unstorableHelp(sync)], failure: receiptFailure(failure, { counts }) };
+}
+
+/**
+ * The refusal when this checkout's local store holds something it cannot read. It stops before
+ * anything is sent or placed, because those bytes are not trusted, whatever refused them. The
+ * host is not at fault and has nothing to repair; a fresh checkout starts the local state over.
+ */
+export function storeUnreadable(binding: CheckoutBinding, documents: readonly { id: string; code: string }[]): CliError {
+  const named = documents.length > 0 ? `holds a copy of ${documents.slice(0, 5).map((row) => `'${row.id}'`).join(", ")} that cannot be read (${[...new Set(documents.map((row) => row.code))].join(", ")})` : "cannot be read";
+  return new CliError("CONFLICT", `this checkout's local store ${named}. Nothing was sent or placed, and your files were not changed`, {
+    details: { reason: "store_damaged", folder: binding.path, documents },
+    help: `copy any unsent edits out of ${binding.path}, then make a fresh checkout: ${cliInvocation()} checkout --release ${commandToken(binding.path)}, then ${cliInvocation()} checkout ${commandToken(hostedBundleReferenceText(bindingReference(binding)))} --host ${commandToken(binding.origin)} --dir <new folder>`,
+  });
+}
+
+/** Stop now if the local store holds a record it cannot read, before anything else reads it. */
+export async function assertStoreReadable(store: JournaledBackend, binding: CheckoutBinding): Promise<void> {
+  const unreadable = (await store.readHeads({ project: (head) => (head.malformed ? { id: head.id, code: head.malformed.code as string } : null) })).filter((row) => row !== null);
+  if (unreadable.length > 0) throw storeUnreadable(binding, unreadable);
+}
+
+/** A store that cannot be opened at all, in the same terms; any other error is unchanged. */
+export function storeOpenFailure(error: unknown, binding: CheckoutBinding): unknown {
+  return error instanceof FileJournalCorruptError ? storeUnreadable(binding, []) : error;
 }
 
 /** The exit that goes with an already-printed receipt: the envelope is not printed again. */

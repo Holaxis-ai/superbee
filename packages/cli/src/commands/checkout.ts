@@ -497,7 +497,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
       // The rerun makes no request: it names what the last run left held, as that run did.
       const holds = await withIdleCheckoutStore(existing, deps.auth.home, async (store) => checkoutHolds(existing, store, await readProjection(deps.auth.home, existing.checkout_id, store)));
       const unstorable = unstorableReceipt(holds ?? undefined, `${cliInvocation()} sync --dir ${commandToken(existing.path)}`);
-      deps.stdout(render({ checkout: "unchanged", ...unstorable?.fields, ...bindingView(existing), help: [...(unstorable?.help ?? []), ...nextSteps(existing.path)] }, mode));
+      deps.stdout(render({ checkout: "unchanged", ...(holds === null ? { status: "busy", holds: "not read: another command holds this checkout" } : {}), ...unstorable?.fields, ...bindingView(existing), help: [...(unstorable?.help ?? []), ...nextSteps(existing.path)] }, mode));
       if (unstorable) throw unstorable.failure;
       return;
     }

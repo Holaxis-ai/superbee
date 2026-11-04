@@ -166,11 +166,13 @@ function reasonFor(binding: CheckoutBinding, error: CliError, receipt: string): 
     );
   } else if (error.code === "GATE_FAILED") {
     lines.push(`Fix what the sync gate reports (${error.help ?? "run the gate yourself"}), then run: ${sync}`);
+  } else if ((error.details as { reason?: unknown } | undefined)?.reason === "store_damaged" && error.help) {
+    lines.push(`Tell the person: ${error.help}`);
   } else if (ORPHANED_LOCK_REASONS.has(String((error.details as { reason?: unknown } | undefined)?.reason)) && error.help) {
     lines.push(`Tell the person: ${error.help}: ${sync}`);
   } else {
     lines.push(
-      `Resolve each conflict with ${cliInvocation()} sync --inspect --doc <id>, then --resolve keep|take|revise --doc <id>; fix held files; then run: ${sync}`,
+      `Resolve each conflict with ${cliInvocation()} sync --inspect --doc <id>, then --resolve keep|take|revise --doc <id>; fix held files (a row whose reason starts with FRONTMATTER_ is repaired where it is stored, and no edit here fixes it); then run: ${sync}`,
     );
     lines.push("Anything the receipt says to do in the Superbee app is for the person: tell them, do not work around it.");
   }

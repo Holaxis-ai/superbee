@@ -62,7 +62,7 @@ import { captureBodyReplacePosture, type BodyReplacePosture } from "@superbee/co
  */
 
 import type { Bundle, ConceptId, OkfDocument, ReadResult, StorageBackend, Version, WriteOptions } from "@superbee/core";
-import { FrontmatterRefusedError, isStackExhaustion, MalformedDocumentError, stringifyDoc } from "@superbee/core/document-codec";
+import { FrontmatterRefusedError, isStackExhaustion, stringifyDoc } from "@superbee/core/document-codec";
 import { BODY_DELIVERY_LIMITS, performBodyDelivery, prepareBodyDelivery, reconcileBodyReceipt, assertSameBodyDelivery, type BodyDeliveryTransport } from "@superbee/core/governed-body-write";
 import { parseIsoInstant } from "@superbee/core/verification";
 import { versionOfBytes } from "@superbee/core/versioning";
@@ -444,29 +444,11 @@ async function readPresent(remote: StorageBackend, ids: ConceptId[]): Promise<{ 
   return { found, absent };
 }
 
-/**
- * One document's journal for a refresh or a deletion, which never needs its parsed form: a copy
- * stored before a frontmatter limit existed cannot be parsed now, and a repair or a deletion on
- * the authority still has to replace it. The hold on an unsettled intent and the guard's pin on
- * these exact bytes stay in force, so no unsent local edit can be overwritten.
- */
-async function readStoredJournal(backend: JournaledBackend, id: ConceptId, meta: readonly string[]): Promise<{ version: Version | null; raw: string | null; intents: IntentRecord[]; meta: Map<string, unknown> }> {
-  try {
-    const read = await backend.readWithJournal(id, { meta });
-    return { version: read.document?.version ?? null, raw: read.raw, intents: read.intents, meta: read.meta };
-  } catch (error) {
-    if (!(error instanceof MalformedDocumentError)) throw error;
-  }
-  const [head] = (await backend.readHeads({ meta: (target) => (target === id ? [...meta] : []), project: (row) => (row.id === id ? row : null) })).filter((row) => row !== null);
-  return head ? { version: head.version, raw: head.raw, intents: head.intents, meta: head.meta } : { version: null, raw: null, intents: [], meta: new Map() };
-}
-
 /** The version of the document currently stored locally, or `null` when absent. */
 async function localVersion(backend: JournaledBackend, id: ConceptId): Promise<Version | null> {
   try {
     return (await backend.read(id)).version;
   } catch (error) {
-    if (error instanceof MalformedDocumentError) return (await readStoredJournal(backend, id, [])).version;
     if ((error as { code?: unknown })?.code === "ENOENT") return null;
     throw error;
   }
@@ -2036,9 +2018,9 @@ function fenceHolds(meta: ReadonlyMap<string, unknown>, fence: PullFence): boole
  * moved and the pull still owns its marker. `null` when the fence no longer holds.
  */
 async function fencedSnapshot(backend: JournaledBackend, id: ConceptId, fence: PullFence): Promise<{ guard: JournalGuard; base: SharedBase | undefined; version: Version | null } | null> {
-  const read = await readStoredJournal(backend, id, [baseKey(id), PULL_KEY, ACKNOWLEDGED_KEY]);
+  const read = await backend.readWithJournal(id, { meta: [baseKey(id), PULL_KEY, ACKNOWLEDGED_KEY] });
   if (!fenceHolds(read.meta, fence)) return null;
-  const document = read.version === null ? null : { version: read.version, raw: read.raw! };
+  const document = read.document === null ? null : { version: read.document.version, raw: read.raw! };
   return {
     base: read.meta.get(baseKey(id)) as SharedBase | undefined,
     version: document?.version ?? null,
@@ -2052,7 +2034,7 @@ async function fencedSnapshot(backend: JournaledBackend, id: ConceptId, fence: P
  * the listing's state.
  */
 async function fenceStanding(backend: JournaledBackend, id: ConceptId, fence: PullFence): Promise<"superseded" | "held" | "moved"> {
-  const read = await readStoredJournal(backend, id, [PULL_KEY, ACKNOWLEDGED_KEY]);
+  const read = await backend.readWithJournal(id, { meta: [PULL_KEY, ACKNOWLEDGED_KEY] });
   if (!fenceHolds(read.meta, fence)) return "superseded";
   return read.intents.some((row) => row.state !== "acknowledged") ? "held" : "moved";
 }
@@ -2144,9 +2126,12 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
   const startedAt = new Date().toISOString();
   let known: string | undefined;
   let fence: PullFence | undefined;
+  // An unfinished pull learned nothing about them: what is held stays named until one completes.
+  const carried = (await syncStatus(local)).unstorable;
+  const heldUntilCompleted = carried === undefined ? {} : { unstorable: carried };
   if (!bodyMode && backend.journalSnapshotCas === true) {
     const acknowledged = await backend.readMeta<AcknowledgedMarker>(ACKNOWLEDGED_KEY);
-    const marker: PullMarker = { startedAt, completedAt: null, refreshed: 0, unchanged: false, run: mintRequestId() };
+    const marker: PullMarker = { startedAt, completedAt: null, refreshed: 0, unchanged: false, ...heldUntilCompleted, run: mintRequestId() };
     for (let attempt = 0; ; attempt++) {
       // Read before the in-progress marker replaces the last pull's record, which may carry the digest.
       const last = await lastKnownDigest(backend);
@@ -2165,7 +2150,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
   } else {
     // Read before the in-progress marker replaces the last pull's record, which may carry the digest.
     known = (await lastKnownDigest(backend)).digest;
-    await backend.writeMeta(PULL_KEY, { startedAt, completedAt: null, refreshed: 0, unchanged: false } satisfies PullMarker);
+    await backend.writeMeta(PULL_KEY, { startedAt, completedAt: null, refreshed: 0, unchanged: false, ...heldUntilCompleted } satisfies PullMarker);
   }
   if (bodyMode) { await assertBodyEdition(backendOf(local), bodyMode); await assertBodyRemoteEdition(remote, bodyMode); }
   const report: PullReport = { refreshed: [], held: [], unchanged: [], deleted: [] };

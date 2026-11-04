@@ -87,6 +87,9 @@ current files in all, and 5,000 earlier versions (64 MiB); the list of everythin
 hosts, about 950 KiB of Markdown; 64 KiB on older ones), 64 KiB per reserved file, 16 KiB of
 frontmatter.
 
+An exit of 5 with 'published: created' means the bundle was created and the folder bound, and the
+host holds a document this client cannot store: the receipt's rows name it.
+
 With --yes, signs in if needed (AUTH_REQUIRED, exit 4, carries the one link to relay and the
 command to re-run), creates the bundle in your workspace (only you can reach it, at write, until
 a workspace admin shares it on the web Access page, https://<workspace host>/settings/access), then

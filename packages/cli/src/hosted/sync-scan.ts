@@ -208,20 +208,6 @@ export interface HeldFile {
   readonly standalone?: true;
 }
 
-/**
- * The held row for a document whose copy in the private store no longer parses (one stored before
- * a frontmatter limit existed). Nothing can be journaled against it, and it does not stop the run.
- */
-function storedUnreadable(id: string, rel: string, error: MalformedDocumentError): HeldFile {
-  return {
-    id,
-    path: rel,
-    reason: error.code,
-    standalone: true,
-    message: `The copy of '${id}' this checkout stored cannot be read by this client (${error.code}: ${error.detail}). The file stays as it is and nothing is sent for it. It has to be repaired where it is stored: the next sync then brings in the repaired version with no extra step, and an edit made here comes back as a conflict, never over the host's version.`,
-  };
-}
-
 /** A document whose file was deleted and whose deletion this scan journaled, with the documents that still link to it. */
 export interface ScannedDeletion {
   readonly id: string;
@@ -842,14 +828,7 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     const digest = digestOf(bytes);
     const entry = projection.files[id];
     if (entry && !entry.deleted && entry.digest === digest) continue;
-    let stored;
-    try {
-      stored = await local.backend.readWithJournal(id);
-    } catch (error) {
-      if (!(error instanceof MalformedDocumentError)) throw error;
-      report.held.push(storedUnreadable(id, rel, error));
-      continue;
-    }
+    const stored = await local.backend.readWithJournal(id);
     // The file already says what the store holds (a crash after placing it, or a managed-only
     // edit): nothing to send; the record catches up.
     if (stored.document && sameAsStored(bytes, id, stored.document.doc, context.okfVersion)) {
@@ -922,14 +901,7 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     if (seen.has(id) || (context.only && !context.only.has(id))) continue;
     const rel = `${id}.md`;
     if ((await readIfPresent(path.join(folder, rel))) !== null) continue;
-    let stored;
-    try {
-      stored = await local.backend.readWithJournal(id);
-    } catch (error) {
-      if (!(error instanceof MalformedDocumentError)) throw error;
-      report.held.push(storedUnreadable(id, rel, error));
-      continue;
-    }
+    const stored = await local.backend.readWithJournal(id);
     if (entry.deleted || !stored.document) {
       // Deleted on both sides: nothing is left to decide.
       delete projection.files[id];
@@ -1107,13 +1079,12 @@ export async function exportCheckout(
 ): Promise<ExportReport> {
   const report: ExportReport = { placed: [], removed: [], kept: [], held: [] };
   const unsettled = new Set((await store.listIntents(UNSETTLED_STATES)).map((row) => row.target));
-  const heads = await store.readHeads({ project: (head) => ({ id: head.id, version: head.version, raw: head.raw, malformed: head.malformed }) });
+  const heads = await store.readHeads({ project: (head) => ({ id: head.id, version: head.version, raw: head.raw }) });
   const twins = await caseTwins(store, projection);
   const present = new Set<string>();
   for (const head of heads) {
     present.add(head.id);
     if (options.only && !options.only.has(head.id)) continue;
-    if (head.malformed) report.held.push(storedUnreadable(head.id, `${head.id}.md`, head.malformed));
     if (unsettled.has(head.id)) continue;
     const entry = projection.files[head.id];
     if (entry && !entry.deleted && entry.version === head.version) continue;
@@ -1245,14 +1216,7 @@ export async function folderConflictFor(
 ): Promise<FolderConflictReason | null> {
   if (bytes === null) return null;
   if (entry && !entry.deleted && digestOf(bytes) === entry.digest) return null;
-  let read;
-  try {
-    read = await store.readWithJournal(id);
-  } catch (error) {
-    // Held with its own row: the host's version is not known here, and nothing is sent over it.
-    if (error instanceof MalformedDocumentError) return null;
-    throw error;
-  }
+  const read = await store.readWithJournal(id);
   if (read.intents.some((row) => row.state !== "acknowledged")) return null;
   if (!read.document) return entry ? "deleted_remotely" : null;
   // A file that already says what the store holds is in sync, whatever its record says.

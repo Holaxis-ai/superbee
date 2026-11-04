@@ -19,7 +19,13 @@ function frameFields(bytes: Buffer, at: number): { format: number; txn: number; 
   return { format: bytes.readUInt32BE(at + 4), txn, end };
 }
 
-export async function plantStoredDocument(directory: string, id: string, raw: string, version: string): Promise<void> {
+function encode(value: unknown): unknown {
+  if (Array.isArray(value)) return ["A", ...value.map(encode)];
+  if (value !== null && typeof value === "object") return ["O", ...Object.entries(value).flatMap(([key, entry]) => [key, encode(entry)])];
+  return value === undefined ? ["U"] : value;
+}
+
+async function appendChange(directory: string, change: unknown): Promise<void> {
   let txn = 0;
   let format = 3;
   const snapshot = path.join(directory, "store.snapshot");
@@ -35,13 +41,15 @@ export async function plantStoredDocument(directory: string, id: string, raw: st
     if (fields.txn > txn) ({ txn, format } = fields);
     at = fields.end;
   }
-  const value = ["O", "raw", raw, "version", version, "updatedBy", "person:someone", "updatedAt", "2026-01-01T00:00:00.000Z"];
-  const change = ["O", "family", "document", "key", id, "value", value];
-  const payload = Buffer.from(JSON.stringify(["O", "format", format, "txn", txn + 1, "changes", ["A", change]]), "utf8");
+  const payload = Buffer.from(JSON.stringify(encode({ format, txn: txn + 1, changes: [change] })), "utf8");
   const header = Buffer.alloc(HEADER);
   header.writeUInt32BE(RECORD_MAGIC, 0);
   header.writeUInt32BE(format, 4);
   header.writeUInt32BE(payload.byteLength, 8);
   createHash("sha256").update(payload).digest().copy(header, 12);
   await appendFile(log, Buffer.concat([header, payload]));
+}
+
+export function plantStoredDocument(directory: string, id: string, raw: string, version: string): Promise<void> {
+  return appendChange(directory, { family: "document", key: id, value: { raw, version, updatedBy: "person:someone", updatedAt: "2026-01-01T00:00:00.000Z" } });
 }
