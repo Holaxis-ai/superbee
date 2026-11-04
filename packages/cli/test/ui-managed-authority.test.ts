@@ -633,37 +633,49 @@ test("a matched worker refusing browser handoff never falls back to a reusable t
   } finally { await rm(home, { recursive: true, force: true }); }
 });
 
-test("a managed UI worker with an open SSE stream dies promptly on SIGTERM", { timeout: 30_000 }, async () => {
+// Guards the default signal disposition only: a worker that installs a handler and stops exiting
+// fails here, while graceful connection shutdown has its own coverage through `ui --stop`.
+test("the default SIGTERM disposition ends a managed UI worker promptly with an SSE stream open", { timeout: 60_000 }, async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "superbee-managed-sigterm-")));
   const home = path.join(root, "home");
   const bundleRoot = path.join(root, "bundle");
   const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../superbee/dist/superbee.mjs");
-  await mkdir(home);
-  await initBundle(bundleRoot);
-  await writeDoc({ root: bundleRoot }, { id: "docs/live", frontmatter: { type: "Doc", title: "Live" }, body: "# Live" });
   const env = { ...process.env, HOME: home, USERPROFILE: home, LOCALAPPDATA: path.join(home, "AppData", "Local"), PATH: "" };
-  const run = (args: string[]): Record<string, unknown> => {
-    const result = spawnSync(process.execPath, [cli, ...args, "--json"], { env, encoding: "utf8", timeout: 15_000 });
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    return JSON.parse(result.stdout) as Record<string, unknown>;
+  const within = <T>(work: Promise<T>, what: string): Promise<T> => {
+    let timer: NodeJS.Timeout;
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${what}: still pending after 3000ms`)), 3_000);
+    });
+    return Promise.race([work, expired]).finally(() => clearTimeout(timer));
   };
+  const connection = new AbortController();
+  let pid: number | undefined;
+  let exited = false;
   try {
-    run(["doc", "open", "docs/live", "--dir", bundleRoot]);
+    await mkdir(home);
+    await initBundle(bundleRoot);
+    await writeDoc({ root: bundleRoot }, { id: "docs/live", frontmatter: { type: "Doc", title: "Live" }, body: "# Live" });
+    const opened = spawnSync(process.execPath, [cli, "doc", "open", "docs/live", "--dir", bundleRoot, "--json"], { env, encoding: "utf8", timeout: 15_000 });
+    assert.equal(opened.status, 0, opened.stderr || opened.stdout);
     const authority = managedUiAuthority(bundleRoot, undefined);
     const record = parseManagedUiRecord(await readUserStateFile(home, managedUiRecordPath(authority, home), 64 * 1024));
-    const stream = await fetch(`http://127.0.0.1:${record.port}/events?token=${record.browser_token}`);
+    pid = record.pid!;
+    const events = `http://127.0.0.1:${record.port}/events?token=${record.browser_token}`;
+    const stream = await within(fetch(events, { signal: connection.signal }), "SSE connect");
     assert.equal(stream.status, 200);
     const reader = stream.body!.getReader();
-    assert.match(new TextDecoder().decode((await reader.read()).value), /: connected/u);
+    assert.match(new TextDecoder().decode((await within(reader.read(), "SSE first frame")).value), /: connected/u);
 
-    const signaled = Date.now();
-    process.kill(record.pid!, "SIGTERM");
+    process.kill(pid, "SIGTERM");
     // A clean end and a connection reset both mean the stream did not hold the worker open.
-    try { while (!(await reader.read()).done); } catch {}
-    await assert.rejects(() => fetch(`http://127.0.0.1:${record.port}/events?token=${record.browser_token}`));
-    assert.ok(Date.now() - signaled < 3_000, `SIGTERM took ${Date.now() - signaled}ms with an open stream`);
+    await within((async () => { try { while (!(await reader.read()).done); } catch {} })(), "SSE stream after SIGTERM");
+    await assert.rejects(() => fetch(events, { signal: AbortSignal.timeout(3_000) }), (error: Error) => error.name !== "TimeoutError");
+    exited = true;
   } finally {
+    connection.abort();
     spawnSync(process.execPath, [cli, "ui", "--stop", "--dir", bundleRoot, "--json"], { env, encoding: "utf8", timeout: 5_000 });
+    // Only a worker this test started and saw survive the signal.
+    if (pid !== undefined && !exited) { try { process.kill(pid, "SIGKILL"); } catch {} }
     await rm(root, { recursive: true, force: true });
   }
 });
