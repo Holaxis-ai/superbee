@@ -216,7 +216,7 @@ export type { QueryOptions, SkippedDoc } from "./bundle.js";
 // Head-projection scan + its canonical filter predicate — contracts documented at the
 // definition sites (bundle.ts/types.ts). The delete-tolerant batch read they share
 // (`readManyExisting`) is exported from the `engine` subpath, for the cross-bundle resolver.
-export { queryHeads } from "./bundle.js";
+export { queryHeads, classifyChangedPath } from "./bundle.js";
 export { matchesFilter, matchesSourceIdentity, hasSourceIdentity } from "./query-filter.js";
 export { applyQuerySelectionFilters } from "./query-selection.js";
 export type { QuerySelectionParams } from "./query-selection.js";
@@ -245,6 +245,7 @@ export type {
 // Pure, unit-testable path / link / note / freshness helpers.
 export {
   RESERVED_FILENAMES,
+  classifyWalkPath,
   isReservedFile,
   conceptIdFromPath,
   pathFromConceptId,

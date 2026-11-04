@@ -8,7 +8,9 @@
 // when a successfully attached watcher silently misses a notification. Snapshots ride
 // the same head projection `list` uses (`queryHeads`), with all storage reads owned by the engine.
 import { watch as fsWatch, type FSWatcher } from "node:fs";
-import { listBlobs, readBlob, queryHeads, type Bundle } from "@superbee/core";
+import { lstat } from "node:fs/promises";
+import path from "node:path";
+import { classifyChangedPath, listBlobs, readBlob, queryHeads, toPosix, type Bundle } from "@superbee/core";
 import { PAGE_BLOB_PREFIXES } from "./pages.js";
 
 /** The single-bundle reference router's bundle segment (mirrors the SPA client's `BUNDLE`). */
@@ -114,9 +116,28 @@ export interface WatcherHandle {
 }
 
 /** Native notifications are injectable independently of the bundle's storage backend. */
-type WatchDirectory = (root: string, onChange: () => void) => Pick<FSWatcher, "on" | "close">;
+export type WatchDirectory = (root: string, onChange: (filename?: string | null) => void) => Pick<FSWatcher, "on" | "close">;
 
-const watchDirectory: WatchDirectory = (root, onChange) => fsWatch(root, { recursive: true }, onChange);
+export const watchDirectory: WatchDirectory = (root, onChange) =>
+  fsWatch(root, { recursive: true }, (_event, filename) => onChange(filename));
+
+/**
+ * Whether a native notification can change what {@link snapshotBundle} reads. The backend owns what
+ * its walk sees; this adds only the snapshot's own blob scope. Anything it cannot rule out counts,
+ * including a platform that names no path: a false positive costs one rested scan, while a false
+ * negative leaves the change waiting for periodic reconciliation.
+ */
+function hintCanChangeSnapshot(bundle: Bundle, filename: string | null | undefined): boolean | Promise<boolean> {
+  if (filename === null || filename === undefined) return true;
+  const relPath = toPosix(filename);
+  const walkClass = classifyChangedPath(bundle, relPath);
+  if (walkClass === "hidden") return false;
+  if (walkClass !== "other" || PAGE_BLOB_PREFIXES.some((prefix) => relPath.startsWith(prefix))) return true;
+  // A plain file here is outside the snapshot. A directory is not, whatever its name: renaming or
+  // removing one moves every document beneath it, and the platform may report only the directory.
+  // A path already gone cannot say which it was.
+  return lstat(path.join(bundle.root, relPath)).then((entry) => !entry.isFile(), () => true);
+}
 
 interface CommonWatcherOptions {
   onChange: (e: ChangeEvent) => void;
@@ -150,9 +171,13 @@ async function takeSnapshot(opts: WatcherOptions, signal?: AbortSignal): Promise
 /**
  * Start watching for changes, emitting a {@link ChangeEvent} to `opts.onChange` whenever a doc or
  * page blob's version token moves. `--dir` uses `fs.watch` recursively (debounced) plus periodic
- * reconciliation, resting at least 2s or ten times the last scan's duration between scans;
+ * reconciliation, resting at least 2s or ten times the last scan's duration after each scan;
  * `--remote` polls on a fixed interval. Awaits
  * a baseline snapshot before resolving, so the first change is diffed against real state.
+ *
+ * A `--dir` hint the snapshot can see scans at once unless the last hint-answering scan is still
+ * resting, so a lone edit stays prompt while a sustained stream scans once per rest. A hint held
+ * by a rest or an active scan is answered when that ends, never dropped.
  *
  * Snapshot runs are SERIALIZED (tasks/ui-pages-spike P1 — remote concurrency): two overlapping
  * runs could complete out of order — the LATER-started (fresher) one lands first, then the
@@ -213,15 +238,33 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
 
   if (opts.mode === "dir") {
     const debounceMs = opts.debounceMs ?? 150;
+    const bundle = opts.bundle;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const trigger = (): void => {
+    // A relevant hint no started scan has covered yet.
+    let hintPending = false;
+    let scanAnswersHint = false;
+    // The last scan answered a hint and its rest has not elapsed.
+    let resting = false;
+    const startScan = (): void => {
+      scanAnswersHint = hintPending;
+      hintPending = false;
+      void emitDiff();
+    };
+    const armDebounce = (): void => {
       if (stopped) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = undefined;
-        void emitDiff();
+        hintPending = true;
+        if (!running && !resting) startScan();
       }, debounceMs);
       timer.unref?.();
+    };
+    const trigger = (filename?: string | null): void => {
+      if (stopped) return;
+      const relevant = hintCanChangeSnapshot(bundle, filename);
+      if (relevant === true) armDebounce();
+      else if (relevant !== false) void relevant.then((answer) => { if (answer) armDebounce(); });
     };
 
     let watcher: ReturnType<WatchDirectory> | undefined;
@@ -233,16 +276,22 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
       if (reconciliation) clearTimeout(reconciliation);
       reconciliation = setTimeout(() => {
         reconciliation = undefined;
-        // A slow scan already reconciles current state. Only a native hint requests a rerun;
-        // periodic ticks must not keep a large, unchanged bundle scanning without a pause.
+        // Periodic ticks must not keep a large, unchanged bundle scanning without a pause.
         if (running) return; // the active scan rearms on settlement
-        void emitDiff();
+        resting = false;
+        startScan();
       }, Math.max(2000, 10 * lastScanMs));
       reconciliation.unref?.();
     };
-    // Native-triggered and failed scans earn the same rest as periodic scans. Scaling with
-    // measured cost keeps large idle bundles from spending most of their time taking snapshots.
-    onSettled = scheduleReconciliation;
+    // Every scan, failed or not, earns the same rest. Scaling with measured cost keeps large
+    // bundles from spending most of their time taking snapshots. Only a hint-answering scan makes
+    // later hints wait out that rest; a periodic scan's rest does not, or a lone edit would wait
+    // for up to a whole rest on a watcher that had seen no other change.
+    onSettled = (): void => {
+      resting = scanAnswersHint;
+      scheduleReconciliation();
+      if (hintPending && !resting) startScan();
+    };
     scheduleReconciliation();
     try {
       watcher = (opts.watch ?? watchDirectory)(opts.bundle.root, trigger);

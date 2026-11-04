@@ -1,4 +1,5 @@
 import type { BodyReplacePosture } from "./body-replace-guards.js";
+import type { WalkPathClass } from "./paths.js";
 /**
  * Shared type shapes for the OKF store engine.
  *
@@ -375,6 +376,12 @@ export interface StorageBackend {
   existsBlob(key: BlobKey): Promise<boolean>;
   /** Blob keys, optionally restricted to a bundle-relative `prefix`, sorted. Never includes concept documents or reserved files. */
   listBlobs(prefix?: string): Promise<BlobKey[]>;
+  /**
+   * Optional: where a root-relative path reported by a native directory watcher sits relative to
+   * what this backend reads. A backend with no walkable file layout omits it, and a watcher then
+   * treats every notification as relevant.
+   */
+  classifyChangedPath?(relPath: string): WalkPathClass;
   /**
    * Hard-delete the blob at `key` (no tombstone, no history to purge — blobs never
    * carried one). Returns `true` when a blob existed and was removed, `false` when it

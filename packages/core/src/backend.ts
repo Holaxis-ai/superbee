@@ -35,12 +35,16 @@ import {
   assertSafeConceptId,
   assertSafeReservedDir,
   assertSafeReservedFilename,
+  classifyWalkPath,
   compareStorageKeys,
   conceptIdFromPath,
+  hasMarkdownExtension,
+  isHiddenWalkEntry,
   isReservedFile,
   pathFromConceptId,
   toPosix,
 } from "./paths.js";
+import type { WalkPathClass } from "./paths.js";
 import { assertStorableReservedWrite } from "./reserved-write.js";
 import { InvalidInputError } from "./errors.js";
 import {
@@ -122,7 +126,7 @@ async function walkFiles(port: FilesystemIdentityPort, root: string, keep: (name
   const entries = (await port.entries(path.join(root, sub))) ?? [];
   const out: string[] = [];
   for (const entry of entries) {
-    if (entry.name.startsWith(".")) continue; // .git, temp files, dot-dirs: invisible to the walk
+    if (isHiddenWalkEntry(entry.name)) continue;
     const rel = sub === "" ? entry.name : `${sub}/${entry.name}`;
     if (entry.kind === "directory") {
       out.push(...(await walkFiles(port, root, keep, rel)));
@@ -481,11 +485,15 @@ export class FilesystemBackend implements StorageBackend {
     // Skipping dot-entries is what excludes the adapter's own dot-prefixed temp files and `.git`
     // from a blob listing (I3), not just the write-time `assertSafeBlobKey` guard. The
     // `.md`-extension check is case-insensitive, mirroring `assertSafeBlobKey`.
-    const files = await walkFiles(this.#port, this.#root, (name) => !name.toLowerCase().endsWith(".md"));
+    const files = await walkFiles(this.#port, this.#root, (name) => !hasMarkdownExtension(name));
     const keys = files.map(toPosix);
     const filtered = prefix ? keys.filter((k) => k.startsWith(prefix)) : keys;
     filtered.sort(compareStorageKeys);
     return filtered;
+  }
+
+  classifyChangedPath(relPath: string): WalkPathClass {
+    return classifyWalkPath(relPath);
   }
 
   capabilities() {

@@ -36,6 +36,7 @@ export {
   query,
   queryEdges,
   queryHeads,
+  classifyChangedPath,
   readBlob,
   readBundleOkfVersion,
   readDoc,

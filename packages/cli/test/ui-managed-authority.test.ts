@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -631,6 +631,41 @@ test("a matched worker refusing browser handoff never falls back to a reusable t
     assert.equal(runtime.services[0]!.state, "adopted");
     await stopManagedUi(authority, runtime.options);
   } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test("a managed UI worker with an open SSE stream dies promptly on SIGTERM", { timeout: 30_000 }, async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "superbee-managed-sigterm-")));
+  const home = path.join(root, "home");
+  const bundleRoot = path.join(root, "bundle");
+  const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../superbee/dist/superbee.mjs");
+  await mkdir(home);
+  await initBundle(bundleRoot);
+  await writeDoc({ root: bundleRoot }, { id: "docs/live", frontmatter: { type: "Doc", title: "Live" }, body: "# Live" });
+  const env = { ...process.env, HOME: home, USERPROFILE: home, LOCALAPPDATA: path.join(home, "AppData", "Local"), PATH: "" };
+  const run = (args: string[]): Record<string, unknown> => {
+    const result = spawnSync(process.execPath, [cli, ...args, "--json"], { env, encoding: "utf8", timeout: 15_000 });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    return JSON.parse(result.stdout) as Record<string, unknown>;
+  };
+  try {
+    run(["doc", "open", "docs/live", "--dir", bundleRoot]);
+    const authority = managedUiAuthority(bundleRoot, undefined);
+    const record = parseManagedUiRecord(await readUserStateFile(home, managedUiRecordPath(authority, home), 64 * 1024));
+    const stream = await fetch(`http://127.0.0.1:${record.port}/events?token=${record.browser_token}`);
+    assert.equal(stream.status, 200);
+    const reader = stream.body!.getReader();
+    assert.match(new TextDecoder().decode((await reader.read()).value), /: connected/u);
+
+    const signaled = Date.now();
+    process.kill(record.pid!, "SIGTERM");
+    // A clean end and a connection reset both mean the stream did not hold the worker open.
+    try { while (!(await reader.read()).done); } catch {}
+    await assert.rejects(() => fetch(`http://127.0.0.1:${record.port}/events?token=${record.browser_token}`));
+    assert.ok(Date.now() - signaled < 3_000, `SIGTERM took ${Date.now() - signaled}ms with an open stream`);
+  } finally {
+    spawnSync(process.execPath, [cli, "ui", "--stop", "--dir", bundleRoot, "--json"], { env, encoding: "utf8", timeout: 5_000 });
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("built CLI returns while its managed document remains live, then reuses, reports, and stops it", async () => {

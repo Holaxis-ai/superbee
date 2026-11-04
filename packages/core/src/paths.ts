@@ -58,6 +58,26 @@ export function isReservedFile(relPath: string): boolean {
   return (RESERVED_FILENAMES as readonly string[]).includes(base);
 }
 
+/** True for a name the filesystem walk never lists or descends into: `.git`, temp files, dot-dirs. */
+export function isHiddenWalkEntry(name: string): boolean {
+  return name.startsWith(".");
+}
+
+/** True for a file name in the concept-document namespace, case-insensitively, which a blob listing excludes. */
+export function hasMarkdownExtension(name: string): boolean {
+  return name.toLowerCase().endsWith(".md");
+}
+
+/** Where a bundle-relative path sits relative to the filesystem walk. */
+export type WalkPathClass = "hidden" | "markdown" | "other";
+
+/** Classify a bundle-relative path by the walk's own rules: any hidden segment hides it, then the final segment's extension decides. */
+export function classifyWalkPath(relPath: string): WalkPathClass {
+  const segments = toPosix(relPath).split("/").filter((segment) => segment !== "");
+  if (segments.some(isHiddenWalkEntry)) return "hidden";
+  return hasMarkdownExtension(segments.at(-1) ?? "") ? "markdown" : "other";
+}
+
 /**
  * Concept ID from a bundle-relative markdown file path: normalize separators,
  * drop a leading `./` or `/`, and strip the trailing `.md`.
