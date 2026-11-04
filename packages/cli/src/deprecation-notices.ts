@@ -14,6 +14,7 @@ import {
   SUPERBEE_API_KEY_ENV,
   SUPERBEE_NO_UPDATE_CHECK_ENV,
 } from "./env-policy.js";
+import type { InstallScope } from "./install-scope.js";
 import { cliInvocation } from "./invocation.js";
 
 export type DeprecationNoticeCode =
@@ -26,6 +27,7 @@ export type DeprecationNoticeCode =
   | "DEPRECATED_LEGACY_HOOK"
   | "DEPRECATED_LEGACY_SKILL_FOLDER"
   | "DEPRECATED_LEGACY_MCP_REGISTRATION"
+  | "DEPRECATED_LEGACY_USER_STATE"
   | "DEPRECATED_REMOTE_FLAG"
   | "DEPRECATED_SERVE";
 
@@ -34,8 +36,8 @@ export interface DeprecationNotice {
   readonly code: DeprecationNoticeCode;
   readonly old: string;
   readonly replacement: string;
-  /** The exact fix, given this executable's own command prefix. */
-  readonly fix: (cli: string) => string;
+  /** The exact fix, given this executable's own command prefix and any install scopes it found. */
+  readonly fix: (cli: string, scopes: readonly InstallScope[]) => string;
   /** Set on a row its presence in the environment triggers at CLI entry. */
   readonly env?: string;
 }
@@ -52,6 +54,11 @@ function envRow(
     fix: () => `rename ${legacy} to ${canonical} wherever it is set (same value)`,
     env: legacy,
   };
+}
+
+/** The install verbs default to project scope, so a fix must name the scope the old thing is in. */
+function scopedInstalls(cli: string, verb: "hook" | "skill", scopes: readonly InstallScope[]): string {
+  return scopes.map((scope) => `${cli} ${verb} install --scope ${scope}`).join(" and ");
 }
 
 export const DEPRECATION_NOTICES: readonly DeprecationNotice[] = Object.freeze([
@@ -76,19 +83,25 @@ export const DEPRECATION_NOTICES: readonly DeprecationNotice[] = Object.freeze([
     code: "DEPRECATED_LEGACY_HOOK",
     old: "a SessionStart hook written by aslite or agentstate-lite",
     replacement: "the Superbee hook",
-    fix: (cli) => `run ${cli} hook install (add --scope project for a project hook), which replaces it`,
+    fix: (cli, scopes) => `run ${scopedInstalls(cli, "hook", scopes)} from a global install (npm install -g superbee), which replaces it`,
   },
   {
     code: "DEPRECATED_LEGACY_SKILL_FOLDER",
     old: "the aslite skill folder",
     replacement: "the superbee skill folder",
-    fix: (cli) => `run ${cli} skill install, which moves a Superbee-owned folder; delete the folder if it remains`,
+    fix: (cli, scopes) => `run ${scopedInstalls(cli, "skill", scopes)} from a global install (npm install -g superbee), which moves a Superbee-owned folder; delete the folder if it remains`,
   },
   {
     code: "DEPRECATED_LEGACY_MCP_REGISTRATION",
     old: "an aslite-views or agentstate-lite-experimental MCP registration",
     replacement: "the superbee MCP registration",
-    fix: (cli) => `delete that entry from the host configuration, then run ${cli} mcp install --host <id>`,
+    fix: (cli) => `delete that entry from the host configuration, then run ${cli} mcp install --host <id> from a global install (npm install -g superbee)`,
+  },
+  {
+    code: "DEPRECATED_LEGACY_USER_STATE",
+    old: "private state under ~/.agentstate or ~/.config/superbee",
+    replacement: "the canonical Superbee state root",
+    fix: (cli) => `run ${cli} setup migrate-state, which copies it and leaves the old files in place`,
   },
   {
     code: "DEPRECATED_REMOTE_FLAG",
@@ -117,15 +130,22 @@ function requestsByteChannel(argv: readonly string[]): boolean {
     || BYTE_CHANNEL_FLAGS.some((flag) => arg.startsWith(`${flag}=`) && arg.slice(flag.length + 1).trim() === "-"));
 }
 
+function requestsRawField(argv: readonly string[]): boolean {
+  return argv.some((arg) => arg === "--field" || arg.startsWith("--field="));
+}
+
 /**
  * Commands that must carry no notice. A host runs `session-start` and `turn-end` and owns what their
- * streams mean, and neither writes to stderr today. A byte channel puts its parseable receipt and
- * error envelope on stderr, and `publish --json` puts progress there as JSON lines.
+ * streams mean, and neither writes to stderr today. A byte or raw value channel and `mcp` put their
+ * parseable receipt or error envelope on stderr, and `publish --json` puts progress there as JSON
+ * lines.
  */
 export function stderrIsReserved(argv: readonly string[]): boolean {
   const command = argv[0];
   if (command === "session-start" || command === "turn-end") return true;
+  if (command === "mcp") return true;
   if (command === "publish" && argv.includes("--json")) return true;
+  if ((command === "catalog" || (command === "doc" && argv[1] === "read")) && requestsRawField(argv)) return true;
   return requestsByteChannel(argv);
 }
 
@@ -134,14 +154,19 @@ export function renderDeprecationNotice(
   row: DeprecationNotice,
   cli: string,
   locations: readonly string[] = [],
+  scopes: readonly InstallScope[] = ["project", "user"],
 ): string {
   const where = locations.length ? ` (${locations.join(", ")})` : "";
-  const line = `superbee: warning: ${row.old}${where} is deprecated and will be removed; use ${row.replacement} instead. Fix: ${row.fix(cli)}. [${row.code}]`;
+  const line = `superbee: warning: ${row.old}${where} is deprecated and will be removed; use ${row.replacement} instead. Fix: ${row.fix(cli, scopes)}. [${row.code}]`;
   return `${line.replace(/[\u0000-\u001f\u007f]/g, " ")}\n`;
 }
 
 /** Show a row at most once per process, naming where the old thing was found. Never throws. */
-export function emitDeprecationNotice(code: DeprecationNoticeCode, locations: readonly string[] = []): void {
+export function emitDeprecationNotice(
+  code: DeprecationNoticeCode,
+  locations: readonly string[] = [],
+  scopes?: readonly InstallScope[],
+): void {
   if (!open || shown.has(code)) return;
   shown.add(code);
   // Guidance never outranks the command: a stderr that cannot be written costs only the notice. A
@@ -152,7 +177,7 @@ export function emitDeprecationNotice(code: DeprecationNoticeCode, locations: re
     process.stderr.on("error", () => {});
   }
   try {
-    process.stderr.write(renderDeprecationNotice(ROWS.get(code)!, cliInvocation(), locations));
+    process.stderr.write(renderDeprecationNotice(ROWS.get(code)!, cliInvocation(), locations, scopes));
   } catch {
     // A synchronous write failure is the same case.
   }

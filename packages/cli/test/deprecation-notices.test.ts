@@ -1,19 +1,20 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { PROJECT_BINDING_FILE_NAME, SUPERBEE_PROJECT_BINDING_FILE_NAME } from "../src/bundle.js";
+import type { InstallScope } from "../src/install-scope.js";
 import {
   DEPRECATION_NOTICES,
   renderDeprecationNotice,
   stderrIsReserved,
   type DeprecationNoticeCode,
 } from "../src/deprecation-notices.js";
-import { canonicalUserStateDir } from "../src/user-state.js";
+import { canonicalUserStateDir, legacyUserStateDir } from "../src/user-state.js";
 import { pluginFixture, registerFixture } from "./source-plugin-fixture.js";
 import { isolatedUserEnv } from "./support/user-env.js";
 
@@ -29,6 +30,9 @@ interface Run {
 function cleanEnv(home: string, overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env = isolatedUserEnv(home, { SUPERBEE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" });
   for (const row of DEPRECATION_NOTICES) if (row.env) delete env[row.env];
+  // Fixes below really install, so no inherited override may point them at a real host config.
+  for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR"]) delete env[name];
+  env.XDG_CONFIG_HOME = join(home, ".config");
   return { ...env, ...overrides };
 }
 
@@ -54,6 +58,8 @@ interface Fixture {
   base: string;
   home: string;
   project: string;
+  /** The built plugin folder a source pointer row registered from. */
+  pluginRoot?: string;
 }
 
 async function withFixture(body: (fixture: Fixture) => Promise<void>): Promise<void> {
@@ -82,26 +88,44 @@ interface Trigger {
   until?: RegExp;
   /** Where the notice must say it found the old thing. */
   names?: string;
+  /** The install scopes the fix must name. */
+  scopes?: readonly InstallScope[];
   arrange?: (fixture: Fixture) => Promise<void>;
+  /** Do what the fix says. Returns the arguments that replace the old form, when the fix changes them. */
+  applyFix: (fixture: Fixture) => Promise<string[] | void>;
 }
+
+async function runFix(fixture: Fixture, args: string[]): Promise<Run> {
+  const result = await run(args, fixture.project, cleanEnv(fixture.home));
+  assert.equal(result.code, 0, `${args.join(" ")}: ${result.stdout}${result.stderr}`);
+  return result;
+}
+
+const LEGACY_HOOK = {
+  hooks: { SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "aslite session-start", timeout: 10 }] }] },
+};
 
 const LOCAL = ["list", "--dir", "bundle", "--json"];
 
 /** Exactly one trigger per table row: the compile-time map is the agreement with the table. */
+const renamedVariable = async (): Promise<void> => {};
 const TRIGGERS: Record<DeprecationNoticeCode, Trigger> = {
-  DEPRECATED_ENV_ACTOR: { args: LOCAL, env: { AGENTSTATE_LITE_ACTOR: "process:tester" } },
-  DEPRECATED_ENV_API_KEY: { args: LOCAL, env: { AGENTSTATE_LITE_API_KEY: "secret-value" } },
-  DEPRECATED_ENV_NO_UPDATE_CHECK: { args: LOCAL, env: { ASLITE_NO_UPDATE_CHECK: "1" } },
-  DEPRECATED_ENV_NO_AUTOPULL: { args: LOCAL, env: { AGENTSTATE_LITE_NO_AUTOPULL: "1" } },
+  DEPRECATED_ENV_ACTOR: { args: LOCAL, env: { AGENTSTATE_LITE_ACTOR: "process:tester" }, applyFix: renamedVariable },
+  DEPRECATED_ENV_API_KEY: { args: LOCAL, env: { AGENTSTATE_LITE_API_KEY: "secret-value" }, applyFix: renamedVariable },
+  DEPRECATED_ENV_NO_UPDATE_CHECK: { args: LOCAL, env: { ASLITE_NO_UPDATE_CHECK: "1" }, applyFix: renamedVariable },
+  DEPRECATED_ENV_NO_AUTOPULL: { args: LOCAL, env: { AGENTSTATE_LITE_NO_AUTOPULL: "1" }, applyFix: renamedVariable },
   DEPRECATED_PROJECT_BINDING: {
     args: ["list", "--json"],
     names: PROJECT_BINDING_FILE_NAME,
     arrange: ({ project }) => writeJson(join(project, PROJECT_BINDING_FILE_NAME), { bundle: "./bundle" }),
+    applyFix: ({ project }) => rename(join(project, PROJECT_BINDING_FILE_NAME), join(project, SUPERBEE_PROJECT_BINDING_FILE_NAME)),
   },
   DEPRECATED_SOURCE_PLUGIN_POINTER: {
     args: ["source", "plugin", "list", "--json"],
-    arrange: async ({ base, home }) => {
+    arrange: async (fixture) => {
+      const { base, home } = fixture;
       const root = await pluginFixture(base);
+      fixture.pluginRoot = root;
       await registerFixture(root, home);
       const file = join(canonicalUserStateDir(home), "source-plugin-github.json");
       const row = JSON.parse(await readFile(file, "utf8")).plugins[0];
@@ -115,21 +139,28 @@ const TRIGGERS: Record<DeprecationNoticeCode, Trigger> = {
         profile: { id: "github-issues", version: 1 },
       });
     },
+    applyFix: async (fixture) => {
+      const preview = await runFix(fixture, ["source", "plugin", "register", fixture.pluginRoot!, "--json"]);
+      await runFix(fixture, ["source", "plugin", "register", fixture.pluginRoot!, "--accept", JSON.parse(preview.stdout).digest, "--json"]);
+    },
   },
   DEPRECATED_LEGACY_HOOK: {
     args: ["setup", "--host", "claude-code", "--json"],
     names: "settings.json",
-    arrange: ({ home }) => writeJson(join(home, ".claude", "settings.json"), {
-      hooks: { SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "aslite session-start", timeout: 10 }] }] },
-    }),
+    scopes: ["user"],
+    arrange: ({ home }) => writeJson(join(home, ".claude", "settings.json"), LEGACY_HOOK),
+    applyFix: async (fixture) => void await runFix(fixture, ["hook", "install", "--scope", "user"]),
   },
   DEPRECATED_LEGACY_SKILL_FOLDER: {
     args: ["setup", "--host", "claude-code", "--json"],
     names: join(".claude", "skills", "aslite"),
-    arrange: async ({ home }) => {
-      await mkdir(join(home, ".claude", "skills", "aslite"), { recursive: true });
-      await writeFile(join(home, ".claude", "skills", "aslite", "SKILL.md"), "old\n");
+    scopes: ["user"],
+    arrange: async (fixture) => {
+      await runFix(fixture, ["skill", "install", "--scope", "user"]);
+      const skills = join(fixture.home, ".claude", "skills");
+      await rename(join(skills, "superbee"), join(skills, "aslite"));
     },
+    applyFix: async (fixture) => void await runFix(fixture, ["skill", "install", "--scope", "user"]),
   },
   DEPRECATED_LEGACY_MCP_REGISTRATION: {
     args: ["setup", "--host", "opencode", "--json"],
@@ -137,9 +168,29 @@ const TRIGGERS: Record<DeprecationNoticeCode, Trigger> = {
     arrange: ({ home }) => writeJson(join(home, ".config", "opencode", "opencode.json"), {
       mcp: { "aslite-views": { type: "local", command: ["aslite", "mcp"] } },
     }),
+    // `mcp install` needs the host's own binary, so the proof stops at the part the notice depends on.
+    applyFix: ({ home }) => writeJson(join(home, ".config", "opencode", "opencode.json"), { mcp: {} }),
   },
-  DEPRECATED_REMOTE_FLAG: { args: ["list", "--remote", "http://127.0.0.1:9", "--json"] },
-  DEPRECATED_SERVE: { args: ["serve", "--dir", "bundle", "--port", "0", "--json"], until: /listening/ },
+  DEPRECATED_LEGACY_USER_STATE: {
+    args: ["setup", "--host", "claude-code", "--json"],
+    arrange: async ({ home }) => {
+      await rm(canonicalUserStateDir(home), { recursive: true, force: true });
+      const legacy = legacyUserStateDir(home);
+      await mkdir(legacy, { recursive: true, mode: 0o700 });
+      await chmod(legacy, 0o700);
+      await writeFile(join(legacy, "catalog.json"), `${JSON.stringify({ schema_version: 1, entries: [] })}\n`, { mode: 0o600 });
+    },
+    applyFix: async (fixture) => void await runFix(fixture, ["setup", "migrate-state"]),
+  },
+  DEPRECATED_REMOTE_FLAG: {
+    args: ["list", "--remote", "http://127.0.0.1:9", "--json"],
+    applyFix: async () => LOCAL,
+  },
+  DEPRECATED_SERVE: {
+    args: ["serve", "--dir", "bundle", "--port", "0", "--json"],
+    until: /listening/,
+    applyFix: async () => LOCAL,
+  },
 };
 
 test("every row names the old thing, its replacement, a runnable fix and a unique stable code", () => {
@@ -150,10 +201,10 @@ test("every row names the old thing, its replacement, a runnable fix and a uniqu
     assert.match(row.code, /^DEPRECATED_[A-Z_]+$/);
     assert.ok(row.old.trim(), row.code);
     assert.ok(row.replacement.trim(), row.code);
-    assert.ok(row.fix("superbee").trim().length > 10, row.code);
-    const rendered = renderDeprecationNotice(row, "superbee", ["/a\nforged"]);
+    assert.ok(row.fix("superbee", ["user"]).trim().length > 10, row.code);
+    const rendered = renderDeprecationNotice(row, "superbee", ["/a\nforged"], ["user"]);
     assert.equal(rendered.split("\n").length, 2, "one line, newline terminated");
-    assert.ok(rendered.includes(row.fix("superbee")), row.code);
+    assert.ok(rendered.includes(row.fix("superbee", ["user"])), row.code);
     assert.ok(rendered.includes(`[${row.code}]`), row.code);
   }
 });
@@ -170,10 +221,85 @@ for (const row of DEPRECATION_NOTICES) {
     await trigger.arrange?.(fixture);
     const result = await run(trigger.args, fixture.project, cleanEnv(fixture.home, trigger.env), trigger.until);
     assert.equal(result.stderr.split(`[${row.code}]`).length - 1, 1, result.stderr);
-    for (const words of row.fix("\0").split("\0")) assert.ok(result.stderr.includes(words), result.stderr);
+    for (const words of row.fix("\0", trigger.scopes ?? []).split("\0")) assert.ok(result.stderr.includes(words), result.stderr);
     if (trigger.names) assert.ok(result.stderr.includes(trigger.names), result.stderr);
     assert.ok(!result.stdout.includes(row.code), result.stdout);
     assert.ok(!result.stderr.includes("secret-value"), "a notice never prints a value");
+  }));
+
+  test(`doing the fix clears ${row.code}`, () => withFixture(async (fixture) => {
+    const trigger = TRIGGERS[row.code];
+    await trigger.arrange?.(fixture);
+    const before = await run(trigger.args, fixture.project, cleanEnv(fixture.home, trigger.env), trigger.until);
+    assert.ok(before.stderr.includes(`[${row.code}]`), before.stderr);
+    const replacement = await trigger.applyFix(fixture);
+    const after = await run(replacement ?? trigger.args, fixture.project, cleanEnv(fixture.home), trigger.until);
+    assert.ok(!after.stderr.includes(row.code), after.stderr);
+  }));
+}
+
+test("a project-scope legacy hook names --scope project, and that install clears it", () => withFixture(async (fixture) => {
+  const { home, project } = fixture;
+  const args = ["setup", "--host", "claude-code", "--scope", "project", "--json"];
+  await writeJson(join(project, ".claude", "settings.json"), LEGACY_HOOK);
+  const before = await run(args, project, cleanEnv(home));
+  assert.ok(before.stderr.includes("hook install --scope project"), before.stderr);
+  assert.ok(!before.stderr.includes("--scope user"), before.stderr);
+  await runFix(fixture, ["hook", "install", "--scope", "project"]);
+  const after = await run(args, project, cleanEnv(home));
+  assert.ok(!after.stderr.includes("DEPRECATED_LEGACY_HOOK"), after.stderr);
+}));
+
+test("a default setup also reaches a project-scope legacy hook and names its scope", () => withFixture(async ({ home, project }) => {
+  await writeJson(join(project, ".claude", "settings.json"), LEGACY_HOOK);
+  const result = await run(["setup", "--host", "claude-code", "--json"], project, cleanEnv(home));
+  assert.ok(result.stderr.includes("hook install --scope project"), result.stderr);
+  assert.ok(!result.stderr.includes("hook install --scope user"), result.stderr);
+}));
+
+test("a skill folder install cannot claim stays named until the person deletes it", () => withFixture(async (fixture) => {
+  const { home, project } = fixture;
+  const folder = join(home, ".claude", "skills", "aslite");
+  const args = ["setup", "--host", "claude-code", "--json"];
+  await mkdir(folder, { recursive: true });
+  await writeFile(join(folder, "SKILL.md"), "old\n");
+  await runFix(fixture, ["skill", "install", "--scope", "user"]);
+  const still = await run(args, project, cleanEnv(home));
+  assert.ok(still.stderr.includes("delete the folder if it remains"), still.stderr);
+  await rm(folder, { recursive: true });
+  const after = await run(args, project, cleanEnv(home));
+  assert.ok(!after.stderr.includes("DEPRECATED_LEGACY_SKILL_FOLDER"), after.stderr);
+}));
+
+test("bare home with --remote carries the notice, with the same stdout and exit code", () => withFixture(async ({ home, project }) => {
+  const remote = ["--remote", "http://127.0.0.1:9"];
+  const result = await run(remote, project, cleanEnv(home));
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(result.stderr.split("[DEPRECATED_REMOTE_FLAG]").length - 1, 1, result.stderr);
+  assert.ok(!result.stdout.includes("DEPRECATED"), result.stdout);
+}));
+
+test("session-start with --remote stays silent", () => withFixture(async ({ home, project }) => {
+  const result = await run(["session-start", "--remote", "http://127.0.0.1:9"], project, cleanEnv(home));
+  assert.equal(result.stderr, "");
+}));
+
+for (const [label, args] of [
+  ["catalog resolve --field path", ["catalog", "resolve", "absent", "--field", "path"]],
+  ["catalog resolve --field=path", ["catalog", "resolve", "absent", "--field=path"]],
+  ["doc read --field", ["doc", "read", "absent/doc", "--dir", "bundle", "--field", "head_version"]],
+  ["doc read --out -", ["doc", "read", "absent/doc", "--dir", "bundle", "--out", "-"]],
+  ["pull --out -", ["pull", "--doc-key", "absent/doc", "--dir", "bundle", "--out", "-"]],
+  ["mcp", ["mcp", "--bogus"]],
+] as const) {
+  test(`a ${label} failure keeps its stderr envelope and exit code byte for byte`, () => withFixture(async ({ home, project }) => {
+    const clean = await run([...args], project, cleanEnv(home));
+    const noticed = await run([...args], project, cleanEnv(home, { AGENTSTATE_LITE_ACTOR: "process:tester" }));
+    assert.notEqual(clean.code, 0);
+    assert.ok(clean.stderr.length > 0, "the proof needs an envelope on stderr");
+    assert.equal(noticed.stderr, clean.stderr);
+    assert.equal(noticed.stdout, clean.stdout);
+    assert.equal(noticed.code, clean.code);
   }));
 }
 
@@ -227,8 +353,11 @@ test("commands whose stderr is a contract are reserved, in every flag spelling",
     ["doc", "read", "a", "--body-out=-"],
     ["pull", "a", "--out=-"],
     ["doc", "read", "a", "--rendered-out", "-"],
+    ["doc", "read", "a", "--field", "head_version"],
+    ["catalog", "resolve", "a", "--field=path"],
+    ["mcp"],
   ]) assert.equal(stderrIsReserved(argv), true, argv.join(" "));
-  for (const argv of [["publish"], ["doc", "read", "a", "--out", "file"], ["list", "--json"], ["mcp"], []]) {
+  for (const argv of [["publish"], ["doc", "read", "a", "--out", "file"], ["list", "--json", "--field", "a=b"], []]) {
     assert.equal(stderrIsReserved(argv), false, argv.join(" "));
   }
 });
