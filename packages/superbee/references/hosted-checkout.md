@@ -229,6 +229,22 @@ superbee sync                                 # sends what keep or revise decide
   them.
 - If you cannot tell which version is right, ask the person. Do not merge by guessing.
 
+## A document this client cannot read
+
+A host document this client cannot store does not stop `checkout` or `sync`. It comes back as a
+`held` row whose reason is its `FRONTMATTER_*` code, the receipt's `status` is `incomplete`, and the
+command exits 5. The document is not placed, the rest of the bundle is, and edits to other documents
+are sent. Tell the person which document it is: it has to be repaired on the host, and the next sync
+then places it without any step here. If you edited an older copy in the folder, that edit comes
+back as a conflict: `--inspect` says what it cannot show, `--resolve take` is refused, and
+`--resolve keep` sends your version against the version inspected.
+
+If the checkout's local store holds a copy it cannot read, sync and the other hosted verbs stop with
+exit 5 and `details.reason` `store_damaged`, naming the documents. Nothing is sent or placed and your files
+are not changed. Reads continue, and `status` reports `state: store_damaged`. Copy any unsent edits
+out of the folder, then follow the error's help: `superbee checkout --release <folder>`, then a
+fresh `superbee checkout`.
+
 ## Document history
 
 In a checkout, `superbee doc history <id>` reads the host's version chain, not the folder: every
@@ -252,6 +268,21 @@ Read a large document a page at a time instead of pulling it whole into context:
 when the whole body fit in one page, so never loop on it. A page is not the document: never write
 it back as the body. To edit, use `doc read <id> --body-out <path-outside-bundle>`, edit that file,
 then `doc update <id> --body-file <path> --expected-version <version>`.
+
+## View pages: `view read` and `view update`
+
+Sync never sends `views/`. To change a View's page on the host:
+
+```sh
+superbee view read <viewId> --out <new-file>      # version and size; --out saves the exact bytes
+superbee view update <viewId> --expected-version <sha256:...> --file <path>
+```
+
+`--file` defaults to the View's entry in the checkout folder. `--expected-version` is the version you
+started from: if the host's page has moved, nothing changes and the command names the host's version.
+A page is at most 512 KiB of UTF-8. If the answer is lost, the command reads the page once and reports
+whether the update applied; it never resends on its own. Uploading never approves execution: a site
+keeps serving the version it pins until that pin moves, and a hosted app slot needs approving again.
 
 ## Notifications: `notify` and `inbox`
 

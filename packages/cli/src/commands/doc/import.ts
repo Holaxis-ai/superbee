@@ -74,7 +74,8 @@ Caveats: resume writes the remaining documents even if this bundle has since dro
 Reference-style definitions ([x]: ../f.md) are copied unchanged and listed as reference_definition.
 
 The source alias must be declared in this bundle's docs/dependencies ('superbee deps add') and
-the copy must declare the same bundle_id ('superbee bundle id set').
+the copy must declare the same bundle_id ('superbee bundle id set'). This bundle must be a local
+bundle or Git board: --remote and hosted checkouts are refused.
 
 Options:
   --from <alias>          The declared alias of the source bundle                     [required]

@@ -127,6 +127,53 @@ In a hosted checkout, `superbee view read <id>` prints a View page's version on 
 `superbee view update <id> --expected-version <version>` replaces the page there (sync never sends
 `views/`). Uploading a page never approves its execution.
 
+## Copying documents between bundles
+
+`superbee doc import` copies chosen documents from another bundle with new ids and rewritten links.
+Declare the source first, then review the plan before applying it:
+
+```sh
+superbee deps add wave --bundle-id <source-bundle-id> --path ../wave
+superbee doc import --from wave --with wave=../wave --select type=Theme --prefix wave
+superbee doc import --from wave --with wave=../wave --select type=Theme --prefix wave --apply <plan-token>
+superbee doc import --from wave --with wave=../wave --refresh <record-id>
+```
+
+The first import command only prints the plan and its token. Applying writes new documents and one
+Promotion record, and never overwrites a document. `--resume <record-id>` finishes an interrupted
+run. `--refresh <record-id>` updates the copies from their sources with the same plan and apply
+steps; a copy edited since the import is a conflict until you name it with `--overwrite <id>` or
+`--skip <id>`. The target must be a local bundle or Git board. `superbee doc import --help` has the
+full reference.
+
+## When a document cannot be read
+
+Superbee bounds how much frontmatter it parses: 256 KiB of YAML, 32 levels of nesting, and limits on
+YAML alias use. Ordinary documents are far below these limits. A write over a limit is refused with
+`USAGE` and nothing is stored. A document already in the bundle that is over a limit, or whose YAML
+is invalid, cannot be read:
+
+- `doc read` on it fails with `RUNTIME`. `details.frontmatter.code` is `FRONTMATTER_TOO_LARGE`,
+  `FRONTMATTER_TOO_DEEP`, `FRONTMATTER_ALIAS_LIMIT`, `FRONTMATTER_CYCLE` or
+  `FRONTMATTER_MALFORMED`, and `details.frontmatter.document` names the file.
+- To find every affected document, run `superbee status` (the `malformed` count and rows) or
+  `superbee list` (the `skipped` rows). `query`, `view list` and `kinds --coverage` also skip it and
+  keep working.
+- **Known limitation:** until it is fixed, `search`, `index generate`, `link list` and `link show`
+  fail for the whole bundle with that same error.
+- To fix it, edit the lines between the `---` markers in a text editor, or remove the document with
+  `superbee doc delete <id>`. `doc update` and `doc field` cannot change a document they cannot read.
+
+On a Git board, `sync` holds a changed file it cannot read: it exits 5, names the file, and commits
+and pushes nothing until you fix it. If a conflict kept a version that cannot be read, the receipt
+tells you to copy your saved export over the document.
+
+In a hosted checkout, a host document this client cannot store comes back as a `held` row named with
+its `FRONTMATTER_*` code, exit 5, and everything else proceeds. The next sync places it once it is
+repaired on the host. If the checkout's own local store holds a copy it cannot read, sync stops with
+`store_damaged` and sends and places nothing. Reads continue and `status` reports it. Copy out any
+unsent edits and make a fresh checkout, as the error's help describes.
+
 ## Upgrading from aslite
 
 If you installed the earlier `@holaxis/aslite` package or its marketplace plugin: install
@@ -139,6 +186,8 @@ run `npm uninstall -g @holaxis/aslite`. Existing `.agentstate-lite/` bundles and
 The [repository](https://github.com/Holaxis-ai/superbee) holds the source, the
 [CLI contract](https://github.com/Holaxis-ai/superbee/blob/main/packages/superbee/AXI-CONTRACT.md),
 and the [wire protocol](https://github.com/Holaxis-ai/superbee/blob/main/docs/WIRE-PROTOCOL.md).
+Site builders can read a publication's Site declaration through `superbee/publication/site-manifest`;
+see [Site declarations](https://github.com/Holaxis-ai/superbee/blob/main/packages/publication/SITE-MANIFEST.md).
 
 ## License
 

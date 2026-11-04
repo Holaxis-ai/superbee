@@ -58,6 +58,38 @@ CLI exposes them.
 Put write-time guidance in a Kind's field or value descriptions, never its body: a write that
 sets a described value returns that description as `guidance`.
 
+## Copy documents from another bundle
+
+Use `superbee doc import` when documents should exist here under their own ids instead of being
+linked with `okf:` links. Declare the source with `superbee deps add <alias> --bundle-id <id>`. The
+copy you bind with `--with` must declare the same bundle id.
+
+```sh
+superbee doc import --from <alias> --with <alias>=<path> --select type=<T> --prefix <p>
+superbee doc import --from <alias> --with <alias>=<path> --select type=<T> --prefix <p> --apply <plan-token>
+superbee doc import --from <alias> --with <alias>=<path> --refresh <record-id>
+```
+
+Without `--apply` the command only prints the plan. Show the person the plan, then apply its exact
+token. An import writes new documents plus one Promotion record and never overwrites. A refresh
+treats a copy edited since the import as a `target_edited` conflict: ask the person whether to name
+it with `--overwrite <id>` (discards the edit) or `--skip <id>`. On `TRANSFER_PLAN_CHANGED`, read
+the new plan before applying again. On `TRANSFER_INTERRUPTED`, run `--resume <record-id>`. Hosted
+checkouts and `--remote` are refused.
+
+## When a document cannot be read
+
+Frontmatter parsing is bounded, so a write over a limit is refused with `USAGE` and nothing is
+stored. A stored document over a limit, or with invalid YAML, fails `doc read` with `RUNTIME` and
+`details.frontmatter.code` (`FRONTMATTER_TOO_LARGE`, `FRONTMATTER_TOO_DEEP`,
+`FRONTMATTER_ALIAS_LIMIT`, `FRONTMATTER_CYCLE` or `FRONTMATTER_MALFORMED`).
+
+`superbee status` and `superbee list` name affected documents. Until one is fixed, `search`,
+`index generate`, `link list` and `link show` fail for the whole bundle; `list`, `query`, `status`
+and `view list` skip it. `doc update` and `doc field` cannot change it. Editing the frontmatter in
+the file or running `superbee doc delete <id>` restores those commands. Removing or rewriting
+someone's document is the person's call, so ask first.
+
 ## Evolve from use
 
 Refine fields or relationships only after actual instances expose a recurring need. Package a
