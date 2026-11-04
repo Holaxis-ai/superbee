@@ -260,8 +260,10 @@ URL with redirects refused. Each read has its own size and time cap, and one com
 deadline and one 16 MiB byte budget across the index and every file. Any other scheme, and an https:
 URL carrying a username or password, is `USAGE` with `details.reason` `RECIPE_INDEX_SCHEME_REFUSED`
 before any request; credentials are never echoed. Core verifies each recipe against its pinned
-`files_digest` and `source_digest` and decodes it as strict UTF-8 before the bundle is opened, and an
-cookbook is verified whole before its first write. Refusals keep the taxonomy, with the Core code in
+`files_digest` and `source_digest` and decodes it as strict UTF-8 before the bundle is opened, and a
+cookbook is verified whole before its first write. A member can still fail on what the target bundle
+already holds after earlier members are written; the error names `failed_recipe` and
+`installed_before_failure` in `details`, and a rerun converges once the reported cause is fixed. Refusals keep the taxonomy, with the Core code in
 `details.reason`: a digest mismatch is `INTEGRITY_MISMATCH` (exit 1) and names the failed pin in
 `details.digest` (`files_digest` or `source_digest`); a timeout, a network failure, an HTTP 5xx or the
 deadline is `TRANSIENT` (exit 1); a missing file, an HTTP 4xx, an escape, a budget overrun, invalid
