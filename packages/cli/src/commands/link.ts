@@ -50,6 +50,7 @@ import {
   parseQualifiedLinks,
   emitLinkHref,
   resolveQualifiedLinks,
+  type SkippedDoc,
   type QualifiedLink,
   type Bundle,
   type EdgeFilter,
@@ -953,7 +954,8 @@ async function linkShow(
     }
   }
 
-  const inbound = (await backlinks(bundle, id)).filter((l) => !isQualifiedHref(l.href));
+  const skipped: SkippedDoc[] = [];
+  const inbound = (await backlinks(bundle, id, { onSkip: row => skipped.push(row) })).filter((l) => !isQualifiedHref(l.href));
   // Distinct link texts across BOTH directions, captured BEFORE filtering — fuel for the
   // zero-match near-miss hint below. Exact match means a typo ('contain' for 'contains') would
   // otherwise read as an empty graph; naming what IS there mirrors `doc read --field`'s
@@ -983,6 +985,7 @@ async function linkShow(
   const payload: Record<string, unknown> = {
     id,
     exists,
+    ...(skipped.length ? { skipped } : {}),
     outbound_count: outbound.length,
     outbound: outboundShown,
     backlink_count: inboundMatched.length,
@@ -1119,11 +1122,12 @@ async function linkList(argv: string[], stdout: (s: string) => void): Promise<vo
   if (fromSelectors.length > 0) scopeFilter.from = fromSelectors;
   if (toSelectors.length > 0) scopeFilter.to = toSelectors;
 
+  const skipped: SkippedDoc[] = [];
   let scopedEdges: Link[];
   try {
     // A malformed `okf:` href without `//` also parses as a local relative edge; it is a
     // cross-bundle link (invalid_ref in status), never a local one.
-    scopedEdges = (await queryEdges(bundle, scopeFilter)).filter((e) => !isQualifiedHref(e.href));
+    scopedEdges = (await queryEdges(bundle, scopeFilter, { onSkip: row => skipped.push(row) })).filter((e) => !isQualifiedHref(e.href));
   } catch (err) {
     throw classifyBundleError(err, values.remote);
   }
@@ -1134,7 +1138,7 @@ async function linkList(argv: string[], stdout: (s: string) => void): Promise<vo
   const shownRows = limit > 0 ? rows.slice(0, limit) : rows;
   const truncated = shownRows.length < total;
 
-  const out: Record<string, unknown> = { count: total, edges: shownRows };
+  const out: Record<string, unknown> = { count: total, edges: shownRows, ...(skipped.length ? { skipped } : {}) };
   if (truncated) out.shown = shownRows.length;
 
   const help: string[] = [];

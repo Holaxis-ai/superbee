@@ -137,8 +137,8 @@ export async function queryEdges(
   return engine.queryEdges(backendFor(bundle), filter, options);
 }
 
-export async function backlinks(bundle: Bundle, target: ConceptId): Promise<Link[]> {
-  return engine.backlinks(backendFor(bundle), target);
+export async function backlinks(bundle: Bundle, target: ConceptId, options: engine.QueryOptions = {}): Promise<Link[]> {
+  return engine.backlinks(backendFor(bundle), target, options);
 }
 
 export async function readBlob(bundle: Bundle, key: BlobKey): Promise<ReadBlobResult | null> {

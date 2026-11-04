@@ -13,8 +13,8 @@ import {
   normalizeV01DocumentForWrite,
   normalizeV02DocumentForWrite,
 } from "./document-write-policy.js";
-import { FilesystemIdentityAliasError, InvalidInputError } from "./errors.js";
-import { isUsableTimestamp, MalformedDocumentError } from "./frontmatter-contract.js";
+import { InvalidInputError } from "./errors.js";
+import { isUsableTimestamp } from "./frontmatter-contract.js";
 import { parseLinksFromDoc } from "./links.js";
 import { assertSafeConceptId, isReservedFile, pathFromConceptId } from "./paths.js";
 import { parseLeadingFrontmatter } from "./portable-frontmatter.js";
@@ -36,6 +36,10 @@ import type {
   WriteOptions,
 } from "./types.js";
 
+import { readManyExisting, type QueryOptions, type SkippedDoc } from "./document-scan.js";
+export { readManyExisting } from "./document-scan.js";
+export type { QueryOptions, SkippedDoc } from "./document-scan.js";
+
 export { MalformedDocumentError } from "./frontmatter-contract.js";
 export type { EdgeFilter, Link } from "./types.js";
 
@@ -43,17 +47,6 @@ export type { EdgeFilter, Link } from "./types.js";
 export interface WriteResult {
   doc: OkfDocument;
   version: Version;
-}
-
-/** A document a resilient scan skipped because it was malformed. */
-export interface SkippedDoc {
-  id: ConceptId;
-  reason: string;
-}
-
-/** Options for document and head scans. */
-export interface QueryOptions {
-  onSkip?: (skip: SkippedDoc) => void;
 }
 
 /** Read the bundle-root OKF edition through an explicit backend. */
@@ -184,51 +177,6 @@ export async function deleteDoc(
   return backend.delete(id, options);
 }
 
-function isEnoent(err: unknown): boolean {
-  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "ENOENT";
-}
-
-/**
- * Delete-tolerant batch read: one `readMany`, falling back to per-id reads only when the batch
- * fails because an id vanished (or, with `onMalformed`, because one document is malformed, or,
- * with `onAliased`, because one id is spelled differently on disk). Absent ids are simply missing
- * from the result; a malformed or aliased id is reported through its hook and skipped. Any other
- * failure still throws. Shared by the scan path and the cross-bundle resolver, which issues one
- * call per bound alias.
- */
-export async function readManyExisting(
-  backend: StorageBackend,
-  ids: ConceptId[],
-  onMalformed?: (skip: SkippedDoc) => void,
-  onAliased?: (skip: SkippedDoc) => void,
-): Promise<ReadResult[]> {
-  try {
-    return await backend.readMany(ids);
-  } catch (err) {
-    const malformed = err instanceof MalformedDocumentError && onMalformed !== undefined;
-    const aliased = err instanceof FilesystemIdentityAliasError && onAliased !== undefined;
-    if (!isEnoent(err) && !malformed && !aliased) throw err;
-    const out: ReadResult[] = [];
-    for (const id of ids) {
-      try {
-        out.push(await backend.read(id));
-      } catch (candidate) {
-        if (isEnoent(candidate)) continue;
-        if (candidate instanceof MalformedDocumentError && onMalformed) {
-          onMalformed({ id, reason: candidate.detail });
-          continue;
-        }
-        if (candidate instanceof FilesystemIdentityAliasError && onAliased) {
-          onAliased({ id, reason: candidate.message });
-          continue;
-        }
-        throw candidate;
-      }
-    }
-    return out;
-  }
-}
-
 async function scanMatching(
   backend: StorageBackend,
   filter: QueryFilter,
@@ -317,9 +265,9 @@ export async function queryEdges(
   return edges;
 }
 
-export async function backlinks(backend: StorageBackend, target: ConceptId): Promise<Link[]> {
+export async function backlinks(backend: StorageBackend, target: ConceptId, options: QueryOptions = {}): Promise<Link[]> {
   if (target.endsWith("/")) return [];
-  return queryEdges(backend, { to: target });
+  return queryEdges(backend, { to: target }, options);
 }
 
 export async function readBlob(backend: StorageBackend, key: BlobKey): Promise<ReadBlobResult | null> {

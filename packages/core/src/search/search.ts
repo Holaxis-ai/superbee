@@ -212,8 +212,10 @@ export async function searchDocuments(
     typeof batch?.key !== "string" ||
     batch.key === "" ||
     !Array.isArray(batch.documents) ||
+    (batch.skipped !== undefined && (!Array.isArray(batch.skipped) || batch.skipped.some(row => typeof row?.id !== "string" || typeof row?.reason !== "string"))) ||
     !isCount(batch.volume) ||
-    ![size?.documents, size?.indexed, size?.skipped, size?.reindexPending].every(isCount)
+    ![size?.documents, size?.indexed, size?.skipped, size?.reindexPending].every(isCount) ||
+    (batch.skipped?.length ?? 0) > size.skipped
   )
     throw new TypeError("the search source answered a malformed evidence batch");
   // The same bound on every source, whether or not the source stopped before its walk.
@@ -272,6 +274,7 @@ export async function searchDocuments(
       ...(ignoredTerms.length === 0 ? {} : { ignoredTerms: [...ignoredTerms] }),
     },
     total: hits.length,
+    ...(batch.skipped?.length ? { skipped: batch.skipped.map(row => ({ ...row })) } : {}),
     ...(wanted.size === 0 ? {} : { facets: facetsOf(hits, wanted) }),
     ...(start + count < hits.length ? { nextCursor: encodeCursor(binding, start + count) } : {}),
     corpus: {

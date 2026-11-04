@@ -1,3 +1,4 @@
+import type { SkippedDoc } from "../document-scan.js";
 /**
  * The `documents.search.v1` contract: its constants, request and result types, and the frontmatter
  * fields a search reads. Ranking and index limits are portal-webmcp 0.3.1's (algorithm
@@ -131,6 +132,8 @@ export interface SearchFacetValueV1 {
 
 export interface SearchResultV1 {
   readonly hits: readonly SearchHitV1[];
+  /** Unreadable documents omitted from this corpus; absent for a complete read. */
+  readonly skipped?: readonly SkippedDoc[];
   readonly query: {
     readonly requestedMatch: SearchMatchV1;
     readonly effectiveMatch: SearchMatchModeV1;

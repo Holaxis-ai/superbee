@@ -16,6 +16,7 @@ Usage:
     [--limit <1..50>] [--cursor <token>] [--facets type,tags] [--json] [--dir <path>]
 
 Searches current local bytes, including unsent checkout edits. Default limit: 10.
+Unreadable documents are omitted and reported under skipped; storage failures still stop the search.
 Prefixes are literal canonical bundle-relative ID prefixes; a trailing / is allowed.
 Use --cursor with the same query, filters and unchanged bundle to continue.
 --remote is unavailable; select a local folder or checkout with --dir.
@@ -61,6 +62,7 @@ export async function search(argv: string[], deps: { stdout?: (s: string) => voi
       query: { match: result.query.effectiveMatch, fallback: result.query.fallbackUsed,
         ignored: result.query.ignoredTerms ?? [] },
       corpus: result.corpus,
+      ...(result.skipped?.length ? { skipped: result.skipped } : {}),
       ...(result.facets ? { facets: result.facets } : {}),
       ...(result.guidance ? { guidance: result.guidance } : {}),
       help: `${cliInvocation()} doc read <id>`,
