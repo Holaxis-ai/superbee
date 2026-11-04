@@ -2650,3 +2650,25 @@ test("blob admission owns explicit actor refusal after its own hosted classifica
     assert.equal(await readFile(file, "utf8"), "must not be admitted");
   } finally { await rm(h.home, { recursive: true, force: true }); await rm(h.cwd, { recursive: true, force: true }); }
 });
+
+test("blob admission captures plain request data before extracting transient policy", async t => {
+  const h = await harness(), key = "capture-actor.bin", file = path.join(h.folder, key);
+  try {
+    await writeFile(file, "plain-data boundary");
+    const before = await retainedBlobRows(h);
+    for (const shape of ["cwd accessor", "actor accessor", "nonplain prototype", "hidden property", "symbol property"]) await t.test(shape, async () => {
+      let evaluations = 0;
+      const request = { operation: "promote" as const, key, source: file, dir: h.folder, home: h.home, cwd: h.cwd };
+      if (shape === "cwd accessor") Object.defineProperty(request, "cwd", { enumerable: true, get() { evaluations++; return h.cwd; } });
+      if (shape === "actor accessor") Object.defineProperty(request, "explicitActor", { enumerable: true, get() { evaluations++; return "process:explicit"; } });
+      if (shape === "nonplain prototype") Object.setPrototypeOf(request, { inherited: true });
+      if (shape === "hidden property") Object.defineProperty(request, "hidden", { value: true });
+      if (shape === "symbol property") Object.defineProperty(request, Symbol("policy"), { enumerable: true, value: true });
+      await assert.rejects(admitOfflineBlob(request), /journal guard/);
+      assert.equal(evaluations, 0);
+      assert.deepEqual(await retainedBlobRows(h), before);
+      assert.equal(h.host.writes.length, 0);
+      assert.equal(await readFile(file, "utf8"), "plain-data boundary");
+    });
+  } finally { await rm(h.home, { recursive: true, force: true }); await rm(h.cwd, { recursive: true, force: true }); }
+});

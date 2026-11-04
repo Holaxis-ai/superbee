@@ -503,8 +503,7 @@ export async function admitOfflineBlob(options: {
   const { readCheckoutMarker } = await import("./marker.js");
   const { withIdleCheckoutStore } = await import("./checkout-store.js");
   const { CliError } = await import("../errors.js");
-  const { explicitActor, ...request } = options;
-  const input = captureJournalValue(request);
+  const { explicitActor, ...input } = captureJournalValue(options);
   const target = await resolveLocalBundleTarget(input.dir, input.cwd);
   const binding = await bindingForPath(input.home, target.canonicalRoot);
   if (!binding) {
