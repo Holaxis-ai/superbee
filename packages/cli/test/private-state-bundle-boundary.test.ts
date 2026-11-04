@@ -36,6 +36,7 @@ import {
   relateToPrivateState,
   type PrivateStateRelation,
 } from "../src/private-state-bundle-boundary.js";
+import { privilegedLinuxSkip, sudo } from "./support/privileged-linux.js";
 import { boundaryFixture, runCli, type BoundaryFixture } from "./support/private-state-fixtures.js";
 import { isolatedUserEnv } from "./support/user-env.js";
 import { syncExportsRoot } from "../src/cursor.js";
@@ -422,6 +423,59 @@ test("a different spelling of an EXISTING state root is refused (the shipped cas
     assert.match(aliased.stdout, /private user-state directory cannot be used as an OKF bundle/);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Specification S12 with a real bind mount: a second mount point onto private state is one inode
+// under two paths, and the relation must see through it in all three directions.
+test("a Linux bind mount that crosses the private boundary is refused", { skip: privilegedLinuxSkip() }, () => {
+  const root = scratch();
+  const mounts: string[] = [];
+  const bind = (source: string, target: string): void => {
+    mkdirSync(target, { recursive: true });
+    sudo(["mount", "--bind", source, target]);
+    mounts.push(target);
+  };
+  let failed = true;
+  try {
+    const home = path.join(root, "home");
+    mkdirSync(home, { recursive: true });
+    const stateRoot = canonicalUserStateDir(home);
+    mkdirSync(stateRoot, { recursive: true, mode: 0o700 });
+    mkdirSync(path.join(stateRoot, "inner"), { mode: 0o700 });
+
+    // The mount is real: it shows the source's device and inode under another path.
+    const onState = path.join(root, "mounted-state");
+    bind(stateRoot, onState);
+    const source = statSync(stateRoot, { bigint: true });
+    const mounted = statSync(onState, { bigint: true });
+    assert.equal(`${mounted.dev}:${mounted.ino}`, `${source.dev}:${source.ino}`, "the bind mount must alias the state directory");
+
+    assert.equal(relateToPrivateState(onState, stateRoot), "identical");
+    assert.equal(relateToPrivateState(path.join(onState, "inner"), stateRoot), "bundle-inside-state");
+
+    const onHome = path.join(root, "mounted-home");
+    bind(home, onHome);
+    assert.equal(relateToPrivateState(onHome, stateRoot), "bundle-contains-state");
+
+    for (const dir of [onState, path.join(onState, "inner"), onHome]) {
+      const result = run(process.execPath, [CLI, "init", "--dir", dir, "--json"], root, isolatedUserEnv(home));
+      assert.equal(result.status, 5, `${dir}: ${result.stderr || result.stdout}`);
+      assert.match(String(result.stdout), /OKF bundle cannot|private user-state directory cannot/);
+    }
+    failed = false;
+  } finally {
+    // Never recurse through a mount that is still attached: that would delete the source.
+    let detached = true;
+    for (const target of mounts.reverse()) {
+      try {
+        sudo(["umount", target]);
+      } catch (error) {
+        detached = false;
+        if (!failed) throw error;
+      }
+    }
+    if (detached) rmSync(root, { recursive: true, force: true });
   }
 });
 
