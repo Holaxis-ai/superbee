@@ -25,6 +25,7 @@ import path from "node:path";
 
 import { commitLocal, deleteLocal, UNSETTLED_STATES, type LocalBundle } from "@superbee/browser-local";
 import { DOCUMENT_DELETE_KIND, equalJournalValue } from "@superbee/core/journaled-backend";
+import type { MalformedDocumentCode } from "@superbee/core";
 import { assertSafeConceptId, BodyReplaceError, conceptIdFromPath, guardDroppedLinks, CONVENTION_TYPE, InvalidInputError, isConventionId, isReservedFile, MalformedDocumentError, parseLinksFromDoc, parseMarkdown, VersionConflict, type Frontmatter, type JournaledBackend, type OkfDocument } from "@superbee/core";
 import { DELETIONS_HELD_REFUSAL_CODE, MAXIMUM_ACCEPTED_DELETIONS, type HostedDefinitionWrites, type HostedRootWrites, FRONTMATTER_KEY_LIMIT, HOSTED_MANAGED_FIELDS, WHOLE_DOCUMENT_BOUNDS, wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
 import { mintRequestId } from "@superbee/core/uncertain-write";
@@ -145,6 +146,8 @@ export interface ProjectionEntry {
 export interface ProjectionRecord {
   /** Document id to its entry. */
   files: Record<string, ProjectionEntry>;
+  /** Why the last run held the host's root, kept for a status preview, which makes no request. */
+  rootHeld?: { code: MalformedDocumentCode; message: string };
   /** The digest of the root `index.md` as exported, or null without one. */
   root: string | null;
   /**
@@ -192,7 +195,8 @@ export type HeldReason =
   | "not_sendable"
   | "case_collision"
   | "unsafe_id"
-  | "dropped_links";
+  | "dropped_links"
+  | MalformedDocumentCode;
 
 export interface HeldFile {
   /** The document id, or the folder-relative path when the file is not a document. */
@@ -200,6 +204,8 @@ export interface HeldFile {
   readonly path: string;
   readonly reason: HeldReason;
   readonly message: string;
+  /** The message is the whole statement: the host's document may have no file in the folder to speak of. */
+  readonly standalone?: true;
 }
 
 /** A document whose file was deleted and whose deletion this scan journaled, with the documents that still link to it. */
@@ -459,6 +465,11 @@ async function readProjectionJson(home: string, checkoutId: string): Promise<unk
   }
 }
 
+function rootHeldOf(value: unknown): { rootHeld?: { code: MalformedDocumentCode; message: string } } {
+  const held = value as { code?: unknown; message?: unknown } | null | undefined;
+  return typeof held?.code === "string" && typeof held.message === "string" ? { rootHeld: { code: held.code as MalformedDocumentCode, message: held.message } } : {};
+}
+
 /**
  * The checkout's projection record. A checkout written before sync (schema 1) recorded only the
  * exported digests; each such document was exported from the store as it still is, so its
@@ -494,6 +505,7 @@ export async function readProjection(home: string, checkoutId: string, store: Jo
       ...(sent && typeof sent.version === "string" && (sent.base === null || typeof sent.base === "string") ? { rootSent: { version: sent.version, base: sent.base } } : {}),
       ...(raw.rootWrites === "allowed" ? { rootWrites: "allowed" as const } : {}),
       ...((value as { rootConflicted?: unknown }).rootConflicted === true ? { rootConflicted: true as const } : {}),
+      ...rootHeldOf((value as { rootHeld?: unknown }).rootHeld),
       ...(Object.keys(discarded).length > 0 ? { discarded } : {}),
       ...(Object.keys(extras).length > 0 ? { extras } : {}),
     };
@@ -535,7 +547,7 @@ export async function folderMatchesProjection(folder: string, projection: Projec
 
 export async function writeProjection(home: string, checkoutId: string, record: ProjectionRecord): Promise<void> {
   const sorted = Object.fromEntries(Object.entries(record.files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
-  await writeUserStateFileAtomic0600(home, checkoutDir(home, checkoutId), PROJECTION_FILE, `${JSON.stringify({ schema: PROJECTION_SCHEMA, files: sorted, root: record.root, ...(record.rootBase !== undefined ? { rootBase: record.rootBase } : {}), ...(record.rootSent ? { rootSent: record.rootSent } : {}), ...(record.rootWrites === "allowed" ? { rootWrites: "allowed" } : {}), ...(record.rootConflicted ? { rootConflicted: true } : {}), ...(record.discarded && Object.keys(record.discarded).length > 0 ? { discarded: record.discarded } : {}), ...(record.extras && Object.keys(record.extras).length > 0 ? { extras: record.extras } : {}) })}\n`);
+  await writeUserStateFileAtomic0600(home, checkoutDir(home, checkoutId), PROJECTION_FILE, `${JSON.stringify({ schema: PROJECTION_SCHEMA, files: sorted, root: record.root, ...(record.rootBase !== undefined ? { rootBase: record.rootBase } : {}), ...(record.rootSent ? { rootSent: record.rootSent } : {}), ...(record.rootWrites === "allowed" ? { rootWrites: "allowed" } : {}), ...(record.rootConflicted ? { rootConflicted: true } : {}), ...(record.rootHeld ? { rootHeld: record.rootHeld } : {}), ...(record.discarded && Object.keys(record.discarded).length > 0 ? { discarded: record.discarded } : {}), ...(record.extras && Object.keys(record.extras).length > 0 ? { extras: record.extras } : {}) })}\n`);
 }
 
 /** Every file under the folder, relative and POSIX-spelled; dot-files and dot-folders are skipped. */

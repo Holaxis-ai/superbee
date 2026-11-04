@@ -50,6 +50,7 @@ import { bundleAbsent } from "../hosted/refusals.js";
 import { hostedBundleReferenceText, parseHostedBundleReference } from "../hosted/reference.js";
 import { hostedCheckoutFor } from "../hosted/sync.js";
 import { classifyCheckout, hostedStatus } from "../hosted/status.js";
+import { storeOpenFailure } from "../hosted/sync-rows.js";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 import { bindingHostArgument, CHECKOUT_MARKER_DIR, readCheckoutMarker, removeCheckoutMarker } from "../hosted/marker.js";
 import {
@@ -508,6 +509,8 @@ interface Journal {
   readonly kept_local: readonly string[];
   /** Documents deleted in the folder and not sent: the host's copies are not put back. */
   readonly deleted_locally: readonly string[];
+  /** Documents the host holds that this client cannot store, so they were not placed. Absent in older journals. */
+  readonly held_paths?: readonly string[];
   readonly unsent_kept: number;
 }
 
@@ -693,6 +696,7 @@ function inPlaceReceipt(folder: string, journal: Journal, finished: Finished, ho
     ...(journal.deleted_locally.length > 0
       ? { deleted_locally: journal.deleted_locally.length, deleted_locally_paths: shown(journal.deleted_locally), deleted_locally_note: "deleted in this folder and not sent; the host's copies were not put back" }
       : {}),
+    ...(journal.held_paths?.length ? { held_documents: journal.held_paths.length, held_paths: shown([...journal.held_paths]), held_note: "this client cannot store the host's copies, so they were not placed in this folder; they stay on the host" } : {}),
     ...(journal.unsent_kept > 0 ? { unsent_kept: journal.unsent_kept, unsent_note: "changes sync had not sent stay in this folder only" } : {}),
     ...(finished.git ? { git: finished.git } : {}),
     hosted: HOSTED_UNCHANGED,
@@ -783,7 +787,7 @@ async function exportInPlace(dirArg: string | undefined, git: boolean, keepUnsen
     throw new CliError("CONFLICT", `another command holds the checkout lock for ${folder}`, { details: { reason: "checkout_busy", folder }, help: "wait for it to finish, then retry the same command" });
   }
   const unsentRefusal = (count: number, sync: Record<string, unknown>) =>
-    new CliError("CONFLICT", `the checkout of '${binding.bundle_id}' at ${folder} has ${count} change(s) not on the host`, {
+    new CliError("CONFLICT", `the checkout of '${binding.bundle_id}' at ${folder} has ${count} document(s) out of step with the host (unsent changes, conflicts or held files)`, {
       details: {
         reason: "unsent_changes",
         folder,
@@ -809,10 +813,12 @@ async function exportInPlace(dirArg: string | undefined, git: boolean, keepUnsen
         throw new CliError("CONFLICT", `the checkout at ${folder} changed while it was exported`, { details: { reason: "checkout_changed", folder }, help: "retry the same command" });
       }
       // Under the lock no sync or edit through Superbee can move the folder's state: decide here.
-      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id), readOnly: true });
+      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id), readOnly: true }).catch((error: unknown) => { throw storeOpenFailure(error, binding); });
       let pending: Set<string>;
+      let unstorable: Set<string>;
       try {
         const classified = await classifyCheckout(binding, deps.auth.home, store);
+        unstorable = new Set([...classified.held].filter(([, reason]) => reason.startsWith("FRONTMATTER_")).map(([id]) => id));
         pending = new Set([...classified.unsent, ...classified.conflicts, ...classified.held.keys(), ...classified.heldDeletions, ...classified.blobs.filter(row => row.state !== "clean").map(row => row.key)]);
       } finally {
         await store.close();
@@ -825,10 +831,15 @@ async function exportInPlace(dirArg: string | undefined, git: boolean, keepUnsen
       const adds: string[] = [];
       const kept: string[] = [];
       const deletedLocally: string[] = [];
+      const heldPaths: string[] = [];
       let same = 0;
       for (const entry of exported.entries) {
         const id = entry.kind === "document" ? entry.path.slice(0, -3) : entry.path;
         const placement = await placementOf(folder, entry);
+        if (placement === "add" && (unstorable.has(id) || unstorable.has(entry.path))) {
+          heldPaths.push(entry.path);
+          continue;
+        }
         if (placement === "add" && pending.has(id)) {
           // Deleted here and not sent: putting the host's copy back would undo the person's delete.
           deletedLocally.push(entry.path);
@@ -855,7 +866,8 @@ async function exportInPlace(dirArg: string | undefined, git: boolean, keepUnsen
         same,
         kept_local: kept,
         deleted_locally: deletedLocally,
-        unsent_kept: pending.size,
+        ...(heldPaths.length > 0 ? { held_paths: heldPaths } : {}),
+        unsent_kept: pending.size - unstorable.size,
       };
       await writeJournal(staging, journal);
       // The binding goes before any file lands, so no sync ever sees a half-converted folder.

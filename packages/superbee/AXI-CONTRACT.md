@@ -264,6 +264,27 @@ diagnostic's `frontmatter_code`. Evidence: `packages/core/test/frontmatter-limit
 `packages/cli/test/doc-field.test.ts` and the frontmatter rows in
 `packages/cli/test/error-boundary.test.ts`.
 
+A hosted document this client cannot store stops neither `checkout` nor `sync`. The receipt carries
+a `held` row whose reason is the document's `FRONTMATTER_*` code, `status` is `incomplete`, and the
+command exits 5 as for any held row. The document is not placed, the rest of the bundle is, and
+local edits to other documents are sent. It is read again on every later sync, so once it is
+repaired where it is stored the next sync places it. It never reads as a deletion, and an edit of an
+older copy in the folder comes back as a conflict. `status`, a repeated `checkout` and `publish` name
+the same holds, and `export --in-place` refuses them as it does other held files unless
+`--keep-unsent` is given, which leaves them out and lists them as `held_paths`. A checkout whose local
+store holds a record it cannot read stops before sending or placing anything: every hosted verb
+refuses with exit 5 and `details.reason` `store_damaged`, naming the documents and their codes, its
+help says to copy out unsent edits and make a fresh checkout, and `status` reports
+`state: store_damaged`. `sync --inspect` on such a conflict, the root
+`index.md` included, carries `remote.unstorable` with the `code` and `message`, and
+`remote.full_version` and `take_unavailable` say what cannot be shown or taken. `--resolve take` is
+refused with exit 5, `details.reason` set to the code, and nothing changed; `keep` sends your version
+against the version inspected. When a Git board's converged conflict kept a version whose frontmatter
+is refused, its row carries `theirs_refused` with the code, and the help names copying the saved
+export over the document. Evidence: `packages/cli/test/hosted-sync-unstorable.test.ts`,
+`packages/browser-local/test/pull-unstorable.test.ts` and
+`packages/cli/test/sync-git-conflict-verbs.test.ts`.
+
 ## Evidence map
 
 Every numbered row has one help/source anchor and one behavioral test anchor. The repository test

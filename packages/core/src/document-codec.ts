@@ -10,6 +10,7 @@ export {
   stringifyWithData,
   normalizeDocumentBodyForStorage,
   MalformedDocumentError,
+  isStackExhaustion,
 } from "./frontmatter.js";
 export type { ParseDocumentOptions } from "./frontmatter.js";
 export { resolveContentType } from "./content-type.js";

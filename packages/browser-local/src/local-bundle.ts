@@ -62,7 +62,7 @@ import { captureBodyReplacePosture, type BodyReplacePosture } from "@superbee/co
  */
 
 import type { Bundle, ConceptId, OkfDocument, ReadResult, StorageBackend, Version, WriteOptions } from "@superbee/core";
-import { stringifyDoc } from "@superbee/core/document-codec";
+import { FrontmatterRefusedError, isStackExhaustion, MalformedDocumentError, parseMarkdown, stringifyDoc } from "@superbee/core/document-codec";
 import { BODY_DELIVERY_LIMITS, performBodyDelivery, prepareBodyDelivery, reconcileBodyReceipt, assertSameBodyDelivery, type BodyDeliveryTransport } from "@superbee/core/governed-body-write";
 import { parseIsoInstant } from "@superbee/core/verification";
 import { versionOfBytes } from "@superbee/core/versioning";
@@ -86,7 +86,7 @@ import {
   type NewIntentRecord,
 } from "@superbee/core/journaled-backend";
 import type { KindRegistry } from "@superbee/core/kinds";
-import { deletionBound, acceptsRefusal, type RefusedDeletions, type RefusedDeletionsReason } from "@superbee/core/platform";
+import { deletionBound, acceptsRefusal, type RefusedDeletions, type RefusedDeletionsReason, type UnstorableDocument as PlatformUnstorableDocument } from "@superbee/core/platform";
 import type { RemoteBackend, WireCapabilities } from "@superbee/core/remote";
 import { InvalidInputError } from "@superbee/core/storage";
 import { isSnapshotRestart } from "@superbee/core/hosted-transport";
@@ -208,6 +208,10 @@ export interface SharedBase {
    * next pull fetches it as though the head had moved, which also clears this.
    */
   refetch?: true;
+  /** On a conflict review: why `content` is null while `version` names a document the authority serves. */
+  unstorable?: UnstorableDocument;
+  /** With `unstorable`: the served body, so a review can show what a keep would replace. */
+  unstorableBody?: string;
 }
 
 /** Whether the working copy already holds the authority's `version` as its shared base. */
@@ -233,6 +237,51 @@ export type DeletionRefusalReason = RefusedDeletionsReason;
  */
 export type DeletionRefusal = RefusedDeletions;
 
+/**
+ * A document the authority serves whose frontmatter this working copy cannot store. It is left
+ * out of the working copy and the rest of the verb proceeds. A verb that holds one records no
+ * digest, so every later pull reads the document again and places it once it can be stored.
+ * Its id stays in the listing, so it never reads as a deletion; a copy already held stays at its
+ * shared base, and a local edit of that copy meets the authority's compare-and-swap at push.
+ */
+export type UnstorableDocument = PlatformUnstorableDocument;
+
+/** The id an {@link UnstorableDocument} carries for the bundle's root `index.md`, which is a file rather than a document. */
+const ROOT_INDEX_ID = "index.md";
+
+function unstorableDocument(id: ConceptId, error: FrontmatterRefusedError): UnstorableDocument {
+  return { id, code: error.code, message: error.message };
+}
+
+/**
+ * The hold a failed write of `doc` amounts to, or null for any other failure. A guarded write
+ * captures its document before serializing it, so a value nested far past the limit exhausts the
+ * stack there first: a stack error is a hold only when the codec itself refuses the document.
+ */
+function unstorableWrite(error: unknown, doc: OkfDocument): UnstorableDocument | null {
+  if (error instanceof FrontmatterRefusedError) return unstorableDocument(doc.id, error);
+  if (!isStackExhaustion(error)) return null;
+  try {
+    stringifyDoc(doc.frontmatter, doc.body ?? "");
+    return null;
+  } catch (refusal) {
+    return refusal instanceof FrontmatterRefusedError ? unstorableDocument(doc.id, refusal) : null;
+  }
+}
+
+/**
+ * Refuses a document whose stored form this client could not read back, such as a body opening
+ * with a fence under empty frontmatter, so the pull holds it instead of damaging the store.
+ */
+function assertReadsBack(doc: OkfDocument): void {
+  try {
+    parseMarkdown(stringifyDoc(doc.frontmatter, doc.body ?? ""), doc.id);
+  } catch (error) {
+    if (error instanceof MalformedDocumentError) throw new FrontmatterRefusedError("FRONTMATTER_MALFORMED", error.message);
+    throw error;
+  }
+}
+
 export interface BootstrapMarker {
   generation: number;
   startedAt: string;
@@ -241,8 +290,9 @@ export interface BootstrapMarker {
   documentCount?: number;
   /**
    * The heads digest the snapshot announced and the working copy now matches; the first
-   * `If-None-Match` a later pull sends. Absent when hydrated by list, and absent when the
-   * snapshot's deletions were refused, since the working copy then holds more than the digest names.
+   * `If-None-Match` a later pull sends. Absent when hydrated by list, when the snapshot's
+   * deletions were refused, since the working copy then holds more than the digest names, and
+   * when a document could not be stored, since it then holds less.
    */
   headsDigest?: string;
   /**
@@ -255,6 +305,8 @@ export interface BootstrapMarker {
   deleted?: ConceptId[];
   /** The deletions a snapshot bootstrap refused to apply; see {@link DeletionRefusal}. */
   refused?: DeletionRefusal;
+  /** Documents left out because their frontmatter cannot be stored; see {@link UnstorableDocument}. */
+  unstorable?: UnstorableDocument[];
   /** Observations recorded during hydration, such as a local token differing from the shared one. */
   findings?: string[];
 }
@@ -281,10 +333,12 @@ export interface PullMarker {
   refreshed: number;
   /** True when the authority answered the conditional heads request with `304`: nothing changed, nothing was fetched. */
   unchanged: boolean;
-  /** The heads digest the working copy matched when this pull completed. Absent for a pull by list, and when deletions were refused. */
+  /** The heads digest the working copy matched when this pull completed. Absent for a pull by list, when deletions were refused, and when a document could not be stored. */
   headsDigest?: string;
   /** The deletions this pull refused to apply; see {@link DeletionRefusal}. */
   refused?: DeletionRefusal;
+  /** Documents this pull left out because their frontmatter cannot be stored; see {@link UnstorableDocument}. */
+  unstorable?: UnstorableDocument[];
   /**
    * The token of the exact-mode pull that wrote this marker, fresh for every pull, so two pulls
    * never write the same marker and each can tell whether the marker is still its own. Absent on
@@ -570,6 +624,9 @@ export interface BootstrapOptions extends FetchOptions {
  * document at a version the authority served and no digest, as the list path completes, so the
  * next pull asks unconditionally. Without `heads` the restart stands.
  *
+ * A document whose frontmatter cannot be stored is left out and named in the marker's `unstorable`
+ * ({@link UnstorableDocument}); every other document is hydrated, and no digest is recorded.
+ *
  * Otherwise the ids are listed and fetched in batches
  * that travel concurrently (see {@link FetchOptions}); each batch is written as it arrives,
  * through the same per-document write, and nothing is removed. A failed batch leaves the
@@ -588,13 +645,20 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
   const generation = (previous?.generation ?? 0) + 1;
   const startedAt = new Date().toISOString();
   await backend.writeMeta(BOOTSTRAP_KEY, { generation, startedAt, complete: false } satisfies BootstrapMarker);
+  /** By id: a resumed snapshot reads a document it could not store again, and may now store it. */
+  const unstorable = new Map<ConceptId, UnstorableDocument>();
 
   if (bodyMode) {
     await seedBodyRoot(backendOf(local), bodyMode);
     await assertBodyRemoteEdition(remote, bodyMode);
   } else {
     const rootIndex = await remote.readReserved("", "index.md");
-    if (rootIndex) await backend.writeReserved("", "index.md", rootIndex.content);
+    try {
+      if (rootIndex) await backend.writeReserved("", "index.md", rootIndex.content);
+    } catch (error) {
+      if (!(error instanceof FrontmatterRefusedError)) throw error;
+      unstorable.set(ROOT_INDEX_ID, unstorableDocument(ROOT_INDEX_ID, error));
+    }
   }
 
   const findings: string[] = [];
@@ -607,6 +671,7 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
     if (bodyMode) await assertBodyRemoteEdition(remote, bodyMode);
     const id = head.doc.id;
     try {
+      assertReadsBack(head.doc);
       const { version } = await backend.writeJournaled(id, head.doc, {
         ...(premises ? { guard: premises.guard(id) } : {}),
         requireSettled: true,
@@ -616,9 +681,12 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
         findings.push(`'${id}': local token ${version} differs from shared token ${head.version}`);
       }
       written.set(id, head.version);
+      unstorable.delete(id);
     } catch (error) {
-      if (!(error instanceof IntentHoldConflict)) throw error;
-      held.push(id);
+      const refused = unstorableWrite(error, head.doc);
+      if (refused) unstorable.set(id, refused);
+      else if (error instanceof IntentHoldConflict) held.push(id);
+      else throw error;
     }
     // Take the index before awaiting the hook: another worker's completion can interleave
     // with an awaiting hook, and the index must stay unique per hydrated document.
@@ -703,7 +771,7 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
     held.push(...reconciled.held);
     refused = reconciled.refused;
     documentCount = listed.size;
-    if (refused === undefined && consistent) headsDigest = digest;
+    if (refused === undefined && consistent && unstorable.size === 0) headsDigest = digest;
   } else {
     const ids = await remote.list();
     await forEachBatch(chunked(ids, batchSize), concurrency, async (batch) => {
@@ -724,6 +792,7 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
     ...(held.length > 0 ? { held } : {}),
     ...(deleted.length > 0 ? { deleted } : {}),
     ...(refused === undefined ? {} : { refused }),
+    ...(unstorable.size > 0 ? { unstorable: [...unstorable.values()] } : {}),
     ...(findings.length > 0 ? { findings } : {}),
   };
   await backend.writeMeta(BOOTSTRAP_KEY, marker);
@@ -1160,10 +1229,20 @@ export async function readConflictResolution(local: LocalTarget, id: ConceptId):
   return receipt?.id === identity && receipt.reviewed?.id === id ? receipt : undefined;
 }
 
-async function readConflictRemote(remote: StorageBackend, id: ConceptId): Promise<{ base: SharedBase; doc: OkfDocument | null }> {
+/**
+ * The shared head of a conflict. Given `admitUnstorable`, a head whose frontmatter cannot be
+ * stored is answered with its version, no content and the reason, so a review can still show the
+ * conflict and keep or revise can answer it. Taking it is refused by the write itself.
+ */
+async function readConflictRemote(remote: StorageBackend, id: ConceptId, admitUnstorable = false): Promise<{ base: SharedBase; doc: OkfDocument | null }> {
   try {
     const read = await remote.read(id);
-    return { base: { version: read.version, content: stringifyDoc(read.doc.frontmatter, read.doc.body ?? "") }, doc: read.doc };
+    try {
+      return { base: { version: read.version, content: stringifyDoc(read.doc.frontmatter, read.doc.body ?? "") }, doc: read.doc };
+    } catch (error) {
+      if (!admitUnstorable || !(error instanceof FrontmatterRefusedError)) throw error;
+      return { base: { version: read.version, content: null, unstorable: unstorableDocument(id, error), unstorableBody: read.doc.body ?? "" }, doc: read.doc };
+    }
   } catch (error) {
     if ((error as { code?: unknown })?.code === "ENOENT") return { base: { version: null, content: null }, doc: null };
     throw error;
@@ -1223,7 +1302,7 @@ export async function inspectConflict(local: LocalTarget, remote: StorageBackend
   const mode = await admitBodyMode(backendOf(local));
   if (mode) await bodySnapshot(backendOf(local), id, mode);
   const { snapshot, intents, document } = await conflictLocal(backend, id, mode !== null);
-  const shared = await readConflictRemote(remote, id);
+  const shared = await readConflictRemote(remote, id, mode === null);
   return {
     id,
     local: document ? { version: document.version, content: snapshot.raw! } : { version: DELETION_VERSION, content: DELETION_CONTENT, deleted: true },
@@ -1273,7 +1352,7 @@ export async function resolveConflict(
   const localVersion = current.document?.version ?? DELETION_VERSION;
   const localContent = current.document ? current.snapshot.raw : DELETION_CONTENT;
   if (localVersion !== review.local.version || localContent !== review.local.content || current.deleting !== (review.local.deleted === true)) throw new ConflictReviewStaleError();
-  const shared = await readConflictRemote(remote, review.id);
+  const shared = await readConflictRemote(remote, review.id, true);
   const reviewedShared = reviewedRemote(shared.base, current.intents[0]!);
   if (reviewedShared.version !== review.remote.version || reviewedShared.content !== review.remote.content || reviewedShared.tombstone !== review.remote.tombstone) throw new ConflictReviewStaleError();
   if (current.deleting && selected.kind === "revise") throw new InvalidInputError("A deletion in conflict is resolved by keeping the deletion or taking the shared version.");
@@ -1890,13 +1969,18 @@ export interface PullOptions extends FetchOptions {
 
 export interface PullReport {
   refreshed: ConceptId[];
-  /** Documents left alone because an unsettled intent targets them; push discovers any divergence. */
+  /**
+   * Documents left alone: because an unsettled intent targets them, and push discovers any
+   * divergence, or because they cannot be stored, and {@link PullReport.unstorable} says why.
+   */
   held: ConceptId[];
   unchanged: ConceptId[];
   /** Documents the authority no longer lists, removed from the working copy with their base. Only a pull by heads removes anything. */
   deleted: ConceptId[];
   /** Present when the heads listing implied deletions this pull refused to apply; see {@link DeletionRefusal}. */
   refused?: DeletionRefusal;
+  /** Present when the authority serves documents whose frontmatter cannot be stored; see {@link UnstorableDocument}. */
+  unstorable?: UnstorableDocument[];
   /**
    * Present when another realm's pull marked, or an acknowledgement settled, after this pull
    * marked, so this exact-mode pull stopped writing: what it lists is what it wrote before
@@ -2029,6 +2113,11 @@ async function lastKnownDigest(backend: JournaledBackend): Promise<{ digest: str
  * fetched document read back at the version the listing named: otherwise the working copy is
  * not that listing's state, and the next pull asks unconditionally.
  *
+ * A fetched document whose frontmatter cannot be stored is held and named in `unstorable`
+ * ({@link UnstorableDocument}); every other document is applied and deletions are reconciled as
+ * usual, with its id still listed. No digest is recorded, so the next pull asks unconditionally,
+ * reads it again, and places it once the authority's copy can be stored.
+ *
  * In exact mode over an adapter with `journalSnapshotCas`, a pull is fenced by its own marker.
  * It marks with a fresh `run` token as a compare-and-swap over the marker its digest was read
  * from (re-reading on a race, and after {@link PULL_MARK_ATTEMPTS} races marking with no digest
@@ -2051,9 +2140,12 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
   const startedAt = new Date().toISOString();
   let known: string | undefined;
   let fence: PullFence | undefined;
+  // An unfinished pull learned nothing about them: what is held stays named until one completes.
+  const carried = (await syncStatus(local)).unstorable;
+  const heldUntilCompleted = carried === undefined ? {} : { unstorable: carried };
   if (!bodyMode && backend.journalSnapshotCas === true) {
     const acknowledged = await backend.readMeta<AcknowledgedMarker>(ACKNOWLEDGED_KEY);
-    const marker: PullMarker = { startedAt, completedAt: null, refreshed: 0, unchanged: false, run: mintRequestId() };
+    const marker: PullMarker = { startedAt, completedAt: null, refreshed: 0, unchanged: false, ...heldUntilCompleted, run: mintRequestId() };
     for (let attempt = 0; ; attempt++) {
       // Read before the in-progress marker replaces the last pull's record, which may carry the digest.
       const last = await lastKnownDigest(backend);
@@ -2072,7 +2164,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
   } else {
     // Read before the in-progress marker replaces the last pull's record, which may carry the digest.
     known = (await lastKnownDigest(backend)).digest;
-    await backend.writeMeta(PULL_KEY, { startedAt, completedAt: null, refreshed: 0, unchanged: false } satisfies PullMarker);
+    await backend.writeMeta(PULL_KEY, { startedAt, completedAt: null, refreshed: 0, unchanged: false, ...heldUntilCompleted } satisfies PullMarker);
   }
   if (bodyMode) { await assertBodyEdition(backendOf(local), bodyMode); await assertBodyRemoteEdition(remote, bodyMode); }
   const report: PullReport = { refreshed: [], held: [], unchanged: [], deleted: [] };
@@ -2093,6 +2185,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
       unchanged,
       ...(headsDigest === undefined ? {} : { headsDigest }),
       ...(report.refused === undefined ? {} : { refused: report.refused }),
+      ...(report.unstorable === undefined ? {} : { unstorable: report.unstorable }),
       ...(fence ? { run: fence.marker.run } : {}),
     };
     try {
@@ -2122,6 +2215,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
     }
     const expectedVersion = fenced ? fenced.version : await localVersion(backend, id);
     try {
+      assertReadsBack(head.doc);
       await backend.writeJournaled(id, head.doc, {
         ...(premises ? { guard: premises.guard(id) } : fenced ? { guard: fenced.guard } : {}),
         expectedVersion,
@@ -2130,6 +2224,13 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
       });
       report.refreshed.push(id);
     } catch (error) {
+      const refused = unstorableWrite(error, head.doc);
+      if (refused) {
+        consistent = false;
+        report.held.push(id);
+        (report.unstorable ??= []).push(refused);
+        return;
+      }
       // A local commit landed during the round trip: its intent holds this document now. The
       // version check is kept for a plain local write that journals nothing.
       if (error instanceof IntentHoldConflict || (error as { name?: unknown })?.name === "VersionConflict") {
@@ -2234,6 +2335,8 @@ export interface SyncStatus {
   bootstrapComplete: boolean;
   generation: number | null;
   lastPull: PullMarker | null;
+  /** What the latest of the last bootstrap and the last pull left out; see {@link UnstorableDocument}. */
+  unstorable?: UnstorableDocument[];
   /**
    * Present only when some document's acknowledged history failed to retire on
    * {@link RETIREMENT_DIAGNOSTIC_FAILURES} consecutive attempts through this opened working copy. Commits and settles
@@ -2253,6 +2356,8 @@ export async function syncStatus(local: LocalTarget): Promise<SyncStatus> {
   const marker = await backend.readMeta<BootstrapMarker>(BOOTSTRAP_KEY);
   const lastPull = await backend.readMeta<PullMarker>(PULL_KEY);
   const retirement = retirementDiagnostics(backendOf(local));
+  const pulledSince = lastPull !== undefined && (marker?.completedAt === undefined || lastPull.startedAt >= marker.completedAt);
+  const unstorable = pulledSince ? lastPull.unstorable : marker?.unstorable;
   return {
     counts,
     paused: control?.paused === true,
@@ -2260,6 +2365,7 @@ export async function syncStatus(local: LocalTarget): Promise<SyncStatus> {
     bootstrapComplete: marker?.complete === true,
     generation: marker?.generation ?? null,
     lastPull: lastPull ?? null,
+    ...(unstorable === undefined ? {} : { unstorable }),
     ...(retirement.length ? { retirementFailures: retirement } : {}),
   };
 }
