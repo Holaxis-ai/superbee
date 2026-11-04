@@ -201,7 +201,9 @@ async function takeSnapshot(opts: WatcherOptions, signal?: AbortSignal): Promise
  * resting, so a lone edit stays prompt while a sustained stream scans once per rest, or once per
  * {@link HELD_HINT_MAX_WAIT_MS} when the rest is longer. A hint held by a rest or an active scan is
  * answered when that ends, never dropped. A hint may scan straight after a periodic scan, so one
- * scan per rest can follow another without a pause.
+ * scan per rest can follow another without a pause. The cap bounds hints only: a change no hint
+ * names, such as deleting a file created by link and unlink on macOS, waits for the periodic rest,
+ * which is uncapped so that a costly scan keeps its CPU bound.
  *
  * Snapshot runs are SERIALIZED (tasks/ui-pages-spike P1 — remote concurrency): two overlapping
  * runs could complete out of order — the LATER-started (fresher) one lands first, then the
