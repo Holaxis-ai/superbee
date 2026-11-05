@@ -403,8 +403,8 @@ function renderNode(node: RootContent | Node, state: WalkState, depth: number, i
       if (resolved === null) {
         // A browser can't nest anchors, and an anchor with no words is a stop with no name.
         const hasContent = /\S/.test(textOf(node)) || (node as Parent).children.some((child) => child.type === "image");
-        const external = insideLink || !hasContent ? null : admitExternalLink(raw, state.options.externalLinks);
-        if (external !== null) {
+        const external = admitExternalLink(raw, state.options.externalLinks);
+        if (external !== null && !insideLink && hasContent) {
           return (
             <a key={index} href={external} rel="noopener noreferrer" target="_blank" className="doc-link-external">
               {children}

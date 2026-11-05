@@ -42,8 +42,9 @@ anchor carries the parsed URL's canonical serialization, never the raw Markdown 
 resolve first; the policy sees only targets the resolver rejects.
 
 Set the policy in trusted host code. Never read it from a document, Kind, recipe, View manifest,
-bundle record or tool argument. `renderDocumentToStaticHtml` takes no options, because it is the
-adapter behind a View's `render-document`, and Views stay link-free. A host's sealed room is the one exception: its host list comes from content that host validated and sealed.
+bundle record or tool argument, except a host's sealed room, whose host list comes from content
+that host validated and sealed. `renderDocumentToStaticHtml` takes no options, because it is the
+adapter behind a View's `render-document`, and Views stay link-free.
 
 Body, node and depth limits bound presentation; the host must show
 the returned `bounded` state rather than imply the entire document was rendered.
