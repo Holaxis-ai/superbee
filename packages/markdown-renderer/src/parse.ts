@@ -12,6 +12,8 @@ import type { Root } from "mdast";
 export const MAX_BLOCK_SCORE = 4.4e8;
 /** Emphasis markers in one block, which bounds inline nesting. */
 export const MAX_BLOCK_EMPHASIS = 4_000;
+/** Sum over blocks of emphasis markers squared. */
+export const MAX_EMPHASIS_SCORE = 1e8;
 /** Document totals. */
 export const MAX_PIPES = 25_000;
 export const MAX_LINE_MARKERS = 14_000;
@@ -24,7 +26,7 @@ export const MAX_LINE_PREFIX = 512;
 const CONTAINER_MARKER = /[ \t]*(?:>|[-+*](?=[ \t]|$)|\d{1,9}[.)](?=[ \t]|$)|\[\^[^\]\s]+\]:)/my;
 
 function withinParseLimits(source: string): boolean {
-  let score = 0, block = 0, emphasis = 0, pipes = 0, markers = 0, tables = 0;
+  let emphasisSum = 0, score = 0, block = 0, emphasis = 0, pipes = 0, markers = 0, tables = 0;
   let lineStart = 0, linePipes = 0, lineDashes = 0, blank = true, delimiterRow = true;
   for (let i = 0; i <= source.length; i++) {
     const code = i < source.length ? source.charCodeAt(i) : 10;
@@ -38,6 +40,7 @@ function withinParseLimits(source: string): boolean {
       if (delimiterRow && linePipes > 0 && lineDashes > 0) tables++;
       if (blank) {
         score += block * block;
+        emphasisSum += emphasis * emphasis;
         block = 0;
         emphasis = 0;
       } else {
@@ -58,7 +61,7 @@ function withinParseLimits(source: string): boolean {
     if ((code === 42 || code === 95 || code === 126) && ++emphasis > MAX_BLOCK_EMPHASIS) return false;
   }
   // One combined check, so a document can't sit just under every limit at once.
-  return (score + block * block) / MAX_BLOCK_SCORE
+  return (emphasisSum + emphasis * emphasis) / MAX_EMPHASIS_SCORE + (score + block * block) / MAX_BLOCK_SCORE
     + (markers / MAX_LINE_MARKERS) ** 2 + (tables / MAX_TABLES) ** 2 + (pipes / MAX_PIPES) ** 2 <= 1;
 }
 

@@ -130,6 +130,12 @@ for (const [name, body] of Object.entries(justInside)) {
   });
 }
 
+test("many blocks of emphasis together reach the limit", () => {
+  const block = "*a _a ".repeat(MAX_BLOCK_EMPHASIS / 4) + "a_ a* ".repeat(MAX_BLOCK_EMPHASIS / 4);
+  assert.notEqual(parseWithinLimits(`${block}\n\n`.repeat(3)), null);
+  assert.equal(parseWithinLimits(`${block}\n\n`.repeat(20)), null);
+});
+
 test("a document near several limits at once is over the limit", () => {
   const body = "- a\n\n".repeat(Math.floor(MAX_LINE_MARKERS * 0.9)) + "a|b\n-|-\nc\n\n".repeat(Math.floor(MAX_TABLES * 0.9));
   const start = performance.now();
