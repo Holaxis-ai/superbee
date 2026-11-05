@@ -580,11 +580,29 @@ async function runInstalledProof(spec) {
       await runProcess(process.execPath, [path.join(repoRoot, "node_modules", "typescript", "bin", "tsc"), "-p", typeConsumer], {
         cwd: typeConsumer, env: isolatedEnvironment({ home }),
       });
+      const policyTypeConsumer = path.join(scratch, "publication-policy-type-consumer");
+      await mkdir(path.join(policyTypeConsumer, "node_modules"), { recursive: true });
+      await symlink(installedRoot, path.join(policyTypeConsumer, "node_modules", "superbee"), "dir");
+      await writeFile(path.join(policyTypeConsumer, "proof.mts"), [
+        'import type { ExternalLinkPolicy, PublicationCapturedSnapshotHandleV1 } from "superbee/publication";',
+        'const policy: ExternalLinkPolicy = "https";',
+        '// @ts-expect-error the policy is a closed set of values',
+        'const refused: ExternalLinkPolicy = "HTTPS";',
+        'declare const handle: PublicationCapturedSnapshotHandleV1;',
+        'handle.renderDocument("note", { externalLinks: policy });',
+        'export { refused };',
+      ].join("\n"));
+      await writeFile(path.join(policyTypeConsumer, "tsconfig.json"), JSON.stringify({ compilerOptions: {
+        strict: true, noEmit: true, types: [], skipLibCheck: true, target: "ES2022", module: "NodeNext",
+      }, files: ["proof.mts"] }));
+      await runProcess(process.execPath, [path.join(repoRoot, "node_modules", "typescript", "bin", "tsc"), "-p", policyTypeConsumer], {
+        cwd: policyTypeConsumer, env: isolatedEnvironment({ home }),
+      });
 
       const publicationBundle = path.join(scratch, "publication-bundle");
       await mkdir(publicationBundle);
       await writeFile(path.join(publicationBundle, "index.md"), "---\nokf_version: '0.2'\n---\n# Published\n");
-      await writeFile(path.join(publicationBundle, "note.md"), "---\ntype: Note\ntitle: Proof\n---\n# Proof\n");
+      await writeFile(path.join(publicationBundle, "note.md"), "---\ntype: Note\ntitle: Proof\n---\n# Proof\n\n[site](https://example.com/page)\n");
       const publication = await import(pathToFileURL(path.join(installedRoot, "dist", "publication.mjs")).href);
       assert.equal(publication.PUBLICATION_SNAPSHOT_V1, "https://getsuperbee.com/schemas/publication-snapshot/v1");
       const snapshot = await publication.capturePublicationSnapshot({
@@ -593,6 +611,11 @@ async function runInstalledProof(spec) {
       });
       assert.deepEqual(snapshot.manifest.documents.map((row) => row.id), ["note"]);
       assert.match(snapshot.manifest.snapshotDigest, /^sha256:[0-9a-f]{64}$/);
+      const linked = await snapshot.renderDocument("note", { externalLinks: "https" });
+      assert.match(linked.html, /<a [^>]*href="https:\/\/example\.com\/page"/);
+      const stored = new TextDecoder().decode(await snapshot.readObject(snapshot.manifest.documents[0].rendered.html));
+      assert.doesNotMatch(stored, /<a[\s>]/);
+      assert.equal((await snapshot.renderDocument("note")).html, stored);
       publication.assertPublicationSourceExclusions(snapshot.manifest, { directories: ["agent-notes"], types: ["Agent Note"] });
       await snapshot.close();
 

@@ -225,6 +225,13 @@ for (const [name, render] of PROFILES) {
     }
   });
 
+  test(`${name}: a host list can't name an IP address, even for a link to that address`, () => {
+    for (const entry of ["93.184.216.34", "127.0.0.1", "0x7f.1", "2130706433", "[::1]", "[::ffff:127.0.0.1]"]) {
+      const { document } = render(`[t](https://${entry}/x)`, { hosts: [entry] });
+      assert.equal(document.querySelector("a"), null, `entry ${JSON.stringify(entry)}`);
+    }
+  });
+
   for (const [label, policy] of ADMITTING) {
     test(`${name} ${label}: the resolver is consulted first, so a concept link is never routed externally`, () => {
       const { document } = render("[doc](../docs/a.md) [ext](https://example.com/a.md)", policy);

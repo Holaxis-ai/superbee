@@ -496,16 +496,17 @@ test("a bundle-read View's render-document has no anchors, whatever the handle o
       { bridge: "v0", type: "render-document", id: "options", docId: "notes/links", options: { externalLinks: "https" } },
       { bridge: "v0", type: "render-document", id: "params", docId: "notes/links", params: { externalLinks: "https" } },
     ];
-    let answered = 0;
     for (const request of requests) {
       const { reply } = await bridge.handle(request);
-      if (reply?.type === "error") continue;
-      assert.equal(reply.type, "render-document:result", request.id);
-      assert.equal(reply.result.html, stored, request.id);
-      assert.doesNotMatch(reply.result.html, /<a[\s>]/, request.id);
-      answered++;
+      if (request.id === "plain") {
+        assert.equal(reply.type, "render-document:result", request.id);
+        assert.equal(reply.result.html, stored, request.id);
+        assert.doesNotMatch(reply.result.html, /<a[\s>]/, request.id);
+      } else {
+        assert.equal(reply.type, "error", request.id);
+        assert.equal(reply.error.code, "USAGE", request.id);
+      }
     }
-    assert.ok(answered >= 1, "the plain request is answered");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
