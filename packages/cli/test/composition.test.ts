@@ -9,19 +9,17 @@ function probe(source: string): void {
   assert.equal(result.stdout, "");
 }
 
-test("source composition shares identity with private-state selection and never invents a worker entry", () => {
-  for (const name of ["superbee", "@holaxis/aslite"]) {
-    probe(`import assert from 'node:assert/strict';
-      import {configureSourceIdentity, staticBuildIdentity, currentExecutableRealPath} from './src/index.ts';
-      import {userStateDir, userStateDirForPackage} from './src/user-state.ts';
-      configureSourceIdentity({name:${JSON.stringify(name)},version:'1.2.3'});
-      assert.equal(staticBuildIdentity().package.name, ${JSON.stringify(name)});
-      assert.equal(userStateDir('/temporary-home'), userStateDirForPackage('/temporary-home', ${JSON.stringify(name)}));
-      assert.equal(currentExecutableRealPath(), undefined);
-      configureSourceIdentity({name:${JSON.stringify(name)},version:'1.2.3'});
-      assert.throws(() => configureSourceIdentity({name:'different',version:'1.2.3'}), /already/);
-    `);
-  }
+test("source composition keeps the canonical private-state root and never invents a worker entry", () => {
+  probe(`import assert from 'node:assert/strict';
+    import {configureSourceIdentity, staticBuildIdentity, currentExecutableRealPath} from './src/index.ts';
+    import {userStateDir, canonicalUserStateDir} from './src/user-state.ts';
+    configureSourceIdentity({name:'superbee',version:'1.2.3'});
+    assert.equal(staticBuildIdentity().package.name, 'superbee');
+    assert.equal(userStateDir('/temporary-home'), canonicalUserStateDir('/temporary-home'));
+    assert.equal(currentExecutableRealPath(), undefined);
+    configureSourceIdentity({name:'superbee',version:'1.2.3'});
+    assert.throws(() => configureSourceIdentity({name:'different',version:'1.2.3'}), /already/);
+  `);
 });
 
 test("late source identity and invalid identity are refused independently of declaration checking", () => {
