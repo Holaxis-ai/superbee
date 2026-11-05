@@ -69,7 +69,7 @@ import {
   withUpstreamHelp,
   writeAwarenessCache,
 } from "./converge.js";
-import { removeCarriedCopies, unsettledConflicts, unsettledRow } from "../../saved-conflicts.js";
+import { removeCarriedCopies, unsettledConflicts, unsettledRow, type SettledClaim } from "../../saved-conflicts.js";
 import { showIncoming } from "./show-incoming.js";
 import { SYNC_GATE_CONFIG, declaredSyncGate, runSyncGate } from "./gate.js";
 import { ffSwallowToError, syncOutcomeError, syncOutcomeLine, withSharingDetails } from "../../sync-outcomes.js";
@@ -158,7 +158,7 @@ enriched delta of docs that arrived this run (capped; --limit controls the row c
 
 When a doc changed on BOTH sides, sync CONVERGES: your teammate's version is kept on the board,
 YOUR version is saved to an export file named in the receipt, and the sync completes (the
-board is never left mid-state; non-conflicted local changes still land). The run exits 5 with
+board is never left mid-state; non-conflicted local changes land on the local board, unpushed until the next sync). The run exits 5 with
 one row per conflicted doc and the reconcile chain: \`sync --show-incoming <id>\` to view the kept
 incoming version, \`doc update <id> --body-file <export-file>\` to write your merged version on
 top, then \`sync\` again to share it. The saved copy stays listed until you settle it.
@@ -167,7 +167,10 @@ A saved copy stays reported until it is settled: \`status\` reads \`needs_decisi
 document, and every later \`sync\` lists it in \`saved_conflicts\`, with the command that shows it
 and the one command that discards it. Only a new conflict exits 5; a copy from an earlier run does
 not change the exit code. A copy whose content the document already holds, apart from engine
-stamps, is settled by itself: the next \`sync\` removes it. A repeat conflict on one document keeps
+stamps, is settled by itself: the next \`sync\` removes it. So is a lost claim race, a copy whose
+text differs only by the one-line owner field its kind declares, which that \`sync\` reports once in
+\`lost_claims_settled\` with the value the copy held; any other difference in the text, a comment or
+a state field included, stays listed. A repeat conflict on one document keeps
 the earlier copy and saves the new one beside it, unless its bytes match a saved copy, which is
 then that copy. Copies are kept per clone folder, so moving a clone leaves them under its old path.
 
@@ -341,6 +344,8 @@ interface SyncRun {
   route?: ResolvedLocalRoute;
   /** The `--dir` as typed, for a follow-up command that must run from anywhere the person is. */
   dirFlag?: string;
+  /** Lost claim races this run settled, reported once on whatever receipt it ends with. */
+  settledClaims?: SettledClaim[];
 }
 
 /** The arg-parse phase's dispatch decision. */
@@ -986,6 +991,7 @@ async function receiptPhase(
     establishAlreadyNote, reanchorNote: delta.reanchorNote, hookHint,
   });
   if (pushed.gate) receipt.gate = `passed: ${String(pushed.gate.command)} (attempt ${String(pushed.gate.attempt)})`;
+  if (run.settledClaims?.length) receipt.lost_claims_settled = cap(run.settledClaims.map((claim) => ({ ...claim })), run.limit);
   const unsettled = await unsettledConflicts(board.boardPath, board.key);
   const counts = { sent: pushed.documents, received: delta.originDelta.length };
   // A copy from an earlier run is listed and does not fail this one: the exit reports what this run
@@ -1127,13 +1133,23 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
     refuseOutgoingWorktreePrivateState(board.boardPath, "sync", `${run.inv} sync`);
   }
   // Before anything moves: a pull could change the document these copies were judged against.
-  if (!run.pullOnly) await removeCarriedCopies(board.boardPath, board.key);
+  if (!run.pullOnly) run.settledClaims = await removeCarriedCopies(board.boardPath, board.key);
   const commitResult = await commitPhase(board, run.pullOnly);
   if (commitResult.held) {
     await heldRun(run, board, baseline, commitResult.held);
     return;
   }
-  await pullPhase(run, board, commitResult);
+  try {
+    await pullPhase(run, board, commitResult);
+  } catch (error) {
+    // A new conflict in this run ends it here, so its envelope carries the one report of these.
+    if (!(error instanceof CliError) || !run.settledClaims?.length) throw error;
+    throw new CliError(error.code, error.message, {
+      details: { ...error.details, lost_claims_settled: cap(run.settledClaims.map((claim) => ({ ...claim })), run.limit) },
+      ...(error.help !== undefined ? { help: error.help } : {}),
+      handled: error.handled,
+    });
+  }
   // The marker can arrive with this pull: then nothing is pushed, and this run's commit stays local.
   if (!run.pullOnly) refuseMovedBoard(board.boardPath);
   const delta = await deltaPhase(board, baseline);

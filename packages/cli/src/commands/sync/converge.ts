@@ -148,7 +148,7 @@ export function entryLabel(c: Pick<ResolvedConflict, "entry" | "isDoc">): string
  * choices: a reserved/raw path drops the fixing-verb suffix (no `doc update`/`doc write` verb
  * exists for log.md); a local-side DELETION (no stage-3 blob → nothing to export) says so
  * honestly instead of naming a file that doesn't exist; a doc DELETED UPSTREAM says "teammate's
- * deletion kept" and points at `doc write` — `doc update` on a doc whose file is gone fails
+ * deletion kept" and points at `--resolve keep`, which keeps the title — `doc update` on a doc whose file is gone fails
  * NOT_FOUND.
  *
  * A lost CLAIM ({@link ConflictAnalysis.claim}) is an ownership outcome, not a content
@@ -176,7 +176,7 @@ export function convergeDocLine(
       return `${label} — teammate's version kept (your side deleted it; nothing to save); the document is back with their change, so carry it over if you moved it, then delete it again`;
     }
     if (!c.landed) {
-      const recreate = fixingVerb ? " — re-create with doc write" : "";
+      const recreate = fixingVerb ? " — re-create with sync --resolve keep" : "";
       return `${label} — teammate's deletion kept; yours saved at ${c.exportPath}${recreate}`;
     }
     const reconcile = fixingVerb ? (keptRefused ? `; doc update cannot read the kept version (${keptRefused.code}), so copy yours over it to reconcile` : " — reconcile with doc update") : "";
@@ -218,9 +218,9 @@ export function copyOverHelp(inv: CommandPrefix, exportPath: string, file: strin
   return `cp ${commandToken(exportPath)} ${commandToken(file)} (this discards the teammate's version from your working tree, and the sync replaces it on the board; it stays in the board's Git history) → ${inv} sync`;
 }
 
-/** The re-create chain for a doc DELETED upstream: `doc write` (a fresh doc), then sync. */
-export function recreateHelp(inv: CommandPrefix, id: string, bodyExportPath: string): string {
-  return `${inv} doc write ${commandToken(id)} --type <Type> --body-file ${commandToken(bodyExportPath)} → ${inv} sync`;
+/** The re-create chain for a doc DELETED upstream: keep re-creates it from the saved copy, then sync. */
+export function recreateHelp(inv: CommandPrefix, id: string): string {
+  return `${inv} sync --resolve keep --doc ${commandToken(id)} → ${inv} sync`;
 }
 
 /**
@@ -250,7 +250,7 @@ export function pickHelp(
       : convergeHelp(inv, reconcilable.entry, reconcilable.bodyExportPath!);
   }
   const recreatable = conflicts.find(usable);
-  if (recreatable) return recreateHelp(inv, recreatable.entry, recreatable.bodyExportPath!);
+  if (recreatable) return recreateHelp(inv, recreatable.entry);
   return undefined;
 }
 
@@ -426,7 +426,7 @@ export function toConflictRows(
 }
 
 /** Only the person can say a merge is finished, so a merged document does not release its copy. */
-export const SAVED_COPIES_NOTE = "each saved copy stays listed until its file is removed or sync --resolve settles it: revise before your merge is pushed, take after, which then leaves the document unchanged";
+export const SAVED_COPIES_NOTE = "each saved copy stays listed until its file is removed or sync --resolve settles it: revise before your merge is pushed, take after, which then leaves the document unchanged. A copy that differs only by a lost claim is settled by the next sync, which reports it";
 
 /**
  * The CONFLICT(5) terminal's envelope for a CONVERGED rebase. ONE landed probe and ONE analysis

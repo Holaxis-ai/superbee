@@ -775,6 +775,146 @@ test("home points at the row's real next step when a document's copy cannot be c
   assert.match(line, /by hand, then delete the saved file/);
 });
 
+/** A board whose Task kind declares its claim, with tasks/seed-one on both clones. */
+async function claimBoard(f: Fixture, declared = true): Promise<void> {
+  await writeBoardDoc(f.topo.a, "conventions/task", {
+    frontmatter: {
+      type: "Convention",
+      title: "Task",
+      governs: "Task",
+      fields: { required: ["title", "superbee_progress_status"], optional: ["assignee"], values: { superbee_progress_status: ["todo", "in_progress", "done"] } },
+      ...(declared ? { claim: { owner_field: "assignee", state_field: "progress_status" } } : {}),
+    } as never,
+    body: "# Task\n",
+  });
+  await modifyBoardDoc(f.topo.a, ID, { frontmatter: { superbee_progress_status: "in_progress" } as never });
+  assert.equal((await runSync(f.homeA, ["--dir", f.topo.a.root])).err, undefined);
+  assert.equal((await runSync(f.homeB, ["--dir", f.topo.b.root])).err, undefined);
+}
+
+test("a lost claim race settles on the next run and is reported once", async () => {
+  const f = await fixture();
+  try {
+    await claimBoard(f);
+    const first = await f.collide(ID, { frontmatter: { assignee: "agent-a" } as never }, { frontmatter: { assignee: "agent-b" } as never });
+    assert.equal(first.err?.exitCode, 5, "the sync that loses still exits 5");
+    const saved = path.join(exportsOf(f.topo, f.homeB), `${ID}.md`);
+    assert.equal((await syncBlock(f.topo, f.homeB)).sync.state, "clean", "a lost race does not bury real conflicts");
+
+    const next = JSON.parse((await runSync(f.homeB, ["--dir", f.topo.b.root, "--json"])).out) as Record<string, any>;
+    assert.deepEqual(next.lost_claims_settled.rows, [{ id: ID, owner: "agent-a", your_owner: "agent-b" }]);
+    assert.equal(next.conflicts, 0);
+    assert.equal(next.saved_conflicts, undefined);
+    assert.equal(existsSync(saved), false);
+    const third = JSON.parse((await runSync(f.homeB, ["--dir", f.topo.b.root, "--json"])).out) as Record<string, any>;
+    assert.equal(third.lost_claims_settled, undefined, "reported once");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a new conflict in the run that settles a lost claim still carries the report", async () => {
+  const f = await fixture();
+  try {
+    await claimBoard(f);
+    await f.collide(ID, { frontmatter: { assignee: "agent-a" } as never }, { frontmatter: { assignee: "agent-b" } as never });
+    const second = await f.collide("tasks/seed-two", { body: "A two.\n" }, { body: "B two.\n" });
+    assert.deepEqual((second.err?.details?.lost_claims_settled as { rows: unknown[] }).rows, [{ id: ID, owner: "agent-a", your_owner: "agent-b" }]);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a lost claim that also differs in state, body or undecodable bytes stays listed", async () => {
+  const cases: Record<string, (f: Fixture) => Promise<void>> = {
+    state: async (f) => void (await f.collide(ID, { frontmatter: { assignee: "agent-a" } as never }, { frontmatter: { assignee: "agent-b", superbee_progress_status: "done" } as never })),
+    body: async (f) => void (await f.collide(ID, { frontmatter: { assignee: "agent-a" } as never }, { frontmatter: { assignee: "agent-b" } as never, body: "# Seed one\n\nB's words.\n" })),
+    bytes: async (f) => {
+      await f.collide(ID, { frontmatter: { assignee: "agent-a" } as never }, { frontmatter: { assignee: "agent-b" } as never });
+      const saved = path.join(exportsOf(f.topo, f.homeB), `${ID}.md`);
+      const text = await readFile(saved);
+      await writeFile(saved, Buffer.concat([text, Buffer.from([0xcf, 0xf0])]));
+      // Sync gives such a copy no body companion.
+      await rm(saved.replace(/\.md$/, ".body.md"));
+    },
+  };
+  for (const [name, arrange] of Object.entries(cases)) {
+    const f = await fixture();
+    try {
+      await claimBoard(f);
+      await arrange(f);
+      const saved = path.join(exportsOf(f.topo, f.homeB), `${ID}.md`);
+      assert.equal((await syncBlock(f.topo, f.homeB)).sync.conflicts, 1, `${name}: status names it`);
+      const next = JSON.parse((await runSync(f.homeB, ["--dir", f.topo.b.root, "--json"])).out) as Record<string, any>;
+      assert.equal(next.conflicts, 1, name);
+      assert.equal(next.lost_claims_settled, undefined, name);
+      assert.equal(existsSync(saved), true, `${name}: the copy survives`);
+    } finally {
+      await f.cleanup();
+    }
+  }
+});
+
+test("frontmatter text that parsing would hide stays listed, and words in an owner value are reported", async () => {
+  const insert = (text: string, line: string): string => text.replace(/^---\n/, `---\n${line}\n`);
+  const cases: Record<string, { base?: string; yours: (text: string) => string }> = {
+    "frontmatter comment": { yours: (text) => insert(text, "# why I claimed this") },
+    "inline comment on the owner line": { yours: (text) => text.replace("assignee: agent-b", "assignee: agent-b # handoff words") },
+    "big number changed in its last digit": { base: "ticket: 12345678901234567890", yours: (text) => text.replace("12345678901234567890", "12345678901234567891") },
+    "nan against inf": { base: "meta: .nan", yours: (text) => text.replace("meta: .nan", "meta: .inf") },
+    "multi-line owner value": { yours: (text) => text.replace("assignee: agent-b", "assignee: |\n  agent-b\n  more words") },
+  };
+  const race = async (f: Fixture, yours: (text: string) => string, base?: string): Promise<void> => {
+    const fileOf = (repo: TwoCloneTopology["a"]) => path.join(repo.board, `${ID}.md`);
+    if (base !== undefined) {
+      await writeFile(fileOf(f.topo.a), insert(await readFile(fileOf(f.topo.a), "utf8"), base));
+      assert.equal((await runSync(f.homeA, ["--dir", f.topo.a.root])).err, undefined);
+      assert.equal((await runSync(f.homeB, ["--dir", f.topo.b.root])).err, undefined);
+    }
+    await writeFile(fileOf(f.topo.a), insert(await readFile(fileOf(f.topo.a), "utf8"), "assignee: agent-a"));
+    assert.equal((await runSync(f.homeA, ["--dir", f.topo.a.root])).err, undefined);
+    await writeFile(fileOf(f.topo.b), yours(insert(await readFile(fileOf(f.topo.b), "utf8"), "assignee: agent-b")));
+    assert.equal((await runSync(f.homeB, ["--dir", f.topo.b.root])).err?.exitCode, 5);
+  };
+  for (const [name, { base, yours }] of Object.entries(cases)) {
+    const f = await fixture();
+    try {
+      await claimBoard(f);
+      await race(f, yours, base);
+      const saved = path.join(exportsOf(f.topo, f.homeB), `${ID}.md`);
+      const next = JSON.parse((await runSync(f.homeB, ["--dir", f.topo.b.root, "--json"])).out) as Record<string, any>;
+      assert.equal(next.conflicts, 1, name);
+      assert.equal(next.lost_claims_settled, undefined, name);
+      assert.equal(existsSync(saved), true, `${name}: the copy survives`);
+    } finally {
+      await f.cleanup();
+    }
+  }
+  const f = await fixture();
+  try {
+    await claimBoard(f);
+    await race(f, (text) => text.replace("assignee: agent-b", "assignee: agent-b handoff words"));
+    const next = JSON.parse((await runSync(f.homeB, ["--dir", f.topo.b.root, "--json"])).out) as Record<string, any>;
+    assert.deepEqual(next.lost_claims_settled.rows, [{ id: ID, owner: "agent-a", your_owner: "agent-b handoff words" }]);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("red probe: an assignee field on a kind that declares no claim is the person's data", async () => {
+  const f = await fixture();
+  try {
+    await claimBoard(f, false);
+    await f.collide(ID, { frontmatter: { assignee: "agent-a" } as never }, { frontmatter: { assignee: "agent-b" } as never });
+    const saved = path.join(exportsOf(f.topo, f.homeB), `${ID}.md`);
+    const next = JSON.parse((await runSync(f.homeB, ["--dir", f.topo.b.root, "--json"])).out) as Record<string, any>;
+    assert.equal(next.conflicts, 1);
+    assert.equal(existsSync(saved), true);
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("a raw file's saved copy is named by path until the file is gone", async () => {
   const f = await fixture();
   try {
