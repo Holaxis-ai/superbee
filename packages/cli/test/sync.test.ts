@@ -249,7 +249,7 @@ test("convergeDocLine: a reserved-file entry (log.md) renders VERBATIM — never
 test("convergeDocLine: a local-side deletion (no export) says so honestly instead of naming a missing file", () => {
   assert.equal(
     convergeDocLine({ entry: "tasks/seed-one", isDoc: true, exportPath: null, bodyExportPath: null, landed: true }),
-    "doc tasks/seed-one — teammate's version kept (your side deleted it; nothing to save)",
+    "doc tasks/seed-one — teammate's version kept (your side deleted it; nothing to save); the document is back with their change, so carry it over if you moved it, then delete it again",
   );
 });
 
