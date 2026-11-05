@@ -423,6 +423,7 @@ test("finalize accepts staged and direct-publish README metadata while retaining
     });
   };
   assert.equal(prove().status, 0, "empty registry README filename must defer to the attested tarball");
+  assert.equal(prove({ readmeFilename: undefined }).status, 0, "the registry moves README metadata to the document level for the latest version");
   assert.equal(prove({ readmeFilename: "README.md", readme: "document-level README of another version" }).status, 0, "direct-publish README metadata is accepted without comparing the document-level readme");
   for (const [registryPatch, manifestPatch] of [
     [{ readmeFilename: "OTHER.md" }, {}],
