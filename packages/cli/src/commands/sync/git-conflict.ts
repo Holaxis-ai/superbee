@@ -150,8 +150,7 @@ interface Board {
   exportDir: string;
 }
 
-async function isFile(file: string | null): Promise<boolean> {
-  if (file === null) return false;
+async function isFile(file: string): Promise<boolean> {
   try {
     return (await fs.lstat(file)).isFile();
   } catch {
