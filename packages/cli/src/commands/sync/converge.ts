@@ -426,7 +426,7 @@ export function toConflictRows(
 }
 
 /** Only the person can say a merge is finished, so a merged document does not release its copy. */
-export const SAVED_COPIES_NOTE = "each saved copy stays listed until its file is removed or sync --resolve settles it: revise before your merge is pushed, take after, which then leaves the document unchanged";
+export const SAVED_COPIES_NOTE = "each saved copy stays listed until its file is removed or sync --resolve settles it: revise before your merge is pushed, take after, which then leaves the document unchanged. A copy that differs only by a lost claim is settled by the next sync, which reports it";
 
 /**
  * The CONFLICT(5) terminal's envelope for a CONVERGED rebase. ONE landed probe and ONE analysis

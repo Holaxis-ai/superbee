@@ -1,7 +1,8 @@
 // What is still unsettled among a Git board's saved conflict copies, derived each time from the
 // copies and the document as it stands. A copy whose content the document already carries, apart
 // from engine stamps, is settled however it got there. So is a lost claim race: a copy that differs
-// from the document only by the owner field its kind declares holds nothing else of the person's.
+// from the document only by the one-line owner field its kind declares holds nothing else of the
+// person's, and the run reports the value it held. Both are judged on the file's text.
 // Everything else stays named until `--resolve` or removing the file: any other difference, a state
 // field included, is something the person wrote.
 import { readFile, rm } from "node:fs/promises";
@@ -12,45 +13,73 @@ import { commandFragment, commandToken, type CommandPrefix, type CommandText } f
 import { ENGINE_STAMPED_FIELDS, loadClaimPolicy, recordedOwner, type ClaimPolicy } from "./commands/sync/claim-conflict.js";
 import { defaultSyncStore } from "./cursor.js";
 
-/** Frontmatter keys, engine stamps excluded, whose values differ between two parsed versions. */
-function differingFields(left: Record<string, unknown>, right: Record<string, unknown>, stamped: ReadonlySet<string>): string[] {
-  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
-  return [...keys].filter((key) => !stamped.has(key) && JSON.stringify(left[key]) !== JSON.stringify(right[key])).sort();
-}
-
 /** Different invalid bytes decode to the same text, so only a lossless decode can be compared as text. */
 export function decodesLosslessly(bytes: Buffer): boolean {
   return Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes);
 }
 
+/** A one-line top-level value with nothing beside it: no comment, no collection, no block scalar. */
+const ONE_LINE_VALUE = /^(?:"[^"#]*"|'[^'#]*'|[^\s\[\]{}|>&*!#'"-][^#]*)?$/;
+
 /**
- * The frontmatter of the document as it stands, and the fields a saved copy with the same body
- * differs from it by, or null when the two cannot be compared as text or their bodies differ.
+ * The document as text with its engine stamps and, when named, its owner field removed, or null when
+ * that cannot be done with certainty. Parsed values cannot judge this: YAML drops comments and rounds
+ * large numbers, so two versions that read as equal can still hold different words.
  */
-function sameBodyDifference(relPath: string, copy: Buffer, current: Buffer): { fields: Record<string, unknown>; differs: string[] } | null {
-  if (!isConceptDocPath(relPath) || !decodesLosslessly(copy) || !decodesLosslessly(current)) return null;
-  try {
-    const saved = parseMarkdown(copy.toString("utf8"), relPath);
-    const now = parseMarkdown(current.toString("utf8"), relPath);
-    if (saved.body !== now.body) return null;
-    const fields = now.frontmatter as Record<string, unknown>;
-    return { fields, differs: differingFields(saved.frontmatter as Record<string, unknown>, fields, ENGINE_STAMPED_FIELDS) };
-  } catch {
-    return null;
+function comparableText(relPath: string, bytes: Buffer, ownerField?: string): string | null {
+  if (!isConceptDocPath(relPath) || !decodesLosslessly(bytes)) return null;
+  const text = bytes.toString("utf8");
+  const close = text.indexOf("\n---\n", 3);
+  if (!text.startsWith("---\n") || close === -1) return null;
+  const lines = text.slice(4, close).split("\n");
+  const kept: string[] = [];
+  const continues = (line: string | undefined): boolean => line !== undefined && /^(?:\s|-(?:\s|$))/.test(line);
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!;
+    const key = /^([^\s#:'"-][^\s:]*):(?:\s|$)/.exec(line)?.[1];
+    if (key !== undefined && key === ownerField) {
+      if (continues(lines[index + 1]) || !ONE_LINE_VALUE.test(line.slice(key.length + 1).trim())) return null;
+    } else if (key !== undefined && ENGINE_STAMPED_FIELDS.has(key)) {
+      if (line.includes("#")) return null;
+      while (continues(lines[index + 1])) {
+        if (lines[++index]!.includes("#")) return null;
+      }
+    } else {
+      kept.push(line);
+    }
   }
+  return `${kept.join("\n")}\n---\n${text.slice(close + 5)}`;
 }
 
 /** True when the document as it stands holds everything the saved copy would add. */
 export function copyIsCarried(relPath: string, copy: Buffer, current: Buffer | null): boolean {
   if (current === null) return false;
   if (copy.equals(current)) return true;
-  return sameBodyDifference(relPath, copy, current)?.differs.length === 0;
+  const saved = comparableText(relPath, copy);
+  return saved !== null && saved === comparableText(relPath, current);
 }
 
-/** A lost claim race that a sync settled: the document, and who holds it now. */
+/** The owner field's two values when the copy differs from the document by that field alone, or null. */
+function lostClaim(relPath: string, copy: Buffer, current: Buffer, policy: ClaimPolicy): { owner?: string; yourOwner?: string } | null {
+  try {
+    const fields = parseMarkdown(current.toString("utf8"), relPath).frontmatter as Record<string, unknown>;
+    const ownerField = policy.forType(fields.type)?.ownerField;
+    if (ownerField === undefined) return null;
+    const saved = comparableText(relPath, copy, ownerField);
+    if (saved === null || saved !== comparableText(relPath, current, ownerField)) return null;
+    const owner = recordedOwner(fields, ownerField);
+    const yourOwner = recordedOwner(parseMarkdown(copy.toString("utf8"), relPath).frontmatter as Record<string, unknown>, ownerField);
+    return { ...(owner !== undefined ? { owner } : {}), ...(yourOwner !== undefined ? { yourOwner } : {}) };
+  } catch {
+    return null;
+  }
+}
+
+/** A lost claim race that a sync settled: the document, who holds it now, and what the copy said. */
 export interface SettledClaim {
   id: string;
   owner?: string;
+  your_owner?: string;
 }
 
 /** The file's bytes, or null when it is absent. Any other failure is the caller's to report. */
@@ -85,7 +114,7 @@ async function classify(boardPath: string, key: string): Promise<{ unsettled: Un
   const byPath = new Map<string, UnsettledConflict>();
   const carried: SavedCopy[] = [];
   const lostClaims: { copy: SavedCopy; claim: SettledClaim }[] = [];
-  // Loaded at most once, and only for a copy that differs by a field alone.
+  // Loaded at most once, and only when a saved copy is not already carried.
   let policy: ClaimPolicy | undefined;
   for (const copy of listSavedCopies(defaultSyncStore.exportsDir(key))) {
     let discardWith: UnsettledConflict["discardWith"] = "remove";
@@ -99,13 +128,14 @@ async function classify(boardPath: string, key: string): Promise<{ unsettled: Un
         carried.push(copy);
         continue;
       }
-      const difference = current === null ? null : sameBodyDifference(copy.relPath, bytes, current);
-      if (difference?.differs.length === 1) {
+      if (current !== null && isConceptDocPath(copy.relPath)) {
         policy ??= await loadClaimPolicy(boardPath);
-        const ownerField = policy.forType(difference.fields.type)?.ownerField;
-        if (difference.differs[0] === ownerField) {
-          const owner = recordedOwner(difference.fields, ownerField);
-          lostClaims.push({ copy, claim: { id: conceptIdFromPath(copy.relPath), ...(owner !== undefined ? { owner } : {}) } });
+        const lost = lostClaim(copy.relPath, bytes, current, policy);
+        if (lost !== null) {
+          lostClaims.push({
+            copy,
+            claim: { id: conceptIdFromPath(copy.relPath), ...(lost.owner !== undefined ? { owner: lost.owner } : {}), ...(lost.yourOwner !== undefined ? { your_owner: lost.yourOwner } : {}) },
+          });
           continue;
         }
       }

@@ -167,9 +167,10 @@ A saved copy stays reported until it is settled: \`status\` reads \`needs_decisi
 document, and every later \`sync\` lists it in \`saved_conflicts\`, with the command that shows it
 and the one command that discards it. Only a new conflict exits 5; a copy from an earlier run does
 not change the exit code. A copy whose content the document already holds, apart from engine
-stamps, is settled by itself: the next \`sync\` removes it. So is a lost claim race, a copy differing
-only by the owner field its kind declares, which that \`sync\` reports once in
-\`lost_claims_settled\`; a copy differing in any other field, a state field included, stays listed. A repeat conflict on one document keeps
+stamps, is settled by itself: the next \`sync\` removes it. So is a lost claim race, a copy whose
+text differs only by the one-line owner field its kind declares, which that \`sync\` reports once in
+\`lost_claims_settled\` with the value the copy held; any other difference in the text, a comment or
+a state field included, stays listed. A repeat conflict on one document keeps
 the earlier copy and saves the new one beside it, unless its bytes match a saved copy, which is
 then that copy. Copies are kept per clone folder, so moving a clone leaves them under its old path.
 
