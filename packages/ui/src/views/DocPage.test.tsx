@@ -332,6 +332,48 @@ describe("DocPage", () => {
     expect(container.querySelector(".doc-body a")!.getAttribute("href")).toBe("?view=doc&id=refs%2Fhistory");
   });
 
+  it("opens https links in a new tab, keeps other targets as text, and routes concept links in-app", async () => {
+    vi.mocked(getDoc).mockResolvedValue({
+      doc: {
+        id: "notes/links",
+        frontmatter: { type: "Doc", title: "Links" },
+        body: [
+          "[web](https://example.com/spec#top) and https://example.com/bare.",
+          "[plain](http://example.com/) [script](javascript:alert(1)) [cased](JaVaScRiPt:alert(1)) [data](data:text/html,x)",
+          "[creds](https://user:pw@example.com/) [relative](//example.com/x) [mail](mailto:a@example.com)",
+          "The archive [contains](../refs/history.md) the history.",
+        ].join("\n\n"),
+      },
+      version: "v1",
+    });
+    await render("notes/links");
+    const body = container.querySelector(".doc-body")!;
+
+    const external = [...body.querySelectorAll("a.doc-link-external")];
+    expect(external.map((a) => a.getAttribute("href"))).toEqual([
+      "https://example.com/spec#top",
+      "https://example.com/bare",
+    ]);
+    for (const anchor of external) {
+      expect(anchor.getAttribute("target")).toBe("_blank");
+      expect(anchor.getAttribute("rel")).toBe("noopener noreferrer");
+    }
+
+    const inert = [...body.querySelectorAll(".doc-link-inert")].map((el) => el.textContent);
+    expect(inert).toEqual(["plain", "script", "cased", "data", "creds", "relative", "mail"]);
+    expect(body.querySelectorAll("a")).toHaveLength(3);
+
+    const concept = body.querySelector<HTMLAnchorElement>('a[href="?view=doc&id=refs%2Fhistory"]')!;
+    expect(concept.getAttribute("target")).toBeNull();
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+    await act(async () => {
+      concept.dispatchEvent(event);
+    });
+    expect(event.defaultPrevented).toBe(true);
+    expect(window.location.search).toContain("view=doc");
+    expect(new URLSearchParams(window.location.search).get("id")).toBe("refs/history");
+  });
+
   it("a doc with no body edges and no backlinks shows the quiet Cited-by empty state", async () => {
     vi.mocked(getDoc).mockResolvedValue({ doc: { id: "notes/lonely", frontmatter: { type: "Context Note", title: "Lonely" }, body: "" }, version: "v1" });
     vi.mocked(fetchEdges).mockResolvedValue([]);

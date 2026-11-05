@@ -640,6 +640,37 @@ test("home surface: flat badged grid, live activity feed, first-run orientation 
   }
 });
 
+test("doc reader: an https link opens a new tab without an opener and leaves the reader in place", async ({ page, context }) => {
+  const ui = await bootUiOverPagesBundle(TASKS);
+  // The destination is fulfilled here, so the test needs no outside network.
+  await context.route("https://example.com/**", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<title>destination</title>" }),
+  );
+  try {
+    execFileSync(process.execPath, [
+      CLI_DIST, "doc", "write", "notes/web-link-probe",
+      "--type", "Context Note", "--title", "Web link probe", "--actor", "process:e2e",
+      "--body", "[the spec](https://example.com/spec#top) and [plain](http://example.com/)",
+      "--dir", ui.dir,
+    ]);
+    await page.goto(`${ui.url}&view=doc&id=notes/web-link-probe`);
+    await expect(page.locator(".doc-head h1")).toHaveText("Web link probe");
+    const readerUrl = page.url();
+
+    const body = page.locator(".doc-body");
+    await expect(body.locator("a")).toHaveCount(1);
+    await expect(body.locator(".doc-link-inert", { hasText: "plain" })).toBeVisible();
+
+    const [popup] = await Promise.all([context.waitForEvent("page"), body.locator("a.doc-link-external").click()]);
+    await expect(popup).toHaveURL("https://example.com/spec#top");
+    expect(await popup.evaluate(() => window.opener)).toBeNull();
+    expect(page.url()).toBe(readerUrl);
+    await popup.close();
+  } finally {
+    await ui.cleanup();
+  }
+});
+
 test("doc reader: feed rows open rendered docs, links navigate, hostile content is inert, deep links work", async ({ page }) => {
   const ui = await bootUiOverPagesBundle(TASKS);
   const dialogs: string[] = [];

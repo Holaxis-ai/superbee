@@ -1251,7 +1251,14 @@ body {
   text-align: right;
 }
 
-/* An external/unresolved/rejected target — visibly a non-link, deliberately inert. */
+/* A web link the page owner admitted. Long bare URLs wrap so they stay inside the column. */
+.doc-link-external {
+  color: var(--color-structure);
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+
+/* A blocked external, unresolved or rejected target: visibly a non-link, deliberately inert. */
 .doc-link-inert {
   color: var(--text-secondary);
   border-bottom: 1px dotted var(--text-tertiary);

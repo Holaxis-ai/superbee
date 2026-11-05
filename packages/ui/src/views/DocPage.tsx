@@ -54,6 +54,7 @@ function DocBody({ id, body, titleById }: { id: string; body: string; titleById:
     fromId: id,
     onNavigateDoc: (target) => navigate({ view: "doc", id: target }),
     titleFor: (target) => titleById.get(target),
+    externalLinks: "https",
   }), [id, body, titles]);
   return (
     <>
