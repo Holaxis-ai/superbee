@@ -23,7 +23,7 @@ export const MAX_LINE_NESTING = 64;
 export const MAX_LINE_PREFIX = 512;
 
 /** One block quote, list or footnote marker at the current position of a line. */
-const CONTAINER_MARKER = /[ \t]*(?:>|[-+*](?=[ \t]|$)|\d{1,9}[.)](?=[ \t]|$)|\[\^[^\]\s]+\]:)/my;
+const CONTAINER_MARKER = />|[-+*](?=[ \t]|$)|\d{1,9}[.)](?=[ \t]|$)|\[\^[^\]\s]+\]:/my;
 
 function withinParseLimits(source: string): boolean {
   let emphasisSum = 0, score = 0, block = 0, emphasis = 0, pipes = 0, markers = 0, tables = 0;
@@ -32,9 +32,15 @@ function withinParseLimits(source: string): boolean {
     const code = i < source.length ? source.charCodeAt(i) : 10;
     if (code === 13 && source.charCodeAt(i + 1) === 10) continue;
     if (code === 10 || code === 13) {
-      CONTAINER_MARKER.lastIndex = lineStart;
-      let nesting = 0, prefix = 0;
-      for (; CONTAINER_MARKER.test(source); nesting++) prefix = CONTAINER_MARKER.lastIndex - lineStart;
+      let nesting = 0, prefix = 0, position = lineStart;
+      for (;;) {
+        while (source.charCodeAt(position) === 32 || source.charCodeAt(position) === 9) position++;
+        CONTAINER_MARKER.lastIndex = position;
+        if (!CONTAINER_MARKER.test(source)) break;
+        position = CONTAINER_MARKER.lastIndex;
+        prefix = position - lineStart;
+        nesting++;
+      }
       if (nesting > MAX_LINE_NESTING || prefix > MAX_LINE_PREFIX) return false;
       markers += nesting;
       if (delimiterRow && linePipes > 0 && lineDashes > 0) tables++;
