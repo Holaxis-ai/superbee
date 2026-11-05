@@ -92,6 +92,30 @@ test("capture is deterministic and preserves exact objects and canonical project
   }
 });
 
+test("documents over the parse limit are captured as bounded", async () => {
+  const { root } = await fixture();
+  try {
+    const bodies = {
+      brackets: "[a".repeat(15000) + "](https://x)".repeat(12000),
+      quotes: "> ".repeat(25000) + "x",
+    };
+    for (const [name, body] of Object.entries(bodies)) {
+      await writeFile(path.join(root, "notes", `${name}.md`), `---\ntype: Note\n---\n${body}\n`, "utf8");
+    }
+    const snapshot = await capturePublicationSnapshot({
+      schema: PUBLICATION_SNAPSHOT_V1,
+      source: { kind: "filesystem", root },
+    });
+    const rendered = (id) => snapshot.manifest.documents.find((row) => row.id === id).rendered;
+    assert.equal(rendered("notes/brackets").bounded, true);
+    assert.equal(rendered("notes/quotes").bounded, true);
+    assert.equal(rendered("notes/alpha").bounded, false);
+    await snapshot.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("captured manifests are deeply immutable and serialization is identity-stable", async () => {
   const { root } = await fixture();
   try {

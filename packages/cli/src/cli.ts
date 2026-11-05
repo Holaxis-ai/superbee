@@ -67,6 +67,7 @@ import { cliInvocation } from "./invocation.js";
 import { PUBLIC_COMMAND_NAMES, type PublicCommandName } from "./command-spec.js";
 import { parseArgs } from "node:util";
 import { commandWords } from "./command-text.js";
+import { openDeprecationNotices } from "./deprecation-notices.js";
 export { cliVersion } from "./build-identity.js";
 
 export const KNOWN_COMMANDS = PUBLIC_COMMAND_NAMES;
@@ -267,6 +268,7 @@ export async function main(argv: string[]): Promise<void> {
   // Bare `axi` (no args): the offline-safe home view — identity header, live local state, and the
   // command reference. Always exits 0.
   if (command === undefined) {
+    openDeprecationNotices(argv);
     await home(argv);
     return;
   }
@@ -293,6 +295,7 @@ export async function main(argv: string[]): Promise<void> {
     // the home view (scoped to that remote/dir) instead of erroring. A real leading flag before a
     // command (`--dir x list`) or an unknown flag (`--bogus`) still gets the actionable USAGE hint.
     if (isGlobalOnlyHomeInvocation(argv)) {
+      openDeprecationNotices(argv);
       await home(argv);
       return;
     }
@@ -319,6 +322,7 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
 
+  openDeprecationNotices(argv);
   await runAxiCli({
     argv,
     description: DESCRIPTION,

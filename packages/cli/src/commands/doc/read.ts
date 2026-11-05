@@ -30,7 +30,6 @@ import {
   readErrorToCliError,
 } from "./common.js";
 import { attachBodyPreview, BODY_PREVIEW_RESERVED_KEYS } from "../../body-replace-guards.js";
-import { MAX_BODY_CHARS, MAX_NODES } from "@superbee/markdown-renderer";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 import { assertSafeNonDocumentOutTarget, inBundlePollutionWarning } from "../egress.js";
 import { bodyPage, PAGE_DEFAULT_BYTES, PAGE_MAX_BYTES, PAGE_MIN_BYTES } from "../../body-pages.js";
@@ -260,17 +259,14 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
       version,
       bounded: rendered.bounded,
     };
-    // `bounded` alone is a boolean a publisher has no reason to read as "your page is INCOMPLETE".
-    // The bounds are quoted from the renderer's exported constants because the document adapter
-    // deliberately returns ONLY {html, bounded} (its own contract test pins that key set), and this
-    // call passes no `limits` override — so the constants ARE what the walk enforced.
-    // Truncation is lossy egress, so disclose it the way the default render does: a warning plus a
-    // pointer at the complete raw channel.
+    // `bounded` alone is a boolean a publisher has no reason to read as "this page is limited".
+    // Limited output is lossy egress, so disclose it the way the default render does: a warning
+    // plus a pointer at the complete raw channel.
     if (rendered.bounded) {
       result.warning =
-        `The rendered HTML is TRUNCATED: this document exceeds the shared renderer's bounds ` +
-        `(${MAX_BODY_CHARS} body characters / ${MAX_NODES} nodes), so ` +
-        `the tail of the body is NOT present in the output. Use --out for the complete raw markdown.`;
+        `The rendered HTML shows this document in a limited form: it exceeds the shared renderer's ` +
+        `limits, so the output may be cut short or show plain source text. ` +
+        `Use --out for the complete raw markdown.`;
       result.help = [`${cliInvocation()} doc read ${commandToken(id)} --out <file>`];
     }
     if (streamMode) {

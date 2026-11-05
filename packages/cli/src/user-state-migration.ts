@@ -19,7 +19,6 @@ import { basename, dirname, join } from "node:path";
 
 import { parseCatalog } from "./catalog.js";
 import { CATALOG_FILE_NAME } from "./catalog.js";
-import { staticBuildIdentity } from "./build-identity.js";
 import { assertMigratableCredentials, CRED_FILE_NAME } from "./credentials.js";
 import { CliError } from "./errors.js";
 import {
@@ -29,7 +28,6 @@ import {
   hasExactUserStateMarker,
   inspectCanonicalUserStateRoot,
   inspectCanonicalUserStateRootDetail,
-  LEGACY_BRIDGE_PACKAGE_NAME,
   legacyUserStateDir,
   readPrivateStateFile,
   resolveUserStatePolicy,
@@ -313,9 +311,6 @@ async function interruptedMigrationRecords(input: UserStateInput): Promise<Migra
 }
 
 export async function inspectUserStateMigration(input: UserStateInput = homedir()): Promise<UserStateMigrationInspection> {
-  if (staticBuildIdentity().package.name === LEGACY_BRIDGE_PACKAGE_NAME) {
-    return { state: "ready", reason: "the separately published Aslite bridge retains its legacy state root", records: 0 };
-  }
   const policy = resolveUserStatePolicy(input);
   if (policy.state === "blocked") {
     return {
@@ -704,9 +699,6 @@ export async function migrateUserState(
   input: UserStateInput = homedir(),
   hooks: UserStateMigrationHooks = {},
 ): Promise<UserStateMigrationReceipt> {
-  if (staticBuildIdentity().package.name === LEGACY_BRIDGE_PACKAGE_NAME) {
-    throw new CliError("NOT_IMPLEMENTED", "state migration is available only from the Superbee package", { help: "npm install -g superbee" });
-  }
   const policy = resolveUserStatePolicy(input);
   if (policy.state === "blocked") {
     throw new CliError("CONFLICT", policy.reason ?? "the selected host private-state location is unavailable", { help: `${distributionBinName()} setup` });

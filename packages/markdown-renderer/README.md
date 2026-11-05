@@ -46,8 +46,9 @@ bundle record or tool argument, except a host's sealed room, whose host list com
 that host validated and sealed. `renderDocumentToStaticHtml` takes no options, because it is the
 adapter behind a View's `render-document`, and Views stay link-free.
 
-Body, node and depth limits bound presentation; the host must show
-the returned `bounded` state rather than imply the entire document was rendered.
+Body, parse, node and depth limits bound presentation; the host must show
+the returned `bounded` state rather than imply the entire document was rendered. A document over the parse
+limit renders as escaped source text in one code block, the same way in both entrypoints.
 The inert profile has no active document navigation and does not call the route
 builder. Do not render arbitrary bundle-authored executable code in the host shell.
 

@@ -17,7 +17,7 @@ import {
   supersededUserStateDirs,
   USER_STATE_MARKER_BYTES,
   USER_STATE_QUARANTINE_COMMAND,
-  userStateDirForPackage,
+  userStateDir,
 } from "../src/user-state.js";
 import { setupStateCapability } from "../src/setup-plan.js";
 import { inspectUserStateMigration, migrateUserState, migrationSourceRoots } from "../src/user-state-migration.js";
@@ -61,11 +61,12 @@ async function runBuiltCli(
   });
 }
 
-test("package identity keeps the Aslite bridge on the legacy root while Superbee is canonical-only", async () => {
+test("the writable state root is the canonical root, never a superseded one", async () => {
   const root = await home();
   try {
-    assert.equal(userStateDirForPackage(root, "superbee"), canonicalUserStateDir(root));
-    assert.equal(userStateDirForPackage(root, "@holaxis/aslite"), legacyUserStateDir(root));
+    assert.equal(userStateDir(root), canonicalUserStateDir(root));
+    assert.equal(canonicalUserStateDir(root), join(root, ".superbee-state"));
+    assert.notEqual(userStateDir(root), legacyUserStateDir(root));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -281,10 +281,10 @@ Options:
                        chrome or executable scripts. Internal concept links carry only normalized
                        data-aslite-doc-id targets for the consuming shell to navigate. Use
                        --rendered-out - to stream HTML bytes to stdout (receipt/errors go to stderr).
-                       The renderer is BOUNDED: a body past its character/node limits renders
-                       TRUNCATED, and the receipt then reports bounded:true plus a warning naming
-                       the enforced limits — a truncated page is lossy egress, so treat bounded:true
-                       as "incomplete" and use --out for the complete raw markdown. Like --body-out,
+                       The renderer is BOUNDED: a body past its limits renders in a limited form,
+                       cut short or as plain source text, and the receipt then reports bounded:true
+                       plus a warning. Treat bounded:true as "limited" and use --out for the
+                       complete raw markdown. Like --body-out,
                        a local in-bundle .md target is refused: rendered HTML has no OKF frontmatter
                        and would corrupt or clobber bundle content (an in-bundle non-.md target is
                        inert and remains allowed).

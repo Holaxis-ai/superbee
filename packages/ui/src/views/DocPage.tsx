@@ -13,7 +13,7 @@
  * Kind-declared chips and the inline edge titles are display-only projections of the bundle's own
  * docs — mechanism in the shell, meaning from the bundle.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getDoc, listAllHeadsReport, ApiError } from "../api/client.js";
 import { fetchDocumentOpenCommand, fetchEdges, fetchKinds } from "../api/pages.js";
@@ -47,6 +47,26 @@ const STANDARD_FIELDS = new Set([
   "description",
   "tags",
 ]);
+
+function DocBody({ id, body, titleById }: { id: string; body: string; titleById: Map<string, string> }) {
+  const titles = JSON.stringify([...titleById]);
+  const rendered = useMemo(() => renderMarkdown(body, {
+    fromId: id,
+    onNavigateDoc: (target) => navigate({ view: "doc", id: target }),
+    titleFor: (target) => titleById.get(target),
+  }), [id, body, titles]);
+  return (
+    <>
+      <div className="doc-body">{rendered.element}</div>
+      {rendered.bounded && (
+        <p className="doc-bounded-note">
+          This document is shown in a limited form. The full content is in the bundle
+          (read it with <code>superbee doc read {id}</code>).
+        </p>
+      )}
+    </>
+  );
+}
 
 export function DocPage({ docId }: { docId: string }) {
   const queryClient = useQueryClient();
@@ -177,11 +197,6 @@ export function DocPage({ docId }: { docId: string }) {
     const t = head.frontmatter.title;
     if (typeof t === "string" && t.trim()) titleById.set(head.id, t);
   }
-  const rendered = renderMarkdown(doc.body ?? "", {
-    fromId: doc.id,
-    onNavigateDoc: (id) => navigate({ view: "doc", id }),
-    titleFor: (id) => titleById.get(id),
-  });
 
   return (
     <div className="page-frame">
@@ -227,13 +242,7 @@ export function DocPage({ docId }: { docId: string }) {
             {when && <span className="doc-when">{when}</span>}
           </p>
         </header>
-        <div className="doc-body">{rendered.element}</div>
-        {rendered.bounded && (
-          <p className="doc-bounded-note">
-            This doc is large — the view above is truncated. The full content is in the bundle
-            (read it with <code>superbee doc read {doc.id}</code>).
-          </p>
-        )}
+        <DocBody id={doc.id} body={doc.body ?? ""} titleById={titleById} />
         {/* Outbound edges render inline in the body above (markdown.tsx). Only "Cited by" —
             backlinks from OTHER docs, which are not in this body — needs a section. */}
         <section className="doc-relationships">
