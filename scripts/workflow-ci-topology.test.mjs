@@ -58,6 +58,8 @@ test("CLI mutation jobs cover every configured source exactly once and keep over
     assert.equal(selected.length, target === "cli" ? 1 : 3);
     assert.ok(selected.every((row) => row.mutate === override));
   }
+  assert.notEqual(mutationPlan("cli", "src/actor.ts").include[0].id, mutationPlan("cli", "src/errors.ts").include[0].id);
+  assert.equal(mutationPlan("cli", "src/actor.ts").include[0].id, mutationPlan("cli", "src/actor.ts").include[0].id);
   assert.throws(() => mutationPlan("unknown"), /Unknown mutation target/);
 });
 
@@ -67,9 +69,8 @@ test("mutation cache identity is captured before build and reused only for succe
   const identity = steps.findIndex((step) => step.id === "cache");
   assert.ok(identity > steps.findIndex((step) => step.uses?.startsWith("actions/checkout@")));
   assert.ok(identity < steps.findIndex((step) => step.run === "npm ci"));
-  const key = steps[identity].env.CACHE_KEY;
-  for (const input of ["matrix.id", "package-lock.json", "packages/**", "scripts/**", ".github/workflows/mutation-tests.yml"])
-    assert.ok(key.includes(input), input);
+  assert.equal(steps[identity].env.PARTITION, "${{ matrix.id }}");
+  assert.match(steps[identity].run, /git rev-parse HEAD\^\{tree\}/, "the complete tracked execution tree defines compatibility");
   for (const name of ["Restore incremental state", "Save incremental state"]) {
     const step = steps.find((step) => step.name === name);
     assert.equal(step.with.key, "${{ steps.cache.outputs.key }}");

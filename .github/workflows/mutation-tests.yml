@@ -89,8 +89,8 @@ jobs:
       - name: Identify mutation execution inputs
         id: cache
         env:
-          CACHE_KEY: stryker-v2-${{ matrix.id }}-${{ hashFiles('package-lock.json', 'packages/**', 'scripts/**', '.github/workflows/mutation-tests.yml') }}
-        run: echo "key=$CACHE_KEY" >> "$GITHUB_OUTPUT"
+          PARTITION: ${{ matrix.id }}
+        run: echo "key=stryker-v2-$PARTITION-$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

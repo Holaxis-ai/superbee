@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { appendFileSync, globSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +14,8 @@ export function mutationPlan(target = "both", override = "") {
     const cwd = path.join(root, "packages", name);
     const owner = JSON.parse(readFileSync(path.join(cwd, "package.json"), "utf8"));
     if (name !== "cli" || override) {
-      include.push({ package: name, workspace: owner.name, id: name, mutate: override });
+      const id = override ? `${name}-override-${createHash("sha256").update(override).digest("hex").slice(0, 16)}` : name;
+      include.push({ package: name, workspace: owner.name, id, mutate: override });
       continue;
     }
     const config = JSON.parse(readFileSync(path.join(cwd, "stryker.config.json"), "utf8"));
