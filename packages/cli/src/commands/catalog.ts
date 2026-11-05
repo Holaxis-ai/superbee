@@ -1,6 +1,7 @@
 import { renderUsage } from "../output.js";
 import { parseArgs } from "node:util";
 import { homedir } from "node:os";
+import path from "node:path";
 
 import { parseSelectorOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -9,6 +10,7 @@ import {
   findCatalogEntry,
   listCatalogEntries,
   removeCatalogEntry,
+  relocateCatalogEntry,
   resolveCatalogEntry,
   type CatalogEntryView,
   type CatalogOptions,
@@ -31,6 +33,7 @@ Usage:
   superbee catalog list --hosted [--host <url>] [--json]
   superbee catalog resolve <label-or-id> [--field path | --json]
   superbee catalog remove <label-or-id> [--json]
+  superbee catalog relocate <label-or-id> --dir <path> [--json]
 
 Labels are user-defined or agent-defined on the user's behalf. They use 1-64 lowercase letters,
 numbers, dots, dashes, or underscores, beginning and ending with a letter or number. Registration
@@ -42,10 +45,11 @@ Commands:
             and, while you are signed in, the hosted bundles you can reach that have no folder
             here; --hosted lists every hosted bundle you can reach instead (see below)
   resolve   Revalidate and return exactly one registered workspace
+  relocate  Explicitly retarget an unavailable entry, keeping its label and ID
   remove    Forget one registered workspace (idempotent); its folder and files are never touched
 
 Options:
-  --dir <path>   add: bundle root or project directory with a direct .superbee (or legacy .agentstate-lite) bundle
+  --dir <path>   add/relocate: bundle root or project directory with a direct .superbee (or legacy .agentstate-lite) bundle
   --field path   resolve: print only the canonical path plus a newline
   --local        list: registered workspaces only; never asks a host
   --hosted       list: the hosted bundles you can reach, read live from the host
@@ -87,6 +91,11 @@ is removed; any change the checkout's store still journals is reported as strand
 'checkout --release <folder>' discards. Removing a label that is not registered is a no-op.
 'catalog list' reports unavailable: <n> for entries whose folder is gone, and never removes one.
 'checkout --release' forgets the label checkout gave the folder by itself.
+
+'catalog relocate' requires an explicit selector and --dir replacement. It preserves the label
+and ID, refuses an available old target or a target another entry owns, and does not prove that
+the replacement is the same bundle. An identical target is unchanged. A moved hosted checkout
+must be adopted with 'checkout --adopt' first; relocation never changes its binding.
 
 The catalog only selects a target. Pass a resolved path explicitly to ordinary commands with
 --dir; there is no process-global active workspace and no implicit cross-bundle operation.
@@ -164,7 +173,7 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
     (positionals) => {
       const [subcommand, ...data] = positionals;
       if (subcommand === undefined) return { kind: "navigation" } as const;
-      if (subcommand !== "add" && subcommand !== "list" && subcommand !== "resolve" && subcommand !== "remove") {
+      if (subcommand !== "add" && subcommand !== "list" && subcommand !== "resolve" && subcommand !== "remove" && subcommand !== "relocate") {
         return { kind: "unknown", token: subcommand } as const;
       }
       return {
@@ -175,7 +184,9 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
             ? CLI_LEAVES.catalogList
             : subcommand === "resolve"
               ? CLI_LEAVES.catalogResolve
-              : CLI_LEAVES.catalogRemove,
+              : subcommand === "relocate"
+                ? CLI_LEAVES.catalogRelocate
+                : CLI_LEAVES.catalogRemove,
         data,
         payload: { subcommand, operand: data[0] },
       } as const;
@@ -209,6 +220,27 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
         resolveMode(parsed.values),
       ),
     );
+    return;
+  }
+
+  if (subcommand === "relocate") {
+    if (parsed.values.dir === undefined || parsed.values.dir.trim() === "") usage("catalog relocate requires an explicit --dir replacement bundle");
+    if (parsed.values.field !== undefined) usage("--field is only valid with catalog resolve");
+    // Resolve the caller path before private catalog access, preserving the shared path boundary.
+    const requested = path.resolve(cwd(), parsed.values.dir);
+    await resolveLocalBundleTarget(requested);
+    const expected = await findCatalogEntry(operand!, home());
+    if (!expected) throw new CliError("NOT_FOUND", `workspace "${operand}" is not registered`, { help: `${cliInvocation()} catalog list --local` });
+    const entry = await relocateCatalogEntry(expected, requested, { ...(deps.catalogOptions ?? {}), home: home() });
+    if (!entry) throw new Error("selected catalog entry was not relocated");
+    const changed = entry.locator.path !== expected.locator.path;
+    stdout(render({
+      schema_version: 1, catalog: changed ? "relocated" : "unchanged", changed,
+      id: entry.id, label: entry.label, locator: entry.locator,
+      previous: { locator: expected.locator, available: !changed }, available: true,
+      note: "explicit replacement selected; bundle sameness was not inferred",
+      help: [`${cliInvocation()} catalog resolve ${commandToken(entry.label)} --field path`],
+    }, resolveMode(parsed.values)));
     return;
   }
 
@@ -246,7 +278,7 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
               ? [`${cliInvocation()} catalog add <label> [--dir <path>]`, ...(firstCheckout ? [firstCheckout] : [])]
               : [
                   `${cliInvocation()} catalog resolve <label-or-id> --field path`,
-                  ...(unavailable[0] ? [`${cliInvocation()} catalog remove ${commandToken(unavailable[0].label)}`] : []),
+                  ...(unavailable[0] ? [`if moved, explicitly select its replacement: ${cliInvocation()} catalog relocate ${commandToken(unavailable[0].label)} --dir <replacement-bundle>`, `${cliInvocation()} catalog remove ${commandToken(unavailable[0].label)}`] : []),
                   ...(firstCheckout ? [firstCheckout] : []),
                 ],
         },

@@ -52,7 +52,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  AGENTSTATE_LITE_NO_AUTOPULL: 1
+  SUPERBEE_NO_AUTOPULL: 1
 
 jobs:
   # The target picker cannot live in a job-level `if` (the `matrix` context is not available

@@ -72,6 +72,7 @@ import {
 } from "@superbee/core";
 import { BoardGitError, classifyGitError, isBoardGitError, type GitFailure } from "./errors.js";
 import { normalizeGitLexicalPath } from "./git-path.js";
+import { saveCopyWithBody } from "./saved-copies.js";
 import {
   PRIVATE_STATE_MAX_RECORD_BYTES,
   privateStateFinding,
@@ -1750,7 +1751,7 @@ function commitSubject(docs: DocChange[]): string {
  * interactive hook) off the machine-managed board branch — hooks configured for the main worktree
  * are shared config in a linked worktree and could otherwise reject or hang the sync commit.
  */
-export function stageAndCommit(boardPath: string): CommitResult {
+export function stageAndCommit(boardPath: string, options: { deletedBy?: string } = {}): CommitResult {
   mustGit(boardPath, ["add", "-A"]);
   if (runGit(boardPath, ["diff", "--cached", "--quiet"]).status === 0) {
     return { committed: false, docs: [] };
@@ -1771,7 +1772,10 @@ export function stageAndCommit(boardPath: string): CommitResult {
     if (!verb) continue;
     // A pending doc's frontmatter is read from the STAGE (`:0:` — the exact bytes being
     // committed); a deletion's from the outgoing HEAD version.
-    docs.push(enrichDocChange(boardPath, relPath, verb, verb === "deleted" ? "HEAD" : ":0"));
+    const change = enrichDocChange(boardPath, relPath, verb, verb === "deleted" ? "HEAD" : ":0");
+    // The outgoing version names its LAST EDITOR, not whoever is deleting it: credit the actor
+    // sync resolved. With none flowing in, that last editor is the only name known.
+    docs.push(verb === "deleted" && options.deletedBy !== undefined ? { ...change, actor: options.deletedBy } : change);
   }
 
   const subject = commitSubject(docs);
@@ -2092,6 +2096,13 @@ export function snapshotBundleCommit(top: string, bundlePath: string): BundleSna
 
 // ── fetch + rebase (conflict = detect only) ───────────────────────────────────
 
+/**
+ * A document's identity is its path, so a replay never follows a rename: a followed rename puts a
+ * teammate's edit and its conflict on a path upstream does not have. Git keeps this option in the
+ * rebase state, so `--continue` and `--skip` inherit it, and it overrides a host `merge.renames`.
+ */
+const REBASE_BY_PATH = ["-X", "no-renames"];
+
 export type FetchRebaseOutcome =
   | { status: "clean" }
   /**
@@ -2115,7 +2126,7 @@ export function fetchRebase(boardPath: string): FetchRebaseOutcome {
   // commit — see porcelain.ts's module header site map.
   const idFlags = identityFlags(boardPath);
   const boardRef = boardRefOf(boardPath);
-  const r = runGit(boardPath, [...idFlags, "rebase", boardRef], {
+  const r = runGit(boardPath, [...idFlags, "rebase", ...REBASE_BY_PATH, boardRef], {
     rebase: true,
     timeoutMs: NETWORK_TIMEOUT_MS,
   });
@@ -2166,7 +2177,8 @@ export type FetchRebaseResolvingOutcome =
    * Same-doc conflicts were RESOLVED by the converging mechanic (upstream kept, local exported)
    * and the rebase COMPLETED — the worktree is never left mid-state; non-conflicted local commits
    * landed on top of `origin/board`. One entry per conflicted file (deduped across rebase stops:
-   * a doc conflicting at several stops keeps its LAST export — the local FINAL content).
+   * a doc conflicting at several stops reports its LAST export, the local FINAL content, and every
+   * stop's version stays saved).
    */
   | { status: "resolved"; conflicts: ResolvedConflict[] }
   /**
@@ -2211,8 +2223,9 @@ const MAX_REBASE_STOPS = 1000;
  * never left mid-state on any path.
  *
  * Export files land at `<exportDir>/<relPath>` with the blob's exact bytes and a
- * `<relPath minus .md>.body.md` body-only companion for parseable concept docs. The companion is
- * the `doc update --body-file` input. Created 0700/0600; the caller passes a
+ * `<relPath minus .md>.body.md` body-only companion for parseable concept docs; a repeat conflict
+ * on a path with a saved copy lands beside it without replacing it (`saved-copies.ts`). The
+ * companion is the `doc update --body-file` input. Created 0700/0600; the caller passes a
  * per-bundle dir OUTSIDE the worktree (see cursor.ts `syncExportsDir`).
  */
 export function fetchRebaseResolving(boardPath: string, exportDir: string): FetchRebaseResolvingOutcome {
@@ -2228,7 +2241,7 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
   // commits nothing): a replayed commit needs COMMITTER identity too, the same failure class as a
   // plain commit — see porcelain.ts's module header site map.
   const idFlags = identityFlags(boardPath);
-  const r = runGit(boardPath, [...idFlags, "rebase", boardRef], { rebase: true, timeoutMs: NETWORK_TIMEOUT_MS });
+  const r = runGit(boardPath, [...idFlags, "rebase", ...REBASE_BY_PATH, boardRef], { rebase: true, timeoutMs: NETWORK_TIMEOUT_MS });
   if (r.status === 0) return { status: "clean" };
   if (!detectStaleRebase(boardPath)) throw classifyGitError(failureOf(["rebase", boardRef], r));
 
@@ -2264,28 +2277,7 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
         let bodyExportPath: string | null = null;
         const isDoc = isConceptDocPath(relPath);
         if (local.status === 0) {
-          exportPath = path.join(exportDir, relPath);
-          mkdirSync(path.dirname(exportPath), { recursive: true, mode: 0o700 });
-          writeFileSync(exportPath, local.stdout, { mode: 0o600 });
-          // The body-only companion is the literally executable
-          // `doc update --body-file` input. Only for a concept doc whose blob parses as OKF
-          // markdown and whose bytes round-trip utf8 cleanly. A doc that parses after a lossy
-          // decode — an invalid byte became U+FFFD — would get a corrupted body
-          // companion while the full export stays exact, and the emitted chain would apply the
-          // corruption; skip the companion, and with it the runnable chain, instead). A parse
-          // failure likewise just means no runnable chain — the full export remains either way.
-          if (isDoc) {
-            try {
-              const decoded = local.stdout.toString("utf8");
-              if (Buffer.from(decoded, "utf8").equals(local.stdout)) {
-                const { body } = parseMarkdown(decoded, relPath);
-                bodyExportPath = exportPath.replace(/\.md$/, ".body.md");
-                writeFileSync(bodyExportPath, body, { mode: 0o600 });
-              }
-            } catch {
-              bodyExportPath = null;
-            }
-          }
+          ({ exportPath, bodyExportPath } = saveCopyWithBody(exportDir, relPath, local.stdout, isDoc));
         }
         // 2+3. Keep the UPSTREAM (teammate's) version — explicit ref, never --ours/--theirs. An
         // upstream-side DELETION keeps upstream's state by removing the path instead.

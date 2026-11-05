@@ -5,7 +5,7 @@
 // held files and held deletions, each tracked ordinary file's state, and how long ago the last
 // pull completed. The folder is classified by the sync scan itself (`scanCheckout` in preview), so
 // status and sync never disagree about what a file is.
-import { UNSETTLED_STATES, openLocalBundle } from "@superbee/browser-local";
+import { syncStatus, UNSETTLED_STATES, openLocalBundle, type UnstorableDocument } from "@superbee/browser-local";
 import type { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
@@ -14,7 +14,10 @@ import { checkoutBindingDigest, type CheckoutBinding } from "./binding.js";
 import { BLOB_SYNC_META_KEY, blobCheckoutStates, type BlobFileState } from "./blob-sync.js";
 import { storeOkfVersion, withIdleCheckoutStore } from "./checkout-store.js";
 import { ageMs, describeAge, HOSTED_STALE_WARNING_MS, readFreshness } from "./freshness.js";
-import { readProjection, scanCheckout, type HeldReason } from "./sync-scan.js";
+import { CliError } from "../errors.js";
+import { ROOT_INDEX } from "./projection.js";
+import { assertStoreReadable } from "./sync-rows.js";
+import { readProjection, scanCheckout, type HeldReason, type ProjectionRecord } from "./sync-scan.js";
 
 /** Ids shown per category; the counts are always the totals. */
 export const STATUS_IDS_SHOWN = 5;
@@ -29,10 +32,23 @@ export interface Classified {
 }
 
 /**
+ * What this checkout holds because this client cannot store it, as the last run left it: what the
+ * last bootstrap or pull could not store, and the root the last run held. Reads only, and no request.
+ */
+export async function checkoutHolds(binding: CheckoutBinding, store: FileJournaledBackend, projection: ProjectionRecord): Promise<UnstorableDocument[]> {
+  await assertStoreReadable(store, binding);
+  const holds = new Map<string, UnstorableDocument>();
+  for (const row of (await syncStatus(openLocalBundle(binding.checkout_id, { backend: store }))).unstorable ?? []) holds.set(row.id, row);
+  if (projection.rootHeld) holds.set(ROOT_INDEX, { id: ROOT_INDEX, ...projection.rootHeld });
+  return [...holds.values()];
+}
+
+/**
  * Every document with local state the host does not have, by category, read from the store and a
  * preview scan. The caller holds the checkout lock (or accepts a racing sync).
  */
 export async function classifyCheckout(binding: CheckoutBinding, home: string, store: FileJournaledBackend): Promise<Classified> {
+  await assertStoreReadable(store, binding);
   const result: Classified = { unsent: new Set(), conflicts: new Set(), held: new Map(), heldDeletions: new Set(), blobs: [] };
 
   // Changes already journaled: the first unsettled intent per document says what it is (as sync's rows do).
@@ -67,6 +83,7 @@ export async function classifyCheckout(binding: CheckoutBinding, home: string, s
     if (row.reason === "bulk_deletion") result.heldDeletions.add(row.id);
     else result.held.set(row.id, row.reason);
   }
+  for (const hold of await checkoutHolds(binding, store, projection)) result.held.set(hold.id, hold.code);
   // The held set also names the deletes the host held: journaled, but a plain sync never sends them.
   for (const id of report.hold?.ids ?? []) result.heldDeletions.add(id);
 
@@ -97,7 +114,12 @@ export async function hostedStatus(binding: CheckoutBinding, home: string, now: 
   const freshness = await readFreshness(home, binding.checkout_id);
   const age = ageMs(freshness.pulled_at, now);
   const stale = age === null || age > HOSTED_STALE_WARNING_MS;
-  const classified = await withIdleCheckoutStore(binding, home, (store) => classifyCheckout(binding, home, store));
+  let damaged: CliError | null = null;
+  const classified = await withIdleCheckoutStore(binding, home, (store) => classifyCheckout(binding, home, store)).catch((error: unknown) => {
+    if (!(error instanceof CliError) || error.details?.reason !== "store_damaged") throw error;
+    damaged = error;
+    return null;
+  });
 
   const sync: Record<string, unknown> = {
     bundle_id: binding.bundle_id,
@@ -106,7 +128,13 @@ export async function hostedStatus(binding: CheckoutBinding, home: string, now: 
   };
   const syncCommand = commandFragment`${cliInvocation()} sync --dir ${commandToken(binding.path)}`;
   const help: CommandText[] = [];
-  if (classified === null) {
+  if (damaged) {
+    const refusal = damaged as CliError;
+    sync.state = "store_damaged";
+    sync.store_damage = refusal.message;
+    sync.damaged = refusal.details?.documents;
+    help.push(commandFragment`${cliInvocation()} checkout --release ${commandToken(binding.path)}`);
+  } else if (classified === null) {
     sync.state = "busy";
   } else {
     const { unsent, conflicts, held, heldDeletions, blobs } = classified;

@@ -46,6 +46,7 @@ import {
   type HostedWriteHost,
 } from "../hosted-auth/session.js";
 import { unboundCopyRefusal } from "../hosted/refusals.js";
+import { unstorableReceipt } from "../hosted/sync-rows.js";
 import { ACCESS_PAGE_HINT } from "../hosted/access.js";
 import { hostedFailure, type HostedSyncClient } from "../hosted/client.js";
 import { connectHostedAccount, hostedListCommand, workspaceNames } from "../hosted/account.js";
@@ -85,6 +86,9 @@ current files in all, and 5,000 earlier versions (64 MiB); the list of everythin
 3 MiB. Every way: each document within the host's bound (983,040 bytes as sent on current
 hosts, about 950 KiB of Markdown; 64 KiB on older ones), 64 KiB per reserved file, 16 KiB of
 frontmatter.
+
+An exit of 5 with 'published: created' means the bundle was created and the folder bound, and the
+host holds a document this client cannot store: the receipt's rows name it.
 
 With --yes, signs in if needed (AUTH_REQUIRED, exit 4, carries the one link to relay and the
 command to re-run), creates the bundle in your workspace (only you can reach it, at write, until
@@ -569,6 +573,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
         upstream: board.upstream,
         head: boardHead(board),
         sync: boardState?.block.state,
+        ...(boardState?.block.saved_copies ? { saved_copies: boardState.block.saved_copies, saved_copies_note: "saved conflict copies stay on this machine and do not block the move" } : {}),
         ...(boardState && ((boardState.block.ahead as number | null) ?? 0) + ((boardState.block.uncommitted as number | null) ?? 0) > 0
           ? { not_on_branch: { ahead: boardState.block.ahead, uncommitted: boardState.block.uncommitted, note: "unpushed commits reach the board branch with the moved-marker push (a board shared on origin); uncommitted changes travel to hosted only" } }
           : {}),
@@ -774,10 +779,12 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
     (entry) => entry.locator.path === canonical,
   );
   const catalog = existing ? { registered: true, label: existing.label, id: existing.id, home: "hosted" } : await registerInCatalog(home, bound.binding);
+  const unstorable = unstorableReceipt(bound.unstorable, `${cliInvocation()} sync --dir ${commandToken(canonical)}`);
   deps.stdout(
     render(
       {
         published: "created",
+        ...unstorable?.fields,
         bundle_id: bundleId,
         name,
         host: target.origin,
@@ -805,6 +812,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
         catalog,
         reverse: `${cliInvocation()} checkout --release ${commandToken(canonical)} leaves a plain local folder; the hosted bundle stays until deleted in the app`,
         help: [
+          ...(unstorable?.help ?? []),
           // A moved board's teammates reach the bundle only once it is shared with them.
           ...(board ? [`share it with the board's teammates: ${ACCESS_PAGE_HINT}`] : []),
           `${cliInvocation()} status --dir ${commandToken(canonical)}`,
@@ -814,4 +822,5 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
       mode,
     ),
   );
+  if (unstorable) throw unstorable.failure;
 }

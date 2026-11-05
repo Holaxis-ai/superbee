@@ -2913,8 +2913,6 @@ test("NORTH STAR: a FRESH bundle built from the shipped recipes (review-workflow
 // pinned below), so the legacy install state is seeded directly.
 
 const LEGACY_REVIEW_WORKFLOW_V1 = path.resolve(import.meta.dirname, "fixtures/review-workflow-legacy-v1");
-const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
-const MIGRATION_SCRIPT = path.join(REPO_ROOT, "scripts", "migrate-legacy-view-names.mjs");
 const execFileAsync = promisify(execFile);
 
 /** Emulate the launcher's listing with THE one registration predicate (core `parseRegistration`)
@@ -2946,39 +2944,6 @@ async function seedLegacyV1Install(bundle: Bundle): Promise<void> {
   await writeBlob(bundle, "pages/review-workflow/reviews.html", new TextEncoder().encode(html), "text/html; charset=utf-8");
 }
 
-test("MID-VINTAGE (round-2 P1): a bundle carrying the known transitional view-authoring reference at its renamed id migrates CLEAN — the real script refreshes it, and no remaining doc teaches legacy names as current", async () => {
-  // The reviewer's exact fixture: the known shipped TRANSITIONAL references/view-authoring-v0
-  // (extracted from 8192269^, frozen with provenance under
-  // scripts/prior-shipped-view-authoring-references/) installed at its already-renamed id.
-  // Pre-fix the script exited 0 with NO warnings and left it teaching "still resolve during the
-  // migration window" — an official migration's known-input postcondition is not optional.
-  const dir = await tempDir();
-  try {
-    await initBundle(dir);
-    const bundle: Bundle = { root: dir };
-    const frozen = await readFile(
-      path.join(REPO_ROOT, "scripts/prior-shipped-view-authoring-references/7-2901497-phase2a-transitional.md"),
-      "utf8",
-    );
-    const { frontmatter, body } = parseMarkdown(frozen);
-    assert.match(body, /migration window/, "the frozen form really is the transitional teaching");
-    await writeDoc(bundle, { id: "references/view-authoring-v0", frontmatter, body });
-
-    const { stdout } = await execFileAsync(process.execPath, [MIGRATION_SCRIPT, "--dir", dir], {
-      cwd: REPO_ROOT,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    const receipt = (JSON.parse(stdout) as { bundles: Array<Record<string, unknown>> }).bundles[0]!;
-    assert.equal(receipt.reference_refreshed, "swapped", "the known transitional form must refresh to the canonical");
-
-    const remaining = await query(bundle, {});
-    assert.ok(remaining.some((d) => d.id === "references/view-authoring-v0"), "the reference is still present");
-    assertTeachesNoLegacyVocabulary(remaining);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 test("REJECTION PIN: the legacy v1 recipe folder no longer installs — its Page-typed registry doc is RECIPE_MALFORMED with the actionable message", async () => {
   const dir = await tempDir();
   try {
@@ -2992,7 +2957,7 @@ test("REJECTION PIN: the legacy v1 recipe folder no longer installs — its Page
   }
 });
 
-test("legacy-alias awareness: reapplying the renamed Review Workflow onto a legacy v1 install creates NO duplicate set — and reports MIGRATION_REQUIRED, not success", async () => {
+test("legacy-alias awareness: reapplying the renamed Review Workflow onto a legacy v1 install creates NO duplicate page set — and reports MIGRATION_REQUIRED, not success", async () => {
   const dir = await tempDir();
   try {
     await initBundle(dir);
@@ -3004,12 +2969,12 @@ test("legacy-alias awareness: reapplying the renamed Review Workflow onto a lega
     await seedLegacyV1Install(bundle);
 
     // 2. The NEW renamed edition applies: the legacy install still holds the artifact slots so
-    //    nothing is duplicated — but the RETIRED-name occupants no longer work, so the receipt
-    //    reports an explicit non-success `migration_required` naming the remedy (review F3c),
-    //    never a satisfied-looking skip.
+    //    nothing is duplicated — but the RETIRED-name occupant no longer works, so the receipt
+    //    reports an explicit non-success `migration_required` naming the remedy, never a
+    //    satisfied-looking skip.
     const reapply = await runJson(recipe, ["add", REVIEW_WORKFLOW_RECIPE, "--dir", dir]);
     const counts = reapply.counts as Record<string, number>;
-    assert.equal(counts.migration_required, 2, "the View convention + the page pair await migration");
+    assert.equal(counts.migration_required, 1, "the page pair awaits migration");
     assert.equal(counts.legacy_present, 0, "an unmigrated occupant is never reported as satisfying");
 
     const pages = reapply.pages as Array<Record<string, unknown>>;
@@ -3025,52 +2990,45 @@ test("legacy-alias awareness: reapplying the renamed Review Workflow onto a lega
     const docs = reapply.docs as Array<Record<string, unknown>>;
     const viewConvention = docs.find((d) => d.id === "conventions/view");
     assert.ok(viewConvention);
-    assert.equal(viewConvention!.changed, false);
-    assert.equal(viewConvention!.migration_required, "conventions/page");
+    assert.equal(viewConvention!.changed, true, "the View convention installs beside the retired Page convention");
+    assert.equal(viewConvention!.migration_required, undefined);
     const reviewRequest = docs.find((d) => d.id === "conventions/review-request");
     assert.equal(reviewRequest!.changed, false, "same-id convention is the ordinary existing no-op");
 
     // The receipt-level warnings carry the remedy by name.
     const warnings = reapply.warnings as Array<Record<string, unknown>>;
     const migrationWarnings = warnings.filter((w) => w.code === "MIGRATION_REQUIRED");
-    assert.equal(migrationWarnings.length, 2);
-    for (const w of migrationWarnings) assert.match(String(w.message), /migrate-legacy-view-names/);
+    assert.equal(migrationWarnings.length, 1);
+    for (const w of migrationWarnings) {
+      assert.match(String(w.message), /https:\/\/github\.com\/Holaxis-ai\/superbee\/blob\/v0\.4\.3\/scripts\/migrate-legacy-view-names\.mjs/);
+    }
 
     // The re-taught authoring reference is genuinely NEW content at a NEW id — it installs (there
     // is no principled alias for reference docs, and updated teaching should reach legacy bundles).
     assert.deepEqual(reapply.references, [{ id: "references/view-authoring-v0", changed: true }]);
-    assert.equal(reapply.changed, true, "the reference install is the only change");
+    assert.equal(reapply.changed, true);
 
-    // 3. NOTHING landed under the new prefixes — no second set on disk.
+    // 3. NOTHING landed for the page pair under the new prefixes — no second set on disk.
     assert.equal((await query(bundle, { prefix: VIEW_REGISTRY_PREFIX })).length, 0);
     assert.equal(await readBlob(bundle, "views/review-workflow/reviews.html"), null);
-    const conventionIds = (await query(bundle, { prefix: "conventions/" })).map((d) => d.id);
-    assert.ok(!conventionIds.includes("conventions/view"), "no duplicate View convention");
 
     // 4. Launcher-level: the UNMIGRATED Page-typed doc no longer registers — zero usable cards
-    //    here BY DESIGN; the receipt above and status's legacy_naming finding carry the remedy.
+    //    here BY DESIGN; the receipt warning above carries the remedy.
     assert.equal((await usableRegistrations(bundle)).length, 0);
 
     // 5. A SECOND renamed apply is stable and still non-success in the same way.
     const third = await runJson(recipe, ["add", REVIEW_WORKFLOW_RECIPE, "--dir", dir]);
     assert.equal(third.changed, false);
-    assert.equal((third.counts as Record<string, number>).migration_required, 2);
+    assert.equal((third.counts as Record<string, number>).migration_required, 1);
     assert.deepEqual(third.references, [{ id: "references/view-authoring-v0", changed: false }]);
 
-    // 6. Run the REAL migration script on the full historical install (review F2): types flip in
-    //    place, the Page convention and the superseded Page-authoring reference are retired with
-    //    their replacements present, the historical review-request wording refreshes — and the
-    //    remaining bundle is north-star clean: NO doc teaches legacy names as current.
-    await execFileAsync(process.execPath, [MIGRATION_SCRIPT, "--dir", dir], {
-      cwd: REPO_ROOT,
-      maxBuffer: 10 * 1024 * 1024,
+    // 6. Retype the legacy registry doc to View (what the tagged migration script does to it).
+    const legacyRegistry = await readDoc(bundle, "pages-registry/review-workflow-reviews");
+    await writeDoc(bundle, {
+      id: legacyRegistry.id,
+      frontmatter: { ...legacyRegistry.frontmatter, type: "View" },
+      body: legacyRegistry.body,
     });
-    const remaining = await query(bundle, {});
-    assert.ok(remaining.some((d) => d.id === "conventions/view"), "the script installed the View convention replacement");
-    assert.ok(!remaining.some((d) => d.id === "conventions/page"), "the Page convention was retired");
-    assert.ok(remaining.some((d) => d.id === "references/view-authoring-v0"), "the replacement reference is present");
-    assert.ok(!remaining.some((d) => d.id === "references/page-authoring-v0"), "the superseded legacy reference was retired");
-    assertTeachesNoLegacyVocabulary(remaining);
 
     //    Post-migration, the alias probe reports the pair as GENUINELY satisfied again, and the
     //    launcher sees exactly ONE usable card at the legacy location.
@@ -3136,14 +3094,13 @@ test("legacy-alias awareness: an INCOMPLETE legacy pair (registry doc without it
     assert.deepEqual(viewIds, ["views-registry/review-workflow-reviews"]);
     assert.ok(await readBlob(bundle, "views/review-workflow/reviews.html"));
 
-    // Tally: page pair + reference created; review-request convention existing; view convention
-    // still blocked by the unmigrated conventions/page (the convention probe is independent of
-    // the pair, and an unmigrated occupant reports migration_required, never legacy_present).
+    // Tally: page pair, reference and View convention created; the review-request convention
+    // exists with a differing source.
     assert.deepEqual(reapply.counts, {
-      created: 2,
+      created: 3,
       existing: 0,
       legacy_present: 0,
-      migration_required: 1,
+      migration_required: 0,
       source_differs: 1,
     });
   } finally {
@@ -3168,10 +3125,10 @@ test("legacy-alias awareness: the mirror partial pair (blob without its registry
     assert.deepEqual(viewIds, ["views-registry/review-workflow-reviews"]);
     assert.ok(await readBlob(bundle, "views/review-workflow/reviews.html"));
     assert.deepEqual(reapply.counts, {
-      created: 2,
+      created: 3,
       existing: 0,
       legacy_present: 0,
-      migration_required: 1,
+      migration_required: 0,
       source_differs: 1,
     });
   } finally {
@@ -3447,7 +3404,7 @@ test("recipe add actor: built CLI resolves flag over canonical and legacy enviro
   const loaded = await resolveRecipe(EXAMPLE_RECIPE_FIXTURE);
   assert.ok(loaded.ok);
   const cli = path.resolve(import.meta.dirname, "../../superbee/dist/superbee.mjs");
-  const baseEnv = { ...process.env, ASLITE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" };
+  const baseEnv = { ...process.env, SUPERBEE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" };
   delete baseEnv.SUPERBEE_ACTOR;
   delete baseEnv.AGENTSTATE_LITE_ACTOR;
   for (const [env, flags, expected] of [
@@ -3477,7 +3434,7 @@ test("recipe add actor: built CLI resolves flag over canonical and legacy enviro
 
 test("recipe add actor: blank flag or environment and invalid v0.2 identity refuse without writes; v0.1 keeps free-form attribution", async () => {
   const cli = path.resolve(import.meta.dirname, "../../superbee/dist/superbee.mjs");
-  const baseEnv = { ...process.env, ASLITE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" };
+  const baseEnv = { ...process.env, SUPERBEE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" };
   delete baseEnv.SUPERBEE_ACTOR;
   delete baseEnv.AGENTSTATE_LITE_ACTOR;
   for (const [env, flags] of [

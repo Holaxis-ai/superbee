@@ -31,15 +31,16 @@ export const CLAIM_NOT_ARBITRATED = "your claim was not arbitrated";
 export const CLAIM_NO_OWNER_RECORDED = "no owner is recorded";
 
 /**
- * Frontmatter keys the ENGINE rewrites on EVERY write (attribution + clocks). Two concurrent
- * versions of one doc always disagree on them and no caller can meaningfully re-apply them, so
- * they never turn an otherwise claim-only conflict into a mixed one. This set decides ONLY that
- * question — the reported `frontmatter_differs` list is untouched for every conflict that carries
- * no claim divergence.
+ * Frontmatter keys the ENGINE rewrites on EVERY write (attribution + clocks; `actor` is the OKF
+ * v0.1 attribution). Two concurrent versions of one doc always disagree on them and no caller can
+ * meaningfully re-apply them, so they never turn an otherwise claim-only conflict into a mixed one,
+ * and they never count as something a saved copy holds that the document lacks. The converge row's
+ * `frontmatter_differs` list is untouched for every conflict that carries no claim divergence.
  */
 export const ENGINE_STAMPED_FIELDS: ReadonlySet<string> = new Set([
   "timestamp",
   "generated",
+  "actor",
   SUPERBEE_UPDATED_BY_FIELD,
 ]);
 

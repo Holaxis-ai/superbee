@@ -308,17 +308,17 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
    * the marker a superseded accepting sync left in place and still unfinished, the refusal that
    * sync kept. Absent when no pull has ever run here.
    */
-  const lastSyncOf = (marker: Awaited<ReturnType<typeof localSyncStatus>>["lastPull"]): PlatformSyncOutcome | undefined => {
-    const outcome = lastOutcome ?? (marker === null ? undefined : { ok: marker.completedAt !== null });
+  const lastSyncOf = (marker: Awaited<ReturnType<typeof localSyncStatus>>["lastPull"], unstorable: Awaited<ReturnType<typeof localSyncStatus>>["unstorable"]): PlatformSyncOutcome | undefined => {
+    const outcome = lastOutcome ?? (marker === null ? (unstorable === undefined ? undefined : { ok: true }) : { ok: marker.completedAt !== null });
     if (outcome === undefined) return undefined;
     const kept = keptRefusal !== undefined && marker !== null && marker.completedAt === null && marker.run === keptRefusal.marker.run && marker.startedAt === keptRefusal.marker.startedAt ? keptRefusal.refusal : undefined;
     const refused = marker?.refused ?? kept;
-    return { ...outcome, ...(refused === undefined ? {} : { refusedDeletions: refused }) };
+    return { ...outcome, ...(refused === undefined ? {} : { refusedDeletions: refused }), ...(unstorable === undefined ? {} : { unstorable }) };
   };
 
   const status = async (): Promise<PlatformSyncStatus> => {
     const local = await localSyncStatus(backend);
-    const lastSync = lastSyncOf(local.lastPull);
+    const lastSync = lastSyncOf(local.lastPull, local.unstorable);
     return {
       mode: "browser-local",
       online,

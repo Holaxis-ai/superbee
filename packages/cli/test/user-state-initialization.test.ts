@@ -38,7 +38,7 @@ function spawnChild(role: "creator" | "observer" | "catalog", home: string, bund
     process.execPath,
     ["--import", pathToFileURL(LOADER).href, CHILD, role, home, ...(bundle ? [bundle] : [])],
     {
-      env: isolatedUserEnv(home, { AGENTSTATE_LITE_NO_AUTOPULL: "1" }),
+      env: isolatedUserEnv(home, { SUPERBEE_NO_AUTOPULL: "1" }),
       stdio: ["ignore", "pipe", "pipe", "ipc"],
     },
   );

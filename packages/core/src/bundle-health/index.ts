@@ -21,7 +21,6 @@ export type {
   FieldValueRow,
   InvalidRegistrationRow,
   KindLintRow,
-  LegacyNamingFindings,
   LinkTypeViolationRow,
   MalformedRow,
   MissingExpectedRow,
@@ -34,4 +33,9 @@ export type {
 } from "./report.js";
 export { bundleKindFindings, bundleKindRegistry, documentKindFinding, isRegistryConvention } from "./kind-findings.js";
 export type { BundleKindFindings, KindFinding, KindWriteIdentity } from "./kind-findings.js";
-export { LEGACY_PAGE_TYPE_NAME, isLegacyPageDoc } from "./legacy-page.js";
+export {
+  LEGACY_PAGE_MIGRATION_HELP,
+  LEGACY_PAGE_MIGRATION_SCRIPT_URL,
+  LEGACY_PAGE_TYPE_NAME,
+  isLegacyPageDoc,
+} from "./legacy-page.js";

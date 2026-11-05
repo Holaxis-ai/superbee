@@ -1,5 +1,5 @@
 /**
- * The `@superbee/core/search` boundary: the subpath imports only itself, core's pure SHA-256, canonical paths, typed errors, heads digest and
+ * The `@superbee/core/search` boundary: the subpath imports only itself, core's pure SHA-256, canonical paths, typed errors, the shared document scan, heads digest and
  * erased types, and names no Node global, so a Worker, a browser page and the CLI load the same
  * bytes. The browser-bundle test runs the built subpath in a sandbox with only TextEncoder and
  * TextDecoder; this one fences the source so a new import is refused before anything is built.
@@ -19,6 +19,7 @@ const ALLOWED_OUTSIDE = new Map([
   ["../paths.js", "value"],
   ["../errors.js", "value"],
   ["../heads-digest.js", "value"],
+  ["../document-scan.js", "value"],
   ["../types.js", "type-only"],
 ]);
 const NODE_GLOBALS = new Set(["Buffer", "process", "require", "createRequire", "global", "__dirname", "__filename"]);

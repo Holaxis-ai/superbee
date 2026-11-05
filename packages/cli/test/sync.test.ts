@@ -249,15 +249,15 @@ test("convergeDocLine: a reserved-file entry (log.md) renders VERBATIM — never
 test("convergeDocLine: a local-side deletion (no export) says so honestly instead of naming a missing file", () => {
   assert.equal(
     convergeDocLine({ entry: "tasks/seed-one", isDoc: true, exportPath: null, bodyExportPath: null, landed: true }),
-    "doc tasks/seed-one — teammate's version kept (your side deleted it; nothing to save)",
+    "doc tasks/seed-one — teammate's version kept (your side deleted it; nothing to save); the document is back with their change, so carry it over if you moved it, then delete it again",
   );
 });
 
-test("convergeDocLine: a doc DELETED UPSTREAM says 'deletion kept' and points at doc write, never doc update (review fix 2)", () => {
+test("convergeDocLine: a doc DELETED UPSTREAM says 'deletion kept' and points at --resolve keep, never doc update (review fix 2)", () => {
   const line = convergeDocLine({ entry: "tasks/seed-one", isDoc: true, exportPath: "/x/tasks/seed-one.md", bodyExportPath: "/x/tasks/seed-one.body.md", landed: false });
   assert.equal(
     line,
-    "doc tasks/seed-one — teammate's deletion kept; yours saved at /x/tasks/seed-one.md — re-create with doc write",
+    "doc tasks/seed-one — teammate's deletion kept; yours saved at /x/tasks/seed-one.md — re-create with sync --resolve keep",
   );
   assert.ok(!line.includes("doc update"), "doc update on a deleted doc fails NOT_FOUND — never suggested here");
 });
@@ -323,7 +323,7 @@ test("pickHelp: prefers a LANDED doc; falls back to the doc-write re-create chai
   // Every conflicted doc deleted upstream → the doc-write re-create chain (body export again).
   assert.equal(
     pickHelp(testInvocation("aslite"), [deletedUpstream], []),
-    "aslite doc write tasks/b --type <Type> --body-file /x/tasks/b.body.md → aslite sync",
+    "aslite sync --resolve keep --doc tasks/b → aslite sync",
   );
   // Nothing usable at all (no export, or no BODY export to feed --body-file) → no help.
   assert.equal(pickHelp(testInvocation("aslite"), [localDeletion], []), undefined);

@@ -556,8 +556,12 @@ export function Launcher() {
                     <p>
                       Worked examples — including the bridge client to copy — ship with the CLI under{" "}
                       <code>examples/views/</code>. (Views used to be called pages; the legacy{" "}
-                      <code>type: Page</code> name is no longer read — <code>superbee status</code> lists
-                      leftover legacy-named documents, and the repo&apos;s migration script renames them in place.)
+                      <code>type: Page</code> name is no longer read, so such documents do not appear here.
+                      To migrate them in place, build a checkout of tag v0.4.3 and run its{" "}
+                      <a href="https://github.com/Holaxis-ai/superbee/blob/v0.4.3/scripts/migrate-legacy-view-names.mjs">
+                        migrate-legacy-view-names script
+                      </a>{" "}
+                      with <code>--dir &lt;bundle-root&gt;</code>.)
                     </p>
                   </div>
                 )}

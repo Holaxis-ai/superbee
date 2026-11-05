@@ -6,6 +6,8 @@ import path from "node:path";
 
 import { resolveLocalBundleTarget, samePhysicalPath } from "./bundle.js";
 import { bundleHomeAt, type BundleHome } from "./bundle-home.js";
+import { bindingForPath, folderIdentity, indexedBindingForPath, listReadyBindings, sameFolder } from "./hosted/binding.js";
+import { readCheckoutMarker } from "./hosted/marker.js";
 import { credentialsDir } from "./credentials.js";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
@@ -73,6 +75,7 @@ interface MutationResult<T> {
   value: T;
   changed: boolean;
   next?: CatalogFile;
+  beforeCommit?: () => Promise<void>;
 }
 
 function catalogDir(home: string): string {
@@ -315,7 +318,7 @@ async function mutateCatalog<T>(
       };
       // Root initialization completed before catalog.lock. Reassert ownership without initializing
       // here so publication stays fail-closed without introducing the inverse lock edge.
-      await writeReadyUserStateFileAtomic0600(home, CATALOG_FILE_NAME, JSON.stringify(next, null, 2) + "\n");
+      await writeReadyUserStateFileAtomic0600(home, CATALOG_FILE_NAME, JSON.stringify(next, null, 2) + "\n", result.beforeCommit);
     }
     return { value: result.value, changed: result.changed };
   } finally {
@@ -379,22 +382,84 @@ export async function addCatalogEntry(
 }
 
 /**
- * Point the entry for a folder that moved at its new canonical path, keeping its id and label.
- * Nothing changes when no entry names the old path, or another entry already names the new one.
- * Returns the entry now naming the new path, or null.
+ * Adoption retains its path-based best-effort contract. Explicit recovery supplies the selected
+ * entry as a compare-and-swap precondition; it never substitutes a competing target's entry.
  */
-export async function relocateCatalogEntry(oldPath: string, newPath: string, options: CatalogOptions = {}): Promise<CatalogEntry | null> {
+export async function relocateCatalogEntry(old: string | CatalogEntry, newPath: string, options: CatalogOptions = {}): Promise<CatalogEntry | null> {
   if (!path.isAbsolute(newPath)) throw new CliError("USAGE", "workspace catalog paths must be absolute");
+  const expected = typeof old === "string" ? null : old;
+  const oldPath = typeof old === "string" ? old : old.locator.path;
+  const home = options.home ?? homedir();
+  const target = expected ? await resolveLocalBundleTarget(newPath) : null;
+  const canonical = target?.canonicalRoot ?? newPath;
+  const identity = expected ? await folderIdentity(canonical) : null;
+  const conflict = (reason: string, message: string, help = `${cliInvocation()} catalog list --local`): never => {
+    throw new CliError("CONFLICT", message, { details: { reason }, help });
+  };
+  const observeTarget = async () => {
+    const now = await resolveLocalBundleTarget(newPath);
+    const folder = await folderIdentity(canonical);
+    if (now.canonicalRoot !== canonical || !identity || !folder || !sameFolder(identity, folder)) {
+      conflict("target_changed", "the replacement bundle path or folder changed; inspect it before retrying");
+    }
+    return folder!;
+  };
+  const validate = async (): Promise<void> => {
+    const folder = await observeTarget();
+    // Use strict checkout evidence: an unbound copy must go through adoption, never acquire a
+    // hosted home merely by changing a catalog locator. The catalog does not change bindings.
+    try {
+      const binding = await bindingForPath(home, canonical, true);
+      const marker = readCheckoutMarker(canonical, true);
+      const moved = (await listReadyBindings(home, true)).some(item => sameFolder(folder, item.folder_identity) && item.path !== canonical);
+      const previous = await indexedBindingForPath(home, oldPath, true);
+      if ((!binding && (marker || moved)) || (previous && previous.checkout_id !== binding?.checkout_id)) {
+        conflict("checkout_adoption_required", "adopt the hosted checkout before relocating its catalog entry", `${cliInvocation()} checkout --adopt ${commandToken(canonical)}`);
+      }
+    } catch (error) {
+      if (error instanceof CliError) throw error;
+      conflict("checkout_unverifiable", "hosted checkout state could not be verified; inspect it before retrying", `${cliInvocation()} status --dir ${commandToken(canonical)}`);
+    }
+    if (!samePhysicalPath(oldPath, canonical)) {
+      let available = false;
+      try {
+        const oldTarget = await resolveLocalBundleTarget(oldPath);
+        if (!samePhysicalPath(oldTarget.canonicalRoot, oldPath)) conflict("old_target_changed", "the registered path now resolves elsewhere; inspect it before recovery");
+        available = true;
+      } catch (error) {
+        if (!(error instanceof CliError) || error.code !== "NOT_FOUND") throw error;
+      }
+      if (available) conflict("old_target_available", "the registered bundle is still available; relocation requires an unavailable old target");
+    }
+    await observeTarget();
+  };
   const result = await mutateCatalog<CatalogEntry | null>(async (current) => {
-    const already = current.entries.find((entry) => samePhysicalPath(entry.locator.path, newPath));
-    if (already) return { value: already, changed: false };
-    const moved = current.entries.find((entry) => entry.locator.path === oldPath);
+    if (!expected) {
+      const already = current.entries.find(entry => samePhysicalPath(entry.locator.path, canonical));
+      if (already) return { value: already, changed: false };
+    }
+    const moved = expected
+      ? current.entries.find(entry => entry.id === expected.id)
+      : current.entries.find(entry => entry.locator.path === oldPath);
+    if (expected && (!moved || moved.label !== expected.label || moved.locator.path !== oldPath)) {
+      conflict("entry_changed", "the selected catalog entry changed; inspect it before retrying");
+    }
     if (!moved) return { value: null, changed: false };
-    const entry: CatalogEntry = { ...moved, locator: { kind: "local-path", path: newPath } };
+    if (expected) {
+      const competing = current.entries.find(entry => entry.id !== moved.id && samePhysicalPath(entry.locator.path, canonical));
+      if (competing) conflict("target_registered", `the replacement bundle is already registered as "${competing.label}"`);
+      await validate();
+    }
+    if (samePhysicalPath(moved.locator.path, canonical)) return { value: moved, changed: false };
+    const entry: CatalogEntry = { ...moved, locator: { kind: "local-path", path: canonical } };
     return {
       value: entry,
       changed: true,
-      next: { schema_version: CATALOG_SCHEMA_VERSION, entries: current.entries.map((item) => (item.id === moved.id ? entry : item)) },
+      ...(expected ? { beforeCommit: async () => {
+        await validate();
+        if (JSON.stringify(await loadCatalog(home)) !== JSON.stringify(current)) conflict("entry_changed", "the catalog changed before relocation was committed");
+      } } : {}),
+      next: { schema_version: CATALOG_SCHEMA_VERSION, entries: current.entries.map(item => item.id === moved.id ? entry : item) },
     };
   }, options);
   return result.value;
@@ -481,7 +546,7 @@ export async function resolveCatalogEntry(
   if (!(await entryAvailable(entry))) {
     throw new CliError("NOT_FOUND", `workspace "${entry.label}" is unavailable at ${entry.locator.path}`, {
       details: { id: entry.id, label: entry.label, path: entry.locator.path },
-      help: `restore the bundle at ${entry.locator.path}, then retry`,
+      help: `restore the bundle at ${entry.locator.path}, or explicitly relocate it: ${cliInvocation()} catalog relocate ${commandToken(entry.label)} --dir <replacement-bundle>`,
     });
   }
   return entryView(entry, true, home);

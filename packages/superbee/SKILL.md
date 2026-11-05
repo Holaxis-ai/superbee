@@ -74,7 +74,7 @@ files, and stop. Use `superbee <command> --help` for exact current syntax rather
 copied command manual. Use `--body-file` for multiline Markdown. `list` / `query` filter metadata, not body text; `doc update` / `doc field` patch metadata while preserving omitted fields and body. For body edits, read the complete body with `doc read <id> --body-out <temp-file>` outside the bundle, edit that temporary file, then `doc update <id> --body-file <temp-file> --expected-version <head_version> --actor <actor>` using the version from the read. Re-read and reconcile on a version conflict. Never feed a truncated preview or a full-document `--out` export to `--body-file`: body input is Markdown only; tooling owns YAML frontmatter. With MCP, use available tools and version preconditions; check tool schemas rather than inventing search or patch verbs.
 
 Focused shipped material is available under `$REFS/recipes/` for portable examples,
-`$REFS/views/` for View authoring and examples, and `$REFS/sample-bundle/` for OKF interop. Integration authoring and explicit local source bind/run use `$REFS/author-an-integration.md`; recorded `$REFS/integrations/` examples need no credentials.
+`$REFS/views/` for View authoring and examples, and `$REFS/sample-bundle/` for OKF interop. Integration authoring and explicit local source bind/run use `$REFS/author-an-integration.md`; recorded `$REFS/integrations/` examples need no credentials. `RUNTIME` with `details.frontmatter.code` means a document cannot be read: see "When a document cannot be read" in `$REFS/modeling-and-delivery.md`, which also covers `superbee doc import`.
 Read only what the accepted work requires.
 
 ## Make the value visible
@@ -93,7 +93,7 @@ When the tone fits, a single 🐝 may mark a successful Superbee outcome.
 
 ## Sync conflicts
 
-- A Git board and a hosted checkout share one playbook. When `superbee sync` exits 5 with conflict rows, run `superbee sync --inspect --doc <id>` to see your version and theirs, then `superbee sync --resolve keep|take|revise --doc <id>`: keep writes yours over theirs, take keeps theirs, revise keeps the document as you edited it to the merged result. `--resolve` never sends: run `superbee sync` after keep or revise. A Git board has already kept the teammate's version and saved yours aside; a hosted checkout keeps your file, treats any concurrent change to one document (even different frontmatter keys) as a conflict, and is explained in `$REFS/hosted-checkout.md`.
+- A Git board and a hosted checkout share one playbook. When `superbee sync` exits 5 with conflict rows, run `superbee sync --inspect --doc <id>` to see your version and theirs, then `superbee sync --resolve keep|take|revise --doc <id>`: keep writes yours over theirs, take keeps theirs, revise keeps the document as you edited it to the merged result. `--resolve` never sends: run `superbee sync` after keep or revise. A Git board has already kept the teammate's version and saved yours aside, and only the new conflict exits 5: `status` and later `sync` runs keep naming the saved copy, with the command that discards it, until it is settled; keep is refused when your copy also differs in frontmatter, so edit the document to the result and use revise. A hosted checkout keeps your file, treats any concurrent change to one document (even different frontmatter keys) as a conflict, and is explained in `$REFS/hosted-checkout.md`.
 
 ## Host setup
 

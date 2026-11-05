@@ -44,6 +44,7 @@ import {
   isAnyRegistryId,
   isPageTypeName,
   isViewEntryVersion,
+  PAGE_ENTRY_PREFIX,
   parseRegistration,
   VIEW_ENTRY_PREFIX,
 } from "../page.js";
@@ -51,13 +52,7 @@ import { isQualifiedHref, parseQualifiedLinks, type QualifiedLink, type Qualifie
 import type { Bundle, OkfDocument } from "../types.js";
 import type { ValidationWarning } from "../validation.js";
 import { trustTierCounts, type TrustTierCounts } from "../verification.js";
-import {
-  hasLegacyBridgeField,
-  isLegacyPageConvention,
-  isLegacyPageDoc,
-  isLegacyRegistryDocId,
-  LEGACY_PAGE_BLOB_PREFIX,
-} from "./legacy-page.js";
+import { isLegacyPageDoc } from "./legacy-page.js";
 
 /**
  * Binds declared dependencies: called once, after every read has completed and `docs/dependencies`
@@ -221,13 +216,6 @@ export interface OkfUpgradeFinding {
   affectedDocuments: number;
 }
 
-export interface LegacyNamingFindings {
-  pageTyped: { id: string }[];
-  bridgeField: { id: string }[];
-  pageConvention: { id: string }[];
-  legacyPrefix: { id: string; store: "doc" | "blob" }[];
-}
-
 export interface BundleHealthReport {
   /** The root index's declared edition; undefined when absent or unreadable. */
   okfVersion: string | undefined;
@@ -261,7 +249,6 @@ export interface BundleHealthReport {
   crossBundle: CrossBundleHealth | null;
   /** Present only on a v0.1 bundle with a workflow-status collision. */
   okfUpgrade: OkfUpgradeFinding | null;
-  legacyNaming: LegacyNamingFindings;
 }
 
 /** A document's `type`, or "" when absent or not a string: the one place this coercion happens. */
@@ -343,9 +330,9 @@ export async function bundleHealth(bundle: Bundle, options: BundleHealthOptions 
   const [registry, docs, legacyBlobKeys, viewBlobKeys, okfVersionRead] = await Promise.all([
     loadKinds(bundle),
     query(bundle, {}, { onSkip: (s) => malformed.push({ id: s.id, reason: s.reason }) }),
-    // legacyNaming: blob keys still under the legacy pages/ prefix.
-    listBlobs(bundle, LEGACY_PAGE_BLOB_PREFIX),
-    // views: the views/ half of the entry-key existence set (the legacy listing is the other half).
+    // views: the legacy pages/ half of the entry-key existence set.
+    listBlobs(bundle, PAGE_ENTRY_PREFIX),
+    // views: the views/ half of the entry-key existence set.
     listBlobs(bundle, VIEW_ENTRY_PREFIX),
     readBundleOkfVersion(bundle)
       .then((version) => ({ version }))
@@ -616,24 +603,8 @@ export async function bundleHealth(bundle: Bundle, options: BundleHealthOptions 
   });
   const missingExpectedLinks = missingExpectedRanked.map((e) => e.row);
 
-  // legacyNaming: retired names the runtime no longer accepts, plus legacy locations (still
-  // recognized, reported as information). Documents count only under the legacy registry prefix,
-  // blob keys only under the legacy entry prefix.
-  const legacyNaming: LegacyNamingFindings = {
-    pageTyped: docs.filter((doc) => isLegacyPageDoc(doc.frontmatter)).map((doc) => ({ id: doc.id })),
-    bridgeField: docs.filter((doc) => hasLegacyBridgeField(doc.frontmatter)).map((doc) => ({ id: doc.id })),
-    pageConvention: docs.filter((doc) => isLegacyPageConvention(doc.frontmatter)).map((doc) => ({ id: doc.id })),
-    legacyPrefix: [
-      ...docs.filter((doc) => isLegacyRegistryDocId(doc.id)).map((doc) => ({ id: doc.id, store: "doc" as const })),
-      ...legacyBlobKeys
-        .slice()
-        .sort()
-        .map((key) => ({ id: key, store: "blob" as const })),
-    ],
-  };
-
   // The View surface, recognized with the same predicates the ui launcher uses (legacy locations
-  // included; a Page-typed document is a legacyNaming finding instead). Entry existence derives
+  // included; a Page-typed document is not a registration). Entry existence derives
   // from the two prefix-scoped listings above, never a per-registration probe.
   const entryBlobKeys = new Set<string>([...viewBlobKeys, ...legacyBlobKeys]);
   const views: ViewSurfaceHealth = { typed: 0, danglingEntries: [], invalidRegistrations: [] };
@@ -694,6 +665,5 @@ export async function bundleHealth(bundle: Bundle, options: BundleHealthOptions 
     views,
     crossBundle,
     okfUpgrade,
-    legacyNaming,
   };
 }

@@ -29,7 +29,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  AGENTSTATE_LITE_NO_AUTOPULL: 1
+  SUPERBEE_NO_AUTOPULL: 1
 
 jobs:
   source-decision:
@@ -72,6 +72,7 @@ jobs:
     timeout-minutes: 20
     env:
       SUPERBEE_TEST_EXPECT_ALIASING_HOST: "0"
+      SUPERBEE_TEST_EXPECT_PRIVILEGED_LINUX: "1"
       SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -87,6 +88,8 @@ jobs:
       - run: npm ci
       - name: Confirm the runner filesystem does not alias case
         run: mkdir -p "$RUNNER_TEMP/host-probe" && touch "$RUNNER_TEMP/host-probe/probe-name" && test ! -e "$RUNNER_TEMP/host-probe/PROBE-NAME"
+      - name: Confirm passwordless sudo for the real-uid and bind-mount rows
+        run: sudo -n true
       - name: Run the identical runtime-sensitive contract
         run: npm run ci:runtime-cli
 

@@ -1,3 +1,4 @@
+import type { SkippedDoc } from "../document-scan.js";
 /**
  * The seam a backend implements so the engine can search it. A source answers evidence for the
  * query's terms in one consistent read and the text of the page's hits for excerpts; the engine
@@ -44,6 +45,8 @@ export interface SearchEvidenceBatchV1 {
   /** Identity of what was searched: a snapshot digest, a heads digest, or a revision. Cursors bind to it. */
   readonly key: string;
   readonly size: SearchCorpusSizeV1;
+  /** Unreadable documents omitted from this corpus; absent for a complete read. */
+  readonly skipped?: readonly SkippedDoc[];
   /** Sum over the terms of their capped instance counts (searchRowText's `instances`) across the
    * indexed documents, before the filters. */
   readonly volume: number;

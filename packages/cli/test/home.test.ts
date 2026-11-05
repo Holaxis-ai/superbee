@@ -491,7 +491,7 @@ test("built home rejects a FIFO catalog and exits after its fail-soft receipt", 
     const output = await new Promise<string>((resolve, reject) => {
       const child = spawn(process.execPath, [BUILT_CLI, "--json"], {
         cwd: root,
-        env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir, AGENTSTATE_LITE_NO_AUTOPULL: "1" },
+        env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir, SUPERBEE_NO_AUTOPULL: "1" },
         stdio: ["ignore", "pipe", "pipe"],
       });
       let stdout = "";

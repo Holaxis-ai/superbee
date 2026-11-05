@@ -37,8 +37,8 @@ test("promote --help describes edition-aware document normalization", async () =
   await promote(["--help"], { stdout: (s) => (out += s) });
 
   assert.match(out, /edition-aware frontmatter normalization and kind validation/);
-  assert.match(out, /Current v0\.2 imports do not invent optional generated metadata or the legacy timestamp/);
-  assert.match(out, /explicit v0\.1 bundles retain their historical defaulted timestamp/);
+  assert.match(out, /Current v0\.2 creates seed generated metadata when a usable clock is absent/);
+  assert.match(out, /Explicit v0\.1 bundles retain their historical defaulted timestamp/);
   assert.doesNotMatch(out, /frontmatter key order, a defaulted timestamp/);
 });
 

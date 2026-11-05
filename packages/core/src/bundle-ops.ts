@@ -9,6 +9,7 @@
 
 import * as engine from "./engine.js";
 import { InvalidInputError } from "./errors.js";
+import type { WalkPathClass } from "./paths.js";
 import type {
   BlobKey,
   Bundle,
@@ -125,6 +126,11 @@ export async function queryHeads(
   return engine.queryHeads(backendFor(bundle), filter, options);
 }
 
+/** Where a watcher-reported path sits relative to what this bundle's backend reads; `undefined` when the backend cannot say. */
+export function classifyChangedPath(bundle: Bundle, relPath: string): WalkPathClass | undefined {
+  return backendFor(bundle).classifyChangedPath?.(relPath);
+}
+
 export function parseLinks(_bundle: Bundle, doc: OkfDocument): Link[] {
   return engine.parseLinks(doc);
 }
@@ -137,8 +143,8 @@ export async function queryEdges(
   return engine.queryEdges(backendFor(bundle), filter, options);
 }
 
-export async function backlinks(bundle: Bundle, target: ConceptId): Promise<Link[]> {
-  return engine.backlinks(backendFor(bundle), target);
+export async function backlinks(bundle: Bundle, target: ConceptId, options: engine.QueryOptions = {}): Promise<Link[]> {
+  return engine.backlinks(backendFor(bundle), target, options);
 }
 
 export async function readBlob(bundle: Bundle, key: BlobKey): Promise<ReadBlobResult | null> {

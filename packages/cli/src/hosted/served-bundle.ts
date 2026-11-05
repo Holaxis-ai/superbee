@@ -54,6 +54,7 @@ const ACCESS = {
   listBlobs: "read",
   queryHeads: "read",
   capabilities: "meta",
+  classifyChangedPath: "meta",
   write: "write",
   delete: "write",
   writeReserved: "write",

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readdir, readFile, realpath, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -192,3 +192,51 @@ async function snapshot(root: string): Promise<Record<string, string>> {
   }
   return out;
 }
+
+
+test("catalog relocate explicitly recovers a renamed project by label and ID without inferring identity", async () => {
+  const f = await fixture();
+  try {
+    for (const name of [".superbee", ".agentstate-lite", "external-bundle"]) {
+      const project = path.join(f.root, `project-${name}`);
+      const bundle = path.join(project, name);
+      await initBundle(bundle);
+      const label = name === ".superbee" ? "modern" : name === ".agentstate-lite" ? "legacy" : "external";
+      const bindingProject = path.join(f.root, "bound-project");
+      if (label === "external") {
+        await mkdir(bindingProject);
+        await writeFile(path.join(bindingProject, ".superbee.json"), JSON.stringify({ bundle }));
+      }
+      const added = label === "external"
+        ? await runJson(["add", label], f.home, bindingProject)
+        : await runJson(["add", label, "--dir", bundle], f.home, f.root);
+      const moved = `${project}-moved`;
+      await rename(project, moved);
+      const target = path.join(moved, name);
+      if (label === "external") await writeFile(path.join(bindingProject, ".superbee.json"), JSON.stringify({ bundle: target }));
+      const result = await runJson(["relocate", label === "legacy" ? added.id : label, "--dir", name === "external-bundle" ? target : moved], f.home, f.root);
+      assert.equal(result.catalog, "relocated");
+      assert.equal(result.id, added.id);
+      assert.equal(result.label, label);
+      assert.deepEqual(result.previous, { locator: added.locator, available: false });
+      assert.equal(result.available, true);
+      assert.equal(result.locator.path, target);
+      assert.match(result.note, /sameness was not inferred/);
+      assert.equal((await runJson(["resolve", label], f.home, f.root)).locator.path, target);
+      const bytes = await readFile(catalogPath(f.home));
+      const repeated = await runJson(["relocate", added.id, "--dir", target], f.home, f.root);
+      assert.equal(repeated.changed, false);
+      assert.equal(repeated.previous.available, true);
+      assert.deepEqual(await readFile(catalogPath(f.home)), bytes);
+    }
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("catalog relocate requires an explicit target and rejects unsupported flags and selectors", async () => {
+  const f = await fixture();
+  try {
+    for (const argv of [["relocate", "project"], ["relocate", "Bad Label", "--dir", f.bundle], ["relocate", "bnd_xyz", "--dir", f.bundle], ["relocate", "project", "--dir", f.bundle, "--field", "path"], ["relocate", "project", "extra", "--dir", f.bundle]]) {
+      await assert.rejects(runJson(argv, f.home, f.root), (error: unknown) => error instanceof CliError && error.code === "USAGE", argv.join(" "));
+    }
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});

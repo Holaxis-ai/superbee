@@ -38,7 +38,7 @@ import {
   type PullReport,
   type SharedBase,
 } from "@superbee/browser-local";
-import { queryHeads, listBlobs, assertSafeConceptId, conceptIdFromPath, FilesystemMutationLockError, isConventionId, InvalidInputError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
+import { queryHeads, listBlobs, assertSafeConceptId, conceptIdFromPath, FilesystemMutationLockError, FrontmatterRefusedError, isConventionId, InvalidInputError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
 import { decodePreparedBlobIntent, isOrdinaryBlobKey, type BlobIntentRecord, type BlobTargetScope } from "@superbee/core/storage";
 import { performHostedBlobDelivery } from "@superbee/core/hosted-client";
 import { createHostedBlobReadAdapter, createHostedBlobWriteAdapter } from "@superbee/core/hosted-transport";
@@ -76,7 +76,7 @@ import { hostedFailure, type createHostedSyncClient } from "./client.js";
 import { connectCheckout } from "./account.js";
 import { storeOkfVersion, withIdleCheckoutStore } from "./checkout-store.js";
 import { bundleAbsent } from "./refusals.js";
-import { buildRows, BUSY_REFUSAL_CODES, countRows, receiptFailure, rowsFailure, type NotSentReason, type SyncRow } from "./sync-rows.js";
+import { buildRows, BUSY_REFUSAL_CODES, countRows, isUnstorableRow, receiptFailure, rowsFailure, storeOpenFailure, assertStoreReadable, unstorableHeld, unstorableHelp, type NotSentReason, type SyncRow } from "./sync-rows.js";
 import {
   walk,
   exportCheckout,
@@ -99,7 +99,7 @@ import {
 } from "./sync-scan.js";
 import { digestOf, fold, replaceGuarded, ROOT_INDEX } from "./projection.js";
 import { refuseTreePrivateState } from "../private-state-publication.js";
-import { adoptHostRoot, moveRootBase, readRootFile, rootConflict, settleRootSent, syncRoot, type HostRoot, type RootStepReport } from "./root-sync.js";
+import { unstorableRoot, adoptHostRoot, moveRootBase, readRootFile, rootConflict, settleRootSent, syncRoot, type HostRoot, type RootStepReport } from "./root-sync.js";
 import { declaredHostedSyncGate, runHostedSyncGate, SYNC_GATE_CONFIG, type HostedGateDeclaration } from "../commands/sync/gate.js";
 import { recordPulled, recordSynced } from "./freshness.js";
 import { needsPersonAtTerminal, processTerminal, type HostedTerminal } from "./terminal.js";
@@ -167,7 +167,9 @@ The bundle's front page (the root index.md) is sent and refreshed like a documen
 takes front-page changes from you; a conflict on it is resolved with --doc index.md (take, or keep
 after --inspect). Elsewhere it is held, and a subdirectory index.md and every log.md always are.
 Rows are committed, conflict, held (sync cannot send the file: reserved files, conventions/ and
-views/, a type change, a bulk deletion, a file over the host's bounds), refused, unknown (the
+views/, a type change, a bulk deletion, a file over the host's bounds, or a host document this
+client cannot store, whose reason is its FRONTMATTER_ code and which the next sync places once it
+is repaired where it is stored), refused, unknown (the
 answer was lost; the next sync looks it up by the same request) and paused (sign-in, or your
 sync quota for this bundle). The exit is 0 only when every row is committed: 5 when a row needs
 your decision, 2 when the host refuses writes to the bundle, 1 for a pause or a lost answer, and
@@ -504,10 +506,13 @@ async function withSession<T>(
       // Sign-in first: AUTH_REQUIRED passes through unchanged with its one link, before any request.
       const { client } = await connectCheckout(binding, { resume: resumeCommand, ...(options.signIn === false ? { signIn: false } : {}) }, deps);
       const unsafeIds = new Map<string, string>();
-      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id) });
+      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id) }).catch((error: unknown) => {
+        throw storeOpenFailure(error, binding);
+      });
       const reader = withoutUnsafeIds(client.reader(binding.bundle_id), unsafeIds, store, deps.idRule);
       let projection: ProjectionRecord | undefined;
       try {
+        await assertStoreReadable(store, binding);
         const local = openLocalBundle(binding.checkout_id, { backend: store });
         const unsent = async () => (await store.listIntents(UNSETTLED_STATES)).length + (await store.listBlobIntents()).filter(row => !row.receipt).length;
         let capabilities: HostedCapabilities;
@@ -956,9 +961,10 @@ function rowHelp(rows: readonly SyncRow[], binding: CheckoutBinding): string[] {
   if (rows.some((row) => row.state === "paused" || row.state === "unknown")) help.push(syncCommand(binding));
   const droppedLinks = rows.find((row) => row.state === "held" && row.reason === "dropped_links");
   if (droppedLinks) help.push(`only if removing the links is intended: ${syncCommand(binding, commandFragment` --replace-links ${commandToken(droppedLinks.id)}`)}`);
-  if (rows.some((row) => row.state === "held" || (row.state === "refused" && row.reason !== "read_only"))) {
+  if (rows.some((row) => (row.state === "held" && !isUnstorableRow(row)) || (row.state === "refused" && row.reason !== "read_only"))) {
     help.push(`edit or restore the files named in the held and refused rows, then: ${syncCommand(binding)}`);
   }
+  if (rows.some(isUnstorableRow)) help.push(unstorableHelp(String(syncCommand(binding))));
   return help;
 }
 
@@ -1496,7 +1502,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       unsettled: await store.listIntents(UNSETTLED_STATES),
       acknowledged: outcome.acknowledged,
       deleted: inbound,
-      held: [...currentHolds.map(h => ({ id: h.publication.id, path: `${h.publication.id}.md`, reason: "not_sendable" as const, message: "initial Artifact record placement is held; original request was not sent" })), ...scan.held.filter(row => !blobOutcome.rows.some(blob => blob.key === row.id && blob.key === row.path)), ...exported.held, ...(blobs?.held.filter(row => !blobOutcome.rows.some(blob => blob.key === row.key)).map(row => ({ id: row.key, path: row.key, reason: row.reason, message: row.message })) ?? []), ...unsafeIdRows(session.unsafeIds)],
+      held: [...currentHolds.map(h => ({ id: h.publication.id, path: `${h.publication.id}.md`, reason: "not_sendable" as const, message: "initial Artifact record placement is held; original request was not sent" })), ...scan.held.filter(row => !blobOutcome.rows.some(blob => blob.key === row.id && blob.key === row.path)), ...exported.held, ...(blobs?.held.filter(row => !blobOutcome.rows.some(blob => blob.key === row.key)).map(row => ({ id: row.key, path: row.key, reason: row.reason, message: row.message })) ?? []), ...unsafeIdRows(session.unsafeIds), ...unstorableHeld(pulled.unstorable)],
       blocked: outcome.collisions,
       accessWithdrawn: outcome.accessWithdrawn,
       notSent: outcome.notSent,
@@ -1651,7 +1657,9 @@ async function pullOnly(binding: CheckoutBinding, session: Session, deps: Hosted
       throw await readFailure(error, session, resumeCommand, (await store.listIntents(UNSETTLED_STATES)).length);
     }
     await recordPulled(deps.auth.home, binding.checkout_id);
-    return { state: "pulled", refreshed: placed.placed.length + (root.refreshed ? 1 : 0), removed: placed.removed.length, kept: placed.kept.length, ...((scan.blobHeld !== undefined || blobs?.held.length) ? { held: new Set([...scan.held.map(row => row.id), ...(blobs?.held.map(row => row.key) ?? [])]).size } : {}), ...(blobs ? { blobs: blobPulledView(blobs) } : {}) };
+    const blobHolds = scan.blobHeld !== undefined || Boolean(blobs?.held.length);
+    const heldIds = [...(blobHolds ? scan.held.map(row => row.id) : []), ...(blobs?.held.map(row => row.key) ?? []), ...(report.unstorable?.map(row => row.id) ?? [])];
+    return { state: "pulled", refreshed: placed.placed.length + (root.refreshed ? 1 : 0), removed: placed.removed.length, kept: placed.kept.length, ...(blobHolds || heldIds.length > 0 ? { held: new Set(heldIds).size } : {}), ...(blobs ? { blobs: blobPulledView(blobs) } : {}) };
   }
 }
 
@@ -1824,7 +1832,8 @@ async function resolveAgain(session: Session, id: string, choice: "keep" | "take
     });
   if (rows.length !== 1) throw refuse("the file was edited again after it, and that edit is waiting to send too");
   if (row.state !== "pending" || row.attempts !== 0) throw refuse("it may already have been sent");
-  if (row.base === null || row.baseContent === null) throw refuse("it re-creates a document the host deleted");
+  if (row.base === null) throw refuse("it re-creates a document the host deleted");
+  if (row.baseContent === null) throw refuse("the host's version it was kept over cannot be stored by this client");
   const bytes = await readIfPresent(file);
   const entry = projection.files[id];
   if (bytes !== null && digestOf(bytes) !== entry?.digest) {
@@ -1947,6 +1956,16 @@ async function rootConflictFor(session: Session): Promise<{ host: HostRoot; base
   return conflict;
 }
 
+const TAKE_UNAVAILABLE = "take cannot place the host's version, because this client cannot store it; once it is repaired where it is stored, take works again";
+
+/** The answer to `--resolve take` over a host version this client cannot store: nothing moved. */
+function takeRefusal(binding: CheckoutBinding, id: string, file: string, code: string): CliError {
+  return new CliError("CONFLICT", `the host's version of '${id}' cannot be stored by this client (${code}), so take cannot place it; nothing changed`, {
+    details: { reason: code, id, file },
+    help: `repair it where it is stored, or send your version with: ${cliInvocation()} sync --resolve keep --doc ${commandToken(id)} --dir ${commandToken(binding.path)}`,
+  });
+}
+
 /** `--inspect --doc index.md`: the front page's base, your file and the host's version. */
 async function runInspectRoot(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
   const doc = commandToken(ROOT_INDEX);
@@ -1970,19 +1989,27 @@ async function runInspectRoot(binding: CheckoutBinding, values: HostedValues, de
     const stored = await session.store.readReserved("", "index.md");
     const keep = `${cliInvocation()} sync --resolve keep --doc ${doc} --dir ${dir}`;
     const take = `${cliInvocation()} sync --resolve take --doc ${doc} --dir ${dir}`;
+    const unstorable = host ? unstorableRoot(host.content) : null;
     return {
       conflict: ROOT_INDEX,
       file: path.join(binding.path, ROOT_INDEX),
       reason: "changed_remotely",
       base: { version: base, ...preview(stored && stored.version === base ? stored.content : null) },
       local: { version: digestOf(bytes), ...preview(bytes.toString("utf8")) },
-      remote: { version: host?.version ?? null, ...preview(host?.content ?? null) },
-      ...(out !== undefined ? { remote_written_to: out } : {}),
-      choices: {
-        keep: "keep your front page: the next sync sends it over the host's version (edit the file first to combine the two)",
-        take: "replace your front page with the host's",
+      remote: {
+        version: host?.version ?? null,
+        ...(unstorable ? { unstorable: { code: unstorable.code, message: unstorable.message }, full_version: "this client cannot store it; --inspect --out writes it whole to a file outside the folder" } : {}),
+        ...preview(host?.content ?? null),
       },
-      help: [keep, take],
+      ...(out !== undefined ? { remote_written_to: out } : {}),
+      choices: unstorable
+        ? { keep: "keep your front page: the next sync sends it over the host's version, which it replaces there" }
+        : {
+            keep: "keep your front page: the next sync sends it over the host's version (edit the file first to combine the two)",
+            take: "replace your front page with the host's",
+          },
+      ...(unstorable ? { take_unavailable: TAKE_UNAVAILABLE } : {}),
+      help: unstorable ? [keep] : [keep, take],
     };
   });
   deps.stdout(render(record, mode));
@@ -2015,6 +2042,8 @@ async function runResolveRoot(binding: CheckoutBinding, choice: "keep" | "take" 
     await assertInspectedCurrent(session, ROOT_INDEX, host?.version ?? null, choice);
     const file = path.join(binding.path, ROOT_INDEX);
     let fileState = "unchanged";
+    const unstorable = choice === "take" && host ? unstorableRoot(host.content) : null;
+    if (unstorable) throw takeRefusal(session.binding, ROOT_INDEX, file, unstorable.code);
     if (choice === "take") {
       // Recorded before the file moves, so a crash mid-take leaves nothing recovery must keep.
       const key = conceptIdFromPath(ROOT_INDEX);
@@ -2050,6 +2079,7 @@ async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: 
     // The deletion shown with a "deleted remotely" conflict is recorded too: a re-create acknowledges exactly it.
     const tombstone = conflict.kind === "journal" && conflict.review.remote.version === null ? conflict.review.remote.tombstone ?? null : null;
     await session.store.writeMeta(inspectedKey(id), { remote: remoteVersionOf(conflict), tombstone });
+    const unstorable = conflict.kind === "journal" ? conflict.review.remote.unstorable : undefined;
     const sides =
       conflict.kind === "journal"
         ? {
@@ -2057,7 +2087,9 @@ async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: 
             local: conflict.review.local.deleted
               ? { version: null, deleted: true, ...preview(null) }
               : { version: conflict.review.local.version, ...preview(conflict.review.local.content) },
-            remote: { version: conflict.review.remote.version, ...(tombstone !== null ? { deleted_as: tombstone } : {}), ...preview(conflict.review.remote.content) },
+            remote: { version: conflict.review.remote.version, ...(tombstone !== null ? { deleted_as: tombstone } : {}), ...(unstorable
+              ? { unstorable: { code: unstorable.code, message: unstorable.message }, full_version: "this client cannot store or show the whole version; content below is its body only, without its frontmatter", ...preview(conflict.review.remote.unstorableBody ?? "") }
+              : preview(conflict.review.remote.content)) },
           }
         : {
             base: { version: null, ...preview(null) },
@@ -2066,6 +2098,7 @@ async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: 
           };
     const remoteContent = conflict.kind === "journal" ? conflict.review.remote.content : conflict.remote.content;
     if (out !== undefined) {
+      if (unstorable) throw new CliError("CONFLICT", `the host's version of '${id}' cannot be stored by this client (${unstorable.code}), so it cannot be written out`, { details: { reason: unstorable.code, id }, help: resumeCommand });
       if (remoteContent === null) throw new CliError("NOT_FOUND", `the host has no version of '${id}' to write: it was deleted there`, { details: { id } });
       await fs.writeFile(out, remoteContent);
     }
@@ -2084,7 +2117,9 @@ async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: 
       choices: deleting
         ? conflict.deleted
           ? { keep: "keep your deletion: the host has no version left, so nothing is sent", take: "accept the host's state: nothing is sent" }
-          : { keep: "keep your deletion: delete the host's current version", take: "bring the host's version back into the folder" }
+          : unstorable
+            ? { keep: "keep your deletion: delete the host's current version, of which only the body is shown here" }
+            : { keep: "keep your deletion: delete the host's current version", take: "bring the host's version back into the folder" }
         : conflict.deleted
           ? {
               take: "accept the deletion: the file is removed",
@@ -2093,12 +2128,18 @@ async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: 
                 : "send your version as a create; if the host has a deletion on record, it comes back naming it, to inspect and keep again",
               revise: "edit the file to the result you want, then re-create the document from it",
             }
-          : {
-              keep: "send your version against the host's current one",
-              take: "replace your version with the host's",
-              revise: "edit the file to the result you want, then send it as it is",
-            },
-      help: deleting ? [keep, take] : conflict.deleted ? [take, keep, revise] : [keep, take, revise],
+          : unstorable
+            ? {
+                keep: "send your version against the host's current one, which replaces it there; only its body is shown here",
+                revise: "edit the file to the result you want, then send it as it is",
+              }
+            : {
+                keep: "send your version against the host's current one",
+                take: "replace your version with the host's",
+                revise: "edit the file to the result you want, then send it as it is",
+              },
+      ...(unstorable ? { take_unavailable: TAKE_UNAVAILABLE } : {}),
+      help: deleting ? (unstorable ? [keep] : [keep, take]) : conflict.deleted ? [take, keep, revise] : unstorable ? [keep, revise] : [keep, take, revise],
     };
   });
   deps.stdout(render(record, mode));
@@ -2234,6 +2275,7 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
       try {
         result = await resolveConflict(local, reader, conflict.review, selected);
       } catch (error) {
+        if (choice === "take" && error instanceof FrontmatterRefusedError) throw takeRefusal(binding, id, file, error.code);
         if (error instanceof ConflictReviewStaleError) {
           throw new CliError("CONFLICT", `the conflict on '${id}' changed while resolving it`, {
             details: { reason: "stale_review", id },
@@ -2353,7 +2395,7 @@ function bindingBlobScope(binding: CheckoutBinding): BlobTargetScope {
 function withLocalStore<T>(binding: CheckoutBinding, deps: HostedSyncDeps, body: (store: FileJournaledBackend) => Promise<T>, readOnly = true): Promise<T> {
   return filesystemPushRoleLocks(deps.lockWaitMs !== undefined ? { waitMs: deps.lockWaitMs } : {})
     .request(checkoutLockName(binding.path), {}, async () => {
-      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id), readOnly });
+      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id), readOnly }).catch((error: unknown) => { throw storeOpenFailure(error, binding); });
       try { return await body(store); } finally { await store.close(); }
     })
     .catch((error: unknown) => { throw lockFailure(error, binding.path); });

@@ -655,7 +655,7 @@ async function runInstalledProof(spec) {
       npm_config_dry_run: "false",
       npm_config_bin_links: "true",
       XDG_CONFIG_HOME: path.join(home, ".config"),
-      AGENTSTATE_LITE_NO_AUTOPULL: "1",
+      SUPERBEE_NO_AUTOPULL: "1",
       SUPERBEE_NO_UPDATE_CHECK: "1",
       SUPERBEE_NO_TURN_SYNC: "1",
     } });

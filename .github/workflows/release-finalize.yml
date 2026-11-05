@@ -129,9 +129,10 @@ jobs:
           ]);
           assert.equal(registry.version, version, "registry metadata version differs from the published version");
           assert.equal(tags[tag], version, `registry ${tag} tag differs from the published version`);
-          // Direct publish records README.md; the transitional staged fallback may omit README
-          // metadata. Both are accepted; the attested tarball below owns the README bytes and name.
-          assert.ok(registry.readmeFilename === "" || registry.readmeFilename === "README.md", "registry metadata names an unexpected README file");
+          // Direct publish records README.md, the transitional staged fallback may omit README
+          // metadata, and the registry moves it to the document level for the `latest` version.
+          // All are accepted; the attested tarball below owns the README bytes and name.
+          assert.ok(registry.readmeFilename === undefined || registry.readmeFilename === "" || registry.readmeFilename === "README.md", "registry metadata names an unexpected README file");
           // The registry document's `readme` field is never compared: staged publishing leaves it
           // empty, and after a direct publish it is document-level, not per version. The exact
           // public tarball was verified against release.yml's build attestation in the prior step,

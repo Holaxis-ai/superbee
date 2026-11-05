@@ -3,7 +3,7 @@
 // pinned in sync-conflict.test.ts and must not change; these tests pin the aliases on top of it.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -55,11 +55,11 @@ function exportPathFor(topo: TwoCloneTopology, home: string, relPath: string): s
 }
 
 /** A converged conflict on tasks/seed-one: A's version on the board, B's saved aside. */
-async function conflicted(): Promise<{ topo: TwoCloneTopology; homeA: string; homeB: string; cleanup: () => Promise<void> }> {
+async function conflicted(options: { teammateRetitles?: boolean } = {}): Promise<{ topo: TwoCloneTopology; homeA: string; homeB: string; cleanup: () => Promise<void> }> {
   const topo = await makeTwoCloneTopology();
   const homeA = await mkdtemp(path.join(tmpdir(), "sb-conflict-verbs-a-"));
   const homeB = await mkdtemp(path.join(tmpdir(), "sb-conflict-verbs-b-"));
-  await modifyBoardDoc(topo.a, "tasks/seed-one", { body: "# Seed one\n\nA's half.\n", frontmatter: { title: "Seed one (A)" } });
+  await modifyBoardDoc(topo.a, "tasks/seed-one", { body: "# Seed one\n\nA's half.\n", ...(options.teammateRetitles === false ? {} : { frontmatter: { title: "Seed one (A)" } }) });
   const aSync = await runSync(homeA, ["--dir", topo.a.root]);
   assert.equal(aSync.err, undefined, aSync.err?.message);
   await modifyBoardDoc(topo.b, "tasks/seed-one", { body: "# Seed one\n\nB's half.\n" });
@@ -89,8 +89,8 @@ test("--inspect shows your saved version and the teammate's, and --inspect <id> 
     assert.equal(record.local.saved_at, exportPathFor(topo, homeB, "tasks/seed-one.md"));
     assert.match(record.remote.content, /A's half/);
     assert.deepEqual(record.frontmatter_differs, ["title"]);
-    assert.deepEqual(Object.keys(record.choices), ["keep", "take", "revise"]);
-    assert.equal(record.help.length, 3);
+    assert.deepEqual(Object.keys(record.choices), ["take", "revise"], "keep cannot carry a differing field, so it is not offered");
+    assert.equal(record.help.length, 2);
 
     const alias = await runSync(homeB, ["--inspect", "tasks/seed-one", "--dir", topo.b.root, "--json"]);
     assert.deepEqual(JSON.parse(alias.out), record);
@@ -147,14 +147,13 @@ test("--resolve take keeps the teammate's version, discards the saved copy, and 
 });
 
 test("--resolve keep writes your saved body with doc update, and the next sync pushes it", async () => {
-  const { topo, homeA, homeB, cleanup } = await conflicted();
+  const { topo, homeA, homeB, cleanup } = await conflicted({ teammateRetitles: false });
   try {
     const kept = await runSync(homeB, ["--resolve", "keep", "--doc", "tasks/seed-one", "--dir", topo.b.root, "--json"]);
     assert.equal(kept.err, undefined, kept.err?.message);
     const record = JSON.parse(kept.out) as Record<string, any>;
     assert.equal(record.file_state, "written");
     assert.equal(record.sent, false, "--resolve never pushes");
-    assert.deepEqual(record.frontmatter_not_carried, ["title"], "only the body is carried, as in the reconcile chain");
     assert.equal(record.help.length, 1);
     assert.match(await readBoardFile(topo.b, "tasks/seed-one.md"), /B's half/);
     assert.equal(existsSync(exportPathFor(topo, homeB, "tasks/seed-one.md")), false);
@@ -277,7 +276,9 @@ test("--resolve take restores the teammate's version over an edit made since the
     assert.equal(taken.err, undefined, taken.err?.message);
     const record = JSON.parse(taken.out) as Record<string, any>;
     assert.equal(record.file_state, "restored");
-    assert.deepEqual(record.help, [], "nothing of yours is left to push");
+    assert.equal(record.help.length, 1, "nothing to push; the saved edit is what is left to look at");
+    assert.match(record.help[0], /--inspect/);
+    assert.match(await readFile(record.unsent_edit_saved_at, "utf8"), /An edit after the conflict/);
     assert.equal(await readBoardFile(topo.b, "tasks/seed-one.md"), theirs);
   } finally {
     await cleanup();
@@ -372,6 +373,52 @@ test("a lost claim is reported, never offered back: no keep, and no owner field 
   } finally {
     await topo.cleanup();
     await rm(homeA, { recursive: true, force: true });
+    await rm(homeB, { recursive: true, force: true });
+  }
+});
+
+test("a kept version over the frontmatter limit: the printed recovery works, and doc update is not offered", async () => {
+  const topo = await makeTwoCloneTopology();
+  const homeB = await mkdtemp(path.join(tmpdir(), "sb-conflict-verbs-limit-"));
+  try {
+    await writeFile(path.join(topo.a.board, "tasks/seed-one.md"), `---\ntype: Task\ntitle: Big\nblob: ${"x".repeat(300 * 1024)}\n---\nA's half.\n`);
+    git(topo.a.board, ["add", "-A"]);
+    git(topo.a.board, ["commit", "-m", "update seed one"]);
+    git(topo.a.board, ["push", "origin", "board"]);
+    await modifyBoardDoc(topo.b, "tasks/seed-one", { body: "# Seed one\n\nB's half.\n" });
+
+    const conflict = await runSync(homeB, ["--dir", topo.b.root]);
+    assert.equal(conflict.err?.exitCode, 5);
+    const yours = exportPathFor(topo, homeB, "tasks/seed-one.md");
+    const help = conflict.err!.help!;
+    assert.doesNotMatch(help, /doc update/);
+    assert.doesNotMatch(conflict.err!.message, /reconcile with doc update/);
+    assert.match(conflict.err!.message, /FRONTMATTER_TOO_LARGE/);
+    assert.equal(JSON.stringify(conflict.err!.details).includes('"theirs_refused":"FRONTMATTER_TOO_LARGE"'), true);
+
+    // What the old help offered is refused on this document.
+    const offered = await runDoc(homeB, ["update", "tasks/seed-one", "--body-file", yours.replace(/\.md$/, ".body.md"), "--dir", topo.b.root]);
+    assert.ok(offered.err, "doc update cannot read the kept version");
+
+    const inspected = await runSync(homeB, ["--inspect", "--doc", "tasks/seed-one", "--dir", topo.b.root, "--json"]);
+    assert.equal(inspected.err, undefined, inspected.err?.message);
+    assert.deepEqual(Object.keys((JSON.parse(inspected.out) as { choices: object }).choices), ["take", "revise"]);
+    const kept = await runSync(homeB, ["--resolve", "keep", "--doc", "tasks/seed-one", "--dir", topo.b.root]);
+    assert.equal(kept.err?.exitCode, 5);
+    assert.equal(kept.err?.help, help, "keep names the same recovery");
+
+    // Follow the printed steps, exactly.
+    assert.match(help, /discards the teammate's version from your working tree/);
+    const steps = /^cp (\S+) (\S+) \(.*\) → .* sync$/.exec(help);
+    assert.ok(steps, help);
+    assert.equal(steps[1], yours);
+    await copyFile(steps[1]!, steps[2]!);
+    const after = await runSync(homeB, ["--dir", topo.b.root]);
+    assert.equal(after.err, undefined, after.err?.message);
+    git(topo.a.board, ["pull", "origin", "board"]);
+    assert.match(await readBoardFile(topo.a, "tasks/seed-one.md"), /B's half/);
+  } finally {
+    await topo.cleanup();
     await rm(homeB, { recursive: true, force: true });
   }
 });

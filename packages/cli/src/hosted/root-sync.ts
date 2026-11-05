@@ -21,11 +21,13 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import type { JournaledBackend } from "@superbee/core";
+import { assertStorableFrontmatter, FrontmatterRefusedError } from "@superbee/core/document-codec";
+import type { JournaledBackend, MalformedDocumentCode } from "@superbee/core";
 import { RootWriteInputError, rootLanding, rootVersionOf, rootWriteRequest, ROOT_BUSY_CODES, type HostedRootWrites, type RootWriteOutcome } from "@superbee/core/hosted-transport";
 
 import { digestOf, placeNew, replaceGuarded, ROOT_INDEX } from "./projection.js";
-import { ACCESS_WITHDRAWN_MESSAGE, READ_ONLY_MESSAGE, type SyncRow } from "./sync-rows.js";
+import type { UnstorableDocument } from "@superbee/browser-local";
+import { ACCESS_WITHDRAWN_MESSAGE, isUnstorableRow, READ_ONLY_MESSAGE, unstorableHeld, type SyncRow } from "./sync-rows.js";
 import { utf8, type ProjectionRecord } from "./sync-scan.js";
 
 /** The host's root as the capabilities answer serves it, or null when the bundle has none. */
@@ -98,7 +100,8 @@ export async function adoptHostRoot(projection: ProjectionRecord, store: Journal
  * holds exactly the host's bytes is in sync instead.
  */
 export async function moveRootBase(projection: ProjectionRecord, store: JournaledBackend, host: HostRoot): Promise<void> {
-  if (host && (await store.readReserved("", "index.md"))?.version !== host.version) await store.writeReserved("", "index.md", host.content);
+  // A host root the store refuses is only named as the base: the send is compared against its version.
+  if (host && !unstorableRoot(host.content) && (await store.readReserved("", "index.md"))?.version !== host.version) await store.writeReserved("", "index.md", host.content);
   projection.rootBase = host?.version ?? null;
   projection.root = null;
   delete projection.rootConflicted;
@@ -150,6 +153,17 @@ export interface RootStepReport {
 }
 
 const row = (state: SyncRow["state"], reason: string, message: string, version: string | null = null): SyncRow => ({ id: ROOT_INDEX, state, reason, version, message });
+
+/** Why this client cannot store a host root's frontmatter, or null when it can. */
+export function unstorableRoot(content: string): UnstorableDocument | null {
+  try {
+    assertStorableFrontmatter(content);
+    return null;
+  } catch (error) {
+    if (!(error instanceof FrontmatterRefusedError)) throw error;
+    return { id: ROOT_INDEX, code: error.code, message: error.message };
+  }
+}
 
 /**
  * Settle a root write whose answer was lost, from the host's root version now. While the host still
@@ -218,6 +232,12 @@ async function settleOutcome(context: RootStepContext, outcome: RootWriteOutcome
  */
 export async function syncRoot(context: RootStepContext): Promise<RootStepReport> {
   const report = await rootStep(context);
+  const held = report.row && isUnstorableRow(report.row) ? { code: report.row.reason as MalformedDocumentCode, message: report.row.message } : null;
+  if (held?.code !== context.projection.rootHeld?.code) {
+    if (held) context.projection.rootHeld = held;
+    else delete context.projection.rootHeld;
+    await context.persist();
+  }
   // Kept for a status preview, which makes no request: a conflict this run reported stands until resolved.
   const conflicted = report.row?.state === "conflict";
   if (conflicted !== (context.projection.rootConflicted === true)) {
@@ -231,6 +251,18 @@ export async function syncRoot(context: RootStepContext): Promise<RootStepReport
 async function rootStep(context: RootStepContext): Promise<RootStepReport> {
   const { folder, projection, store } = context;
   let host = await context.current();
+  // Held like any document the store refuses, until it is repaired or the person kept their file
+  // over exactly this version, which is the only way the base comes to name it. A kept file that
+  // holds the host's own bytes has nothing to send, and the store cannot adopt them.
+  const refused = host ? unstorableRoot(host.content) : null;
+  if (refused) {
+    const keptFile = await readRootFile(folder);
+    const kept = projection.rootBase === host!.version && projection.root === null && context.rootWrites === "allowed" && context.send !== undefined && keptFile.kind === "file" && digestOf(keptFile.bytes) !== host!.version;
+    if (!kept) {
+      const [held] = unstorableHeld([refused]);
+      return { row: row("held", held!.reason, held!.message), refreshed: false };
+    }
+  }
   const settled = await settleSent(context, host);
   if (settled === "landed") host = await context.current();
   const file = path.join(folder, ROOT_INDEX);

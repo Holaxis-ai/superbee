@@ -19,6 +19,7 @@ import {
   USER_STATE_QUARANTINE_COMMAND,
   userStateDirForPackage,
 } from "../src/user-state.js";
+import { setupStateCapability } from "../src/setup-plan.js";
 import { inspectUserStateMigration, migrateUserState, migrationSourceRoots } from "../src/user-state-migration.js";
 import { isolatedUserEnv } from "./support/user-env.js";
 
@@ -106,7 +107,10 @@ test("setup inspection distinguishes fresh, unknown-only, malformed, and conflic
 
     await mkdir(canonicalUserStateDir(conflicting), { recursive: true, mode: 0o700 });
     await writeFile(join(canonicalUserStateDir(conflicting), "foreign.json"), "{}\n", { mode: 0o600 });
-    assert.equal((await inspectUserStateMigration(conflicting)).state, "blocked");
+    const unrecognized = await inspectUserStateMigration(conflicting);
+    assert.equal(unrecognized.state, "blocked");
+    assert.match((unrecognized as { command: string }).command, /setup quarantine-state$/);
+    assert.equal(setupStateCapability(unrecognized).command, (unrecognized as { command: string }).command);
   } finally {
     await Promise.all([fresh, unknown, malformed, conflicting].map((dir) => rm(dir, { recursive: true, force: true })));
   }
@@ -275,10 +279,22 @@ test("one-shot migration copies only validated durable records, preserves legacy
       catalog: "migrated",
       credentials: "migrated",
       view_authorizations: 1,
-      sync_state: "rederived",
-      ephemeral_state: "rederived",
+      sync_state: "left_in_legacy_root",
+      ephemeral_state: "left_in_legacy_root",
     });
     assert.equal(first.legacy_preserved, true);
+    assert.deepEqual(first.left_behind, {
+      roots: ["~/.agentstate"],
+      conflict_copies: 1,
+      conflict_copies_at: ["~/.agentstate/sync/exports"],
+      scan: "complete",
+      notes: [],
+    });
+    assert.equal(
+      await readFile(join(legacy, "sync", "exports", "recovery.md"), "utf8"),
+      "keep me\n",
+      "the conflict copy the receipt names is really there",
+    );
 
     const canonical = canonicalUserStateDir(root);
     assert.equal(await readFile(join(canonical, "catalog.json"), "utf8"), catalog);
@@ -303,9 +319,10 @@ test("one-shot migration copies only validated durable records, preserves legacy
       catalog: "unchanged",
       credentials: "unchanged",
       view_authorizations: 1,
-      sync_state: "rederived",
-      ephemeral_state: "rederived",
+      sync_state: "left_in_legacy_root",
+      ephemeral_state: "left_in_legacy_root",
     });
+    assert.equal(second.left_behind.conflict_copies, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -390,7 +407,14 @@ test("source drift before completion preserves a resumable copy and a ready root
     assert.equal(await absent(join(canonical, "state.json")), true);
 
     await writeLegacy(catalogFile, original);
+    // The interrupted root is this migration's own staging: setup routes to the resuming command,
+    // not to quarantine.
+    const interrupted = await inspectUserStateMigration(root);
+    assert.equal(interrupted.state, "migratable");
+    assert.match(interrupted.reason, /interrupted/);
+    assert.equal(setupStateCapability(interrupted).command, "superbee setup migrate-state");
     assert.equal((await migrateUserState(root)).status, "migrated", "an exact interrupted migration resumes");
+    assert.equal((await inspectUserStateMigration(root)).state, "ready");
 
     const residue = join(canonical, ".migration.json");
     await writeLegacy(residue, "foreign residue\n");
@@ -506,5 +530,159 @@ test("the emitted quarantine command executes and clears the block even against 
     );
   } finally {
     await Promise.all([collidingFile, collidingDir, twice].map((dir) => rm(dir, { recursive: true, force: true })));
+  }
+});
+
+// `setup` and `migrate-state` apply one proof to a canonical root that has no marker. Every forged
+// root below must get quarantine advice from BOTH, and neither may write into it.
+const OWNED_CATALOG_TEMPORARY = `.migration-${createHash("sha256").update("catalog.json").digest("hex").slice(0, 24)}.tmp`;
+
+async function interruptedRoot(stage: "journal-only" | "catalog-staged"): Promise<{ root: string; canonical: string; original: string }> {
+  const root = await home();
+  const legacy = legacyUserStateDir(root);
+  const original = `${JSON.stringify({ schema_version: 1, entries: [] })}\n`;
+  await mkdir(legacy, { mode: 0o700 });
+  await writeLegacy(join(legacy, "catalog.json"), original);
+  await assert.rejects(() => migrateUserState(root, stage === "journal-only"
+    ? { beforeRecordPublish: async () => { throw new Error("interrupt"); } }
+    : { beforeMarkerPublish: async () => { throw new Error("interrupt"); } }));
+  return { root, canonical: canonicalUserStateDir(root), original };
+}
+
+const FORGED_ROOTS: Array<{ name: string; stage: "journal-only" | "catalog-staged"; forge: (canonical: string, original: string) => Promise<void> }> = [
+  { name: "staged catalog with different same-size bytes", stage: "catalog-staged", forge: async (c, o) => writeLegacy(join(c, "catalog.json"), "x".repeat(o.length - 1) + "\n") },
+  { name: "truncated staged catalog", stage: "catalog-staged", forge: async (c) => writeLegacy(join(c, "catalog.json"), "") },
+  { name: "larger staged catalog", stage: "catalog-staged", forge: async (c, o) => writeLegacy(join(c, "catalog.json"), `${o}${o}`) },
+  { name: "symlinked staged catalog", stage: "catalog-staged", forge: async (c, o) => {
+    await rm(join(c, "catalog.json"));
+    await writeLegacy(join(c, "..", "elsewhere.json"), o);
+    await symlink(join(c, "..", "elsewhere.json"), join(c, "catalog.json"));
+  } },
+  { name: "directory at an owned temporary path", stage: "catalog-staged", forge: async (c) => mkdir(join(c, OWNED_CATALOG_TEMPORARY), { mode: 0o700 }) },
+  { name: "foreign.json beside the journal", stage: "journal-only", forge: async (c) => writeLegacy(join(c, "foreign.json"), "{}\n") },
+  { name: "sync directory beside the journal", stage: "journal-only", forge: async (c) => mkdir(join(c, "sync"), { mode: 0o700 }) },
+  { name: "bad marker", stage: "journal-only", forge: async (c) => writeLegacy(join(c, "state.json"), "not the marker\n") },
+  { name: "group-readable journal", stage: "journal-only", forge: async (c) => chmod(join(c, ".migration.json"), 0o644) },
+];
+
+for (const row of FORGED_ROOTS) {
+  test(`forged interrupted root (${row.name}): setup and migrate-state agree on quarantine and nothing is written`, async () => {
+    const { root, canonical, original } = await interruptedRoot(row.stage);
+    try {
+      await row.forge(canonical, original);
+      const before = (await readdir(canonical)).sort();
+      const inspection = await inspectUserStateMigration(root);
+      assert.equal(inspection.state, "blocked");
+      assert.match((inspection as { command: string }).command, /setup quarantine-state$/);
+      await assert.rejects(
+        () => migrateUserState(root),
+        (error: unknown) => error instanceof CliError && error.code === "CONFLICT" && /quarantine-state$/.test(error.help ?? ""),
+      );
+      assert.deepEqual((await readdir(canonical)).sort(), before, "the refusal wrote nothing");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("an owned staging temporary left by a kill is tolerated by inspect and swept by migrate-state", async () => {
+  const { root, canonical } = await interruptedRoot("journal-only");
+  try {
+    await writeLegacy(join(canonical, OWNED_CATALOG_TEMPORARY), "partial");
+    assert.equal((await inspectUserStateMigration(root)).state, "migratable");
+    assert.equal((await migrateUserState(root)).status, "migrated");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the receipt names truncation, unreadable data, symlinks, and a second root", async () => {
+  const root = await home();
+  try {
+    const [first, second] = migrationSourceRoots(root) as [string, string];
+    for (const source of [first, second]) {
+      await mkdir(dirname(source), { recursive: true, mode: 0o700 });
+      await mkdir(join(source, "sync", "exports", "a"), { recursive: true, mode: 0o700 });
+      await chmod(dirname(source), 0o700);
+      await chmod(source, 0o700);
+    }
+    await writeLegacy(join(first, "catalog.json"), `${JSON.stringify({ schema_version: 1, entries: [] })}\n`);
+    await writeLegacy(join(second, "sync", "exports", "a", "copy.md"), "second root\n");
+    await mkdir(join(first, "sync", "exports", "locked"), { mode: 0o000 });
+    await symlink(join(first, "catalog.json"), join(first, "sync", "exports", "link.md"));
+    const receipt = await migrateUserState(root);
+    await chmod(join(first, "sync", "exports", "locked"), 0o700);
+    assert.equal(receipt.left_behind.scan, "partial");
+    assert.equal(receipt.left_behind.conflict_copies, 1, "the second root is counted");
+    assert.equal(receipt.left_behind.roots.length, 2);
+    assert.ok(receipt.left_behind.notes.some((note) => /locked could not be read/.test(note)));
+    assert.ok(receipt.left_behind.notes.some((note) => /link\.md is a symlink and was not followed/.test(note)));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("left_behind stays bounded under a flood of directories or symlinks", async () => {
+  const root = await home();
+  try {
+    const [first, second] = migrationSourceRoots(root) as [string, string];
+    for (const source of [first, second]) {
+      await mkdir(join(source, "sync", "exports"), { recursive: true, mode: 0o700 });
+      await chmod(dirname(source), 0o700);
+      await chmod(source, 0o700);
+    }
+    await writeLegacy(join(first, "catalog.json"), `${JSON.stringify({ schema_version: 1, entries: [] })}\n`);
+    for (let index = 0; index < 2_100; index += 1) await mkdir(join(first, "sync", "exports", `d${index}`));
+    for (let index = 0; index < 40; index += 1) await symlink(join(first, "catalog.json"), join(second, "sync", "exports", `l${index}`));
+    const receipt = await migrateUserState(root);
+    assert.equal(receipt.left_behind.scan, "partial");
+    assert.ok(receipt.left_behind.notes.length <= 21, `${receipt.left_behind.notes.length} notes`);
+    assert.equal(receipt.left_behind.notes.filter((note) => /directory limit/.test(note)).length, 1);
+    assert.match(receipt.left_behind.notes.at(-1) ?? "", /^\d+ more notes omitted$/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked sync directory is not followed, and nothing to migrate reports no legacy state", async () => {
+  const empty = await home();
+  const linked = await home();
+  try {
+    const none = await migrateUserState(empty);
+    assert.equal(none.status, "nothing_to_migrate");
+    assert.equal(none.records.sync_state, "absent");
+    assert.equal(none.records.ephemeral_state, "absent");
+    assert.deepEqual(none.left_behind.roots, []);
+
+    const [source] = migrationSourceRoots(linked) as [string];
+    await mkdir(source, { recursive: true, mode: 0o700 });
+    await writeLegacy(join(source, "catalog.json"), `${JSON.stringify({ schema_version: 1, entries: [] })}\n`);
+    const outside = join(linked, "outside");
+    await mkdir(join(outside, "exports"), { recursive: true });
+    await writeLegacy(join(outside, "exports", "x.md"), "x\n");
+    await symlink(outside, join(source, "sync"));
+    const receipt = await migrateUserState(linked);
+    assert.equal(receipt.left_behind.conflict_copies, 0);
+    assert.ok(receipt.left_behind.notes.some((note) => /sync is a symlink and was not followed/.test(note)));
+  } finally {
+    await Promise.all([empty, linked].map((dir) => rm(dir, { recursive: true, force: true })));
+  }
+});
+
+test("a symlinked legacy root is reported even when canonical state is already ready", async () => {
+  const root = await home();
+  try {
+    const [source] = migrationSourceRoots(root) as [string];
+    await mkdir(dirname(source), { recursive: true, mode: 0o700 });
+    await mkdir(join(root, "real-legacy"), { mode: 0o700 });
+    await symlink(join(root, "real-legacy"), source);
+    await mkdir(canonicalUserStateDir(root), { recursive: true, mode: 0o700 });
+    await writeLegacy(join(canonicalUserStateDir(root), "state.json"), USER_STATE_MARKER_BYTES);
+    const receipt = await migrateUserState(root);
+    assert.equal(receipt.status, "already_current");
+    assert.equal(receipt.left_behind.roots.length >= 1, true);
+    assert.ok(receipt.left_behind.notes.some((note) => /is a symlink and was not scanned/.test(note)));
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

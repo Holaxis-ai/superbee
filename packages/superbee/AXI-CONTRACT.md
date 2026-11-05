@@ -298,6 +298,82 @@ diagnostic's `frontmatter_code`. Evidence: `packages/core/test/frontmatter-limit
 `packages/cli/test/doc-field.test.ts` and the frontmatter rows in
 `packages/cli/test/error-boundary.test.ts`.
 
+A hosted document this client cannot store stops neither `checkout` nor `sync`. The receipt carries
+a `held` row whose reason is the document's `FRONTMATTER_*` code, `status` is `incomplete`, and the
+command exits 5 as for any held row. The document is not placed, the rest of the bundle is, and
+local edits to other documents are sent. It is read again on every later sync, so once it is
+repaired where it is stored the next sync places it. It never reads as a deletion, and an edit of an
+older copy in the folder comes back as a conflict. `status`, a repeated `checkout` and `publish` name
+the same holds, and `export --in-place` refuses them as it does other held files unless
+`--keep-unsent` is given, which leaves them out and lists them as `held_paths`. A checkout whose local
+store holds a record it cannot read stops before sending or placing anything: every hosted verb
+refuses with exit 5 and `details.reason` `store_damaged`, naming the documents and their codes, its
+help says to copy out unsent edits and make a fresh checkout, and `status` reports
+`state: store_damaged`. `sync --inspect` on such a conflict, the root
+`index.md` included, carries `remote.unstorable` with the `code` and `message`, and
+`remote.full_version` and `take_unavailable` say what cannot be shown or taken. `--resolve take` is
+refused with exit 5, `details.reason` set to the code, and nothing changed; `keep` sends your version
+against the version inspected. When a Git board's converged conflict kept a version whose frontmatter
+is refused, its row carries `theirs_refused` with the code, and the help names copying the saved
+export over the document. Evidence: `packages/cli/test/hosted-sync-unstorable.test.ts`,
+`packages/browser-local/test/pull-unstorable.test.ts` and
+`packages/cli/test/sync-git-conflict-verbs.test.ts`.
+
+A Git board's saved conflict copy stays reported until it is settled. The copies themselves are the
+record: there is no separate list. While one is unsettled, `status` reports `sync.state:
+needs_decision` (`behind` and `diverged` keep their names) with `sync.conflicts` and
+`sync.conflict_ids` and `sync.saved_copies`, `session-start` and `home` carry a `saved_conflicts` line, and `sync` and
+`--pull-only` list rows in `saved_conflicts` with `next` and a one-command `discard`, counting them in
+`conflicts`. Only a new conflict exits 5: a copy from an earlier run does not change the exit code,
+make `publish` refuse (its preview counts `saved_copies`), or make turn end sync or block. A
+`discard` is the `--resolve` verb that leaves the document as it is, or `rm` of the copy when the
+person deleted the document. A copy is settled by `--resolve`, by removing its file (a body companion
+left behind is ignored), or when the file's text is the document's apart from engine stamp lines; the
+next full `sync` removes such a copy. A lost claim race is settled the same way: a copy whose text
+differs from the document only by the one-line owner field its Kind declares is not listed, and the
+next full `sync` removes it and reports it once in `lost_claims_settled`, with the current `owner` and
+the copy's `your_owner`, on its receipt or its new conflict's `details`. Any other difference in the
+text stays listed, including a comment, an inline comment or multi-line value on the owner field, a
+state field, and a reordered key. A repeat conflict on one document keeps every earlier copy, the new copy landing beside
+it, except that bytes matching a saved copy are that copy; a rebase that stops on one document more
+than once saves each stop's version, and racing processes saving a copy each keep theirs. Copies are
+kept per clone folder, so a known limit is that moving a clone leaves them under the old key,
+unreported. `--inspect` and `--resolve` take a document's copies oldest first, name the rest in
+`later_copies`, and a `take` while a later copy waits leaves the document alone. `--resolve keep` exits
+5 with `details.frontmatter_differs` and nothing changed when the saved copy differs from the kept
+version in any frontmatter field other than engine stamps and lost-claim fields, because it writes
+only the body, and with `details.reason: unsent_edit` when the document holds a body that is neither
+upstream's nor the copy's. `--resolve revise` exits 5 while the document equals its upstream version
+and does not hold the copy, with no clock involved, so after a merge is pushed the copy settles with
+`take`, which then leaves the document unchanged. A `take` that would erase a document differing from
+upstream by more than engine stamps first saves it as a new copy, named in `unsent_edit_saved_at`,
+and `--inspect` then offers `revise` first. Text comparison needs a lossless decode on both sides, so
+bytes that decode the same are not treated as equal. A copy that cannot be compared, such as one whose
+upstream version is too large to read, never stops a sync: it stays listed with a `note` and only
+removal offered. Evidence: `packages/cli/test/sync-git-conflict-visible.test.ts` and
+`packages/board-git/test/saved-copies.test.ts`.
+
+In a local bundle or Git board, one unreadable document does not stop whole-bundle reads: `list`,
+`query`, `search`, `index generate`, `link list`, `link show`, `status`, `view list` and
+`kinds --coverage` skip and report it. `doc read`, `doc update` and `doc field` on that document fail
+with the same `RUNTIME` error. Editing its frontmatter in the file or `doc delete <id>` clears it.
+
+## Document import
+
+`doc import` copies documents from a declared, bound bundle with new ids, rewritten links, a
+`sources` entry on each and one Promotion record. Without `--apply` it reads only and prints the
+plan with a `plan_token`; `--apply <token>` recomputes the plan from fresh reads and writes only if
+the token still matches. Writes are create-only. `--refresh <record-id>` follows the same plan and
+apply steps, writes each copy only if it is still the version the plan saw, and reports a copy edited
+since the record wrote it as a `target_edited` conflict unless named with `--overwrite` or `--skip`.
+`--resume <record-id>` finishes an interrupted run. `--remote` and hosted checkouts are `USAGE`.
+
+Exit 5 codes: `TRANSFER_CONFLICT` (the plan has conflicts, with rows in `details.conflicts`),
+`TRANSFER_PLAN_CHANGED` (the token no longer matches, with `details.expected_plan` and
+`details.current_plan`), `TRANSFER_INTERRUPTED` (another writer created a target id; `--resume`
+finishes the rest) and `TRANSFER_RESUME_CONFLICT`. Evidence: `packages/cli/test/doc-import.test.ts`
+and `packages/core/test/document-transfer.test.ts`.
+
 ## Evidence map
 
 Every numbered row has one help/source anchor and one behavioral test anchor. The repository test

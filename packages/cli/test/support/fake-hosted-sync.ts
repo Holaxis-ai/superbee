@@ -340,6 +340,17 @@ export class FakeHost {
     this.histories.set(id, rows);
   }
 
+  /** A document the host serves as it is, without the client codec's refusal of its frontmatter. */
+  putUnchecked(id: string, frontmatter: Record<string, unknown>, body: string): string {
+    const stored = { ...frontmatter, superbee_updated_by: "someone-else" };
+    const raw = `---\n${JSON.stringify(stored)}\n---\n${body}`;
+    const version = versionOfBytes(raw);
+    this.docs.set(id, { frontmatter: stored, body, version, raw });
+    this.record(id, "someone-else", undefined);
+    this.oldIds.add(id);
+    return version;
+  }
+
   /** A change made on the host (another person, or the app). */
   put(id: string, frontmatter: Record<string, unknown>, body: string): string {
     const stored = { ...frontmatter, superbee_updated_by: "someone-else" };

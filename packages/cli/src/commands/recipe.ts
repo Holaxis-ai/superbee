@@ -567,8 +567,7 @@ async function installReceipt(
         ? "; a Connector another recipe's stamp owns is never taken over: this recipe's evolve plan blocks on it until it is removed by hand"
         : "");
   }
-  const migrationPending = result.docs.some((doc) => doc.migration_required !== undefined);
-  if (sourceDiffers > 0 || result.restamp_ids.length > 0 || migrationPending) {
+  if (sourceDiffers > 0 || result.restamp_ids.length > 0) {
     if (evolve) receipt.commands = { plan_evolution: evolve };
     else receipt.evolution_help = INDEX_EVOLUTION_HELP;
   }

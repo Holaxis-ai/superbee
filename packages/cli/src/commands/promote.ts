@@ -17,7 +17,7 @@ import { renderUsage } from "../output.js";
 // shared helper, B8 — warn-by-default, `--strict` rejects). Every OTHER key routes through
 // `writeBlob` (opaque bytes + a content-type, never parsed). `--content-type` with a `.md` key is a
 // USAGE error (I9) — content-type is a blob-route-only concept; A11: the doc route passes through
-// exactly what the FILE's OWN frontmatter says, no CLI metadata flags.
+// the FILE's OWN content fields; operational attribution uses the shared actor policy.
 //
 // CAS (I9): promote v1 supports token-CAS ONLY via `--expected-version <token>`. Omitting it does
 // NOT mean "unconditional overwrite" — it means EXPECT-ABSENT CREATE (`expectedVersion: null`, the
@@ -58,6 +58,7 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { readExternalFileBytes, readExternalTextFile } from "../external-file.js";
+import { assertActorAcceptedByBundle, resolveActor } from "../actor.js";
 import { mutateDoc } from "../mutate.js";
 import { isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../legacy-page.js";
 import { commandFragment, commandLiteral, commandToken } from "../command-text.js";
@@ -72,8 +73,8 @@ Not 'superbee doc import', which copies many documents from another bundle with 
 Routes by the --doc-key's target (checked case-insensitively):
   A key ending '.md' is a DOC: the file is parsed as an OKF concept (YAML frontmatter + markdown
   body) and written through the engine — doc id = the key minus '.md'. The file's OWN frontmatter
-  supplies the document metadata (no CLI metadata flags on this route — edit the file locally,
-  that is the whole loop). A governing kind convention is validated exactly like 'doc write' (warn-by-
+  supplies the content fields; operational --actor attribution and clocks follow the shared
+  mutation policy. Edit the file locally to change authored metadata. A governing kind convention is validated exactly like 'doc write' (warn-by-
   default; --strict rejects, exit 2, no write). --content-type is a USAGE error on this route.
   Any OTHER key is a BLOB: opaque bytes + a content-type, never parsed or normalized.
 
@@ -85,8 +86,10 @@ edit -> re-promote without a second discovery call.
 
 Locally (--dir) this is a convenience — the files ARE the store — but a .md promote still doubles
 as IMPORT+NORMALIZE (edition-aware frontmatter normalization and kind validation), same as 'doc
-write'. Current v0.2 imports do not invent optional generated metadata or the legacy timestamp;
-explicit v0.1 bundles retain their historical defaulted timestamp. Over --remote it is load-bearing:
+write'. Current v0.2 creates seed generated metadata when a usable clock is absent; meaningful
+edits update content provenance, while no-ops preserve the stored version, clocks and attribution.
+Unknown metadata and semantic title values survive normalization; source YAML quoting may change.
+Explicit v0.1 bundles retain their historical defaulted timestamp. Over --remote it is load-bearing:
 there is no other way to get bytes into a served bundle.
 
 In a hosted checkout, an ordinary-file source must already be the canonical target pathname
@@ -108,6 +111,13 @@ Options:
                             key's extension, else application/octet-stream (hosted replacement preserves observed MIME)
   --expected-version <v>   Compare-and-swap token from a prior pull/promote receipt (omit = expect-
                             absent create; see CAS above)
+  --actor <actor>          Revision attribution: --actor overrides environment; SUPERBEE_ACTOR and
+                            legacy AGENTSTATE_LITE_ACTOR must agree when both are set. Blank values
+                            are refused. With neither set, attribution is absent. In v0.2, use
+                            human:<id>, process:<id>, or <producer>/<version>. Local/wire blobs
+                            forward attribution to storage; filesystem blobs have no actor history.
+                            Hosted blobs use the signed-in writer: explicit --actor is unsupported,
+                            and actor environment variables do not label their frozen requests.
   --strict                 Doc route only: reject (exit 2) instead of writing-with-warnings when a
                             kind convention governs the doc's type and it does not satisfy it
   --accept-truncated-body  Doc route only: required to replace an EXISTING doc's body with a
@@ -156,6 +166,7 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
           "accept-truncated-body": { type: "boolean" },
           "replace-links": { type: "boolean" },
           strict: { type: "boolean" },
+          actor: { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
           json: { type: "boolean" },
@@ -210,8 +221,8 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
   const remote = await resolveRemoteFlag(values.remote, values.dir);
   const home = deps.hosted?.auth?.home ?? deps.home ?? homedir(), cwd = deps.cwd ?? deps.hosted?.cwd ?? process.cwd();
   if (deps.home !== undefined && deps.hosted?.auth !== undefined && deps.home !== deps.hosted.auth.home) throw new CliError("USAGE", "offline admission and hosted delivery must use the same private-state home");
-  if (!remote && !isDocRouteKey(key)) {
-    const pending = await admitOfflineBlob({ operation: "promote", key, ...(values.dir === undefined ? {} : { dir: values.dir }), source: file, ...(values["expected-version"] === undefined ? {} : { expectedVersion: values["expected-version"] }), ...(values["content-type"] === undefined ? {} : { contentType: values["content-type"] }), home, cwd });
+  if (!remote && !docRoute) {
+    const pending = await admitOfflineBlob({ operation: "promote", key, ...(values.actor === undefined ? {} : { explicitActor: values.actor }), ...(values.dir === undefined ? {} : { dir: values.dir }), source: file, ...(values["expected-version"] === undefined ? {} : { expectedVersion: values["expected-version"] }), ...(values["content-type"] === undefined ? {} : { contentType: values["content-type"] }), home, cwd });
     if (pending) {
       const { finishAdmittedBlob } = await import("../hosted/sync.js");
       const resume = commandFragment`${cliInvocation()} promote ${commandToken(file)} --doc-key ${commandToken(key)} --dir ${commandToken(pending.binding.path)}${values["expected-version"] === undefined ? commandFragment`` : commandFragment` --expected-version ${commandToken(values["expected-version"])}`}${values["content-type"] === undefined ? commandFragment`` : commandFragment` --content-type ${commandToken(values["content-type"])}`}`;
@@ -219,6 +230,7 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
       return;
     }
   }
+  const actor = resolveActor(values.actor, { help: `${cliInvocation()} promote <file> --doc-key <key> --actor <actor>` });
   const bundle = await openBundle(values.dir, remote);
   const mode = resolveMode(values);
   // I9: promote v1 supports token-CAS only via --expected-version; omitting it means EXPECT-ABSENT
@@ -232,6 +244,7 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
       bundle,
       {
         expectedVersion,
+        actor,
         strict: Boolean(values.strict),
         acceptTruncatedBody: Boolean(values["accept-truncated-body"]),
         replaceLinks: Boolean(values["replace-links"]),
@@ -242,14 +255,14 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
     );
     return;
   }
-  await promoteBlob(file, key, bundle, { expectedVersion, contentType: values["content-type"] }, stdout, mode, values.remote);
+  await promoteBlob(file, key, bundle, { expectedVersion, contentType: values["content-type"], actor }, stdout, mode, values.remote);
 }
 
 async function promoteDoc(
   file: string,
   key: string,
   bundle: Bundle,
-  opts: { expectedVersion: string | null; strict: boolean; acceptTruncatedBody: boolean; replaceLinks: boolean },
+  opts: { expectedVersion: string | null; actor?: string; strict: boolean; acceptTruncatedBody: boolean; replaceLinks: boolean },
   stdout: (s: string) => void,
   mode: OutputMode,
   remoteUrl?: string,
@@ -292,6 +305,7 @@ async function promoteDoc(
       onAbsent: "create",
       registry,
       remoteUrl,
+      actor: opts.actor,
       strict: opts.strict,
       helpOnKindReject: `${cliInvocation()} kinds`,
       expectedVersion: opts.expectedVersion ?? undefined,
@@ -333,11 +347,12 @@ async function promoteBlob(
   file: string,
   key: string,
   bundle: Bundle,
-  opts: { expectedVersion: string | null; contentType: string | undefined },
+  opts: { expectedVersion: string | null; contentType: string | undefined; actor?: string },
   stdout: (s: string) => void,
   mode: OutputMode,
   remoteUrl?: string,
 ): Promise<void> {
+  await assertActorAcceptedByBundle(bundle, opts.actor);
   let bytes: Buffer;
   try {
     bytes = await readExternalFileBytes(file);
@@ -347,7 +362,7 @@ async function promoteBlob(
 
   let version: string;
   try {
-    version = await writeBlob(bundle, key, bytes, opts.contentType, { expectedVersion: opts.expectedVersion });
+    version = await writeBlob(bundle, key, bytes, opts.contentType, { expectedVersion: opts.expectedVersion, actor: opts.actor });
   } catch (err) {
     throw promoteWriteErrorToCliError(err, key, file, remoteUrl);
   }

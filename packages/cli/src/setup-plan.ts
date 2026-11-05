@@ -1,4 +1,4 @@
-import { distributionBinName } from "./runtime-context.js";
+import { distributionBinName, distributionPackageName } from "./runtime-context.js";
 import type { ChannelDetection } from "@superbee/board-git";
 // Pure AXI setup planning. Host/file inspection lives at the command boundary; this module owns
 // only the bounded capability matrix, deterministic ordering, and one-next-command projection.
@@ -94,6 +94,8 @@ export interface SetupPlanInput {
   readonly workspace: SetupWorkspaceState;
   /** Resolved launcher for follow-up actions; defaults to the portable installed bin. */
   readonly invocation?: readonly string[];
+  /** The running CLI's version, so a repair install is pinned to it; absent or "unknown" withholds the install. */
+  readonly version?: string;
 }
 
 export function setupStateCapability(state: UserStateMigrationInspection): SetupCapability {
@@ -277,12 +279,23 @@ function distributionCapability(input: SetupPlanInput): SetupCapability {
       command: "npm prefix --global && command -v node && command -v superbee",
     };
   }
+  // An unpinned install resolves to the registry's latest stable, which downgrades a machine
+  // running a prerelease. Pin the running version, or offer nothing when it is not known.
+  const version = input.version;
+  if (version === undefined || version === "unknown") {
+    return {
+      id: "distribution",
+      requirement: "required",
+      state: "blocked",
+      reason: `${input.distribution.reason}; the running version is unknown, so no install command can be pinned to it. Install a specific released version with npm install -g ${distributionPackageName()}@<version>, then rerun setup`,
+    };
+  }
   return {
     id: "distribution",
     requirement: "required",
     state: "needs_action",
     reason: input.distribution.reason,
-    command: "npm install -g superbee",
+    command: `npm install -g ${distributionPackageName()}@${version}`,
   };
 }
 
@@ -577,7 +590,7 @@ function catalogCapability(input: SetupPlanInput): SetupCapability {
     requirement: "required",
     state: "needs_action",
     reason: input.workspace.bundle === "selected"
-      ? "the selected bundle is not registered for bundle-unbound MCP access"
+      ? "the selected bundle is not registered for bundle-unbound MCP access; if it moved, inspect catalog list --local and explicitly use catalog relocate <label-or-id> --dir <replacement-bundle>; sameness is not inferred"
       : "the private workspace catalog has no available bundles",
     command: input.workspace.bundle === "selected"
       ? "superbee catalog add <label>"

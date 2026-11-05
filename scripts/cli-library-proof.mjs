@@ -513,7 +513,7 @@ export async function proveCliTarball(tarball, { checkSource, execute = exec } =
       await writeFile(path.join(scratch, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true, noEmit: true, module: "NodeNext", target: "ES2022", types: ["node"], skipLibCheck: false }, files: ["consumer.ts"] }));
       await run([path.join(root, "node_modules/typescript/bin/tsc"), "-p", "tsconfig.json"]);
       const home = path.join(scratch, "home"); const cwd = path.join(scratch, "work"); await mkdir(home); await mkdir(cwd);
-      const env = { HOME: home, USERPROFILE: home, LOCALAPPDATA: home, ASLITE_NO_UPDATE_CHECK: "1", AGENTSTATE_LITE_NO_AUTOPULL: "1" };
+      const env = { HOME: home, USERPROFILE: home, LOCALAPPDATA: home, SUPERBEE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" };
       await writeFile(path.join(scratch, "inert.mjs"), `import assert from 'node:assert/strict';
   import child from 'node:child_process'; import net from 'node:net'; import { syncBuiltinESMExports } from 'node:module';
   import { readdirSync } from 'node:fs';

@@ -23,6 +23,7 @@ import {
   writeResponseToServerResponse,
 } from "@superbee/server";
 import { assertSafeBlobKey, loadKinds, queryEdges, queryHeads, readBundleOkfVersion, type Bundle, type EdgeFilter } from "@superbee/core";
+import { LEGACY_PAGE_MIGRATION_HELP } from "@superbee/core/bundle-health";
 import { parseRegistration } from "@superbee/core/page";
 import { isAllowedHost } from "./host.js";
 import { checkAuth, constantTimeEqual, mintSessionSecret, sessionCookieHeader } from "./session.js";
@@ -476,7 +477,7 @@ function mintFailureResponse(options: UiServerOptions, registryId: string, error
       case "VIEW_REGISTRY_READ_FAILED":
         return jsonError(502, "RUNTIME", error.message);
       case "VIEW_INVALID_REGISTRATION":
-        return jsonError(403, "FORBIDDEN", `'${registryId}' is not a valid type:View registration (the legacy type:Page name no longer registers — migrate legacy content with the repo's migrate-legacy-view-names script)`);
+        return jsonError(403, "FORBIDDEN", `'${registryId}' is not a valid type:View registration (the legacy type:Page name no longer registers; ${LEGACY_PAGE_MIGRATION_HELP})`);
       case "VIEW_ENTRY_READ_FAILED": {
         const upstreamStatus = (error.storageCause as { status?: unknown } | undefined)?.status;
         // Preserve the retired remote helper's public contract: an HTTP non-success while reading
