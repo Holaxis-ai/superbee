@@ -1591,3 +1591,116 @@ test("claim converge REGRESSION LOCK: a kind with NO claim declaration reports e
     await topo.cleanup();
   }
 });
+
+// ── a local rename crossing a teammate's edit: a document's identity is its path ──
+
+const RENAME_BODY = "line0\nline1\nline2\nline3\nline4\nline5";
+const TEAM_BODY = `${RENAME_BODY}\nadd C TEAMWORDS`;
+
+/** Both clones hold `notes/d3`; the local clone B then re-creates it at `notes/moved` and deletes it. */
+async function seedRenameDoc(topo: TwoCloneTopology, homeA: string, homeB: string): Promise<void> {
+  const created = await runDoc(["write", "notes/d3", "--type", "Note", "--title", "d3", "--body", RENAME_BODY, "--actor", "process:a", "--dir", topo.a.board]);
+  assert.equal(created.err, undefined, created.err?.message);
+  const published = await runSync(homeA, ["--dir", topo.a.root]);
+  assert.equal(published.err, undefined, published.err?.message);
+  const pulled = await runSync(homeB, ["--dir", topo.b.root]);
+  assert.equal(pulled.err, undefined, pulled.err?.message);
+}
+
+async function renameLocally(topo: TwoCloneTopology): Promise<void> {
+  const moved = await runDoc(["write", "notes/moved", "--type", "Note", "--title", "moved", "--body", RENAME_BODY, "--actor", "process:a", "--dir", topo.b.board]);
+  assert.equal(moved.err, undefined, moved.err?.message);
+  const removed = await runDoc(["delete", "notes/d3", "--actor", "process:a", "--dir", topo.b.board]);
+  assert.equal(removed.err, undefined, removed.err?.message);
+}
+
+function originFile(topo: TwoCloneTopology, relPath: string): string | null {
+  const shown = gitTry(topo.origin, ["show", `board:${relPath}`]);
+  return shown.status === 0 ? shown.stdout : null;
+}
+
+test("a rename crossing a teammate's edit keeps their words at the old path and the rename's new document, and says so truthfully", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(2);
+  const [homeA, homeB] = homes;
+  try {
+    await seedRenameDoc(topo, homeA!, homeB!);
+    const edited = await runDoc(["update", "notes/d3", "--body", TEAM_BODY, "--actor", "process:c", "--dir", topo.a.board]);
+    assert.equal(edited.err, undefined, edited.err?.message);
+    const pushed = await runSync(homeA!, ["--dir", topo.a.root]);
+    assert.equal(pushed.err, undefined, pushed.err?.message);
+
+    await renameLocally(topo);
+    const crossed = await runSync(homeB!, ["--dir", topo.b.root]);
+    assert.equal(crossed.err?.code, "CONFLICT");
+    const message = crossed.err!.message;
+    assert.ok(message.includes("doc notes/d3"), `the message names the document that really conflicted: ${message}`);
+    assert.ok(message.includes("teammate's version kept (your side deleted it; nothing to save)"), `the true outcome: ${message}`);
+    assert.ok(!message.includes("deletion kept"), `nobody on the other side deleted anything: ${message}`);
+    assert.ok(!message.includes("notes/moved"), `the new document did not conflict: ${message}`);
+    assert.equal(isMidRebase(topo.b), false);
+
+    const settled = await runSync(homeB!, ["--dir", topo.b.root]);
+    assert.equal(settled.err, undefined, settled.err?.message);
+    const keptOnTip = originFile(topo, "notes/d3.md");
+    assert.ok(keptOnTip?.includes("TEAMWORDS"), `the teammate's words stay on the board tip: ${keptOnTip}`);
+    const movedOnTip = originFile(topo, "notes/moved.md");
+    assert.ok(movedOnTip?.includes("title: moved"), `the rename's new document landed: ${movedOnTip}`);
+
+    const pulled = await runSync(homeA!, ["--dir", topo.a.root]);
+    assert.equal(pulled.err, undefined, pulled.err?.message);
+    assert.ok((await readBoardFile(topo.a, "notes/d3.md")).includes("TEAMWORDS"), "the teammate's next pull keeps their document");
+    assert.ok((await readBoardFile(topo.a, "notes/moved.md")).includes("title: moved"), "the teammate's next pull gains the new one");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("control: a rename replayed over an unrelated teammate change lands with no conflict", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(2);
+  const [homeA, homeB] = homes;
+  try {
+    await seedRenameDoc(topo, homeA!, homeB!);
+    const other = await runDoc(["update", "notes/welcome", "--body", "unrelated edit\n", "--actor", "process:c", "--dir", topo.a.board]);
+    assert.equal(other.err, undefined, other.err?.message);
+    const pushed = await runSync(homeA!, ["--dir", topo.a.root]);
+    assert.equal(pushed.err, undefined, pushed.err?.message);
+
+    await renameLocally(topo);
+    const synced = await runSync(homeB!, ["--dir", topo.b.root]);
+    assert.equal(synced.err, undefined, synced.err?.message);
+    assert.equal(originFile(topo, "notes/d3.md"), null, "the old path is gone");
+    assert.ok(originFile(topo, "notes/moved.md")?.includes("title: moved"), "the new path landed");
+    assert.ok(originFile(topo, "notes/welcome.md")?.includes("unrelated edit"), "the teammate's change stays");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("two people renaming the same document to different paths both keep their document", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(2);
+  const [homeA, homeB] = homes;
+  try {
+    await seedRenameDoc(topo, homeA!, homeB!);
+    const theirs = await runDoc(["write", "notes/their-name", "--type", "Note", "--title", "their name", "--body", RENAME_BODY, "--actor", "process:c", "--dir", topo.a.board]);
+    assert.equal(theirs.err, undefined, theirs.err?.message);
+    const removed = await runDoc(["delete", "notes/d3", "--actor", "process:c", "--dir", topo.a.board]);
+    assert.equal(removed.err, undefined, removed.err?.message);
+    const pushed = await runSync(homeA!, ["--dir", topo.a.root]);
+    assert.equal(pushed.err, undefined, pushed.err?.message);
+
+    await renameLocally(topo);
+    const synced = await runSync(homeB!, ["--dir", topo.b.root]);
+    assert.equal(synced.err, undefined, `both sides deleted the old path and added different new ones: ${synced.err?.message}`);
+    assert.equal(originFile(topo, "notes/d3.md"), null, "both sides agree the old path is gone");
+    assert.ok(originFile(topo, "notes/their-name.md")?.includes("title: their name"), "the teammate's document stays");
+    assert.ok(originFile(topo, "notes/moved.md")?.includes("title: moved"), "this side's document landed");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
