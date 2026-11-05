@@ -140,12 +140,7 @@ test("bundle health: every section fires on an in-memory v0.2 bundle", async () 
     invalidRegistrations: [{ id: "notes/view-shaped", problem: "id" }],
   });
   assert.equal(report.okfUpgrade, null, "a v0.2 bundle has no upgrade finding");
-  assert.deepEqual(report.legacyNaming, {
-    pageTyped: [{ id: "pages-registry/retired" }],
-    bridgeField: [{ id: "views-registry/live" }],
-    pageConvention: [{ id: "conventions/page" }],
-    legacyPrefix: [{ id: "pages-registry/retired", store: "doc" }, { id: "pages/retired.html", store: "blob" }],
-  });
+  assert.equal("legacyNaming" in report, false);
 });
 
 test("bundle health: presence rules are null on a conventions-free v0.1 bundle and on an undeclared edition", async () => {

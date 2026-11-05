@@ -1265,8 +1265,7 @@ test("status: the terminal exclusion keys off the DECLARED value set, not a hard
 //   - `pages-registry/legacy-ghost` — type View at the LEGACY locations, entry blob missing ->
 //                                     dangling (legacy-location registrations are covered too).
 //   - `pages-registry/retired`      — legacy TYPE Page: no longer a registration at all — it
-//                                     must appear in NEITHER View lint (legacy_naming is its
-//                                     designated finding, pinned below).
+//                                     must appear in NEITHER View lint.
 //   - `views-registry/bad-entry`    — type View, entry under a non-entry prefix: fails the entry
 //                                     grammar -> invalid registration (leg 'entry').
 //   - `notes/view-shaped`           — type View but NOT under a registry prefix: fails the id
@@ -1311,7 +1310,7 @@ async function makeViewEntryFixtureBundle(): Promise<{ dir: string; cleanup: () 
   return { dir, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
-test("status: dangling_view_entries reports recognized View registrations (legacy LOCATIONS included) whose entry blob does not exist; a Page-TYPED doc lands in legacy_naming instead", async () => {
+test("status: dangling_view_entries reports recognized View registrations (legacy LOCATIONS included) whose entry blob does not exist; a Page-TYPED doc is not a registration", async () => {
   const { dir, cleanup } = await makeViewEntryFixtureBundle();
   try {
     const result = await runJson(["--dir", dir]);
@@ -1343,14 +1342,7 @@ test("status: dangling_view_entries reports recognized View registrations (legac
       { id: "notes/view-shaped", problem: "id" },
       { id: "views-registry/bad-entry", problem: "entry" },
     ]);
-    // RED-PROBE ANCHOR (tasks/remove-legacy-page-bridge-support): the Page-typed doc fell OUT of
-    // View-surface recognition — its loud diagnostic is the legacy_naming FINDING, which names
-    // it and points at the migration script. Removal must never equal silence.
-    const legacy = result.legacy_naming as Record<string, unknown>;
-    assert.ok(legacy, "a bundle with Page-typed stock must carry the legacy_naming finding");
-    assert.equal(legacy.page_typed_docs, 1);
-    assert.deepEqual((legacy.page_typed_rows as { rows: { id: string }[] }).rows, [{ id: "pages-registry/retired" }]);
-    assert.match(String(legacy.help), /migrate-legacy-view-names/);
+    assert.equal("legacy_naming" in result, false, "retired-name stock has no status section");
   } finally {
     await cleanup();
   }

@@ -35,22 +35,11 @@ test("REMOVAL PIN: the launcher lists View docs from BOTH folder generations, an
     await expect(page.locator('[data-page-id="pages-registry/about"]')).toBeVisible();
     await expect(page.getByRole("heading", { name: "Pulse — activity feed" })).toBeVisible();
     // The retired legacy NAME does not: the seeded type: Page doc (real entry bytes and all)
-    // never reaches the launcher grid (tasks/remove-legacy-page-bridge-support). It remains an
+    // never reaches the launcher grid. It remains an
     // ordinary DOC — visible in the activity feed like any content — so the never-appears check
     // is scoped to the Views grid, not the whole page.
     await expect(page.locator('[data-page-id="pages-registry/retired"]')).toHaveCount(0);
     await expect(page.locator(".launcher-grid").getByText("Retired legacy page")).toHaveCount(0);
-
-    // Removal must not equal silence: the designated loud surface names the doc and the remedy.
-    // (This fixture bundle SHOWS views, so the launcher's empty-state pointer never renders —
-    // status's legacy_naming FINDING is the diagnostic for this shape.)
-    const status = JSON.parse(
-      execFileSync(process.execPath, [CLI_DIST, "status", "--dir", ui.dir, "--json"], { encoding: "utf8" }),
-    ) as { legacy_naming?: { note?: string; help?: string; page_typed_docs?: number; page_typed_rows?: { rows: Array<{ id: string }> } } };
-    expect(status.legacy_naming?.page_typed_docs).toBe(1);
-    expect(status.legacy_naming?.page_typed_rows?.rows).toEqual([{ id: "pages-registry/retired" }]);
-    expect(status.legacy_naming?.note).toContain("FINDING");
-    expect(status.legacy_naming?.help).toContain("migrate-legacy-view-names");
   } finally {
     await ui.cleanup();
   }

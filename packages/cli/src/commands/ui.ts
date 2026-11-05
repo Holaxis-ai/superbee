@@ -54,7 +54,7 @@ import {
   type ManagedUiControllerOptions,
 } from "../ui/managed-authority.js";
 
-export const UI_USAGE = `superbee ui — boot the local web UI over the bundle: read its docs as rendered pages (cross-links, backlinks), launch its registered Views (type: View docs framed sandboxed with live updates; legacy type: Page docs are not registered — 'status' lists them and the migrate-legacy-view-names script renames them in place), and see live activity, sharing status, and your workspaces
+export const UI_USAGE = `superbee ui — boot the local web UI over the bundle: read its docs as rendered pages (cross-links, backlinks), launch its registered Views (type: View docs framed sandboxed with live updates; legacy type: Page docs are not registered), and see live activity, sharing status, and your workspaces
 
 Usage:
   superbee ui [--dir <path> | --remote <url>] [--port <n>] [--actor <name>] [--open]

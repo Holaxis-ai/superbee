@@ -1,8 +1,7 @@
 /**
  * Pure View registry/entry path grammar shared by every producer and consumer.
  *
- * `View` is the ONLY accepted kind name: the legacy `Page` spelling is no longer read
- * (the repo's `migrate-legacy-view-names` script renames legacy content in place). Registry ids
+ * `View` is the ONLY accepted kind name: the legacy `Page` spelling is no longer read. Registry ids
  * are concept ids under `views-registry/` (legacy `pages-registry/` LOCATIONS stay recognized;
  * relocation is a separate open decision); entries are opaque blob keys under
  * `views/` (legacy `pages/`). Both retain exact, case-preserving nested paths while
@@ -25,8 +24,7 @@ export const VIEW_ENTRY_PREFIX = "views/";
 /**
  * The kind names the launcher/registry surfaces accept: exactly `View`. Exact, case-sensitive
  * match. The legacy `Page` name is deliberately NOT here — a Page-typed doc no longer registers
- * anywhere (the CLI's `status` legacy_naming finding is the loud diagnostic for leftover stock,
- * and `migrate-legacy-view-names` is the remedy).
+ * anywhere.
  */
 export const PAGE_TYPE_NAMES = ["View"] as const;
 export type PageTypeName = (typeof PAGE_TYPE_NAMES)[number];
@@ -46,9 +44,7 @@ export function resolveBridgeCapability(value: unknown): BridgeCapability {
 /**
  * THE one reader of the registry-doc capability FIELD: `access`, and ONLY `access`. The legacy
  * `bridge` spelling is no longer read — a doc declaring only `bridge` resolves to `undefined`
- * here and fails closed to `none` downstream (the `migrate-legacy-view-names` script renames
- * existing stock in place; the CLI's `status` legacy_naming finding flags leftover `bridge`
- * fields loudly).
+ * here and fails closed to `none` downstream.
  */
 export function declaredAccessValue(frontmatter: Record<string, unknown>): unknown {
   // Own-property-gated: an INHERITED field (a crafted prototype, or a polluted

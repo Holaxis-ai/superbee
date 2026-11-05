@@ -280,9 +280,9 @@ bundles remain supported without rewriting their declared edition.
   Views, and View-bearing definitions-only recipes can carry the operating model, registry entry,
   HTML, and authoring reference together. (`Page` is the legacy name for the kind and is no
   longer read — a legacy `type: Page` doc does not register, and the legacy `bridge:` field
-  grants nothing; `superbee status` flags leftover legacy names and the repo's
-  `migrate-legacy-view-names` script renames them in place. Legacy folder locations stay
-  recognized.) Authoring is still HTML/agent-driven rather than a
+  grants nothing; the `migrate-legacy-view-names` script at tag
+  [`v0.4.3`](https://github.com/Holaxis-ai/superbee/blob/v0.4.3/scripts/migrate-legacy-view-names.mjs)
+  renames them in place. Legacy folder locations stay recognized.) Authoring is still HTML/agent-driven rather than a
   polished end-user builder, so treat the surface as a preview.
 - **The public package ends at a generic remote boundary.** `serve` exposes a bundle through the
   versioned wire protocol, and bundle commands can target a service explicitly with `--remote`.
