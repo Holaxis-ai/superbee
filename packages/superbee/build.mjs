@@ -71,6 +71,11 @@ async function buildPublicationTypes() {
   const bridgeTypes = r("dist/publication/bridge.d.ts");
   await writeFile(bridgeTypes, (await readFile(bridgeTypes, "utf8"))
     .replaceAll('"@superbee/view-runtime/bridge"', '"./bridge-host-kind.js"'));
+  // The handle's options use only this standalone type from the private renderer.
+  await cp(r("../markdown-renderer/dist/external-link-policy.d.ts"), r("dist/publication/external-link-policy.d.ts"));
+  const handleTypes = r("dist/publication/types.d.ts");
+  await writeFile(handleTypes, (await readFile(handleTypes, "utf8"))
+    .replaceAll('"@superbee/markdown-renderer"', '"./external-link-policy.js"'));
   // The Core declaration is standalone; keep its one owner without a consumer Core dependency.
   await cp(r("../core/dist/site-manifest.d.ts"), r("dist/publication/site-manifest-core.d.ts"));
   for (const file of ["index.d.ts", "site-manifest.d.ts", "site-manifest-entry.d.ts"]) {

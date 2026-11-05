@@ -22,18 +22,29 @@ normal browser navigation; ordinary clicks invoke `onNavigateDoc`. Every target
 read still needs the host's authorization check.
 
 Raw HTML is literal text. External links and images are inert by default; Mermaid remains
-a code block. A host may opt in to real external links with `externalLinkHosts`,
-a list of bare host names. A link renders as an anchor only when its target
-parses with the WHATWG `URL` constructor to `https:` with no userinfo, no IP
-literal, the default port, and a host that is exactly one listed name after
-normalization; a subdomain, `http:`, a homoglyph host, or a scheme-less or
-unparsable target stays inert. The anchor carries the parsed URL's canonical
-serialization, never the raw Markdown string, with `rel="noopener noreferrer"`,
-`target="_blank"` and the `doc-link-external` class. Concept links resolve first;
-the allowlist sees only targets the resolver rejects. Both the interactive and
-static entrypoints accept the option, and `renderDocumentToStaticHtml` takes it
-as an optional second argument. Without the option, or with an empty list, every
-external link stays inert exactly as before. Body, node and depth limits bound presentation; the host must show
+a code block.
+
+The page owner may choose real external links with `externalLinks`, on both the
+interactive and static entrypoints:
+
+| Value | Admits |
+| --- | --- |
+| `"none"`, absent, or any unknown value | Nothing. Every external link stays as its words. |
+| `"https"` | Any `https:` URL with no userinfo, on any host or port. |
+| `{ hosts: ["example.com"] }` | An `https:` URL with no userinfo and the default port, whose host is exactly one listed bare name after normalization. A subdomain, a homoglyph host or an IP literal is refused, and a malformed entry admits nothing. |
+
+Only `https:` can ever be admitted: `http:`, `javascript:`, `data:`, other schemes, and
+relative, scheme-less or unparsable targets stay inert under every policy. Images and raw HTML
+are unaffected, and so are reference-style links such as `[text][ref]`, which render as text. The
+anchor carries the parsed URL's canonical serialization, never the raw Markdown string, with
+`rel="noopener noreferrer"`, `target="_blank"` and the `doc-link-external` class. Concept links
+resolve first; the policy sees only targets the resolver rejects.
+
+Set the policy in trusted host code. Never read it from a document, Kind, recipe, View manifest,
+bundle record or tool argument. `renderDocumentToStaticHtml` takes no options, because it is the
+adapter behind a View's `render-document`, and Views stay link-free.
+
+Body, node and depth limits bound presentation; the host must show
 the returned `bounded` state rather than imply the entire document was rendered.
 The inert profile has no active document navigation and does not call the route
 builder. Do not render arbitrary bundle-authored executable code in the host shell.
@@ -65,7 +76,7 @@ their bytes, MIME, response headers and access checks. This renderer does not lo
 inspect the image bytes, widen asset publication rules, or make arbitrary SVG safe for other
 embedding contexts. Never populate the inventory directly from bundle-authored renderer options.
 Interactive rendering ignores this option. The bridge-shaped `renderDocumentToStaticHtml` adapter
-does not accept or forward it; its image behavior remains inert. Existing body/node/depth bounds
+does not accept it; its image behavior remains inert. Existing body/node/depth bounds
 also apply when the static image option is enabled.
 
 ## Package preparation

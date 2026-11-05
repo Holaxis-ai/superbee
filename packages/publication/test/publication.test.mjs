@@ -409,3 +409,104 @@ test("static View bridge reuses canonical read semantics and rejects mismatched 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+async function linkFixture() {
+  const { root } = await fixture();
+  await writeFile(
+    path.join(root, "notes", "links.md"),
+    "---\ntype: Note\ntitle: Links\n---\n# Links\n\n[web](https://EXAMPLE.com:443/a) [other](https://other.example/b) " +
+      "[plain](http://example.com/c) [script](javascript:alert(1)) [peer](./beta.md)\n",
+    "utf8",
+  );
+  const snapshot = await capturePublicationSnapshot({ schema: PUBLICATION_SNAPSHOT_V1, source: { kind: "filesystem", root } });
+  return { root, snapshot };
+}
+
+const anchorHrefs = (html) => [...html.matchAll(/<a [^>]*href="([^"]*)"/g)].map((match) => match[1]);
+
+test("a captured handle renders from verified source with the caller's policy and leaves the snapshot alone", async () => {
+  const { root, snapshot } = await linkFixture();
+  try {
+    const manifestBefore = snapshot.serializeManifest();
+    for (const row of snapshot.manifest.documents) {
+      const stored = new TextDecoder().decode(await snapshot.readObject(row.rendered.html));
+      for (const options of [undefined, {}, { externalLinks: "none" }, { externalLinks: "unknown" }, { externalLinks: ["example.com"] }]) {
+        assert.deepEqual(await snapshot.renderDocument(row.id, options), { html: stored, bounded: row.rendered.bounded }, row.id);
+      }
+    }
+    const https = await snapshot.renderDocument("notes/links", { externalLinks: "https" });
+    assert.deepEqual(anchorHrefs(https.html), ["https://example.com/a", "https://other.example/b"]);
+    assert.match(https.html, /<a href="https:\/\/example\.com\/a" rel="noopener noreferrer" target="_blank" class="doc-link-external">web<\/a>/);
+    assert.match(https.html, /data-aslite-doc-id="notes\/beta"/);
+    assert.doesNotMatch(https.html, /javascript:|http:\/\//);
+    const hosts = await snapshot.renderDocument("notes/links", { externalLinks: { hosts: ["example.com"] } });
+    assert.deepEqual(anchorHrefs(hosts.html), ["https://example.com/a"]);
+    assert.deepEqual(snapshot.serializeManifest(), manifestBefore, "rendering again changes no snapshot bytes");
+    const row = snapshot.manifest.documents.find((document) => document.id === "notes/links");
+    assert.deepEqual(anchorHrefs(new TextDecoder().decode(await snapshot.readObject(row.rendered.html))), [], "the stored HTML stays inert");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a captured handle refuses an unknown document, a tampered source and a closed handle", async () => {
+  const { root, snapshot } = await linkFixture();
+  try {
+    await assert.rejects(
+      () => snapshot.renderDocument("constructor", { externalLinks: "https" }),
+      (error) => error instanceof PublicationError && error.code === "OBJECT_MISSING" && error.subject === "constructor",
+    );
+    const row = snapshot.manifest.documents.find((document) => document.id === "notes/links");
+    const objects = snapshot.objects;
+    const original = objects.get(row.source.digest);
+    const tampered = original.slice();
+    tampered[tampered.length - 2] ^= 1;
+    objects.set(row.source.digest, tampered);
+    await assert.rejects(
+      () => snapshot.renderDocument("notes/links"),
+      (error) => error instanceof PublicationError && error.code === "OBJECT_DIGEST_MISMATCH",
+    );
+    objects.set(row.source.digest, original);
+    await snapshot.close();
+    await assert.rejects(
+      () => snapshot.renderDocument("notes/links"),
+      (error) => error instanceof PublicationError && error.code === "HANDLE_CLOSED",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a bundle-read View's render-document has no anchors, whatever the handle or the request says", async () => {
+  const { root, snapshot } = await linkFixture();
+  try {
+    const view = snapshot.manifest.views[0];
+    assert.equal(view.access, "bundle-read");
+    const bridge = createPublicationBridge({
+      protocol: PUBLICATION_BRIDGE_V0,
+      snapshot,
+      admittedView: { id: view.id, entry: view.entry, access: view.access, entryDigest: view.entryObject.digest },
+    });
+    const row = snapshot.manifest.documents.find((document) => document.id === "notes/links");
+    const stored = new TextDecoder().decode(await snapshot.readObject(row.rendered.html));
+    assert.deepEqual(anchorHrefs((await snapshot.renderDocument("notes/links", { externalLinks: "https" })).html).length, 2, "the document does hold web links");
+    const requests = [
+      { bridge: "v0", type: "render-document", id: "plain", docId: "notes/links" },
+      { bridge: "v0", type: "render-document", id: "asks", docId: "notes/links", externalLinks: "https" },
+      { bridge: "v0", type: "render-document", id: "options", docId: "notes/links", options: { externalLinks: "https" } },
+      { bridge: "v0", type: "render-document", id: "params", docId: "notes/links", params: { externalLinks: "https" } },
+    ];
+    let answered = 0;
+    for (const request of requests) {
+      const { reply } = await bridge.handle(request);
+      if (reply?.type === "error") continue;
+      assert.equal(reply.type, "render-document:result", request.id);
+      assert.equal(reply.result.html, stored, request.id);
+      assert.doesNotMatch(reply.result.html, /<a[\s>]/, request.id);
+      answered++;
+    }
+    assert.ok(answered >= 1, "the plain request is answered");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
