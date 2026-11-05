@@ -117,7 +117,7 @@ export function inspectCommand(inv: CommandPrefix, id: string, dir: string | und
   return commandFragment`${inv} sync --inspect --doc ${commandToken(id)}${suffix}`;
 }
 
-function removeCommand(copy: SavedCopy): string {
+export function removeCommand(copy: SavedCopy): string {
   return `rm ${commandToken(copy.file)}${copy.bodyFile === null ? "" : ` ${commandToken(copy.bodyFile)}`}`;
 }
 

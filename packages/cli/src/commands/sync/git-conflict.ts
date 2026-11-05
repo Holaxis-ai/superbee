@@ -27,7 +27,7 @@ import { CliError } from "../../errors.js";
 import { cliInvocation } from "../../invocation.js";
 import { render, resolveMode } from "../../output.js";
 import { assertPathOutsidePrivateState } from "../../private-state-bundle-boundary.js";
-import { copyIsCarried, decodesLosslessly, inspectCommand } from "../../saved-conflicts.js";
+import { copyIsCarried, decodesLosslessly, inspectCommand, removeCommand } from "../../saved-conflicts.js";
 import type { SyncCliDeps } from "../../sync-cli.js";
 import { docUpdate } from "../doc/update.js";
 import { docWrite } from "../doc/write.js";
@@ -206,6 +206,14 @@ async function locateBoard(args: ConflictArgs, cwd: string): Promise<Board> {
   const copies = listSavedCopies(exportDir).filter((copy) => copy.relPath === relPath);
   const oldest = copies[0];
   if (oldest === undefined) {
+    // A raw file's copy is saved under its own path, which a document id does not map to.
+    const raw = listSavedCopies(exportDir).filter((copy) => copy.relPath === args.id);
+    if (raw[0] !== undefined) {
+      throw new CliError("CONFLICT", `'${args.id}' has a saved conflict copy, but it is a raw file, which --inspect and --resolve do not take; merge what you need into it by hand from ${raw[0].file}, then delete that file`, {
+        details: { path: args.id, saved_at: raw[0].file, copies: raw.length },
+        help: removeCommand(raw[0]),
+      });
+    }
     throw new CliError("NOT_FOUND", `'${args.id}' has no saved conflict on this board: sync saves your version only when a teammate changed the same document`, {
       details: { id: args.id, board: root },
       help: `${inv} sync${dirSuffix(args)}`,

@@ -13,7 +13,9 @@ import { withIsolatedUserEnv } from "./support/user-env.js";
 import { sync } from "../src/commands/sync.js";
 import { doc } from "../src/commands/doc.js";
 import { status } from "../src/commands/status.js";
+import { buildBoardBlock } from "../src/commands/home.js";
 import { sessionStart } from "../src/commands/session-start.js";
+import { cliInvocation } from "../src/invocation.js";
 import { turnEnd } from "../src/commands/turn-end.js";
 import { CliError } from "../src/errors.js";
 import { bundleKey, syncExportsDir } from "../src/cursor.js";
@@ -739,6 +741,38 @@ test("different invalid bytes that decode the same are not carried", async () =>
   } finally {
     await f.cleanup();
   }
+});
+
+test("--inspect on a raw file with a saved copy says so and gives the removal step", async () => {
+  const f = await fixture();
+  try {
+    const file = (repo: TwoCloneTopology["a"]) => path.join(repo.board, "data.bin");
+    await writeFile(file(f.topo.a), "base");
+    assert.equal((await runSync(f.homeA, ["--dir", f.topo.a.root])).err, undefined);
+    assert.equal((await runSync(f.homeB, ["--dir", f.topo.b.root])).err, undefined);
+    await writeFile(file(f.topo.a), "A words");
+    assert.equal((await runSync(f.homeA, ["--dir", f.topo.a.root])).err, undefined);
+    await writeFile(file(f.topo.b), "B words");
+    assert.equal((await runSync(f.homeB, ["--dir", f.topo.b.root])).err?.exitCode, 5);
+    const saved = path.join(exportsOf(f.topo, f.homeB), "data.bin");
+    const shown = await runSync(f.homeB, ["--inspect", "--doc", "data.bin", "--dir", f.topo.b.root]);
+    assert.equal(shown.err?.exitCode, 5);
+    assert.doesNotMatch(shown.err?.message ?? "", /no saved conflict/);
+    assert.match(shown.err?.message ?? "", /raw file/);
+    assert.match(shown.err?.help ?? "", /^rm .*data\.bin/);
+    assert.equal(existsSync(saved), true);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("home points at the row's real next step when a document's copy cannot be compared", () => {
+  const unsettled = [{ relPath: "tasks/big.md", id: "tasks/big", copies: [{ relPath: "tasks/big.md", file: "/x/tasks/big.md", bodyFile: null }], discardWith: "remove" as const, unreadable: true }];
+  const { block } = buildBoardBlock({ state: "provisioned", cache: null, selfActors: [], unpushed: 0, uncommitted: 0, unsettled }, undefined, cliInvocation());
+  const line = String((block as Record<string, unknown>).saved_conflicts);
+  assert.doesNotMatch(line, /--inspect/);
+  assert.match(line, /tasks\/big/);
+  assert.match(line, /by hand, then delete the saved file/);
 });
 
 test("a raw file's saved copy is named by path until the file is gone", async () => {

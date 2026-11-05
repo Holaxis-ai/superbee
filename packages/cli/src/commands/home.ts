@@ -105,7 +105,7 @@ import { maybeAutoPull } from "../autopull.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { HOME_LEAF } from "../command-spec.js";
-import { inspectCommand, unsettledConflicts, unsettledMessage, type UnsettledConflict } from "../saved-conflicts.js";
+import { unsettledConflicts, unsettledMessage, unsettledRow, type UnsettledConflict } from "../saved-conflicts.js";
 import { defaultSyncStore, type AwarenessCache, type AwarenessDeltaRow } from "../cursor.js";
 import { hookNeedsUpdate } from "./hook.js";
 import { skillRefreshScopes } from "./skill.js";
@@ -702,10 +702,7 @@ export function buildBoardBlock(
   }
   // Read live from the saved copies, so it carries no cache age.
   if (status.state === "provisioned" && status.unsettled && status.unsettled.length > 0) {
-    const first = status.unsettled.find((conflict) => conflict.id !== null);
-    rec.saved_conflicts = first?.id
-      ? `${unsettledMessage(status.unsettled)}; start with ${inspectCommand(inv, first.id, dir)}`
-      : unsettledMessage(status.unsettled);
+    rec.saved_conflicts = `${unsettledMessage(status.unsettled)}; next: ${String(unsettledRow(status.unsettled[0]!, inv, dir).next)}`;
   }
   // The quiet in-tree state renders the mode line, not "up to date": a plain in-tree render never
   // fetched, so it cannot claim currency — the mode line is true either way (and doubles as the
