@@ -103,6 +103,7 @@ import {
 } from "@superbee/board-git";
 import { maybeAutoPull } from "../autopull.js";
 import { CliError } from "../errors.js";
+import { emitDeprecationNotice } from "../deprecation-notices.js";
 import { parseLeafOrUsage } from "../args.js";
 import { HOME_LEAF } from "../command-spec.js";
 import { unsettledConflicts, unsettledMessage, unsettledRow, type UnsettledConflict } from "../saved-conflicts.js";
@@ -1113,6 +1114,8 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
     stdout(renderUsage(HOME_USAGE));
     return;
   }
+  // Home only points at a remote and never opens one, so it has to name this itself.
+  if (remote !== undefined) emitDeprecationNotice("DEPRECATED_REMOTE_FLAG");
 
   // A committed project binding (see the module header's PROJECT-BINDING PEEK) is consulted ONLY
   // when the caller passed NEITHER --remote NOR --dir themselves — the same suppression rule every

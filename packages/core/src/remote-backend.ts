@@ -303,6 +303,9 @@ function encodeBlobKey(key: BlobKey): string {
  * The client half of the wire-protocol v0 contract: implements {@link StorageBackend}
  * over HTTP against a `@superbee/server` instance (or any conformant
  * implementation of `docs/WIRE-PROTOCOL.md`).
+ *
+ * @deprecated The v0 remote client will be removed in a future release. Open a local bundle
+ * through the filesystem backend, or use a hosted checkout through the CLI.
  */
 export class RemoteBackend implements StorageBackend {
   private readonly baseUrl: string;

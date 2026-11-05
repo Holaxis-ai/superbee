@@ -6,6 +6,7 @@ import { getSourceProfile, restJsonProfile, nextLinkTarget, SOURCE_PLUGIN_CORE_V
 import { unsupportedContent, type SourceProfile } from "@superbee/core/source-engine";
 import { parseRecipeFiles, type LoadResult } from "@superbee/core/recipes";
 import { CliError } from "./errors.js";
+import { emitDeprecationNotice } from "./deprecation-notices.js";
 import type { UserStateInput } from "./user-state.js";
 import { trustedLocalPlugins, pluginRecord as record, pluginExact as exact, pluginSlug as lexicalPluginSlug, pluginRelativePath, pluginPackage, pluginPointer, pluginFileRows, type PluginPointer, type PluginSnapshot } from "./trusted-local-plugins.js";
 
@@ -44,6 +45,7 @@ function decodeSourcePointers(raw: string): Active[] {
         return a.plugins as Active[];
     }
     if (!record(a) || !exact(a, ["v", "plugin", "generation", "digest", "package", "version", "contract", "core", "profile"]) || !pluginPointer(a) || a.plugin !== "github" || a.package !== "@superbee/integration-github" || typeof a.version !== "string" || a.contract !== 1 || typeof a.core !== "string" || !a.core || !record(a.profile) || !exact(a.profile, ["id", "version"]) || a.profile.id !== "github-issues" || !Number.isSafeInteger(a.profile.version) || (a.profile.version as number) < 1) throw refusal("state_invalid");
+    emitDeprecationNotice("DEPRECATED_SOURCE_PLUGIN_POINTER");
     return [{ v: 1, plugin: a.plugin, generation: a.generation, digest: a.digest, legacy: a as unknown as LegacyActive }];
 }
 function verifySourcePointer(a: Active, s: PluginSnapshot<Manifest>) {
