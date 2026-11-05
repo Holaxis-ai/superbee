@@ -19,10 +19,10 @@ test("mutation workflow selects the package that owns each mutation script", (t)
   t.after(() => rmSync(outputDir, { recursive: true, force: true }));
   const mutationWorkflow = yaml.safeLoad(readFileSync(path.join(root, ".github/workflows/mutation-tests.yml"), "utf8"));
   const select = mutationWorkflow.jobs.plan.steps.find((step) => step.id === "pick").run;
-  assert.equal(select, "node scripts/mutation-plan.mjs");
+  assert.match(select, /node scripts\/mutation-plan\.mjs/);
   for (const target of ["both", "core", "cli", "board-git", ""]) {
     const outputFile = path.join(outputDir, `${target || "default"}.output`);
-    const result = spawnSync(process.execPath, ["scripts/mutation-plan.mjs"], {
+    const result = spawnSync("bash", ["-e", "-c", select], {
       cwd: root,
       env: { ...process.env, TARGET: target, MUTATE: "", GITHUB_OUTPUT: outputFile },
       encoding: "utf8",

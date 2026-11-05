@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, globSync, readFileSync } from "node:fs";
+import { globSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./is-main-module.mjs";
@@ -7,8 +7,15 @@ import { isMainModule } from "./is-main-module.mjs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 export function mutationPlan(target = "both", override = "") {
-  const packages = target === "both" || !target ? ["core", "cli", "board-git"] : [target];
-  if (packages.some((name) => !["core", "cli", "board-git"].includes(name))) throw new Error("Unknown mutation target");
+  let packages;
+  switch (target) {
+    case "":
+    case "both": packages = ["core", "cli", "board-git"]; break;
+    case "core": packages = ["core"]; break;
+    case "cli": packages = ["cli"]; break;
+    case "board-git": packages = ["board-git"]; break;
+    default: throw new Error("Unknown mutation target");
+  }
   const include = [];
   for (const name of packages) {
     const cwd = path.join(root, "packages", name);
@@ -32,5 +39,5 @@ export function mutationPlan(target = "both", override = "") {
 
 if (isMainModule(import.meta.url)) {
   const matrix = JSON.stringify(mutationPlan(process.env.TARGET, process.env.MUTATE));
-  appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${matrix}\n`);
+  process.stdout.write(matrix + "\n");
 }

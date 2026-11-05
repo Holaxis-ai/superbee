@@ -73,7 +73,9 @@ jobs:
         env:
           TARGET: ${{ inputs.target }}
           MUTATE: ${{ inputs.mutate }}
-        run: node scripts/mutation-plan.mjs
+        run: |
+          matrix=$(node scripts/mutation-plan.mjs)
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
 
   mutate:
     needs: plan
