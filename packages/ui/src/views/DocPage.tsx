@@ -230,7 +230,7 @@ export function DocPage({ docId }: { docId: string }) {
         <div className="doc-body">{rendered.element}</div>
         {rendered.bounded && (
           <p className="doc-bounded-note">
-            This doc is large — the view above is truncated. The full content is in the bundle
+            This document is shown in a limited form. The full content is in the bundle
             (read it with <code>superbee doc read {doc.id}</code>).
           </p>
         )}

@@ -26,15 +26,14 @@
  * Images are inert by default; a trusted inert/static host may admit exact local asset paths.
  *
  * RESOURCE BOUNDS: body bytes capped ({@link MAX_BODY_CHARS}, with an honest truncation notice —
- * the AXI `read` truncation's human analog) and the walk bounded ({@link MAX_NODES} nodes,
+ * the AXI `read` truncation's human analog), parsing limited ({@link parseWithinLimits}, a
+ * document over the limit renders as source text) and the walk bounded ({@link MAX_NODES} nodes,
  * {@link MAX_DEPTH} depth) — a pathological doc degrades, never hangs the trusted tab.
  */
 import type { MouseEvent, ReactNode } from "react";
-import { fromMarkdown } from "mdast-util-from-markdown";
-import { gfm } from "micromark-extension-gfm";
-import { gfmFromMarkdown } from "mdast-util-gfm";
 import type { AlignType, Node, Parent, RootContent } from "mdast";
 import { resolveConceptId } from "@superbee/core/links";
+import { parseWithinLimits } from "./parse.js";
 
 /**
  * The renderer's one concept-link resolver. Any `okf:` href is a cross-bundle reference with no
@@ -55,7 +54,7 @@ export const MAX_DEPTH = 40;
 
 export interface RenderedMarkdown {
   element: ReactNode;
-  /** True when the body was cut at {@link MAX_BODY_CHARS} or the walk hit {@link MAX_NODES}. */
+  /** True when the body was cut at {@link MAX_BODY_CHARS}, the body was over the parse limit, or the walk hit {@link MAX_NODES}. */
   bounded: boolean;
   /**
    * The bounds this render actually applied, after defaulting and clamping. Reported so the
@@ -137,13 +136,21 @@ function staticImageLookup(options: RenderOptions): ReadonlyMap<string, string> 
 }
 
 /** Flatten a node's text content — the inert fallback for unknown/rejected constructs. */
-function textOf(node: Node): string {
-  if (node.type === "text" || node.type === "inlineCode" || node.type === "html") {
-    return (node as { value?: string }).value ?? "";
+function textOf(root: Node): string {
+  // Iterative because inline nesting can run far deeper than the walk's depth bound.
+  const parts: string[] = [];
+  const pending: Node[] = [root];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (node.type === "text" || node.type === "inlineCode" || node.type === "html") {
+      parts.push((node as { value?: string }).value ?? "");
+      continue;
+    }
+    const children = (node as Partial<Parent>).children;
+    if (!Array.isArray(children)) continue;
+    for (let i = children.length - 1; i >= 0; i--) pending.push(children[i]!);
   }
-  const children = (node as Partial<Parent>).children;
-  if (!Array.isArray(children)) return "";
-  return children.map((child) => textOf(child)).join("");
+  return parts.join("");
 }
 
 /** Keep flattened AST semantics opaque to downstream text decorators. */
@@ -534,10 +541,18 @@ export function renderMarkdown(body: string, options: RenderOptions): RenderedMa
     source = source.slice(0, maxBodyChars);
     bounded = true;
   }
-  const tree = fromMarkdown(source, {
-    extensions: [gfm()],
-    mdastExtensions: [gfmFromMarkdown()],
-  });
+  const tree = parseWithinLimits(source);
+  if (tree === null) {
+    return {
+      element: (
+        <pre className="doc-code doc-markdown-fallback">
+          <code>{source}</code>
+        </pre>
+      ),
+      bounded: true,
+      limits: { maxBodyChars, maxNodes },
+    };
+  }
   const state: WalkState = { count: 0, bounded: false, options, maxNodes, imageAssets: staticImageLookup(options) };
   // Render a run of bare concept-link paragraphs inline as one "verb → target" edge list (authors
   // write one edge per line, so merge the consecutive run). Non-bare paragraphs and inline links

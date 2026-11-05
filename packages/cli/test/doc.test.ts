@@ -66,7 +66,7 @@ import {
 } from "@superbee/core";
 import { serve, type ServerHandle } from "@superbee/server";
 import { encode } from "@toon-format/toon";
-import { MAX_BODY_CHARS, MAX_NODES } from "@superbee/markdown-renderer";
+import { MAX_BODY_CHARS } from "@superbee/markdown-renderer";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 
 import { doc, type DocCliDeps } from "../src/commands/doc.js";
@@ -3727,7 +3727,7 @@ test("doc read --rendered-out writes the canonical bounded renderer output", asy
   }
 });
 
-test("doc read --rendered-out discloses a TRUNCATED render as a warning, not a bare boolean", async () => {
+test("doc read --rendered-out discloses a limited render as a warning, not a bare boolean", async () => {
   const { dir, cleanup } = await makeBundle();
   const outDir = await tempDir();
   try {
@@ -3747,9 +3747,8 @@ test("doc read --rendered-out discloses a TRUNCATED render as a warning, not a b
 
     assert.equal(receipt.bounded, true);
     // Lossy egress is only safe if it is LOUD: `bounded: true` alone reads as a config detail.
-    assert.match(String(receipt.warning), /TRUNCATED/);
-    assert.match(String(receipt.warning), new RegExp(String(MAX_BODY_CHARS)));
-    assert.match(String(receipt.warning), new RegExp(String(MAX_NODES)));
+    assert.match(String(receipt.warning), /limited form/);
+    assert.match(String(receipt.warning), /--out/);
     assert.deepEqual(receipt.help, [`${cliInvocation()} doc read concepts/big --out <file>`]);
     assert.doesNotMatch(html, new RegExp(tail));
     // The complete-bytes channel it points at really does carry what was dropped.

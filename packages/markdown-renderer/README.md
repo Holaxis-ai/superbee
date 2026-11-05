@@ -33,8 +33,9 @@ serialization, never the raw Markdown string, with `rel="noopener noreferrer"`,
 the allowlist sees only targets the resolver rejects. Both the interactive and
 static entrypoints accept the option, and `renderDocumentToStaticHtml` takes it
 as an optional second argument. Without the option, or with an empty list, every
-external link stays inert exactly as before. Body, node and depth limits bound presentation; the host must show
-the returned `bounded` state rather than imply the entire document was rendered.
+external link stays inert exactly as before. Body, parse, node and depth limits bound presentation; the host must show
+the returned `bounded` state rather than imply the entire document was rendered. A document over the parse
+limit renders as escaped source text in one code block, the same way in both entrypoints.
 The inert profile has no active document navigation and does not call the route
 builder. Do not render arbitrary bundle-authored executable code in the host shell.
 
