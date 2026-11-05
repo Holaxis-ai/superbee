@@ -9,15 +9,12 @@ export interface StaticRenderOptions {
   fromId: string;
   titleFor?: RenderOptions["titleFor"];
   limits?: RenderOptions["limits"];
-  /** Same allowlist rules as the interactive profile; absent keeps every external target inert. */
-  externalLinkHosts?: RenderOptions["externalLinkHosts"];
+  /** Same rules as the interactive profile; absent or unknown keeps every external target inert. */
+  externalLinks?: RenderOptions["externalLinks"];
   /** Trusted presentation inventory, never bundle-authored renderer configuration.
-   * Omit to keep images inert. The bridge-shaped document adapter does not forward this. */
+   * Omit to keep images inert. The bridge-shaped document adapter does not accept this. */
   imageAssets?: RenderOptions["imageAssets"];
 }
-
-/** The subset of {@link StaticRenderOptions} the bridge-shaped document adapter accepts. */
-export type StaticDocumentRenderOptions = Pick<StaticRenderOptions, "externalLinkHosts">;
 
 export interface StaticRenderedMarkdown extends Omit<RenderedMarkdown, "element"> {
   html: string;
@@ -49,14 +46,11 @@ export function renderMarkdownToStaticHtml(
   return { html, bounded: rendered.bounded, limits: rendered.limits };
 }
 
-/** Bridge-shaped adapter shared by every host that presents a canonical bundle document. */
-export function renderDocumentToStaticHtml(
-  document: StaticRenderableDocument,
-  options: StaticDocumentRenderOptions = {},
-): StaticRenderedDocument {
-  const rendered = renderMarkdownToStaticHtml(document.body, {
-    fromId: document.id,
-    externalLinkHosts: options.externalLinkHosts,
-  });
+/**
+ * Bridge-shaped adapter shared by every host that presents a canonical bundle document. It takes no
+ * options, so a View's `render-document` cannot carry a link policy or local images.
+ */
+export function renderDocumentToStaticHtml(document: StaticRenderableDocument): StaticRenderedDocument {
+  const rendered = renderMarkdownToStaticHtml(document.body, { fromId: document.id });
   return { html: rendered.html, bounded: rendered.bounded };
 }

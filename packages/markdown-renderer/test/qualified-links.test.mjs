@@ -1,7 +1,7 @@
 /**
  * Cross-bundle links (`okf://<alias>/<path>.md`) have no renderer route yet. Until one exists they
  * must render exactly like any other unresolvable target: an inert span, with the raw `okf:` href
- * in no attribute, in both profiles and with or without the external-link allowlist.
+ * in no attribute, in both profiles and under every external-link policy.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -14,14 +14,14 @@ import { renderMarkdownToStaticHtml } from "../dist/static.js";
 import { parseQualifiedLinks } from "@superbee/core/qualified-links";
 import { fromMarkdown } from "mdast-util-from-markdown";
 
-function interactive(body, externalLinkHosts) {
+function interactive(body, externalLinks) {
   return renderToStaticMarkup(
-    renderMarkdown(body, { fromId: "menus/tap-1", onNavigateDoc() {}, externalLinkHosts }).element,
+    renderMarkdown(body, { fromId: "menus/tap-1", onNavigateDoc() {}, externalLinks }).element,
   );
 }
 
-function inert(body, externalLinkHosts) {
-  return renderMarkdownToStaticHtml(body, { fromId: "menus/tap-1", externalLinkHosts }).html;
+function inert(body, externalLinks) {
+  return renderMarkdownToStaticHtml(body, { fromId: "menus/tap-1", externalLinks }).html;
 }
 
 const BODIES = [
@@ -34,10 +34,10 @@ const BODIES = [
 ];
 
 for (const [profile, render] of [["interactive", interactive], ["inert", inert]]) {
-  for (const hosts of [undefined, ["beers", "example.com"]]) {
+  for (const policy of [undefined, { hosts: ["beers", "example.com"] }, "https"]) {
     for (const body of [...BODIES, ...BODIES.map((b) => `see ${b} here`)]) {
-      test(`${profile}${hosts ? " with an allowlist" : ""}: ${body} renders inert with no okf: attribute`, () => {
-        const html = render(body, hosts);
+      test(`${profile} with policy ${JSON.stringify(policy)}: ${body} renders inert with no okf: attribute`, () => {
+        const html = render(body, policy);
         const document = new JSDOM(html).window.document;
         assert.equal(document.querySelectorAll("a").length, 0, html);
         const spans = document.querySelectorAll("span.doc-link-inert");
@@ -62,10 +62,10 @@ const CODE_BODIES = [
 ];
 
 for (const [profile, render] of [["interactive", interactive], ["inert", inert]]) {
-  for (const hosts of [undefined, ["beers", "example.com"]]) {
+  for (const policy of [undefined, { hosts: ["beers", "example.com"] }, "https"]) {
     for (const body of CODE_BODIES) {
-      test(`${profile}${hosts ? " with an allowlist" : ""}: ${JSON.stringify(body)} stays code with no okf: attribute, as core parses it`, () => {
-        const html = render(body, hosts);
+      test(`${profile} with policy ${JSON.stringify(policy)}: ${JSON.stringify(body)} stays code with no okf: attribute, as core parses it`, () => {
+        const html = render(body, policy);
         const document = new JSDOM(html).window.document;
         assert.equal(document.querySelectorAll("a, span.doc-link-inert").length, 0, html);
         const code = document.querySelector("code");

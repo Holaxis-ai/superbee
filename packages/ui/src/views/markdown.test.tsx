@@ -79,7 +79,7 @@ describe("markdown renderer", () => {
 
   it("THE INVARIANT holds with an external allowlist on: the one external href is the canonical URL", async () => {
     const body = `${SCHEME_VECTORS}\n\n[spec](https://EXAMPLE.com:443/spec#top) [sub](https://www.example.com/) [plain](http://example.com/)`;
-    const result = renderMarkdown(body, { fromId: "tasks/alpha", onNavigateDoc, externalLinkHosts: ["example.com"] });
+    const result = renderMarkdown(body, { fromId: "tasks/alpha", onNavigateDoc, externalLinks: { hosts: ["example.com"] } });
     await act(async () => {
       root.render(<div className="doc-body">{result.element}</div>);
     });

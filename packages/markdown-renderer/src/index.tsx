@@ -18,11 +18,11 @@
  * raw markdown href/src NEVER reaches a DOM attribute. An interactive resolved link gets a route
  * built from `resolveConceptId`; the inert profile gets only that normalized id in
  * `data-aslite-doc-id`. A same-page fragment of the strict anchor shape is named only by
- * `data-aslite-fragment` ({@link admitFragment}) on an otherwise inert span. An allowlisted
- * external link's href is the CANONICAL SERIALIZATION of a URL the host's `externalLinkHosts`
- * allowlist admitted ({@link admitExternalLink}), never the raw string. Everything else the
- * resolver rejects (external URLs off the allowlist or with no allowlist, `javascript:`/`data:`/any
- * scheme, non-`.md`, reserved files) renders as inert text.
+ * `data-aslite-fragment` ({@link admitFragment}) on an otherwise inert span. An admitted external
+ * link's href is the CANONICAL SERIALIZATION of a URL the host's {@link ExternalLinkPolicy} admitted
+ * ({@link admitExternalLink}), never the raw string. Everything else the resolver rejects (external
+ * URLs the policy refuses, `javascript:`/`data:`/any non-`https:` scheme, non-`.md`, reserved files)
+ * renders as inert text.
  * Images are inert by default; a trusted inert/static host may admit exact local asset paths.
  *
  * RESOURCE BOUNDS: body bytes capped ({@link MAX_BODY_CHARS}, with an honest truncation notice —
@@ -34,6 +34,9 @@ import type { MouseEvent, ReactNode } from "react";
 import type { AlignType, Node, Parent, RootContent } from "mdast";
 import { resolveConceptId } from "@superbee/core/links";
 import { parseWithinLimits } from "./parse.js";
+import type { ExternalLinkPolicy } from "./external-link-policy.js";
+
+export type { ExternalLinkPolicy } from "./external-link-policy.js";
 
 /**
  * The renderer's one concept-link resolver. Any `okf:` href is a cross-bundle reference with no
@@ -76,13 +79,11 @@ export interface RenderOptions {
   /** Interactive for the shell reader; inert for serialized fragments crossing into a View. */
   profile?: "interactive" | "inert";
   /**
-   * Host names whose `https:` links may render as real anchors. Absent or empty keeps every
-   * external target inert. A listed name admits only an exact host match after WHATWG `URL`
-   * normalization (so case folds and a homoglyph form does not), never a subdomain, an IP
-   * literal, a non-default port, userinfo, or a scheme other than `https:`. See
-   * {@link admitExternalLink} for the full refusal set; both profiles honor the option.
+   * Which external links render as real anchors. Absent or unknown means `none`, so every external
+   * target stays inert. Only `https:` targets with no userinfo can ever be admitted. See
+   * {@link ExternalLinkPolicy} and {@link admitExternalLink}; both profiles honor the option.
    */
-  externalLinkHosts?: readonly string[];
+  externalLinks?: ExternalLinkPolicy;
   /** Exact canonical /assets image paths admitted by a trusted static-presentation host.
    * Honored only by the inert profile. The host owns frozen bytes, MIME and serving policy;
    * this renderer performs no loading and never treats SVG bytes as inline markup. */
@@ -251,24 +252,29 @@ export function admitFragment(raw: string): string | null {
 
 /**
  * THE ONLY PATH from a markdown link target to an external href. Returns the canonical `URL`
- * serialization when the allowlist admits the target, else null (the caller renders inert text).
- * Admission requires all of: the allowlist is non-empty; the raw string parses on its own (no base,
- * so relative and scheme-less targets fail); the scheme is `https:`; no userinfo; no IP literal;
- * the default port; and the normalized host is exactly one of the normalized entries. A subdomain
- * of a listed host is a different host and is refused. The returned value is `url.href`, never
- * the raw string, so the attribute always carries the parser's serialization.
+ * serialization when the policy admits the target, else null (the caller renders inert text).
+ * Any policy other than `"https"` or an object with a non-empty `hosts` array admits nothing.
+ * Every admission requires that the raw string parses on its own (no base, so relative and
+ * scheme-less targets fail), the scheme is `https:`, and there is no userinfo. `{ hosts }` also
+ * requires the default port and a normalized host exactly equal to a normalized entry, so a
+ * subdomain is refused and an IP literal cannot match, since no entry can name one. The returned
+ * value is `url.href`, never the raw string, so the attribute always carries the parser's
+ * serialization.
  */
-export function admitExternalLink(raw: string, hosts: readonly string[] | undefined): string | null {
-  if (!Array.isArray(hosts) || hosts.length === 0) return null;
+export function admitExternalLink(raw: string, policy: ExternalLinkPolicy | undefined): string | null {
+  const anyHost = policy === "https";
+  const hosts = typeof policy === "object" && policy !== null ? policy.hosts : undefined;
+  if (!anyHost && (!Array.isArray(hosts) || hosts.length === 0)) return null;
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
     return null;
   }
-  if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.port !== "") return null;
-  if (isIpLiteralHost(url.hostname)) return null;
-  for (const entry of hosts) {
+  if (url.protocol !== "https:" || url.username !== "" || url.password !== "") return null;
+  if (anyHost) return url.href;
+  if (url.port !== "") return null;
+  for (const entry of hosts!) {
     if (normalizeAllowedHost(entry) === url.hostname) return url.href;
   }
   return null;
@@ -297,6 +303,7 @@ interface WalkState {
   options: RenderOptions;
   imageAssets: ReadonlyMap<string, string>;
   maxNodes: number;
+  insideLink: boolean;
 }
 
 function renderChildren(node: Parent, state: WalkState, depth: number): ReactNode[] {
@@ -390,16 +397,21 @@ function renderNode(node: RootContent | Node, state: WalkState, depth: number, i
     case "break":
       return <br key={index} />;
     case "link": {
-      // THE INVARIANT: every href below is BUILT from the resolver's output or from the allowlist's
-      // canonical serialization. `node.url` (raw markdown) is consulted only as their INPUT and
-      // never reaches an attribute. The resolver is asked first; the allowlist sees only targets
-      // it rejects, so a concept link can never be rerouted off the bundle.
+      // THE INVARIANT: every href below is BUILT from the resolver's output or from the link
+      // policy's canonical serialization. `node.url` (raw markdown) is consulted only as their
+      // INPUT and never reaches an attribute. The resolver is asked first; the policy sees only
+      // targets it rejects, so a concept link can never be rerouted off the bundle.
       const raw = (node as { url?: string }).url ?? "";
       const resolved = renderableConceptId(state.options.fromId, raw);
+      const insideLink = state.insideLink;
+      state.insideLink = true;
       const children = renderChildren(node as Parent, state, depth);
+      state.insideLink = insideLink;
       if (resolved === null) {
-        const external = admitExternalLink(raw, state.options.externalLinkHosts);
-        if (external !== null) {
+        // A browser can't nest anchors, and an anchor with no words is a stop with no name.
+        const hasContent = /\S/.test(textOf(node)) || (node as Parent).children.some((child) => child.type === "image");
+        const external = admitExternalLink(raw, state.options.externalLinks);
+        if (external !== null && !insideLink && hasContent) {
           return (
             <a key={index} href={external} rel="noopener noreferrer" target="_blank" className="doc-link-external">
               {children}
@@ -553,7 +565,7 @@ export function renderMarkdown(body: string, options: RenderOptions): RenderedMa
       limits: { maxBodyChars, maxNodes },
     };
   }
-  const state: WalkState = { count: 0, bounded: false, options, maxNodes, imageAssets: staticImageLookup(options) };
+  const state: WalkState = { count: 0, bounded: false, insideLink: false, options, maxNodes, imageAssets: staticImageLookup(options) };
   // Render a run of bare concept-link paragraphs inline as one "verb → target" edge list (authors
   // write one edge per line, so merge the consecutive run). Non-bare paragraphs and inline links
   // render normally through renderNode.
