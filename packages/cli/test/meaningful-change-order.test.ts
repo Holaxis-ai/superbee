@@ -40,7 +40,7 @@ for (const edition of ["0.1", "0.2"] as const) {
             cwd: scratch,
             env: { ...process.env, TZ: zone, HOME: userDir, USERPROFILE: userDir,
               LOCALAPPDATA: path.join(userDir, "AppData", "Local"), APPDATA: path.join(userDir, "AppData", "Roaming"),
-              SUPERBEE_NO_UPDATE_CHECK: "1", AGENTSTATE_LITE_NO_AUTOPULL: "1" },
+              SUPERBEE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" },
             encoding: "utf8", timeout: 15_000, windowsHide: true,
           });
           assert.ifError(result.error);
@@ -83,7 +83,7 @@ test("list and home break same-millisecond ties by canonical ID in code-unit ord
         cwd: scratch,
         env: { ...process.env, HOME: userDir, USERPROFILE: userDir,
           LOCALAPPDATA: path.join(userDir, "AppData", "Local"), APPDATA: path.join(userDir, "AppData", "Roaming"),
-          SUPERBEE_NO_UPDATE_CHECK: "1", AGENTSTATE_LITE_NO_AUTOPULL: "1" },
+          SUPERBEE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" },
         encoding: "utf8", timeout: 15_000, windowsHide: true,
       });
       assert.ifError(result.error);

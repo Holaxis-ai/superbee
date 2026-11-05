@@ -60,8 +60,8 @@ function run(command: string, args: string[], cwd: string, env: NodeJS.ProcessEn
     cwd,
     env: {
       ...process.env,
-      ASLITE_NO_UPDATE_CHECK: "1",
-      AGENTSTATE_LITE_NO_AUTOPULL: "1",
+      SUPERBEE_NO_UPDATE_CHECK: "1",
+      SUPERBEE_NO_AUTOPULL: "1",
       ...env,
     },
     encoding: "utf8",

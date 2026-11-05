@@ -203,8 +203,8 @@ function startConcurrencyFixture(input: {
       ASLITE_TEST_MODE: input.mode,
       ASLITE_TEST_NOW: input.now,
       ASLITE_TEST_TOKEN: input.token,
-      ASLITE_NO_UPDATE_CHECK: "1",
-      AGENTSTATE_LITE_NO_AUTOPULL: "1",
+      SUPERBEE_NO_UPDATE_CHECK: "1",
+      SUPERBEE_NO_AUTOPULL: "1",
     },
     stdio: ["ignore", "ignore", "pipe", "ipc", "pipe"],
   });
@@ -835,7 +835,7 @@ test("home JSON and every exact suppressor bypass the orientation seam; default 
     await home(argv, { ...base, updateOrientation });
     assert.equal(calls, 1, argv.join(" "));
   }
-  for (const key of ["ASLITE_NO_UPDATE_CHECK", "NO_UPDATE_NOTIFIER", "CI"]) {
+  for (const key of ["ASLITE_NO_UPDATE_CHECK", "SUPERBEE_NO_UPDATE_CHECK", "NO_UPDATE_NOTIFIER", "CI"]) {
     await home([], {
       ...base,
       updateEnvironment: { [key]: "" },
@@ -876,7 +876,7 @@ test("built hidden route is silent, private, and invalid/no-authority invocation
           ...process.env,
           HOME: home,
           USERPROFILE: home,
-          AGENTSTATE_LITE_NO_AUTOPULL: "1",
+          SUPERBEE_NO_AUTOPULL: "1",
         },
         encoding: "utf8",
         timeout: 2_000,
@@ -887,7 +887,7 @@ test("built hidden route is silent, private, and invalid/no-authority invocation
       assert.equal(existsSync(credentialsDir(home)), false, argv.join(" "));
     }
     const help = spawnSync(process.execPath, [BUILT_CLI, "--help"], {
-      env: { ...process.env, ASLITE_NO_UPDATE_CHECK: "1" },
+      env: { ...process.env, SUPERBEE_NO_UPDATE_CHECK: "1" },
       encoding: "utf8",
     });
     assert.equal(help.status, 0);
@@ -912,8 +912,8 @@ test("built JSON and suppressed default routes perform zero update-state work", 
           ...process.env,
           HOME: home,
           USERPROFILE: home,
-          AGENTSTATE_LITE_NO_AUTOPULL: "1",
-          ASLITE_NO_UPDATE_CHECK: undefined,
+          SUPERBEE_NO_AUTOPULL: "1",
+          SUPERBEE_NO_UPDATE_CHECK: undefined,
           NO_UPDATE_NOTIFIER: undefined,
           CI: undefined,
         },

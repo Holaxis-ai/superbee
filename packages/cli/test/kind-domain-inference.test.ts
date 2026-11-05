@@ -72,7 +72,7 @@ test("built v0.2 kind draft/apply preserves stored workflow and logical progress
   const dir = await mkdtemp(path.join(tmpdir(), "sb-workflow-inference-"));
   const cli = fileURLToPath(new URL("../../superbee/dist/superbee.mjs", import.meta.url));
   const run = (args: string[]) => JSON.parse(execFileSync(process.execPath, [cli, ...args, "--dir", dir, "--json"], {
-    encoding: "utf8", env: { ...process.env, ASLITE_NO_UPDATE_CHECK: "1", AGENTSTATE_LITE_NO_AUTOPULL: "1" },
+    encoding: "utf8", env: { ...process.env, SUPERBEE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" },
   }));
   try {
     await initBundle(dir, { okfVersion: "0.2" });

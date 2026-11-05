@@ -43,7 +43,7 @@ function spawnLinkChild(root: string, target: string): ChildHarness {
     ["--import", pathToFileURL(LOADER).href, LINK_CHILD, root, target],
     {
     stdio: ["ignore", "pipe", "pipe", "ipc"],
-    env: { ...process.env, AGENTSTATE_LITE_NO_AUTOPULL: "1" },
+    env: { ...process.env, SUPERBEE_NO_AUTOPULL: "1" },
     },
   );
   let resultSeen = false;

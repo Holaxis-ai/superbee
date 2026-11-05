@@ -34,7 +34,7 @@ function run(
 ): Promise<RunResult> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    AGENTSTATE_LITE_NO_AUTOPULL: "1",
+    SUPERBEE_NO_AUTOPULL: "1",
     AGENTSTATE_LITE_REMOTE: legacyRemote ?? undefined,
   };
   if (legacyRemote === null) delete env.AGENTSTATE_LITE_REMOTE;

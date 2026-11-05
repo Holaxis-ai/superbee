@@ -281,7 +281,7 @@ test("literal PATH `aslite mcp` reports the selected CLI release and never rewri
   await initBundle(root);
   const env = isolatedUserEnv(home, {
     PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-    ASLITE_NO_UPDATE_CHECK: "1",
+    SUPERBEE_NO_UPDATE_CHECK: "1",
   });
   const selected = spawn(
     "aslite",

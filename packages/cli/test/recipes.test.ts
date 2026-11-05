@@ -3447,7 +3447,7 @@ test("recipe add actor: built CLI resolves flag over canonical and legacy enviro
   const loaded = await resolveRecipe(EXAMPLE_RECIPE_FIXTURE);
   assert.ok(loaded.ok);
   const cli = path.resolve(import.meta.dirname, "../../superbee/dist/superbee.mjs");
-  const baseEnv = { ...process.env, ASLITE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" };
+  const baseEnv = { ...process.env, SUPERBEE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" };
   delete baseEnv.SUPERBEE_ACTOR;
   delete baseEnv.AGENTSTATE_LITE_ACTOR;
   for (const [env, flags, expected] of [
@@ -3477,7 +3477,7 @@ test("recipe add actor: built CLI resolves flag over canonical and legacy enviro
 
 test("recipe add actor: blank flag or environment and invalid v0.2 identity refuse without writes; v0.1 keeps free-form attribution", async () => {
   const cli = path.resolve(import.meta.dirname, "../../superbee/dist/superbee.mjs");
-  const baseEnv = { ...process.env, ASLITE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" };
+  const baseEnv = { ...process.env, SUPERBEE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" };
   delete baseEnv.SUPERBEE_ACTOR;
   delete baseEnv.AGENTSTATE_LITE_ACTOR;
   for (const [env, flags] of [

@@ -881,7 +881,7 @@ test("hook install wires `session-start` into all three runtimes; status/uninsta
         LOCALAPPDATA: path.join(base, "AppData", "Local"),
         APPDATA: path.join(base, "AppData", "Roaming"),
         PATH: "/usr/bin:/bin",
-        AGENTSTATE_LITE_NO_AUTOPULL: "1",
+        SUPERBEE_NO_AUTOPULL: "1",
       },
       encoding: "utf8",
       },

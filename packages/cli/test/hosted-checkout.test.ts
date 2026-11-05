@@ -606,7 +606,7 @@ test("built CLI: checkout is registered, and a refused command in a checkout is 
   const h = await harness();
   await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
   const folder = path.join(h.cwd, "team");
-  const env = isolatedUserEnv(h.home, { ASLITE_NO_UPDATE_CHECK: "1" });
+  const env = isolatedUserEnv(h.home, { SUPERBEE_NO_UPDATE_CHECK: "1" });
   const runCli = (argv: string[]) =>
     new Promise<{ status: number | null; stdout: string }>((resolve) => {
       const proc = spawn(process.execPath, [cli, ...argv], { env, cwd: h.cwd, stdio: ["ignore", "pipe", "pipe"] });
