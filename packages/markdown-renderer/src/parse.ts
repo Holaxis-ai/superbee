@@ -23,7 +23,7 @@ export const MAX_LINE_NESTING = 64;
 export const MAX_LINE_PREFIX = 512;
 
 /** One block quote, list or footnote marker at the current position of a line. */
-const CONTAINER_MARKER = />|[-+*](?=[ \t]|$)|\d{1,9}[.)](?=[ \t]|$)|\[\^[^\]\s]+\]:/my;
+const CONTAINER_MARKER = />|[-+*](?=[ \t]|$)|\d{1,9}[.)](?=[ \t]|$)|\[\^[^[\]\s]+\]:/my;
 
 function withinParseLimits(source: string): boolean {
   let emphasisSum = 0, score = 0, block = 0, emphasis = 0, pipes = 0, markers = 0, tables = 0;
