@@ -35,14 +35,15 @@ interactive and static entrypoints:
 
 Only `https:` can ever be admitted: `http:`, `javascript:`, `data:`, other schemes, and
 relative, scheme-less or unparsable targets stay inert under every policy. Images and raw HTML
-are unaffected, and so are reference-style links such as `[text][ref]`, which render as text. The
+are unaffected, and so are reference-style links such as `[text][ref]` and links in footnotes,
+which render as text. A link inside another link, or a link with no words, also stays inert. The
 anchor carries the parsed URL's canonical serialization, never the raw Markdown string, with
 `rel="noopener noreferrer"`, `target="_blank"` and the `doc-link-external` class. Concept links
 resolve first; the policy sees only targets the resolver rejects.
 
 Set the policy in trusted host code. Never read it from a document, Kind, recipe, View manifest,
 bundle record or tool argument. `renderDocumentToStaticHtml` takes no options, because it is the
-adapter behind a View's `render-document`, and Views stay link-free.
+adapter behind a View's `render-document`, and Views stay link-free. A host's sealed room is the one exception: its host list comes from content that host validated and sealed.
 
 Body, node and depth limits bound presentation; the host must show
 the returned `bounded` state rather than imply the entire document was rendered.

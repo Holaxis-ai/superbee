@@ -296,6 +296,7 @@ interface WalkState {
   options: RenderOptions;
   imageAssets: ReadonlyMap<string, string>;
   maxNodes: number;
+  insideLink: boolean;
 }
 
 function renderChildren(node: Parent, state: WalkState, depth: number): ReactNode[] {
@@ -395,9 +396,14 @@ function renderNode(node: RootContent | Node, state: WalkState, depth: number, i
       // targets it rejects, so a concept link can never be rerouted off the bundle.
       const raw = (node as { url?: string }).url ?? "";
       const resolved = renderableConceptId(state.options.fromId, raw);
+      const insideLink = state.insideLink;
+      state.insideLink = true;
       const children = renderChildren(node as Parent, state, depth);
+      state.insideLink = insideLink;
       if (resolved === null) {
-        const external = admitExternalLink(raw, state.options.externalLinks);
+        // A browser can't nest anchors, and an anchor with no words is a stop with no name.
+        const hasContent = /\S/.test(textOf(node)) || (node as Parent).children.some((child) => child.type === "image");
+        const external = insideLink || !hasContent ? null : admitExternalLink(raw, state.options.externalLinks);
         if (external !== null) {
           return (
             <a key={index} href={external} rel="noopener noreferrer" target="_blank" className="doc-link-external">
@@ -544,7 +550,7 @@ export function renderMarkdown(body: string, options: RenderOptions): RenderedMa
     extensions: [gfm()],
     mdastExtensions: [gfmFromMarkdown()],
   });
-  const state: WalkState = { count: 0, bounded: false, options, maxNodes, imageAssets: staticImageLookup(options) };
+  const state: WalkState = { count: 0, bounded: false, insideLink: false, options, maxNodes, imageAssets: staticImageLookup(options) };
   // Render a run of bare concept-link paragraphs inline as one "verb → target" edge list (authors
   // write one edge per line, so merge the consecutive run). Non-bare paragraphs and inline links
   // render normally through renderNode.

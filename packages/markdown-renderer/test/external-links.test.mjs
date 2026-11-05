@@ -329,3 +329,20 @@ test("every existing caller's output is byte-identical with no policy", () => {
   assert.equal(interactive(NO_POLICY_BODY, undefined).html, NO_POLICY_INTERACTIVE);
   assert.equal(interactive(NO_POLICY_BODY, "none").html, NO_POLICY_INTERACTIVE);
 });
+
+test("a link inside a link never yields nested anchors", () => {
+  for (const md of ["[<https://a.example/>](https://b.example/)", "See [<https://a.example/>](other.md) now"]) {
+    const { html } = renderMarkdownToStaticHtml(md, { fromId: "x", externalLinks: "https" });
+    assert.ok((html.match(/<a[\s>]/g) ?? []).length <= 1, html);
+    assert.doesNotMatch(html, /data-aslite-doc-id="[^"]*"><a /, html);
+  }
+});
+
+test("a link with no words stays inert, and an image link keeps its anchor", () => {
+  for (const md of ["[](https://example.com/a)", "[ ](https://example.com/b)"]) {
+    const { html } = renderMarkdownToStaticHtml(md, { fromId: "x", externalLinks: "https" });
+    assert.doesNotMatch(html, /<a[\s>]/, md);
+  }
+  const { html } = renderMarkdownToStaticHtml("[![alt](i.png)](https://example.com/c)", { fromId: "x", externalLinks: "https" });
+  assert.match(html, /<a [^>]*href="https:\/\/example\.com\/c"/);
+});
