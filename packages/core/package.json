@@ -271,7 +271,7 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "node --test --import ./test/ts-loader.mjs ./test/*.test.ts",
-    "mutation": "node --test --import ./test/ts-loader.mjs ./test/source-egress.test.ts ./test/search-boundary.test.ts ./test/links-performance.test.ts && stryker run",
+    "mutation": "node --test --import ./test/ts-loader.mjs ./test/source-egress.test.ts ./test/search-boundary.test.ts ./test/performance.test.ts ./test/filesystem-identity-boundary.test.ts ./test/import-direction.test.ts && stryker run",
     "prepublishOnly": "node -e \"console.error('@superbee/core is released by .github/workflows/release-libraries.yml; do not run npm publish here'); process.exit(1)\""
   },
   "dependencies": {

@@ -3,18 +3,16 @@
  * exports exactly the allowlisted names from the storage modules, the adapter class has exactly
  * the contract shape with no statics, the filesystem is reachable only from the identity and lock
  * modules, and none of the three runtime modules reads the environment. N3 (the packed package)
- * lives in `scripts/package-core-external-proof.test.mjs`.
+ * lives in `scripts/package-core-external-proof.test.mjs`. Runtime class and projection assertions
+ * live in `filesystem-identity-runtime.test.ts` so mutation instrumentation still exercises them.
  */
 import assert from "node:assert/strict";
-import { readdir, readFile, mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
-
-import { FilesystemBackend, probeFilesystemPath } from "../src/backend.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SOURCE_ROOT = path.resolve(here, "..", "src");
@@ -160,36 +158,6 @@ test("N1: index.ts exports exactly the allowlisted names from the storage module
 });
 
 // ── N2: structural class shape ────────────────────────────────────────────────
-
-test("N2: FilesystemBackend retains one required constructor argument, the contract prototype, and no statics", () => {
-  assert.equal(FilesystemBackend.length, 1);
-  assert.deepEqual(Object.getOwnPropertyNames(FilesystemBackend.prototype).sort(), [
-    "capabilities",
-    "classifyChangedPath",
-    "constructor",
-    "delete",
-    "deleteBlob",
-    "exists",
-    "existsBlob",
-    "inventoryGuard",
-    "list",
-    "listBlobs",
-    "read",
-    "readBlob",
-    "readMany",
-    "readReserved",
-    "versions",
-    "write",
-    "writeBlob",
-    "writeReserved",
-  ]);
-  assert.deepEqual(Object.getOwnPropertyNames(FilesystemBackend).sort(), ["length", "name", "prototype"]);
-  assert.deepEqual(Object.getOwnPropertySymbols(FilesystemBackend), []);
-  assert.deepEqual(Object.getOwnPropertySymbols(FilesystemBackend.prototype), []);
-  assert.equal(Object.getPrototypeOf(FilesystemBackend), Function.prototype, "no base class carries hidden members");
-  const instance = new FilesystemBackend("/nonexistent");
-  assert.deepEqual(Object.getOwnPropertyNames(instance), [], "state is private, not an own property");
-});
 
 test("N2: FilesystemMutationLockOptions has only bounded lock options and trusted host policy", async () => {
   const lock = await parse("filesystem-lock.ts");
@@ -468,19 +436,4 @@ test("N4: the boundary scanner recognizes every process.env access form", () => 
     ts.ScriptKind.TS,
   );
   assert.deepEqual(processEnvAccesses(source), [1, 2, 3]);
-});
-
-
-test("N1: metadata-only projection probe preserves absence, rejects unsafe keys and creates no paths", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "projection-probe-")), root = path.join(directory, "absent");
-  try {
-    const backend = new FilesystemBackend(root);
-    assert.equal(await probeFilesystemPath(backend, "nested/a.bin"), "absent");
-    await assert.rejects(probeFilesystemPath(backend, "../escape.bin"));
-    assert.deepEqual(await readdir(directory), []);
-    await mkdir(root); await writeFile(path.join(root, "a.bin"), "opaque bytes");
-    assert.equal(await probeFilesystemPath(backend, "a.bin"), "exact");
-    assert.equal(await readFile(path.join(root, "a.bin"), "utf8"), "opaque bytes");
-    assert.deepEqual(await readdir(root), ["a.bin"]);
-  } finally { await rm(directory, { recursive: true, force: true }); }
 });

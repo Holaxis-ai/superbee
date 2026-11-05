@@ -86,12 +86,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Identify mutation execution inputs
-        id: cache
-        env:
-          PARTITION: ${{ matrix.id }}
-        run: echo "key=stryker-v2-$PARTITION-$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
-
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.22.1
@@ -106,7 +100,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: packages/${{ matrix.package }}/reports/stryker-incremental.json
-          key: ${{ steps.cache.outputs.key }}
+          key: stryker-v2-${{ matrix.id }}-${{ github.sha }}
 
       - name: Run Stryker
         # Core's mutation script first checks pristine source egress, before instrumentation
@@ -134,6 +128,7 @@ jobs:
               echo "no mutation report was written — see the Run Stryker step"
             fi
             echo '```'
+            echo 'NoCoverage can reflect runner collection limitations, including built CLI subprocesses. It does not by itself establish a missing behavioral test.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload report artifact
@@ -149,4 +144,4 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: packages/${{ matrix.package }}/reports/stryker-incremental.json
-          key: ${{ steps.cache.outputs.key }}
+          key: stryker-v2-${{ matrix.id }}-${{ github.sha }}

@@ -63,17 +63,12 @@ test("CLI mutation jobs cover every configured source exactly once and keep over
   assert.throws(() => mutationPlan("unknown"), /Unknown mutation target/);
 });
 
-test("mutation cache identity is captured before build and reused only for successful identical inputs", () => {
+test("mutation caches cannot cross source revisions or target partitions", () => {
   const workflow = yaml.safeLoad(readFileSync(path.join(root, ".github/workflows/mutation-tests.yml"), "utf8"));
   const steps = workflow.jobs.mutate.steps;
-  const identity = steps.findIndex((step) => step.id === "cache");
-  assert.ok(identity > steps.findIndex((step) => step.uses?.startsWith("actions/checkout@")));
-  assert.ok(identity < steps.findIndex((step) => step.run === "npm ci"));
-  assert.equal(steps[identity].env.PARTITION, "${{ matrix.id }}");
-  assert.match(steps[identity].run, /git rev-parse HEAD\^\{tree\}/, "the complete tracked execution tree defines compatibility");
   for (const name of ["Restore incremental state", "Save incremental state"]) {
     const step = steps.find((step) => step.name === name);
-    assert.equal(step.with.key, "${{ steps.cache.outputs.key }}");
+    assert.equal(step.with.key, "stryker-v2-${{ matrix.id }}-${{ github.sha }}");
     assert.equal(step.with["restore-keys"], undefined);
   }
   assert.equal(steps.find((step) => step.name === "Save incremental state").if, "success()");
@@ -81,7 +76,7 @@ test("mutation cache identity is captured before build and reused only for succe
 
 test("Core mutation checks pristine source policies and timing before behavioral TAP tests", async () => {
   const core = JSON.parse(readFileSync(path.join(root, "packages/core/package.json"), "utf8"));
-  assert.equal(core.scripts.mutation, "node --test --import ./test/ts-loader.mjs ./test/source-egress.test.ts ./test/search-boundary.test.ts ./test/links-performance.test.ts && stryker run");
+  assert.equal(core.scripts.mutation, "node --test --import ./test/ts-loader.mjs ./test/source-egress.test.ts ./test/search-boundary.test.ts ./test/performance.test.ts ./test/filesystem-identity-boundary.test.ts ./test/import-direction.test.ts && stryker run");
   assert.equal(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).scripts["mutation:core"], "npm run mutation -w @superbee/core");
   assert.match(core.scripts.test, /\.\/test\/\*\.test\.ts$/, "ordinary tests still include the pristine fence");
   const config = JSON.parse(readFileSync(path.join(root, "packages/core/stryker.config.json"), "utf8"));
@@ -90,7 +85,7 @@ test("Core mutation checks pristine source policies and timing before behavioral
   const cwd = path.join(root, "packages/core");
   const all = await glob("test/*.test.ts", { cwd });
   const instrumented = await glob(config.tap.testFiles, { cwd });
-  assert.deepEqual(all.filter((file) => !instrumented.includes(file)).sort(), ["test/links-performance.test.ts", "test/search-boundary.test.ts", "test/source-egress.test.ts"]);
+  assert.deepEqual(all.filter((file) => !instrumented.includes(file)).sort(), ["test/filesystem-identity-boundary.test.ts", "test/import-direction.test.ts", "test/performance.test.ts", "test/search-boundary.test.ts", "test/source-egress.test.ts"]);
   assert.deepEqual(instrumented.filter((file) => !all.includes(file)), []);
 });
 test("CLI mutation keeps source policies pristine and all runtime files instrumented", async () => {
