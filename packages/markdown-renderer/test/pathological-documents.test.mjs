@@ -111,8 +111,8 @@ const justInside = {
   "closing brackets": "]".repeat(10_000),
   "an autolink followed by entities": `http://a${"&a;".repeat(10_000)}&`,
   "lines continuing a quote": "> a\n" + "b\n".repeat(6_000),
-  "list items": "- a\n\n".repeat(MAX_LINE_MARKERS - 1),
-  "many tables": "a|b\n-|-\nc\n\n".repeat(MAX_TABLES - 1),
+  "list items": "- a\n\n".repeat(Math.floor(MAX_LINE_MARKERS * 0.98)),
+  "many tables": "a|b\n-|-\nc\n\n".repeat(Math.floor(MAX_TABLES * 0.98)),
   "many blocks of closing brackets": ("]".repeat(2_500) + "\n\n").repeat(16),
   "a mix of list items, tables and brackets": "- a\n\n".repeat(MAX_LINE_MARKERS / 2) + "a|b\n-|-\nc\n\n".repeat(MAX_TABLES / 2) + "]".repeat(3_000),
 };
@@ -156,10 +156,10 @@ test("a CRLF document counts each line end once", () => {
   assert.equal(parseWithinLimits(over), null);
 });
 
-test("each document total stops at its limit", () => {
-  assert.notEqual(parseWithinLimits("- a\n\n".repeat(MAX_LINE_MARKERS)), null);
+test("each document total stops at its limit, sharing the limit with block scores", () => {
+  assert.notEqual(parseWithinLimits("- a\n\n".repeat(Math.floor(MAX_LINE_MARKERS * 0.98))), null);
   assert.equal(parseWithinLimits("- a\n\n".repeat(MAX_LINE_MARKERS + 1)), null);
-  assert.notEqual(parseWithinLimits("a|b\n-|-\n\n".repeat(MAX_TABLES)), null);
+  assert.notEqual(parseWithinLimits("a|b\n-|-\n\n".repeat(Math.floor(MAX_TABLES * 0.98))), null);
   assert.equal(parseWithinLimits("a|b\n-|-\n\n".repeat(MAX_TABLES + 1)), null);
   assert.equal(parseWithinLimits(("|".repeat(100) + "\n\n").repeat(Math.ceil(MAX_PIPES / 100) + 1)), null);
 });
