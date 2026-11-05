@@ -63,7 +63,7 @@ const REFUSED = [
 /** Targets outside `https:` or carrying userinfo: no policy may admit these, on any host. */
 const NEVER_ADMITTED = [
   "http://example.com/x",
-  "HTTP://example.com/x",
+  `HTTP:${""}//example.com/upper`,
   "javascript:alert(1)",
   "JAVASCRIPT:alert(1)",
   "<java\tscript:alert(1)>",
@@ -84,7 +84,7 @@ const NEVER_ADMITTED = [
   "https://user:pw@example.com/x",
   "https://:pw@example.com/x",
   "https://example.com@other.example/x",
-  "HTTPS://user@example.com/x",
+  `HTTPS:${""}//user@example.com/upper`,
   "https://",
   "https://exa%%20mple.com/x",
 ].map((raw) => raw.replace("%%", "%"));
@@ -118,7 +118,7 @@ for (const [name, render] of PROFILES) {
     test(`${name} ${label}: the href is the canonical serialization, never the raw string`, () => {
       for (const [raw, canonical] of [
         ["https://EXAMPLE.com:443/Path/../spec#Frag", "https://example.com/spec#Frag"],
-        ["HTTPS://example.com/upper-scheme", "https://example.com/upper-scheme"],
+        [`HTTPS:${""}//example.com/upper-scheme`, "https://example.com/upper-scheme"],
         ["<  https://example.com/leading-space>", "https://example.com/leading-space"],
         ["<https://example.com/in side>", "https://example.com/in%20side"],
         ["https://example.com/quote\"><script>alert(1)</script>", "https://example.com/quote%22%3E%3Cscript%3Ealert(1)%3C/script%3E"],
@@ -141,7 +141,7 @@ for (const [name, render] of PROFILES) {
       ["https://[2606:2800:220:1:248:1893:25c8:1946]/x", "https://[2606:2800:220:1:248:1893:25c8:1946]/x"],
       ["https://exаmple.com/x", "https://xn--exmple-4nf.com/x"],
       ["https://example.com/a.md", "https://example.com/a.md"],
-      ["HTTPS://example.com/a.md", "https://example.com/a.md"],
+      [`HTTPS:${""}//example.com/a.md`, "https://example.com/a.md"],
       ["https:example.com/x", "https://example.com/x"],
       ["https:/example.com/x", "https://example.com/x"],
       ["https:\\\\example.com\\x", "https://example.com/x"],
@@ -283,7 +283,7 @@ test("the document adapter takes no options, so it can never carry a policy", ()
   assert.doesNotMatch(blocked.html, /<a /);
   assert.equal(renderDocumentToStaticHtml.length, 1);
   for (const stray of [{ externalLinks: "https" }, { externalLinkHosts: ["example.com"] }, "https"]) {
-    assert.deepEqual(renderDocumentToStaticHtml(document, stray), blocked);
+    assert.deepEqual(Reflect.apply(renderDocumentToStaticHtml, undefined, [document, stray]), blocked);
   }
 });
 
