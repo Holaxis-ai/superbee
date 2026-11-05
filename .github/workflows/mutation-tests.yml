@@ -21,10 +21,12 @@ name: Mutation tests
 # taxonomy, mutation/attribution policy, bundle resolution, the sync family, the outcome table)
 # — a whole-CLI run exceeds this job's 300-minute ceiling and produces no report at all. To
 # measure anything outside the curated set, dispatch with the `mutate` glob input (it overrides
-# the config list for that run). Core mutates its whole src (a full run fits comfortably).
+# the config list for that run). Core mutates its whole src. Scheduled CLI jobs partition the configured source files,
+# each retaining the complete behavioral suite, so one serial campaign cannot consume
+# the job ceiling before producing any report.
 #
-# The incremental file is cached per package so scheduled runs only re-test what changed;
-# a monthly-ish `force: true` dispatch is the recommended drift flush.
+# Incremental results are reused only for identical execution inputs and the same source partition.
+# Changed source, tests, dependencies, scripts or workflow require fresh results.
 on:
   schedule:
     - cron: "17 5 * * 1" # weekly, Monday 05:17 UTC
@@ -63,27 +65,24 @@ jobs:
     outputs:
       matrix: ${{ steps.pick.outputs.matrix }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
       - id: pick
         env:
           TARGET: ${{ inputs.target }}
+          MUTATE: ${{ inputs.mutate }}
         run: |
-          core='{"package":"core","workspace":"@superbee/core"}'
-          cli='{"package":"cli","workspace":"@superbee/cli"}'
-          boardgit='{"package":"board-git","workspace":"@superbee/board-git"}'
-          case "${TARGET:-both}" in
-            core) include="$core" ;;
-            cli) include="$cli" ;;
-            board-git) include="$boardgit" ;;
-            *) include="$core,$cli,$boardgit" ;;
-          esac
-          echo "matrix={\"include\":[$include]}" >> "$GITHUB_OUTPUT"
+          matrix=$(node scripts/mutation-plan.mjs)
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
 
   mutate:
     needs: plan
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
-    name: mutation (${{ matrix.package }})
+    name: mutation (${{ matrix.id }})
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
@@ -103,9 +102,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: packages/${{ matrix.package }}/reports/stryker-incremental.json
-          key: stryker-incremental-${{ matrix.package }}-${{ github.sha }}
-          restore-keys: |
-            stryker-incremental-${{ matrix.package }}-
+          key: stryker-v2-${{ matrix.id }}-${{ github.sha }}
 
       - name: Run Stryker
         # Core's mutation script first checks pristine source egress, before instrumentation
@@ -115,14 +112,16 @@ jobs:
         # The dispatch input rides an env var, quoted in shell — never templated into the
         # script — so a hostile input value cannot inject commands.
         env:
-          MUTATE: ${{ inputs.mutate }}
+          MUTATE: ${{ matrix.mutate }}
         run: npm run mutation -w ${{ matrix.workspace }} -- --incremental ${MUTATE:+--mutate "$MUTATE"}
 
       - name: Survivors to job summary
         if: always()
+        env:
+          MUTATION_TARGET: ${{ matrix.mutate }}
         run: |
           {
-            echo "## Mutation survivors (${{ matrix.package }})"
+            echo "## Mutation survivors (${{ matrix.id }}, $MUTATION_TARGET)"
             echo '```'
             report="packages/${{ matrix.package }}/reports/mutation/mutation.json"
             if [ -f "$report" ]; then
@@ -131,19 +130,20 @@ jobs:
               echo "no mutation report was written — see the Run Stryker step"
             fi
             echo '```'
+            echo 'NoCoverage can reflect runner collection limitations, including built CLI subprocesses. It does not by itself establish a missing behavioral test.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload report artifact
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: mutation-report-${{ matrix.package }}-${{ github.run_id }}
+          name: mutation-report-${{ matrix.id }}-${{ github.run_id }}
           path: packages/${{ matrix.package }}/reports/mutation/
           if-no-files-found: ignore
 
       - name: Save incremental state
-        if: always()
+        if: success()
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: packages/${{ matrix.package }}/reports/stryker-incremental.json
-          key: stryker-incremental-${{ matrix.package }}-${{ github.sha }}
+          key: stryker-v2-${{ matrix.id }}-${{ github.sha }}

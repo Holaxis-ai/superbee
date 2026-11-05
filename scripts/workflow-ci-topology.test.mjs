@@ -19,28 +19,64 @@ test("mutation workflow selects the package that owns each mutation script", (t)
   t.after(() => rmSync(outputDir, { recursive: true, force: true }));
   const mutationWorkflow = yaml.safeLoad(readFileSync(path.join(root, ".github/workflows/mutation-tests.yml"), "utf8"));
   const select = mutationWorkflow.jobs.plan.steps.find((step) => step.id === "pick").run;
+  assert.match(select, /node scripts\/mutation-plan\.mjs/);
   for (const target of ["both", "core", "cli", "board-git", ""]) {
     const outputFile = path.join(outputDir, `${target || "default"}.output`);
-    const result = spawnSync("bash", ["-c", select], {
-      env: { ...process.env, TARGET: target, GITHUB_OUTPUT: outputFile },
+    const result = spawnSync("bash", ["-e", "-c", select], {
+      cwd: root,
+      env: { ...process.env, TARGET: target, MUTATE: "", GITHUB_OUTPUT: outputFile },
       encoding: "utf8",
     });
     assert.equal(result.status, 0, result.stderr);
     const matrix = JSON.parse(readFileSync(outputFile, "utf8").trim().replace(/^matrix=/, "")).include;
-    assert.deepEqual(matrix.map((row) => row.package), target === "both" || !target ? ["core", "cli", "board-git"] : [target]);
+    assert.deepEqual([...new Set(matrix.map((row) => row.package))], target === "both" || !target ? ["core", "cli", "board-git"] : [target]);
+    assert.equal(new Set(matrix.map((row) => row.id)).size, matrix.length);
     for (const row of matrix) {
       const owner = JSON.parse(readFileSync(path.join(root, "packages", row.package, "package.json"), "utf8"));
       assert.equal(row.workspace, owner.name);
       assert.equal(typeof owner.scripts.mutation, "string", `${row.workspace} must own a mutation script`);
     }
   }
-  assert.match(mutationWorkflow.jobs.mutate.steps.find((step) => step.name === "Run Stryker").run,
-    /^npm run mutation -w /, "the workflow must invoke the owning prerequisite chain");
+  const execution = mutationWorkflow.jobs.mutate.steps.find((step) => step.name === "Run Stryker");
+  assert.match(execution.run, /^npm run mutation -w /, "the workflow must invoke the owning prerequisite chain");
+  assert.equal(execution.env.MUTATE, "${{ matrix.mutate }}");
 });
 
-test("Core mutation checks pristine egress before running all behavioral TAP tests", async () => {
+test("CLI mutation jobs cover every configured source exactly once and keep override requests intact", async () => {
+  const { mutationPlan } = await import("./mutation-plan.mjs");
+  const { glob } = createRequire(import.meta.resolve("@stryker-mutator/tap-runner"))("glob");
+  const cwd = path.join(root, "packages/cli");
+  const config = JSON.parse(readFileSync(path.join(cwd, "stryker.config.json"), "utf8"));
+  const expected = (await glob(config.mutate, { cwd })).sort();
+  const rows = mutationPlan("cli").include;
+  assert.deepEqual(rows.map((row) => row.mutate).sort(), expected);
+  assert.equal(new Set(rows.map((row) => row.mutate)).size, expected.length);
+  assert.ok(rows.length > 1, "the CLI campaign must be divided before the job time ceiling");
+  const override = 'src/actor.ts; touch /tmp/mutation-input-must-remain-data';
+  for (const target of ["cli", "both"]) {
+    const selected = mutationPlan(target, override).include;
+    assert.equal(selected.length, target === "cli" ? 1 : 3);
+    assert.ok(selected.every((row) => row.mutate === override));
+  }
+  assert.notEqual(mutationPlan("cli", "src/actor.ts").include[0].id, mutationPlan("cli", "src/errors.ts").include[0].id);
+  assert.equal(mutationPlan("cli", "src/actor.ts").include[0].id, mutationPlan("cli", "src/actor.ts").include[0].id);
+  assert.throws(() => mutationPlan("unknown"), /Unknown mutation target/);
+});
+
+test("mutation caches cannot cross source revisions or target partitions", () => {
+  const workflow = yaml.safeLoad(readFileSync(path.join(root, ".github/workflows/mutation-tests.yml"), "utf8"));
+  const steps = workflow.jobs.mutate.steps;
+  for (const name of ["Restore incremental state", "Save incremental state"]) {
+    const step = steps.find((step) => step.name === name);
+    assert.equal(step.with.key, "stryker-v2-${{ matrix.id }}-${{ github.sha }}");
+    assert.equal(step.with["restore-keys"], undefined);
+  }
+  assert.equal(steps.find((step) => step.name === "Save incremental state").if, "success()");
+});
+
+test("Core mutation checks pristine source policies and timing before behavioral TAP tests", async () => {
   const core = JSON.parse(readFileSync(path.join(root, "packages/core/package.json"), "utf8"));
-  assert.equal(core.scripts.mutation, "node --test --import ./test/ts-loader.mjs ./test/source-egress.test.ts && stryker run");
+  assert.equal(core.scripts.mutation, "node --test --import ./test/ts-loader.mjs ./test/source-egress.test.ts ./test/search-boundary.test.ts ./test/performance.test.ts ./test/filesystem-identity-boundary.test.ts ./test/import-direction.test.ts && stryker run");
   assert.equal(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).scripts["mutation:core"], "npm run mutation -w @superbee/core");
   assert.match(core.scripts.test, /\.\/test\/\*\.test\.ts$/, "ordinary tests still include the pristine fence");
   const config = JSON.parse(readFileSync(path.join(root, "packages/core/stryker.config.json"), "utf8"));
@@ -49,7 +85,7 @@ test("Core mutation checks pristine egress before running all behavioral TAP tes
   const cwd = path.join(root, "packages/core");
   const all = await glob("test/*.test.ts", { cwd });
   const instrumented = await glob(config.tap.testFiles, { cwd });
-  assert.deepEqual(all.filter((file) => !instrumented.includes(file)), ["test/source-egress.test.ts"]);
+  assert.deepEqual(all.filter((file) => !instrumented.includes(file)).sort(), ["test/filesystem-identity-boundary.test.ts", "test/import-direction.test.ts", "test/performance.test.ts", "test/search-boundary.test.ts", "test/source-egress.test.ts"]);
   assert.deepEqual(instrumented.filter((file) => !all.includes(file)), []);
 });
 test("CLI mutation keeps source policies pristine and all runtime files instrumented", async () => {

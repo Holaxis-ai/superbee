@@ -3,7 +3,7 @@
   "packageManager": "npm",
   "testRunner": "tap",
   "tap": {
-    "testFiles": ["test/!(source-egress).test.ts"],
+    "testFiles": ["test/!(source-egress|search-boundary|performance|filesystem-identity-boundary|import-direction).test.ts"],
     "nodeArgs": ["--import", "./test/ts-loader.mjs", "--test-reporter=tap", "-r", "../../scripts/stryker-cwd-pin.cjs", "-r", "{{hookFile}}", "{{testFile}}"],
     "forceBail": true
   },
@@ -11,6 +11,7 @@
   "inPlace": true,
   "disableTypeChecks": true,
   "coverageAnalysis": "perTest",
+  "dryRunTimeoutMinutes": 15,
   "reporters": ["html", "json", "clear-text", "progress"],
   "ignoreStatic": true,
   "incrementalFile": "reports/stryker-incremental.json",

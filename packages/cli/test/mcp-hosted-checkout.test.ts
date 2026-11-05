@@ -20,7 +20,7 @@ import { decode } from "@toon-format/toon";
 
 import { addCatalogEntry, listCatalogEntries } from "../src/catalog.js";
 import { openBundle } from "../src/bundle.js";
-import { catalog } from "../src/commands/catalog.js";
+import { catalog, CATALOG_HOSTED_BUDGET_MS } from "../src/commands/catalog.js";
 import { checkout } from "../src/commands/checkout.js";
 import { mcp } from "../src/commands/mcp.js";
 import { status } from "../src/commands/status.js";
@@ -487,13 +487,29 @@ test("catalog list: signed out it lists the folders alone and asks no host; sign
   assert.equal(signedIn.requests.length, 0);
 });
 
-test("catalog list: a host that does not answer in time leaves the folders listed, with one note", async () => {
+test("catalog list: a host that does not answer in time leaves the folders listed, with one note", { timeout: 10_000 }, async (t) => {
   const c = await hostedCheckout();
   await seedHostedSession(c.home, { host: HOST, accessToken: TOKEN, expiresAtMs: Date.now() + 3_600_000 });
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  let requestStarted!: () => void;
+  const requested = new Promise<void>((resolve) => { requestStarted = resolve; });
+  let aborted = false;
   const hanging = (async (_input: unknown, init?: RequestInit) =>
-    new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason)))) as typeof fetch;
+    new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      assert.ok(signal, "the host request carries its deadline signal");
+      signal.addEventListener("abort", () => {
+        aborted = true;
+        reject(signal.reason);
+      });
+      requestStarted();
+    })) as typeof fetch;
   const started = Date.now();
-  const listed = await listCatalog(c, [], undefined, hanging);
+  const listing = listCatalog(c, [], undefined, hanging);
+  await requested;
+  t.mock.timers.tick(CATALOG_HOSTED_BUDGET_MS);
+  const listed = await listing;
+  assert.equal(aborted, true, "the request deadline aborts the hanging host");
   assert.ok(Date.now() - started < 4_500, "inside the 3-second budget");
   assert.equal((listed.entries as unknown[]).length, 1);
   assert.deepEqual(listed.hosted, []);
