@@ -295,8 +295,10 @@ make `publish` refuse (its preview counts `saved_copies`), or make turn end sync
 `discard` is the `--resolve` verb that leaves the document as it is, or `rm` of the copy when the
 person deleted the document. A copy is settled by `--resolve`, by removing its file (a body companion
 left behind is ignored), or when the document holds its content apart from engine stamps; the next
-full `sync` removes such a copy. A copy differing by a lost claim is not settled that way: `take`
-settles it. A repeat conflict on one document keeps every earlier copy, the new copy landing beside
+full `sync` removes such a copy. A lost claim race is settled the same way: a copy differing from the
+document only by the owner field its Kind declares, compared losslessly, is not listed, and the next
+full `sync` removes it and reports it once in `lost_claims_settled`, on its receipt or its new
+conflict's `details`. A copy differing in any other field, a state field included, stays listed. A repeat conflict on one document keeps every earlier copy, the new copy landing beside
 it, except that bytes matching a saved copy are that copy; a rebase that stops on one document more
 than once saves each stop's version, and racing processes saving a copy each keep theirs. Copies are
 kept per clone folder, so a known limit is that moving a clone leaves them under the old key,

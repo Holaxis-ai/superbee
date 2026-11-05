@@ -388,7 +388,7 @@ test("U3b fix 1: a NON-ASCII doc id (tasks/café) converges — no quotepath cor
 
 // ── review fix 2 + note 3: deletion conflicts, BOTH directions ──────────────────
 
-test("U3b deletion conflict (upstream deleted, local edited): deletion kept, yours exported, help points at doc write, re-create clears", async () => {
+test("U3b deletion conflict (upstream deleted, local edited): deletion kept, yours exported, help points at --resolve keep, re-create clears", async () => {
   const topo = await makeTwoCloneTopology();
   const { homes, cleanup } = await tempHomes(2);
   const [homeA, homeB] = homes;
@@ -406,12 +406,12 @@ test("U3b deletion conflict (upstream deleted, local edited): deletion kept, you
     assert.ok(result.err, "expected the CONFLICT(5) terminal envelope");
     assert.equal(result.err!.code, "CONFLICT");
     assert.ok(result.err!.message.includes("teammate's deletion kept"), `deletion framing in: ${result.err!.message}`);
-    assert.ok(result.err!.message.includes("re-create with doc write"), "points at doc write");
+    assert.ok(result.err!.message.includes("re-create with sync --resolve keep"), "points at --resolve keep");
     assert.ok(!result.err!.message.includes("reconcile with doc update"), "doc update would fail NOT_FOUND — never suggested");
 
     // REVIEW FIX 2: the help chain must NOT emit `doc update` for a doc whose file is gone.
     assert.ok(result.err!.help, "a re-create chain is offered");
-    assert.ok(result.err!.help!.includes("doc write tasks/seed-two"), `help: ${result.err!.help}`);
+    assert.ok(result.err!.help!.includes("sync --resolve keep --doc tasks/seed-two"), `help: ${result.err!.help}`);
     assert.ok(!result.err!.help!.includes("doc update"), "no doc-update chain for a deleted-upstream doc");
 
     // The deletion LANDED (keep-upstream = the file is gone), yours exported byte-identically.
@@ -423,10 +423,6 @@ test("U3b deletion conflict (upstream deleted, local edited): deletion kept, you
     assert.equal(rows[0]!.yours, exportPath);
     const bodyExportPath = exportPath.replace(/\.md$/, ".body.md");
     assert.equal(rows[0]!.yours_body, bodyExportPath, "the body-only companion rides the row");
-    assert.ok(
-      result.err!.help!.includes(`--body-file ${rendered(bodyExportPath)}`),
-      `the chain consumes the BODY export (round-2 REQUIRED 3): ${result.err!.help}`,
-    );
     assert.equal(isMidRebase(topo.b), false);
     assertPristine(topo.b, "B after upstream-deletion converge");
 

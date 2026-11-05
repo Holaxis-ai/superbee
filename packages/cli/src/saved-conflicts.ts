@@ -1,13 +1,15 @@
 // What is still unsettled among a Git board's saved conflict copies, derived each time from the
 // copies and the document as it stands. A copy whose content the document already carries, apart
-// from engine stamps, is settled however it got there. Everything else stays named until `--resolve`
-// or removing the file: any other difference is something the person wrote.
+// from engine stamps, is settled however it got there. So is a lost claim race: a copy that differs
+// from the document only by the owner field its kind declares holds nothing else of the person's.
+// Everything else stays named until `--resolve` or removing the file: any other difference, a state
+// field included, is something the person wrote.
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { conceptIdFromPath, parseMarkdown } from "@superbee/core";
 import { boardRefOf, isConceptDocPath, listSavedCopies, readDocBytesAtRef, type SavedCopy } from "@superbee/board-git";
 import { commandFragment, commandToken, type CommandPrefix, type CommandText } from "./command-text.js";
-import { ENGINE_STAMPED_FIELDS } from "./commands/sync/claim-conflict.js";
+import { ENGINE_STAMPED_FIELDS, loadClaimPolicy, recordedOwner, type ClaimPolicy } from "./commands/sync/claim-conflict.js";
 import { defaultSyncStore } from "./cursor.js";
 
 /** Frontmatter keys, engine stamps excluded, whose values differ between two parsed versions. */
@@ -21,21 +23,34 @@ export function decodesLosslessly(bytes: Buffer): boolean {
   return Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes);
 }
 
+/**
+ * The frontmatter of the document as it stands, and the fields a saved copy with the same body
+ * differs from it by, or null when the two cannot be compared as text or their bodies differ.
+ */
+function sameBodyDifference(relPath: string, copy: Buffer, current: Buffer): { fields: Record<string, unknown>; differs: string[] } | null {
+  if (!isConceptDocPath(relPath) || !decodesLosslessly(copy) || !decodesLosslessly(current)) return null;
+  try {
+    const saved = parseMarkdown(copy.toString("utf8"), relPath);
+    const now = parseMarkdown(current.toString("utf8"), relPath);
+    if (saved.body !== now.body) return null;
+    const fields = now.frontmatter as Record<string, unknown>;
+    return { fields, differs: differingFields(saved.frontmatter as Record<string, unknown>, fields, ENGINE_STAMPED_FIELDS) };
+  } catch {
+    return null;
+  }
+}
+
 /** True when the document as it stands holds everything the saved copy would add. */
 export function copyIsCarried(relPath: string, copy: Buffer, current: Buffer | null): boolean {
   if (current === null) return false;
   if (copy.equals(current)) return true;
-  if (!isConceptDocPath(relPath)) return false;
-  if (!decodesLosslessly(copy) || !decodesLosslessly(current)) return false;
-  let saved: ReturnType<typeof parseMarkdown>;
-  let now: ReturnType<typeof parseMarkdown>;
-  try {
-    saved = parseMarkdown(copy.toString("utf8"), relPath);
-    now = parseMarkdown(current.toString("utf8"), relPath);
-  } catch {
-    return false;
-  }
-  return saved.body === now.body && differingFields(saved.frontmatter as Record<string, unknown>, now.frontmatter as Record<string, unknown>, ENGINE_STAMPED_FIELDS).length === 0;
+  return sameBodyDifference(relPath, copy, current)?.differs.length === 0;
+}
+
+/** A lost claim race that a sync settled: the document, and who holds it now. */
+export interface SettledClaim {
+  id: string;
+  owner?: string;
 }
 
 /** The file's bytes, or null when it is absent. Any other failure is the caller's to report. */
@@ -66,9 +81,12 @@ export interface UnsettledConflict {
   unreadable?: boolean;
 }
 
-async function classify(boardPath: string, key: string): Promise<{ unsettled: UnsettledConflict[]; carried: SavedCopy[] }> {
+async function classify(boardPath: string, key: string): Promise<{ unsettled: UnsettledConflict[]; carried: SavedCopy[]; lostClaims: { copy: SavedCopy; claim: SettledClaim }[] }> {
   const byPath = new Map<string, UnsettledConflict>();
   const carried: SavedCopy[] = [];
+  const lostClaims: { copy: SavedCopy; claim: SettledClaim }[] = [];
+  // Loaded at most once, and only for a copy that differs by a field alone.
+  let policy: ClaimPolicy | undefined;
   for (const copy of listSavedCopies(defaultSyncStore.exportsDir(key))) {
     let discardWith: UnsettledConflict["discardWith"] = "remove";
     let unreadable = false;
@@ -81,6 +99,16 @@ async function classify(boardPath: string, key: string): Promise<{ unsettled: Un
         carried.push(copy);
         continue;
       }
+      const difference = current === null ? null : sameBodyDifference(copy.relPath, bytes, current);
+      if (difference?.differs.length === 1) {
+        policy ??= await loadClaimPolicy(boardPath);
+        const ownerField = policy.forType(difference.fields.type)?.ownerField;
+        if (difference.differs[0] === ownerField) {
+          const owner = recordedOwner(difference.fields, ownerField);
+          lostClaims.push({ copy, claim: { id: conceptIdFromPath(copy.relPath), ...(owner !== undefined ? { owner } : {}) } });
+          continue;
+        }
+      }
       const upstream = readDocBytesAtRef(boardPath, `refs/remotes/${boardRefOf(boardPath)}`, copy.relPath);
       discardWith = current === null ? (upstream === null ? "take" : "remove") : upstream === null || !current.equals(upstream) ? "revise" : "take";
     } catch {
@@ -91,7 +119,7 @@ async function classify(boardPath: string, key: string): Promise<{ unsettled: Un
     entry.copies.push(copy);
     byPath.set(copy.relPath, entry);
   }
-  return { unsettled: [...byPath.values()], carried };
+  return { unsettled: [...byPath.values()], carried, lostClaims };
 }
 
 /** The saved conflicts still to settle on this board: local state and the working tree only. */
@@ -100,15 +128,23 @@ export async function unsettledConflicts(boardPath: string, key: string): Promis
 }
 
 /**
- * Remove the copies the document already carries, so a later change to the document cannot make
- * one read as unsettled again. Only a full sync calls this, before it moves anything.
+ * Remove the copies with nothing left to lose, so a later change to the document cannot make one
+ * read as unsettled again, and return the lost claims among them for the run to report once. Only a
+ * full sync calls this, before it moves anything.
  */
-export async function removeCarriedCopies(boardPath: string, key: string): Promise<void> {
-  for (const copy of (await classify(boardPath, key)).carried) {
+export async function removeCarriedCopies(boardPath: string, key: string): Promise<SettledClaim[]> {
+  const { carried, lostClaims } = await classify(boardPath, key);
+  const settled = new Map<string, SettledClaim>();
+  for (const { copy, claim } of lostClaims) {
+    carried.push(copy);
+    settled.set(claim.id, claim);
+  }
+  for (const copy of carried) {
     // A copy that cannot be removed is judged again next time, which costs nothing.
     await rm(copy.file, { force: true }).catch(() => {});
     if (copy.bodyFile !== null) await rm(copy.bodyFile, { force: true }).catch(() => {});
   }
+  return [...settled.values()];
 }
 
 /** The command that shows one unsettled document's first copy. */
