@@ -1,6 +1,9 @@
 // `superbee publish --to hosted` against the fake `bundles.create.v1` host
 // (`support/fake-hosted-create.ts`, held to the golden exchanges captured from the real gateway by
 // `hosted-create-fake-contract.test.ts`). No request leaves the process.
+import { resolveBundleKey } from "@superbee/board-git";
+import { syncExportsDir, writeSyncState } from "../src/cursor.js";
+import { withIsolatedUserEnv } from "./support/user-env.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -598,6 +601,41 @@ test("an id the host's canonical spelling refuses blocks before any request; a j
   assert.deepEqual(rows.map((row) => row.reason), refused.map(() => "document_id_not_canonical"), JSON.stringify(rows));
   assert.deepEqual(new Set(rows.map((row) => row.path)), new Set(refused));
   assert.equal(fake.requests.length, 0);
+});
+
+test("a saved conflict copy alone does not block publish, and the preview counts it", async () => {
+  const h = await harness();
+  const project = path.join(h.cwd, "project");
+  const remote = path.join(h.cwd, "remote.git");
+  await mkdir(project);
+  git(h.cwd, ["init", "-q", "--bare", remote]);
+  git(project, ["init", "-q", "-b", "main"]);
+  await writeFile(path.join(project, ".gitignore"), ".superbee/\n");
+  git(project, ["add", ".gitignore"]);
+  git(project, ["commit", "-q", "-m", "project"]);
+  git(project, ["remote", "add", "origin", remote]);
+  const board = path.join(project, ".superbee");
+  git(project, ["worktree", "add", "-q", "--detach", board]);
+  git(board, ["checkout", "-q", "--orphan", "board"]);
+  git(board, ["rm", "-q", "-rf", "--ignore-unmatch", "."]);
+  await writeBundle(board);
+  git(board, ["add", "."]);
+  git(board, ["commit", "-q", "-m", "v1"]);
+  git(board, ["push", "-q", "-u", "origin", "board"]);
+  const canonical = await realpath(board);
+
+  await withIsolatedUserEnv(h.home, async () => {
+    const key = resolveBundleKey(canonical);
+    await writeSyncState(key, {}, h.home);
+    const copy = path.join(syncExportsDir(key, h.home), "notes", "old.md");
+    await mkdir(path.dirname(copy), { recursive: true });
+    await writeFile(copy, "---\ntype: Note\ntitle: Old\n---\nOld words.\n");
+    const preview = await run(h, ["--to", "hosted", "--dir", canonical, "--host", HOST], new FakeCreateHost());
+    assert.equal(preview.ready, true, JSON.stringify(preview.blockers));
+    const plan = preview.git as Record<string, unknown>;
+    assert.equal(plan.sync, "needs_decision");
+    assert.equal(plan.saved_copies, 1);
+  });
 });
 
 test("a Git board is published with its history, unbound, and its branch left as it was", async () => {

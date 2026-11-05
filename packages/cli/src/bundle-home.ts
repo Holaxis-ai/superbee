@@ -29,6 +29,7 @@ import {
   inTreeBehindCount,
   inTreeUnpushedCount,
   inTreeUpstreamSha,
+  resolveBundleKey,
   resolveInTreeUpstream,
   runGit,
   type BundleDirName,
@@ -36,6 +37,7 @@ import {
 
 import { bindingForPath, type CheckoutBinding } from "./hosted/binding.js";
 import { readCheckoutMarker, unboundCopyDetail, type CheckoutMarker } from "./hosted/marker.js";
+import { unsettledConflicts } from "./saved-conflicts.js";
 
 export type BundleHome = "local" | "git" | "hosted";
 
@@ -217,7 +219,9 @@ export async function lastFetch(top: string): Promise<string | null> {
 
 /**
  * The `sync` block `status` reports for a Git board, from local Git only (no fetch): what the next
- * `sync` would push (`ahead`, `uncommitted`) and what the last fetch saw upstream (`behind`).
+ * `sync` would push (`ahead`, `uncommitted`) and what the last fetch saw upstream (`behind`). A saved
+ * conflict still to settle reads as `needs_decision`, except that `behind` and `diverged` keep their
+ * names: `publish` refuses on those, and the conflict rows stay present beside them.
  */
 export async function gitBoardSyncBlock(board: GitBoardFacts): Promise<Record<string, unknown>> {
   const block: Record<string, unknown> = {
@@ -253,9 +257,16 @@ export async function gitBoardSyncBlock(board: GitBoardFacts): Promise<Record<st
           : (behind ?? 0) > 0
             ? "behind"
             : "clean";
+  const unsettled = board.channel === "branch" ? await unsettledConflicts(board.top, resolveBundleKey(board.top)).catch(() => []) : [];
+  if (unsettled.length > 0 && (block.state === "clean" || block.state === "unsent_changes")) block.state = "needs_decision";
   block.ahead = ahead;
   block.behind = behind;
   block.uncommitted = uncommitted;
+  if (unsettled.length > 0) {
+    block.conflicts = unsettled.length;
+    block.conflict_ids = unsettled.slice(0, 5).map((conflict) => conflict.id ?? conflict.relPath);
+    block.saved_copies = unsettled.reduce((total, conflict) => total + conflict.copies.length, 0);
+  }
   block.last_fetch = await lastFetch(board.top);
   return block;
 }

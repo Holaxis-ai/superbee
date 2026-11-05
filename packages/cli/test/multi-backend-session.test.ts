@@ -594,9 +594,23 @@ const STEPS: readonly Step[] = [
       const file = await readFile(path.join(folder(home), "notes", "alpha.md"), "utf8");
       const kept = home === "git" ? /Teammate's alpha\./.test(file) : /Alpha, edited in hosted/.test(file);
       if (!kept) return { failure: { invariant: "per-home starting state", detail: file }, output: output.join(""), network };
+      // The agent's edit is a title and the teammate's a body. A hosted keep sends the whole document;
+      // a Git board's keep writes only the body, so it refuses and the title is applied by hand.
+      if (home === "git") {
+        const refused = await cli(["sync", "--resolve", "keep", "--doc", "notes/alpha", "--dir", r.dirs[home]]);
+        output.push(refused.stdout, refused.stderr);
+        network.push(...refused.network);
+        if (refused.code !== 5) return { failure: { invariant: "keep refuses what it cannot carry (exit 5)", detail: `${refused.code}: ${refused.stdout}${refused.stderr}`.slice(0, 400) }, output: output.join(""), network };
+      }
+      const settle = home === "git"
+        ? [
+            ["doc", "update", "notes/alpha", "--title", "Alpha, edited in git", "--dir", r.dirs[home]],
+            ["sync", "--resolve", "revise", "--doc", "notes/alpha", "--dir", r.dirs[home]],
+          ]
+        : [["sync", "--resolve", "keep", "--doc", "notes/alpha", "--dir", r.dirs[home]]];
       for (const args of [
         ["sync", "--inspect", "--doc", "notes/alpha", "--dir", r.dirs[home], "--json"],
-        ["sync", "--resolve", "keep", "--doc", "notes/alpha", "--dir", r.dirs[home]],
+        ...settle,
       ]) {
         const run = await cli(args);
         output.push(run.stdout, run.stderr);

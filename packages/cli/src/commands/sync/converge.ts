@@ -425,6 +425,9 @@ export function toConflictRows(
   });
 }
 
+/** Only the person can say a merge is finished, so a merged document does not release its copy. */
+export const SAVED_COPIES_NOTE = "each saved copy stays listed until its file is removed or sync --resolve settles it: revise before your merge is pushed, take after, which then leaves the document unchanged";
+
 /**
  * The CONFLICT(5) terminal's envelope for a CONVERGED rebase. ONE landed probe and ONE analysis
  * per conflict feed the message lines, the rows, AND the help-chain pick. The bundle's own kind
@@ -443,7 +446,7 @@ export async function buildConvergeError(
   const rows = toConflictRows(conflicts, analyses);
   const help = pickHelp(inv, conflicts, analyses);
   return new CliError("CONFLICT", buildConvergeMessage(conflicts, analyses), {
-    details: { conflicts: cap(rows, limit) },
+    details: { conflicts: cap(rows, limit), saved_copies: SAVED_COPIES_NOTE },
     ...(help ? { help } : {}),
   });
 }

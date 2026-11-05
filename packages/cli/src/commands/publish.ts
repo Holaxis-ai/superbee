@@ -573,6 +573,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
         upstream: board.upstream,
         head: boardHead(board),
         sync: boardState?.block.state,
+        ...(boardState?.block.saved_copies ? { saved_copies: boardState.block.saved_copies, saved_copies_note: "saved conflict copies stay on this machine and do not block the move" } : {}),
         ...(boardState && ((boardState.block.ahead as number | null) ?? 0) + ((boardState.block.uncommitted as number | null) ?? 0) > 0
           ? { not_on_branch: { ahead: boardState.block.ahead, uncommitted: boardState.block.uncommitted, note: "unpushed commits reach the board branch with the moved-marker push (a board shared on origin); uncommitted changes travel to hosted only" } }
           : {}),

@@ -285,6 +285,36 @@ export over the document. Evidence: `packages/cli/test/hosted-sync-unstorable.te
 `packages/browser-local/test/pull-unstorable.test.ts` and
 `packages/cli/test/sync-git-conflict-verbs.test.ts`.
 
+A Git board's saved conflict copy stays reported until it is settled. The copies themselves are the
+record: there is no separate list. While one is unsettled, `status` reports `sync.state:
+needs_decision` (`behind` and `diverged` keep their names) with `sync.conflicts` and
+`sync.conflict_ids` and `sync.saved_copies`, `session-start` and `home` carry a `saved_conflicts` line, and `sync` and
+`--pull-only` list rows in `saved_conflicts` with `next` and a one-command `discard`, counting them in
+`conflicts`. Only a new conflict exits 5: a copy from an earlier run does not change the exit code,
+make `publish` refuse (its preview counts `saved_copies`), or make turn end sync or block. A
+`discard` is the `--resolve` verb that leaves the document as it is, or `rm` of the copy when the
+person deleted the document. A copy is settled by `--resolve`, by removing its file (a body companion
+left behind is ignored), or when the document holds its content apart from engine stamps; the next
+full `sync` removes such a copy. A copy differing by a lost claim is not settled that way: `take`
+settles it. A repeat conflict on one document keeps every earlier copy, the new copy landing beside
+it, except that bytes matching a saved copy are that copy; a rebase that stops on one document more
+than once saves each stop's version, and racing processes saving a copy each keep theirs. Copies are
+kept per clone folder, so a known limit is that moving a clone leaves them under the old key,
+unreported. `--inspect` and `--resolve` take a document's copies oldest first, name the rest in
+`later_copies`, and a `take` while a later copy waits leaves the document alone. `--resolve keep` exits
+5 with `details.frontmatter_differs` and nothing changed when the saved copy differs from the kept
+version in any frontmatter field other than engine stamps and lost-claim fields, because it writes
+only the body, and with `details.reason: unsent_edit` when the document holds a body that is neither
+upstream's nor the copy's. `--resolve revise` exits 5 while the document equals its upstream version
+and does not hold the copy, with no clock involved, so after a merge is pushed the copy settles with
+`take`, which then leaves the document unchanged. A `take` that would erase a document differing from
+upstream by more than engine stamps first saves it as a new copy, named in `unsent_edit_saved_at`,
+and `--inspect` then offers `revise` first. Text comparison needs a lossless decode on both sides, so
+bytes that decode the same are not treated as equal. A copy that cannot be compared, such as one whose
+upstream version is too large to read, never stops a sync: it stays listed with a `note` and only
+removal offered. Evidence: `packages/cli/test/sync-git-conflict-visible.test.ts` and
+`packages/board-git/test/saved-copies.test.ts`.
+
 In a local bundle or Git board, one unreadable document does not stop whole-bundle reads: `list`,
 `query`, `search`, `index generate`, `link list`, `link show`, `status`, `view list` and
 `kinds --coverage` skip and report it. `doc read`, `doc update` and `doc field` on that document fail

@@ -2,6 +2,7 @@
 // acceptance bar). ONE barrel: the CLI consumes the package root; module structure is internal.
 export * from "./errors.js";
 export * from "./porcelain.js";
+export * from "./saved-copies.js";
 export * from "./channel.js";
 export * from "./diff.js";
 export * from "./cursor.js";

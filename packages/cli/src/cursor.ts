@@ -75,9 +75,9 @@ export function syncStatePath(key: string, home: string = homedir()): string {
  * Deliberately OUTSIDE any worktree (the board worktree must end every sync pristine) and under
  * the same per-clone key discipline as the cursor/cache/marker state — exports for two different
  * bundles (or two clones of ONE bundle: each clone's conflicted local version is its own "yours")
- * can never collide. Stable per doc (no per-run timestamp): a re-conflict on the same doc
- * overwrites the export with the NEWER local version, which is what "yours" means at that point,
- * and nothing accumulates unboundedly. This module only names the path; the git layer creates it.
+ * can never collide. A re-conflict on the same doc keeps the earlier copy: the git layer saves the
+ * newer one beside it (`saved-copies.ts`), and settling a conflict removes its copy. This module
+ * only names the path.
  */
 export function syncExportsDir(key: string, home: string = homedir()): string {
   return storeForHome(home).exportsDir(key);

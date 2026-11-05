@@ -72,6 +72,7 @@ import {
 } from "@superbee/core";
 import { BoardGitError, classifyGitError, isBoardGitError, type GitFailure } from "./errors.js";
 import { normalizeGitLexicalPath } from "./git-path.js";
+import { saveCopyWithBody } from "./saved-copies.js";
 import {
   PRIVATE_STATE_MAX_RECORD_BYTES,
   privateStateFinding,
@@ -2169,7 +2170,8 @@ export type FetchRebaseResolvingOutcome =
    * Same-doc conflicts were RESOLVED by the converging mechanic (upstream kept, local exported)
    * and the rebase COMPLETED — the worktree is never left mid-state; non-conflicted local commits
    * landed on top of `origin/board`. One entry per conflicted file (deduped across rebase stops:
-   * a doc conflicting at several stops keeps its LAST export — the local FINAL content).
+   * a doc conflicting at several stops reports its LAST export, the local FINAL content, and every
+   * stop's version stays saved).
    */
   | { status: "resolved"; conflicts: ResolvedConflict[] }
   /**
@@ -2214,8 +2216,9 @@ const MAX_REBASE_STOPS = 1000;
  * never left mid-state on any path.
  *
  * Export files land at `<exportDir>/<relPath>` with the blob's exact bytes and a
- * `<relPath minus .md>.body.md` body-only companion for parseable concept docs. The companion is
- * the `doc update --body-file` input. Created 0700/0600; the caller passes a
+ * `<relPath minus .md>.body.md` body-only companion for parseable concept docs; a repeat conflict
+ * on a path with a saved copy lands beside it without replacing it (`saved-copies.ts`). The
+ * companion is the `doc update --body-file` input. Created 0700/0600; the caller passes a
  * per-bundle dir OUTSIDE the worktree (see cursor.ts `syncExportsDir`).
  */
 export function fetchRebaseResolving(boardPath: string, exportDir: string): FetchRebaseResolvingOutcome {
@@ -2267,28 +2270,7 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
         let bodyExportPath: string | null = null;
         const isDoc = isConceptDocPath(relPath);
         if (local.status === 0) {
-          exportPath = path.join(exportDir, relPath);
-          mkdirSync(path.dirname(exportPath), { recursive: true, mode: 0o700 });
-          writeFileSync(exportPath, local.stdout, { mode: 0o600 });
-          // The body-only companion is the literally executable
-          // `doc update --body-file` input. Only for a concept doc whose blob parses as OKF
-          // markdown and whose bytes round-trip utf8 cleanly. A doc that parses after a lossy
-          // decode — an invalid byte became U+FFFD — would get a corrupted body
-          // companion while the full export stays exact, and the emitted chain would apply the
-          // corruption; skip the companion, and with it the runnable chain, instead). A parse
-          // failure likewise just means no runnable chain — the full export remains either way.
-          if (isDoc) {
-            try {
-              const decoded = local.stdout.toString("utf8");
-              if (Buffer.from(decoded, "utf8").equals(local.stdout)) {
-                const { body } = parseMarkdown(decoded, relPath);
-                bodyExportPath = exportPath.replace(/\.md$/, ".body.md");
-                writeFileSync(bodyExportPath, body, { mode: 0o600 });
-              }
-            } catch {
-              bodyExportPath = null;
-            }
-          }
+          ({ exportPath, bodyExportPath } = saveCopyWithBody(exportDir, relPath, local.stdout, isDoc));
         }
         // 2+3. Keep the UPSTREAM (teammate's) version — explicit ref, never --ours/--theirs. An
         // upstream-side DELETION keeps upstream's state by removing the path instead.
