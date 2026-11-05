@@ -2096,6 +2096,13 @@ export function snapshotBundleCommit(top: string, bundlePath: string): BundleSna
 
 // ── fetch + rebase (conflict = detect only) ───────────────────────────────────
 
+/**
+ * A document's identity is its path, so a replay never follows a rename: a followed rename puts a
+ * teammate's edit and its conflict on a path upstream does not have. Git keeps this option in the
+ * rebase state, so `--continue` and `--skip` inherit it, and it overrides a host `merge.renames`.
+ */
+const REBASE_BY_PATH = ["-X", "no-renames"];
+
 export type FetchRebaseOutcome =
   | { status: "clean" }
   /**
@@ -2119,7 +2126,7 @@ export function fetchRebase(boardPath: string): FetchRebaseOutcome {
   // commit — see porcelain.ts's module header site map.
   const idFlags = identityFlags(boardPath);
   const boardRef = boardRefOf(boardPath);
-  const r = runGit(boardPath, [...idFlags, "rebase", boardRef], {
+  const r = runGit(boardPath, [...idFlags, "rebase", ...REBASE_BY_PATH, boardRef], {
     rebase: true,
     timeoutMs: NETWORK_TIMEOUT_MS,
   });
@@ -2234,7 +2241,7 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
   // commits nothing): a replayed commit needs COMMITTER identity too, the same failure class as a
   // plain commit — see porcelain.ts's module header site map.
   const idFlags = identityFlags(boardPath);
-  const r = runGit(boardPath, [...idFlags, "rebase", boardRef], { rebase: true, timeoutMs: NETWORK_TIMEOUT_MS });
+  const r = runGit(boardPath, [...idFlags, "rebase", ...REBASE_BY_PATH, boardRef], { rebase: true, timeoutMs: NETWORK_TIMEOUT_MS });
   if (r.status === 0) return { status: "clean" };
   if (!detectStaleRebase(boardPath)) throw classifyGitError(failureOf(["rebase", boardRef], r));
 
