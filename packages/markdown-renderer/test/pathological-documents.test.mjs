@@ -114,6 +114,7 @@ const justInside = {
   "list items": "- a\n\n".repeat(MAX_LINE_MARKERS - 1),
   "many tables": "a|b\n-|-\nc\n\n".repeat(MAX_TABLES - 1),
   "many blocks of closing brackets": ("]".repeat(2_500) + "\n\n").repeat(16),
+  "a mix of list items, tables and brackets": "- a\n\n".repeat(MAX_LINE_MARKERS / 2) + "a|b\n-|-\nc\n\n".repeat(MAX_TABLES / 2) + "]".repeat(3_000),
 };
 for (const [name, body] of Object.entries(justInside)) {
   justInside[`${name} with CRLF line ends`] = body.replace(/\n/g, "\r\n");
@@ -128,6 +129,15 @@ for (const [name, body] of Object.entries(justInside)) {
     assert.ok(elapsed < RENDER_LIMIT_MS, `took ${elapsed} ms`);
   });
 }
+
+test("a document near several limits at once is over the limit", () => {
+  const body = "- a\n\n".repeat(Math.floor(MAX_LINE_MARKERS * 0.9)) + "a|b\n-|-\nc\n\n".repeat(Math.floor(MAX_TABLES * 0.9));
+  const start = performance.now();
+  const { html, bounded } = renderMarkdownToStaticHtml(body, { fromId: "notes/a" });
+  assert.equal(bounded, true);
+  assert.ok(html.includes(FALLBACK));
+  assert.ok(performance.now() - start < RENDER_LIMIT_MS);
+});
 
 test("the escaped text of a document over the limit stays inert", () => {
   const body = `${"]".repeat(15_000)}\n\n<script>globalThis.ran = true</script>\n\n[x](javascript:alert(1)) ![y](https://example.invalid/y.png)`;

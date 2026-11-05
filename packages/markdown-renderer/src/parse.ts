@@ -57,7 +57,9 @@ function withinParseLimits(source: string): boolean {
     if (!alphanumeric) block += code === 93 ? 2 : 1;
     if ((code === 42 || code === 95 || code === 126) && ++emphasis > MAX_BLOCK_EMPHASIS) return false;
   }
-  return score + block * block <= MAX_BLOCK_SCORE && pipes <= MAX_PIPES && markers <= MAX_LINE_MARKERS && tables <= MAX_TABLES;
+  // One combined check, so a document can't sit just under every limit at once.
+  return (score + block * block) / MAX_BLOCK_SCORE
+    + (markers / MAX_LINE_MARKERS) ** 2 + (tables / MAX_TABLES) ** 2 + (pipes / MAX_PIPES) ** 2 <= 1;
 }
 
 /** Whether an error means the call stack ran out, as each engine reports it. */
