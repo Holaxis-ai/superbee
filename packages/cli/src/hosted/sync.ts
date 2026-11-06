@@ -109,12 +109,17 @@ import { syncEnvelope, syncVerbNotApplicable, withSyncEnvelope, type SyncEnvelop
 export const HOSTED_SYNC_USAGE = `In a hosted checkout (made by 'superbee checkout'), sync sends and receives documents and admitted ordinary files:
 
 Usage:
-  superbee sync [--dir <folder>] [--limit <n>] [--json]
+  superbee sync [--dir <folder>] [--limit <n>] [--max-documents <n>] [--json]
   superbee sync --replace-links <id> [--dir <folder>] [--json]
   superbee sync --inspect --doc <id> [--out <file>] [--dir <folder>] [--json]
   superbee sync --resolve keep|take|revise --doc <id> [--dir <folder>] [--json]
   superbee sync --restore-deletes | --accept-deletes <token> [--dir <folder>] [--json]
   superbee sync --take-host-deletions <token> [--dir <folder>] [--json]
+
+--max-documents <1..1000> bounds the document targets attempted in this pass. Deferred documents
+remain in the same checkout, reported paused/document_limit with batch metadata and a nonzero
+exit. Run sync again there to continue. Front-page, ordinary-file and definition writes cannot
+be combined with this option. --limit only caps displayed rows; it never limits writes.
 
 Edited documents are sent whole under your own access. Tracked ordinary files send frozen
 opaque bytes with exact version and MIME pins, up to 16 MiB or a smaller advertised host bound;
@@ -279,7 +284,7 @@ export async function hostedCheckoutFor(argv: readonly string[], home: string = 
 
 /** True when raw argv asks for a hosted-only verb. */
 export function requestsHostedVerb(argv: readonly string[]): boolean {
-  return argv.some((token) => ["--inspect", "--resolve", "--doc", "--accept-deletes", "--restore-deletes", "--take-host-deletions", "--replace-links"].some((flag) => token === flag || token.startsWith(`${flag}=`)));
+  return argv.some((token) => ["--inspect", "--resolve", "--doc", "--accept-deletes", "--restore-deletes", "--take-host-deletions", "--replace-links", "--max-documents"].some((flag) => token === flag || token.startsWith(`${flag}=`)));
 }
 
 const GIT_ONLY_FLAGS = ["establish", "pull-only", "show-incoming", "yes", "body-out", "migrate"] as const;
@@ -287,6 +292,7 @@ const GIT_ONLY_FLAGS = ["establish", "pull-only", "show-incoming", "yes", "body-
 interface HostedValues {
   "accept-deletes"?: string;
   "replace-links"?: string;
+  "max-documents"?: string;
   "restore-deletes"?: boolean;
   "take-host-deletions"?: string;
   inspect?: string;
@@ -328,6 +334,12 @@ function parseHosted(argv: string[]): HostedValues {
   }
   if (values.resolve !== undefined && !["keep", "take", "revise"].includes(values.resolve)) {
     throw new CliError("USAGE", `--resolve takes keep, take or revise, not '${values.resolve}'`, { help: `${inv} sync --resolve keep|take|revise --doc <id>` });
+  }
+  if (values["max-documents"] !== undefined) {
+    if (!/^[1-9][0-9]{0,3}$/.test(values["max-documents"]) || Number(values["max-documents"]) > 1000)
+      throw new CliError("USAGE", "--max-documents takes an integer from 1 to 1000");
+    if (values.inspect !== undefined || values.resolve !== undefined || values["restore-deletes"] || values["take-host-deletions"] !== undefined || values["accept-deletes"] !== undefined)
+      throw new CliError("USAGE", "--max-documents is for an ordinary document sync pass, not a conflict or deletion-confirmation step");
   }
   const accept = values["accept-deletes"];
   if (accept !== undefined) {
@@ -742,6 +754,7 @@ interface PushOutcome {
   readonly collisions: HeldFile[];
   /** The agent the writes named (`X-Superbee-Via`), or why a named one was not sent. */
   readonly via?: { readonly token?: string; readonly ignored?: string };
+  readonly batch?: { readonly limit: number; readonly selected: ReadonlySet<string> };
 }
 
 /**
@@ -767,7 +780,7 @@ async function caseCollidingCreates(store: JournaledBackend): Promise<HeldFile[]
   return out;
 }
 
-async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes?: number, heldSink: { value?: { deletions: number; baseline: number } } = {}, publicationHolds: readonly InitialPlacementHold[] = []): Promise<PushOutcome> {
+async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes?: number, heldSink: { value?: { deletions: number; baseline: number } } = {}, publicationHolds: readonly InitialPlacementHold[] = [], maxDocuments?: number): Promise<PushOutcome> {
   const { store, local, binding, reader } = session;
   const acknowledged = new Map<string, string>();
   const deleted = new Set<string>();
@@ -788,13 +801,17 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
     },
     stream: (route, input, signal) => session.carrier.stream(route, input, signal),
   };
+  // A fixed target set spans resume, folded successors and every retry pass. The native journal
+  // retains deferred requests; neither the caller nor a transport invents replacement identities.
+  const candidates = [...await store.listIntents(UNSETTLED_STATES)].sort((a, b) => Number(b.attempts > 0) - Number(a.attempts > 0));
+  const selected = maxDocuments === undefined ? undefined : new Set([...new Set(candidates.map(row => row.target))].slice(0, maxDocuments));
   // Selection stays in front of resume/requeue as well as delivery. Revalidate original
   // ownership each time; an updated state alone is not a successor or a visibility baseline.
   const selectedStore = new Proxy(store, { get(inner, prop) {
     if (prop === "listIntents") return async (states?: Parameters<JournaledBackend["listIntents"]>[0]) => {
       const rows = await inner.listIntents(states);
       const owners = await Promise.all(publicationHolds.map(h => initialArtifactOwner(store, session.projection, h.publication)));
-      return rows.filter(row => !owners.some(owner => owner && equalJournalValue(owner.intent, row)));
+      return rows.filter(row => (!selected || selected.has(row.target)) && !owners.some(owner => owner && equalJournalValue(owner.intent, row)));
     };
     const value = Reflect.get(inner, prop, inner); return typeof value === "function" ? value.bind(inner) : value;
   } });
@@ -864,7 +881,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
     for (const id of requeued) if (model.has(id)) retried.add(id);
     await (deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(50 + Math.floor(Math.random() * 200));
   }
-  return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions: [...collisions, ...withheld], via };
+  return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions: [...collisions, ...withheld], via, ...(selected ? { batch: { limit: maxDocuments!, selected } } : {}) };
 }
 
 /**
@@ -1356,6 +1373,7 @@ function blobPulledView(report: BlobRefreshReport): Record<string, unknown> {
 
 async function runSync(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
   const limit = rowLimit(values.limit);
+  const maxDocuments = values["max-documents"] === undefined ? undefined : Number(values["max-documents"]);
   const resumeCommand = syncCommand(binding, values.json ? commandLiteral(" --json") : commandFragment``);
   const acceptDeletes = values["accept-deletes"];
   if (acceptDeletes?.startsWith("blobs:")) {
@@ -1447,6 +1465,14 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // anything is sent: a failure sends nothing, no document and no front page.
     let gateDetails: Record<string, unknown> | undefined;
     let judgedRoot: string | null | undefined;
+    if (maxDocuments !== undefined) {
+      const root = await readRootFile(binding.path);
+      const intents = await store.listIntents(UNSETTLED_STATES);
+      const blobsPending = (await store.listBlobIntents()).some(row => !row.receipt);
+      const rootPending = projection.rootSent !== undefined || (root.kind === "file" && digestOf(root.bytes) !== projection.root);
+      if (blobsPending || rootPending || intents.some(row => isConventionId(row.target)))
+        throw new CliError("USAGE", "--max-documents cannot budget outgoing front-page, ordinary-file or definition writes; sync those separately without this flag", { details: { reason: "document_limit_scope" } });
+    }
     const blobOutcome = await driveBlobRequests(session, deps, { gatePresent: declared.kind !== "none", gate: async (fresh, count) => {
       const judged = await judgeHostedWrites(session, declared, resumeCommand, fresh || await wouldSend(session), await unsent() + count, { ...pulledView(binding, first.report, first.placed.placed, first.placed.removed, first.placed.kept), ...(blobs ? { blobs: blobPulledView(blobs) } : {}) });
       gateDetails = judged.gateDetails; judgedRoot = judged.judgedRoot;
@@ -1454,7 +1480,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     let outcome: PushOutcome;
     const heldSink: { value?: { deletions: number; baseline: number } } = {};
     try {
-      outcome = await pushChanges(session, deps, scan.acceptDeletes, heldSink, currentHolds);
+      outcome = await pushChanges(session, deps, scan.acceptDeletes, heldSink, currentHolds, maxDocuments);
     } catch (error) {
       // The deletes the host held before the push failed stay parked; keep its counts with them.
       await recordHostHold(store, heldSink.value, scan.hold).catch(() => undefined);
@@ -1474,7 +1500,12 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // The front page, after the documents: settled, pulled, or sent against its base.
     let root: RootStepReport;
     try {
-      root = await rootStep(session, deps, true, judgedRoot);
+      root = await rootStep(session, deps, maxDocuments === undefined, judgedRoot);
+      if (maxDocuments !== undefined && !root.row) {
+        const file = await readRootFile(binding.path);
+        if (file.kind === "file" && digestOf(file.bytes) !== projection.root)
+          root = { ...root, row: { id: ROOT_INDEX, state: "held", reason: "document_limit_scope", version: null, message: "The front page changed during this document-only pass. It was not sent; sync it separately without --max-documents." } };
+      }
     } catch (error) {
       throw await readFailure(error, session, resumeCommand, await unsent());
     }
@@ -1495,7 +1526,6 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // removed is a conflict now, so the run that saw it never reports itself in sync.
     const conflicts = await folderConflicts(binding.path, store, projection, session.okfVersion);
     // After the run's last placement: a file changed later is an edit this run did not see.
-    await recordSynced(deps.auth.home, binding.checkout_id);
     const inbound = await inboundLinks(store, outcome.deleted, session.okfVersion);
     const rows = buildRows({
       folderConflicts: conflicts,
@@ -1506,9 +1536,12 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       blocked: outcome.collisions,
       accessWithdrawn: outcome.accessWithdrawn,
       notSent: outcome.notSent,
+      ...(outcome.batch ? { deferred: new Set((await store.listIntents("pending")).filter(row => row.attempts === 0 && !outcome.batch!.selected.has(row.target)).map(row => row.target)) } : {}),
       ...(root.row ? { root: root.row } : {}),
     });
     const counts = countRows(rows);
+    const deferred = rows.filter(row => row.state === "paused" && row.reason === "document_limit").length;
+    if (deferred === 0) await recordSynced(deps.auth.home, binding.checkout_id);
     const shown = rows.slice(0, limit);
     const record: Record<string, unknown> = {
       sync: "hosted",
@@ -1547,6 +1580,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
         : {}),
       ...(gateDetails ? { gate: `passed: ${String(gateDetails.command)} (attempt ${String(gateDetails.attempt)})` } : {}),
       counts,
+      ...(outcome.batch ? { batch: { limit: outcome.batch.limit, selected: outcome.batch.selected.size, deferred, complete: rows.every(row => row.state === "committed") && blobDeliveryFailure(blobOutcome) === null } } : {}),
       ...(blobOutcome.rows.length ? { blobs: blobOutcome } : {}),
       rows: shown,
       ...(shown.length < rows.length ? { rows_shown: shown.length, rows_total: rows.length, rows_all: syncCommand(binding, commandFragment` --limit ${commandToken(String(rows.length))}`) } : {}),

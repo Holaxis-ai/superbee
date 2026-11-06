@@ -39,7 +39,7 @@ import { syncVerbNotApplicable } from "../../sync-outcomes.js";
 /** The raw flags that ask for a conflict verb (as opposed to a hosted-only deletion verb). */
 const CONFLICT_FLAGS = ["--inspect", "--resolve", "--doc"] as const;
 /** Hosted-only verbs: a Git board has no held or refused deletions, and no held link removals. */
-const HOSTED_ONLY_FLAGS = ["--accept-deletes", "--restore-deletes", "--take-host-deletions", "--replace-links"] as const;
+const HOSTED_ONLY_FLAGS = ["--accept-deletes", "--restore-deletes", "--take-host-deletions", "--replace-links", "--max-documents"] as const;
 /** Flags of the Git sync run that have no meaning for a conflict verb. */
 const RUN_ONLY_FLAGS = ["establish", "pull-only", "show-incoming", "yes", "body-out", "migrate", "limit"] as const;
 /** Content shown per side by --inspect; --out writes the teammate's version whole. */
