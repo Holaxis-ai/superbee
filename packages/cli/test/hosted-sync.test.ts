@@ -2743,3 +2743,19 @@ test("bounded recovery looks up an uncertain write with its original identity be
   await runSync(h, ["--max-documents", "1"]);
   assert.deepEqual(h.host.applied, ["notes/alpha", "notes/beta"]);
 });
+
+
+test("bounded document delivery cannot send a front-page edit introduced after its preflight", async () => {
+  const h = await harness();
+  await edit(h, "notes/alpha", doc => void (doc.body = "document edit\n"));
+  let wrote = false;
+  h.host.hook = call => {
+    if (call.route === "replace" && !wrote) { wrote = true; writeFileSync(path.join(h.folder, "index.md"), "late root edit\n"); }
+    return undefined;
+  };
+  const result = await failingSync(h, ["--max-documents", "1"]);
+  assert.equal(h.host.rootCalls.length, 0);
+  assert.equal(result.error.code, "CONFLICT");
+  assert.equal(rowFor(result.receipt, "index.md")?.reason, "document_limit_scope");
+  assert.equal(rowFor(result.receipt, "notes/alpha")?.state, "committed");
+});

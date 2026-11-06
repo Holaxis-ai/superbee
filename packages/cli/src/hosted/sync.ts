@@ -1500,7 +1500,12 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // The front page, after the documents: settled, pulled, or sent against its base.
     let root: RootStepReport;
     try {
-      root = await rootStep(session, deps, true, judgedRoot);
+      root = await rootStep(session, deps, maxDocuments === undefined, judgedRoot);
+      if (maxDocuments !== undefined && !root.row) {
+        const file = await readRootFile(binding.path);
+        if (file.kind === "file" && digestOf(file.bytes) !== projection.root)
+          root = { ...root, row: { id: ROOT_INDEX, state: "held", reason: "document_limit_scope", version: null, message: "The front page changed during this document-only pass. It was not sent; sync it separately without --max-documents." } };
+      }
     } catch (error) {
       throw await readFailure(error, session, resumeCommand, await unsent());
     }
