@@ -40,6 +40,9 @@ import { privilegedLinuxSkip, sudo } from "./support/privileged-linux.js";
 import { boundaryFixture, runCli, type BoundaryFixture } from "./support/private-state-fixtures.js";
 import { isolatedUserEnv } from "./support/user-env.js";
 import { syncExportsRoot } from "../src/cursor.js";
+import { builtinRecipeFiles, loadBuiltinRecipe } from "@superbee/core/builtin-recipes";
+import { recipeSourceDigest } from "@superbee/core/recipe-lifecycle";
+import { recipeFilesDigest } from "@superbee/core/recipe-sources";
 import {
   canonicalUserStateDir,
   ensureUserStateRoot,
@@ -729,6 +732,22 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
   { leaf: "kindDismiss", surface: "--dir", argv: (t) => ["kind", "dismiss", "Probe Type", "--dir", t, "--json"] },
   { leaf: "recipes", surface: "--dir", argv: (t) => ["recipes", "--dir", t, "--json"] },
   { leaf: "recipeAdd", surface: "--dir", argv: (t) => ["recipe", "add", "work-tracking", "--dir", t, "--json"] },
+  {
+    leaf: "recipeAdd", surface: "--index",
+    argv: (target) => ["recipe", "add", "context-notes", "--index", target, "--dir", ".superbee", "--json"],
+    control: (fixture) => {
+      const files = builtinRecipeFiles("context-notes")!;
+      for (const file of files) {
+        mkdirSync(path.dirname(path.join(fixture.outside, "index", file.path)), { recursive: true });
+        writeFileSync(path.join(fixture.outside, "index", file.path), file.bytes);
+      }
+      const loaded = loadBuiltinRecipe("context-notes");
+      assert.ok(loaded?.ok);
+      const index = path.join(fixture.outside, "index", "index.json");
+      writeFileSync(index, JSON.stringify({ format: "recipe-index/v1", source: "probe", cookbooks: [], recipes: [{ id: "context-notes", version: "1", designation: "supported", maintainer: "Holaxis-ai", source_digest: recipeSourceDigest(loaded.recipe), files_digest: recipeFilesDigest(files.map((file) => ({ path: file.path, bytes: new TextEncoder().encode(file.bytes) }))), files: files.map((file) => file.path) }] }));
+      return index;
+    },
+  },
   { leaf: "recipeEvolve", surface: "--dir", argv: (t) => ["recipe", "evolve", "work-tracking", "--dir", t, "--json"] },
   {
     leaf: "recipeEvolve", surface: "--retirement-evidence",
