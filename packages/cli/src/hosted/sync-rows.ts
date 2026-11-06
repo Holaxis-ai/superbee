@@ -130,6 +130,8 @@ export interface RowInputs {
   /** The host answered 403 during the push: a sign-in refusal is a withdrawn grant. */
   readonly accessWithdrawn?: boolean;
   readonly notSent: NotSentReason;
+  /** Never-attempted documents deliberately left for a later bounded pass. */
+  readonly deferred?: ReadonlySet<string>;
   /** The bundle's front page (the root `index.md`), synced by its own step: its row, if any. */
   readonly root?: SyncRow;
 }
@@ -171,7 +173,9 @@ export function buildRows(inputs: RowInputs): SyncRow[] {
           id,
           head.attempts > 0
             ? { id, state: "unknown", reason: "possibly_delivered", version: null, message: "The answer was lost; the change may have landed. The next sync looks it up by the same request, never sending it twice." }
-            : waitingRow(id, pausedBy, inputs.notSent),
+            : inputs.deferred?.has(id) && !pausedBy && inputs.notSent === null
+              ? { id, state: "paused", reason: "document_limit", version: null, message: "Not attempted: this pass reached its document limit. Run sync again in the same checkout." }
+              : waitingRow(id, pausedBy, inputs.notSent),
         );
         break;
       default:

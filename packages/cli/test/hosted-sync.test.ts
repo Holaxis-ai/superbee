@@ -2672,3 +2672,74 @@ test("blob admission captures plain request data before extracting transient pol
     });
   } finally { await rm(h.home, { recursive: true, force: true }); await rm(h.cwd, { recursive: true, force: true }); }
 });
+
+test("bounded document passes defer unsent targets and resume without resending accepted writes", async () => {
+  const host = new FakeHost();
+  for (let n = 0; n < 5; n++) host.put(`batch/n${n}`, { type: "Note", title: `N${n}` }, "before\n");
+  const h = await harness(host);
+  for (let n = 0; n < 5; n++) await edit(h, `batch/n${n}`, doc => void (doc.body = "after\n"));
+  const first = await failingSync(h, ["--max-documents", "2"]);
+  assert.equal(first.error.code, "TRANSIENT");
+  assert.equal(first.receipt?.status, "incomplete");
+  assert.deepEqual(first.receipt?.batch, { limit: 2, selected: 2, deferred: 3, complete: false });
+  assert.equal(rowsOf(first.receipt).filter(row => row.reason === "document_limit").length, 3);
+  assert.equal(writeRoutes(h).length, 2);
+  const accepted = new Set(writeRoutes(h).map(call => call.body.documentId));
+  h.host.writes.length = 0;
+  const second = await failingSync(h, ["--max-documents", "2"]);
+  assert.equal(second.error.code, "TRANSIENT");
+  assert.deepEqual(second.receipt?.batch, { limit: 2, selected: 2, deferred: 1, complete: false });
+  assert.equal(writeRoutes(h).length, 2);
+  assert.ok(writeRoutes(h).every(call => !accepted.has(call.body.documentId)));
+  const final = await runSync(h, ["--max-documents", "2"]);
+  assert.equal(final.status, "synced");
+  assert.deepEqual(final.batch, { limit: 2, selected: 1, deferred: 0, complete: true });
+});
+
+test("bounded sync preserves concurrent-edit conflicts rather than treating them as batch deferrals", async () => {
+  const h = await harness();
+  await edit(h, "notes/alpha", doc => void (doc.body = "local\n"));
+  await edit(h, "notes/beta", doc => void (doc.body = "local beta\n"));
+  const before = hostDoc(h, "notes/alpha");
+  h.host.put("notes/alpha", before.frontmatter, "remote\n");
+  const result = await failingSync(h, ["--max-documents", "1"]);
+  assert.equal(result.error.code, "CONFLICT");
+  assert.equal(rowFor(result.receipt, "notes/alpha")?.state, "conflict");
+  assert.equal(hostDoc(h, "notes/alpha").body, "remote\n");
+});
+
+test("bounded sync rejects malformed limits and outgoing root changes before document delivery", async () => {
+  const h = await harness();
+  await edit(h, "notes/alpha", doc => void (doc.body = "local\n"));
+  for (const value of ["0", "-1", "1.5", "1001", "1e2"]) {
+    const result = await failingSync(h, ["--max-documents", value]);
+    assert.equal(result.error.code, "USAGE");
+  }
+  await writeFile(path.join(h.folder, "index.md"), "changed front page\n");
+  const result = await failingSync(h, ["--max-documents", "1"]);
+  assert.equal(result.error.code, "USAGE");
+  assert.equal(result.error.details?.reason, "document_limit_scope");
+  assert.equal(writeRoutes(h).length, 0);
+  assert.equal(h.host.rootCalls.length, 0);
+});
+
+test("bounded recovery looks up an uncertain write with its original identity before a deferred new target", async () => {
+  const h = await harness();
+  let down = true;
+  h.host.hook = call => down && call.route === "replace" ? { kind: "apply-then-drop" } : down && call.route === "outcome" ? { kind: "drop" } : undefined;
+  await edit(h, "notes/alpha", doc => void (doc.body = "once\n"));
+  await edit(h, "notes/beta", doc => void (doc.body = "later\n"));
+  const first = await failingSync(h, ["--max-documents", "1"]);
+  assert.equal(rowFor(first.receipt, "notes/alpha")?.state, "unknown");
+  assert.notEqual(rowFor(first.receipt, "notes/alpha")?.reason, "document_limit");
+  const original = h.host.writes.find(call => call.route === "replace")!.requestId;
+  down = false;
+  h.host.writes.length = 0;
+  const second = await failingSync(h, ["--max-documents", "1"]);
+  assert.equal(rowFor(second.receipt, "notes/alpha")?.state, "committed");
+  assert.equal(rowFor(second.receipt, "notes/beta")?.reason, "document_limit");
+  assert.equal(h.host.writes[0]!.route, "outcome");
+  assert.ok(h.host.writes.every(call => call.requestId === original));
+  await runSync(h, ["--max-documents", "1"]);
+  assert.deepEqual(h.host.applied, ["notes/alpha", "notes/beta"]);
+});

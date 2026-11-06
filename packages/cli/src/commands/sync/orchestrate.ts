@@ -520,6 +520,7 @@ export function parseSyncArgs(argv: string[]) {
           "restore-deletes": { type: "boolean" },
           "take-host-deletions": { type: "string" },
           "replace-links": { type: "string" },
+          "max-documents": { type: "string" },
         },
         allowPositionals: true,
       }),
