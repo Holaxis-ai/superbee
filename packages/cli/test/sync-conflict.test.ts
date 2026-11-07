@@ -245,6 +245,44 @@ test("U3b: multi-commit local stack — the converging loop terminates, every co
   }
 });
 
+test("a later local commit that replays cleanly over a conflicted doc is in the saved copy, and the emitted chain keeps it", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(2);
+  const [homeA, homeB] = homes;
+  try {
+    await modifyBoardDoc(topo.a, "tasks/seed-one", { frontmatter: { title: "A title" } });
+    const aSync = await runSync(homeA!, ["--dir", topo.a.root]);
+    assert.equal(aSync.err, undefined, aSync.err?.message);
+
+    // B stacks two commits on the same doc: the first conflicts with A's retitle, the second
+    // appends a paragraph that replays cleanly on top of the kept upstream version.
+    await modifyBoardDoc(topo.b, "tasks/seed-one", { frontmatter: { title: "B title" } });
+    commitBoard(topo.b, "board: bob 1", { author: { name: "bob", email: "bob@example.invalid" } });
+    const bFirst = await readBoardFile(topo.b, "tasks/seed-one.md");
+    await modifyBoardDoc(topo.b, "tasks/seed-one", { body: "# Seed one\n\nseed body\n\nB LATER PARAGRAPH\n" });
+    commitBoard(topo.b, "board: bob 2", { author: { name: "bob", email: "bob@example.invalid" } });
+    const bFinal = await readBoardFile(topo.b, "tasks/seed-one.md");
+
+    const conflicted = await runSync(homeB!, ["--dir", topo.b.root]);
+    assert.equal(conflicted.err?.code, "CONFLICT", conflicted.err?.message);
+    const row = conflictRows(conflicted.err!)[0]!;
+    assert.equal(await readFile(row.yours as string, "utf8"), bFinal, "the saved copy is B's final version");
+    assert.match(await readFile(row.yours_body as string, "utf8"), /B LATER PARAGRAPH/);
+    assert.equal(await readFile(exportPathFor(topo, homeB!, "tasks/seed-one.md"), "utf8"), bFirst, "the stop's own copy stays saved");
+
+    for (const step of conflicted.err!.help!.split(" → ")) {
+      await runChainStep(homeB!, topo.b.root, step);
+    }
+    const originDoc = git(topo.origin, ["show", "board:tasks/seed-one.md"]);
+    assert.match(originDoc, /B LATER PARAGRAPH/, "the later commit's paragraph survives the reconcile chain");
+    assert.match(originDoc, /title: A title/, "the teammate's kept title stays");
+    assertPristine(topo.b, "B after the reconcile chain");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
 // ── reserved-file conflict (log.md) ─────────────────────────────────────────────
 
 test("U3b: a reserved-file (log.md) conflict — kept-upstream, exported, labeled VERBATIM (never 'doc log.md')", async () => {
