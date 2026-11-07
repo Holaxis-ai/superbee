@@ -8,6 +8,12 @@ import { createHash, randomUUID } from "node:crypto";
 const OWNER_FILE = "owner.json";
 const DEFAULT_WAIT_MS = 5_000;
 const DEFAULT_POLL_MS = 25;
+/**
+ * How long one ownership check polls an owner record it cannot read. Scanner and descriptor
+ * transients clear in milliseconds; a record that stays unreadable this long will not clear, and
+ * waiting out a caller's whole budget for it only delays the same fail-closed refusal.
+ */
+const UNREADABLE_OWNER_POLL_MS = 2_000;
 
 export interface FilesystemMutationLockOwner {
   pid: number;
@@ -181,7 +187,7 @@ async function readOwnerRecord(lockPath: string): Promise<OwnerRecordState> {
 
 /**
  * Resolve the owner record to a definitive answer, polling out an indeterminate read inside the
- * caller's remaining budget. `EMFILE`/`ENFILE` under concurrency, and the `EBUSY`/`EACCES`/`EPERM`
+ * caller's remaining budget and at most `UNREADABLE_OWNER_POLL_MS`. `EMFILE`/`ENFILE` under concurrency, and the `EBUSY`/`EACCES`/`EPERM`
  * open transients that Windows indexing and antivirus software produce, otherwise read as "no
  * record" and let a caller conclude that a lock it still owns has changed hands. An unreadable
  * record never authorizes the destructive step: the caller fails closed when the budget expires.
@@ -192,9 +198,13 @@ async function resolveOwnerRecord(
   waitMs: number,
   pollMs: number,
 ): Promise<OwnerRecordState> {
+  let firstUnreadable: number | undefined;
   while (true) {
     const record = await readOwnerRecord(lockPath);
-    if (record.state !== "unreadable" || Date.now() - started >= waitMs) return record;
+    if (record.state !== "unreadable") return record;
+    const now = Date.now();
+    firstUnreadable ??= now;
+    if (now - started >= waitMs || now - firstUnreadable >= UNREADABLE_OWNER_POLL_MS) return record;
     await delay(pollMs);
   }
 }
