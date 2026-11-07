@@ -225,10 +225,34 @@ function relateSegments(bundle: readonly string[], state: readonly string[]): Pr
   return bundle.length < state.length ? "bundle-contains-state" : "bundle-inside-state";
 }
 
+function sameCoordinate(left: PhysicalCoordinate, right: PhysicalCoordinate): boolean {
+  return (
+    left.anchorKey === right.anchorKey &&
+    left.anchorPath === right.anchorPath &&
+    left.anchorChain.join("/") === right.anchorChain.join("/") &&
+    left.missing.join("/") === right.missing.join("/")
+  );
+}
+
 /** THE domain relation. Every private-state guard in the CLI answers to this one function. */
 export function relateToPrivateState(candidate: string, stateRoot: string): PrivateStateRelation {
-  const bundle = physicalCoordinate(path.resolve(candidate));
-  const state = physicalCoordinate(path.resolve(stateRoot), new Set(), true);
+  // The two sides are read one after the other, so an entry replaced between the reads would be
+  // compared under two different identities. Accept a pair only when re-reading both sides gives
+  // the same answer; a second disagreement fails closed rather than reporting `unrelated`.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const bundle = physicalCoordinate(path.resolve(candidate));
+    const state = physicalCoordinate(path.resolve(stateRoot), new Set(), true);
+    if (
+      sameCoordinate(bundle, physicalCoordinate(path.resolve(candidate))) &&
+      sameCoordinate(state, physicalCoordinate(path.resolve(stateRoot), new Set(), true))
+    ) {
+      return relateCoordinates(bundle, state);
+    }
+  }
+  throw runtimeFailure();
+}
+
+function relateCoordinates(bundle: PhysicalCoordinate, state: PhysicalCoordinate): PrivateStateRelation {
 
   // Undeterminable inode on EITHER side: compare normalized paths instead, and never conclude
   // `identical` from an inode collapse.
