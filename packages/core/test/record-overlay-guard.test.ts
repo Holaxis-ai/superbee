@@ -545,12 +545,10 @@ test("plan validation: a plan must be a mapping with a steps list, and each step
   assert.equal((await w.read("events/story-time")).version, version);
 });
 
-test("the grouped shape: a removal or a list-valued source property is INVALID_INPUT; scalar to list owned fields too; no derive hook is needed", async () => {
+test("the grouped shape: a list-valued source property is INVALID_INPUT; scalar to list owned fields too; a removal is an unset; no derive hook is needed", async () => {
   const w = await overlayWorld();
   const version = await w.put("events/story-time", { ...event("001", STORY), venue_text: "Room A", sources: [{ resource: PROVIDER, id: UID("001"), tags: ["a"] }] }, EDITOR_BODY);
-  const grouped = (fields: Record<string, { from: unknown; to: unknown }>, sources: Record<string, unknown>) => ownedStep(version, fields, { sources } as never);
-  const removal = await applyRecordOverlay(planOf([grouped({ venue_text: { from: "Room A", to: undefined } }, { revision: "r1" })]), ctxOf(w));
-  assert.deepEqual([removal.results[0]!.code, removal.results[0]!.details], ["INVALID_INPUT", { reason: "grouped-shape-removes-field", field: "venue_text" }]);
+  const grouped = (fields: Record<string, { from: unknown; to: unknown }>, sources: Record<string, unknown>, at: Version = version) => ownedStep(at, fields, { sources } as never);
   const listed = await applyRecordOverlay(planOf([grouped({ start: { from: STORY.start, to: "2026-10-10T11:00:00-04:00" } }, { tags: "b" })]), ctxOf(w));
   assert.deepEqual([listed.results[0]!.code, listed.results[0]!.details], ["INVALID_INPUT", { reason: "list-valued-source-property", field: "sources" }]);
   const toList = await applyRecordOverlay(planOf([ownedStep(version, { venue_text: { from: "Room A", to: ["Room A", "Room B"] } })]), ctxOf(w));
@@ -560,6 +558,11 @@ test("the grouped shape: a removal or a list-valued source property is INVALID_I
   assert.equal(ok.results[0]!.outcome, "applied", JSON.stringify(ok.results[0]));
   const doc = (await w.read("events/story-time")).doc;
   assert.deepEqual([doc.frontmatter.start, doc.frontmatter.updated_at], ["2026-10-10T11:00:00-04:00", undefined]);
+  const removal = await applyRecordOverlay(planOf([grouped({ venue_text: { from: "Room A", to: undefined } }, { revision: "r2" }, ok.results[0]!.version as Version)]), ctxOf(w));
+  assert.equal(removal.results[0]!.outcome, "applied", JSON.stringify(removal.results[0]));
+  const removed = (await w.read("events/story-time")).doc;
+  assert.equal(Object.hasOwn(removed.frontmatter, "venue_text"), false);
+  assert.deepEqual(removed.frontmatter.sources, [{ resource: PROVIDER, id: UID("001"), tags: ["a"], revision: "r2" }]);
 });
 
 test("the grouped shape on an overlay that no longer carries the identity is refused: the upsert would add an entry", async () => {

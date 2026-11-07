@@ -410,7 +410,7 @@ test("T20 the grouped shape lands the owned fields, the sources upsert and updat
   assert.equal((await docVersions(w.content.bundle, "events/story-time")).length, history + 1, "one CAS write");
 });
 
-test("T20 sourceProperties naming the identity or holding a list is refused at plan time; a removal keeps the patch shape and survives serialization", async () => {
+test("T20 sourceProperties naming the identity or holding a list is refused at plan time; a removal carries the upsert on v0.2 and survives serialization", async () => {
   const w = await overlayWorld();
   await w.put("events/story-time", event("001", { ...STORY, venue_text: "Room A" }), EDITOR_BODY);
   const c = change(UID("001"), "changed", STORY, { ...STORY, start: "2026-10-10T11:00:00-04:00" }, DIGEST("4"));
@@ -419,10 +419,24 @@ test("T20 sourceProperties naming the identity or holding a list is refused at p
   }
   const removal = change(UID("001"), "changed", { ...STORY, venue_text: "Room A" }, STORY, DIGEST("5"));
   const p = await plan(w, [removal], { hooks: { sourceProperties: () => ({ revision: "r1" }) } });
-  assert.equal((p.steps[0] as { sources?: unknown }).sources, undefined);
+  assert.deepEqual((p.steps[0] as { sources?: unknown }).sources, { revision: "r1" }, "on v0.2 a removal carries the upsert");
   const serialized = JSON.parse(JSON.stringify(p)) as OverlayPlan;
   assert.deepEqual((serialized.steps[0] as { fields: object }).fields, { venue_text: { from: "Room A" } }, "a serialized removal has no `to`");
-  await apply(w, serialized);
+  const r = await apply(w, serialized);
+  assert.equal(r.results[0]!.outcome, "applied", JSON.stringify(r.results[0]));
+  const doc = (await w.read("events/story-time")).doc;
+  assert.equal(Object.hasOwn(doc.frontmatter, "venue_text"), false);
+  assert.deepEqual(doc.frontmatter.sources, [{ resource: PROVIDER, id: UID("001"), title: "feed record", revision: "r1" }], "the provider property is not left stale");
+});
+
+test("T20 on a v0.1 bundle a removal keeps the patch shape without the upsert", async () => {
+  const w = await overlayWorld({ edition: "0.1" });
+  await w.put("events/story-time", event("001", { ...STORY, venue_text: "Room A" }), EDITOR_BODY);
+  const removal = change(UID("001"), "changed", { ...STORY, venue_text: "Room A" }, STORY, DIGEST("5"));
+  const p = await plan(w, [removal], { hooks: { sourceProperties: () => ({ revision: "r1" }) } });
+  assert.equal((p.steps[0] as { sources?: unknown }).sources, undefined);
+  const r = await apply(w, p);
+  assert.equal(r.results[0]!.outcome, "applied", JSON.stringify(r.results[0]));
   assert.equal((await w.read("events/story-time")).doc.frontmatter.venue_text, undefined);
 });
 
