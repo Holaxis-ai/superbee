@@ -27,10 +27,16 @@ import {
   changesSince,
   countUncommitted,
   currentHead,
-  fetchRebaseResolving,
+  abortStaleRebase,
+  boardGitCommonDir,
+  fetchBoard,
+  rebaseResolving,
   ffPull,
   hasLocalOnlyBundle,
-  healStaleRebaseBeforeProvisioning,
+  syncStartedRebase,
+  wedgedBoardRebase,
+  clearStaleSyncRebaseMarker,
+  clearStaleSyncRebaseMarkers,
   inTreeFetchAndRecord,
   fetchOrigin,
   isBoardGitError,
@@ -74,7 +80,8 @@ import {
 import { removeCarriedCopies, unsettledConflicts, unsettledRow, type SettledClaim } from "../../saved-conflicts.js";
 import { showIncoming } from "./show-incoming.js";
 import { SYNC_GATE_CONFIG, declaredSyncGate, runSyncGate } from "./gate.js";
-import { ffSwallowToError, syncOutcomeError, syncOutcomeLine, withSharingDetails } from "../../sync-outcomes.js";
+import { ffSwallowToError, rebaseInProgressRefusal, syncOutcomeError, syncOutcomeLine, withSharingDetails } from "../../sync-outcomes.js";
+import { DEADLINE_SYNC_FOLDER_LOCK_WAIT_MS, SYNC_FOLDER_LOCK_WAIT_MS, withSyncFolderLock, withSyncRootLock } from "./folder-lock.js";
 import { CliError, asHandled, cliErrorFromBoardGit, toExit } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
@@ -694,7 +701,7 @@ async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<
 }
 
 /** The provision phase: owns known-remote-absence vs failed-remote-check; empty states render here (null). */
-function provisionPhase(run: SyncRun): SyncBoard | null {
+async function provisionPhase(run: SyncRun): Promise<SyncBoard | null> {
   if (run.owner) {
     // The binding proof already established the exact private board worktree. Provisioning is a
     // public-cwd discovery/healing mechanism and is categorically unavailable to a bound run.
@@ -734,7 +741,7 @@ function provisionPhase(run: SyncRun): SyncBoard | null {
   // go unhealed for the rest of this run. Re-run the SAME entry heal now that the worktree is
   // structurally sound (best-effort, matching the entry heal's own posture — see its doc comment).
   if (outcome.kind === "repaired") {
-    healStaleRebaseBeforeProvisioning(run.dir);
+    await healEntry(run);
   }
 
   return { boardPath, key: resolveBundleKey(boardPath), outcome };
@@ -764,7 +771,7 @@ async function commitPhase(board: SyncBoard, pullOnly: boolean): Promise<CommitR
   if (!pullOnly) {
     let deletedBy: string | undefined;
     try { deletedBy = resolveActor(undefined); } catch { /* a blank actor variable never blocks a sync */ }
-    commitResult = stageAndCommit(board.boardPath, deletedBy === undefined ? {} : { deletedBy });
+    commitResult = await withSyncRootLock(board.boardPath, () => stageAndCommit(board.boardPath, deletedBy === undefined ? {} : { deletedBy }));
     if (commitResult.committed && commitResult.docs.length > 0) {
       // The actors THIS clone just committed are recorded per-clone, so the
       // home render can filter self-authored rows out of the human "since" count.
@@ -786,7 +793,7 @@ async function commitPhase(board: SyncBoard, pullOnly: boolean): Promise<CommitR
 async function pullPhase(run: SyncRun, board: SyncBoard, commitResult: CommitResult): Promise<void> {
   const { boardPath, outcome } = board;
   if (run.pullOnly) {
-    const ff = ffPull(boardPath);
+    const ff = await withSyncRootLock(boardPath, () => ffPull(boardPath));
     if (ff.swallowed) {
       throw withProvisionAnnouncement(ffSwallowToError(ff.swallowed, run.inv, boardPath), outcome);
     }
@@ -807,7 +814,9 @@ async function convergingRebase(run: SyncRun, board: SyncBoard, committedThisRun
     throwPostCommitFailure(withProvisionAnnouncement(err, outcome), committedThisRun, key, boardPath);
   let rebaseOutcome: FetchRebaseResolvingOutcome;
   try {
-    rebaseOutcome = fetchRebaseResolving(boardPath, defaultSyncStore.exportsDir(key), networkBudget(run, NETWORK_TIMEOUT_MS));
+    // The fetch moves no worktree file, so only the rebase holds the root lock writes take.
+    fetchBoard(boardPath, networkBudget(run, NETWORK_TIMEOUT_MS));
+    rebaseOutcome = await withSyncRootLock(boardPath, () => rebaseResolving(boardPath, defaultSyncStore.exportsDir(key)));
   } catch (rawErr) {
     throw await fail(withUpstreamHelp(toCliError(rawErr, "rebase"), run.inv));
   }
@@ -1023,7 +1032,7 @@ async function receiptPhase(
  * fix, and the run exits 5 so the turn-end hook hands it back to the writer.
  */
 async function heldRun(run: SyncRun, board: SyncBoard, baseline: SyncBaseline, held: readonly HeldDocument[]): Promise<void> {
-  const pulled = ffPull(board.boardPath);
+  const pulled = await withSyncRootLock(board.boardPath, () => ffPull(board.boardPath));
   const delta = await deltaPhase(board, baseline);
   await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
   reportHeld(run, board, delta, held, "in the worktree", pulled.swallowed);
@@ -1080,11 +1089,47 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
     return;
   }
 
+  // One sync at a time per clone: everything from the entry heal to the receipt runs under the
+  // board folder's sync lock (see ./folder-lock.ts). Outside a repository there is nothing to lock.
+  const commonDir = run.route?.kind === "bound-board" ? run.route.owner.commonGitDir : boardGitCommonDir(run.dir);
+  if (commonDir === null) {
+    await syncLocked(run, dispatch);
+    return;
+  }
+  const waitMs = deps.networkDeadline !== undefined ? DEADLINE_SYNC_FOLDER_LOCK_WAIT_MS : SYNC_FOLDER_LOCK_WAIT_MS;
+  const locked = await withSyncFolderLock(commonDir, waitMs, () => syncLocked(run, dispatch));
+  if (locked.kind === "busy") {
+    stdout(render(withSyncEnvelope({
+      sync: "Skipped: another superbee sync is running in this folder. Nothing changed.",
+      status: "skipped",
+      reason: "sync_busy",
+      holder_pid: locked.holderPid,
+      waited_ms: locked.waitedMs,
+      help: `Your documents are saved in the folder. The next \`${inv} sync\` sends them.`,
+    }, syncEnvelope("git")), run.mode));
+  }
+}
+
+/**
+ * Abort a rebase a killed sync left in the board checkout; refuse one a person started. Runs only
+ * under the folder lock, which proves no live sync owns the rebase.
+ */
+async function healEntry(run: SyncRun): Promise<void> {
+  clearStaleSyncRebaseMarkers(run.dir);
+  const wedged = wedgedBoardRebase(run.dir);
+  if (wedged === null) return;
+  if (!syncStartedRebase(wedged)) throw rebaseInProgressRefusal(wedged, run.inv);
+  await withSyncRootLock(wedged, () => abortStaleRebase(wedged));
+}
+
+async function syncLocked(run: SyncRun, dispatch: Extract<SyncDispatch, { kind: "run" }>): Promise<void> {
+  const { deps, stdout, inv } = run;
   if (run.route?.kind === "bound-board" && run.route.readiness === "recovery-pending") {
-    const recoveredOwner = await recoverBoundBoardOwner(run.route.target, run.route.owner);
+    const recoveredOwner = await recoverBoundBoardOwner(run.route.target, run.route.owner, (boardPath, abort) => withSyncRootLock(boardPath, abort), run.inv);
     run.owner = recoveredOwner;
     run.route = { ...run.route, readiness: "ready", owner: recoveredOwner };
   }
+  if (run.route?.kind === "bound-board") clearStaleSyncRebaseMarker(run.route.owner.bundleRoot);
 
   // Refuse the private-state identity before provisioning, fetching, committing, or publishing.
   // Later phase-local checks retain the invariant across any path re-resolution.
@@ -1103,10 +1148,10 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
     establishAlreadyNote = ESTABLISH_ALREADY;
   }
 
-  // The entry self-heal: a stale mid-rebase state found at ENTRY (a crashed/killed prior run) is
-  // aborted BEFORE provisioning is even checked, let alone the commit phase (see
-  // {@link healStaleRebaseBeforeProvisioning} for why this must run BEFORE provisioning).
-  if (!run.owner) healStaleRebaseBeforeProvisioning(run.dir);
+  // The entry self-heal: a rebase a killed sync left is aborted BEFORE provisioning is even
+  // checked, let alone the commit phase (see {@link wedgedBoardRebase} for why this must run
+  // BEFORE provisioning); a rebase a person started is refused.
+  if (!run.owner) await healEntry(run);
 
   // CHANNEL DETECTION — the act-time probe at sync's own resolution point, computed fresh on
   // every run (never cached across a network boundary). Routing is deliberately narrow: ONLY a
@@ -1122,7 +1167,7 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
     }
   }
 
-  const board = provisionPhase(run);
+  const board = await provisionPhase(run);
   if (board === null) return;
   assertBundleOutsidePrivateState(board.boardPath);
   // A board moved to hosted (its marker already here) takes nothing from this run. A pull-only run

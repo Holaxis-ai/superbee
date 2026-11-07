@@ -29,7 +29,7 @@
  *
  * IDENTITY FALLBACK: every commit-CREATING call (`stageAndCommit`, `snapshotBundleCommit`,
  * `flow.ts`'s `createBoardRootCommit`/`createRemovalCommit`, and every non-`--abort` rebase
- * invocation in `fetchRebase`/`fetchRebaseResolving` — a replay needs committer identity too)
+ * invocation in `fetchRebase`/`rebaseResolving` — a replay needs committer identity too)
  * prepends {@link identityFlags}'s per-invocation `-c user.*` args. `[]` on a machine with a
  * resolvable identity — byte-identical to before this existed; the synthetic identity only when
  * git itself could not construct one anywhere (fresh container / identity-less CI runner).
@@ -37,7 +37,7 @@
  * CONFLICT BOUNDARY: {@link fetchRebase} DETECTS a same-doc conflict — collects the conflicted ids
  * via `diff --name-only --diff-filter=U` — and `git rebase --abort`s cleanly (ZERO data movement;
  * kept for any consumer that must never move data). The converging mechanic is
- * {@link fetchRebaseResolving}: keep the upstream version, export the local version, and complete
+ * {@link rebaseResolving}: keep the upstream version, export the local version, and complete
  * the rebase.
  */
 import { captureBoardHostPolicy, type BoardHostPolicy } from "./host-policy.js";
@@ -364,7 +364,7 @@ function gitEnv(rebase: boolean, connectTimeoutSeconds = 10, indexFile?: string)
  * path-parsing consumer at the one chokepoint, like LC_ALL=C does for prose. Every
  * `--name-status` invocation additionally passes `-z` (see {@link nameStatusRows}) so a TAB,
  * newline, or other control byte inside a path is immune too, matching the conflict list's
- * `--name-only -z` (see `fetchRebaseResolving`).
+ * `--name-only -z` (see `rebaseResolving`).
  */
 export function runGit(dir: string, args: string[], opts: RunOptions = {}): GitRunResult {
   const r = runGitBytes(dir, args, opts);
@@ -658,7 +658,7 @@ export function rebaseWasFromBoardBranch(boardPath: string): boolean {
  * unrelated `git worktree add .superbee some-other-branch`), or one merely left on a plain
  * detached HEAD for an unrelated reason (no rebase in progress at all), would otherwise be
  * misreported as a successful "repaired" board checkout — and every downstream sync step
- * (`stageAndCommit`, `fetchRebaseResolving`, `push`) would then operate against content that was
+ * (`stageAndCommit`, `rebaseResolving`, `push`) would then operate against content that was
  * never the shared board. This is genuinely on
  * `board` when EITHER the branch is attached and literally `board`, OR HEAD is detached BECAUSE
  * of a wedged rebase that was itself started FROM `board` ({@link rebaseWasFromBoardBranch}) — any
@@ -1611,6 +1611,33 @@ export function detectStaleRebase(boardPath: string): boolean {
 /** Abort the wedged rebase, restoring the pre-rebase worktree. */
 export function abortStaleRebase(boardPath: string): void {
   mustGit(boardPath, ["rebase", "--abort"], { rebase: true });
+  rmSync(worktreeGitPath(boardPath, SYNC_REBASE_MARKER), { force: true });
+}
+
+/** Written beside the rebase state while sync's own rebase runs; see {@link rebaseResolving}. */
+const SYNC_REBASE_MARKER = "superbee-sync-rebase";
+
+/**
+ * True when the rebase in progress in `boardPath` was started by sync, which leaves a marker for
+ * its whole run. Only a sync holding the board folder's sync lock may act on the answer: the lock
+ * is what proves the sync that started it is gone.
+ */
+export function syncStartedRebase(boardPath: string): boolean {
+  return existsSync(worktreeGitPath(boardPath, SYNC_REBASE_MARKER));
+}
+
+/**
+ * Remove the marker a sync killed after its rebase ended (before it could remove the marker)
+ * left in `boardPath`. Without this, a rebase a person starts later would read as sync's own.
+ * A marker beside a rebase in progress is kept: that rebase is what it marks.
+ */
+export function clearStaleSyncRebaseMarker(boardPath: string): void {
+  if (!detectStaleRebase(boardPath)) rmSync(worktreeGitPath(boardPath, SYNC_REBASE_MARKER), { force: true });
+}
+
+/** The repository's git common-dir, realpathed: one per clone, shared by all its worktrees. */
+export function boardGitCommonDir(dir: string): string | null {
+  return gitCommonDir(dir);
 }
 
 // ── doc-change vocabulary ─────────────────────────────────────────────────────
@@ -2201,8 +2228,13 @@ export type FetchRebaseResolvingOutcome =
  */
 const MAX_REBASE_STOPS = 1000;
 
+/** The network half of the converging pull: `git fetch --prune origin`. It moves no worktree file. */
+export function fetchBoard(boardPath: string, fetchTimeoutMs: number = NETWORK_TIMEOUT_MS): void {
+  mustGit(boardPath, ["fetch", "--prune", BOARD_REMOTE], { timeoutMs: fetchTimeoutMs });
+}
+
 /**
- * `git fetch --prune origin` then `git rebase origin/board`, RESOLVING same-doc conflicts with the
+ * `git rebase origin/board` after {@link fetchBoard}, RESOLVING same-doc conflicts with the
  * converging mechanic ({@link fetchRebase} keeps its detect-only shape for consumers that must
  * never move data).
  *
@@ -2235,13 +2267,28 @@ const MAX_REBASE_STOPS = 1000;
  * conflicted path gets one copy per run: the pre-rebase local tip's version when the tip has the
  * path, else the last stop's `:3:` version. The companion is the `doc update --body-file` input. Created 0700/0600; the caller passes a
  * per-bundle dir OUTSIDE the worktree (see cursor.ts `syncExportsDir`).
+ *
+ * It refuses a rebase already in progress rather than driving one it did not start, and marks the
+ * rebase as sync's own while it runs, so a later sync can tell a killed sync's rebase (healed)
+ * from one a person started (refused).
  */
-export function fetchRebaseResolving(
-  boardPath: string,
-  exportDir: string,
-  fetchTimeoutMs: number = NETWORK_TIMEOUT_MS,
-): FetchRebaseResolvingOutcome {
-  mustGit(boardPath, ["fetch", "--prune", BOARD_REMOTE], { timeoutMs: fetchTimeoutMs });
+export function rebaseResolving(boardPath: string, exportDir: string): FetchRebaseResolvingOutcome {
+  if (detectStaleRebase(boardPath)) {
+    throw new BoardGitError("CONFLICT", "a git rebase is already in progress in the board checkout; sync did not start another", {
+      details: { reason: "rebase_in_progress" },
+    });
+  }
+  const marker = worktreeGitPath(boardPath, SYNC_REBASE_MARKER);
+  writeFileSync(marker, `${process.pid}\n`);
+  try {
+    return rebaseResolvingMarked(boardPath, exportDir);
+  } finally {
+    // A rebase still in progress here is one a later sync heals; it keeps the marker that says so.
+    if (!detectStaleRebase(boardPath)) rmSync(marker, { force: true });
+  }
+}
+
+function rebaseResolvingMarked(boardPath: string, exportDir: string): FetchRebaseResolvingOutcome {
   const boardRef = boardRefOf(boardPath);
   // The fetch above is a LIVE view of origin, but there is no `origin/board` to rebase onto —
   // checked structurally (not by parsing rebase's failure prose) so this never collides with the

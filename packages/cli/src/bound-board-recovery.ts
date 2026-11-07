@@ -9,7 +9,10 @@ import {
   abortStaleRebase,
   detectStaleRebase,
   rebaseWasFromBoardBranch,
+  syncStartedRebase,
 } from "@superbee/board-git";
+import type { CommandPrefix } from "./command-text.js";
+import { rebaseInProgressRefusal } from "./sync-outcomes.js";
 
 import type { LocalBundleTarget } from "./bundle.js";
 import {
@@ -51,6 +54,8 @@ function sameOwner(left: BoundBoardOwner, right: BoundBoardOwner): boolean {
 export async function recoverBoundBoardOwner(
   target: LocalBundleTarget,
   expected: BoundBoardOwner,
+  underRootLock: (boardPath: string, abort: () => void) => Promise<void>,
+  inv: CommandPrefix,
 ): Promise<BoundBoardOwner> {
   const before = await validateBoundBoardOwner(target);
   if (!before || before.readiness !== "recovery-pending" || !sameOwner(before.owner, expected)) {
@@ -59,9 +64,11 @@ export async function recoverBoundBoardOwner(
   if (!detectStaleRebase(expected.bundleRoot) || !rebaseWasFromBoardBranch(expected.bundleRoot)) {
     throw recoveryFailure(target, "rebase-origin", "the pending rebase is no longer a board-origin rebase");
   }
+  // Only a rebase a sync started is ours to abort; the caller's folder lock proves that sync is gone.
+  if (!syncStartedRebase(expected.bundleRoot)) throw rebaseInProgressRefusal(expected.bundleRoot, inv);
 
   try {
-    abortStaleRebase(expected.bundleRoot);
+    await underRootLock(expected.bundleRoot, () => abortStaleRebase(expected.bundleRoot));
   } catch {
     throw recoveryFailure(target, "abort", "the unfinished board rebase could not be canceled");
   }
