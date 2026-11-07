@@ -43,7 +43,7 @@ async function isolatedLockPaths(): Promise<{
 }
 
 function replaceFsMethod(
-  name: "lstat" | "mkdir" | "readFile" | "rename" | "rm" | "writeFile",
+  name: "lstat" | "mkdir" | "readFile" | "rename" | "rm" | "rmdir" | "writeFile",
   replacement: (...args: unknown[]) => unknown,
 ): () => void {
   const mutable = fs as unknown as Record<string, unknown>;
@@ -1045,7 +1045,7 @@ test("pin: timeout diagnosis distinguishes held vs foreign-host vs malformed in 
   const malformed = await diagnose(null);
   assert.equal(malformed.malformed, true);
   assert.match(malformed.message, /owner metadata is missing or malformed/);
-  assert.match(malformed.message, /only after confirming no process is mutating the target/);
+  assert.match(malformed.message, /Remove the lock directory once no Superbee process is running, then retry/);
 });
 
 /** A live process of this user that is not this one: a holder id that exists but did not claim the lock. */
@@ -2330,6 +2330,217 @@ test("a transient unreadable owner record that clears within the cap still relea
   } finally {
     restoreRead();
     clock.restore();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+/** Plant an owner-less lock directory for the harness target, optionally with owner.json content, and date it. */
+async function plantOwnerlessLock(
+  harness: Awaited<ReturnType<typeof isolatedLockPaths>>,
+  ageMs: number,
+  ownerContent?: string,
+): Promise<string> {
+  await fs.mkdir(harness.lockRoot, { recursive: true, mode: 0o700 });
+  const lockPath = await lockPathInRoot(harness.target, harness.lockRoot);
+  await fs.mkdir(lockPath, { mode: 0o700 });
+  if (ownerContent !== undefined) await fs.writeFile(path.join(lockPath, "owner.json"), ownerContent);
+  const when = new Date(Date.now() - ageMs);
+  await fs.utimes(lockPath, when, when);
+  return lockPath;
+}
+
+test("a process killed between creating the lock directory and writing its owner record does not wedge the next claim", async () => {
+  const harness = await isolatedLockPaths();
+  const child = spawn(
+    process.execPath,
+    ["--import", pathToFileURL(LOADER).href, LOCK_HOLDER_CHILD, harness.target, harness.portableRoot, harness.lockRoot, "pause-before-record"],
+    { stdio: ["ignore", "pipe", "pipe", "ipc"] },
+  );
+  let stderr = "";
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk: string) => (stderr += chunk));
+  try {
+    const lockPath = await eventually(
+      new Promise<string>((resolve, reject) => {
+        child.on("message", (message: unknown) => {
+          const value = message as Record<string, unknown> | null;
+          if (value?.type === "paused" && typeof value.lockPath === "string") resolve(value.lockPath);
+        });
+        child.once("error", reject);
+        child.once("exit", (code, signal) => reject(new Error(`claimer exited before pausing (${String(code)}/${String(signal)}): ${stderr}`)));
+      }),
+    );
+    assert.equal(child.kill("SIGKILL"), true);
+    await eventually(new Promise<void>((resolve) => child.once("exit", () => resolve())));
+    assert.deepEqual(await fs.readdir(lockPath), [], "the crash leaves an owner-less lock directory");
+
+    // The default wait must cover the age at which an owner-less directory counts as abandoned.
+    const release = await eventually(
+      acquireFilesystemMutationLock(harness.target, { portableRoot: harness.portableRoot, lockRoot: harness.lockRoot }),
+      8_000,
+    );
+    assert.deepEqual(await fs.readdir(harness.lockRoot), [path.basename(lockPath)]);
+    assert.deepEqual(await fs.readdir(lockPath), ["owner.json"]);
+    await release();
+    assert.deepEqual(await fs.readdir(harness.lockRoot), []);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("an aged owner-less identity lock is recovered through the identity-key entry point", async () => {
+  const harness = await isolatedLockPaths();
+  try {
+    const key = "a".repeat(64);
+    await fs.mkdir(harness.lockRoot, { recursive: true, mode: 0o700 });
+    const lockPath = path.join(harness.lockRoot, `${key}.lock`);
+    await fs.mkdir(lockPath);
+    const old = new Date(Date.now() - 60_000);
+    await fs.utimes(lockPath, old, old);
+    const release = await acquireFilesystemIdentityLock(key, "identity", { lockRoot: harness.lockRoot, waitMs: 50, pollMs: 5 });
+    assert.deepEqual(await fs.readdir(lockPath), ["owner.json"]);
+    await release();
+  } finally {
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("a lock directory holding any owner.json, or dated in the future, is never removed as abandoned", async (t) => {
+  const cases = [
+    { name: "empty record", content: "", ageMs: 60_000 },
+    { name: "partial record", content: '{"pid":', ageMs: 60_000 },
+    { name: "future mtime", content: undefined, ageMs: -60_000 },
+    { name: "fresh claim", content: undefined, ageMs: 0 },
+  ];
+  for (const fixture of cases) {
+    await t.test(fixture.name, async () => {
+      const harness = await isolatedLockPaths();
+      try {
+        const lockPath = await plantOwnerlessLock(harness, fixture.ageMs, fixture.content);
+        await assert.rejects(
+          () => acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, waitMs: 50, pollMs: 5 }),
+          (err: unknown) => err instanceof FilesystemMutationLockError && err.malformed && err.lockPath === lockPath,
+        );
+        assert.deepEqual(await fs.readdir(lockPath), fixture.content === undefined ? [] : ["owner.json"]);
+        if (fixture.content !== undefined) {
+          assert.equal(await fs.readFile(path.join(lockPath, "owner.json"), "utf8"), fixture.content);
+        }
+      } finally {
+        await fs.rm(harness.root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("competing recoverers of one abandoned lock directory end with exactly one holder at a time", async () => {
+  const harness = await isolatedLockPaths();
+  const originalRmdir = fs.rmdir;
+  let removed = 0;
+  const restore = replaceFsMethod("rmdir", async (...args) => {
+    await Reflect.apply(originalRmdir, fs, args);
+    // Release removes its renamed remnant through `rm`, which may call rmdir; count only lock paths.
+    if (String(args[0]).endsWith(".lock")) removed += 1;
+  });
+  try {
+    await plantOwnerlessLock(harness, 60_000);
+    let inside = 0;
+    let most = 0;
+    const holders: string[] = [];
+    await Promise.all(
+      [0, 1, 2, 3].map(async (index) => {
+        const release = await acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, waitMs: 3_000, pollMs: 2 });
+        inside += 1;
+        most = Math.max(most, inside);
+        holders.push(String(index));
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        inside -= 1;
+        await release();
+      }),
+    );
+    assert.equal(most, 1);
+    assert.equal(holders.length, 4);
+    // A recoverer that aged the abandoned directory may remove a fresh claim still in its write
+    // window; that claimer's owner write then fails and it claims again, so exclusion holds.
+    assert.ok(removed >= 1 && removed <= 4, `removed ${removed}`);
+    assert.deepEqual(await fs.readdir(harness.lockRoot), []);
+  } finally {
+    restore();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("a recoverer that removes a paused claimer's directory leaves exactly one holder", async () => {
+  const harness = await isolatedLockPaths();
+  const originalWriteFile = fs.writeFile;
+  let paused = true;
+  let recovererRelease: (() => Promise<void>) | undefined;
+  let lockPath = "";
+  // The first claimer stalls between its mkdir and its owner write long enough to look abandoned;
+  // a recoverer removes its directory, claims, and holds while the first claimer resumes.
+  const restore = replaceFsMethod("writeFile", async (...args) => {
+    if (paused && path.basename(String(args[0])) === "owner.json") {
+      paused = false;
+      lockPath = path.dirname(String(args[0]));
+      const old = new Date(Date.now() - 60_000);
+      await fs.utimes(lockPath, old, old);
+      recovererRelease = await acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, waitMs: 50, pollMs: 5 });
+    }
+    return Reflect.apply(originalWriteFile, fs, args);
+  });
+  try {
+    let resumedHolds = false;
+    const resumed = acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, waitMs: 3_000, pollMs: 5 }).then((release) => {
+      resumedHolds = true;
+      return release;
+    });
+    resumed.catch(() => {});
+    const deadline = Date.now() + 3_000;
+    while (recovererRelease === undefined) {
+      assert.ok(Date.now() < deadline, "the recoverer never claimed the abandoned directory");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const recovererToken = (JSON.parse(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")) as { pid: number; token: string }).token;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(resumedHolds, false, "the resumed claimer must wait for the recoverer");
+    assert.equal((JSON.parse(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")) as { token: string }).token, recovererToken);
+    await recovererRelease();
+    const release = await eventually(resumed);
+    await release();
+    assert.deepEqual(await fs.readdir(harness.lockRoot), []);
+  } finally {
+    restore();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("an owner write whose directory was removed retries the claim without a rollback", async () => {
+  const harness = await isolatedLockPaths();
+  const originalWriteFile = fs.writeFile;
+  const originalReadFile = fs.readFile;
+  let removedOnce = false;
+  let ownerReads = 0;
+  const restoreWrite = replaceFsMethod("writeFile", async (...args) => {
+    if (!removedOnce && path.basename(String(args[0])) === "owner.json") {
+      removedOnce = true;
+      await fs.rmdir(path.dirname(String(args[0])));
+    }
+    return Reflect.apply(originalWriteFile, fs, args);
+  });
+  const restoreRead = replaceFsMethod("readFile", (...args) => {
+    if (path.basename(String(args[0])) === "owner.json") ownerReads += 1;
+    return Reflect.apply(originalReadFile, fs, args);
+  });
+  try {
+    const release = await acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, waitMs: 50, pollMs: 5 });
+    restoreRead();
+    assert.equal(removedOnce, true);
+    assert.equal(ownerReads, 0, "a write that found no directory has nothing to roll back");
+    await release();
+    assert.deepEqual(await fs.readdir(harness.lockRoot), []);
+  } finally {
+    restoreRead();
+    restoreWrite();
     await fs.rm(harness.root, { recursive: true, force: true });
   }
 });

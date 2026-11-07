@@ -14,6 +14,13 @@ const DEFAULT_POLL_MS = 25;
  * waiting out a caller's whole budget for it only delays the same fail-closed refusal.
  */
 const UNREADABLE_OWNER_POLL_MS = 2_000;
+/**
+ * How old an owner-less lock directory must be before a claimer removes it as abandoned. A live
+ * claimer writes its record milliseconds after its `mkdir`. The age only spares a live claimer a
+ * needless retry; removal is safe at any age (see `removeAbandonedClaim`). It stays below the
+ * default wait, so a claim recovers the leftover within one default wait.
+ */
+const ABANDONED_CLAIM_AGE_MS = 2_000;
 
 export interface FilesystemMutationLockOwner {
   pid: number;
@@ -288,6 +295,27 @@ async function quarantineStaleLock(
   }
 }
 
+/**
+ * Remove an owner-less lock directory left by a claimer that stopped between its `mkdir` and its
+ * owner record. A claim is held only once its `wx` create of owner.json succeeds, and `rmdir`
+ * removes only an empty directory, so this can never remove a held lock: a directory with any
+ * owner.json, even an empty or partial one, refuses. A live claimer whose empty directory is
+ * removed sees its owner write fail with ENOENT and claims again. Any failure, including losing a
+ * race to another recoverer, is non-progress: the caller keeps waiting.
+ */
+async function removeAbandonedClaim(lockPath: string): Promise<boolean> {
+  try {
+    const info = await fs.lstat(lockPath);
+    // A directory dated in the future has no trustworthy age.
+    const age = Date.now() - info.mtimeMs;
+    if (!info.isDirectory() || age < ABANDONED_CLAIM_AGE_MS) return false;
+    await fs.rmdir(lockPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -399,7 +427,7 @@ async function timeoutError(
   if (malformed) {
     message =
       `timed out waiting for filesystem mutation lock '${lockPath}'; its owner metadata is missing or malformed. ` +
-      `Inspect and remove the lock only after confirming no process is mutating the target, then retry.`;
+      `Remove the lock directory once no Superbee process is running, then retry.`;
   } else if (stale) {
     message =
       `stale filesystem mutation lock '${lockPath}' belongs to absent PID ${owner.pid} on ${owner.hostname}. ` +
@@ -493,7 +521,9 @@ async function claimLockPath(
         unwitnessedRetryUsed = false;
       }
 
-      let existingOwner = await readOwner(lockPath);
+      const existing = await readOwnerRecord(lockPath);
+      let existingOwner = existing.state === "record" ? existing.owner : null;
+      if (existing.state === "absent" && (await removeAbandonedClaim(lockPath))) continue;
       if (existingOwner !== null) {
         if (await quarantineStaleLock(lockPath, existingOwner, policy)) continue;
         // A failed quarantine attempt is non-progress: another reclaimer may have moved the stale
@@ -527,13 +557,14 @@ async function claimLockPath(
       // `wx` fails with EEXIST only when another claimer's owner.json was already there, possibly
       // opened but not yet written. The directory is that claimer's now: never roll it back.
       // A lost claim re-enters the loop, whose next `mkdir` either claims or reaches the timeout check.
-      if (code === "EEXIST") {
+      // ENOENT or ENOTDIR means this claim's directory is already gone, so there is nothing to roll
+      // back, and any directory there now belongs to another claimer.
+      if (code === "EEXIST" || code === "ENOENT" || code === "ENOTDIR") {
         heldTokens.delete(owner.token);
         continue;
       }
       await rollBackOwnClaim(lockPath, owner, claimed, waitMs, pollMs, policy).catch(() => {});
       heldTokens.delete(owner.token);
-      if (code === "ENOENT" || code === "ENOTDIR") continue;
       throw err;
     }
 
@@ -571,7 +602,7 @@ async function claimLockPath(
  * alone. So is a record this process still cannot read once the wait budget is spent (a transient
  * read failure is polled out first), and a host that reports no birth time (Linux on NFS, say), where the
  * directory cannot be told from a successor that reused its inode: an owner-less lock left behind
- * is reported as orphaned once the claim grace passes, while a deleted live lock breaks exclusion.
+ * is removed by a later claimer once it ages, while a deleted live lock breaks exclusion.
  */
 async function rollBackOwnClaim(
   lockPath: string,
@@ -739,8 +770,8 @@ function newOwner(target: string): FilesystemMutationLockOwner {
  * `mkdir` is the atomic claim. Locks live in a private per-user runtime namespace keyed by the
  * canonical target path, never inside the portable bundle: Git staging, establishment snapshots,
  * copying, and packaging cannot capture them. A valid same-host lock whose PID is absent is moved
- * to a token-fenced quarantine and retried; malformed, foreign-host, and live locks remain
- * fail-closed.
+ * to a token-fenced quarantine and retried; an empty lock directory older than the claim window is
+ * removed and retried; malformed, foreign-host, and live locks remain fail-closed.
  */
 export async function acquireFilesystemMutationLock(
   target: string,
