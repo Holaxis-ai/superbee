@@ -23,7 +23,7 @@ import type {
   StorageBackend,
   Version,
 } from "../src/types.js";
-import { blobVersion, contentVersion, VersionConflict } from "../src/versioning.js";
+import { blobVersion, contentVersion, VersionConflict, versionOfBytes } from "../src/versioning.js";
 import { normalizeDocumentBodyForStorage } from "../src/frontmatter.js";
 import { FilesystemIdentityAliasError, FrontmatterRefusedError, InvalidInputError } from "../src/errors.js";
 import { FRONTMATTER_LIMITS } from "../src/bounded-yaml.js";
@@ -165,6 +165,25 @@ export function registerFrontmatterReadContract(
   }
 
   if (!localYamlValues) return;
+
+  // The wire refuses typeless documents before storage, so only local adapters reach this row.
+  test(`${name} frontmatter read contract: an empty-metadata body the reader would misread is fenced and survives intact`, async () => {
+    await withFixture(create, async (backend) => {
+      const bodies = ["---\nvalue: body text\n---\nbody", "\uFEFF---\nvalue: body text\n---\nbody", "---", "---\r", "\uFEFFbody", "---\r\nx: 1\r\n---\r\nrest"];
+      for (const [index, body] of bodies.entries()) {
+        const value: OkfDocument = { id: `metadata/delimiter-body-${index}`, frontmatter: {} as OkfDocument["frontmatter"], body };
+        const version = await backend.write(value.id, value);
+        // An empty block keeps the body (and any leading BOM) out of the delimiter and BOM rules.
+        assert.equal(version, versionOfBytes(`---\n---\n${normalizeDocumentBodyForStorage(body)}`));
+        assert.equal(version, contentVersion(value));
+        for (const read of [await backend.read(value.id), ...(await backend.readMany([value.id]))]) {
+          assert.equal(read.version, version);
+          assert.deepEqual(read.doc.frontmatter, {});
+          assert.equal(read.doc.body, normalizeDocumentBodyForStorage(body));
+        }
+      }
+    });
+  });
 
   test(`${name} frontmatter read contract: current edition governs decoding without changing stored version`, async () => {
     await withFixture(create, async (backend) => {
