@@ -82,6 +82,20 @@ describe("DocumentBrowser", () => {
     const alert = container.querySelector(".browse-unreadable")!;
     expect(alert.textContent).toContain("1 document could not be read");
     expect(alert.textContent).toContain("tasks/broken: bad indentation of a mapping entry");
+    expect(alert.textContent).toContain("fix the YAML");
+    expect(groupByKind("Task").querySelector(".browse-count")!.textContent).toBe("8");
+  });
+
+  it("names a document the host denied reading without YAML advice that cannot fix it", async () => {
+    vi.mocked(listAllHeadsReport).mockResolvedValue({
+      heads: HEADS,
+      skipped: [{ id: "tasks/locked", reason: "permission denied (EACCES)" }],
+    } as never);
+    await render();
+    const alert = container.querySelector(".browse-unreadable")!;
+    expect(alert.textContent).toContain("1 document could not be read and is left out below.");
+    expect(alert.textContent).toContain("tasks/locked: permission denied (EACCES)");
+    expect(alert.textContent).not.toContain("YAML");
     expect(groupByKind("Task").querySelector(".browse-count")!.textContent).toBe("8");
   });
 
