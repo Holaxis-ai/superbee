@@ -2277,3 +2277,59 @@ test("an ownership check that never resolves is bounded and never reaches the de
     await fs.rm(harness.root, { recursive: true, force: true });
   }
 });
+
+test("a durably unreadable owner record refuses within its own short cap, not the whole release budget", async () => {
+  const { harness, release, lockPath, ownerFile } = await heldLock({ waitMs: 60_000, pollMs: 0 });
+  const record = await fs.readFile(ownerFile, "utf8");
+  const clock = virtualClock();
+  const begun = Date.now();
+  const originalReadFile = fs.readFile;
+  let reads = 0;
+  const restoreRead = replaceFsMethod("readFile", (...args) => {
+    if (path.resolve(String(args[0])) !== path.resolve(ownerFile)) return Reflect.apply(originalReadFile, fs, args);
+    reads += 1;
+    clock.advance(250);
+    return Promise.reject(unreadableRecord);
+  });
+  try {
+    await assert.rejects(
+      () => release(),
+      (err: unknown) => err instanceof FilesystemMutationLockError && /owner record could not be read/.test(err.message),
+    );
+    const elapsed = Date.now() - begun;
+    assert.ok(elapsed <= 5_000, `a durable read failure must stop within the cap, spent ${elapsed}ms of a 60000ms budget`);
+    assert.ok(reads > 1, "it must still have been polled, not concluded from one read");
+  } finally {
+    restoreRead();
+    clock.restore();
+    assert.equal(await fs.readFile(ownerFile, "utf8"), record, "the lock and its record are retained");
+    assert.equal(await pathExists(lockPath), true);
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("a transient unreadable owner record that clears within the cap still releases normally", async () => {
+  const { harness, release, ownerFile } = await heldLock({ waitMs: 60_000, pollMs: 0 });
+  const clock = virtualClock();
+  const originalReadFile = fs.readFile;
+  let reads = 0;
+  const restoreRead = replaceFsMethod("readFile", (...args) => {
+    if (path.resolve(String(args[0])) !== path.resolve(ownerFile)) return Reflect.apply(originalReadFile, fs, args);
+    reads += 1;
+    // A scanner holds the record for about a second and a half, then lets go.
+    if (reads <= 4) {
+      clock.advance(400);
+      return Promise.reject(unreadableRecord);
+    }
+    return Reflect.apply(originalReadFile, fs, args);
+  });
+  try {
+    await release();
+    assert.equal(reads, 5, "four indeterminate reads, then the definitive one");
+    assert.deepEqual(await lockRootEntries(harness.lockRoot), []);
+  } finally {
+    restoreRead();
+    clock.restore();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
