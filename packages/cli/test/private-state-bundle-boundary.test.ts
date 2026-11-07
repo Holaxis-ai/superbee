@@ -153,7 +153,8 @@ test("truth table — the state root does NOT exist (the first-run fixture)", ()
 });
 
 // Replaces the state root with a fresh directory (new inode) immediately before chosen stats of
-// that exact path, so the replacement lands deterministically between the relation's reads.
+// that exact path, so the replacement lands deterministically between the relation's reads. The
+// old directory is renamed aside and kept, so the filesystem cannot hand its inode to the new one.
 function relateUnderReplacement(swapBeforeStats: "second" | "every"): { relation?: string; error?: string } {
   const root = scratch();
   try {
@@ -169,7 +170,7 @@ function relateUnderReplacement(swapBeforeStats: "second" | "every"): { relation
       fs.statSync = (target, options) => {
         if (target === state) {
           calls += 1;
-          if (mode === 'every' ? calls > 1 : calls === 2) { fs.rmdirSync(state); fs.mkdirSync(state); }
+          if (mode === 'every' ? calls > 1 : calls === 2) { fs.renameSync(state, state + '.old' + calls); fs.mkdirSync(state); }
         }
         return original(target, options);
       };
