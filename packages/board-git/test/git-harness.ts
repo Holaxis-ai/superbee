@@ -536,7 +536,9 @@ export function isMidRebase(repo: BoardRepo): boolean {
 /**
  * Plant a SAME-DOC divergence and then ACTUALLY start `rebase origin/board` in clone B, leaving its
  * board worktree WEDGED mid-rebase (`rebase-merge` present) — the crash/kill-mid-run state sync
- * entry must self-heal (adjudication C). Returns the underlying divergence.
+ * entry must self-heal (adjudication C). The rebase carries the marker sync writes while its own
+ * rebase runs, so it models a sync killed mid-rebase, not a rebase a person started by hand.
+ * Returns the underlying divergence.
  */
 export async function wedgeMidRebase(topo: TwoCloneTopology, docId = "tasks/seed-one"): Promise<Divergence> {
   const d = await divergeSameDoc(topo, docId);
@@ -547,7 +549,14 @@ export async function wedgeMidRebase(topo: TwoCloneTopology, docId = "tasks/seed
   if (!isMidRebase(topo.b)) {
     throw new Error(`wedgeMidRebase: rebase exited ${r.status} but left no rebase-merge state`);
   }
+  markSyncStartedRebase(topo.b.board);
   return d;
+}
+
+/** Leave the marker sync's own rebase carries, so a rebase started here reads as a killed sync's. */
+export function markSyncStartedRebase(checkout: string): void {
+  const rel = git(checkout, ["rev-parse", "--git-path", "superbee-sync-rebase"]).trim();
+  writeFileSync(path.resolve(checkout, rel), "0\n");
 }
 
 // ── concurrent-sync / held index.lock fixture (adjudication B) ────────────────

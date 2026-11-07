@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fetchRebase, fetchRebaseResolving } from "../src/index.js";
+import { fetchRebase, fetchBoard as fetchRemoteBoard, rebaseResolving } from "../src/index.js";
 import {
   commitBoard,
   deleteBoardDoc,
@@ -20,6 +20,8 @@ import {
   type BoardRepo,
   type TwoCloneTopology,
 } from "./git-harness.js";
+
+const fetchThenRebaseResolving = (board: string, exportDir: string) => { fetchRemoteBoard(board); return rebaseResolving(board, exportDir); };
 
 const BODY = "line0\nline1\nline2\nline3\nline4\nline5\n";
 const FIXTURES = ["notes/first", "notes/empties", "notes/last"];
@@ -42,7 +44,7 @@ async function renameAndCommit(repo: BoardRepo, from: string, to: string): Promi
   commitBoard(repo, `rename ${from} to ${to}`);
 }
 
-test("fetchRebaseResolving: renames stay add+delete across --continue and --skip, even with a host merge.renames", async () => {
+test("rebaseResolving: renames stay add+delete across --continue and --skip, even with a host merge.renames", async () => {
   const topo = await makeTwoCloneTopology();
   const exportDir = await mkdtemp(path.join(tmpdir(), "rebase-path-identity-"));
   try {
@@ -54,7 +56,7 @@ test("fetchRebaseResolving: renames stay add+delete across --continue and --skip
     commitBoard(topo.b, "delete empties");
     await renameAndCommit(topo.b, "notes/last", "notes/last-moved");
 
-    const outcome = fetchRebaseResolving(topo.b.board, exportDir);
+    const outcome = fetchThenRebaseResolving(topo.b.board, exportDir);
     assert.equal(outcome.status, "resolved");
     if (outcome.status !== "resolved") assert.fail("expected resolution");
     assert.deepEqual(outcome.conflicts.map((c) => c.relPath).sort(), FIXTURES.map((id) => `${id}.md`).sort());
@@ -88,7 +90,7 @@ test("fetchRebase: a rename crossing a teammate's edit reports the old path, the
   }
 });
 
-test("fetchRebaseResolving: a teammate's rename keeps the local edit in a saved copy at the old path", async () => {
+test("rebaseResolving: a teammate's rename keeps the local edit in a saved copy at the old path", async () => {
   const topo = await makeTwoCloneTopology();
   const exportDir = await mkdtemp(path.join(tmpdir(), "rebase-path-identity-"));
   try {
@@ -101,7 +103,7 @@ test("fetchRebaseResolving: a teammate's rename keeps the local edit in a saved 
     await modifyBoardDoc(topo.b, "notes/first", { body: `${BODY}LOCAL WORDS\n` });
     commitBoard(topo.b, "local edit");
 
-    const outcome = fetchRebaseResolving(topo.b.board, exportDir);
+    const outcome = fetchThenRebaseResolving(topo.b.board, exportDir);
     assert.equal(outcome.status, "resolved");
     if (outcome.status !== "resolved") assert.fail("expected resolution");
     assert.deepEqual(outcome.conflicts.map((c) => c.relPath), ["notes/first.md"]);
