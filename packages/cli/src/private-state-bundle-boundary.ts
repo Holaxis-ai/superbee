@@ -16,6 +16,8 @@ import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
+import { foldPath } from "@superbee/core";
+
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
 import {
@@ -207,18 +209,11 @@ function physicalCoordinate(
   }
 }
 
-/**
- * Folding rule for path components that do not exist yet: their future physical identity depends on
- * the containing filesystem's case and Unicode rules, so fold to the portable equivalence class.
- * This OVER-refuses a genuinely distinct `SUPERBEE` on a case-sensitive volume. That is retained
- * deliberately — do not "fix" it.
- */
-function fold(segment: string): string {
-  return segment.normalize("NFC").toLowerCase();
-}
-
+// Path components that do not exist yet take their future identity from the containing
+// filesystem's case and Unicode rules, so they fold to core's portable equivalence class. This
+// over-refuses a genuinely distinct `SUPERBEE` on a case-sensitive volume, deliberately.
 function foldedSegments(coordinate: PhysicalCoordinate): string[] {
-  return path.resolve(coordinate.anchorPath, ...coordinate.missing).split(path.sep).filter(Boolean).map(fold);
+  return path.resolve(coordinate.anchorPath, ...coordinate.missing).split(path.sep).filter(Boolean).map(foldPath);
 }
 
 function relateSegments(bundle: readonly string[], state: readonly string[]): PrivateStateRelation {
@@ -242,7 +237,7 @@ export function relateToPrivateState(candidate: string, stateRoot: string): Priv
   }
 
   if (bundle.anchorKey === state.anchorKey) {
-    return relateSegments(bundle.missing.map(fold), state.missing.map(fold));
+    return relateSegments(bundle.missing.map(foldPath), state.missing.map(foldPath));
   }
 
   // The `missing is empty` guards below are LOAD-BEARING. Without them an absent state root

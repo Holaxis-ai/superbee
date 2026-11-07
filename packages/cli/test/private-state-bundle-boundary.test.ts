@@ -36,6 +36,7 @@ import {
   relateToPrivateState,
   type PrivateStateRelation,
 } from "../src/private-state-bundle-boundary.js";
+import { foldPath } from "@superbee/core";
 import { privilegedLinuxSkip, sudo } from "./support/privileged-linux.js";
 import { boundaryFixture, runCli, type BoundaryFixture } from "./support/private-state-fixtures.js";
 import { isolatedUserEnv } from "./support/user-env.js";
@@ -160,6 +161,20 @@ test("truth table — BOTH missing: identity folds to the portable equivalence c
     assert.equal(relateToPrivateState(path.join(variant, "sub"), state), "bundle-inside-state");
     assert.equal(relateToPrivateState(path.join(home, "unrelated-name"), state), "unrelated");
     assert.equal(existsSync(state), false, "classification never creates anything");
+  });
+});
+
+test("truth table: a name core's foldPath joins with the state root is not a bypass", () => {
+  withHome((home) => {
+    const state = canonicalUserStateDir(home);
+    const base = path.basename(state);
+    assert.ok(base.includes("s"), "the derived fixture needs an s to respell");
+    // U+017F (long s) uppercases to S, so case-insensitive volumes treat it as s.
+    const variant = path.join(path.dirname(state), base.replace("s", "\u017F"));
+    assert.equal(foldPath(variant), foldPath(state), "foldPath is the one folding rule");
+    assert.equal(existsSync(state), false);
+    assert.equal(relateToPrivateState(variant, state), "identical");
+    assert.equal(relateToPrivateState(path.join(variant, "sub"), state), "bundle-inside-state");
   });
 });
 
