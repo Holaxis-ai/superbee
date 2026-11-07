@@ -96,6 +96,26 @@ test("sync: a stalled push stops by the caller's deadline and reports a timeout,
   }
 });
 
+test("sync: a deadline that has already passed fails fast with a positive budget, never an unlimited one", async () => {
+  const topo = await makeTwoCloneTopology();
+  const home = await realpath(await mkdtemp(path.join(tmpdir(), "sb-push-timeout-home-")));
+  try {
+    await writeBoardDoc(topo.a, "notes/late", { frontmatter: { type: "Note", title: "late" }, body: "# late\n" });
+    const hook = await stallPush(topo, 5);
+    const started = Date.now();
+    const err = await withIsolatedUserEnv(home, () =>
+      rejects(sync(["--dir", topo.a.board, "--json"], { stdout: () => {}, stderr: () => {}, hookInstalled: () => true, networkDeadline: Date.now() - 5_000 })),
+    );
+    assert.ok(Date.now() - started < 4_500, "a past deadline must not wait for the stalled hook");
+    assert.equal(err.details?.reason, "timeout");
+    assert.ok((err.details?.timeout_ms as number) >= 1, "the budget is clamped, never zero or negative");
+    await rm(hook);
+  } finally {
+    await topo.cleanup();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("sync: when a stopped upload already reached the remote, the next sync sends nothing again", async () => {
   const topo = await makeTwoCloneTopology();
   const home = await realpath(await mkdtemp(path.join(tmpdir(), "sb-push-landed-home-")));

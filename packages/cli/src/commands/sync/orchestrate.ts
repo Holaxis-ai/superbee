@@ -341,7 +341,8 @@ export const SYNC_IN_TREE_CURRENT = "checkout is current with upstream";
 /** An op's budget: its ordinary bound, cut to what is left before the caller's deadline. */
 function networkBudget(run: SyncRun, ordinaryMs: number): number {
   const deadline = run.deps.networkDeadline;
-  return deadline === undefined ? ordinaryMs : Math.min(ordinaryMs, deadline - Date.now());
+  // At least 1 ms: a past deadline must still fail fast, and a timeout of 0 would mean no limit.
+  return deadline === undefined ? ordinaryMs : Math.max(1, Math.min(ordinaryMs, deadline - Date.now()));
 }
 
 /** The per-run inputs every phase shares, assembled once by {@link syncCommand}. */
