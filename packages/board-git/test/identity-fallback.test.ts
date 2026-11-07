@@ -40,11 +40,14 @@ import {
   createBoardRootCommit,
   createRemovalCommit,
   fetchRebase,
-  fetchRebaseResolving,
+  fetchBoard as fetchRemoteBoard,
+  rebaseResolving,
   identityFlags,
   runGit,
   stageAndCommit,
 } from "../src/index.js";
+
+const fetchThenRebaseResolving = (board: string, exportDir: string) => { fetchRemoteBoard(board); return rebaseResolving(board, exportDir); };
 
 /** A commit's `{author, committer}` identity line, each `<name> <email>`. */
 function identityOf(dir: string, rev = "HEAD"): { author: string; committer: string } {
@@ -202,7 +205,7 @@ test("fetchRebase: a clean different-doc REPLAY creates a new commit whose COMMI
   }
 });
 
-test("fetchRebaseResolving: a resolved conflict whose replayed commit SURVIVES non-empty (the --continue path, not just --skip) also gets the synthetic committer identity when resolution fails", async () => {
+test("rebaseResolving: a resolved conflict whose replayed commit SURVIVES non-empty (the --continue path, not just --skip) also gets the synthetic committer identity when resolution fails", async () => {
   const topo = await makeTwoCloneTopology();
   const exportDir = await mkdtemp(path.join(tmpdir(), "aslite-identity-exports-"));
   try {
@@ -221,7 +224,7 @@ test("fetchRebaseResolving: a resolved conflict whose replayed commit SURVIVES n
     commitBoard(topo.b, "board: B edits seed-one AND welcome", { author: { name: "bob", email: "bob@example.invalid" } });
     fetchBoard(topo.b);
 
-    const outcome = await withNoGitIdentity(() => fetchRebaseResolving(topo.b.board, exportDir));
+    const outcome = await withNoGitIdentity(() => fetchThenRebaseResolving(topo.b.board, exportDir));
     assert.equal(outcome.status, "resolved");
     // The replay genuinely landed a NEW commit (not just origin/board's own tip): welcome.md
     // carries B's surviving edit, seed-one.md carries A's kept-upstream version.

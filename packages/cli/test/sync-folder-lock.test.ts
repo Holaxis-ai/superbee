@@ -14,6 +14,7 @@ import {
   gitTry,
   isMidRebase,
   makeTwoCloneTopology,
+  divergeSameDoc,
   modifyBoardDoc,
   wedgeMidRebase,
   type TwoCloneTopology,
@@ -128,8 +129,29 @@ test("a rebase a person started is refused, never aborted", async () => {
     const result = await runSync(home, ["--dir", topo.b.root]);
     assert.equal(result.err?.code, "CONFLICT");
     assert.equal(result.err?.details?.reason, "rebase_in_progress");
-    assert.match(result.err!.message, /a git rebase you started is in progress in .*; finish it with `git rebase --continue` or `git rebase --abort`, then run `.*sync`/);
+    assert.match(result.err!.message, /a git rebase is in progress in .* that this sync did not start; finish it with `git rebase --continue` or `git rebase --abort`, then run `.*sync`/);
     assert.equal(isMidRebase(topo.b), true);
+  } finally {
+    await done();
+  }
+});
+
+test("a marker a sync left after its rebase ended is cleared, so a later hand-started rebase is refused", async () => {
+  const { topo, home, done } = await fixture();
+  try {
+    const marker = path.resolve(topo.b.board, git(topo.b.board, ["rev-parse", "--git-path", "superbee-sync-rebase"]).trim());
+    writeFileSync(marker, "0\n");
+    // A pull-only run never rebases, so only the entry heal can clear the marker.
+    const clean = await runSync(home, ["--dir", topo.b.root, "--pull-only"]);
+    assert.equal(clean.err, undefined, clean.out);
+    assert.equal(existsSync(marker), false, "the stale marker is gone");
+    await divergeSameDoc(topo);
+    assert.notEqual(gitTry(topo.b.board, ["rebase", "origin/board"]).status, 0);
+    const before = head(topo);
+    const refused = await runSync(home, ["--dir", topo.b.root]);
+    assert.equal(refused.err?.details?.reason, "rebase_in_progress");
+    assert.equal(isMidRebase(topo.b), true, "the person's rebase is untouched");
+    assert.equal(head(topo), before);
   } finally {
     await done();
   }

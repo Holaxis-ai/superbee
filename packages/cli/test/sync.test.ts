@@ -1995,7 +1995,7 @@ test("sync: loud provisioning — a FRESH provision followed by a broken-origin 
   try {
     // Break origin AFTER the initial clone already fetched refs/remotes/origin/board (mirrors
     // FINDING 3's own technique): provisioning succeeds from that pre-fetched local ref (needs no
-    // network), but STEP 3's own `fetch` inside fetchRebaseResolving then fails for real.
+    // network), but STEP 3's own `fetch` inside fetchBoard then fails for real.
     git(topo.a.root, ["remote", "set-url", "origin", "/nonexistent-origin-xyz"]);
     const result = await runSync(homes[0]!, ["--dir", topo.a.root]);
     assert.ok(result.err, "expected a thrown CliError");

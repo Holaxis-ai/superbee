@@ -906,13 +906,14 @@ export function syncVerbNotApplicable(flags: readonly string[], home: SyncHome, 
 }
 
 /**
- * A git rebase in the board checkout that sync did not start: a person's own work in progress,
- * which sync never aborts or drives. A rebase a killed sync left is healed instead.
+ * A git rebase in the board checkout that sync did not start (a person's own, or one an older
+ * superbee left without the marker), which sync never aborts or drives. A rebase a killed sync
+ * left is healed instead.
  */
 export function rebaseInProgressRefusal(folder: string, inv: CommandPrefix): CliError {
   return new CliError(
     "CONFLICT",
-    `a git rebase you started is in progress in ${commandToken(folder)}; finish it with \`git rebase --continue\` or \`git rebase --abort\`, then run \`${inv} sync\``,
+    `a git rebase is in progress in ${commandToken(folder)} that this sync did not start; finish it with \`git rebase --continue\` or \`git rebase --abort\`, then run \`${inv} sync\``,
     { details: { reason: "rebase_in_progress", folder, retryable: false } },
   );
 }

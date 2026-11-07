@@ -35,6 +35,8 @@ import {
   hasLocalOnlyBundle,
   syncStartedRebase,
   wedgedBoardRebase,
+  clearStaleSyncRebaseMarker,
+  clearStaleSyncRebaseMarkers,
   inTreeFetchAndRecord,
   fetchOrigin,
   isBoardGitError,
@@ -1113,6 +1115,7 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
  * under the folder lock, which proves no live sync owns the rebase.
  */
 async function healEntry(run: SyncRun): Promise<void> {
+  clearStaleSyncRebaseMarkers(run.dir);
   const wedged = wedgedBoardRebase(run.dir);
   if (wedged === null) return;
   if (!syncStartedRebase(wedged)) throw rebaseInProgressRefusal(wedged, run.inv);
@@ -1126,6 +1129,7 @@ async function syncLocked(run: SyncRun, dispatch: Extract<SyncDispatch, { kind: 
     run.owner = recoveredOwner;
     run.route = { ...run.route, readiness: "ready", owner: recoveredOwner };
   }
+  if (run.route?.kind === "bound-board") clearStaleSyncRebaseMarker(run.route.owner.bundleRoot);
 
   // Refuse the private-state identity before provisioning, fetching, committing, or publishing.
   // Later phase-local checks retain the invariant across any path re-resolution.

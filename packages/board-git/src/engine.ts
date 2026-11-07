@@ -13,6 +13,7 @@ import {
   BOARD_REMOTE,
   BUNDLE_DIRS,
   bundleDirNameForProject,
+  clearStaleSyncRebaseMarker,
   detectStaleRebase,
   isRecoverableStandaloneBoardCheckout,
   repoTopLevel,
@@ -91,6 +92,27 @@ export function retargetBoardInterior(dir: string): string {
     /* fall through — the normal flow classifies whatever this is */
   }
   return retargetStaleBoardInteriorByPath(dir) ?? dir;
+}
+
+/**
+ * Clear a stale sync-rebase marker from each checkout sync could treat as this project's board:
+ * the repository root (a standalone board clone) and its own conventional linked worktree.
+ * Best-effort, like {@link wedgedBoardRebase}; the caller holds the board folder's sync lock.
+ */
+export function clearStaleSyncRebaseMarkers(dir: string): void {
+  try {
+    const top = repoTopLevel(dir);
+    if (!top) return;
+    clearStaleSyncRebaseMarker(top);
+    const candidateBoardPath = path.join(top, bundleDirNameForProject(top));
+    if (!existsSync(candidateBoardPath)) return;
+    const boardTop = repoTopLevel(candidateBoardPath);
+    if (boardTop && realOrSame(boardTop) === realOrSame(candidateBoardPath) && isLinkedWorktree(candidateBoardPath)) {
+      clearStaleSyncRebaseMarker(candidateBoardPath);
+    }
+  } catch {
+    /* best-effort: a marker left here only makes a later hand-started rebase read as sync's own */
+  }
 }
 
 /**

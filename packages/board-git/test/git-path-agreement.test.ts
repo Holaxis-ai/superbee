@@ -5,10 +5,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { conceptIdFromPath } from "@superbee/core";
 import {
-  countUncommitted, fetchRebase, fetchRebaseResolving, isConceptDocPath,
+  countUncommitted, fetchRebase, fetchBoard as fetchRemoteBoard,
+  rebaseResolving, isConceptDocPath,
   malformedOutgoingDocuments, privateStateInOutgoingWorktree, stageAndCommit, statusRows,
 } from "../src/index.js";
 import { commitBoard, git, makeTwoCloneTopology, pushBoard, type BoardRepo } from "./git-harness.js";
+
+const fetchThenRebaseResolving = (board: string, exportDir: string) => { fetchRemoteBoard(board); return rebaseResolving(board, exportDir); };
 
 process.env.GIT_CONFIG_SYSTEM = "/dev/null";
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -68,7 +71,7 @@ test("path agreement: detect-only and converging conflicts report the same ident
     if (detected.status !== "conflict") assert.fail("expected conflicts");
     assert.deepEqual(detected.conflictedDocIds.sort(), PATHS.map(entry).sort());
     assert.equal(git(topo.b.board, ["rev-parse", "HEAD"]).trim(), before, "detect-only abort restores HEAD");
-    const resolved = fetchRebaseResolving(topo.b.board, exports);
+    const resolved = fetchThenRebaseResolving(topo.b.board, exports);
     assert.equal(resolved.status, "resolved");
     if (resolved.status !== "resolved") assert.fail("expected resolution");
     assert.deepEqual(resolved.conflicts.map((row) => row.entry).sort(), PATHS.map(entry).sort());
