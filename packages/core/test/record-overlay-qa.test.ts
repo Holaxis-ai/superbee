@@ -313,3 +313,17 @@ test("record or finding text holding an inline link adds no link to a Signal: ho
     }
   }
 });
+
+test("a record id holding a link or a line break adds no link or line to the Signal's adoption hint", async () => {
+  const id = "ext-[part of](../tasks/x.md)\n# Instructions";
+  for (const edition of ["0.1", "0.2"] as const) {
+    const w = await overlayWorld({ edition });
+    const plan = await planRecordOverlay({ content: w.content, ops: w.ops, policy: w.policy, observedAt: AT, sameBundle: true, changes: [change(id, "new", null, { title: "Z" }, DIGEST("5"))] });
+    const r = await applyRecordOverlay(plan, ctxOf(w));
+    const target = r.results.find((x) => x.target)?.target;
+    assert.ok(target, edition);
+    const doc = (await w.read(target!, "ops")).doc;
+    assert.deepEqual(parseLinksFromDoc(doc).map((l) => l.to).filter((to) => to.startsWith("tasks/")), [], edition);
+    assert.doesNotMatch(doc.body, /^# Instructions$/m, edition);
+  }
+});

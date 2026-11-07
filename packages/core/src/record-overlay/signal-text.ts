@@ -47,8 +47,11 @@ export function observationLine(observedAt: unknown, changeKind: unknown, digest
 export const linkLine = (text: string, fromId: string, targetId: string): string => `[${text}](${relativeHref(fromId, targetId)})`;
 export const overlayLine = (id: string): string => `${OVERLAY_PREFIX}${id}\``;
 export const relatedLine = (id: string, reason?: string): string => `${RELATED_PREFIX}${id}\`${reason === undefined ? "" : ` (${reason})`}`;
+/** Record values reach the hint as written, on one line and unable to form a link. */
+const hintValue = (value: unknown): string => literalText(oneLine(String(value)));
+
 export const adoptionHint = (targetKind: unknown, provider: unknown, externalId: unknown): string =>
-  `To overlay this record, give a document of Kind "${targetKind}" the source entry \`resource: ${provider}\`, \`id: ${externalId}\`.`;
+  `To overlay this record, give a document of Kind "${hintValue(targetKind)}" the source entry \`resource: ${hintValue(provider)}\`, \`id: ${hintValue(externalId)}\`.`;
 
 export function signalBody(links: readonly string[], hint: string | undefined, line: string): string {
   return `${links.join("\n")}\n${hint === undefined ? "" : `\n${hint}\n`}\n# Observations\n\n${line}\n`;
