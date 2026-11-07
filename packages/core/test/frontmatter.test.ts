@@ -23,6 +23,21 @@ test("stringifyWithData ordinary-input bytes match gray-matter stringify", () =>
   }
 });
 
+test("empty metadata fences exactly the bodies the reader would misread, and every row round-trips", () => {
+  const fenced = ["---", "---\n", "---\r\n", "---\na: 1\n---\nrest", "---\r\nx: 1\r\n---\r\nrest", "\uFEFFbody", "\uFEFF---\na: 1\n---\nrest"];
+  const bare = ["", "body", "---foo", "----", " ---", "--", "body\n---\nmore", "\u200Bbody"];
+  for (const body of fenced) {
+    const raw = stringifyWithData({}, body);
+    assert.equal(raw, `---\n---\n${body.endsWith("\n") ? body : `${body}\n`}`, JSON.stringify(body));
+    assert.deepEqual(parseMarkdown(raw), { frontmatter: {}, body: raw.slice(8) }, JSON.stringify(body));
+  }
+  for (const body of bare) {
+    const raw = stringifyWithData({}, body);
+    assert.equal(raw, body.endsWith("\n") ? body : `${body}\n`, JSON.stringify(body));
+    assert.deepEqual(parseMarkdown(raw), { frontmatter: {}, body: raw }, JSON.stringify(body));
+  }
+});
+
 test("stringifyDoc round-trips prototype-looking keys as exact own properties", () => {
   const frontmatter = { type: "Special" } as Record<string, unknown>;
   const expected = new Map<string, unknown>([
