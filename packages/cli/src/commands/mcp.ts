@@ -47,9 +47,9 @@ Usage:
 
 Options:
   --dir <path>          Fixed local bundle compatibility mode; omit for the private workspace catalog
-  --actor <name>        Attribute confirmed human actions (overrides SUPERBEE_ACTOR; legacy
-                        AGENTSTATE_LITE_ACTOR remains supported). OKF v0.2 bundles accept only an
-                        OKF actor: human:<id>, process:<id>, or <producer>/<version> (e.g. openai/codex)
+  --actor <name>        Attribute confirmed human actions (overrides SUPERBEE_ACTOR). OKF v0.2
+                        bundles accept only an OKF actor: human:<id>, process:<id>, or
+                        <producer>/<version> (e.g. openai/codex)
   -h, --help            Show this help
 
 Run \`superbee mcp install --host <id>\` once for each host you use. Installation is user-level,

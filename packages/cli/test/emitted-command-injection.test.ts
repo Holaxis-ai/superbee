@@ -3,7 +3,7 @@
  *
  * The CLI prints follow-up commands a human or agent is expected to RUN, built from values it does
  * not own: a kind convention's `governs`, declared field names, enum values and link types are
- * written by whoever authored the bundle; `.agentstate.json`'s binding by whoever authored the
+ * written by whoever authored the bundle; `.superbee.json`'s binding by whoever authored the
  * repository. Each test drives one of those surfaces with a value carrying every shell
  * metacharacter that matters and asserts the value comes back as ONE inert argument.
  *
@@ -313,11 +313,11 @@ test("`new`'s ALREADY_EXISTS remedy renders a hostile kind name as a single argu
 test("a repo-authored project binding renders its URL as a single argument in the emitted --remote help", async () => {
   const dir = await tempDir("superbee-inject-binding-");
   try {
-    // `.agentstate.json` is committed by whoever wrote the repository, not typed by the operator.
+    // `.superbee.json` is committed by whoever wrote the repository, not typed by the operator.
     // `bindingUriIntent` echoes the RAW value, not `URL.href`, so everything the WHATWG parser
     // tolerates survives verbatim into the emitted `--remote` argument.
     const hostileUrl = `http://example.com/a${PAYLOAD}`;
-    await writeFile(path.join(dir, ".agentstate.json"), JSON.stringify({ bundle: hostileUrl }), "utf8");
+    await writeFile(path.join(dir, ".superbee.json"), JSON.stringify({ bundle: hostileUrl }), "utf8");
     const err = await rejection(async () => {
       await resolveProjectBinding(dir);
     });

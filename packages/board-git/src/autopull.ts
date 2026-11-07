@@ -30,9 +30,8 @@
 // the attempt-side throttle below backs off failing pulls too, so an offline machine pays one
 // bounded probe per window, not one per read.
 //
-// DEFAULT-ON, INCLUDING NON-TTY, with the {@link SUPERBEE_NO_AUTOPULL_ENV} or legacy
-// {@link NO_AUTOPULL_ENV} opt-out ({@code SUPERBEE_NO_AUTOPULL=1} or
-// {@code AGENTSTATE_LITE_NO_AUTOPULL=1}) for scripted/CI contexts. The CLI's
+// DEFAULT-ON, INCLUDING NON-TTY, with the {@link SUPERBEE_NO_AUTOPULL_ENV} opt-out
+// ({@code SUPERBEE_NO_AUTOPULL=1}) for scripted/CI contexts. The CLI's
 // primary consumers are AGENTS driving it non-interactively (stdout is a pipe in every Claude
 // Code/Codex session) — a TTY gate would disable the feature for exactly its target audience. CI
 // is protected structurally, not by sniffing: the trigger is DETECTION-GATED (a CI checkout has no
@@ -101,7 +100,6 @@ export const AUTO_PULL_BUDGET_MS = 2_000;
 /** ssh ConnectTimeout for the trigger's fetch, in seconds (a black-holed ssh host fails fast). */
 export const AUTO_PULL_CONNECT_TIMEOUT_SECONDS = 2;
 /** Set (to any non-empty value) to disable the opportunistic pull entirely — the CI/scripting knob. */
-export const NO_AUTOPULL_ENV = "AGENTSTATE_LITE_NO_AUTOPULL";
 export const SUPERBEE_NO_AUTOPULL_ENV = "SUPERBEE_NO_AUTOPULL";
 
 /** realpath when the path exists; the path unchanged otherwise (stable comparisons). */
@@ -236,7 +234,7 @@ export async function pullBoardAndRecord(
  * the trigger itself is SILENT on every path (no stdout, no throw).
  */
 export type AutoPullOutcome =
-  /** The {@link NO_AUTOPULL_ENV} knob is set. */
+  /** The {@link SUPERBEE_NO_AUTOPULL_ENV} knob is set. */
   | "disabled"
   /** No git repo / no provisioned board checkout here — the trigger never provisions. */
   | "no-board"
@@ -300,7 +298,7 @@ export async function maybeAutoPull(
 ): Promise<AutoPullOutcome> {
   try {
     const env = opts.env ?? process.env;
-    if (env[SUPERBEE_NO_AUTOPULL_ENV] || env[NO_AUTOPULL_ENV]) return "disabled";
+    if (env[SUPERBEE_NO_AUTOPULL_ENV]) return "disabled";
     const hostPolicy = captureBoardHostPolicy(deps.hostPolicy);
     const now = opts.now ?? (() => new Date());
     const staleMs = opts.staleMs ?? AUTO_PULL_STALE_MS;

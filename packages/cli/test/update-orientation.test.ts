@@ -40,7 +40,7 @@ import {
   type UpdateCacheRecord,
   type UpdateLeaseRecord,
 } from "../src/update-orientation.js";
-import { LEGACY_NO_UPDATE_CHECK_ENV, SUPERBEE_NO_UPDATE_CHECK_ENV } from "../src/env-policy.js";
+import { SUPERBEE_NO_UPDATE_CHECK_ENV } from "../src/env-policy.js";
 import type { UpdateCheckResult } from "../src/update-check.js";
 import { buildHomeView, home } from "../src/commands/home.js";
 import { sessionStart } from "../src/commands/session-start.js";
@@ -86,7 +86,7 @@ const HOME_BASELINE_TOON = [
   '  Hosted: "login, whoami, logout, checkout, export, publish, op, notify, inbox, access, workload register, workload exec, bundle retire"',
   "commands_help: run `superbee <command> --help` (or `superbee --help`) for full usage",
   "kinds: kinds are declared per-bundle — run `superbee kinds` to list them",
-  'remote_env: "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit --dir wins, then a committed .superbee.json or supported .agentstate.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. Both binding names at one level conflict. URL-valued bindings and the retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly"',
+  'remote_env: "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit --dir wins, then a committed .superbee.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. A retired .agentstate.json binding is refused with the rename fix. URL-valued bindings and the retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly"',
   "",
 ].join("\n");
 
@@ -112,7 +112,7 @@ const HOME_BASELINE_JSON = `${JSON.stringify({
   commands_help: "run `superbee <command> --help` (or `superbee --help`) for full usage",
   kinds: "kinds are declared per-bundle — run `superbee kinds` to list them",
   remote_env:
-    "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit --dir wins, then a committed .superbee.json or supported .agentstate.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. Both binding names at one level conflict. URL-valued bindings and the retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly",
+    "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit --dir wins, then a committed .superbee.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. A retired .agentstate.json binding is refused with the rename fix. URL-valued bindings and the retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly",
 })}\n`;
 
 // Derive the quoted token from the shipped renderer and escape it for the serialized baselines.
@@ -346,7 +346,7 @@ test("passive suppressors are exact tokens and environment-key presence, includi
   assert.equal(isPassiveUpdateSuppressed(["--no-update-check"], {}), true);
   assert.equal(isPassiveUpdateSuppressed(["--no-update-check=false"], {}), false);
   assert.equal(isPassiveUpdateSuppressed(["--no-update-checker"], {}), false);
-  for (const key of [SUPERBEE_NO_UPDATE_CHECK_ENV, LEGACY_NO_UPDATE_CHECK_ENV, "NO_UPDATE_NOTIFIER", "CI"]) {
+  for (const key of [SUPERBEE_NO_UPDATE_CHECK_ENV, "ASLITE_NO_UPDATE_CHECK", "NO_UPDATE_NOTIFIER", "CI"]) {
     for (const value of ["", "0", "1"]) {
       assert.equal(isPassiveUpdateSuppressed([], { [key]: value }), true, `${key}=${value}`);
     }

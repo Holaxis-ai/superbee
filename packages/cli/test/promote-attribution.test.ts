@@ -18,17 +18,15 @@ async function run(argv: string[]): Promise<Record<string, unknown>> {
 const actorRows = [
   { name: "explicit overrides environment", explicit: " process:explicit ", env: "process:environment", expected: "process:explicit" },
   { name: "canonical environment", env: " process:environment ", expected: "process:environment" },
-  { name: "legacy environment", legacy: "process:legacy", expected: "process:legacy" },
   { name: "default", expected: undefined },
 ] as const;
 
 test("promote attribution agrees with shared policy across edition, actor, create, update and no-op rows", async t => {
-  const saved = { canonical: process.env.SUPERBEE_ACTOR, legacy: process.env.AGENTSTATE_LITE_ACTOR };
+  const saved = process.env.SUPERBEE_ACTOR;
   try {
     for (const remote of [false, true]) for (const edition of ["0.1", "0.2"] as const) for (const row of actorRows) await t.test(`${remote ? "wire" : "local"} ${edition}: ${row.name}`, async () => {
-      delete process.env.SUPERBEE_ACTOR; delete process.env.AGENTSTATE_LITE_ACTOR;
+      delete process.env.SUPERBEE_ACTOR;
       if ("env" in row) process.env.SUPERBEE_ACTOR = row.env;
-      if ("legacy" in row) process.env.AGENTSTATE_LITE_ACTOR = row.legacy;
       const dir = await mkdtemp(path.join(tmpdir(), "promote-attribution-"));
       let close: (() => Promise<void>) | undefined;
       try {
@@ -71,18 +69,16 @@ test("promote attribution agrees with shared policy across edition, actor, creat
       } finally { await close?.(); await rm(dir, { recursive: true, force: true }); }
     });
   } finally {
-    if (saved.canonical === undefined) delete process.env.SUPERBEE_ACTOR; else process.env.SUPERBEE_ACTOR = saved.canonical;
-    if (saved.legacy === undefined) delete process.env.AGENTSTATE_LITE_ACTOR; else process.env.AGENTSTATE_LITE_ACTOR = saved.legacy;
+    if (saved === undefined) delete process.env.SUPERBEE_ACTOR; else process.env.SUPERBEE_ACTOR = saved;
   }
 });
 
 test("promote blob forwards actor/CAS through wire storage and leaves byte identity unchanged", async t => {
-  const saved = { canonical: process.env.SUPERBEE_ACTOR, legacy: process.env.AGENTSTATE_LITE_ACTOR };
+  const saved = process.env.SUPERBEE_ACTOR;
   try {
     for (const edition of ["0.1", "0.2"] as const) for (const row of actorRows) await t.test(`${edition}: ${row.name}`, async () => {
-      delete process.env.SUPERBEE_ACTOR; delete process.env.AGENTSTATE_LITE_ACTOR;
+      delete process.env.SUPERBEE_ACTOR;
       if ("env" in row) process.env.SUPERBEE_ACTOR = row.env;
-      if ("legacy" in row) process.env.AGENTSTATE_LITE_ACTOR = row.legacy;
       const backend = new MemoryBackend(), seen: WriteOptions[] = [];
       await backend.writeReserved("", "index.md", `---\nokf_version: '${edition}'\n---\n# Test\n`);
       const original = backend.writeBlob.bind(backend);
@@ -105,8 +101,7 @@ test("promote blob forwards actor/CAS through wire storage and leaves byte ident
       } finally { await server.close(); await rm(dir, { recursive: true, force: true }); }
     });
   } finally {
-    if (saved.canonical === undefined) delete process.env.SUPERBEE_ACTOR; else process.env.SUPERBEE_ACTOR = saved.canonical;
-    if (saved.legacy === undefined) delete process.env.AGENTSTATE_LITE_ACTOR; else process.env.AGENTSTATE_LITE_ACTOR = saved.legacy;
+    if (saved === undefined) delete process.env.SUPERBEE_ACTOR; else process.env.SUPERBEE_ACTOR = saved;
   }
 });
 

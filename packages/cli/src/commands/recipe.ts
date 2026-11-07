@@ -106,8 +106,7 @@ Options:
                       Missing evidence means unassessed consumers, never ecosystem clearance.
   --apply <plan-token>  Apply the exact ready token returned by 'recipe evolve' (evolve only)
   --actor <name>        Attribute installed or evolved document writes. Add resolves --actor over
-                        SUPERBEE_ACTOR, legacy AGENTSTATE_LITE_ACTOR, then absent; conflicting
-                        environment values refuse. OKF v0.2 bundles accept
+                        SUPERBEE_ACTOR, then absent. OKF v0.2 bundles accept
                         only an OKF actor: human:<id>, process:<id>, or <producer>/<version>
                         (e.g. openai/codex)
   --json                Emit compact JSON instead of TOON

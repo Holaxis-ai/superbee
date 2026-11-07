@@ -111,8 +111,7 @@ Options:
                             key's extension, else application/octet-stream (hosted replacement preserves observed MIME)
   --expected-version <v>   Compare-and-swap token from a prior pull/promote receipt (omit = expect-
                             absent create; see CAS above)
-  --actor <actor>          Revision attribution: --actor overrides environment; SUPERBEE_ACTOR and
-                            legacy AGENTSTATE_LITE_ACTOR must agree when both are set. Blank values
+  --actor <actor>          Revision attribution: --actor overrides SUPERBEE_ACTOR. Blank values
                             are refused. With neither set, attribution is absent. In v0.2, use
                             human:<id>, process:<id>, or <producer>/<version>. Local/wire blobs
                             forward attribution to storage; filesystem blobs have no actor history.

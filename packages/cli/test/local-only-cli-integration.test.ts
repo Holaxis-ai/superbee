@@ -105,7 +105,7 @@ test("built CLI: a reached URL binding errors actionably, while a local binding 
     // Drive-shaped input is still an unsupported URI scheme on supported hosts.
     remoteValues.push("C://remote.example/bundle");
     for (const value of remoteValues) {
-      await writeFile(path.join(cwd, ".agentstate.json"), JSON.stringify({ bundle: value }));
+      await writeFile(path.join(cwd, ".superbee.json"), JSON.stringify({ bundle: value }));
       const remoteBinding = await run(["list", "--json"], cwd, null);
       assert.equal(remoteBinding.code, 2);
       assert.match(remoteBinding.stdout, /project binding .* cannot use (?:remote URL|unsupported URI scheme)/);
@@ -113,7 +113,7 @@ test("built CLI: a reached URL binding errors actionably, while a local binding 
       assert.ok(remoteBinding.stdout.includes(value));
     }
 
-    await writeFile(path.join(cwd, ".agentstate.json"), JSON.stringify({ bundle: sampleBundle }));
+    await writeFile(path.join(cwd, ".superbee.json"), JSON.stringify({ bundle: sampleBundle }));
     const localBinding = await run(["list", "--json"], cwd, null);
     assert.equal(localBinding.code, 0, localBinding.stderr || localBinding.stdout);
     assert.equal((JSON.parse(localBinding.stdout) as { count: number }).count, 4);
@@ -124,7 +124,7 @@ test("built CLI: a reached URL binding errors actionably, while a local binding 
 
 test("built CLI: a FIFO project binding is rejected promptly instead of blocking discovery", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "aslite-local-only-binding-fifo-"));
-  const binding = path.join(cwd, ".agentstate.json");
+  const binding = path.join(cwd, ".superbee.json");
   try {
     execFileSync("mkfifo", [binding]);
     const result = await run(["list", "--json"], cwd, null, 3_000);

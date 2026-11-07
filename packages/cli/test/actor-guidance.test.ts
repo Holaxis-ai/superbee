@@ -21,7 +21,6 @@ import { buildHomeView } from "../src/commands/home.js";
 import { CliError } from "../src/errors.js";
 import { renderNpm } from "../src/skill-render.js";
 import { ACTOR_FORMS_HELP, actorRefusal, describeResolvedActor } from "../src/actor-guidance.js";
-import { LEGACY_ACTOR_ENV } from "../src/env-policy.js";
 
 async function bundle(okfVersion: "0.1" | "0.2"): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(path.join(tmpdir(), `superbee-actor-guidance-${okfVersion}-`));
@@ -110,7 +109,7 @@ test("a v0.1 bundle still accepts a free-form actor (the grammar is a v0.2 prove
 });
 
 test("actorRefusal / describeResolvedActor: deterministic wording for the three states", () => {
-  assert.deepEqual(actorRefusal("openai/codex/root", { env: {} }), {
+  assert.deepEqual(actorRefusal("openai/codex/root"), {
     message:
       "actor 'openai/codex/root' is not an OKF actor, so this v0.2 bundle refuses to record it as provenance. "
       + "Use openai/codex or process:codex-root — human:<id> for a person, process:<id> for an automated job or a "
@@ -118,31 +117,22 @@ test("actorRefusal / describeResolvedActor: deterministic wording for the three 
     help: "rerun with --actor openai/codex, or set it once: export SUPERBEE_ACTOR=openai/codex",
   });
   assert.deepEqual(describeResolvedActor({ kind: "value", actor: "anthropic/claude" }), { actor: "anthropic/claude" });
-  const bad = describeResolvedActor({ kind: "value", actor: "codex-root" }, { env: {} });
+  const bad = describeResolvedActor({ kind: "value", actor: "codex-root" });
   assert.equal(bad.actor, "codex-root");
   assert.match(String(bad.actor_help), /will be refused — use process:codex-root or human:codex-root: export SUPERBEE_ACTOR=process:codex-root$/);
-  // When the bad value came from the legacy variable, the orientation hint must clear it too, and
-  // the hint must WORK when pasted: execute its span from that env and check what follows sees.
-  const legacyHint = String(describeResolvedActor({ kind: "value", actor: "codex-root" }, { env: { AGENTSTATE_LITE_ACTOR: "codex-root" } }).actor_help);
-  assert.match(legacyHint, /export SUPERBEE_ACTOR=process:codex-root; unset AGENTSTATE_LITE_ACTOR$/);
-  const unset = describeResolvedActor({ kind: "unset" }, { env: {} });
+  const unset = describeResolvedActor({ kind: "unset" });
   assert.match(unset.actor, /^unset/);
   assert.match(String(unset.actor_help), /\(human:<id>.*\): export SUPERBEE_ACTOR=<actor>$/, "the span ends the line");
   const unusable = describeResolvedActor({ kind: "unusable", diagnostic: "SUPERBEE_ACTOR was given an empty value" });
   assert.equal(unusable.actor, "unusable environment value (writes will be refused)");
   assert.match(String(unusable.actor_help), /^SUPERBEE_ACTOR was given an empty value — human:<id>/);
-  // The env repair also clears a legacy variable that would otherwise conflict with the fix.
-  const combined = actorRefusal("codex-root", { env: { AGENTSTATE_LITE_ACTOR: "codex-root" } }).help;
-  assert.equal(combined, "rerun with --actor process:codex-root, or set it once: export SUPERBEE_ACTOR=process:codex-root; unset AGENTSTATE_LITE_ACTOR");
-  assert.doesNotMatch(actorRefusal("codex-root", { env: {} }).help, /AGENTSTATE_LITE_ACTOR/);
+  assert.equal(
+    actorRefusal("codex-root").help,
+    "rerun with --actor process:codex-root, or set it once: export SUPERBEE_ACTOR=process:codex-root",
+  );
 
-  assert.equal(LEGACY_ACTOR_ENV, "AGENTSTATE_LITE_ACTOR", "the guidance module spells the legacy variable as a literal to avoid an import cycle");
-  const punct = describeResolvedActor({ kind: "value", actor: "///" }, { env: {} });
+  const punct = describeResolvedActor({ kind: "value", actor: "///" });
   assert.match(String(punct.actor_help), /set a real one \(human:<id>.*\): export SUPERBEE_ACTOR=<actor>$/);
-  // The placeholder branch clears a legacy value too; with a real actor substituted, the span must
-  // leave a usable environment (executed, not read).
-  const punctLegacy = String(describeResolvedActor({ kind: "value", actor: "///" }, { env: { AGENTSTATE_LITE_ACTOR: "///" } }).actor_help);
-  assert.match(punctLegacy, /export SUPERBEE_ACTOR=<actor>; unset AGENTSTATE_LITE_ACTOR$/, "the span ends the line so a whole-line paste works");
 
   assert.match(ACTOR_FORMS_HELP, /human:<id>/);
 });
@@ -164,9 +154,19 @@ test("home: the v0.2 bundle block shows the resolved actor and flags a refusable
   assert.equal((bad.bundle as Record<string, unknown>).actor, "codex-root");
   assert.match(String((bad.bundle as Record<string, unknown>).actor_help), /export SUPERBEE_ACTOR=process:codex-root/);
 
-  const legacy = buildHomeView(deps({ AGENTSTATE_LITE_ACTOR: "brian" }), summary("0.2") as never);
-  assert.equal((legacy.bundle as Record<string, unknown>).actor, "brian");
-  assert.match(String((legacy.bundle as Record<string, unknown>).actor_help), /; unset AGENTSTATE_LITE_ACTOR$/);
+  // A retired name alone is not read: the actor is unset and the payload names the rename.
+  const retired = buildHomeView(deps({ AGENTSTATE_LITE_ACTOR: "brian" }), summary("0.2") as never);
+  assert.match(String((retired.bundle as Record<string, unknown>).actor), /^unset/);
+  assert.match(
+    String(retired.retired_env),
+    /^AGENTSTATE_LITE_ACTOR is no longer read; .*Fix: rename AGENTSTATE_LITE_ACTOR to SUPERBEE_ACTOR .*then run the command again\.$/,
+  );
+  // Beside its replacement the retired name is ignored quietly, whatever its value.
+  for (const value of ["", "human:b"]) {
+    const quiet = buildHomeView(deps({ SUPERBEE_ACTOR: "human:a", AGENTSTATE_LITE_ACTOR: value }), summary("0.2") as never);
+    assert.equal((quiet.bundle as Record<string, unknown>).actor, "human:a");
+    assert.equal("retired_env" in quiet, false);
+  }
 
   const unset = buildHomeView(deps({}), summary("0.2") as never);
   assert.match(String((unset.bundle as Record<string, unknown>).actor), /^unset/);
@@ -174,14 +174,6 @@ test("home: the v0.2 bundle block shows the resolved actor and flags a refusable
   const blank = buildHomeView(deps({ SUPERBEE_ACTOR: "   " }), summary("0.2") as never);
   assert.equal((blank.bundle as Record<string, unknown>).actor, "unusable environment value (writes will be refused)", "a blank env value never crashes orientation, and is not reported as unset");
   assert.match(String((blank.bundle as Record<string, unknown>).actor_help), /SUPERBEE_ACTOR was given an empty value/);
-  // The resolver's own diagnostic names the variable actually at fault, even beside a valid canonical value.
-  const blankLegacy = buildHomeView(deps({ SUPERBEE_ACTOR: "human:a", AGENTSTATE_LITE_ACTOR: "" }), summary("0.2") as never);
-  assert.equal((blankLegacy.bundle as Record<string, unknown>).actor, "unusable environment value (writes will be refused)");
-  assert.match(String((blankLegacy.bundle as Record<string, unknown>).actor_help), /AGENTSTATE_LITE_ACTOR/);
-  assert.doesNotMatch(String((blankLegacy.bundle as Record<string, unknown>).actor_help), /^SUPERBEE_ACTOR was given/);
-  const conflict = buildHomeView(deps({ SUPERBEE_ACTOR: "human:a", AGENTSTATE_LITE_ACTOR: "human:b" }), summary("0.2") as never);
-  assert.equal((conflict.bundle as Record<string, unknown>).actor, "unusable environment value (writes will be refused)");
-  assert.match(String((conflict.bundle as Record<string, unknown>).actor_help), /different/);
 
   const v01 = buildHomeView(deps({ SUPERBEE_ACTOR: "codex-root" }), summary("0.1") as never);
   assert.equal("actor" in (v01.bundle as Record<string, unknown>), false);
@@ -257,32 +249,29 @@ test("verbs whose first write is not the document mutation refuse BEFORE any wri
 test(
   "POSIX: every emitted env repair executes verbatim and leaves a usable environment",
   () => {
-    const run = (span: string, env: NodeJS.ProcessEnv) =>
-      spawnSync("/bin/sh", ["-c", `${span}; printf '%s|%s' "$SUPERBEE_ACTOR" "\${AGENTSTATE_LITE_ACTOR-UNSET}"`], {
+    const run = (span: string) =>
+      spawnSync("/bin/sh", ["-c", `${span}; printf '%s' "$SUPERBEE_ACTOR"`], {
         encoding: "utf8",
-        env: { PATH: process.env.PATH ?? "", ...env },
+        env: { PATH: process.env.PATH ?? "" },
       });
-    const legacy = { AGENTSTATE_LITE_ACTOR: "codex-root" };
 
-    // Refusal help, concrete fix, legacy variable present.
-    const help = actorRefusal("codex-root", { env: legacy }).help;
-    const repair = help.slice(help.indexOf("set it once: ") + "set it once: ".length);
-    const repaired = run(repair, legacy);
+    // Refusal help, concrete fix.
+    const help = actorRefusal("codex-root").help;
+    const repaired = run(help.slice(help.indexOf("set it once: ") + "set it once: ".length));
     assert.equal(repaired.status, 0, repaired.stderr);
-    assert.equal(repaired.stdout, "process:codex-root|UNSET", "after the pasted repair the fix is exported and the legacy variable is gone");
+    assert.equal(repaired.stdout, "process:codex-root", "after the pasted repair the fix is exported");
 
-    // Orientation hint, concrete bad value from the legacy variable.
-    const hint = String(describeResolvedActor({ kind: "value", actor: "codex-root" }, { env: legacy }).actor_help);
-    const hinted = run(hint.slice(hint.indexOf("export SUPERBEE_ACTOR=")), legacy);
-    assert.equal(hinted.stdout, "process:codex-root|UNSET", "the pasted orientation hint leaves a usable environment");
+    // Orientation hint, concrete bad value.
+    const hint = String(describeResolvedActor({ kind: "value", actor: "codex-root" }).actor_help);
+    assert.equal(run(hint.slice(hint.indexOf("export SUPERBEE_ACTOR="))).stdout, "process:codex-root");
 
     // Orientation hint, placeholder branch, with a real actor substituted for <actor>.
-    const punct = String(describeResolvedActor({ kind: "value", actor: "///" }, { env: { AGENTSTATE_LITE_ACTOR: "///" } }).actor_help);
+    const punct = String(describeResolvedActor({ kind: "value", actor: "///" }).actor_help);
     const substituted = punct.slice(punct.indexOf("export SUPERBEE_ACTOR=")).replace("<actor>", "process:review");
-    assert.equal(run(substituted, { AGENTSTATE_LITE_ACTOR: "///" }).stdout, "process:review|UNSET");
+    assert.equal(run(substituted).stdout, "process:review");
 
     // Unset-env hint, with a real actor substituted.
-    const unsetHint = String(describeResolvedActor({ kind: "unset" }, { env: {} }).actor_help);
-    assert.equal(run(unsetHint.slice(unsetHint.indexOf("export SUPERBEE_ACTOR=")).replace("<actor>", "human:brian"), {}).stdout, "human:brian|UNSET");
+    const unsetHint = String(describeResolvedActor({ kind: "unset" }).actor_help);
+    assert.equal(run(unsetHint.slice(unsetHint.indexOf("export SUPERBEE_ACTOR=")).replace("<actor>", "human:brian")).stdout, "human:brian");
   },
 );

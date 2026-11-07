@@ -63,9 +63,9 @@ export function kindsPointer(invocation: CommandPrefix): string {
 export function remoteEnvPointer(): string {
   return (
     "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit " +
-    "--dir wins, then a committed .superbee.json or supported .agentstate.json local-path binding at " +
+    "--dir wins, then a committed .superbee.json local-path binding at " +
     "or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. " +
-    "Both binding names at one level conflict. URL-valued bindings and the " +
+    "A retired .agentstate.json binding is refused with the rename fix. URL-valued bindings and the " +
     "retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly"
   );
 }

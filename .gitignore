@@ -24,7 +24,6 @@ packages/ui/blob-report/
 /docs/
 /research/
 .superbee.json
-.agentstate.json
 packages/worker/wrangler.local.jsonc
 .claude/
 .codex/

@@ -62,6 +62,17 @@ structured record or an exit code. Commands whose stderr is itself a contract ca
 stderr) and `publish --json` (JSON progress lines). See
 `packages/cli/test/deprecation-notices.test.ts`.
 
+A retired path is refused with its exact fix, through the same owner. A retired environment name
+(`AGENTSTATE_LITE_ACTOR`, `AGENTSTATE_LITE_API_KEY`, `ASLITE_NO_UPDATE_CHECK`,
+`AGENTSTATE_LITE_NO_AUTOPULL`) set without its `SUPERBEE_*` replacement stops every command before
+any work with `USAGE`, exit 2, `details.code` `RETIRED_ENV` and the names in
+`details.retired_env`; beside its replacement it is ignored. The envelope goes where the command
+puts its errors (stderr for `mcp` and the byte and raw value channels). `session-start`,
+`turn-end` and bare home never refuse: home shows a `retired_env` line and skips the update check
+and automatic pull. A `.agentstate.json` project binding is refused at the level where the walk
+finds it with `USAGE`, exit 2, `details.code` `RETIRED_PROJECT_BINDING` and the file in
+`details.binding`; home shows the same text as `project_binding_error`.
+
 ## Standing mutation invariant
 
 All public mutations are idempotent at their advertised semantic boundary. Repeating a request that

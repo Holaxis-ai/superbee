@@ -82,7 +82,7 @@ test("development shims and the View demo resolve to the Superbee artifact", asy
   assert.doesNotMatch(demo, /REPO\/\.agentstate-lite/);
 });
 
-test("project bindings stay machine-local across the compatibility window", async () => {
+test("project bindings stay machine-local", async () => {
   const entries = new Set(
     (await readFile(path.join(repoRoot, ".gitignore"), "utf8"))
       .split(/\r?\n/u)
@@ -90,6 +90,5 @@ test("project bindings stay machine-local across the compatibility window", asyn
       .filter((line) => line !== "" && !line.startsWith("#")),
   );
 
-  assert.ok(entries.has(".superbee.json"), "preferred binding must be ignored");
-  assert.ok(entries.has(".agentstate.json"), "legacy binding must remain ignored during compatibility");
+  assert.ok(entries.has(".superbee.json"), "the binding must be ignored");
 });

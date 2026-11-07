@@ -41,15 +41,15 @@ import { renderedPattern } from "./support/rendered-command.js";
 const T = "2026-07-01T00:00:00.000Z";
 
 async function withActorEnv<T>(value: string | undefined, run: () => Promise<T>): Promise<T> {
-  const had = Object.prototype.hasOwnProperty.call(process.env, "AGENTSTATE_LITE_ACTOR");
-  const previous = process.env.AGENTSTATE_LITE_ACTOR;
-  if (value === undefined) delete process.env.AGENTSTATE_LITE_ACTOR;
-  else process.env.AGENTSTATE_LITE_ACTOR = value;
+  const had = Object.prototype.hasOwnProperty.call(process.env, "SUPERBEE_ACTOR");
+  const previous = process.env.SUPERBEE_ACTOR;
+  if (value === undefined) delete process.env.SUPERBEE_ACTOR;
+  else process.env.SUPERBEE_ACTOR = value;
   try {
     return await run();
   } finally {
-    if (had) process.env.AGENTSTATE_LITE_ACTOR = previous;
-    else delete process.env.AGENTSTATE_LITE_ACTOR;
+    if (had) process.env.SUPERBEE_ACTOR = previous;
+    else delete process.env.SUPERBEE_ACTOR;
   }
 }
 

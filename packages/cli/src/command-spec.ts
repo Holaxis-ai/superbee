@@ -650,7 +650,7 @@ export const CLI_COMMAND_GROUPS = [
         id: "sessionStart",
         leaves: [publicLeaf("sessionStart", "session-start", zero, 25, DIR_SURFACE)],
         usage: "session-start [--dir <path>] [--no-update-check]",
-        summary: "The SessionStart hook payload: pull then render; default TOON uses a nonblocking 24-hour cached latest check, while --no-update-check or SUPERBEE_NO_UPDATE_CHECK/NO_UPDATE_NOTIFIER/CI presence disables both display and refresh (legacy ASLITE_NO_UPDATE_CHECK remains supported); npm receives only the public package request and ordinary network metadata, never installed version, cwd, bundle, actor, or usage data",
+        summary: "The SessionStart hook payload: pull then render; default TOON uses a nonblocking 24-hour cached latest check, while --no-update-check or SUPERBEE_NO_UPDATE_CHECK/NO_UPDATE_NOTIFIER/CI presence disables both display and refresh; npm receives only the public package request and ordinary network metadata, never installed version, cwd, bundle, actor, or usage data",
       },
       {
         id: "turnEnd",

@@ -86,9 +86,9 @@ export function givenFlags(flags: ReadonlyArray<readonly [flag: string, value: s
 
 export const DECLARATION_COMMON_OPTIONS = `  --expected-version <v>  Compare-and-swap: write only if the document is still at this version
                           (from a prior receipt or 'doc read'); a missing document has no version
-  --actor <name>       Attribute the write (overrides SUPERBEE_ACTOR; legacy AGENTSTATE_LITE_ACTOR
-                       remains supported). OKF v0.2 bundles accept only an OKF actor: human:<id>,
-                       process:<id>, or <producer>/<version> (e.g. openai/codex)
+  --actor <name>       Attribute the write (overrides SUPERBEE_ACTOR). OKF v0.2 bundles accept
+                       only an OKF actor: human:<id>, process:<id>, or <producer>/<version>
+                       (e.g. openai/codex)
   --dir <path>         Bundle directory (default: discovered from the cwd)
   --remote <url>       Talk to a wire-protocol server instead of a local bundle
                        (mutually exclusive with --dir)

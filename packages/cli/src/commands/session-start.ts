@@ -120,8 +120,9 @@ Default TOON may show a cached latest-track release notice and launch one detach
 24-hour attempt window (on builds with supported-release checks disabled, currently the published
 builds, the refresh exits into cooldown and makes no network request); rendering never waits for npm. The fixed public request names only
 superbee and sends no installed version, cwd, bundle, actor, or usage data beyond ordinary
-network metadata. Presence of SUPERBEE_NO_UPDATE_CHECK, legacy ASLITE_NO_UPDATE_CHECK,
-NO_UPDATE_NOTIFIER, or CI disables both display and refresh.
+network metadata. Presence of SUPERBEE_NO_UPDATE_CHECK,
+NO_UPDATE_NOTIFIER, or CI disables both display and refresh. A retired environment name set without
+its SUPERBEE_* replacement also disables both, and the automatic pull, and the render names the fix.
 
 The render also performs a local managed-Skill byte check. If a stale install passes the installer's
 complete read-only preflight, it reports the exact refresh command and that the host must restart;

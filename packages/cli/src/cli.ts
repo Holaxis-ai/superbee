@@ -67,7 +67,7 @@ import { cliInvocation } from "./invocation.js";
 import { PUBLIC_COMMAND_NAMES, type PublicCommandName } from "./command-spec.js";
 import { parseArgs } from "node:util";
 import { commandWords } from "./command-text.js";
-import { openDeprecationNotices } from "./deprecation-notices.js";
+import { openDeprecationNotices, refuseRetiredEnv } from "./deprecation-notices.js";
 export { cliVersion } from "./build-identity.js";
 
 export const KNOWN_COMMANDS = PUBLIC_COMMAND_NAMES;
@@ -322,6 +322,8 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
 
+  // The hook commands own their streams and must not fail a session; home shows the fix instead.
+  if (command !== "session-start" && command !== "turn-end" && refuseRetiredEnv(argv)) return;
   openDeprecationNotices(argv);
   await runAxiCli({
     argv,

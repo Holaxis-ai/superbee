@@ -1,28 +1,18 @@
-// The one owner of "this old path will be removed" notices: a table of what is going away, what
-// replaces it and the exact fix, plus one way to emit a row.
+// The one owner of retired and retiring paths: a table of what is going away, what replaces it and
+// the exact fix, plus one way to emit a row, and the refusal for environment names already retired.
 //
 // A notice is one prose line on stderr, the channel `autopull.ts` already uses for notes, so stdout
 // records and exit codes never change. The channel stays closed until the CLI entry opens it for a
 // command that leaves stderr free: importing this module, a private worker and a command whose
 // stderr is itself a contract all stay silent. See {@link stderrIsReserved}.
-import { NO_AUTOPULL_ENV, SUPERBEE_NO_AUTOPULL_ENV } from "@superbee/board-git";
-import {
-  LEGACY_ACTOR_ENV,
-  LEGACY_API_KEY_ENV,
-  LEGACY_NO_UPDATE_CHECK_ENV,
-  SUPERBEE_ACTOR_ENV,
-  SUPERBEE_API_KEY_ENV,
-  SUPERBEE_NO_UPDATE_CHECK_ENV,
-} from "./env-policy.js";
+import { SUPERBEE_NO_AUTOPULL_ENV } from "@superbee/board-git";
+import { SUPERBEE_ACTOR_ENV, SUPERBEE_API_KEY_ENV, SUPERBEE_NO_UPDATE_CHECK_ENV } from "./env-policy.js";
+import { CliError, toEnvelope } from "./errors.js";
 import type { InstallScope } from "./install-scope.js";
 import { cliInvocation } from "./invocation.js";
+import { renderErrorEnvelope } from "./output.js";
 
 export type DeprecationNoticeCode =
-  | "DEPRECATED_ENV_ACTOR"
-  | "DEPRECATED_ENV_API_KEY"
-  | "DEPRECATED_ENV_NO_UPDATE_CHECK"
-  | "DEPRECATED_ENV_NO_AUTOPULL"
-  | "DEPRECATED_PROJECT_BINDING"
   | "DEPRECATED_SOURCE_PLUGIN_POINTER"
   | "DEPRECATED_LEGACY_HOOK"
   | "DEPRECATED_LEGACY_SKILL_FOLDER"
@@ -38,22 +28,61 @@ export interface DeprecationNotice {
   readonly replacement: string;
   /** The exact fix, given this executable's own command prefix and any install scopes it found. */
   readonly fix: (cli: string, scopes: readonly InstallScope[]) => string;
-  /** Set on a row its presence in the environment triggers at CLI entry. */
-  readonly env?: string;
 }
 
-function envRow(
-  code: DeprecationNoticeCode,
-  legacy: string,
-  canonical: string,
-): DeprecationNotice {
-  return {
-    code,
-    old: `the ${legacy} environment variable`,
-    replacement: canonical,
-    fix: () => `rename ${legacy} to ${canonical} wherever it is set (same value)`,
-    env: legacy,
-  };
+/** Retired environment names and the Superbee name that replaced each one. */
+export const RETIRED_ENV: readonly (readonly [retired: string, replacement: string])[] = Object.freeze([
+  ["AGENTSTATE_LITE_ACTOR", SUPERBEE_ACTOR_ENV],
+  ["AGENTSTATE_LITE_API_KEY", SUPERBEE_API_KEY_ENV],
+  ["ASLITE_NO_UPDATE_CHECK", SUPERBEE_NO_UPDATE_CHECK_ENV],
+  ["AGENTSTATE_LITE_NO_AUTOPULL", SUPERBEE_NO_AUTOPULL_ENV],
+] as const);
+
+/**
+ * Retired names that are set while their replacement is not: the only case where ignoring the old
+ * name would silently change behavior. Presence counts, even empty; a value is never read.
+ */
+export function retiredEnvNames(env: Readonly<Record<string, string | undefined>> = process.env): string[] {
+  return RETIRED_ENV
+    .filter(([retired, replacement]) => Object.hasOwn(env, retired) && !Object.hasOwn(env, replacement))
+    .map(([retired]) => retired);
+}
+
+/** The refusal for {@link retiredEnvNames}: names only, so an API key never reaches the output. */
+export function retiredEnvRefusal(names: readonly string[]): CliError {
+  const pairs = RETIRED_ENV.filter(([retired]) => names.includes(retired));
+  const listed = pairs.map(([retired]) => retired).join(" and ");
+  const message = `${listed} ${pairs.length === 1 ? "is" : "are"} no longer read; Superbee reads only `
+    + `${pairs.map(([, replacement]) => replacement).join(" and ")}.`;
+  const renames = pairs.map(([retired, replacement]) => `${retired} to ${replacement}`).join(" and ");
+  return new CliError("USAGE", message, {
+    help: `rename ${renames} wherever it is set (shell profile, CI, hook or MCP config), same value, then run the command again.`,
+    details: { code: "RETIRED_ENV", retired_env: pairs.map(([retired]) => retired) },
+  });
+}
+
+/**
+ * The CLI entry's refusal for retired environment names, before any work. The envelope goes where
+ * the command puts its errors: stderr for `mcp` and the byte and raw value channels, else stdout.
+ */
+export function refuseRetiredEnv(
+  argv: readonly string[],
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  const names = retiredEnvNames(env);
+  if (!names.length) return false;
+  const stderr = argv[0] === "mcp" || requestsRawField(argv) || requestsByteChannel(argv);
+  (stderr ? process.stderr : process.stdout).write(renderErrorEnvelope(toEnvelope(retiredEnvRefusal(names))));
+  process.exitCode = 2;
+  return true;
+}
+
+/** The `retired_env` line the hook path shows in place of refusing, or undefined when none apply. */
+export function retiredEnvHomeLine(env: Readonly<Record<string, string | undefined>> = process.env): string | undefined {
+  const names = retiredEnvNames(env);
+  if (!names.length) return undefined;
+  const refusal = retiredEnvRefusal(names);
+  return `${refusal.message} This session skips the update check and automatic pull until it is fixed. Fix: ${refusal.help}`;
 }
 
 /** The install verbs default to project scope, so a fix must name the scope the old thing is in. */
@@ -62,17 +91,6 @@ function scopedInstalls(cli: string, verb: "hook" | "skill", scopes: readonly In
 }
 
 export const DEPRECATION_NOTICES: readonly DeprecationNotice[] = Object.freeze([
-  envRow("DEPRECATED_ENV_ACTOR", LEGACY_ACTOR_ENV, SUPERBEE_ACTOR_ENV),
-  envRow("DEPRECATED_ENV_API_KEY", LEGACY_API_KEY_ENV, SUPERBEE_API_KEY_ENV),
-  envRow("DEPRECATED_ENV_NO_UPDATE_CHECK", LEGACY_NO_UPDATE_CHECK_ENV, SUPERBEE_NO_UPDATE_CHECK_ENV),
-  envRow("DEPRECATED_ENV_NO_AUTOPULL", NO_AUTOPULL_ENV, SUPERBEE_NO_AUTOPULL_ENV),
-  {
-    code: "DEPRECATED_PROJECT_BINDING",
-    // Spelled here rather than imported: `bundle.ts` imports this module. A test pins the literal.
-    old: "the .agentstate.json project binding",
-    replacement: ".superbee.json",
-    fix: () => "rename .agentstate.json to .superbee.json (same contents)",
-  },
   {
     code: "DEPRECATED_SOURCE_PLUGIN_POINTER",
     old: "the pre-v2 source plugin pointer",
@@ -183,18 +201,8 @@ export function emitDeprecationNotice(
   }
 }
 
-/**
- * The CLI entry's one call: open the channel for this command and report old variables by name. A
- * present variable warns even when empty, because it is what the later refusal will check. A value
- * is never read here, so an API key cannot reach the notice.
- */
-export function openDeprecationNotices(
-  argv: readonly string[],
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): void {
+/** The CLI entry's one call: open the channel for this command. */
+export function openDeprecationNotices(argv: readonly string[]): void {
   if (stderrIsReserved(argv)) return;
   open = true;
-  for (const row of DEPRECATION_NOTICES) {
-    if (row.env !== undefined && Object.hasOwn(env, row.env)) emitDeprecationNotice(row.code);
-  }
 }

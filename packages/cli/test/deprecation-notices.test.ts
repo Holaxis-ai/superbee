@@ -6,10 +6,11 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { PROJECT_BINDING_FILE_NAME, SUPERBEE_PROJECT_BINDING_FILE_NAME } from "../src/bundle.js";
+import { RETIRED_PROJECT_BINDING_FILE_NAME, SUPERBEE_PROJECT_BINDING_FILE_NAME } from "../src/bundle.js";
 import type { InstallScope } from "../src/install-scope.js";
 import {
   DEPRECATION_NOTICES,
+  RETIRED_ENV,
   renderDeprecationNotice,
   stderrIsReserved,
   type DeprecationNoticeCode,
@@ -26,14 +27,21 @@ interface Run {
   stderr: string;
 }
 
-/** Without a legacy name in the inherited environment, so each row controls its own trigger. */
+/** Without a retired name in the inherited environment, so each case controls its own trigger. */
 function cleanEnv(home: string, overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env = isolatedUserEnv(home, { SUPERBEE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" });
-  for (const row of DEPRECATION_NOTICES) if (row.env) delete env[row.env];
+  for (const [retired] of RETIRED_ENV) delete env[retired];
   // Fixes below really install, so no inherited override may point them at a real host config.
   for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR"]) delete env[name];
   env.XDG_CONFIG_HOME = join(home, ".config");
   return { ...env, ...overrides };
+}
+
+/** {@link cleanEnv} with each given retired name set and its replacement absent. */
+function retiredOnly(home: string, retired: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env = cleanEnv(home, retired);
+  for (const [name, replacement] of RETIRED_ENV) if (name in retired) delete env[replacement];
+  return env;
 }
 
 /** `until` ends a foreground server once its stdout shows it is up. */
@@ -108,18 +116,7 @@ const LEGACY_HOOK = {
 const LOCAL = ["list", "--dir", "bundle", "--json"];
 
 /** Exactly one trigger per table row: the compile-time map is the agreement with the table. */
-const renamedVariable = async (): Promise<void> => {};
 const TRIGGERS: Record<DeprecationNoticeCode, Trigger> = {
-  DEPRECATED_ENV_ACTOR: { args: LOCAL, env: { AGENTSTATE_LITE_ACTOR: "process:tester" }, applyFix: renamedVariable },
-  DEPRECATED_ENV_API_KEY: { args: LOCAL, env: { AGENTSTATE_LITE_API_KEY: "secret-value" }, applyFix: renamedVariable },
-  DEPRECATED_ENV_NO_UPDATE_CHECK: { args: LOCAL, env: { ASLITE_NO_UPDATE_CHECK: "1" }, applyFix: renamedVariable },
-  DEPRECATED_ENV_NO_AUTOPULL: { args: LOCAL, env: { AGENTSTATE_LITE_NO_AUTOPULL: "1" }, applyFix: renamedVariable },
-  DEPRECATED_PROJECT_BINDING: {
-    args: ["list", "--json"],
-    names: PROJECT_BINDING_FILE_NAME,
-    arrange: ({ project }) => writeJson(join(project, PROJECT_BINDING_FILE_NAME), { bundle: "./bundle" }),
-    applyFix: ({ project }) => rename(join(project, PROJECT_BINDING_FILE_NAME), join(project, SUPERBEE_PROJECT_BINDING_FILE_NAME)),
-  },
   DEPRECATED_SOURCE_PLUGIN_POINTER: {
     args: ["source", "plugin", "list", "--json"],
     arrange: async (fixture) => {
@@ -209,12 +206,6 @@ test("every row names the old thing, its replacement, a runnable fix and a uniqu
   }
 });
 
-test("the binding row spells the same file names bundle.ts resolves", () => {
-  const row = DEPRECATION_NOTICES.find((candidate) => candidate.code === "DEPRECATED_PROJECT_BINDING")!;
-  assert.ok(row.old.includes(PROJECT_BINDING_FILE_NAME));
-  assert.equal(row.replacement, SUPERBEE_PROJECT_BINDING_FILE_NAME);
-});
-
 for (const row of DEPRECATION_NOTICES) {
   test(`trigger emits ${row.code} once, on stderr only, with its fix`, () => withFixture(async (fixture) => {
     const trigger = TRIGGERS[row.code];
@@ -224,7 +215,6 @@ for (const row of DEPRECATION_NOTICES) {
     for (const words of row.fix("\0", trigger.scopes ?? []).split("\0")) assert.ok(result.stderr.includes(words), result.stderr);
     if (trigger.names) assert.ok(result.stderr.includes(trigger.names), result.stderr);
     assert.ok(!result.stdout.includes(row.code), result.stdout);
-    assert.ok(!result.stderr.includes("secret-value"), "a notice never prints a value");
   }));
 
   test(`doing the fix clears ${row.code}`, () => withFixture(async (fixture) => {
@@ -292,14 +282,14 @@ for (const [label, args] of [
   ["pull --out -", ["pull", "--doc-key", "absent/doc", "--dir", "bundle", "--out", "-"]],
   ["mcp", ["mcp", "--bogus"]],
 ] as const) {
-  test(`a ${label} failure keeps its stderr envelope and exit code byte for byte`, () => withFixture(async ({ home, project }) => {
+  test(`${label} refuses a retired variable on its stderr error channel, leaving stdout empty`, () => withFixture(async ({ home, project }) => {
     const clean = await run([...args], project, cleanEnv(home));
-    const noticed = await run([...args], project, cleanEnv(home, { AGENTSTATE_LITE_ACTOR: "process:tester" }));
-    assert.notEqual(clean.code, 0);
-    assert.ok(clean.stderr.length > 0, "the proof needs an envelope on stderr");
-    assert.equal(noticed.stderr, clean.stderr);
-    assert.equal(noticed.stdout, clean.stdout);
-    assert.equal(noticed.code, clean.code);
+    assert.ok(clean.stderr.length > 0, "the command routes its own errors to stderr");
+    const refused = await run([...args], project, cleanEnv(home, { AGENTSTATE_LITE_ACTOR: "process:tester" }));
+    assert.equal(refused.code, 2);
+    assert.equal(refused.stdout, "");
+    assert.match(refused.stderr, /code: RETIRED_ENV/);
+    assert.match(refused.stderr, /rename AGENTSTATE_LITE_ACTOR to SUPERBEE_ACTOR/);
   }));
 }
 
@@ -309,33 +299,25 @@ test("a clean run emits no notice", () => withFixture(async ({ home, project }) 
   assert.equal(result.stderr, "");
 }));
 
-test("a notice in --json mode leaves stdout parseable and identical, with the same exit code", () => withFixture(async ({ home, project }) => {
-  const clean = await run(LOCAL, project, cleanEnv(home));
-  const noticed = await run(LOCAL, project, cleanEnv(home, { AGENTSTATE_LITE_ACTOR: "process:tester" }));
-  assert.ok(noticed.stderr.includes("[DEPRECATED_ENV_ACTOR]"), "the notice must fire for this proof to mean anything");
-  assert.equal(noticed.code, clean.code);
-  assert.equal(noticed.stdout, clean.stdout);
+test("a notice in --json mode leaves stdout parseable, with exit 0", () => withFixture(async ({ home, project }) => {
+  const noticed = await run(["--remote", "http://127.0.0.1:9", "--json"], project, cleanEnv(home));
+  assert.ok(noticed.stderr.includes("[DEPRECATED_REMOTE_FLAG]"), "the notice must fire for this proof to mean anything");
+  assert.equal(noticed.code, 0);
   assert.equal(typeof JSON.parse(noticed.stdout), "object");
 }));
 
-test("a failing command keeps its exit code and error envelope under a notice", () => withFixture(async ({ home, project }) => {
-  const args = ["doc", "read", "missing/doc", "--dir", "bundle"];
-  const clean = await run(args, project, cleanEnv(home));
-  const noticed = await run(args, project, cleanEnv(home, { AGENTSTATE_LITE_ACTOR: "process:tester" }));
-  assert.notEqual(clean.code, 0);
-  assert.equal(noticed.code, clean.code);
-  assert.equal(noticed.stdout, clean.stdout);
-}));
-
-test("hook commands stay silent on stderr even with a legacy variable and binding", () => withFixture(async ({ home, project }) => {
-  await writeJson(join(project, PROJECT_BINDING_FILE_NAME), { bundle: "./bundle" });
-  const result = await run(["session-start"], project, cleanEnv(home, { AGENTSTATE_LITE_ACTOR: "process:tester" }));
+test("hook commands never refuse: session-start exits 0 with an empty stderr and names each fix", () => withFixture(async ({ home, project }) => {
+  await writeJson(join(project, RETIRED_PROJECT_BINDING_FILE_NAME), { bundle: "./bundle" });
+  const result = await run(["session-start"], project, retiredOnly(home, { AGENTSTATE_LITE_NO_AUTOPULL: "1" }));
   assert.equal(result.code, 0, result.stdout);
   assert.equal(result.stderr, "");
+  assert.match(result.stdout, /retired_env: .*AGENTSTATE_LITE_NO_AUTOPULL is no longer read.*rename AGENTSTATE_LITE_NO_AUTOPULL to SUPERBEE_NO_AUTOPULL/);
+  assert.match(result.stdout, /skips the update check and automatic pull/);
+  assert.match(result.stdout, /project_binding_error: .*retired name \.agentstate\.json, which is no longer read; rename it to \.superbee\.json \(same contents\)/);
 }));
 
-test("a byte channel keeps its stderr receipt parseable and its stdout raw", () => withFixture(async ({ home, project }) => {
-  const env = cleanEnv(home, { AGENTSTATE_LITE_ACTOR: "process:tester" });
+test("a byte channel works with a retired name beside its replacement", () => withFixture(async ({ home, project }) => {
+  const env = cleanEnv(home, { AGENTSTATE_LITE_ACTOR: "process:tester", SUPERBEE_ACTOR: "process:tester" });
   const write = await run(["doc", "write", "notes/raw", "--dir", "bundle", "--type", "Note", "--body", "payload", "--actor", "process:tester"], project, cleanEnv(home));
   assert.equal(write.code, 0, write.stdout);
   const result = await run(["doc", "read", "notes/raw", "--dir", "bundle", "--out", "-", "--json"], project, env);
@@ -364,9 +346,9 @@ test("commands whose stderr is a contract are reserved, in every flag spelling",
 
 test("a closed stderr reader costs the notice and never changes the exit code", () => withFixture(async ({ home, project }) => {
   const code = await new Promise<number | null>((resolve, reject) => {
-    const child = spawn(process.execPath, [CLI, ...LOCAL], {
+    const child = spawn(process.execPath, [CLI, "--remote", "http://127.0.0.1:9"], {
       cwd: project,
-      env: cleanEnv(home, { AGENTSTATE_LITE_ACTOR: "process:tester" }),
+      env: cleanEnv(home),
       stdio: ["ignore", "ignore", "pipe"],
     });
     child.stderr.destroy();
@@ -374,4 +356,77 @@ test("a closed stderr reader costs the notice and never changes the exit code", 
     child.once("close", resolve);
   });
   assert.equal(code, 0);
+}));
+
+for (const [retired, replacement] of RETIRED_ENV) {
+  test(`${retired} alone is refused before any work, naming the rename and never the value`, () => withFixture(async ({ home, project }) => {
+    const result = await run(LOCAL, project, retiredOnly(home, { [retired]: "secret-value" }));
+    assert.equal(result.code, 2, result.stdout);
+    assert.match(result.stdout, /code: USAGE/);
+    assert.match(result.stdout, /code: RETIRED_ENV/);
+    assert.ok(result.stdout.includes(`${retired} is no longer read; Superbee reads only ${replacement}.`), result.stdout);
+    assert.ok(result.stdout.includes(`rename ${retired} to ${replacement} wherever it is set`), result.stdout);
+    assert.ok(result.stdout.includes("then run the command again."), result.stdout);
+    assert.ok(!(result.stdout + result.stderr).includes("secret-value"), "a refusal never prints a value");
+    // An empty value is still a setting the person meant.
+    assert.equal((await run(LOCAL, project, retiredOnly(home, { [retired]: "" }))).code, 2);
+  }));
+
+  test(`${retired} beside ${replacement} is ignored quietly, whatever its value`, () => withFixture(async ({ home, project }) => {
+    const clean = await run(LOCAL, project, cleanEnv(home, { [replacement]: "1" }));
+    for (const value of ["", "different"]) {
+      const result = await run(LOCAL, project, cleanEnv(home, { [replacement]: "1", [retired]: value }));
+      assert.equal(result.code, 0, result.stdout);
+      assert.equal(result.stderr, "");
+      assert.equal(result.stdout, clean.stdout);
+    }
+  }));
+}
+
+test("several retired names give one refusal listing each", () => withFixture(async ({ home, project }) => {
+  const result = await run(LOCAL, project, retiredOnly(home, { AGENTSTATE_LITE_ACTOR: "a", ASLITE_NO_UPDATE_CHECK: "1" }));
+  assert.equal(result.code, 2);
+  assert.ok(result.stdout.includes("AGENTSTATE_LITE_ACTOR and ASLITE_NO_UPDATE_CHECK are no longer read"), result.stdout);
+  assert.match(result.stdout, /retired_env\[2\]: AGENTSTATE_LITE_ACTOR,ASLITE_NO_UPDATE_CHECK/);
+}));
+
+test("help and version still answer with a retired name set", () => withFixture(async ({ home, project }) => {
+  const env = cleanEnv(home, { AGENTSTATE_LITE_ACTOR: "a" });
+  assert.equal((await run(["--help"], project, env)).code, 0);
+  assert.equal((await run(["--version"], project, env)).code, 0);
+}));
+
+test("a .agentstate.json binding is refused with the rename, and doing the rename works", () => withFixture(async ({ home, project }) => {
+  const retired = join(project, RETIRED_PROJECT_BINDING_FILE_NAME);
+  await writeJson(retired, { bundle: "./bundle" });
+  const refused = await run(["list", "--json"], project, cleanEnv(home));
+  assert.equal(refused.code, 2, refused.stdout);
+  assert.match(refused.stdout, /code: RETIRED_PROJECT_BINDING/);
+  assert.match(refused.stdout, /project binding .*\/project\/\.agentstate\.json uses the retired name \.agentstate\.json, which is no longer read; rename it to \.superbee\.json/);
+  assert.match(refused.stdout, /rename it to \.superbee\.json \(same contents\): mv .*\.agentstate\.json.* .*\.superbee\.json/);
+  // --dir never consults a binding.
+  assert.equal((await run(LOCAL, project, cleanEnv(home))).code, 0);
+  await rename(retired, join(project, SUPERBEE_PROJECT_BINDING_FILE_NAME));
+  const fixed = await run(["list", "--json"], project, cleanEnv(home));
+  assert.equal(fixed.code, 0, fixed.stdout);
+  assert.equal(fixed.stderr, "");
+}));
+
+test("both binding names at one level refuse with the delete fix", () => withFixture(async ({ home, project }) => {
+  await writeJson(join(project, RETIRED_PROJECT_BINDING_FILE_NAME), { bundle: "./bundle" });
+  await writeJson(join(project, SUPERBEE_PROJECT_BINDING_FILE_NAME), { bundle: "./bundle" });
+  const result = await run(["list", "--json"], project, cleanEnv(home));
+  assert.equal(result.code, 2, result.stdout);
+  assert.match(result.stdout, /code: RETIRED_PROJECT_BINDING/);
+  assert.match(result.stdout, /has both \.superbee\.json and the retired \.agentstate\.json, which is no longer read/);
+  assert.match(result.stdout, /delete .*\.agentstate\.json after checking that .*\.superbee\.json points at the bundle you want/);
+}));
+
+test("a nearer .agentstate.json refuses rather than falling through to a farther .superbee.json", () => withFixture(async ({ home, project }) => {
+  const nested = join(project, "nested");
+  await writeJson(join(project, SUPERBEE_PROJECT_BINDING_FILE_NAME), { bundle: "./bundle" });
+  await writeJson(join(nested, RETIRED_PROJECT_BINDING_FILE_NAME), { bundle: "../bundle" });
+  const result = await run(["list", "--json"], nested, cleanEnv(home));
+  assert.equal(result.code, 2, result.stdout);
+  assert.ok(result.stdout.includes(join(nested, RETIRED_PROJECT_BINDING_FILE_NAME)), result.stdout);
 }));
