@@ -2184,8 +2184,7 @@ export type FetchRebaseResolvingOutcome =
    * Same-doc conflicts were RESOLVED by the converging mechanic (upstream kept, local exported)
    * and the rebase COMPLETED — the worktree is never left mid-state; non-conflicted local commits
    * landed on top of `origin/board`. One entry per conflicted file (deduped across rebase stops:
-   * a doc conflicting at several stops reports its LAST export, the local FINAL content, and every
-   * stop's version stays saved).
+   * one saved copy per file per run, the local FINAL content).
    */
   | { status: "resolved"; conflicts: ResolvedConflict[] }
   /**
@@ -2213,8 +2212,9 @@ const MAX_REBASE_STOPS = 1000;
  * `--ours`/`--theirs`.
  *
  * The test-pinned sequence for each conflicted `<path>`:
- *   1. `git show :3:<path> > <export-file>` — FIRST (`:3:` = theirs-in-rebase = the LOCAL
- *      version → this is "yours saved").
+ *   1. Save yours FIRST: `git show <local tip>:<path>` when the pre-rebase tip has the path,
+ *      else (after the loop) the last stop's `git show :3:<path>` (`:3:` = theirs-in-rebase =
+ *      the LOCAL version) → this is "yours saved".
  *   2. `git checkout origin/board -- <path>` — keep the UPSTREAM (teammate's) version.
  *   3. `git add -- <path>`.
  * Then advance non-interactively: `GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true git rebase --continue`
@@ -2231,8 +2231,9 @@ const MAX_REBASE_STOPS = 1000;
  *
  * Export files land at `<exportDir>/<relPath>` with the blob's exact bytes and a
  * `<relPath minus .md>.body.md` body-only companion for parseable concept docs; a repeat conflict
- * on a path with a saved copy lands beside it without replacing it (`saved-copies.ts`). The
- * companion is the `doc update --body-file` input. Created 0700/0600; the caller passes a
+ * on a path with a saved copy lands beside it without replacing it (`saved-copies.ts`). Each
+ * conflicted path gets one copy per run: the pre-rebase local tip's version when the tip has the
+ * path, else the last stop's `:3:` version. The companion is the `doc update --body-file` input. Created 0700/0600; the caller passes a
  * per-bundle dir OUTSIDE the worktree (see cursor.ts `syncExportsDir`).
  */
 export function fetchRebaseResolving(
@@ -2252,6 +2253,8 @@ export function fetchRebaseResolving(
   // commits nothing): a replayed commit needs COMMITTER identity too, the same failure class as a
   // plain commit — see porcelain.ts's module header site map.
   const idFlags = identityFlags(boardPath);
+  const tip = runGit(boardPath, ["rev-parse", "--verify", "--quiet", "HEAD"]);
+  const localTip = tip.status === 0 ? tip.stdout.trim() : null;
   const r = runGit(boardPath, [...idFlags, "rebase", ...REBASE_BY_PATH, boardRef], { rebase: true, timeoutMs: NETWORK_TIMEOUT_MS });
   if (r.status === 0) return { status: "clean" };
   if (!detectStaleRebase(boardPath)) throw classifyGitError(failureOf(["rebase", boardRef], r));
@@ -2261,6 +2264,7 @@ export function fetchRebaseResolving(
   // so it must be robust even against names the tab/newline-split parsers can't express — NUL
   // output is raw and unquoted BY DEFINITION, independent of any quotepath setting.
   const byPath = new Map<string, ResolvedConflict>();
+  const lastStopBytes = new Map<string, Buffer | null>();
   try {
     let stops = 0;
     while (detectStaleRebase(boardPath)) {
@@ -2279,16 +2283,24 @@ export function fetchRebaseResolving(
         continue;
       }
       for (const relPath of conflicted) {
-        // 1. EXPORT yours FIRST: `:3:` = theirs-in-rebase = the LOCAL version (the inversion).
+        // 1. EXPORT yours FIRST. The pre-rebase local tip's version, when it has the path, is
+        // your final version: a later local commit may have replayed cleanly over the kept
+        // upstream version, and neither the stop's `:3:` (theirs-in-rebase = the LOCAL version,
+        // the inversion) nor HEAD carries both. Saving the same bytes again at a later stop adds
+        // no file. Without it, the last stop's `:3:` version is saved once the loop ends.
         // Bytes, not a utf8 string: the export must round-trip the blob
         // byte-identically — a binary/invalid-UTF-8 blob routed through a string is corrupted
         // (invalid sequences become U+FFFD).
-        const local = runGitBytes(boardPath, ["show", `:3:${relPath}`]);
+        const isDoc = isConceptDocPath(relPath);
         let exportPath: string | null = null;
         let bodyExportPath: string | null = null;
-        const isDoc = isConceptDocPath(relPath);
-        if (local.status === 0) {
-          ({ exportPath, bodyExportPath } = saveCopyWithBody(exportDir, relPath, local.stdout, isDoc));
+        const final = localTip === null ? null : runGitBytes(boardPath, ["show", `${localTip}:${relPath}`]);
+        if (final !== null && final.status === 0) {
+          ({ exportPath, bodyExportPath } = saveCopyWithBody(exportDir, relPath, final.stdout, isDoc));
+          lastStopBytes.delete(relPath);
+        } else {
+          const local = runGitBytes(boardPath, ["show", `:3:${relPath}`]);
+          lastStopBytes.set(relPath, local.status === 0 ? local.stdout : null);
         }
         // 2+3. Keep the UPSTREAM (teammate's) version — explicit ref, never --ours/--theirs. An
         // upstream-side DELETION keeps upstream's state by removing the path instead.
@@ -2322,6 +2334,12 @@ export function fetchRebaseResolving(
       /* best-effort — the original error is the one that matters */
     }
     throw err;
+  }
+  for (const [relPath, bytes] of lastStopBytes) {
+    const conflict = byPath.get(relPath)!;
+    if (bytes === null) continue;
+    const { exportPath, bodyExportPath } = saveCopyWithBody(exportDir, relPath, bytes, conflict.isDoc);
+    byPath.set(relPath, { ...conflict, exportPath, bodyExportPath });
   }
   return { status: "resolved", conflicts: [...byPath.values()] };
 }
