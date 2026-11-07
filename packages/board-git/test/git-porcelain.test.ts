@@ -1636,7 +1636,8 @@ test("runGit timeoutMs <= 0: immediate TRANSIENT classification, NO child proces
       assert.ok(!existsSync(path.join(dir, ".git")), `git must never have run (timeoutMs ${timeoutMs})`);
       assert.ok(isBoardGitError(err));
       assert.equal(err.code, "TRANSIENT");
-      assert.match(err.message, /timed out/);
+      assert.match(err.message, /did not finish within 0 seconds and was stopped/);
+      assert.equal(err.details?.reason, "timeout");
     }
   } finally {
     await rm(dir, { recursive: true, force: true });

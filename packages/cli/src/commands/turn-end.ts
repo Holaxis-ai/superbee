@@ -100,7 +100,7 @@ export interface TurnEndDeps {
   /** The shared Git board the run is in, from local Git only (default: {@link sharedGitBoardAt}). */
   gitBoard: (dir: string | undefined) => Promise<GitTurnEndBoard | null>;
   /** The Git board sync (default: `superbee sync`). */
-  gitSync: (argv: string[], stdout: (text: string) => void) => Promise<void>;
+  gitSync: (argv: string[], stdout: (text: string) => void, networkDeadline: number) => Promise<void>;
   now: () => Date;
   /** The live hosted checkouts on this machine (default: the ready bindings in private state). */
   checkouts: () => Promise<CheckoutBinding[]>;
@@ -243,7 +243,7 @@ export async function turnEnd(argv: string[], partial: Partial<TurnEndDeps> = {}
     if (condition === "stop") return;
     if (condition) conditions.push(condition);
   } else if (values["git-boards"] || (await readTurnEndGitBoards(home))) {
-    const condition = await gitTurnEnd(values.dir, home, partial, stopHookActive);
+    const condition = await gitTurnEnd(values.dir, home, deadline, partial, stopHookActive);
     if (condition === "stop") return;
     if (condition) conditions.push(condition);
   }
@@ -524,11 +524,11 @@ function gitReasonFor(root: string, error: CliError): string {
  * The opt-in Git turn end: the hosted rules on a Git board. Nothing to send and a fetch under five
  * minutes old means no Git network call at all. A converged conflict (the teammate's version kept,
  * yours exported), a failed sync gate or a Git sign-in failure is handed back to the agent once; offline, a busy
- * repository and everything else wait for the next turn or an explicit sync. Git's own per-command
- * timeouts bound the network; the host's Stop-hook timeout is the outer bound, and a sync cut off
- * there is healed at the next sync's entry.
+ * repository and everything else wait for the next turn or an explicit sync. The fetch and push end
+ * by the turn-end deadline, under the host's Stop-hook timeout, so a slow upload is stopped and left
+ * for the next sync rather than cut off mid-run.
  */
-async function gitTurnEnd(dir: string | undefined, home: string, partial: Partial<TurnEndDeps>, stopHookActive: () => Promise<boolean>): Promise<Condition | null | "stop"> {
+async function gitTurnEnd(dir: string | undefined, home: string, deadline: number, partial: Partial<TurnEndDeps>, stopHookActive: () => Promise<boolean>): Promise<Condition | null | "stop"> {
   const board = await (partial.gitBoard ?? ((d) => sharedGitBoardAt(d, home)))(dir).catch(() => null);
   if (!board) return null;
   if (!board.changed) {
@@ -538,11 +538,12 @@ async function gitTurnEnd(dir: string | undefined, home: string, partial: Partia
   if (await stopHookActive()) return "stop";
   const run =
     partial.gitSync ??
-    (async (args: string[], out: (text: string) => void) => (await import("./sync/orchestrate.js")).sync(args, { stdout: out, stderr: out }));
+    (async (args: string[], out: (text: string) => void, networkDeadline: number) =>
+      (await import("./sync/orchestrate.js")).sync(args, { stdout: out, stderr: out, networkDeadline }));
   let blocking: CliError | null = null;
   try {
     // The sync a person would run here: from the same directory, so it routes exactly as they would.
-    await run([...(dir === undefined ? [] : ["--dir", dir]), "--limit", String(REASON_ROWS), "--json"], () => {});
+    await run([...(dir === undefined ? [] : ["--dir", dir]), "--limit", String(REASON_ROWS), "--json"], () => {}, deadline);
   } catch (error) {
     if (error instanceof CliError && (error.code === "CONFLICT" || error.code === "GATE_FAILED" || error.code === "AUTH_REQUIRED" || error.details?.reason === "board_moved")) blocking = error;
   }

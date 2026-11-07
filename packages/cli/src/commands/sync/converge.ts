@@ -59,6 +59,15 @@ export const PUSH_FAIL_NETWORK_MESSAGE =
   "committed to the board locally — your work is saved. The update to origin/board could not " +
   "reach the remote; re-run sync after connectivity changes.";
 
+/** The push-timeout warning: the upload was stopped, so whether the remote has it is unknown. */
+export function pushTimeoutMessage(timeoutMs: number | undefined): string {
+  const within = timeoutMs === undefined ? "in time" : `within ${Math.ceil(timeoutMs / 1000)} seconds`;
+  return (
+    `committed to the board locally — your work is saved. The upload to origin/board did not finish ` +
+    `${within} and was stopped. The remote may already have it. Run sync again to check and continue.`
+  );
+}
+
 /**
  * The push-failure warning: auth and connectivity failures get the exact generic safety string;
  * a non-fast-forward retry and other classifications keep the same safety-first framing with
@@ -68,6 +77,10 @@ export function pushFailureMessage(err: CliError): string {
   const sharing = err.details?.sharing as { operation?: unknown } | undefined;
   const isUpdatePush = sharing?.operation === "update-board";
   if (isUpdatePush && err.code === "AUTH_REQUIRED") return PUSH_FAIL_ACCESS_MESSAGE;
+  if (isUpdatePush && err.details?.reason === "timeout") {
+    const timeoutMs = err.details.timeout_ms;
+    return pushTimeoutMessage(typeof timeoutMs === "number" ? timeoutMs : undefined);
+  }
   if (isUpdatePush && err.code === "TRANSIENT" && err.details?.reason !== "non-fast-forward") {
     return PUSH_FAIL_NETWORK_MESSAGE;
   }

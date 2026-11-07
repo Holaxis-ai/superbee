@@ -52,6 +52,8 @@ import {
   type FetchRebaseResolvingOutcome,
   type ProvisionOutcome,
   type SyncCursor,
+  NETWORK_TIMEOUT_MS,
+  PUSH_TIMEOUT_MS,
 } from "@superbee/board-git";
 import { REANCHOR_NOTE, defaultSyncStore } from "../../cursor.js";
 import { hookInstallHintOnce, type SyncCliDeps } from "../../sync-cli.js";
@@ -335,6 +337,12 @@ export function inTreePullHint(behind: number): string {
 export const SYNC_IN_TREE_CURRENT = "checkout is current with upstream";
 
 // ── the phase inputs/results ──────────────────────────────────────────────────
+
+/** An op's budget: its ordinary bound, cut to what is left before the caller's deadline. */
+function networkBudget(run: SyncRun, ordinaryMs: number): number {
+  const deadline = run.deps.networkDeadline;
+  return deadline === undefined ? ordinaryMs : Math.min(ordinaryMs, deadline - Date.now());
+}
 
 /** The per-run inputs every phase shares, assembled once by {@link syncCommand}. */
 interface SyncRun {
@@ -798,7 +806,7 @@ async function convergingRebase(run: SyncRun, board: SyncBoard, committedThisRun
     throwPostCommitFailure(withProvisionAnnouncement(err, outcome), committedThisRun, key, boardPath);
   let rebaseOutcome: FetchRebaseResolvingOutcome;
   try {
-    rebaseOutcome = fetchRebaseResolving(boardPath, defaultSyncStore.exportsDir(key));
+    rebaseOutcome = fetchRebaseResolving(boardPath, defaultSyncStore.exportsDir(key), networkBudget(run, NETWORK_TIMEOUT_MS));
   } catch (rawErr) {
     throw await fail(withUpstreamHelp(toCliError(rawErr, "rebase"), run.inv));
   }
@@ -896,7 +904,7 @@ async function pushPhase(
       gateDetails = judged.details;
     }
     try {
-      push(board.boardPath, head, branch);
+      push(board.boardPath, head, branch, networkBudget(run, PUSH_TIMEOUT_MS));
       return { commits: ahead, documents: outgoing, delta, ...(gateDetails ? { gate: gateDetails } : {}) };
     } catch (err) {
       const classified = withSharingDetails(toCliError(err, "push"), { operation: "update-board" });

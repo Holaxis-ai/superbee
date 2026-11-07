@@ -300,6 +300,11 @@ const SCRUBBED_GIT_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] as cons
 const LOCAL_TIMEOUT_MS = 30_000;
 /** Budget for ops that touch the network (fetch/push/probe) — bounded, but tolerant of a slow remote. */
 export const NETWORK_TIMEOUT_MS = 60_000;
+/**
+ * Budget for a push: the upload of a large pending history can take minutes on an ordinary link,
+ * so it gets its own longer bound rather than sharing the fetch/probe budget.
+ */
+export const PUSH_TIMEOUT_MS = 600_000;
 
 export interface GitRunResult {
   status: number;
@@ -390,8 +395,9 @@ export function runGitBytes(dir: string, args: string[], opts: RunOptions = {}):
   // exists to bound. A non-positive timeout therefore classifies as an IMMEDIATE fired timeout
   // (TRANSIENT) without ever spawning: one chokepoint closing the class for every caller,
   // present and future, however their guard-to-spawn gaps decay.
-  if (opts.timeoutMs !== undefined && opts.timeoutMs <= 0) {
-    throw classifyGitError({ args, status: null, stdout: "", stderr: "", timedOut: true });
+  const timeoutMs = opts.timeoutMs ?? LOCAL_TIMEOUT_MS;
+  if (timeoutMs <= 0) {
+    throw classifyGitError({ args, status: null, stdout: "", stderr: "", timedOut: true, timeoutMs });
   }
   const repositoryArgs = [
     ...(opts.gitDir ? [`--git-dir=${opts.gitDir}`] : []),
@@ -410,7 +416,7 @@ export function runGitBytes(dir: string, args: string[], opts: RunOptions = {}):
     ...args,
   ], {
     env: gitEnv(opts.rebase ?? false, opts.connectTimeoutSeconds, opts.indexFile),
-    timeout: opts.timeoutMs ?? LOCAL_TIMEOUT_MS,
+    timeout: timeoutMs,
     input: opts.input,
     maxBuffer: 32 * 1024 * 1024,
   });
@@ -424,12 +430,13 @@ export function runGitBytes(dir: string, args: string[], opts: RunOptions = {}):
       stdout: stdout.toString("utf8"),
       stderr,
       timedOut: code === "ETIMEDOUT",
+      timeoutMs,
       spawnErrorCode: code ?? "SPAWN",
     });
   }
   // A killed child (e.g. timeout without an error object on some platforms) has status null.
   if (r.status === null) {
-    throw classifyGitError({ args, status: null, stdout: stdout.toString("utf8"), stderr, timedOut: true });
+    throw classifyGitError({ args, status: null, stdout: stdout.toString("utf8"), stderr, timedOut: true, timeoutMs });
   }
   return { status: r.status, stdout, stderr };
 }
@@ -2228,8 +2235,12 @@ const MAX_REBASE_STOPS = 1000;
  * companion is the `doc update --body-file` input. Created 0700/0600; the caller passes a
  * per-bundle dir OUTSIDE the worktree (see cursor.ts `syncExportsDir`).
  */
-export function fetchRebaseResolving(boardPath: string, exportDir: string): FetchRebaseResolvingOutcome {
-  mustGit(boardPath, ["fetch", "--prune", BOARD_REMOTE], { timeoutMs: NETWORK_TIMEOUT_MS });
+export function fetchRebaseResolving(
+  boardPath: string,
+  exportDir: string,
+  fetchTimeoutMs: number = NETWORK_TIMEOUT_MS,
+): FetchRebaseResolvingOutcome {
+  mustGit(boardPath, ["fetch", "--prune", BOARD_REMOTE], { timeoutMs: fetchTimeoutMs });
   const boardRef = boardRefOf(boardPath);
   // The fetch above is a LIVE view of origin, but there is no `origin/board` to rebase onto —
   // checked structurally (not by parsing rebase's failure prose) so this never collides with the
@@ -2438,10 +2449,15 @@ function remoteRefIfPresent(dir: string, branch: string): string | null {
  * ran in between (a gate, a hook) can change where the push goes. Failures classify (AUTH exit 4 vs network exit 1, best-effort).
  * Every push first runs the private-state backstop on exactly what it would send.
  */
-export function push(boardPath: string, commit?: string, branch: string = boardBranchOf(boardPath)): void {
+export function push(
+  boardPath: string,
+  commit?: string,
+  branch: string = boardBranchOf(boardPath),
+  timeoutMs: number = PUSH_TIMEOUT_MS,
+): void {
   const refspec = commit === undefined ? branch : `${commit}:refs/heads/${branch}`;
   assertNoPrivateStateOutgoing(boardPath, commit ?? `refs/heads/${branch}`, { ...PUSH_BACKSTOP, base: remoteRefIfPresent(boardPath, branch) });
-  mustGit(boardPath, ["push", BOARD_REMOTE, refspec], { timeoutMs: NETWORK_TIMEOUT_MS });
+  mustGit(boardPath, ["push", BOARD_REMOTE, refspec], { timeoutMs });
 }
 
 /**
@@ -2455,7 +2471,7 @@ export function push(boardPath: string, commit?: string, branch: string = boardB
  */
 export function pushBoardUpstream(top: string): void {
   assertNoPrivateStateOutgoing(top, `refs/heads/${BOARD_BRANCH}`, { ...PUSH_BACKSTOP, base: remoteRefIfPresent(top, BOARD_BRANCH) });
-  mustGit(top, ["push", "-u", BOARD_REMOTE, BOARD_BRANCH], { timeoutMs: NETWORK_TIMEOUT_MS });
+  mustGit(top, ["push", "-u", BOARD_REMOTE, BOARD_BRANCH], { timeoutMs: PUSH_TIMEOUT_MS });
 }
 
 /**
@@ -2466,7 +2482,7 @@ export function pushBoardUpstream(top: string): void {
 export function pushBoardCommit(top: string, commit: string): void {
   assertNoPrivateStateOutgoing(top, commit, PUSH_BACKSTOP);
   mustGit(top, ["push", BOARD_REMOTE, `${commit}:refs/heads/${BOARD_BRANCH}`], {
-    timeoutMs: NETWORK_TIMEOUT_MS,
+    timeoutMs: PUSH_TIMEOUT_MS,
   });
 }
 
