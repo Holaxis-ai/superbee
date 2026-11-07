@@ -963,7 +963,7 @@ async function failGate(
   reason: string, details: Record<string, unknown>,
 ): Promise<never> {
   const warning =
-    `committed to the board locally — your work is saved. The sync gate ${reason} on the rebased ` +
+    `Committed to the board locally. Your work is saved. The sync gate ${reason} on the rebased ` +
     "board, so nothing was pushed; fix what it reports, then re-run sync";
   const help = `run the gate yourself from ${board.boardPath} (git config --get ${SYNC_GATE_CONFIG}), fix what it reports, then ${run.inv} sync`;
   const partial = buildPushFailurePartial(

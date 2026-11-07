@@ -47,23 +47,23 @@ export function cap(rows: Record<string, unknown>[], limit: number): Capped {
 
 /** The push-fail safety message (test-pinned VERBATIM): reassurance first, then failure class + retry path. */
 export const PUSH_FAIL_SAFETY_MESSAGE =
-  "committed to the board locally — your work is saved. The push failed (offline or auth); " +
+  "Committed to the board locally. Your work is saved. The push failed (offline or auth); " +
   "re-run sync when you're back online or your access is restored.";
 
 export const PUSH_FAIL_ACCESS_MESSAGE =
-  "committed to the board locally — your work is saved. The remote did not accept the update " +
+  "Committed to the board locally. Your work is saved. The remote did not accept the update " +
   "to origin/board. Verify the active HTTPS/SSH identity, repository-specific Write access, and " +
   "board-update policy; re-run sync only after one of those conditions changes.";
 
 export const PUSH_FAIL_NETWORK_MESSAGE =
-  "committed to the board locally — your work is saved. The update to origin/board could not " +
+  "Committed to the board locally. Your work is saved. The update to origin/board could not " +
   "reach the remote; re-run sync after connectivity changes.";
 
 /** The push-timeout warning: the upload was stopped, so whether the remote has it is unknown. */
 export function pushTimeoutMessage(timeoutMs: number | undefined): string {
   const within = timeoutMs === undefined ? "in time" : `within ${Math.ceil(timeoutMs / 1000)} seconds`;
   return (
-    `committed to the board locally — your work is saved. The upload to origin/board did not finish ` +
+    `Committed to the board locally. Your work is saved. The upload to origin/board did not finish ` +
     `${within} and was stopped. The remote may already have it. Run sync again to check and continue.`
   );
 }
@@ -86,7 +86,7 @@ export function pushFailureMessage(err: CliError): string {
   }
   if (isUpdatePush && err.details?.reason === "remote-rejected") {
     return (
-      "committed to the board locally — your work is saved. The remote rejected the update to " +
+      "Committed to the board locally. Your work is saved. The remote rejected the update to " +
       "origin/board; a remote policy, branch rule, or server-side hook may be responsible. " +
       "Verify repository-specific Write access and update policy, then re-run sync only after a condition changes."
     );
@@ -94,7 +94,7 @@ export function pushFailureMessage(err: CliError): string {
   const genericConnectivityFailure =
     err.code === "AUTH_REQUIRED" || (err.code === "TRANSIENT" && err.details?.reason !== "non-fast-forward");
   if (genericConnectivityFailure) return PUSH_FAIL_SAFETY_MESSAGE;
-  return `committed to the board locally — your work is saved. ${err.message}`;
+  return `Committed to the board locally. Your work is saved. ${err.message}`;
 }
 
 /**
