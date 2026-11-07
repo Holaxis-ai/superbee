@@ -299,9 +299,10 @@ async function quarantineStaleLock(
  * Remove an owner-less lock directory left by a claimer that stopped between its `mkdir` and its
  * owner record. A claim is held only once its `wx` create of owner.json succeeds, and `rmdir`
  * removes only an empty directory, so this can never remove a held lock: a directory with any
- * owner.json, even an empty or partial one, refuses. A live claimer whose empty directory is
- * removed sees its owner write fail with ENOENT and claims again. Any failure, including losing a
- * race to another recoverer, is non-progress: the caller keeps waiting.
+ * owner.json, even an empty or partial one, refuses. The age is read before the removal, so a
+ * recoverer can also remove another claimer's fresh, still unheld directory that replaced the one
+ * it aged; that claimer's owner write then fails and it claims again. Any failure, including losing
+ * a race to another recoverer, is non-progress: the caller keeps waiting.
  */
 async function removeAbandonedClaim(lockPath: string): Promise<boolean> {
   try {
@@ -557,9 +558,12 @@ async function claimLockPath(
       // `wx` fails with EEXIST only when another claimer's owner.json was already there, possibly
       // opened but not yet written. The directory is that claimer's now: never roll it back.
       // A lost claim re-enters the loop, whose next `mkdir` either claims or reaches the timeout check.
-      // ENOENT or ENOTDIR means this claim's directory is already gone, so there is nothing to roll
-      // back, and any directory there now belongs to another claimer.
-      if (code === "EEXIST" || code === "ENOENT" || code === "ENOTDIR") {
+      // A directory gone, or replaced by another, was removed under this claim before its record
+      // landed (an abandoned-claim recoverer can do that), so there is nothing to roll back and any
+      // directory there now belongs to another claimer. The write's error code does not say so
+      // reliably: an exclusive create racing the removal of its directory fails with EINVAL on
+      // macOS and EPERM on Windows, so the directory's identity decides.
+      if (code === "EEXIST" || code === "ENOENT" || code === "ENOTDIR" || (await claimDirectoryLost(lockPath, claimed))) {
         heldTokens.delete(owner.token);
         continue;
       }
@@ -619,10 +623,24 @@ async function rollBackOwnClaim(
     return;
   }
   if (record.state === "unreadable" || !(await isClaimedDirectory(lockPath, claimed))) return;
-  // Move exactly the verified directory aside, under a name only this claim can produce, then remove it.
-  const remnant = releasedLockRemnantPath(lockPath, owner);
-  await fs.rename(lockPath, remnant);
-  await fs.rm(remnant, { recursive: true, force: true });
+  // rmdir, never a rename: between the identity check and this step another claimer may remove
+  // the verified directory as abandoned and a third may claim the path and write its record. rmdir
+  // refuses that directory because it is not empty; a rename would move the live lock away.
+  await fs.rmdir(lockPath);
+}
+
+/**
+ * Whether the lock path no longer holds the directory this claim made: it is gone, or it is a
+ * different directory. Unknown when this claim could not record its directory, so not lost.
+ */
+async function claimDirectoryLost(lockPath: string, claimed: BigIntStats | null): Promise<boolean> {
+  try {
+    const current = await fs.lstat(lockPath, { bigint: true });
+    return claimed !== null && (current.dev !== claimed.dev || current.ino !== claimed.ino);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR";
+  }
 }
 
 async function isClaimedDirectory(lockPath: string, claimed: BigIntStats | null): Promise<boolean> {

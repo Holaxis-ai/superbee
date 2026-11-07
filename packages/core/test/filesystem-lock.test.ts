@@ -1575,7 +1575,7 @@ test("owner-record failure preserves exclusive-create flags and rolls back the c
   }
 });
 
-test("owner-record failure leaves a directory that is not the one this claim made", async () => {
+test("an owner-record failure after this claim's directory was replaced is a lost claim that leaves the replacement alone", async () => {
   const harness = await isolatedLockPaths();
   const originalWriteFile = fs.writeFile;
   const writeFailure = Object.assign(new Error("owner write failed"), { code: "EIO" });
@@ -1591,9 +1591,10 @@ test("owner-record failure leaves a directory that is not the one this claim mad
     return Reflect.apply(originalWriteFile, fs, args);
   });
   try {
+    // The replacement is a fresh owner-less claim, so the retried claim times out on it.
     await assert.rejects(
-      () => acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot }),
-      (err: unknown) => err === writeFailure,
+      () => acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, waitMs: 50, pollMs: 5 }),
+      (err: unknown) => err instanceof FilesystemMutationLockError && err.malformed && err.lockPath === lockPath,
     );
     assert.deepEqual(await fs.readdir(harness.lockRoot), [path.basename(lockPath)]);
   } finally {
@@ -1633,7 +1634,7 @@ test("an owner write that meets another claimer's opened but unwritten record le
 test("owner-record host-classified sharing failures never re-enter claim contention", async () => {
   const harness = await isolatedLockPaths();
   const originalWriteFile = fs.writeFile;
-  const originalRm = fs.rm;
+  const originalRmdir = fs.rmdir;
   const writeFailure = Object.assign(new Error("owner write denied"), { code: "TEST_CONTENTION" });
   const rollbackFailure = Object.assign(new Error("rollback denied"), { code: "TEST_CONTENTION" });
   let restoreWriteFile = () => {};
@@ -1644,13 +1645,13 @@ test("owner-record host-classified sharing failures never re-enter claim content
       if (path.basename(String(args[0])) === "owner.json") return Promise.reject(writeFailure);
       return Reflect.apply(originalWriteFile, fs, args);
     });
-    restoreRm = replaceFsMethod("rm", (...args) => {
-      // Rollback moves the claimed directory to its token-derived remnant, then removes that.
-      if (/\.lock\.released-[0-9a-f]{64}$/.test(String(args[0]))) {
+    restoreRm = replaceFsMethod("rmdir", (...args) => {
+      // Rollback removes the claimed, still empty directory in place.
+      if (String(args[0]).endsWith(".lock")) {
         rollbackAttempted = true;
         return Promise.reject(rollbackFailure);
       }
-      return Reflect.apply(originalRm, fs, args);
+      return Reflect.apply(originalRmdir, fs, args);
     });
     await assert.rejects(
       () => acquireFilesystemMutationLock(harness.target, {
@@ -2539,6 +2540,93 @@ test("an owner write whose directory was removed retries the claim without a rol
     await release();
     assert.deepEqual(await fs.readdir(harness.lockRoot), []);
   } finally {
+    restoreRead();
+    restoreWrite();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("an owner write racing the removal of its directory is a lost claim whatever error the host reports", async (t) => {
+  const harness = await isolatedLockPaths();
+  const originalWriteFile = fs.writeFile;
+  const originalRmdir = fs.rmdir;
+  const codes: Record<string, number> = {};
+  let race = false;
+  // Each round removes the claim's fresh directory concurrently with its owner write, as a recoverer
+  // that aged the previous directory does. On macOS the exclusive create then fails with EINVAL.
+  const restore = replaceFsMethod("writeFile", async (...args) => {
+    if (!race || path.basename(String(args[0])) !== "owner.json") return Reflect.apply(originalWriteFile, fs, args);
+    race = false;
+    const [, written] = await Promise.allSettled([
+      Reflect.apply(originalRmdir, fs, [path.dirname(String(args[0]))]) as Promise<void>,
+      Reflect.apply(originalWriteFile, fs, args) as Promise<void>,
+    ]);
+    const code = written.status === "fulfilled" ? "ok" : String((written.reason as NodeJS.ErrnoException).code);
+    codes[code] = (codes[code] ?? 0) + 1;
+    if (written.status === "rejected") throw written.reason;
+  });
+  try {
+    const deadline = Date.now() + 4_000;
+    let rounds = 0;
+    while (Date.now() < deadline && rounds < 3_000) {
+      race = true;
+      rounds += 1;
+      const release = await acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, waitMs: 1_000, pollMs: 1 });
+      await release();
+    }
+    t.diagnostic(`rounds=${rounds} owner-write outcomes=${JSON.stringify(codes)}`);
+    if (process.platform === "darwin") assert.ok((codes.EINVAL ?? 0) > 0, `no EINVAL reached: ${JSON.stringify(codes)}`);
+    assert.deepEqual(await fs.readdir(harness.lockRoot), []);
+  } finally {
+    restore();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("a rollback never moves a live lock that replaced the directory it verified", async () => {
+  const harness = await isolatedLockPaths();
+  const originalWriteFile = fs.writeFile;
+  const originalReadFile = fs.readFile;
+  const originalLstat = fs.lstat;
+  const originalRmdir = fs.rmdir;
+  const writeFailure = Object.assign(new Error("owner write failed"), { code: "EIO" });
+  const live = { pid: process.pid, hostname: hostname(), created_at_ms: Date.now(), token: "live-replacement", target: harness.target };
+  let lockPath = "";
+  let armed = false;
+  let swapped = false;
+  const restoreWrite = replaceFsMethod("writeFile", (...args) => {
+    if (path.basename(String(args[0])) === "owner.json" && lockPath === "") {
+      lockPath = path.dirname(String(args[0]));
+      return Promise.reject(writeFailure);
+    }
+    return Reflect.apply(originalWriteFile, fs, args);
+  });
+  // The rollback reads the record, then verifies the directory. Right after that verification a
+  // recoverer removes the directory and another claimer takes the path and writes its record.
+  const restoreRead = replaceFsMethod("readFile", (...args) => {
+    if (lockPath !== "" && String(args[0]) === path.join(lockPath, "owner.json")) armed = true;
+    return Reflect.apply(originalReadFile, fs, args);
+  });
+  const restoreLstat = replaceFsMethod("lstat", async (...args) => {
+    const result = await Reflect.apply(originalLstat, fs, args);
+    if (armed && !swapped && String(args[0]) === lockPath) {
+      swapped = true;
+      await Reflect.apply(originalRmdir, fs, [lockPath]);
+      await fs.mkdir(lockPath);
+      await Reflect.apply(originalWriteFile, fs, [path.join(lockPath, "owner.json"), JSON.stringify(live)]);
+    }
+    return result;
+  });
+  try {
+    await assert.rejects(
+      () => acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, waitMs: 50, pollMs: 5 }),
+      (err: unknown) => err === writeFailure,
+    );
+    assert.equal(swapped, true);
+    assert.deepEqual(await fs.readdir(harness.lockRoot), [path.basename(lockPath)]);
+    assert.equal((JSON.parse(await originalReadFile.call(fs, path.join(lockPath, "owner.json"), "utf8")) as { token: string }).token, "live-replacement");
+  } finally {
+    restoreLstat();
     restoreRead();
     restoreWrite();
     await fs.rm(harness.root, { recursive: true, force: true });
