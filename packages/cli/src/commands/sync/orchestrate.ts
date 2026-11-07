@@ -52,6 +52,8 @@ import {
   type FetchRebaseResolvingOutcome,
   type ProvisionOutcome,
   type SyncCursor,
+  NETWORK_TIMEOUT_MS,
+  PUSH_TIMEOUT_MS,
 } from "@superbee/board-git";
 import { REANCHOR_NOTE, defaultSyncStore } from "../../cursor.js";
 import { hookInstallHintOnce, type SyncCliDeps } from "../../sync-cli.js";
@@ -335,6 +337,13 @@ export function inTreePullHint(behind: number): string {
 export const SYNC_IN_TREE_CURRENT = "checkout is current with upstream";
 
 // ── the phase inputs/results ──────────────────────────────────────────────────
+
+/** An op's budget: its ordinary bound, cut to what is left before the caller's deadline. */
+function networkBudget(run: SyncRun, ordinaryMs: number): number {
+  const deadline = run.deps.networkDeadline;
+  // At least 1 ms: a past deadline must still fail fast, and a timeout of 0 would mean no limit.
+  return deadline === undefined ? ordinaryMs : Math.max(1, Math.min(ordinaryMs, deadline - Date.now()));
+}
 
 /** The per-run inputs every phase shares, assembled once by {@link syncCommand}. */
 interface SyncRun {
@@ -798,7 +807,7 @@ async function convergingRebase(run: SyncRun, board: SyncBoard, committedThisRun
     throwPostCommitFailure(withProvisionAnnouncement(err, outcome), committedThisRun, key, boardPath);
   let rebaseOutcome: FetchRebaseResolvingOutcome;
   try {
-    rebaseOutcome = fetchRebaseResolving(boardPath, defaultSyncStore.exportsDir(key));
+    rebaseOutcome = fetchRebaseResolving(boardPath, defaultSyncStore.exportsDir(key), networkBudget(run, NETWORK_TIMEOUT_MS));
   } catch (rawErr) {
     throw await fail(withUpstreamHelp(toCliError(rawErr, "rebase"), run.inv));
   }
@@ -896,7 +905,7 @@ async function pushPhase(
       gateDetails = judged.details;
     }
     try {
-      push(board.boardPath, head, branch);
+      push(board.boardPath, head, branch, networkBudget(run, PUSH_TIMEOUT_MS));
       return { commits: ahead, documents: outgoing, delta, ...(gateDetails ? { gate: gateDetails } : {}) };
     } catch (err) {
       const classified = withSharingDetails(toCliError(err, "push"), { operation: "update-board" });
@@ -955,7 +964,7 @@ async function failGate(
   reason: string, details: Record<string, unknown>,
 ): Promise<never> {
   const warning =
-    `committed to the board locally — your work is saved. The sync gate ${reason} on the rebased ` +
+    `Committed to the board locally. Your work is saved. The sync gate ${reason} on the rebased ` +
     "board, so nothing was pushed; fix what it reports, then re-run sync";
   const help = `run the gate yourself from ${board.boardPath} (git config --get ${SYNC_GATE_CONFIG}), fix what it reports, then ${run.inv} sync`;
   const partial = buildPushFailurePartial(

@@ -142,7 +142,7 @@ test("U3b BINDING: converge → show-incoming → doc update → sync — all th
     assert.equal(conflicted.err!.code, "CONFLICT");
     assert.equal(conflicted.err!.exitCode, 5);
     assert.ok(
-      conflicted.err!.message.startsWith("committed to the board locally — your work is saved."),
+      conflicted.err!.message.startsWith("Committed to the board locally. Your work is saved."),
       "composite safety framing (this run committed B's version first)",
     );
 

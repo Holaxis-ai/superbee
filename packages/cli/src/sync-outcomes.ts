@@ -172,7 +172,8 @@ function sharingDetailsFor(err: CliError, context: SharingContext): SharingDetai
       possible_causes: ["repository-write", "branch-policy"],
     };
   }
-  if (err.code === "TRANSIENT" && err.details?.reason !== "non-fast-forward") {
+  // A timeout names no cause: a slow upload and a dead link look the same from here.
+  if (err.code === "TRANSIENT" && err.details?.reason !== "non-fast-forward" && err.details?.reason !== "timeout") {
     return { ...base, cause_certainty: "best-effort", possible_causes: ["network"] };
   }
   return base;
