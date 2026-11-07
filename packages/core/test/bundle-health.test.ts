@@ -5,6 +5,9 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import { bundleHealth, type BundleHealthReport } from "../src/bundle-health/index.js";
 import { QUALIFIED_EDGE_CASES } from "./fixtures/qualified-edge-cases.js";
@@ -12,6 +15,7 @@ import type { BundleBinding, PinCheck } from "../src/cross-bundle.js";
 import { FrontmatterRefusedError, InvalidInputError } from "../src/errors.js";
 import { MalformedDocumentError } from "../src/frontmatter-contract.js";
 import { MemoryBackend } from "../src/memory-backend.js";
+import { FilesystemBackend } from "../src/backend.js";
 import type { Bundle, OkfDocument, StorageBackend } from "../src/types.js";
 
 const NOW = new Date("2026-10-17T12:00:00.000Z");
@@ -397,4 +401,26 @@ test("bundle health qualified target: a resolved nonstring type is a known misma
   });
   assert.equal(report.crossLinkTypeViolations.length, 1);
   assert.deepEqual(report.crossBundle?.unresolved, []);
+});
+
+test("bundle health: a link to a document the scan skipped is not a broken link; the target is reported as skipped", {
+  // chmod cannot deny a read to root, and Windows ignores the mode.
+  skip: process.platform === "win32" || process.getuid?.() === 0,
+}, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "health-skipped-target-"));
+  const locked = path.join(root, "notes", "locked.md");
+  try {
+    await mkdir(path.join(root, "notes"), { recursive: true });
+    await writeFile(path.join(root, "notes", "a.md"), "---\ntype: Note\n---\n[l](locked.md) [b](broken.md) [g](gone.md)\n");
+    await writeFile(path.join(root, "notes", "broken.md"), "---\ntype: Note\ntitle: Bad: unquoted\n---\nbody\n");
+    await writeFile(locked, "---\ntype: Note\n---\nbody\n");
+    await chmod(locked, 0o000);
+    const report = await bundleHealth({ root, backend: new FilesystemBackend(root) }, { now: NOW });
+    assert.deepEqual(report.unresolvedLinks, [{ from: "notes/a", href: "gone.md" }], "only the truly missing target is unresolved");
+    assert.deepEqual(report.malformed.map((row) => row.id), ["notes/broken", "notes/locked"]);
+    assert.equal(report.malformed.find((row) => row.id === "notes/locked")?.reason, "permission denied (EACCES)");
+  } finally {
+    await chmod(locked, 0o644).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
 });

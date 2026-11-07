@@ -184,7 +184,7 @@ async function scanMatching(
 ): Promise<ReadResult[]> {
   const ids = await backend.list(filter.prefix);
   const results: ReadResult[] = [];
-  for (const result of await readManyExisting(backend, ids, onSkip)) {
+  for (const result of await readManyExisting(backend, ids, onSkip, undefined, onSkip)) {
     if (matchesFilter(result.doc, filter)) results.push(result);
   }
   results.sort((a, b) => compareCodeUnits(a.doc.id, b.doc.id));

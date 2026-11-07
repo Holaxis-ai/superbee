@@ -50,6 +50,7 @@ import {
   projectKindForAuthoring,
   type KindRegistry,
   type QueryFilter,
+  isPermissionDeniedSkip,
 } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { maybeAutoPull } from "../autopull.js";
@@ -434,9 +435,13 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
   }
   if (skipped.length > 0) {
     out.skipped = skipped;
-    help.push(
-      `${skipped.length} document(s) skipped (unparseable frontmatter) — run \`${cliInvocation()} doc read <id>\` for the full error, then fix the YAML`,
-    );
+    const denied = skipped.filter(isPermissionDeniedSkip).length;
+    if (skipped.length > denied) {
+      help.push(
+        `${skipped.length - denied} document(s) skipped (unparseable frontmatter) — run \`${cliInvocation()} doc read <id>\` for the full error, then fix the YAML`,
+      );
+    }
+    if (denied > 0) help.push(`${denied} document(s) skipped (could not be read: permission denied); make those files readable by your user`);
   }
   // --open on a bundle with zero terminal declarations is a structural no-op (nothing to exclude) —
   // said explicitly so the flag is never silently meaningless.

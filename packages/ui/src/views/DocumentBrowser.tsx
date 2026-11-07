@@ -10,6 +10,7 @@
  * "show all N" expander. Typing in the filter FLATTENS to a recency-sorted match list across every
  * kind. Live: any doc change refetches the head list (invalidate-and-refetch, like the feed).
  */
+import { isPermissionDeniedSkip } from "@superbee/core/skip-reasons";
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listAllHeadsReport } from "../api/client.js";
@@ -149,16 +150,23 @@ function DocRow({ row, showKind = false }: { row: BrowseRow; showKind?: boolean 
 }
 
 /**
- * Documents the listing left out because their frontmatter does not parse. One bad file never
- * hides the rest of the bundle; it is named here, with the parser's reason, so it can be fixed.
+ * Documents the listing left out because their frontmatter does not parse or the host denied
+ * reading them. One bad file never hides the rest of the bundle; it is named here, with its
+ * reason, so it can be fixed. The YAML advice is shown only when some reason is a parse failure.
  */
 function UnreadableDocs({ skipped }: { skipped: SkippedDoc[] }) {
+  const anyMalformed = skipped.some((row) => !isPermissionDeniedSkip(row));
   return (
     <div className="view-status view-status-error browse-unreadable" role="alert">
       <p>
-        {skipped.length === 1 ? "1 document" : `${skipped.length} documents`} could not be read (invalid
-        frontmatter) and {skipped.length === 1 ? "is" : "are"} left out below. Fix the YAML between the
-        {" "}<code>---</code> lines; a value containing <code>: </code> must be quoted.
+        {skipped.length === 1 ? "1 document" : `${skipped.length} documents`} could not be read and
+        {" "}{skipped.length === 1 ? "is" : "are"} left out below.
+        {anyMalformed && (
+          <>
+            {" "}For invalid frontmatter, fix the YAML between the <code>---</code> lines; a value
+            containing <code>: </code> must be quoted.
+          </>
+        )}
       </p>
       <ul>
         {skipped.map((row) => (
