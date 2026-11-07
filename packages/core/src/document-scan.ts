@@ -24,7 +24,14 @@ function isEnoent(err: unknown): boolean {
  */
 function deniedReason(err: unknown): string | undefined {
   const code = typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
-  return code === "EACCES" || code === "EPERM" ? `permission denied (${code})` : undefined;
+  return code === "EACCES" || code === "EPERM" ? `${DENIED_REASON_PREFIX}${code})` : undefined;
+}
+
+const DENIED_REASON_PREFIX = "permission denied (";
+
+/** True when a scan skipped this document because the host refused to read it, not because it is malformed. */
+export function isPermissionDeniedSkip(skip: SkippedDoc): boolean {
+  return skip.reason.startsWith(DENIED_REASON_PREFIX);
 }
 
 /**
