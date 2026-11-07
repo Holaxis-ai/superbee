@@ -18,6 +18,8 @@
 import { closeSync, constants as fsConstants, fstatSync, openSync, readSync } from "node:fs";
 import path from "node:path";
 
+import { foldPath } from "@superbee/core";
+
 import { BoardGitError, isBoardGitError } from "./errors.js";
 
 /** The final segment of every guarded private-state root that has a product-specific name. */
@@ -61,22 +63,19 @@ export interface PrivateStateFinding {
   remove: string;
 }
 
-function fold(segment: string): string {
-  return segment.normalize("NFC").toLowerCase();
-}
-
-const ROOT_NAMES = new Set(PRIVATE_STATE_ROOT_NAMES.map(fold));
+const ROOT_NAMES = new Set(PRIVATE_STATE_ROOT_NAMES.map(foldPath));
+const CREDENTIAL_FILE_NAME = foldPath(PRIVATE_STATE_CREDENTIAL_FILE_NAME);
 
 /** Name evidence for one relative path, or null. Pure. */
 export function privateStatePathEvidence(relPath: string): { evidence: PrivateStateEvidence; remove: string } | null {
   const segments = relPath.split(/[\\/]+/).filter((segment) => segment.length > 0 && segment !== ".");
   for (let index = 0; index < segments.length - 1; index += 1) {
-    if (ROOT_NAMES.has(fold(segments[index]!))) {
+    if (ROOT_NAMES.has(foldPath(segments[index]!))) {
       return { evidence: "state_folder", remove: segments.slice(0, index + 1).join("/") };
     }
   }
   const last = segments.at(-1);
-  if (last !== undefined && fold(last) === PRIVATE_STATE_CREDENTIAL_FILE_NAME) {
+  if (last !== undefined && foldPath(last) === CREDENTIAL_FILE_NAME) {
     return { evidence: "credential_file", remove: segments.join("/") };
   }
   return null;
