@@ -631,12 +631,17 @@ async function rollBackOwnClaim(
 
 /**
  * Whether the lock path no longer holds the directory this claim made: it is gone, or it is a
- * different directory. Unknown when this claim could not record its directory, so not lost.
+ * different directory. A host can give a removed directory's inode to its replacement, so a birth
+ * time, where the host reports one, also tells them apart; without one, a replacement that reused
+ * the inode reads as this claim's own and the claim fails closed instead of retrying. Unknown when
+ * this claim could not record its directory, so not lost.
  */
 async function claimDirectoryLost(lockPath: string, claimed: BigIntStats | null): Promise<boolean> {
   try {
     const current = await fs.lstat(lockPath, { bigint: true });
-    return claimed !== null && (current.dev !== claimed.dev || current.ino !== claimed.ino);
+    if (claimed === null) return false;
+    const reborn = claimed.birthtimeNs > 0n && current.birthtimeNs > 0n && current.birthtimeNs !== claimed.birthtimeNs;
+    return current.dev !== claimed.dev || current.ino !== claimed.ino || reborn;
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     return code === "ENOENT" || code === "ENOTDIR";

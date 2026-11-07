@@ -1575,7 +1575,12 @@ test("owner-record failure preserves exclusive-create flags and rolls back the c
   }
 });
 
-test("an owner-record failure after this claim's directory was replaced is a lost claim that leaves the replacement alone", async () => {
+/**
+ * An owner write fails after this claim's directory was replaced by another claim's. `reuseInode`
+ * removes the original first, so a host may hand its inode to the replacement; otherwise the
+ * original is kept aside until the test ends, so the replacement is a different inode.
+ */
+async function replacedDirectoryClaim(reuseInode: boolean): Promise<void> {
   const harness = await isolatedLockPaths();
   const originalWriteFile = fs.writeFile;
   const writeFailure = Object.assign(new Error("owner write failed"), { code: "EIO" });
@@ -1584,7 +1589,8 @@ test("an owner-record failure after this claim's directory was replaced is a los
   const restore = replaceFsMethod("writeFile", async (...args) => {
     if (path.basename(String(args[0])) === "owner.json") {
       lockPath = path.dirname(String(args[0]));
-      await fs.rm(lockPath, { recursive: true });
+      if (reuseInode) await fs.rm(lockPath, { recursive: true });
+      else await fs.rename(lockPath, path.join(harness.root, "original-claim"));
       await fs.mkdir(lockPath);
       throw writeFailure;
     }
@@ -1601,6 +1607,21 @@ test("an owner-record failure after this claim's directory was replaced is a los
     restore();
     await fs.rm(harness.root, { recursive: true, force: true });
   }
+}
+
+test("an owner-record failure after this claim's directory was replaced is a lost claim that leaves the replacement alone", async () => {
+  await replacedDirectoryClaim(false);
+});
+
+test("a replacement directory that reuses this claim's inode is still a lost claim where birth time is reported", async (t) => {
+  const probe = await tempDir();
+  try {
+    const birth = (await fs.lstat(probe, { bigint: true })).birthtimeNs;
+    if (birth <= 0n) return t.skip("this host reports no directory birth time");
+  } finally {
+    await fs.rm(probe, { recursive: true, force: true });
+  }
+  await replacedDirectoryClaim(true);
 });
 
 test("an owner write that meets another claimer's opened but unwritten record leaves the lock to that claimer", async () => {
