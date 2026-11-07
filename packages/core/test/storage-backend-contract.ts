@@ -169,7 +169,7 @@ export function registerFrontmatterReadContract(
   // The wire refuses typeless documents before storage, so only local adapters reach this row.
   test(`${name} frontmatter read contract: an empty-metadata body the reader would misread is fenced and survives intact`, async () => {
     await withFixture(create, async (backend) => {
-      const bodies = ["---\nvalue: body text\n---\nbody", "\uFEFF---\nvalue: body text\n---\nbody", "---", "\uFEFFbody", "---\r\nx: 1\r\n---\r\nrest"];
+      const bodies = ["---\nvalue: body text\n---\nbody", "\uFEFF---\nvalue: body text\n---\nbody", "---", "---\r", "\uFEFFbody", "---\r\nx: 1\r\n---\r\nrest"];
       for (const [index, body] of bodies.entries()) {
         const value: OkfDocument = { id: `metadata/delimiter-body-${index}`, frontmatter: {} as OkfDocument["frontmatter"], body };
         const version = await backend.write(value.id, value);

@@ -24,7 +24,7 @@ test("stringifyWithData ordinary-input bytes match gray-matter stringify", () =>
 });
 
 test("empty metadata fences exactly the bodies the reader would misread, and every row round-trips", () => {
-  const fenced = ["---", "---\n", "---\r\n", "---\na: 1\n---\nrest", "---\r\nx: 1\r\n---\r\nrest", "\uFEFFbody", "\uFEFF---\na: 1\n---\nrest"];
+  const fenced = ["---", "---\n", "---\r", "---\r\n", "---\na: 1\n---\nrest", "---\r\nx: 1\r\n---\r\nrest", "\uFEFFbody", "\uFEFF---\na: 1\n---\nrest"];
   const bare = ["", "body", "---foo", "----", " ---", "--", "body\n---\nmore", "\u200Bbody"];
   for (const body of fenced) {
     const raw = stringifyWithData({}, body);

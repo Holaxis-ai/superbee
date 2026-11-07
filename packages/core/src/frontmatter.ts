@@ -172,7 +172,8 @@ export function stringifyWithSerializedFrontmatter(dumped: string, body: string)
   const newline = (value: string): string => (value.endsWith("\n") ? value : `${value}\n`);
   if (dumped === "{}") {
     // Like gray-matter, empty metadata writes a bare body, unless the reader would misread that body.
-    return `${startsWithFrontmatterSyntax(content) ? "---\n---\n" : ""}${normalizeDocumentBodyForStorage(content)}`;
+    const stored = normalizeDocumentBodyForStorage(content);
+    return `${startsWithFrontmatterSyntax(stored) ? "---\n---\n" : ""}${stored}`;
   }
   return `---\n${newline(dumped)}---\n${normalizeDocumentBodyForStorage(content)}`;
 }
