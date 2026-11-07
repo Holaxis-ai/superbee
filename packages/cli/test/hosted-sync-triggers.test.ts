@@ -263,6 +263,8 @@ test("B3: a sign-in session lock left by a killed command is reported by the pul
   const { auth } = await deadSession(h);
   const lock = filesystemMutationLockPath(path.join(await realpath(sessionDirFor(h.home, sessionAccount(resolveHostedTarget(HOST)))), "session"));
   await mkdir(lock);
+  // An unusable owner record: an empty lock directory would be removed as an abandoned claim.
+  await writeFile(path.join(lock, "owner.json"), "{");
   const when = new Date(Date.now() - 60_000);
   await utimes(lock, when, when);
   try {

@@ -1369,9 +1369,22 @@ async function sessionLockError(h: Harness): Promise<CliError> {
   assert.fail("expected the session lock to be refused");
 }
 
-test("an owner-less session lock left by a killed command is session_lock_orphaned, not retryable, and names the lock", async () => {
+test("an aged empty session lock left by a command killed before its owner record is recovered by the next command", async () => {
   const h = await harness();
   const lock = await plantSessionLock(h, null, 60_000);
+  try {
+    assert.equal(await withSessionLock(resolveHostedTarget(h.host), { ...h.deps, lockWaitMs: 100 }, async () => "ran"), "ran");
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+    await h.cleanup();
+  }
+});
+
+test("a session lock with an unusable owner record is session_lock_orphaned, not retryable, and names the lock", async () => {
+  const h = await harness();
+  const lock = await plantSessionLock(h, null, 60_000);
+  await writeFile(path.join(lock, "owner.json"), "{");
+  await utimes(lock, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
   try {
     const error = await sessionLockError(h);
     assert.equal(error.code, "CONFLICT");

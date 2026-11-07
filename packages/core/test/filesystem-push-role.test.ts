@@ -405,8 +405,13 @@ test("an owner-less lock younger than the claim grace is a claim or release in p
       locks.request(ROLE, {}, async () => "never"),
       (error: unknown) => error instanceof FilesystemMutationLockError && !error.malformed && error.owner === null,
     );
-    // Once the grace has passed, the same lock is reported as the orphan it is.
+    // Once aged, an empty lock directory is an abandoned claim, and the next claim removes it.
     const past = new Date(Date.now() - 60_000);
+    await fs.utimes(lock, past, past);
+    assert.deepEqual(await withRole(locks, ROLE, async () => "recovered"), { held: true, result: "recovered" });
+    // An aged lock whose owner record is unusable is still reported as the orphan it is.
+    await fs.mkdir(lock);
+    await fs.writeFile(path.join(lock, "owner.json"), "{");
     await fs.utimes(lock, past, past);
     await assert.rejects(withRole(locks, ROLE, async () => "never"), (error: unknown) => error instanceof FilesystemMutationLockError && error.malformed);
   } finally {
