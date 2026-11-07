@@ -70,7 +70,7 @@ import {
   BUNDLE_NAME_DOC_TYPE,
   type BundleNameSource,
 } from "../bundle-name.js";
-import { CONVENTIONS_PREFIX, queryHeads, readBundleOkfVersion, type OkfDocument } from "@superbee/core";
+import { CONVENTIONS_PREFIX, isPermissionDeniedSkip, queryHeads, readBundleOkfVersion, type OkfDocument } from "@superbee/core";
 import { trustCountsRow, type TrustCountsRow } from "../trust.js";
 import { resolveActor } from "../actor.js";
 import { describeResolvedActor } from "../actor-guidance.js";
@@ -977,10 +977,21 @@ export function buildHomeView(
         total: summary.malformed.length,
         rows: summary.malformed.slice(0, MALFORMED_SHOWN),
       };
-      bundleBlock.malformed_help =
-        `these documents' frontmatter is invalid YAML: readers skip them and sync publishes nothing until they parse — fix the ` +
-        `lines between the --- markers (quote a value that contains ': '), then confirm with ` +
-        `\`${deps.invocation()} status\``;
+      const denied = summary.malformed.some(isPermissionDeniedSkip);
+      const parse = summary.malformed.some((row) => !isPermissionDeniedSkip(row));
+      const advice: string[] = [];
+      if (parse) {
+        advice.push(
+          `a document whose frontmatter is invalid YAML is skipped by readers and sync publishes nothing until it parses: fix the ` +
+          `lines between the --- markers (quote a value that contains ': ')`,
+        );
+      }
+      if (denied) advice.push("a document whose reason is permission denied could not be read: make the file readable by your user");
+      bundleBlock.malformed_help = parse && !denied
+        ? `these documents' frontmatter is invalid YAML: readers skip them and sync publishes nothing until they parse — fix the ` +
+          `lines between the --- markers (quote a value that contains ': '), then confirm with ` +
+          `\`${deps.invocation()} status\``
+        : `${advice.join("; ")}; then confirm with \`${deps.invocation()} status\``;
     }
     bundleBlock.docs = summary.docs;
     bundleBlock.by_type = summary.byType;

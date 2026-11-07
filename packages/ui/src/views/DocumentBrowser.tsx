@@ -10,6 +10,7 @@
  * "show all N" expander. Typing in the filter FLATTENS to a recency-sorted match list across every
  * kind. Live: any doc change refetches the head list (invalidate-and-refetch, like the feed).
  */
+import { isPermissionDeniedSkip } from "@superbee/core/skip-reasons";
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listAllHeadsReport } from "../api/client.js";
@@ -154,7 +155,7 @@ function DocRow({ row, showKind = false }: { row: BrowseRow; showKind?: boolean 
  * reason, so it can be fixed. The YAML advice is shown only when some reason is a parse failure.
  */
 function UnreadableDocs({ skipped }: { skipped: SkippedDoc[] }) {
-  const anyMalformed = skipped.some((row) => !row.reason.startsWith("permission denied ("));
+  const anyMalformed = skipped.some((row) => !isPermissionDeniedSkip(row));
   return (
     <div className="view-status view-status-error browse-unreadable" role="alert">
       <p>

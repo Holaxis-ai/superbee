@@ -344,6 +344,9 @@ export async function bundleHealth(bundle: Bundle, options: BundleHealthOptions 
   if ("malformed" in okfVersionRead) malformed.unshift(okfVersionRead.malformed);
   const okfVersion = okfVersionRead.version;
   const byId = new Set(docs.map((d) => d.id));
+  // A skipped document (malformed or unreadable) exists: a link to it is not broken. It has its
+  // own finding in `malformed`, and nothing about its type is known, so no edge check runs on it.
+  const skippedIds = new Set(malformed.map((row) => row.id));
   const docsById = new Map(docs.map((d) => [d.id, d]));
 
   // Kind lint, per violation; conformance debt regroups the same pass by document and keeps only
@@ -393,7 +396,7 @@ export async function bundleHealth(bundle: Bundle, options: BundleHealthOptions 
       // so it must not also make its source an orphan.
       if (l.to !== doc.id) outbound.add(doc.id);
       if (!byId.has(l.to)) {
-        unresolvedLinks.push({ from: doc.id, href: l.href });
+        if (!skippedIds.has(l.to)) unresolvedLinks.push({ from: doc.id, href: l.href });
         continue;
       }
       if (l.to !== doc.id) {

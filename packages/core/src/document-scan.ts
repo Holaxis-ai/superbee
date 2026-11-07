@@ -1,6 +1,7 @@
 /** Runtime-neutral document scan policy, shared by engine queries and backend-fed search. */
 import { FilesystemIdentityAliasError } from "./errors.js";
 import { MalformedDocumentError } from "./frontmatter-contract.js";
+import { permissionDeniedReason } from "./skip-reasons.js";
 import type { ConceptId, ReadResult, StorageBackend } from "./types.js";
 
 /** A document a resilient scan skipped because it was malformed or the host denied reading it. */
@@ -24,14 +25,7 @@ function isEnoent(err: unknown): boolean {
  */
 function deniedReason(err: unknown): string | undefined {
   const code = typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
-  return code === "EACCES" || code === "EPERM" ? `${DENIED_REASON_PREFIX}${code})` : undefined;
-}
-
-const DENIED_REASON_PREFIX = "permission denied (";
-
-/** True when a scan skipped this document because the host refused to read it, not because it is malformed. */
-export function isPermissionDeniedSkip(skip: SkippedDoc): boolean {
-  return skip.reason.startsWith(DENIED_REASON_PREFIX);
+  return code === "EACCES" || code === "EPERM" ? permissionDeniedReason(code) : undefined;
 }
 
 /**
@@ -39,8 +33,8 @@ export function isPermissionDeniedSkip(skip: SkippedDoc): boolean {
  * fails because an id vanished (or, with `onMalformed`, because one document is malformed, or,
  * with `onAliased`, because one id is spelled differently on disk, or, with `onDenied`, because
  * the host refused to read one). Absent ids are simply missing from the result; a malformed,
- * aliased or denied id is reported through its hook and skipped. Any other failure still throws. Shared by the scan path and the cross-bundle resolver, which issues one
- * call per bound alias.
+ * aliased or denied id is reported through its hook and skipped. Any other failure still throws.
+ * Shared by the scan path and the cross-bundle resolver, which issues one call per bound alias.
  */
 export async function readManyExisting(
   backend: StorageBackend,

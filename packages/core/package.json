@@ -119,6 +119,10 @@
       "types": "./dist/verification.d.ts",
       "default": "./dist/verification.js"
     },
+    "./skip-reasons": {
+      "types": "./dist/skip-reasons.d.ts",
+      "default": "./dist/skip-reasons.js"
+    },
     "./page": {
       "types": "./dist/page.d.ts",
       "default": "./dist/page.js"
