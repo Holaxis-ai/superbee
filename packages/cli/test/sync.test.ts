@@ -74,6 +74,7 @@ import {
   pushBoard,
   readBoardFile,
   wedgeMidRebase,
+  markSyncStartedRebase,
   writeBoardDoc,
   git,
   type BoardRepo,
@@ -1034,6 +1035,7 @@ test("sync: a legitimate standalone checkout heals an interrupted board rebase b
     const localBefore = git(wedged, ["rev-parse", "HEAD"]).trim();
     git(wedged, ["fetch", "origin"]);
     assert.notEqual(gitTry(wedged, ["rebase", `origin/${BOARD_BRANCH}`]).status, 0);
+    markSyncStartedRebase(wedged);
     const rebasePath = path.resolve(wedged, git(wedged, ["rev-parse", "--git-path", "rebase-merge"]).trim());
     assert.equal(existsSync(rebasePath), true, "fixture is genuinely mid-rebase");
 

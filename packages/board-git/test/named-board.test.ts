@@ -15,7 +15,8 @@ import {
   declaredBoardBranchAtRef,
   fetchRebaseResolving,
   ffPull,
-  healStaleRebaseBeforeProvisioning,
+  wedgedBoardRebase,
+  abortStaleRebase,
   isBoardBranchName,
   isBoardGitError,
   isDeclaredBoardBranch,
@@ -210,7 +211,8 @@ test("named boards: a crashed rebase on a named board is recognized and healed i
 
     assert.equal(boardBranchOf(wedged), NAME, "a detached mid-rebase checkout keeps its board branch");
     assert.equal(isRecoverableStandaloneBoardCheckout(wedged), true);
-    healStaleRebaseBeforeProvisioning(wedged);
+    assert.equal(wedgedBoardRebase(wedged), wedged);
+    abortStaleRebase(wedged);
     assert.equal(git(wedged, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), NAME);
     assert.equal(git(wedged, ["rev-parse", "HEAD"]).trim(), localHead);
   } finally {

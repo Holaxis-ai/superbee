@@ -904,3 +904,24 @@ export function syncVerbNotApplicable(flags: readonly string[], home: SyncHome, 
     help,
   });
 }
+
+/**
+ * A git rebase in the board checkout that sync did not start: a person's own work in progress,
+ * which sync never aborts or drives. A rebase a killed sync left is healed instead.
+ */
+export function rebaseInProgressRefusal(folder: string, inv: CommandPrefix): CliError {
+  return new CliError(
+    "CONFLICT",
+    `a git rebase you started is in progress in ${commandToken(folder)}; finish it with \`git rebase --continue\` or \`git rebase --abort\`, then run \`${inv} sync\``,
+    { details: { reason: "rebase_in_progress", folder, retryable: false } },
+  );
+}
+
+/** A board folder's sync lock whose holder is gone but which cannot be reclaimed automatically. */
+export function syncLockOrphaned(lockPath: string, pid: number | null): CliError {
+  const lock = commandToken(lockPath);
+  const owner = pid === null ? "has no readable owner" : `belongs to PID ${pid}, which is now a different program`;
+  return new CliError("CONFLICT", `A sync lock in ${lock} ${owner}. Make sure no superbee sync is running, then delete ${lock}.`, {
+    details: { reason: "lock_orphaned", lock: lockPath, ...(pid === null ? {} : { holder_pid: pid }), retryable: false },
+  });
+}
