@@ -16,7 +16,7 @@ import {
   SHOW_VIEW_TOOL_NAME,
   createMcpAppServer,
 } from "@superbee/mcp-app";
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../../ui-server/dist/bundle-router.js";
 import { bootUiServer } from "@superbee/ui-server";
 import { SessionViewAuthorizationStore } from "@superbee/view-runtime";
 import { Client } from "@modelcontextprotocol/client";
@@ -114,7 +114,7 @@ async function webSurface(): Promise<Surface> {
   const server = await bootUiServer({
     mode: "dir",
     bundle,
-    router: createRouter(bundle),
+    router: createBundleRouter(bundle),
     sessionSecret: SECRET,
     renderDocument: renderDocumentToStaticHtml,
     viewAuthorization: new SessionViewAuthorizationStore(),

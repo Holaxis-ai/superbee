@@ -6,7 +6,7 @@ import { connect } from "node:net";
 import { runInNewContext } from "node:vm";
 
 import { MemoryBackend, type Bundle } from "@superbee/core";
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../src/bundle-router.js";
 import { bootUiServer, type UiServerHandle } from "../src/server.js";
 import { BrowserLaunchTickets, parseBrowserLaunchTarget } from "../src/browser-launch.js";
 
@@ -26,7 +26,7 @@ async function boot(managed = true): Promise<UiServerHandle> {
   return bootUiServer({
     mode: "dir",
     bundle: value,
-    router: createRouter(value),
+    router: createBundleRouter(value),
     renderDocument,
     serveAsset: asset,
     sessionSecret: SESSION,
@@ -117,7 +117,7 @@ test("weak or malformed exported management authority is rejected at boot", asyn
   const base = {
     mode: "dir" as const,
     bundle: value,
-    router: createRouter(value),
+    router: createBundleRouter(value),
     renderDocument,
     serveAsset: asset,
     sessionSecret: SESSION,
@@ -147,7 +147,7 @@ test("authority-specific browser cookies do not collide across loopback ports", 
   const second = await bootUiServer({
     mode: "dir",
     bundle: value,
-    router: createRouter(value),
+    router: createBundleRouter(value),
     renderDocument,
     serveAsset: asset,
     sessionSecret: "second-browser-secret",

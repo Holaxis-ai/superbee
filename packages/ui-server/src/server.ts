@@ -4,8 +4,8 @@ import { DocumentOffers } from "./document-offers.js";
 // (for a mutation) the `X-Requested-With` check, before it ever reaches the router /
 // asset layer — see each helper module's own doc comment for why each gate exists.
 //
-// Reuses the server package's exported node:http adapter ({@link requestFromIncomingMessage} /
-// {@link writeResponseToServerResponse}) so Request/Response marshaling has one implementation.
+// One node:http adapter (`node-http.ts`) marshals every Request/Response, and the SPA's `/v0/*`
+// data path is the one-bundle router (`bundle-router.ts`) over the mounted bundle.
 //
 // Bundle Views add a second privilege tier alongside the data API: the session-authed shell
 // mints one immutable launch (`POST /__page/mint`), fetches that launch's exact HTML once through
@@ -17,11 +17,8 @@ import { DocumentOffers } from "./document-offers.js";
 // version-token watcher. See `pages.ts`, `events.ts`, `watch.ts`.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
-import {
-  RequestBodyTooLargeError,
-  requestFromIncomingMessage,
-  writeResponseToServerResponse,
-} from "@superbee/server";
+import { createBundleRouter } from "./bundle-router.js";
+import { RequestBodyTooLargeError, requestFromIncomingMessage, writeResponseToServerResponse } from "./node-http.js";
 import { assertSafeBlobKey, loadKinds, queryEdges, queryHeads, readBundleOkfVersion, type Bundle, type EdgeFilter } from "@superbee/core";
 import { LEGACY_PAGE_MIGRATION_HELP } from "@superbee/core/bundle-health";
 import { parseRegistration } from "@superbee/core/page";
@@ -155,8 +152,8 @@ export interface UiManagementHandle {
 
 export interface UiServerOptions extends CommonUiServerOptions {
   mode: "dir";
-  /** The in-process router mounted over the local bundle (`createRouter(bundle)`). */
-  router: (req: Request) => Promise<Response>;
+  /** The `/v0/*` router; omitted, the one-bundle router over `bundle`. A test seam. */
+  router?: (req: Request) => Promise<Response>;
   /** Consumer-owned display-name policy; the runtime never imports CLI naming rules. */
   resolveBundleDisplayName?: (bundle: Bundle) => Promise<string>;
   /** Consumer-owned sharing classifier; absent means the shell makes no sharing claim. */
@@ -187,6 +184,8 @@ interface UiRuntime {
   bridge?: BridgeService;
   actions?: TrustedActionService;
   sse: SseHub;
+  /** The SPA's `/v0/*` data path. */
+  router: (req: Request) => Promise<Response>;
   watcher?: WatcherHandle;
   shutdown: AbortController;
   management?: {
@@ -1042,7 +1041,7 @@ async function handleRequest(
   } else if (url.pathname === "/__ui/edges") {
     response = await edgesResponse(options, url);
   } else if (url.pathname.startsWith("/v0/")) {
-    response = await options.router(request);
+    response = await runtime.router(request);
   } else {
     const asset = options.serveAsset(url.pathname, request.headers.get("accept-encoding"));
     response = new Response(asset.body, { status: asset.status, headers: asset.headers });
@@ -1084,6 +1083,7 @@ export async function bootUiServer(options: UiServerOptions): Promise<UiServerHa
   const authorizations = options.viewAuthorization ?? new SessionViewAuthorizationStore();
   const bridgeAuthority = new PageBridgeLaunchAuthority(options.bundle, launches, authorizations);
   const runtime: UiRuntime = {
+    router: options.router ?? createBundleRouter(options.bundle),
     browserLaunches: new BrowserLaunchTickets(),
     documentOffers: new DocumentOffers(),
     launches,

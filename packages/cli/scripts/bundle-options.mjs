@@ -62,8 +62,10 @@ export const workspaceAliases = {
       // The git tier lives in its own workspace package (board-git A1); alias to source so the
       // npm artifact stays ONE self-contained file with no dist pre-build.
       "@superbee/board-git": r("../board-git/src/index.ts"),
-      // server/src/index.ts is guard-free re-exports (createRouter + serve) — its only deps are
-      // core + node:http, so aliasing straight to it keeps the esbuild bundle ONE self-contained file.
+      // The server package is guard-free source over core (the router, its route table and the
+      // in-memory outcome store); aliasing to source keeps the esbuild bundle ONE self-contained file.
+      "@superbee/server/router": r("../server/src/router.ts"),
+      "@superbee/server/operation-outcomes": r("../server/src/operation-outcomes.ts"),
       "@superbee/server": r("../server/src/index.ts"),
       // The experimental conversational View adapter is private workspace source. It is bundled
       // into the npm CLI exactly like the other internal packages, leaving no runtime workspace

@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 
 import { FRONTMATTER_LIMITS, FrontmatterRefusedError, MemoryBackend, type ConceptId } from "@superbee/core";
 
-import { createRouterForBackend } from "../src/legacy-router.js";
+import { BUNDLE_ID, oneBackendRouter } from "./support/one-backend-router.js";
 import { RemoteBackend } from "../../core/dist/remote-backend.js";
 
 type ErrorEnvelope = { error: { code: string; message: string } };
@@ -30,8 +30,8 @@ class FailOnceBackend extends MemoryBackend {
 }
 
 test("unknown backend failures are 500 RUNTIME, not 400 USAGE", async () => {
-  const router = createRouterForBackend(new RuntimeFailingBackend());
-  const res = await router(new Request("http://wire.local/v0/bundles/default/docs/concepts/a"));
+  const router = oneBackendRouter(new RuntimeFailingBackend());
+  const res = await router(new Request("http://wire.local/v0/bundles/bnd_00112233445566778899aabbccddeeff/docs/concepts/a"));
 
   assert.equal(res.status, 500);
   assert.deepEqual((await res.json()) as ErrorEnvelope, {
@@ -40,12 +40,12 @@ test("unknown backend failures are 500 RUNTIME, not 400 USAGE", async () => {
 });
 
 test("router-owned invalid input remains 400 USAGE", async () => {
-  const router = createRouterForBackend(new MemoryBackend());
+  const router = oneBackendRouter(new MemoryBackend());
   const cases = [
-    "http://wire.local/v0/bundles/default/docs/index",
-    "http://wire.local/v0/bundles/default/docs/%E0%A4%A",
-    "http://wire.local/v0/bundles/default/blobs/%E0%A4%A",
-    `http://wire.local/v0/bundles/default/reserved/log.md?dir=${encodeURIComponent("../outside")}`,
+    "http://wire.local/v0/bundles/bnd_00112233445566778899aabbccddeeff/docs/index",
+    "http://wire.local/v0/bundles/bnd_00112233445566778899aabbccddeeff/docs/%E0%A4%A",
+    "http://wire.local/v0/bundles/bnd_00112233445566778899aabbccddeeff/blobs/%E0%A4%A",
+    `http://wire.local/v0/bundles/bnd_00112233445566778899aabbccddeeff/reserved/log.md?dir=${encodeURIComponent("../outside")}`,
   ];
 
   for (const url of cases) {
@@ -58,9 +58,9 @@ test("router-owned invalid input remains 400 USAGE", async () => {
 });
 
 test("a non-string document body is 400 USAGE, not an internal retryable failure", async () => {
-  const router = createRouterForBackend(new MemoryBackend());
+  const router = oneBackendRouter(new MemoryBackend());
   const res = await router(
-    new Request("http://wire.local/v0/bundles/default/docs/concepts/a", {
+    new Request("http://wire.local/v0/bundles/bnd_00112233445566778899aabbccddeeff/docs/concepts/a", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ frontmatter: { type: "Concept" }, body: 42 }),
@@ -75,8 +75,8 @@ test("a non-string document body is 400 USAGE, not an internal retryable failure
 
 test("a document PUT whose frontmatter the reader would refuse is 400 USAGE with its code, and stores nothing", async () => {
   const backend = new MemoryBackend();
-  const router = createRouterForBackend(backend);
-  const url = "http://wire.local/v0/bundles/default/docs/concepts/long";
+  const router = oneBackendRouter(backend);
+  const url = "http://wire.local/v0/bundles/bnd_00112233445566778899aabbccddeeff/docs/concepts/long";
   const res = await router(
     new Request(url, {
       method: "PUT",
@@ -90,7 +90,7 @@ test("a document PUT whose frontmatter the reader would refuse is 400 USAGE with
   assert.equal(body.error.details?.frontmatter?.code, "FRONTMATTER_TOO_LARGE");
   assert.equal((await router(new Request(url))).status, 404);
 
-  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "default", fetchImpl: router, maxRetries: 0 });
+  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: BUNDLE_ID, fetchImpl: router, maxRetries: 0 });
   await assert.rejects(
     remote.write("concepts/long", { id: "concepts/long", frontmatter: { type: "Concept", description: "v".repeat(FRONTMATTER_LIMITS.sourceChars) }, body: "" }),
     (error: unknown) => error instanceof FrontmatterRefusedError && error.code === "FRONTMATTER_TOO_LARGE",
@@ -98,8 +98,8 @@ test("a document PUT whose frontmatter the reader would refuse is 400 USAGE with
 });
 
 test("a reserved-file PUT whose leading frontmatter the reader would refuse is 400 USAGE and stores nothing", async () => {
-  const router = createRouterForBackend(new MemoryBackend());
-  const url = "http://wire.local/v0/bundles/default/reserved/index.md?dir=notes";
+  const router = oneBackendRouter(new MemoryBackend());
+  const url = "http://wire.local/v0/bundles/bnd_00112233445566778899aabbccddeeff/reserved/index.md?dir=notes";
   const res = await router(
     new Request(url, {
       method: "PUT",
@@ -121,10 +121,10 @@ test("RemoteBackend retries a router-classified runtime failure and succeeds", a
     body: "hello",
   });
 
-  const router = createRouterForBackend(backend);
+  const router = oneBackendRouter(backend);
   const remote = new RemoteBackend({
     baseUrl: "http://wire.local",
-    bundle: "default",
+    bundle: BUNDLE_ID,
     fetchImpl: router,
     maxRetries: 1,
   });

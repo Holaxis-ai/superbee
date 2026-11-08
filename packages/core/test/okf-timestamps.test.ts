@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../../ui-server/dist/bundle-router.js";
 import { FilesystemBackend } from "../src/backend.js";
 import { RemoteBackend } from "../src/remote-backend.js";
 import { invalidOkfTimestamps, assertAuthoredOkfTimestamps } from "../src/okf-timestamps.js";
@@ -158,7 +158,7 @@ test("strict v0.2 freshness agrees across host zones for explicit and ambiguous 
 test("filesystem and remote authored validation agree while raw imports stay permissive", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-offset-adapters-"));
   const memory = new MemoryBackend();
-  const router = createRouter({ root: "mem://offset-server", backend: memory });
+  const router = createBundleRouter({ root: "mem://offset-server", backend: memory });
   const backends = [new FilesystemBackend(root), new RemoteBackend({ baseUrl: "http://wire.local", bundle: "offsets", fetchImpl: router })];
   try {
     for (const backend of backends) {

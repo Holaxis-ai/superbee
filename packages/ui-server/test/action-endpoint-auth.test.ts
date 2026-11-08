@@ -14,7 +14,7 @@ import {
   writeDoc,
   type Bundle,
 } from "@superbee/core";
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../src/bundle-router.js";
 import { bootUiServer, type UiServerHandle } from "../src/server.js";
 
 const SECRET = "action-endpoint-auth-secret";
@@ -169,7 +169,7 @@ async function fixture(): Promise<Fixture> {
   const server = await bootUiServer({
     mode: "dir",
     bundle,
-    router: createRouter(bundle),
+    router: createBundleRouter(bundle),
     sessionSecret: SECRET,
     renderDocument,
     actor: "mike/test",

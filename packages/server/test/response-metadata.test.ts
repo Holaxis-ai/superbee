@@ -2,10 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { FrontmatterRefusedError, MemoryBackend, type ConceptId, type Frontmatter } from "@superbee/core";
 import { REMOTE_LOSSY_METADATA } from "../../core/test/remote-metadata-fixtures.ts";
-import { createRouterForBackend } from "../src/legacy-router.js";
+import { BUNDLE_ID, oneBackendRouter } from "./support/one-backend-router.js";
 import { RemoteBackend } from "../../core/dist/remote-backend.js";
 
-const base = "http://wire.local/v0/bundles/default";
+const base = "http://wire.local/v0/bundles/bnd_00112233445566778899aabbccddeeff";
 class InjectedMetadata extends MemoryBackend {
   metadata: Frontmatter = { type: "Note" };
   override async read(id: ConceptId) {
@@ -16,7 +16,7 @@ class InjectedMetadata extends MemoryBackend {
 async function fixture() {
   const backend = new InjectedMetadata();
   await backend.write("notes/a", { id: "notes/a", frontmatter: { type: "Note" }, body: "hello" });
-  return { backend, router: createRouterForBackend(backend) };
+  return { backend, router: oneBackendRouter(backend) };
 }
 const routes = [
   () => new Request(`${base}/docs/notes/a`),
@@ -37,7 +37,7 @@ for (const row of REMOTE_LOSSY_METADATA) {
     }
     assert.equal((await router(new Request(`${base}/docs`))).status, 200, "hidden extension does not block thin projection");
     assert.equal((await router(new Request(`${base}/docs/notes/a`, { method: "HEAD" }))).status, 200);
-    const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "default", fetchImpl: router, maxRetries: 0 });
+    const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: BUNDLE_ID, fetchImpl: router, maxRetries: 0 });
     const snapshot = await remote.snapshot();
     await assert.rejects(async () => { for await (const _ of snapshot.docs) { /* consume */ } });
     backend.metadata = { type: "Note", title: row.make() };
@@ -76,7 +76,7 @@ test("locally stored YAML values remain readable locally but cannot be silently 
     const backend = new MemoryBackend();
     await backend.write("notes/a", { id: "notes/a", frontmatter: { type: "Note", extra }, body: "hello" });
     const before = await backend.read("notes/a");
-    const router = createRouterForBackend(backend);
+    const router = oneBackendRouter(backend);
     assert.equal((await router(routes[0]!())).status, 500);
     assert.deepEqual(await backend.read("notes/a"), before);
   }

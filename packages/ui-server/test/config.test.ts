@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { get as httpGet } from "node:http";
 
 import { MemoryBackend, type Bundle } from "@superbee/core";
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../src/bundle-router.js";
 import { bootUiServer, type SharingSummary, type UiServerHandle, type UiServerOptions } from "../src/server.js";
 
 const SECRET = "config-contract-secret";
@@ -53,7 +53,7 @@ async function bootDir(extra: Partial<UiServerOptions>): Promise<UiServerHandle>
   return bootUiServer({
     mode: "dir",
     bundle,
-    router: createRouter(bundle),
+    router: createBundleRouter(bundle),
     sessionSecret: SECRET,
     renderDocument,
     serveAsset: stubAsset,
