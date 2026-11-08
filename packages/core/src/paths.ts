@@ -154,21 +154,32 @@ export function nonCanonicalDocumentId(id: string): NonCanonicalDocumentId | nul
 /**
  * Refuse a NEW document id outside its canonical spelling (see {@link nonCanonicalDocumentId}).
  * Callers apply this only where a document is about to be created; existing ids stay readable,
- * writable and deletable.
+ * writable and deletable. `exists` reports whether the suggested spelling is already a document,
+ * so the refusal never steers a create onto it.
  */
-export function assertCanonicalNewDocumentId(id: ConceptId): void {
+export function assertCanonicalNewDocumentId(id: ConceptId, exists: (candidate: ConceptId) => boolean = () => false): void {
   const why = nonCanonicalDocumentId(id);
-  if (why !== null) throw new NonCanonicalDocumentIdError(id, why, suggestCanonicalDocumentId(id));
+  if (why === null) return;
+  const suggested = suggestCanonicalDocumentId(id);
+  throw new NonCanonicalDocumentIdError(id, why, suggested === undefined ? undefined : { id: suggested, exists: exists(suggested) });
 }
 
-/** A canonical, safe spelling of `id`, or undefined when cleaning it leaves no usable id. */
-function suggestCanonicalDocumentId(id: string): string | undefined {
+/**
+ * Clean `text` toward the canonical spelling: NFC, no format characters except interior joiners,
+ * and no whitespace or format character at a segment edge. Canonical text is returned unchanged.
+ */
+export function canonicalizeIdText(text: string): string {
   const edge = /^[\s\p{Cf}]+|[\s\p{Cf}]+$/gu;
-  const candidate = id
+  return text
     .normalize("NFC")
     .split("/")
     .map((segment) => segment.replace(edge, "").replace(/(?![\u200c\u200d])\p{Cf}/gu, "").replace(edge, ""))
     .join("/");
+}
+
+/** A canonical, safe spelling of `id`, or undefined when cleaning it leaves no usable id. */
+export function suggestCanonicalDocumentId(id: string): string | undefined {
+  const candidate = canonicalizeIdText(id);
   if (candidate === id || nonCanonicalDocumentId(candidate) !== null) return undefined;
   try {
     assertSafeConceptId(candidate);

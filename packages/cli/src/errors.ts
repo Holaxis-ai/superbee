@@ -276,7 +276,8 @@ export function classifyBundleError(err: unknown): CliError {
   if (err instanceof FieldActionError) return new CliError("USAGE", err.message, { details: { ...err.details } });
   if (err instanceof NonCanonicalDocumentIdError) {
     return new CliError("USAGE", err.message, { details: { reason: err.reason, why: err.why, id: err.id,
-      ...(err.suggestedId === undefined ? {} : { suggested_id: err.suggestedId }) } });
+      ...(err.suggestedId === undefined ? {} : { suggested_id: err.suggestedId }),
+      ...(err.existingId === undefined ? {} : { existing_id: err.existingId }) } });
   }
   if (err instanceof FrontmatterRefusedError) return new CliError("USAGE", err.message, { details: { frontmatter: { code: err.code } } });
   if (err instanceof InvalidInputError) return new CliError("USAGE", err.message);

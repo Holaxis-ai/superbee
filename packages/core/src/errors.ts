@@ -21,14 +21,16 @@ export class InvalidInputError extends Error {
 /**
  * A create of a document id outside its one canonical spelling. The reason is the same one a
  * hosted create and `publish` report (`document_id_not_canonical`), so the refusal surfaces where
- * the id is chosen. `suggestedId` is a safe canonical spelling when one exists.
+ * the id is chosen. `suggestedId` is a safe canonical spelling when one exists and is free.
  */
 export class NonCanonicalDocumentIdError extends InvalidInputError {
   readonly reason = "document_id_not_canonical" as const;
   readonly id: string;
   readonly why: NonCanonicalDocumentId;
   readonly suggestedId: string | undefined;
-  constructor(id: string, why: NonCanonicalDocumentId, suggestedId: string | undefined) {
+  /** The canonical spelling names a document that already exists, so it is not offered as the fix. */
+  readonly existingId: string | undefined;
+  constructor(id: string, why: NonCanonicalDocumentId, suggestion: { id: string; exists: boolean } | undefined) {
     const explanation = {
       segment_whitespace: "a path segment starts or ends with whitespace",
       format_character: "a path segment holds an invisible format character",
@@ -36,12 +38,15 @@ export class NonCanonicalDocumentIdError extends InvalidInputError {
     }[why];
     super(
       `'${visibleId(id)}' cannot be created: ${explanation}. Ids must have one spelling everywhere, so this one would also fail at publish and sync.`
-        + (suggestedId === undefined ? " Choose a different id." : ` Use '${suggestedId}'.`),
+        + (suggestion === undefined ? " Choose a different id."
+          : suggestion.exists ? ` '${suggestion.id}' already exists: choose a different id, or edit that document if you meant it.`
+          : ` Use '${suggestion.id}'.`),
     );
     this.name = "NonCanonicalDocumentIdError";
     this.id = id;
     this.why = why;
-    this.suggestedId = suggestedId;
+    this.suggestedId = suggestion && !suggestion.exists ? suggestion.id : undefined;
+    this.existingId = suggestion?.exists ? suggestion.id : undefined;
   }
 }
 

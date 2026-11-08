@@ -142,3 +142,15 @@ test("canonical id: the suggestion is canonical and safe, or absent", () => {
   assert.equal(suggest("notes/\u{200b}index"), undefined);
   assert.equal(suggest("notes/nai\u{308}ve"), "notes/na\u{ef}ve");
 });
+
+test("canonical id: a suggestion that names an existing document is not offered as the fix", async () => {
+  const backend = new MemoryBackend();
+  const bundle: Bundle = { root: "/unused", backend };
+  await backend.write("notes/zerowidth", { id: "notes/zerowidth", ...note("taken") });
+  await assert.rejects(
+    () => mutateDocument({ bundle, id: "notes/zero\u{200b}width", mode: "overwrite", registry: CREATE_EMPTY, strict: false, buildCandidate: () => note("x") }),
+    (error: unknown) => error instanceof NonCanonicalDocumentIdError && error.suggestedId === undefined
+      && error.existingId === "notes/zerowidth" && /'notes\/zerowidth' already exists/.test(error.message) && !/ Use '/.test(error.message),
+  );
+  assert.equal((await readDoc(backend, "notes/zerowidth")).body.trim(), "taken");
+});

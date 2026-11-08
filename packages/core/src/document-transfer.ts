@@ -561,9 +561,11 @@ const CONVENTIONS_FOLD = `${foldIdentityPath(CONVENTIONS_PREFIX.replace(/\/$/, "
  * (installing Kinds is not part of v1). Compared under the identity fold, so a case or
  * normalization variant of a protected id is refused too.
  */
-function assertImportableTargetId(id: ConceptId): void {
+function assertImportableTargetId(id: ConceptId, newTarget?: { exists: (candidate: ConceptId) => boolean }): void {
   assertSafeConceptId(id);
-  assertCanonicalNewDocumentId(id);
+  // Only a planned target is a create; a stored record's targets may predate the canonical-id rule,
+  // and any create its resume still performs meets the rule in mutateDocument.
+  if (newTarget) assertCanonicalNewDocumentId(id, newTarget.exists);
   if (isReservedFile(pathFromConceptId(id))) throw new InvalidInputError("index.md and log.md are reserved files, not documents");
   const fold = foldIdentityPath(id);
   if (PROTECTED_TARGET_FOLDS.has(fold)) throw new InvalidInputError("it is the bundle's own identity or dependency declaration");
@@ -590,7 +592,7 @@ function checkTargetIds(
   for (const row of planned) {
     const where = { ...(row.source === undefined ? {} : { source: row.source }), target: row.target };
     try {
-      assertImportableTargetId(row.target);
+      assertImportableTargetId(row.target, { exists: (candidate) => existing.has(candidate) });
     } catch (error) {
       if (!(error instanceof InvalidInputError)) throw error;
       conflicts.push({ code: "unsafe_target_id", ...where, detail: `'${row.target}' is not a usable document id: ${error.message}` });
