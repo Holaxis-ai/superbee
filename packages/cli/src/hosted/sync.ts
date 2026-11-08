@@ -1187,6 +1187,17 @@ async function orphanedArtifactPublication(store: FileJournaledBackend, p: Publi
   const snapshot = await readBlobSyncState(store, p.entry, p.scope);
   return !snapshot.map.entries.find(entry => entry.key === p.entry)?.head && snapshot.journal.intents.every(row => row.receipt !== undefined);
 }
+/**
+ * A blob_admitted publication whose create lost to a file already on the host, and whose version
+ * conflict was then resolved with keep or take: its blob request is gone from the journal while the
+ * checkout records a host head for its entry. The create can never be sent again, and a record is
+ * admitted only over the exact acknowledged create, so the publication stays held as evidence.
+ */
+async function lostArtifactCreate(store: FileJournaledBackend, p: Publication): Promise<boolean> {
+  if (p.state !== "blob_admitted" || await store.readBlobIntent(p.blobRequestId)) return false;
+  const snapshot = await readBlobSyncState(store, p.entry, p.scope);
+  return Boolean(snapshot.map.entries.find(entry => entry.key === p.entry)?.head);
+}
 export async function queueHostedArtifact(binding: CheckoutBinding, input: { file: string; title: string; description?: string; actor: string }, partial: Partial<HostedSyncDeps>, resume: CommandText): Promise<Record<string, unknown>> {
   const deps = hostedDeps(partial), signal = deps.write?.signal;
   signal?.throwIfAborted();
@@ -1199,6 +1210,20 @@ export async function queueHostedArtifact(binding: CheckoutBinding, input: { fil
     await assertActorAcceptedByBundle(local.bundle, input.actor);
     let all = await publications(store);
     const source = path.resolve(deps.cwd, input.file), rel = path.relative(binding.path, source).split(path.sep).join("/");
+    const createCommand = (target: string): string => `${cliInvocation()} artifact create ${commandToken(target)} --title ${commandToken(input.title)} --actor ${commandToken(input.actor)} --dir ${commandToken(binding.path)}${input.description ? commandFragment` --description ${commandToken(input.description)}` : commandFragment``}`;
+    /** The first id the title derives that no record, file or publication here or on the host holds. */
+    const freshArtifactEntry = async (retained: readonly Publication[]): Promise<{ id: string; entry: string }> => {
+      const heads = await queryHeads(local.bundle, { prefix: "artifacts/" });
+      const blobs = await listBlobs(local.bundle, "artifacts/");
+      const remoteHeads = await session.reader.heads();
+      if (!remoteHeads) throw new CliError("CONFLICT", "Artifact needs a complete current record listing");
+      const remote = remoteHeads.heads.map(h => h.id);
+      const blobAdapter = createHostedBlobReadAdapter({ carrier: session.carrier, bundleId: binding.bundle_id, prefix: session.routes, signal: signal ?? new AbortController().signal, capabilities: () => Promise.resolve(session.capabilities) });
+      const remoteBlobs = (await blobAdapter.heads()).heads;
+      const taken = new Set([...heads.map(h => h.id), ...blobs.map(k => k.replace(/\.[^/.]+$/, "")), ...remote.filter(id => id.startsWith("artifacts/")), ...remoteBlobs.map(h => h.key.replace(/\.[^/.]+$/, "")), ...retained.map(p => p.id)]);
+      const id = firstFreeId(slugifyTitle(input.title), taken);
+      return { id, entry: `${id}.html` };
+    };
     let publication = all.find(p => p.entry === rel);
     if (publication) {
       assertPublicationBinding(publication, binding);
@@ -1210,19 +1235,26 @@ export async function queueHostedArtifact(binding: CheckoutBinding, input: { fil
         publication = undefined;
       }
     }
+    if (publication && await lostArtifactCreate(store, publication)) {
+      // The create met a file already on the host and that conflict was resolved; the reservation
+      // stays held as its evidence, so a page is published again under the next free path.
+      const next = await freshArtifactEntry(all);
+      const target = path.join(binding.path, ...next.entry.split("/")), current = path.join(binding.path, ...publication.entry.split("/"));
+      const found = readRegularFileNoFollowSync(current, { maximumBytes: 16 * 1024 * 1024 });
+      const pageInFolder = found.state === "present" && digestOf(found.bytes) === publication.digest;
+      const where = pageInFolder
+        ? `Your page is still at ${publication.entry}, as an ordinary file. Publish it under ${next.entry}, the next free name for this title: copy it there, then run artifact create on the copy`
+        : `${publication.entry} no longer holds your page. Publish your page under ${next.entry}, the next free name for this title: save it there, then run artifact create on it`;
+      throw new CliError("CONFLICT", `${publication.entry} was already taken on the host, so this Artifact cannot be published there; nothing was submitted, and rerunning fails the same way. ${where}`, {
+        details: { reason: "artifact_create_conflict_resolved", id: publication.id, entry: publication.entry, blob_request_id: publication.blobRequestId, page_in_folder: pageInFolder, next_entry: next.entry },
+        help: pageInFolder ? `cp ${commandToken(current)} ${commandToken(target)} && ${createCommand(target)}` : createCommand(target),
+      });
+    }
     if (publication) {
       if (publication.title !== input.title || publication.actor !== input.actor || publication.description !== input.description) throw new CliError("CONFLICT", "Artifact arguments differ from the frozen publication; no new identity was selected");
     } else {
-      const heads = await queryHeads(local.bundle, { prefix: "artifacts/" });
-      const blobs = await listBlobs(local.bundle, "artifacts/");
-      const remoteHeads = await session.reader.heads();
-      if (!remoteHeads) throw new CliError("CONFLICT", "Artifact needs a complete current record listing");
-      const remote = remoteHeads.heads.map(h => h.id);
-      const blobAdapter = createHostedBlobReadAdapter({ carrier: session.carrier, bundleId: binding.bundle_id, prefix: session.routes, signal: signal ?? new AbortController().signal, capabilities: () => Promise.resolve(session.capabilities) });
-      const remoteBlobs = (await blobAdapter.heads()).heads;
-      const taken = new Set([...heads.map(h => h.id), ...blobs.map(k => k.replace(/\.[^/.]+$/, "")), ...remote.filter(id => id.startsWith("artifacts/")), ...remoteBlobs.map(h => h.key.replace(/\.[^/.]+$/, "")), ...all.map(p => p.id)]);
-      const id = firstFreeId(slugifyTitle(input.title), taken), entry = `${id}.html`;
-      if (source !== path.join(binding.path, ...entry.split("/"))) throw new CliError("USAGE", "hosted Artifact requires its source at the canonical checkout target", { help: `copy the source to ${commandToken(path.join(binding.path, ...entry.split("/")))}, then ${cliInvocation()} artifact create ${commandToken(path.join(binding.path, ...entry.split("/")))} --title ${commandToken(input.title)} --actor ${commandToken(input.actor)} --dir ${commandToken(binding.path)}${input.description ? commandFragment` --description ${commandToken(input.description)}` : commandFragment``}` });
+      const { id, entry } = await freshArtifactEntry(all);
+      if (source !== path.join(binding.path, ...entry.split("/"))) throw new CliError("USAGE", "hosted Artifact requires its source at the canonical checkout target", { help: `copy the source to ${commandToken(path.join(binding.path, ...entry.split("/")))}, then ${createCommand(path.join(binding.path, ...entry.split("/")))}` });
       const file = readRegularFileNoFollowSync(source, { maximumBytes: 16 * 1024 * 1024 });
       if (file.state !== "present") throw new CliError("CONFLICT", "Artifact source is unsafe or missing");
       const doc = readRegularFileNoFollowSync(path.join(binding.path, `${id}.md`), { maximumBytes: 1 });
