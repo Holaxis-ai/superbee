@@ -6,7 +6,6 @@
 // records and exit codes never change. The channel stays closed until the CLI entry opens it for a
 // command that leaves stderr free: importing this module, a private worker and a command whose
 // stderr is itself a contract all stay silent. See {@link stderrIsReserved}.
-import { parseArgs } from "node:util";
 import { SUPERBEE_NO_AUTOPULL_ENV } from "@superbee/board-git";
 import { SUPERBEE_ACTOR_ENV, SUPERBEE_NO_UPDATE_CHECK_ENV } from "./env-policy.js";
 import { CliError, toEnvelope } from "./errors.js";
@@ -103,34 +102,13 @@ function remoteRoutes(cli: string): string {
 /** The last release that still carries the removed remote client and reference server. */
 const LAST_REMOTE_RELEASE = "superbee@0.4.5";
 
-/** The long options a leading flag block may carry before the command word, for {@link retiredInput}. */
-const LEADING_BLOCK_OPTIONS = {
-  dir: { type: "string" },
-  remote: { type: "string" },
-  json: { type: "boolean" },
-  "no-update-check": { type: "boolean" },
-  help: { type: "boolean", short: "h" },
-} as const;
-
 /**
- * A removed command word, or `--remote` in a leading flag block (`superbee --remote <url> ...`),
- * where no command parser runs. Inside a command, its own parser reports `--remote` through
- * {@link retiredFlagInParse}, so an option VALUE spelled `--remote` is never mistaken for the flag.
+ * A removed command word. `--remote` is found by parsers instead: a command's own parser through
+ * {@link retiredFlagInParse}, and the CLI entry's leading-flag handling through
+ * {@link refuseLeadingRetiredFlag}, so an option VALUE spelled `--remote` is never mistaken for it.
  */
-export function retiredInput(argv: readonly string[]): "--remote" | "serve" | undefined {
-  if (argv[0] === "serve") return "serve";
-  if (!argv[0]?.startsWith("-")) return undefined;
-  let tokens;
-  try {
-    tokens = parseArgs({ args: [...argv], options: LEADING_BLOCK_OPTIONS, strict: false, allowPositionals: true, tokens: true }).tokens;
-  } catch {
-    return undefined;
-  }
-  for (const token of tokens) {
-    if (token.kind === "positional" || token.kind === "option-terminator") return undefined;
-    if (token.kind === "option" && token.name === "remote") return "--remote";
-  }
-  return undefined;
+export function retiredInput(argv: readonly string[]): "serve" | undefined {
+  return argv[0] === "serve" ? "serve" : undefined;
 }
 
 /**
@@ -161,9 +139,14 @@ export function retiredInputRefusal(input: "--remote" | "serve"): CliError {
 }
 
 /**
- * The CLI entry's refusal for a removed flag or command, before any work. The envelope goes where
- * the command puts its errors, as for retired environment names.
+ * The CLI entry's refusal for `--remote` in a leading flag block with no command word to parse it.
+ * The envelope goes where the command puts its errors, as for retired environment names.
  */
+export function refuseLeadingRetiredFlag(argv: readonly string[]): void {
+  writeEntryRefusal(argv, retiredInputRefusal("--remote"));
+}
+
+/** The CLI entry's refusal for a removed command word, before any work. */
 export function refuseRetiredInput(argv: readonly string[]): boolean {
   // The hook commands own their streams and must not fail a session.
   if (argv[0] === "session-start" || argv[0] === "turn-end") return false;

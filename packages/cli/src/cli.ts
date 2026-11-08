@@ -66,7 +66,7 @@ import { cliInvocation } from "./invocation.js";
 import { PUBLIC_COMMAND_NAMES, type PublicCommandName } from "./command-spec.js";
 import { parseArgs } from "node:util";
 import { commandWords } from "./command-text.js";
-import { openDeprecationNotices, refuseRetiredEnv, refuseRetiredInput } from "./deprecation-notices.js";
+import { openDeprecationNotices, refuseLeadingRetiredFlag, refuseRetiredEnv, refuseRetiredInput } from "./deprecation-notices.js";
 export { cliVersion } from "./build-identity.js";
 
 export const KNOWN_COMMANDS = PUBLIC_COMMAND_NAMES;
@@ -241,6 +241,8 @@ export function hoistLeadingGlobalFlags(argv: string[]): string[] | null {
       allowPositionals: true,
       options: {
         dir: { type: "string" },
+        // Known here only so a hoisted `--remote` reaches the command parser, which refuses it.
+        remote: { type: "string" },
         json: { type: "boolean" },
         "no-update-check": { type: "boolean" },
         help: { type: "boolean", short: "h" },
@@ -282,7 +284,7 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
 
-  // A removed flag or command fails before any routing, wherever the flag sits.
+  // A removed command word fails before any routing.
   if (refuseRetiredInput(argv)) return;
 
   // A leading flag (e.g. `axi --dir <path> list`) is a common mistake: options are per-command and
@@ -305,6 +307,11 @@ export async function main(argv: string[]): Promise<void> {
     const hoisted = hoistLeadingGlobalFlags(argv);
     if (hoisted) {
       await main(hoisted);
+      return;
+    }
+    // A leading block with no command word: `superbee --remote <url>` once oriented against a remote.
+    if (argv.some((arg) => arg === "--remote" || arg.startsWith("--remote="))) {
+      refuseLeadingRetiredFlag(argv);
       return;
     }
     const envelope = toEnvelope(
