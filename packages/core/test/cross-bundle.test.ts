@@ -230,7 +230,7 @@ test("local resolver: one batched read per alias, duplicates collapsed", async (
   assert.equal(wines.readCalls - 2, 0);
 });
 
-test("local resolver: a batch with a missing target still issues one readMany for the alias", async () => {
+test("local resolver: a batch with a missing target reads its survivors in batches, not one by one", async () => {
   const beers = await catalog(["beers/a"]);
   const resolver = createLocalResolver({
     dependencies: deps({ beers: { bundle_id: "hm-beer-catalog" } }),
@@ -239,10 +239,10 @@ test("local resolver: a batch with a missing target still issues one readMany fo
   const [a, gone] = await resolver.resolve([ref("beers", "beers/a"), ref("beers", "beers/gone")]);
   assert.equal(a!.state, "resolved");
   assert.equal(unresolved(gone!).reason, "target_missing");
-  assert.equal(beers.readManyCalls.length, 1);
-  // The documented fallback cost: MemoryBackend.readMany reads both ids (2) and fails on the
-  // absent one, then readManyExisting reads each id once more (2).
-  assert.equal(beers.readCalls, 4);
+  // The failed batch is read again in halves: the survivor in a batch of its own, the absent id
+  // alone and then once by `read` to classify it.
+  assert.deepEqual(beers.readManyCalls, [["beers/a", "beers/gone"], ["beers/a"], ["beers/gone"]]);
+  assert.equal(beers.readCalls, 5);
 });
 
 test("local resolver: a declared alias whose entry was rejected says so, still as unknown_alias", async () => {
