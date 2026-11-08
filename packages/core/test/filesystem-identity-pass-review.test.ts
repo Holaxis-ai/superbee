@@ -40,7 +40,7 @@ const settledClock = (): number => Date.now() + 60_000;
 
 /** Witness driven by a generation, like the PR's own helper, but the test controls when it lies. */
 function witnessed(port: ScriptedPort): { port: FilesystemIdentityPort; bump(): void } {
-  let generation = 0n;
+  let generation = 1n; // 0 is the never-moving witness the protocol distrusts
   const wrapped = Object.create(port) as FilesystemIdentityPort;
   wrapped.directoryWitness = async (dir: string): Promise<DirectoryWitness | null> =>
     port.node(dir) === null ? null : { dev: 1n, ino: BigInt(port.node(dir)!.ino), mtimeNs: generation, ctimeNs: generation };

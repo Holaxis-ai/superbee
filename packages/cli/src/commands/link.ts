@@ -302,11 +302,9 @@ async function lintLinkType(
  * real file for any tool that does not enforce exact identity. Raised as core's own typed alias
  * verdict, which is an `InvalidInputError` and maps to USAGE like every other alias refusal.
  *
- * Scope is exactly what the read reports. An observation short-circuits to ABSENT at the first
- * missing segment, so an id whose DIRECTORY prefix is an alias spelling but whose leaf does not
- * exist reads as absent and is still written as a forward declaration (its
- * `LINK_TARGET_ABSENT` warning then names a `doc write` that core will refuse). Widening the
- * refusal to the directory prefix is a separate decision, not something this check does today.
+ * Scope is exactly what the read reports, and core's observation refuses an alias spelling at ANY
+ * segment: an absent leaf under an alias spelling of an existing directory is refused too, so a
+ * forward declaration is only ever written for an id that `doc write` can later create.
  *
  * Only the alias verdict blocks. A target that is merely ABSENT stays legal and keeps its
  * post-write `LINK_TARGET_ABSENT` warning, and any other read failure stays non-blocking here:

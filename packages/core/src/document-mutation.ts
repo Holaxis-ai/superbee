@@ -15,7 +15,7 @@ import { prepareKindFieldMutation, type KindFieldMutation } from "./kind-field-m
 import { appendVerificationEvent, type AppendVerificationOptions } from "./verification.js";
 import { okfValuesEqual } from "./okf-authored-values.js";
 import { isRequestIdentity } from "./uncertain-write.js";
-import { InvalidInputError } from "./errors.js";
+import { FilesystemIdentityAliasError, InvalidInputError, NonCanonicalDocumentIdError } from "./errors.js";
 import { assertCanonicalNewDocumentId, nonCanonicalDocumentId, suggestCanonicalDocumentId } from "./paths.js";
 import { kindDeprecationTransition } from "./kind-deprecation.js";
 import { KindConformanceError } from "./kind-conformance-error.js";
@@ -522,9 +522,18 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
   const prepare = async (existing: OkfDocument | undefined, decisionNow: () => string) => {
     // Every mode decides a create here with no existing document, so this is the one place a new
     // id meets the canonical-spelling rule; ids that already exist stay editable.
-    if (existing === undefined && nonCanonicalDocumentId(opts.id) !== null) {
+    const why = existing === undefined ? nonCanonicalDocumentId(opts.id) : null;
+    if (why !== null) {
       const suggested = suggestCanonicalDocumentId(opts.id);
-      const taken = suggested !== undefined && await existsDoc(opts.bundle, suggested);
+      let taken = false;
+      try {
+        taken = suggested !== undefined && await existsDoc(opts.bundle, suggested);
+      } catch (error) {
+        // The canonical spelling is itself an alias of an existing entry (a legacy NFD folder,
+        // say), so it can never be created either: offer no suggestion rather than a dead one.
+        if (!(error instanceof FilesystemIdentityAliasError)) throw error;
+        throw new NonCanonicalDocumentIdError(opts.id, why, undefined);
+      }
       assertCanonicalNewDocumentId(opts.id, () => taken);
     }
     return prepareDocumentMutationCandidate(existing, await build(existing, decisionNow), {

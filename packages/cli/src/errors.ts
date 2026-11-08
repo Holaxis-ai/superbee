@@ -13,6 +13,7 @@ import {
   InvalidInputError,
   FrontmatterRefusedError,
   NonCanonicalDocumentIdError,
+  FilesystemIdentityAliasError,
   MalformedDocumentError,
   OkfActorError,
   RemoteError,
@@ -278,6 +279,12 @@ export function classifyBundleError(err: unknown): CliError {
     return new CliError("USAGE", err.message, { details: { reason: err.reason, why: err.why, id: err.id,
       ...(err.suggestedId === undefined ? {} : { suggested_id: err.suggestedId }),
       ...(err.existingId === undefined ? {} : { existing_id: err.existingId }) } });
+  }
+  if (err instanceof FilesystemIdentityAliasError) {
+    return new CliError("USAGE", err.message, {
+      details: { reason: err.reason, path: err.rel, segment: err.segment, ...(err.existing === undefined ? {} : { existing: err.existing }) },
+      ...(err.suggestedPath === undefined ? {} : { help: `use the existing spelling: ${err.suggestedPath}` }),
+    });
   }
   if (err instanceof FrontmatterRefusedError) return new CliError("USAGE", err.message, { details: { frontmatter: { code: err.code } } });
   if (err instanceof InvalidInputError) return new CliError("USAGE", err.message);
