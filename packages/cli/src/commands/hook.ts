@@ -43,7 +43,6 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { parseArgs } from "node:util";
 import {
