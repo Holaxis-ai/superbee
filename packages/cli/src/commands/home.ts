@@ -485,9 +485,11 @@ export interface BoardPullOutcome {
   /**
    * True when this run could NOT confirm the board's currency: the fetch failed (offline, auth,
    * a held lock), the pull lost its time box, or the pull step threw. Renders the pinned
-   * {@link BOARD_OFFLINE_NOTE}.
+   * {@link BOARD_OFFLINE_NOTE}, or {@link BOARD_TIMEOUT_NOTE} when `timedOut` is set.
    */
   offline: boolean;
+  /** The pull ran out of its time budget: never reported as offline. */
+  timedOut?: boolean;
   /**
    * True ONLY when this run's pull SUCCEEDED and rewrote the awareness cache (including the
    * re-anchor path — that writes a cache too). This is the explicit signal that lets the render
@@ -556,6 +558,7 @@ export type BoardStatus =
 import {
   BOARD_IN_TREE_LINE,
   BOARD_OFFLINE_NOTE,
+  BOARD_TIMEOUT_NOTE,
   BOARD_UP_TO_DATE,
   boardInTreeLine,
   boardFirstContactLine,
@@ -569,6 +572,7 @@ import { commandFragment, commandLiteral, commandQuoted, commandToken, type Comm
 export {
   BOARD_IN_TREE_LINE,
   BOARD_OFFLINE_NOTE,
+  BOARD_TIMEOUT_NOTE,
   BOARD_UP_TO_DATE,
   boardInTreeLine,
   boardFirstContactLine,
@@ -685,7 +689,7 @@ export function buildBoardBlock(
   if (uncommitted > 0) rec.uncommitted = inTree ? inTreeUncommittedLine(uncommitted) : uncommittedLine(uncommitted);
   const notes: string[] = [];
   if (inTree && (status.behind ?? 0) > 0) notes.push(inTreePullHintLine(status.behind!));
-  if (pull?.offline) notes.push(BOARD_OFFLINE_NOTE);
+  if (pull?.offline) notes.push(pull.timedOut ? BOARD_TIMEOUT_NOTE : BOARD_OFFLINE_NOTE);
   if (pull?.discoveryUnknown) notes.push(pull.discoveryUnknown);
   if (pull?.notes) notes.push(...pull.notes);
   if (status.cache?.note) notes.push(status.cache.note);
