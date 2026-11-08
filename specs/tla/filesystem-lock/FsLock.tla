@@ -59,9 +59,9 @@
 (*     MaxRetries polls. The claim-grace age check in acquireSettled is    *)
 (*     "young iff the directory's creator is still alive". The ps start    *)
 (*     time is exact: "started after the claim" iff the pid now belongs to *)
-(*     a later process. The age check in removeAbandonedClaim may pass for *)
-(*     a directory whose creator is dead, or that has aged past the window *)
-(*     while its live creator was suspended (Stall, once per token).       *)
+(*     a later process. The age check in removeAbandonedClaim passes for a *)
+(*     directory whose creator is dead, or that aged past the window while *)
+(*     its live creator was suspended (Stall, at most once per claimer).   *)
 (*  A8 The acquireSettled retry re-uses the same token. Sound: a claim     *)
 (*     that timed out never wrote a record.                                *)
 (*  A9 Assumed, not modeled: nothing external deletes a held <key>.lock    *)
@@ -226,8 +226,7 @@ Read1(t) ==
 \* removeAbandonedClaim: lstat(L) and its age. No directory, or too young: the normal wait (A7).
 RmAge(t) ==
   /\ pc[t] = "rmAge"
-  /\ \E aged \in (IF lock.ex /\ (lock.old \/ ~alive[lock.by]) THEN {TRUE, FALSE} ELSE {FALSE}) :
-       GoTo(t, IF aged THEN "rmAbandoned" ELSE "tcheck")
+  /\ GoTo(t, IF lock.ex /\ (lock.old \/ ~alive[lock.by]) THEN "rmAbandoned" ELSE "tcheck")
   /\ UNCHANGED <<lock, stale, rel, nextId, snap, claimed, wdir, mode, retries, settled, relErr>>
   /\ Unchanged_env
 
@@ -508,11 +507,12 @@ HostnameChange ==
   /\ UNCHANGED <<lock, stale, rel, nextId, pc, snap, claimed, wdir, mode, retries, settled,
                  alive, pidLive, ownerHost, diag, diagOk, relErr, reused, stalled>>
 
-\* A live claimer is suspended long enough for its owner-less directory at L to pass the
-\* abandoned-claim age. At most once per claimer, which bounds the removals of live claims.
+\* A live claimer is suspended between its mkdir and its owner write long enough for its
+\* owner-less directory at L to pass the abandoned-claim age. At most once per claimer, which
+\* bounds the removals of live claims.
 Stall ==
   /\ ClaimStall /\ lock.ex /\ lock.rec = NONE /\ ~lock.old
-  /\ alive[lock.by] /\ ~stalled[lock.by]
+  /\ alive[lock.by] /\ ~stalled[lock.by] /\ pc[lock.by] \in {"lstat", "openwx"}
   /\ lock' = [lock EXCEPT !.old = TRUE]
   /\ stalled' = [stalled EXCEPT ![lock.by] = TRUE]
   /\ UNCHANGED <<stale, rel, nextId, pc, snap, claimed, wdir, mode, retries, settled,
