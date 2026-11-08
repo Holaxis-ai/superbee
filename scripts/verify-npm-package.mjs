@@ -762,17 +762,23 @@ async function runInstalledProof(spec) {
     assert.equal(homeIdentity.version, manifest.version);
     assert.equal(homeIdentity.channel, spec.expectedChannel);
     assert.equal(homeIdentity.bin, installedEntrypointRealPath);
-    assert.ok(
-      noBundleHome.getting_started.includes(
-        `${target.preferred_command} init --create-only --recipe none --dir ${conventionalDirArgument}`,
-      ),
-      "bundle-free home must advertise fail-closed conventional creation",
+    const setupCommand = `${target.preferred_command} setup`;
+    for (const expected of [`${setupCommand} --project .\``, `${setupCommand} --project <dir>\``, `${setupCommand} --no-project\``]) {
+      assert.ok(
+        noBundleHome.getting_started.includes(expected),
+        `bundle-free home must offer setup's project-folder choice (${expected})`,
+      );
+    }
+    assert.doesNotMatch(noBundleHome.getting_started, / init /, "bundle-free home must leave bundle creation to setup");
+    await mkdir(home, { recursive: true });
+    const homeFolderHome = parseJson(
+      (await runCli(target.preferred_command, ["--json"], { cwd: home })).stdout,
+      `${target.preferred_command} home --json from the home folder`,
     );
-    assert.match(
-      noBundleHome.getting_started,
-      new RegExp(`${target.preferred_command} recipes`),
-      "bundle-free home must point at Recipe discovery",
-    );
+    assert.match(homeFolderHome.getting_started, /your home folder/, "home-folder home must say the home folder cannot hold a project");
+    assert.ok(homeFolderHome.getting_started.includes(`${setupCommand} --project <dir>\``), "home-folder home must ask for a project folder");
+    assert.ok(homeFolderHome.getting_started.includes(`${setupCommand} --no-project\``), "home-folder home must offer --no-project");
+    assert.ok(!homeFolderHome.getting_started.includes(`${setupCommand} --project .`), "home-folder home must never offer the home folder");
 
     for (const command of target.expected_commands) await runCli(command, ["--help"]);
     const initHelp = (await runCli(target.preferred_command, ["init", "--help"])).stdout;
