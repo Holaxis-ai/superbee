@@ -1,6 +1,7 @@
 import { currentPrivateStateHost, distributionBinName, currentDistribution, currentHost } from "./runtime-context.js";
 // Explicit, one-shot migration from Superbee's historical operational-state root into its one
-// canonical root. This module is imported only by `setup`; ordinary state readers stay single-root.
+// canonical root. Imported by `setup`, and lazily by the unrecognized-root refusal in user-state.ts
+// for its interrupted-migration proof; ordinary state readers stay single-root.
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import {

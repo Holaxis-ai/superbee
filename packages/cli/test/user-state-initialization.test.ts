@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -13,11 +13,13 @@ import {
   ensureUserStateRoot,
   ensureUserStateRootForTest,
   inspectCanonicalUserStateRoot,
+  legacyUserStateDir,
   USER_STATE_MARKER_BYTES,
   USER_STATE_MARKER_FILE_NAME,
   USER_STATE_MIGRATION_JOURNAL_FILE_NAME,
 } from "../src/user-state.js";
 import { CliError } from "../src/errors.js";
+import { migrateUserState } from "../src/user-state-migration.js";
 import { isolatedUserEnv } from "./support/user-env.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -268,17 +270,41 @@ test("persistent markerless root remains foreign after bounded initialization", 
   }
 });
 
+async function interruptedMigration(home: string): Promise<void> {
+  const legacy = legacyUserStateDir(home);
+  await mkdir(legacy, { recursive: true, mode: 0o700 });
+  await chmod(legacy, 0o700);
+  await writeFile(path.join(legacy, "catalog.json"), `${JSON.stringify({ schema_version: 1, entries: [] })}\n`, { mode: 0o600 });
+  await assert.rejects(migrateUserState(home, { beforeMarkerPublish: () => { throw new Error("interrupted"); } }));
+}
+
+const UNRECOGNIZED = {
+  message: "is not recognized as Superbee state.",
+  reason: "state_root_unrecognized",
+  help: /^Run `superbee setup` to see what is wrong and the fix\. Then re-run this command\.$/,
+};
+
 for (const row of [
   {
     label: "a foreign root",
-    files: ["sentinel.txt"],
-    message: "is not recognized as Superbee state.",
-    reason: "state_root_unrecognized",
-    help: /^Run `superbee setup` to see what is wrong and the fix\. Then re-run this command\.$/,
+    prepare: async (stateRoot: string) => {
+      await mkdir(stateRoot, { recursive: true, mode: 0o700 });
+      await writeFile(path.join(stateRoot, "sentinel.txt"), "{}\n", { mode: 0o600 });
+    },
+    ...UNRECOGNIZED,
+  },
+  {
+    // A journal that migrate-state would refuse must not send the user to migrate-state.
+    label: "a root with a journal migrate-state rejects",
+    prepare: async (stateRoot: string) => {
+      await mkdir(stateRoot, { recursive: true, mode: 0o700 });
+      await writeFile(path.join(stateRoot, USER_STATE_MIGRATION_JOURNAL_FILE_NAME), "{}\n", { mode: 0o600 });
+    },
+    ...UNRECOGNIZED,
   },
   {
     label: "a root left by an interrupted migration",
-    files: [USER_STATE_MIGRATION_JOURNAL_FILE_NAME],
+    prepare: async (_stateRoot: string, home: string) => interruptedMigration(home),
     message: "is unfinished: a state migration was interrupted.",
     reason: "state_migration_interrupted",
     help: /^Run `superbee setup migrate-state` to finish it\. Your old state files are not changed\. Then re-run this command\.$/,
@@ -288,8 +314,7 @@ for (const row of [
     const { root: scratch, home } = await scratchHome("superbee-user-state-next-step-");
     try {
       const stateRoot = canonicalUserStateDir(home);
-      await mkdir(stateRoot, { recursive: true, mode: 0o700 });
-      for (const name of row.files) await writeFile(path.join(stateRoot, name), "{}\n", { mode: 0o600 });
+      await row.prepare(stateRoot, home);
       await assert.rejects(within(ensureUserStateRoot(home), 5_000), (error: unknown) => {
         assert.ok(error instanceof CliError);
         assert.equal(error.code, "RUNTIME");

@@ -87,17 +87,23 @@ const STATE_ROOT_GITIGNORE_BYTES = "*\n";
 export const USER_STATE_MIGRATION_JOURNAL_FILE_NAME = ".migration.json";
 
 /**
- * The one refusal for a canonical root without this product's marker. The help depends on why:
- * a root holding the migration journal is a migration that `migrate-state` finishes; anything
- * else is diagnosed by `setup`, which alone can tell a resumable root from a foreign one.
+ * The one refusal for a canonical root without this product's marker. Only a root that passes
+ * setup's own interrupted-migration proof is sent to `migrate-state`; anything else (including a
+ * journal that proof rejects) is sent to `setup`, which diagnoses it. The proof lives in the
+ * migration module, loaded here only on this refusal path; ordinary state readers stay single-root.
  */
-export function unrecognizedStateRootError(root: string): CliError {
+export async function unrecognizedStateRootError(root: string, input: UserStateInput | undefined): Promise<CliError> {
   let interrupted = false;
   try {
-    interrupted = lstatSync(join(root, USER_STATE_MIGRATION_JOURNAL_FILE_NAME)).isFile();
+    const { inspectUserStateMigration } = await import("./user-state-migration.js");
+    interrupted = (await inspectUserStateMigration(input ?? homedir())).state === "migratable";
   } catch {
     interrupted = false;
   }
+  return stateRootRefusal(root, interrupted);
+}
+
+function stateRootRefusal(root: string, interrupted: boolean): CliError {
   const bin = distributionBinName();
   return interrupted
     ? new CliError("RUNTIME", `${root} is unfinished: a state migration was interrupted.`, {
@@ -398,7 +404,7 @@ async function publishCanonicalRoot(
   }
   const marker = await inspectUserStateMarker(root, input);
   if (!marker.recognized) {
-    throw unrecognizedStateRootError(root);
+    throw await unrecognizedStateRootError(root, input);
   }
 }
 
@@ -417,7 +423,7 @@ async function initializeCanonicalRoot(
 
   const marker = await inspectUserStateMarker(root, input);
   if (!marker.recognized) {
-    throw unrecognizedStateRootError(root);
+    throw await unrecognizedStateRootError(root, input);
   }
   // Ownership is proven, so drifted permissions are repaired rather than refused — the directory
   // first, so the marker is re-tightened inside an already-private root. A root already at 0700
@@ -561,10 +567,10 @@ export function ensureUserStateRootSync(input: UserStateInput = homedir()): stri
   try {
     marker = readFileSync(join(root, USER_STATE_MARKER_FILE_NAME), "utf8");
   } catch {
-    throw unrecognizedStateRootError(root);
+    throw stateRootRefusal(root, false);
   }
   if (marker !== USER_STATE_MARKER_BYTES) {
-    throw unrecognizedStateRootError(root);
+    throw stateRootRefusal(root, false);
   }
   if (currentPrivateStateHost().enforcePrivateMode) {
     chmodSync(root, DIR_MODE);
@@ -634,7 +640,7 @@ export async function inspectCanonicalUserStateRoot(input: UserStateInput = home
 
 async function assertCanonicalUserStateRootReady(input: UserStateInput): Promise<void> {
   if (await inspectCanonicalUserStateRoot(input) !== "ready") {
-    throw unrecognizedStateRootError(canonicalUserStateDir(input));
+    throw await unrecognizedStateRootError(canonicalUserStateDir(input), input);
   }
 }
 
@@ -707,7 +713,7 @@ export async function readUserStateFile(
   }
   const state = await inspectCanonicalUserStateRoot(input);
   if (state === "absent") throw missingStateError(file);
-  if (state === "conflict") throw unrecognizedStateRootError(root);
+  if (state === "conflict") throw await unrecognizedStateRootError(root, input);
   await assertPrivateDirectoryChain(root, file, input);
   return readPrivateStateFile(file, maxBytes, signal, input);
 }
