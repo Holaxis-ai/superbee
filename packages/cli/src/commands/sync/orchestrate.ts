@@ -766,13 +766,15 @@ async function baselinePhase(board: SyncBoard, entryOriginRef?: string | null): 
 }
 
 /** The commit phase (skipped for `--pull-only`): stage-and-commit, recording self actors. */
-async function commitPhase(board: SyncBoard, pullOnly: boolean): Promise<CommitResult> {
-  if (pullOnly) return { committed: false, docs: [] };
-  return withSyncRootLock(board.boardPath, () => commitLocal(board));
+async function commitPhase(run: SyncRun, board: SyncBoard): Promise<CommitResult> {
+  if (run.pullOnly) return { committed: false, docs: [] };
+  return withSyncRootLock(board.boardPath, () => commitLocal(run, board));
 }
 
 /** Stage and commit the worktree, recording self actors. The caller holds the root lock. */
-async function commitLocal(board: SyncBoard): Promise<CommitResult> {
+async function commitLocal(run: SyncRun, board: SyncBoard): Promise<CommitResult> {
+  // F8: private state copied into the bundle is refused before anything is staged or committed.
+  refuseOutgoingWorktreePrivateState(board.boardPath, "sync", `${run.inv} sync`);
   let deletedBy: string | undefined;
   try { deletedBy = resolveActor(undefined); } catch { /* a blank actor variable never blocks a sync */ }
   const commitResult = stageAndCommit(board.boardPath, deletedBy === undefined ? {} : { deletedBy });
@@ -822,10 +824,12 @@ async function convergingRebase(run: SyncRun, board: SyncBoard, commitResult: Co
     rebaseOutcome = await withSyncRootLock(boardPath, async () => {
       // A write may have landed while the root lock was free for the fetch; git refuses to
       // rebase over it, so it joins this run's commit first.
-      const late = await commitLocal(board);
+      const late = await commitLocal(run, board);
       if (late.committed) {
         commitResult.committed = true;
-        commitResult.docs.push(...late.docs);
+        // One receipt row per document: a later commit's change to it replaces the earlier one.
+        const lateIds = new Set(late.docs.map((doc) => doc.docId));
+        commitResult.docs = [...commitResult.docs.filter((doc) => !lateIds.has(doc.docId)), ...late.docs];
         commitResult.sha = late.sha;
       }
       return rebaseResolving(boardPath, defaultSyncStore.exportsDir(key));
@@ -1197,12 +1201,10 @@ async function syncLocked(run: SyncRun, dispatch: Extract<SyncDispatch, { kind: 
       await heldRun(run, board, baseline, held);
       return;
     }
-    // F8: private state copied into the bundle is refused before anything is staged or committed.
-    refuseOutgoingWorktreePrivateState(board.boardPath, "sync", `${run.inv} sync`);
   }
   // Before anything moves: a pull could change the document these copies were judged against.
   if (!run.pullOnly) run.settledClaims = await removeCarriedCopies(board.boardPath, board.key);
-  const commitResult = await commitPhase(board, run.pullOnly);
+  const commitResult = await commitPhase(run, board);
   if (commitResult.held) {
     await heldRun(run, board, baseline, commitResult.held);
     return;
