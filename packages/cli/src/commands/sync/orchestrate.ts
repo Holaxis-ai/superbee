@@ -112,8 +112,8 @@ Usage:
   superbee sync [--pull-only] [--dir <path>] [--limit <n>] [--json]
   superbee sync --establish [--yes] [--dir <path>] [--json]
   superbee sync --show-incoming <id> [--out <file> | --body-out <file>] [--dir <path>] [--json]
-  superbee sync --inspect --doc <id> [--out <file>] [--dir <path>] [--json]
-  superbee sync --resolve keep|take|revise --doc <id> [--dir <path>] [--json]
+  superbee sync --inspect --doc <id|path> [--out <file>] [--dir <path>] [--json]
+  superbee sync --resolve keep|take|revise --doc <id|path> [--dir <path>] [--json]
 
 Before first publication, check whether the intended remote repository exists, then whether
 origin/board exists. Superbee does not create the remote repository. If the repository is
@@ -193,8 +193,14 @@ since keep carries only the body, or when the document holds unsent words it wou
 is refused while the document equals its upstream version and does not hold your copy: after a merge
 is pushed, or to drop a lost claim, use take, which then leaves the document unchanged.
 Each removes one saved copy, oldest first; while a later copy waits, take leaves the document
-alone. None commits or pushes: the next \`sync\` shares keep and revise. A raw or reserved file's
-copy has no verbs: merge what you need by hand and delete the saved file.
+alone. None commits or pushes: the next \`sync\` shares keep and revise. A file that is not a
+document (a JSON snapshot, say) takes the same verbs by its full path, \`--doc feeds/a.json\`, byte
+for byte: \`--inspect\` shows each side's size and sha256 and its text when it is UTF-8, keep writes
+your saved bytes over the file (re-creating it if the teammate deleted it), and keep is refused
+with nothing changed when the file holds changes that are neither side, or while a later copy of it
+waits, since the newest copy has the last word. When a document id and a file share a name, the id
+means the document. A reserved file's copy has no verbs: merge what you need by hand and delete
+the saved file.
 
 \`sync --show-incoming <id>\` prints the board's incoming (upstream) version of one doc — the
 state of \`origin/board\` as of the last fetch (it never fetches). Full doc-read semantics: large
@@ -279,11 +285,14 @@ Options:
   --show-incoming <id> Print the upstream (origin/board) version of one doc, as of the last fetch
   --out <file>         With --show-incoming: write the raw bytes to <file> ('-' = raw to stdout)
   --body-out <file>    With --show-incoming: write only a parsed doc body ('-' = body to stdout)
-  --inspect --doc <id> Show a saved conflict: your saved version and the teammate's
-                       (--inspect <id> is an alias; --out <file> writes theirs whole)
-  --resolve keep|take|revise --doc <id>
-                       Settle a saved conflict: keep writes yours with doc update, take keeps
-                       theirs, revise keeps the document as you edited it; sync then pushes it
+  --inspect --doc <id|path>
+                       Show a saved conflict: your saved version and the teammate's
+                       (--inspect <id> is an alias; --out <file> writes theirs whole). A file
+                       that is not a document is named by its full path, e.g. feeds/a.json
+  --resolve keep|take|revise --doc <id|path>
+                       Settle a saved conflict: keep writes yours (a document's body with doc
+                       update, any other file byte for byte), take keeps theirs, revise keeps
+                       the file as you edited it; sync then pushes it
   --dir <path>         Directory to run sync from (default: the cwd) — must be inside a git repo
   --limit <n>          Cap the incoming-delta row list to <n> rows (default: 20; 0 = unlimited)
   --json               Emit compact JSON instead of TOON

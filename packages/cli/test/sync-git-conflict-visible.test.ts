@@ -743,23 +743,17 @@ test("different invalid bytes that decode the same are not carried", async () =>
   }
 });
 
-test("--inspect on a raw file with a saved copy says so and gives the removal step", async () => {
+test("--inspect on a reserved file with a saved copy says so and gives the removal step", async () => {
   const f = await fixture();
   try {
-    const file = (repo: TwoCloneTopology["a"]) => path.join(repo.board, "data.bin");
-    await writeFile(file(f.topo.a), "base");
+    await writeFile(path.join(f.topo.a.board, "log.md"), "# A log\n");
     assert.equal((await runSync(f.homeA, ["--dir", f.topo.a.root])).err, undefined);
-    assert.equal((await runSync(f.homeB, ["--dir", f.topo.b.root])).err, undefined);
-    await writeFile(file(f.topo.a), "A words");
-    assert.equal((await runSync(f.homeA, ["--dir", f.topo.a.root])).err, undefined);
-    await writeFile(file(f.topo.b), "B words");
+    await writeFile(path.join(f.topo.b.board, "log.md"), "# B log\n");
     assert.equal((await runSync(f.homeB, ["--dir", f.topo.b.root])).err?.exitCode, 5);
-    const saved = path.join(exportsOf(f.topo, f.homeB), "data.bin");
-    const shown = await runSync(f.homeB, ["--inspect", "--doc", "data.bin", "--dir", f.topo.b.root]);
-    assert.equal(shown.err?.exitCode, 5);
-    assert.doesNotMatch(shown.err?.message ?? "", /no saved conflict/);
-    assert.match(shown.err?.message ?? "", /raw file/);
-    assert.match(shown.err?.help ?? "", /^rm .*data\.bin/);
+    const saved = path.join(exportsOf(f.topo, f.homeB), "log.md");
+    const shown = await runSync(f.homeB, ["--inspect", "--doc", "log.md", "--dir", f.topo.b.root]);
+    assert.equal(shown.err?.code, "USAGE");
+    assert.match(shown.err?.message ?? "", /reserved file/);
     assert.equal(existsSync(saved), true);
   } finally {
     await f.cleanup();

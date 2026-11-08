@@ -377,7 +377,14 @@ upstream by more than engine stamps first saves it as a new copy, named in `unse
 and `--inspect` then offers `revise` first. Text comparison needs a lossless decode on both sides, so
 bytes that decode the same are not treated as equal. A copy that cannot be compared, such as one whose
 upstream version is too large to read, never stops a sync: it stays listed with a `note` and only
-removal offered. Evidence: `packages/cli/test/sync-git-conflict-visible.test.ts` and
+removal offered. A file that is not a document takes the same verbs by its full path and is settled
+byte for byte: `--inspect` reports `kind: file` and each side's `bytes` and `sha256`, with `content`
+only when the bytes decode losslessly (otherwise `binary: true`); `--resolve keep` writes the saved
+bytes whole, keeping the file's mode, and exits 5 with nothing changed and `details.reason`
+`unsent_edit` when the file holds bytes that are neither side's, `later_copy_waits` while a later copy
+of it waits, or `not_a_regular_file` for a link or folder. Its row's `next` and `discard` name the
+verbs; a reserved file keeps the hand merge. Evidence: `packages/cli/test/sync-git-conflict-files.test.ts`,
+`packages/cli/test/sync-git-conflict-visible.test.ts` and
 `packages/board-git/test/saved-copies.test.ts`.
 
 In a local bundle or Git board, one unreadable document does not stop whole-bundle reads: `list`,
