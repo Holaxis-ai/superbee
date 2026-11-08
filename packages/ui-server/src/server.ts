@@ -26,6 +26,7 @@ import { assertSafeBlobKey, loadKinds, queryEdges, queryHeads, readBundleOkfVers
 import { LEGACY_PAGE_MIGRATION_HELP } from "@superbee/core/bundle-health";
 import { parseRegistration } from "@superbee/core/page";
 import { isAllowedHost } from "./host.js";
+import { observeResponseCompletion } from "./response-completion.js";
 import { checkAuth, constantTimeEqual, mintSessionSecret, sessionCookieHeader } from "./session.js";
 import {
   BROWSER_LAUNCH_MAX_BODY_BYTES, BROWSER_LAUNCH_PATH, BrowserLaunchTickets,
@@ -388,11 +389,11 @@ async function handleManagementRequest(
       await writeResponseToServerResponse(res, jsonError(409, "CONFLICT", "managed UI launch is already stopping"));
       return true;
     }
-    const finished = new Promise<void>((resolve) => res.once("finish", resolve));
+    const finished = observeResponseCompletion(res);
     await writeResponseToServerResponse(res, new Response(JSON.stringify({
       adopted: true,
       launch_nonce: options.management.identity.launch_nonce,
-    }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }));
+    }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } })).catch(() => undefined);
     await finished;
     runtime.management.finishAdopt();
     return true;
@@ -400,11 +401,11 @@ async function handleManagementRequest(
   if (url.pathname === "/__manage/stop" && req.method === "POST") {
     runtime.management.reserveStop();
     runtime.browserLaunches.clear();
-    const finished = new Promise<void>((resolve) => res.once("finish", resolve));
+    const finished = observeResponseCompletion(res);
     await writeResponseToServerResponse(res, new Response(JSON.stringify({
       stopping: true,
       launch_nonce: options.management.identity.launch_nonce,
-    }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }));
+    }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } })).catch(() => undefined);
     await finished;
     runtime.management.finishStop();
     return true;
@@ -1020,16 +1021,7 @@ async function handleRequest(
     }
     const nonce = decodeURIComponent(url.pathname.slice("/__page/".length));
     const served = await servePageBytes(options, runtime, nonce);
-    const completed = new Promise<boolean>((resolve) => {
-      const finish = (): void => { cleanup(); resolve(true); };
-      const close = (): void => { cleanup(); resolve(res.writableFinished); };
-      const cleanup = (): void => {
-        res.off("finish", finish);
-        res.off("close", close);
-      };
-      res.once("finish", finish);
-      res.once("close", close);
-    });
+    const completed = observeResponseCompletion(res);
     await writeResponseToServerResponse(res, served.response);
     if (served.deliveredLaunch && await completed) {
       runtime.deliveredLaunches.add(served.deliveredLaunch);
