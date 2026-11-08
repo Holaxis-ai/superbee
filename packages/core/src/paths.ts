@@ -45,7 +45,14 @@ function assertPortablePath(value: string, label: string): void {
 export function assertSafeFilePath(rel: string): void {
   if (typeof rel !== "string" || rel.trim() === "") throw new InvalidInputError("File path must be a non-empty string.");
   assertPortablePath(rel, "File path");
+  // Never a repository's metadata, a private-state root, or a reserved OKF file, whatever the case.
+  if (rel.split("/").some((segment) => UNWRITABLE_FILE_SEGMENTS.has(segment.toLowerCase()))) {
+    throw new InvalidInputError("File path must not enter .git or a private-state folder.");
+  }
+  if (isReservedFile(rel.toLowerCase())) throw new InvalidInputError("File path must not name a reserved OKF file.");
 }
+
+const UNWRITABLE_FILE_SEGMENTS: ReadonlySet<string> = new Set([".git", ".superbee-state", ".agentstate"]);
 
 /** Runtime callers must obey the same finite reserved-name type as TypeScript callers. */
 export function assertSafeReservedFilename(name: unknown): asserts name is typeof RESERVED_FILENAMES[number] {

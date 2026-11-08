@@ -382,7 +382,7 @@ test("replaceFilesystemFile writes any bundle file the blob rules would refuse, 
       await assert.rejects(replaceFilesystemFile(backend, rel, bytes, null), VersionConflict, "absent was expected, the file is there");
       await replaceFilesystemFile(backend, rel, new TextEncoder().encode("[]\n"), blobVersion(bytes));
     }
-    for (const rel of ["../out.json", "/abs.json", "a/./b.json", "a\\b.json"]) {
+    for (const rel of ["../out.json", "/abs.json", "a/./b.json", "a\\b.json", ".git/hooks/pre-commit", ".GIT/config", "x/.superbee-state/y", ".agentstate/mutation-locks/x", "index.md", "a/LOG.md"]) {
       await assert.rejects(replaceFilesystemFile(backend, rel, bytes, null), InvalidInputError);
     }
   } finally {
