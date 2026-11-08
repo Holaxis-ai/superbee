@@ -179,8 +179,8 @@ async function bindingVerdict(
 /**
  * The local resolver: each alias reads through the backend the caller bound to it. One
  * delete-tolerant batch read per alias per `resolve` call. When a batch names a missing target,
- * a backend whose `readMany` fails on the absent id (as the shipped backends do) costs one extra
- * `read()` per id in that alias's batch, through `readManyExisting`'s per-id fallback.
+ * a backend whose `readMany` fails on the absent id (as the shipped backends do) re-reads the
+ * batch in halves through `readManyExisting` until the missing id is read alone.
  *
  * `backlinks()` always returns `[]`: a local reader has no index of who links into a bundle, and
  * scanning other bound copies for inbound links is deferred until something needs it.
