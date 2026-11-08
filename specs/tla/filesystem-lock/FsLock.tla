@@ -61,7 +61,7 @@
 (*     time is exact: "started after the claim" iff the pid now belongs to *)
 (*     a later process. The age check in removeAbandonedClaim passes for a *)
 (*     directory whose creator is dead, or that aged past the window while *)
-(*     its live creator was suspended (Stall, at most once per claimer).   *)
+(*     its live creator was suspended (chosen at Mkdir, once per claimer). *)
 (*  A8 The acquireSettled retry re-uses the same token. Sound: a claim     *)
 (*     that timed out never wrote a record.                                *)
 (*  A9 Assumed, not modeled: nothing external deletes a held <key>.lock    *)
@@ -203,16 +203,22 @@ StartRun(t) ==
                  host, hostChanged, diag, diagOk, relErr, reused, stalled>>
 
 \* mkdir(L). EEXIST is contention, so the next step reads the owner.
+\* Under ClaimStall, a claimer may be suspended between this mkdir and its owner write long
+\* enough for the owner-less directory to pass the abandoned-claim age: the directory is created
+\* old. At most once per claimer, which bounds the removals of live claims. Deciding it at mkdir
+\* loses no behavior: aging commutes with the claimer's own steps and only enables removals.
 Mkdir(t) ==
   /\ pc[t] = "mkdir"
   /\ IF ~lock.ex
-       THEN /\ lock' = Dir(nextId, t, NONE)
+       THEN /\ \E o \in (IF ClaimStall /\ ~stalled[t] THEN BOOLEAN ELSE {FALSE}) :
+                 /\ lock' = [Dir(nextId, t, NONE) EXCEPT !.old = o]
+                 /\ stalled' = [stalled EXCEPT ![t] = @ \/ o]
             /\ nextId' = nextId + 1
             /\ pc' = [pc EXCEPT ![t] = "lstat"]
        ELSE /\ pc' = [pc EXCEPT ![t] = "read1"]
-            /\ UNCHANGED <<lock, nextId>>
+            /\ UNCHANGED <<lock, nextId, stalled>>
   /\ UNCHANGED <<stale, rel, snap, claimed, wdir, mode, retries, settled, diag, diagOk, relErr>>
-  /\ Unchanged_env
+  /\ UNCHANGED <<alive, pidLive, ownerHost, host, hostChanged, reused>>
 
 \* existingOwner = readOwnerRecord(L). A parsed record leads to the quarantine attempt; no
 \* usable record (none, unwritten, or no directory) to the abandoned-claim removal.
@@ -465,13 +471,24 @@ RbRm(t) ==
   /\ UNCHANGED <<lock, stale, nextId, snap, claimed, wdir, mode, retries, settled, relErr>>
   /\ Unchanged_env
 
+\* A process that has ended never reads its own locals again; resetting them keeps ended
+\* processes from multiplying the state space.
+EndLocals(t) ==
+  /\ snap' = [snap EXCEPT ![t] = NONE]
+  /\ claimed' = [claimed EXCEPT ![t] = 0]
+  /\ wdir' = [wdir EXCEPT ![t] = 0]
+  /\ mode' = [mode EXCEPT ![t] = "plain"]
+  /\ retries' = [retries EXCEPT ![t] = 0]
+  /\ settled' = [settled EXCEPT ![t] = FALSE]
+
 \* The one-shot CLI command ends; the process exits and is reaped.
 Exit(t) ==
   /\ pc[t] = "finished"
   /\ pc' = [pc EXCEPT ![t] = "exited"]
   /\ alive' = [alive EXCEPT ![t] = FALSE]
   /\ pidLive' = [pidLive EXCEPT ![t] = FALSE]
-  /\ UNCHANGED <<lock, stale, rel, nextId, snap, claimed, wdir, mode, retries, settled,
+  /\ EndLocals(t)
+  /\ UNCHANGED <<lock, stale, rel, nextId,
                  ownerHost, host, hostChanged, diag, diagOk, relErr, reused, stalled>>
 
 -----------------------------------------------------------------------------
@@ -483,7 +500,8 @@ Crash(t) ==
   /\ pc' = [pc EXCEPT ![t] = "crashed"]
   /\ alive' = [alive EXCEPT ![t] = FALSE]
   /\ pidLive' = [pidLive EXCEPT ![t] = FALSE]
-  /\ UNCHANGED <<lock, stale, rel, nextId, snap, claimed, wdir, mode, retries, settled,
+  /\ EndLocals(t)
+  /\ UNCHANGED <<lock, stale, rel, nextId,
                  ownerHost, host, hostChanged, diag, diagOk, relErr, reused, stalled>>
 
 \* One foreign process takes the dead pid (it may later exit, ReuserExit). At most once per pid.
@@ -507,17 +525,6 @@ HostnameChange ==
   /\ UNCHANGED <<lock, stale, rel, nextId, pc, snap, claimed, wdir, mode, retries, settled,
                  alive, pidLive, ownerHost, diag, diagOk, relErr, reused, stalled>>
 
-\* A live claimer is suspended between its mkdir and its owner write long enough for its
-\* owner-less directory at L to pass the abandoned-claim age. At most once per claimer, which
-\* bounds the removals of live claims.
-Stall ==
-  /\ ClaimStall /\ lock.ex /\ lock.rec = NONE /\ ~lock.old
-  /\ alive[lock.by] /\ ~stalled[lock.by] /\ pc[lock.by] \in {"lstat", "openwx"}
-  /\ lock' = [lock EXCEPT !.old = TRUE]
-  /\ stalled' = [stalled EXCEPT ![lock.by] = TRUE]
-  /\ UNCHANGED <<stale, rel, nextId, pc, snap, claimed, wdir, mode, retries, settled,
-                 alive, pidLive, ownerHost, host, hostChanged, diag, diagOk, relErr, reused>>
-
 -----------------------------------------------------------------------------
 Step(t) ==
   \/ Mkdir(t) \/ Read1(t) \/ RmAge(t) \/ RmAbandoned(t) \/ Probe(t) \/ RecheckOwner(t) \/ Quar(t) \/ Read2(t) \/ TCheck(t)
@@ -530,7 +537,6 @@ Step(t) ==
 Next ==
   \/ \E t \in Tokens : StartRun(t) \/ Step(t) \/ Crash(t) \/ Reuse(t) \/ ReuserExit(t)
   \/ HostnameChange
-  \/ Stall
 
 Spec == Init /\ [][Next]_vars
 
