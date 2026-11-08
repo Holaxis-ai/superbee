@@ -159,10 +159,6 @@
       "types": "./dist/remote.d.ts",
       "default": "./dist/remote.js"
     },
-    "./remote-operations": {
-      "types": "./dist/remote-operations.d.ts",
-      "default": "./dist/remote-operations.js"
-    },
     "./hosted-transport": {
       "types": "./dist/hosted-transport/index.d.ts",
       "default": "./dist/hosted-transport/index.js"

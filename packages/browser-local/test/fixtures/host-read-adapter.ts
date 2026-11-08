@@ -1,5 +1,5 @@
 import type { StorageBackend } from "@superbee/core";
-import type { RemoteBackend } from "@superbee/core/remote";
+import type { RemoteBackend } from "../../../core/dist/remote-backend.js";
 
 /** The existing optional inventory protocol, without a concrete backend identity. */
 type Inventory = Pick<RemoteBackend, "heads" | "snapshot" | "wireCapabilities">;

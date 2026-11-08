@@ -25,10 +25,11 @@
  * router recorded and what it answered from the record is observed by wrapping the store.
  */
 
-import { MemoryBackend, RemoteBackend, type StorageBackend } from "@superbee/core";
-import { openRemoteOperationTransport } from "@superbee/core/remote-operations";
+import { MemoryBackend, type StorageBackend } from "@superbee/core";
 import type { OperationTransport, Outcome } from "@superbee/core/uncertain-write";
 import { createRouter, MemoryOperationOutcomeStore, type OperationOutcomeStore } from "@superbee/server";
+import { RemoteBackend } from "../../../core/dist/remote-backend.js";
+import { openRemoteOperationTransport } from "../../../core/dist/remote-operations.js";
 
 export const BASE_URL = "http://fixture.invalid";
 export const BUNDLE = "default";

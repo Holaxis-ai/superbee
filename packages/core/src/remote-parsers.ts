@@ -26,6 +26,27 @@ export const SNAPSHOT_TRUNCATED = "SNAPSHOT_TRUNCATED";
 export const SNAPSHOT_DIGEST_MISMATCH = "SNAPSHOT_DIGEST_MISMATCH";
 
 /** A `200` from `GET /heads`: every document id and version, and the digest over them. */
+/** The deployment-scoped capability booleans a wire authority reports (`docs/WIRE-PROTOCOL.md`). */
+export interface WireCapabilities {
+  history: boolean;
+  enforced_cas: boolean;
+  projections: boolean;
+  backlinks: boolean;
+  blobs: boolean;
+  /** Whether document writes carrying `Idempotency-Key` are recorded and readable by lookup. */
+  operations: boolean;
+  /** Whether `GET /heads` answers every document id and version under one digest, with `304`. */
+  heads: boolean;
+  /** Whether `GET /snapshot` streams every document as terminated NDJSON. */
+  snapshot: boolean;
+}
+
+/** Options for a wire authority's `heads` read. */
+export interface HeadsOptions {
+  /** A digest from an earlier `heads` or `snapshot` answer; the authority answers `304` when it still holds it. */
+  ifNoneMatch?: string;
+}
+
 export interface HeadsResult {
   digest: string;
   heads: DocumentHead[];

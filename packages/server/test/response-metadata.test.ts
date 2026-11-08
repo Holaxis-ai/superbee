@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { FrontmatterRefusedError, MemoryBackend, RemoteBackend, type ConceptId, type Frontmatter } from "@superbee/core";
+import { FrontmatterRefusedError, MemoryBackend, type ConceptId, type Frontmatter } from "@superbee/core";
 import { REMOTE_LOSSY_METADATA } from "../../core/test/remote-metadata-fixtures.ts";
 import { createRouterForBackend } from "../src/legacy-router.js";
+import { RemoteBackend } from "../../core/dist/remote-backend.js";
 
 const base = "http://wire.local/v0/bundles/default";
 class InjectedMetadata extends MemoryBackend {

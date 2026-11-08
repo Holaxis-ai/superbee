@@ -1,5 +1,5 @@
 /**
- * `agentstate-lite blobs` — enumerate the store's blob (non-document) keys. The seam / RemoteBackend /
+ * `agentstate-lite blobs` — enumerate the store's blob (non-document) keys. The seam /
  * wire already implement `listBlobs`; this command is the CLI surface over it, symmetric with `list`
  * for documents. Runs in-process against a temp filesystem bundle.
  */

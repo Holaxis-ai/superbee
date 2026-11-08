@@ -150,21 +150,13 @@ export type {
   FilesystemMutationLockOwner,
 } from "./filesystem-lock.js";
 
-// `RemoteBackend` is the CLIENT half of the wire-protocol v0 seam-over-HTTP contract
-// (docs/WIRE-PROTOCOL.md) — a FUTURE plug-in adapter, proven here against the
-// in-repo reference server (`@superbee/server`) by the tri-backend contract
-// tests. No CF/D1/production deployment is implied by its presence.
-export { RemoteBackend } from "./remote-backend.js";
-export type { FetchLike, HeadsOptions, RemoteBackendOptions, WireCapabilities } from "./remote-backend.js";
+// The wire protocol's answer shapes, parsers and typed rejection, for a host that serves or reads
+// the same grammar (docs/WIRE-PROTOCOL.md). The in-repo test client stays internal.
 export { RemoteError, MalformedAnswer, MALFORMED_ANSWER, isMalformedAnswer } from "./remote-error.js";
 export { SNAPSHOT_DIGEST_MISMATCH, SNAPSHOT_TRUNCATED, parseHeadsAnswer, readSnapshotStream } from "./remote-parsers.js";
-export type { HeadsResult, ReadSnapshotStreamOptions, RemoteSnapshot, SnapshotDocument, SnapshotHeader } from "./remote-parsers.js";
+export type { HeadsOptions, HeadsResult, ReadSnapshotStreamOptions, RemoteSnapshot, SnapshotDocument, SnapshotHeader, WireCapabilities } from "./remote-parsers.js";
 export { headsDigest, isHeadsDigest, sortHeads } from "./heads-digest.js";
 export type { DocumentHead } from "./heads-digest.js";
-// The uncertain-write transport over `RemoteBackend`: identified document writes plus outcome
-// lookup, the client side of the wire's request identity.
-export { createRemoteOperationTransport, openRemoteOperationTransport, OperationsUnsupportedError } from "./remote-operations.js";
-export type { RemoteOperationTransportOptions } from "./remote-operations.js";
 
 // Versioning / attribution primitives shared by every adapter: the content-addressed
 // version token, a default actor, and the typed compare-and-swap conflict error.

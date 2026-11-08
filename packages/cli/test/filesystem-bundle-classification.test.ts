@@ -6,7 +6,6 @@ import { join } from "node:path";
 import {
   FilesystemBackend,
   MemoryBackend,
-  RemoteBackend,
   type Bundle,
 } from "@superbee/core";
 import { isFilesystemBundle } from "../src/filesystem-runtime.js";
@@ -15,7 +14,7 @@ import {
   assertSafeNonDocumentOutTarget,
 } from "../src/commands/egress.js";
 
-test("filesystem egress authority follows storage identity for implicit, configured, memory and remote bundles", async () => {
+test("filesystem egress authority follows storage identity for implicit, configured and memory bundles", async () => {
   const root = await mkdtemp(join(tmpdir(), "superbee-backend-egress-"));
   const rows: { name: string; bundle: Bundle; local: boolean }[] = [
     { name: "implicit filesystem", bundle: { root }, local: true },
@@ -27,17 +26,6 @@ test("filesystem egress authority follows storage identity for implicit, configu
     {
       name: "memory",
       bundle: { root, backend: new MemoryBackend() },
-      local: false,
-    },
-    {
-      name: "remote",
-      bundle: {
-        root,
-        backend: new RemoteBackend({
-          baseUrl: "https://example.invalid",
-          bundle: "default",
-        }),
-      },
       local: false,
     },
   ];
