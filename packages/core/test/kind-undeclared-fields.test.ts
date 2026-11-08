@@ -78,6 +78,13 @@ test("undeclared_fields parses, warns on a bad value, round-trips and survives k
   assert.equal(edited.frontmatter.undeclared_fields, "error");
 });
 
+test("a logical field name written as a raw key names its stored key instead of contradicting the declared list", () => {
+  const [warning] = prepare(kind(), { title: "A", progress_status: "todo" }, false).warnings
+    .filter((w) => w.code === "KIND_FIELD_UNDECLARED");
+  assert.equal(warning!.field, "progress_status");
+  assert.equal(warning!.message, "'progress_status' is the field name, not its stored key in this bundle; write it in frontmatter as 'superbee_progress_status'.");
+});
+
 test("coverage reports the same undeclared keys the write check names", () => {
   const docs: OkfDocument[] = [{ id: "signals/a", body: "", frontmatter: { type: "Signal", title: "A", ownr: "me", superbee_updated_by: "x", runtime: "y" } as never }];
   const report = kindCoverage(registry(kind()), docs, { now: new Date(now()), okfVersion: "0.2" });

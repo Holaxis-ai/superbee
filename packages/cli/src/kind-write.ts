@@ -9,6 +9,7 @@ import {
   isKindFieldValidationWarning,
   projectKindForAuthoring,
   projectKindValidationWarnings,
+  progressStatusCoordinate,
   progressStatusStorageField,
   type ConceptId,
   type KindConvention,
@@ -85,10 +86,14 @@ export function kindConformanceCliError(
   const message = `'${error.id}' does not satisfy the '${error.governs}' kind: ` +
     authoringViolations.map((warning) => warning.message).join("; ");
   // An undeclared key has no completing value to supply; the next step is declaring it.
+  // Most undeclared keys are typos, so renaming leads and declaring is the deliberate alternative.
   const undeclared = authoringViolations.find((warning) => warning.code === KIND_FIELD_UNDECLARED && warning.field);
-  const declareHelp = undeclared
-    ? `${cliInvocation()} kind field ${commandToken(error.governs)} add ${commandToken(undeclared.field!)}`
-    : undefined;
+  const progressStorage = kind ? progressStatusCoordinate(error.okfVersion, kind)?.storageField : undefined;
+  const declareHelp = !undeclared ? undefined : undeclared.field === "progress_status" && progressStorage
+    ? `Rename the key to '${progressStorage}' in the frontmatter` + (docExists
+      ? `, or set it with ${cliInvocation()} doc update ${commandToken(error.id)} --progress_status <value>.`
+      : ".")
+    : `Rename the key to a declared field, or declare it: ${cliInvocation()} kind field ${commandToken(error.governs)} add ${commandToken(undeclared.field!)}`;
   return new CliError("USAGE", message, {
     help: completing ?? declareHelp ?? fallbackHelp,
     details: { violations: authoringViolations },

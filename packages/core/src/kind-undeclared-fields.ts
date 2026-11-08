@@ -7,6 +7,7 @@ import { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 import { okfValuesEqual } from "./okf-authored-values.js";
 import { isOkfStandardField } from "./okf-standard-fields.js";
 import {
+  progressStatusCoordinate,
   projectKindForAuthoring,
   resolveKindFieldCoordinate,
   SUPERBEE_PROGRESS_STATUS_FIELD,
@@ -56,13 +57,13 @@ export function undeclaredFieldWarnings(
 ): ValidationWarning[] {
   const declared = kindDeclaredFieldNames(okfVersion, kind);
   const list = declared.length > 0 ? declared.join(", ") : "none";
+  // Authors see logical names; a raw key spelled with one stores nothing the Kind reads.
+  const progress = progressStatusCoordinate(okfVersion, kind);
+  const message = (key: string) => progress && key === progress.logicalField && key !== progress.storageField
+    ? `'${key}' is the field name, not its stored key in this bundle; write it in frontmatter as '${progress.storageField}'.`
+    : `'${key}' is not declared by kind '${kind.governs}' (declared: ${list}).`;
   return undeclaredFrontmatterKeys(okfVersion, kind, candidate)
     .filter((key) => !existing || !Object.hasOwn(existing, key) || !okfValuesEqual(existing[key], candidate[key]))
     .sort()
-    .map((key) => ({
-      code: KIND_FIELD_UNDECLARED,
-      message: `'${key}' is not declared by kind '${kind.governs}' (declared: ${list}).`,
-      field: key,
-      severity: "warning" as const,
-    }));
+    .map((key) => ({ code: KIND_FIELD_UNDECLARED, message: message(key), field: key, severity: "warning" as const }));
 }

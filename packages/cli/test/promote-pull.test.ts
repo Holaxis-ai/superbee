@@ -452,7 +452,7 @@ test("promote .md: an undeclared key warns under --strict by default; undeclared
         assert.ok(err instanceof CliError);
         assert.equal(err.exitCode, 2);
         assert.match(err.message, /'sumary' is not declared by kind 'Context Note'/);
-        assert.match(err.help ?? "", / kind field 'Context Note' add sumary$/);
+        assert.match(err.help ?? "", /^Rename the key to a declared field, or declare it: .* kind field 'Context Note' add sumary$/);
         return true;
       },
     );
