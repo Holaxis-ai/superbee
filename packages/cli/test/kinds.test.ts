@@ -3,8 +3,7 @@
  * (`--strict` upgrade), and `status`'s kind-fed freshness horizon sweep.
  *
  * Runs command functions in-process (no subprocess) against a real temp filesystem bundle,
- * mirroring `link.test.ts`'s pattern. The `--remote` parity test additionally boots a real
- * `@superbee/server` `serve()` instance, mirroring `remote.test.ts`.
+ * mirroring `link.test.ts`'s pattern.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -13,7 +12,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { initBundle, writeDoc, readDoc, parseMarkdown, isTerminal, loadKinds, CONVENTION_TYPE, type Bundle } from "@superbee/core";
-import { serve, type ServerHandle } from "@superbee/server";
 
 import { newCommand } from "../src/commands/new.js";
 import { kinds } from "../src/commands/kinds.js";
@@ -395,13 +393,13 @@ test("new: unknown kind is a USAGE error (exit 2) that enumerates declared kinds
   }
 });
 
-test("new: a control flag (--dir/--remote) with no value (final argv token) is a clean USAGE, not a RUNTIME openBundle crash", async () => {
+test("new: a control flag (--dir) with no value (final argv token) is a clean USAGE, not a RUNTIME openBundle crash", async () => {
   // Phase-1 discovery runs `strict:false`, which returns boolean `true` (not undefined, no throw) for
-  // a configured value flag given no value as the LAST token. `--dir`/`--remote` open the bundle
+  // a configured value flag given no value as the LAST token. `--dir` opens the bundle
   // BEFORE the authoritative Phase-2 strict parse, so an unguarded boolean would reach openBundle and
   // crash it ('paths[0] must be of type string', RUNTIME/exit 1) instead of the clean USAGE Phase 2
   // gives. The guard fires before any bundle access, so no seeded bundle is needed.
-  for (const flag of ["--dir", "--remote"]) {
+  for (const flag of ["--dir"]) {
     await assert.rejects(
       () => newCommand(["Task", "x", flag]),
       (err: unknown) => {
@@ -1307,42 +1305,6 @@ test("list --fields fields on a Convention row: pins the nested-object TOON rend
   }
 });
 
-test("--remote: new + kinds against a served bundle, parity with the same operations run locally", async () => {
-  const localDir = await tempDir();
-  const remoteDir = await tempDir();
-  try {
-    await initBundle(localDir);
-    await installRecipe({ root: localDir }, CONTEXT_NOTES_RECIPE);
-    await initBundle(remoteDir);
-    await installRecipe({ root: remoteDir }, CONTEXT_NOTES_RECIPE);
-    const handle: ServerHandle = await serve({ bundle: { root: remoteDir }, port: 0 });
-    const url = `http://${handle.host}:${handle.port}`;
-    try {
-      const localKinds = await runJson(kinds, ["--dir", localDir]);
-      const remoteKinds = await runJson(kinds, ["--remote", url]);
-      assert.deepEqual(remoteKinds, localKinds);
-
-      const localNew = await runJson(newCommand, ["Context Note", "n1", "--title", "N1", "--dir", localDir]);
-      const remoteNew = await runJson(newCommand, ["Context Note", "n1", "--title", "N1", "--remote", url]);
-      assert.equal(remoteNew.id, localNew.id);
-      assert.equal(remoteNew.kind, localNew.kind);
-      await assert.rejects(
-        () => newCommand(["Context Note", "missing", "--remote", url]),
-        (err: unknown) => {
-          assert.ok(err instanceof CliError);
-          assert.ok(err.help?.endsWith(`superbee new ${shellArg("Context Note")} --help --remote ${shellArg(url)}`));
-          return true;
-        },
-      );
-    } finally {
-      await handle.close();
-    }
-  } finally {
-    await rm(localDir, { recursive: true, force: true });
-    await rm(remoteDir, { recursive: true, force: true });
-  }
-});
-
 test("seed round-trip (usability F2): init seeds 'sections: [Summary]' into 'kinds', and BOTH a summary-only and a fully-populated Context Note doc (written via the GENERIC 'doc write' path) pass 'status' with zero kind/registry warnings (alert-fatigue guard)", async () => {
   const dir = await tempDir();
   try {
@@ -1601,7 +1563,7 @@ test("kinds coverage is fixed-time local/read-only and retains registry warnings
     assert.equal(await readFile(path.join(dir, "unexpected", "nested", "item.md"), "utf8"), before);
     const plain = await runJson(kinds, ["--dir", dir]);
     assert.equal(plain.coverage, undefined);
-    for (const args of [["--coverage", "--remote", "http://127.0.0.1:1"], ["--now", "2026-10-11"], ["--coverage", "--now", "2026-02-30"], ["--coverage", "--kind", "missing"]]) {
+    for (const args of [["--now", "2026-10-11"], ["--coverage", "--now", "2026-02-30"], ["--coverage", "--kind", "missing"]]) {
       await assert.rejects(kinds(["--dir", dir, ...args]), (error: unknown) => error instanceof CliError && error.code === "USAGE");
     }
     let toon = "";

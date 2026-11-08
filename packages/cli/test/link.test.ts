@@ -31,7 +31,6 @@ import {
   type OkfDocument,
   type Version,
 } from "@superbee/core";
-import { serve, type ServerHandle } from "@superbee/server";
 import { link, addLink } from "../src/commands/link.js";
 import { CliError, classifyBundleError, toExit } from "../src/errors.js";
 import { detectHostAliasing, hostAliasesPair } from "../../core/test/host-class.js";
@@ -327,50 +326,28 @@ test("link add: equivalent target spellings share one normalized target + exact-
   }
 });
 
-test("link add: environment attribution reaches local+remote content/history; a no-op never rewrites actor", async () => {
+test("link add: environment attribution reaches local content; a no-op never rewrites actor", async () => {
   const local = await makeFixtureBundle();
-  const remoteBundle: Bundle = { root: "mem://link-actor-env", backend: new MemoryBackend() };
-  await writeDoc(remoteBundle, {
-    id: "concepts/a",
-    frontmatter: { type: "Concept", title: "A", actor: "old", timestamp: OLD_TS },
-    body: "Body A.",
-  });
-  await writeDoc(remoteBundle, {
-    id: "concepts/b",
-    frontmatter: { type: "Concept", title: "B", timestamp: OLD_TS },
-    body: "Body B.",
-  });
-  const handle: ServerHandle = await serve({ bundle: remoteBundle, port: 0 });
-  const url = `http://${handle.host}:${handle.port}`;
+  const bundle: Bundle = { root: local.dir };
   try {
     await withActorEnv(" env-link ", async () => {
       assert.equal((await linkAdd(local.dir, ["concepts/a", "concepts/b"])).changed, true);
-      let out = "";
-      await link(["add", "concepts/a", "concepts/b", "--remote", url, "--json"], {
-        stdout: (s) => (out += s),
-      });
-      assert.equal((JSON.parse(out) as { changed: boolean }).changed, true);
     });
-    assert.equal((await readDoc({ root: local.dir }, "concepts/a")).frontmatter.actor, "env-link");
-    assert.equal((await readDoc(remoteBundle, "concepts/a")).frontmatter.actor, "env-link");
-    assert.equal((await docVersions(remoteBundle, "concepts/a"))[0]!.actor, "env-link");
+    assert.equal((await readDoc(bundle, "concepts/a")).frontmatter.actor, "env-link");
 
-    const beforeNoOp = await readDocVersioned(remoteBundle, "concepts/a");
-    const historyLength = (await docVersions(remoteBundle, "concepts/a")).length;
+    const beforeNoOp = await readDocVersioned(bundle, "concepts/a");
     let noOpOut = "";
     await withActorEnv("ignored-env", () =>
       link(
-        ["add", "concepts/a", "concepts/b", "--actor", "flag-must-not-rewrite", "--remote", url, "--json"],
+        ["add", "concepts/a", "concepts/b", "--actor", "flag-must-not-rewrite", "--dir", local.dir, "--json"],
         { stdout: (s) => (noOpOut += s) },
       ),
     );
     assert.equal((JSON.parse(noOpOut) as { changed: boolean }).changed, false);
-    const afterNoOp = await readDocVersioned(remoteBundle, "concepts/a");
+    const afterNoOp = await readDocVersioned(bundle, "concepts/a");
     assert.equal(afterNoOp.version, beforeNoOp.version);
     assert.equal(afterNoOp.doc.frontmatter.actor, "env-link");
-    assert.equal((await docVersions(remoteBundle, "concepts/a")).length, historyLength);
   } finally {
-    await handle.close();
     await local.cleanup();
   }
 });
@@ -741,55 +718,6 @@ test("link add: once the target is written, re-adding the same edge stays change
     assert.ok(!("warnings" in second));
   } finally {
     await cleanup();
-  }
-});
-
-test("link add: target-existence honesty is LOCAL-bundle only — a --remote link add to an absent target never carries the warning (no extra network round trip)", async () => {
-  const remoteBundle: Bundle = { root: "mem://link-target-honesty-remote", backend: new MemoryBackend() };
-  await writeDoc(remoteBundle, {
-    id: "concepts/a",
-    frontmatter: { type: "Concept", title: "A", timestamp: OLD_TS },
-    body: "Body A.",
-  });
-  const handle: ServerHandle = await serve({ bundle: remoteBundle, port: 0 });
-  const url = `http://${handle.host}:${handle.port}`;
-  const originalFetch = globalThis.fetch;
-  let requestCount = 0;
-  globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
-    requestCount++;
-    return originalFetch(...args);
-  }) as typeof fetch;
-  try {
-    let out = "";
-    await link(["add", "concepts/a", "concepts/ghost", "--remote", url, "--json"], {
-      stdout: (s) => (out += s),
-    });
-    const result = JSON.parse(out) as Record<string, unknown>;
-    assert.equal(result.changed, true);
-    assert.ok(
-      !("warnings" in result),
-      "a --remote link add to an absent target must never carry a target-existence warning",
-    );
-    // Exactly the same request count a --remote link add to a PRESENT target costs (below) — proof
-    // that no extra round trip was added for the absent-target case.
-    const requestsForAbsentTarget = requestCount;
-
-    // A direct in-process writeDoc against `remoteBundle`'s MemoryBackend, NOT through HTTP — sets
-    // up the present-target comparison below without spending any of its own fetch calls.
-    await writeDoc(remoteBundle, {
-      id: "concepts/b",
-      frontmatter: { type: "Concept", title: "B", timestamp: OLD_TS },
-      body: "Body B.",
-    });
-    requestCount = 0;
-    let out2 = "";
-    await link(["add", "concepts/a", "concepts/b", "--remote", url, "--json"], {
-      stdout: (s) => (out2 += s),
-    });
-    assert.equal(requestCount, requestsForAbsentTarget, "no extra HTTP request for an absent vs. present target");
-  } finally {
-    globalThis.fetch = originalFetch;
-    await handle.close();
   }
 });
 
@@ -1343,38 +1271,6 @@ test("link list resolves .md convenience before exact core filtering, preserving
   }
 });
 
-test("link list --text zero-match over --remote: exactly ONE round trip (2 HTTP requests: list + read-many), not two round trips (4) — the near-miss hint reuses the already-fetched scoped edges rather than re-scanning", async () => {
-  const { dir, cleanup } = await makeEdgeFixtureBundle();
-  try {
-    const handle: ServerHandle = await serve({ bundle: { root: dir }, port: 0 });
-    const url = `http://${handle.host}:${handle.port}`;
-    // `globalThis.fetch` is what the CLI's --remote transport (bundle.ts's `wrapTransportErrors`)
-    // calls at request time — a plain mutable global, unlike a frozen ESM namespace export, so
-    // wrapping it for the duration of one test (and restoring it in `finally`) is safe here.
-    const originalFetch = globalThis.fetch;
-    let requestCount = 0;
-    globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
-      requestCount++;
-      return originalFetch(...args);
-    }) as typeof fetch;
-    try {
-      let out = "";
-      await link(["list", "--text", "no-such-text", "--remote", url, "--json"], { stdout: (s) => (out += s) });
-      const result = JSON.parse(out) as Record<string, unknown>;
-      assert.equal(result.count, 0);
-      assert.ok((result.help as string[])?.some((h) => matchesNoLinks(h, "no-such-text")));
-    } finally {
-      globalThis.fetch = originalFetch;
-      await handle.close();
-    }
-    // ONE queryEdges call == ONE query()/readMany round trip == 2 HTTP requests (GET the doc-id
-    // list, then POST the batch read). The pre-fix double-scan would show 4.
-    assert.equal(requestCount, 2, "a zero-match --text query must cost exactly one round trip, not two");
-  } finally {
-    await cleanup();
-  }
-});
-
 test("link list --limit not-a-number: USAGE error, exit 2", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "agentstate-lite-link-list-test-"));
   try {
@@ -1403,25 +1299,6 @@ test("link list on an empty bundle: count 0, empty edges array, no error", async
     assert.equal(result.help, undefined);
   } finally {
     await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("link list over --remote: same result set as --dir against a live serve() (client-side over the existing readMany batch, no wire change)", async () => {
-  const { dir, cleanup } = await makeEdgeFixtureBundle();
-  try {
-    const handle: ServerHandle = await serve({ bundle: { root: dir }, port: 0 });
-    const url = `http://${handle.host}:${handle.port}`;
-    try {
-      const local = await linkList(dir, ["--to", "tasks/"]);
-      let out = "";
-      await link(["list", "--to", "tasks/", "--remote", url, "--json"], { stdout: (s) => (out += s) });
-      const remote = JSON.parse(out);
-      assert.deepEqual(remote, local);
-    } finally {
-      await handle.close();
-    }
-  } finally {
-    await cleanup();
   }
 });
 
@@ -1495,7 +1372,7 @@ test("link add --help: focused on 'add' — carries its own flags (--text, --kee
   assert.match(text, /Idempotent: re-adding the same target/);
   assert.match(text, /Graph lint:/);
   assert.match(text, /LINK_TARGET_ABSENT/, "link add help preserves the missing-target receipt signal");
-  assert.match(text, /--remote link-add receipt never carries this signal/);
+  assert.doesNotMatch(text, /--remote/);
   assert.doesNotMatch(text, /link show —/);
   assert.doesNotMatch(text, /link list —/);
   assert.doesNotMatch(text, /--from <id\|prefix\/>/, "link add help must not carry link list's flags");

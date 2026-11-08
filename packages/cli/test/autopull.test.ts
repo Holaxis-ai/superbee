@@ -363,7 +363,7 @@ test("wiring: list / status / doc read / link show invoke the trigger; doc write
   }
 });
 
-test("home wiring: plain local home triggers; a session-start render (boardPull present) and --remote never do", async () => {
+test("home wiring: plain local home triggers; a session-start render (boardPull present) never does", async () => {
   const calls: string[] = [];
   const spy = async (d?: string) => {
     calls.push(`home:${d}`);
@@ -382,9 +382,6 @@ test("home wiring: plain local home triggers; a session-start render (boardPull 
   calls.length = 0;
   await home([], { ...inert, autoPull: spy, boardPull: { offline: false, refreshed: true } });
   assert.equal(calls.length, 0, "session-start already pulled in-process — home must not double-pull");
-
-  await home(["--remote", "http://127.0.0.1:9/x"], { ...inert, autoPull: spy });
-  assert.equal(calls.length, 0, "a --remote-scoped home stays fully offline (the board is a local concept)");
 });
 
 // ── 3. the latency budget against a REAL hanging remote (U0 hang:// pattern) ──

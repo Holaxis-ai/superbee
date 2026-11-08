@@ -128,11 +128,10 @@ test("apply against a plan with conflicts is TRANSFER_CONFLICT and writes nothin
   } finally { await fx.cleanup(); }
 });
 
-test("usage refusals: --remote, missing --from, undeclared or unbound alias, bad --select, --resume extras", async () => {
+test("usage refusals: missing --from, undeclared or unbound alias, bad --select, --resume extras", async () => {
   const fx = await makeFixture();
   try {
     for (const [argv, pattern] of [
-      [baseArgs(fx, ["--remote", "http://127.0.0.1:9"]), /--remote is not supported/],
       [["import", "--dir", fx.target.root], /requires --from/],
       [["import", "--from", "nope", "--with", `nope=${fx.source.root}`, "--dir", fx.target.root], /not declared/],
       [["import", "--from", "wave", "--select", "type=Theme", "--dir", fx.target.root], /no copy of 'wave' is bound/],

@@ -11,6 +11,8 @@ import type { InstallScope } from "../src/install-scope.js";
 import {
   DEPRECATION_NOTICES,
   RETIRED_ENV,
+  RETIRED_REMOTE_ENV,
+  RETIRED_UNUSED_ENV,
   renderDeprecationNotice,
   stderrIsReserved,
   type DeprecationNoticeCode,
@@ -31,6 +33,8 @@ interface Run {
 function cleanEnv(home: string, overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env = isolatedUserEnv(home, { SUPERBEE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" });
   for (const [retired] of RETIRED_ENV) delete env[retired];
+  for (const [retired] of RETIRED_UNUSED_ENV) delete env[retired];
+  delete env[RETIRED_REMOTE_ENV];
   // Fixes below really install, so no inherited override may point them at a real host config.
   for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR"]) delete env[name];
   env.XDG_CONFIG_HOME = join(home, ".config");
@@ -179,15 +183,6 @@ const TRIGGERS: Record<DeprecationNoticeCode, Trigger> = {
     },
     applyFix: async (fixture) => void await runFix(fixture, ["setup", "migrate-state"]),
   },
-  DEPRECATED_REMOTE_FLAG: {
-    args: ["list", "--remote", "http://127.0.0.1:9", "--json"],
-    applyFix: async () => LOCAL,
-  },
-  DEPRECATED_SERVE: {
-    args: ["serve", "--dir", "bundle", "--port", "0", "--json"],
-    until: /listening/,
-    applyFix: async () => LOCAL,
-  },
 };
 
 test("every row names the old thing, its replacement, a runnable fix and a unique stable code", () => {
@@ -261,15 +256,7 @@ test("a skill folder install cannot claim stays named until the person deletes i
   assert.ok(!after.stderr.includes("DEPRECATED_LEGACY_SKILL_FOLDER"), after.stderr);
 }));
 
-test("bare home with --remote carries the notice, with the same stdout and exit code", () => withFixture(async ({ home, project }) => {
-  const remote = ["--remote", "http://127.0.0.1:9"];
-  const result = await run(remote, project, cleanEnv(home));
-  assert.equal(result.code, 0, result.stdout);
-  assert.equal(result.stderr.split("[DEPRECATED_REMOTE_FLAG]").length - 1, 1, result.stderr);
-  assert.ok(!result.stdout.includes("DEPRECATED"), result.stdout);
-}));
-
-test("session-start with --remote stays silent", () => withFixture(async ({ home, project }) => {
+test("session-start with --remote writes nothing to stderr", () => withFixture(async ({ home, project }) => {
   const result = await run(["session-start", "--remote", "http://127.0.0.1:9"], project, cleanEnv(home));
   assert.equal(result.stderr, "");
 }));
@@ -299,9 +286,11 @@ test("a clean run emits no notice", () => withFixture(async ({ home, project }) 
   assert.equal(result.stderr, "");
 }));
 
-test("a notice in --json mode leaves stdout parseable, with exit 0", () => withFixture(async ({ home, project }) => {
-  const noticed = await run(["--remote", "http://127.0.0.1:9", "--json"], project, cleanEnv(home));
-  assert.ok(noticed.stderr.includes("[DEPRECATED_REMOTE_FLAG]"), "the notice must fire for this proof to mean anything");
+test("a notice in --json mode leaves stdout parseable, with exit 0", () => withFixture(async (fixture) => {
+  const trigger = TRIGGERS.DEPRECATED_LEGACY_USER_STATE;
+  await trigger.arrange?.(fixture);
+  const noticed = await run(trigger.args, fixture.project, cleanEnv(fixture.home));
+  assert.ok(noticed.stderr.includes("[DEPRECATED_LEGACY_USER_STATE]"), "the notice must fire for this proof to mean anything");
   assert.equal(noticed.code, 0);
   assert.equal(typeof JSON.parse(noticed.stdout), "object");
 }));
@@ -344,11 +333,13 @@ test("commands whose stderr is a contract are reserved, in every flag spelling",
   }
 });
 
-test("a closed stderr reader costs the notice and never changes the exit code", () => withFixture(async ({ home, project }) => {
+test("a closed stderr reader costs the notice and never changes the exit code", () => withFixture(async (fixture) => {
+  const trigger = TRIGGERS.DEPRECATED_LEGACY_USER_STATE;
+  await trigger.arrange?.(fixture);
   const code = await new Promise<number | null>((resolve, reject) => {
-    const child = spawn(process.execPath, [CLI, "--remote", "http://127.0.0.1:9"], {
-      cwd: project,
-      env: cleanEnv(home),
+    const child = spawn(process.execPath, [CLI, ...trigger.args], {
+      cwd: fixture.project,
+      env: cleanEnv(fixture.home),
       stdio: ["ignore", "ignore", "pipe"],
     });
     child.stderr.destroy();
@@ -356,6 +347,31 @@ test("a closed stderr reader costs the notice and never changes the exit code", 
     child.once("close", resolve);
   });
   assert.equal(code, 0);
+}));
+
+for (const [retired, why] of RETIRED_UNUSED_ENV) {
+  test(`${retired} has no replacement and is refused whenever it is set, even beside --dir, never printing the value`, () => withFixture(async ({ home, project }) => {
+    for (const value of ["secret-value", ""]) {
+      const result = await run(LOCAL, project, cleanEnv(home, { [retired]: value }));
+      assert.equal(result.code, 2, result.stdout);
+      assert.match(result.stdout, /code: RETIRED_ENV/);
+      assert.ok(result.stdout.includes(`${retired} is no longer read; ${why}.`), result.stdout);
+      assert.ok(!(result.stdout + result.stderr).includes("secret-value"), "a refusal never prints a value");
+    }
+  }));
+}
+
+test("AGENTSTATE_LITE_API_KEY names removal and login, never a rename to an unread SUPERBEE_API_KEY", () => withFixture(async ({ home, project }) => {
+  const result = await run(LOCAL, project, cleanEnv(home, { AGENTSTATE_LITE_API_KEY: "k", SUPERBEE_API_KEY: "k" }));
+  assert.equal(result.code, 2, result.stdout);
+  assert.match(result.stdout, /remove AGENTSTATE_LITE_API_KEY wherever it is set; it is no longer used\. Hosted bundles use .+ login\./);
+  assert.doesNotMatch(result.stdout, /SUPERBEE_API_KEY/);
+}));
+
+test("SUPERBEE_API_KEY is ignored silently: nothing reads it and nothing refuses it", () => withFixture(async ({ home, project }) => {
+  const result = await run(LOCAL, project, cleanEnv(home, { SUPERBEE_API_KEY: "k" }));
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(result.stderr, "");
 }));
 
 for (const [retired, replacement] of RETIRED_ENV) {

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ReloginScreen } from "./ReloginScreen.js";
@@ -24,28 +24,17 @@ describe("ReloginScreen", () => {
       root.unmount();
     });
     container.remove();
-    vi.unstubAllGlobals();
   });
 
-  it("directs a rejected remote key through the supported env-and-relaunch path", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({
-        ok: true,
-        json: async () => ({ mode: "remote", remoteUrl: "https://remote.example" }),
-      })),
-    );
-
+  it("sends a refused tab back to the terminal, never to a removed remote flow", async () => {
     await act(async () => {
       root.render(<ReloginScreen kind="unauthorized" />);
       await flush();
     });
 
     const text = container.textContent ?? "";
-    expect(text).toContain("SUPERBEE_API_KEY");
-    expect(text).toContain("ui --remote");
-    expect(text).toContain("https://remote.example");
-    expect(text).not.toContain("agentstate-lite login");
-    expect(text).not.toContain("agentstate-lite ui");
+    expect(text).toContain("rerun the ui command");
+    expect(text).not.toContain("--remote");
+    expect(text).not.toContain("SUPERBEE_API_KEY");
   });
 });

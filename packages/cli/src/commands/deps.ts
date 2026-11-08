@@ -38,7 +38,6 @@ import { mutateDoc } from "../mutate.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 
 const READ_OPTIONS = `  --dir <path>         Bundle directory (default: discovered from the cwd)
-  --remote <url>       Talk to a wire-protocol server instead of a local bundle
   --json               Emit compact JSON instead of TOON
   -h, --help           Show this help`;
 
@@ -199,12 +198,12 @@ function problemKey(p: DependencyProblem): string {
   return `${p.code}\u0000${p.alias ?? ""}\u0000${p.detail}`;
 }
 
-async function selfBundleId(bundle: Bundle, remoteUrl: string | undefined): Promise<string | undefined> {
+async function selfBundleId(bundle: Bundle): Promise<string | undefined> {
   try {
     return declaredBundleId(await readDoc(bundle, BUNDLE_NAME_DOC_ID));
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
-    throw classifyBundleError(err, remoteUrl);
+    throw classifyBundleError(err);
   }
 }
 
@@ -216,7 +215,6 @@ export interface DepsAddFlags {
   replace?: boolean;
   actor?: string;
   dir?: string;
-  remote?: string;
 }
 
 /**
@@ -231,7 +229,7 @@ export function depsAddRerun(alias: string, values: DepsAddFlags): { base: strin
     ["pin", values.pin],
     ["path", values.path],
   ]);
-  const scope = givenFlags([["actor", values.actor], ["dir", values.dir], ["remote", values.remote]]);
+  const scope = givenFlags([["actor", values.actor], ["dir", values.dir]]);
   const base = `${cliInvocation()} deps add ${commandToken(alias)}${entry}`;
   return { base, scope, retry: `${base}${givenFlags([["replace", values.replace]])}${scope}` };
 }
@@ -250,7 +248,6 @@ async function depsAdd(argv: string[], stdout: (s: string) => void): Promise<voi
           "expected-version": { type: "string" },
           actor: { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -286,8 +283,8 @@ async function depsAdd(argv: string[], stdout: (s: string) => void): Promise<voi
   const { base, scope, retry } = depsAddRerun(alias, values);
   const expectedVersion = expectedVersionFlag(values["expected-version"], `${base} --expected-version <v>`);
   const actor = resolveActor(values.actor, { help: `${base} --actor <name>` });
-  const target = await openDeclarationTarget(values.dir, values.remote);
-  const self = await selfBundleId(target.bundle, target.remoteUrl);
+  const target = await openDeclarationTarget(values.dir);
+  const self = await selfBundleId(target.bundle);
 
   let created = false;
   let replaced = false;
@@ -302,7 +299,6 @@ async function depsAdd(argv: string[], stdout: (s: string) => void): Promise<voi
     registry: await loadKinds(target.bundle),
     strict: false,
     helpOnKindReject: `${cliInvocation()} kinds`,
-    remoteUrl: target.remoteUrl,
     actor,
     persistActor: true,
     ...(expectedVersion === undefined ? {} : { expectedVersion }),
@@ -386,7 +382,6 @@ async function depsRemove(argv: string[], stdout: (s: string) => void): Promise<
           "expected-version": { type: "string" },
           actor: { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -403,10 +398,10 @@ async function depsRemove(argv: string[], stdout: (s: string) => void): Promise<
     throw new CliError("USAGE", "deps remove requires a non-empty <alias>", { help: `${cliInvocation()} deps list` });
   }
   const bare = `${cliInvocation()} deps remove ${commandToken(alias)}`;
-  const retry = `${bare}${givenFlags([["actor", values.actor], ["dir", values.dir], ["remote", values.remote]])}`;
+  const retry = `${bare}${givenFlags([["actor", values.actor], ["dir", values.dir]])}`;
   const expectedVersion = expectedVersionFlag(values["expected-version"], `${bare} --expected-version <v>`);
   const actor = resolveActor(values.actor, { help: `${bare} --actor <name>` });
-  const target = await openDeclarationTarget(values.dir, values.remote);
+  const target = await openDeclarationTarget(values.dir);
   const mode = resolveMode(values);
 
   const absent = (): void => {
@@ -416,7 +411,7 @@ async function depsRemove(argv: string[], stdout: (s: string) => void): Promise<
   try {
     await readDoc(target.bundle, DEPENDENCIES_DOC_ID);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw classifyBundleError(err, target.remoteUrl);
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw classifyBundleError(err);
     present = false;
   }
   if (!present && expectedVersion === undefined) {
@@ -433,7 +428,6 @@ async function depsRemove(argv: string[], stdout: (s: string) => void): Promise<
     registry: await loadKinds(target.bundle),
     strict: false,
     helpOnKindReject: `${cliInvocation()} kinds`,
-    remoteUrl: target.remoteUrl,
     actor,
     persistActor: true,
     ...(expectedVersion === undefined ? {} : { expectedVersion }),
@@ -486,7 +480,6 @@ async function depsList(argv: string[], stdout: (s: string) => void, autoPull: (
         options: {
           limit: { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -505,16 +498,16 @@ async function depsList(argv: string[], stdout: (s: string) => void, autoPull: (
     }
     limit = Number(values.limit.trim());
   }
-  const target = await openDeclarationTarget(values.dir, values.remote);
-  if (target.remoteUrl === undefined) await autoPull(values.dir);
+  const target = await openDeclarationTarget(values.dir);
+  await autoPull(values.dir);
 
   let doc: OkfDocument | null = null;
   try {
     doc = await readDoc(target.bundle, DEPENDENCIES_DOC_ID);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw classifyBundleError(err, target.remoteUrl);
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw classifyBundleError(err);
   }
-  const self = await selfBundleId(target.bundle, target.remoteUrl);
+  const self = await selfBundleId(target.bundle);
   const parsed = parseDependencies(doc, self === undefined ? {} : { selfBundleId: self });
   const rows = [...parsed.dependencies.values()].map((entry) => ({
     alias: entry.alias,

@@ -30,7 +30,6 @@ export function readShellJson<T>(url: string): Promise<T> {
 /** `/__ui/config` shape (server `configResponse`). `sharing`/`workspaces` are ui-server's plain data shapes (type-only import — no runtime dependency), CLI-injected in dir mode. */
 export interface UiConfig {
   mode: string;
-  remoteUrl: string | null;
   root: string | null;
   name: string;
   sharing: SharingSummary | null;

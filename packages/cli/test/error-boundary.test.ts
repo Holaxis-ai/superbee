@@ -196,7 +196,6 @@ test("error matrix: recipe lifecycle errors keep their messages and details verb
   // `other` classifies its cause, merging the cause's details, help and handled flag with progress.
   const auth = classifyBundleError(new RecipeEvolutionInterrupted("other", "401", completed, ["conventions/b"], new RemoteError("401", "AUTH_REQUIRED", 401)));
   assert.equal(auth.code, "AUTH_REQUIRED");
-  assert.match(auth.help ?? "", /SUPERBEE_API_KEY/);
   assert.deepEqual(auth.details, { completed, pending: ["conventions/b"] });
   const busy = classifyBundleError(new RecipeEvolutionInterrupted(
     "other",
@@ -231,12 +230,6 @@ test("error matrix: an uncaught VersionConflict carries {expected, actual} detai
 test("error matrix: the 429 TRANSIENT envelope is a structured retry signal (retryable + status)", () => {
   const classified = classifyBundleError(new RemoteError("too many join attempts", "RATE_LIMITED", 429));
   assert.deepEqual(classified.details, { retryable: true, status: 429 });
-});
-
-test("error matrix: AUTH_REQUIRED keeps the remote-url fixing hint when the caller has it", () => {
-  const classified = classifyBundleError(new RemoteError("401", "AUTH_REQUIRED", 401), "http://127.0.0.1:4818");
-  assert.match(classified.help ?? "", /SUPERBEE_API_KEY/);
-  assert.match(classified.help ?? "", /--remote http:\/\/127\.0\.0\.1:4818/);
 });
 
 test("error matrix: asHandled applies the SAME classification, flagged handled", () => {

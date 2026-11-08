@@ -549,7 +549,6 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
   // The read-only check writes nothing, so it runs.
   await assertAllowedInHostedCheckout("index", ["generate", "--check", "--dir", folder], context);
   await assertAllowedInHostedCheckout("doc", ["delete", "--help", "--dir", folder], context);
-  await assertAllowedInHostedCheckout("doc", ["delete", "x", "--remote", "http://127.0.0.1:9"], context);
   const elsewhere = await mkdtemp(path.join(tmpdir(), "sb-local-"));
   await writeFile(path.join(elsewhere, "index.md"), '---\nokf_version: "0.2"\n---\n');
   await assertAllowedInHostedCheckout("doc", ["delete", "x", "--dir", elsewhere], context);
@@ -558,8 +557,6 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
   await assertAllowedInHostedCheckout("delete", ["--doc-key", "assets/logo.png", "--dir", folder], context);
   const protectedBlob = await rejects(assertAllowedInHostedCheckout("promote", ["x.pdf", "--doc-key", "Conventions/x.pdf", "--dir", folder], context));
   assert.equal(protectedBlob.details?.do_this_in, "app");
-  const serve = await rejects(assertAllowedInHostedCheckout("serve", ["--dir", folder, "--port", "0"], context));
-  assert.equal(serve.details?.do_this_in, "app");
   await assertAllowedInHostedCheckout("promote", ["x.md", "--doc-key", "notes/x.md", "--dir", folder], context);
   // A key under a folder of conventions, or a reserved file, is held whatever its extension.
   assert.equal((await rejects(assertAllowedInHostedCheckout("promote", ["x.md", "--doc-key", "conventions/x.md", "--dir", folder], context))).details?.do_this_in, "app");
@@ -575,7 +572,7 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
     assert.equal(error.details?.bundle_id, BUNDLE);
     assert.match(error.message, /supports local and Git bundles only/);
   }
-  assert.equal(HOSTED_CHECKOUT_REFUSALS.length, 13);
+  assert.equal(HOSTED_CHECKOUT_REFUSALS.length, 12);
 });
 
 test("projection placement never overwrites: new files are exclusive, replacements are pre-image guarded", async () => {

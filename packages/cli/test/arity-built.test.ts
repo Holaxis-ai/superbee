@@ -129,7 +129,6 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
     sourceSnapshotRun: simple(CLI_LEAVES.sourceSnapshotRun,["source","snapshot","run"],["snapshots/test"],[...dir,"--snapshot",ctx.scratch]),
     sourceSnapshotCheck: simple(CLI_LEAVES.sourceSnapshotCheck,["source","snapshot","check"],[ctx.scratch],["--inputs-file",ctx.scratch]),
     sourceTest: simple(CLI_LEAVES.sourceTest, ["source", "test"], [ctx.scratch], ["--fixture", ctx.scratch]),
-    serve: simple(CLI_LEAVES.serve, ["serve"], [], [...dir, "--port", "0"]),
     ui: simple(CLI_LEAVES.ui, ["ui"], [], [...dir, "--port", "0"]),
     mcp: simple(CLI_LEAVES.mcp, ["mcp"], [], dir, "stderr"),
     mcpInstall: simple(CLI_LEAVES.mcpInstall, ["mcp", "install"], []),
@@ -383,7 +382,7 @@ test("schema-deferred new preserves valid dynamic-field ordering", () => {
   assert.ok(existsSync(join(bundle, "tasks/valid-interspersed.md")));
 });
 
-test("surplus sync performs zero Git spawns and surplus serve exits before listener readiness", () => {
+test("surplus sync performs zero Git spawns", () => {
   const scratch = mkdtempSync(join(tmpdir(), "aslite-arity-effects-"));
   const bin = join(scratch, "bin");
   const marker = join(scratch, "git-called");
@@ -394,10 +393,6 @@ test("surplus sync performs zero Git spawns and surplus serve exits before liste
   const sync = run(["sync", SURPLUS], scratch, { PATH: `${bin}:${process.env.PATH ?? ""}` });
   assert.equal(sync.status, 2, sync.stdout + sync.stderr);
   assert.equal(existsSync(marker), false);
-
-  const serve = run(["serve", SURPLUS, "--port", "0"], scratch);
-  assert.equal(serve.status, 2, serve.stdout + serve.stderr);
-  assert.doesNotMatch(serve.stdout + serve.stderr, /listening|ready/i);
 });
 
 test("surplus remote list performs zero HTTP requests or connections", async () => {

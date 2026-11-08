@@ -12,7 +12,7 @@ test("hoistLeadingGlobalFlags: reorders [global flags] <known-subcommand> so `--
     hoistLeadingGlobalFlags(["--dir", "x", "list", "--type", "Task"]),
     ["list", "--type", "Task", "--dir", "x"],
   );
-  assert.deepEqual(hoistLeadingGlobalFlags(["--json", "--remote", "u", "status"]), ["status", "--json", "--remote", "u"]);
+  assert.deepEqual(hoistLeadingGlobalFlags(["--json", "--dir", "u", "status"]), ["status", "--json", "--dir", "u"]);
   // Round-4 regression: a two-word command must land as `doc read y --dir x`, NOT `doc --dir x read y`.
   assert.deepEqual(hoistLeadingGlobalFlags(["--dir", "x", "doc", "read", "y"]), ["doc", "read", "y", "--dir", "x"]);
   assert.deepEqual(hoistLeadingGlobalFlags(["--dir", "x", "bundle", "locate"]), ["bundle", "locate", "--dir", "x"]);

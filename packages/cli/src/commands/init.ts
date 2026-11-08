@@ -120,9 +120,6 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
           "okf-version": { type: "string" },
           recipe: { type: "string" },
           "create-only": { type: "boolean" },
-          // Declared (not just left to error out generically) so a misdirected `init --remote`
-          // gets the SPECIFIC message below instead of parseArgs's generic unknown-option text.
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -134,16 +131,6 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
     stdout(renderUsage(INIT_USAGE));
     return;
   }
-  if (values.remote) {
-    throw new CliError(
-      "USAGE",
-      "the wire protocol has no create-bundle endpoint; run init on the server's directory",
-      // Both halves of this two-step hint must resolve for the actual running executable (AXI
-      // §7/§10); a hard-coded bare command would fail when the CLI is running through npx.
-      { help: `${cliInvocation()} init --dir <path> (then ${cliInvocation()} serve --dir <path>)` },
-    );
-  }
-
   // `init` is write-first. A plain binding names its selected bundle, while only a proven private
   // board refuses bare init before a write can reach the invoking public checkout.
   let boundRoute: Awaited<ReturnType<typeof resolveLocalBundleRoute>> | undefined;

@@ -3,7 +3,7 @@ import { renderUsage } from "../../output.js";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { docVersions, parseMarkdown, type VersionInfo } from "@superbee/core";
-import { openBundle, resolveRemoteFlag } from "../../bundle.js";
+import { openBundle } from "../../bundle.js";
 import { CliError } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
@@ -39,7 +39,6 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
           limit: { type: "string" },
           seq: { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -85,18 +84,17 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
     }
   }
 
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
-  // A hosted checkout reads the host's chain; an explicit --remote wins over the folder's binding.
+  // A hosted checkout reads the host's chain.
   const home = deps.hosted?.auth?.home ?? homedir();
-  const checkout = remote ? null : await hostedCheckoutAt(values.dir, home).catch(() => null);
+  const checkout = await hostedCheckoutAt(values.dir, home).catch(() => null);
   if (seq !== undefined && !checkout) {
-    throw new CliError("USAGE", "--seq reads one version from a hosted checkout's history; a local bundle or --remote has no such history", {
+    throw new CliError("USAGE", "--seq reads one version from a hosted checkout's history; a local bundle has no such history", {
       details: { reason: "no_hosted_history" },
       help: `${cliInvocation()} doc read ${commandToken(id)}`,
     });
   }
 
-  const bundle = await openBundle(values.dir, remote);
+  const bundle = await openBundle(values.dir);
   id = await resolveConceptIdCliArgument(bundle, rawId);
   const mode = resolveMode(values);
 
@@ -117,7 +115,7 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
   try {
     versions = await docVersions(bundle, id);
   } catch (err) {
-    throw readErrorToCliError(err, id, values.remote);
+    throw readErrorToCliError(err, id);
   }
 
   if (versions.length === 0) {
@@ -137,34 +135,22 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
     return;
   }
 
-  // Bound the page like `list`/`status`/`blobs` do: `count` always reports the TRUE total (the
-  // filesystem backend's single-entry chain never triggers this). `versions` is already
-  // newest-first, so slicing from the front keeps the newest revision and drops only the oldest tail.
-  const total = versions.length;
-  const shown = limit > 0 ? versions.slice(0, limit) : versions;
-  const truncated = shown.length < total;
-
-  // Attributed history, newest-first (a history-keeping backend returns the full chain; the plain
-  // filesystem keeps none, so honestly returns just the single current revision). The newest token is
-  // offered inline as a ready-to-paste `--expected-version` for an optimistic update.
+  // A local bundle keeps no history: the filesystem backend returns the one current revision, so
+  // `--limit` never cuts anything here. The newest token is offered inline as a ready-to-paste
+  // `--expected-version` for an optimistic update.
   const out: Record<string, unknown> = {
     id,
-    count: total,
-    versions: shown.map((v) =>
+    count: versions.length,
+    versions: versions.map((v) =>
       v.agent === undefined
         ? { version: v.version, actor: v.actor, timestamp: v.timestamp }
         : { version: v.version, actor: v.actor, timestamp: v.timestamp, agent: v.agent },
     ),
+    help: [
+      "Local bundle: current version only; no prior versions are retained.",
+      `${cliInvocation()} doc update ${commandToken(id)} --expected-version ${commandToken(versions[0]!.version)}`,
+    ],
   };
-  if (truncated) out.shown = shown.length;
-
-  const help: string[] = [];
-  if (!remote) help.push("Local bundle: current version only; no prior versions are retained.");
-  if (truncated) {
-    help.push(truncationHelp(id, shown.length, total));
-  }
-  help.push(`${cliInvocation()} doc update ${commandToken(id)} --expected-version ${commandToken(versions[0]!.version)}`);
-  out.help = help;
 
   stdout(render(out, mode));
 }

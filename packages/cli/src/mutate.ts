@@ -67,7 +67,6 @@ export interface MutateDocOptions {
   onAbsent?: "fail" | "create";
   maxAttempts?: number;
   compareTimestamp?: boolean;
-  remoteUrl?: string;
   actor?: string;
   persistActor?: boolean;
   expectedVersion?: Version;
@@ -114,7 +113,6 @@ export async function deleteMutatedDoc(opts: {
   bundle: Bundle;
   id: ConceptId;
   expectedVersion?: Version;
-  remoteUrl?: string;
   staleHead: (error: VersionConflict) => CliError;
   onPersisted?: () => void | Promise<void>;
 }): Promise<boolean> {
@@ -125,7 +123,7 @@ export async function deleteMutatedDoc(opts: {
     return deleted;
   } catch (error) {
     if (error instanceof VersionConflict) throw opts.staleHead(error);
-    throw classifyBundleError(error, opts.remoteUrl);
+    throw classifyBundleError(error);
   }
 }
 
@@ -166,7 +164,7 @@ async function translateMutationError(error: unknown, opts: MutateDocOptions): P
     }
     throw opts.errors.staleHead?.(error) ?? new CliError("STALE_HEAD", error.message);
   }
-  throw classifyBundleError(error, opts.remoteUrl);
+  throw classifyBundleError(error);
 }
 
 export async function mutateDoc(opts: MutateDocOptions): Promise<MutateResult> {

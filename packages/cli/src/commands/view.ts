@@ -4,7 +4,7 @@ import { listViewCatalog } from "@superbee/view-runtime";
 import { parseSelectorOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { maybeAutoPull } from "../autopull.js";
-import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { openBundle } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { commandToken } from "../command-text.js";
@@ -15,7 +15,7 @@ import type { HostedAccountDeps } from "../hosted/account.js";
 export const VIEW_USAGE = `superbee view — inspect and open durable bundle Views
 
 Usage:
-  superbee view list [--limit <n>] [--dir <path> | --remote <url>]
+  superbee view list [--limit <n>] [--dir <path>]
   superbee view open <viewId> [--dir <path>] [--actor <name>] [--no-open --json]
   superbee view read <viewId> [--out <path>] [--dir <path>] [--json]
   superbee view update <viewId> --expected-version <sha256:...> [--file <path>] [--dir <path>] [--json]
@@ -36,7 +36,6 @@ view update --help.
 Options:
   --limit <n>          Cap rows (default: 100; 0 = unlimited)
   --dir <path>         Bundle directory (default: discovered from the cwd)
-  --remote <url>       Talk to a wire-protocol server instead of a local bundle
   --actor <name>       Actor for the exact managed local authority (open only)
   --no-open           Prepare a private one-use handoff without opening a browser (open, --json only)
   --json               Emit compact JSON instead of TOON
@@ -63,7 +62,6 @@ export async function view(argv: string[], deps: Partial<ViewCliDeps> = {}): Pro
       options: {
         limit: { type: "string" },
         dir: { type: "string" },
-        remote: { type: "string" },
         actor: { type: "string" },
         "no-open": { type: "boolean" },
         json: { type: "boolean" },
@@ -111,9 +109,8 @@ export async function view(argv: string[], deps: Partial<ViewCliDeps> = {}): Pro
     limit = Number(raw);
   }
 
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
-  if (!remote) await (deps.autoPull ?? maybeAutoPull)(values.dir);
-  const catalog = await listViewCatalog(await openBundle(values.dir, remote));
+  await (deps.autoPull ?? maybeAutoPull)(values.dir);
+  const catalog = await listViewCatalog(await openBundle(values.dir));
   const rows = limit === 0 ? catalog.entries : catalog.entries.slice(0, limit);
   const truncated = rows.length < catalog.total;
   stdout(render({

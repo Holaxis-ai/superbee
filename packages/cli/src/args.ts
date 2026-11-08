@@ -16,6 +16,7 @@
 //
 // Ported from holaxis-agentstate `packages/cli/src/args.ts` (help pointer retargeted to `axi`).
 import { CliError } from "./errors.js";
+import { retiredFlagInParse, retiredInputRefusal } from "./deprecation-notices.js";
 import { cliInvocation } from "./invocation.js";
 import {
   assertCliLeaf,
@@ -152,10 +153,12 @@ function parseOwnedOrUsage<T extends { positionals: readonly string[]; values?: 
   command: string,
   recovery: ParseRecoveryOptions = {},
 ): T {
+  let parsed: T;
   try {
-    return parse();
+    parsed = parse();
   } catch (err) {
     if (err instanceof CliError) throw err; // passthrough — never remapped
+    if (retiredFlagInParse({ error: err })) throw retiredInputRefusal("--remote");
     const translated = translateParseArgsError(err);
     const raw = err instanceof Error ? err.message : String(err);
     const suggestion = (err as { code?: unknown } | null)?.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION"
@@ -165,6 +168,8 @@ function parseOwnedOrUsage<T extends { positionals: readonly string[]; values?: 
     const message = suggestion ? `${baseMessage} — did you mean '${suggestion}'?` : baseMessage;
     throw new CliError("USAGE", message, { help: `${cliInvocation()} ${commandWords(command)} --help` });
   }
+  if (retiredFlagInParse({ values: parsed.values })) throw retiredInputRefusal("--remote");
+  return parsed;
 }
 
 /** Parse and validate an ordinary leaf through its branded canonical specification. */

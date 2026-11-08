@@ -1,8 +1,7 @@
 /**
  * E2E harness: boot the REAL, BUILT `superbee ui` command as a child process (never a
  * dev server — plans/ui-v1.md rev 3.2 "E2E: Playwright against the REAL `ui` command server").
- * Readiness/teardown ride the port-0 TOON/JSON receipt, exactly as the CLI's own `serve`
- * command's tests do (`packages/cli/test/serve.test.ts`).
+ * Readiness/teardown ride the port-0 TOON/JSON receipt.
  */
 import { execFileSync, spawn, type ChildProcessByStdio } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
@@ -514,28 +513,4 @@ export async function bootUiServerInProcess(opts: { dir: string; port?: number; 
     serveAsset: createEmbeddedAssetHandler(assets),
     resolveBundleDisplayName: async () => path.basename(opts.dir),
   });
-}
-
-/** Boot a local, keyless reference `serve()` instance, then `ui --remote <that url>` proxying it — proves conditional (absent) Bearer injection with zero cloud, per rev 3.2. */
-export async function bootUiOverRemote(seedTasks: SeedTask[]) {
-  const { initBundle, writeDoc } = await import("@superbee/core");
-  const { serve } = await import("@superbee/server");
-  const dir = await mkdtemp(path.join(tmpdir(), "agentstate-lite-ui-e2e-remote-"));
-  await initBundle(dir);
-  for (const task of seedTasks) {
-    await writeDoc({ root: dir }, { id: task.id, frontmatter: task.frontmatter, body: task.body });
-  }
-  const referenceServer = await serve({ bundle: { root: dir }, port: 0 });
-  const remoteUrl = `http://${referenceServer.host}:${referenceServer.port}`;
-  const running = await bootUi(["--remote", remoteUrl]);
-  return {
-    ...running,
-    dir,
-    remoteUrl,
-    cleanup: async () => {
-      await running.stop();
-      await referenceServer.close();
-      await rm(dir, { recursive: true, force: true });
-    },
-  };
 }

@@ -1,6 +1,6 @@
 import { captureRuntimeCallback } from "../runtime-context.js";
 // CLI-owned adapter for the reusable loopback UI runtime. Generated asset bytes and bundle-name
-// policy stay in this package; the listener/session/proxy/View/SSE mechanics live below it.
+// policy stay in this package; the listener/session/View/SSE mechanics live below it.
 import {
   bootUiServer as bootUiServerRuntime,
   type UiServerHandle,
@@ -21,27 +21,18 @@ type InjectedUiServerOption =
   | "loadSharingSummary"
   | "loadWorkspaces"
   | "renderDocument";
-type WithoutInjectedOptions<T> = T extends unknown ? Omit<T, InjectedUiServerOption> : never;
-export type UiServerOptions = WithoutInjectedOptions<RuntimeUiServerOptions>;
+export type UiServerOptions = Omit<RuntimeUiServerOptions, InjectedUiServerOption>;
 
 export function bootUiServer(options: UiServerOptions): Promise<UiServerHandle> {
-  // Dir mode injects the CLI's board-channel classification + catalog projection through the
-  // runtime's consumer-owned seams (remote mode derives `hosted` in the runtime itself).
-  if (options.mode === "dir") {
-    return bootUiServerRuntime({
-      ...options,
-      viewAuthorization: new LocalViewAuthorizationStore(options.bundle.root),
-      renderDocument: renderDocumentToStaticHtml,
-      serveAsset: serveEmbeddedUiAsset,
-      resolveBundleDisplayName: captureRuntimeCallback(async (bundle: Bundle) => (await deriveBundleDisplayName(bundle)).name),
-      loadSharingSummary: createSharingLoader(options.bundle.root),
-      loadWorkspaces: createWorkspacesLoader(options.bundle.root),
-    });
-  }
+  // Inject the CLI's board-channel classification and catalog projection through the runtime's
+  // consumer-owned seams.
   return bootUiServerRuntime({
     ...options,
-    viewAuthorization: new LocalViewAuthorizationStore(options.remoteBase),
+    viewAuthorization: new LocalViewAuthorizationStore(options.bundle.root),
     renderDocument: renderDocumentToStaticHtml,
     serveAsset: serveEmbeddedUiAsset,
+    resolveBundleDisplayName: captureRuntimeCallback(async (bundle: Bundle) => (await deriveBundleDisplayName(bundle)).name),
+    loadSharingSummary: createSharingLoader(options.bundle.root),
+    loadWorkspaces: createWorkspacesLoader(options.bundle.root),
   });
 }

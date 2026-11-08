@@ -75,7 +75,7 @@ token. An import writes new documents plus one Promotion record and never overwr
 treats a copy edited since the import as a `target_edited` conflict: ask the person whether to name
 it with `--overwrite <id>` (discards the edit) or `--skip <id>`. On `TRANSFER_PLAN_CHANGED`, read
 the new plan before applying again. On `TRANSFER_INTERRUPTED`, run `--resume <record-id>`. Hosted
-checkouts and `--remote` are refused.
+checkouts are refused.
 
 ## When a document cannot be read
 

@@ -794,13 +794,6 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
     },
   },
   {
-    leaf: "serve",
-    surface: "--dir",
-    argv: (t) => ["serve", "--dir", t, "--port", "0"],
-    controlSkip: "the control would boot a long-lived reference server; the refusal above still proves the "
-      + "boundary check runs before any listener and is not a USAGE error",
-  },
-  {
     leaf: "ui",
     surface: "--dir",
     argv: (t) => ["ui", "--dir", t, "--port", "0"],

@@ -1,8 +1,7 @@
 /**
- * One terminal interceptor state for failures that must stop all polling: remote authentication
- * rejection (401), rate limiting (429), or the shell's expired local session (403). A 401 requires
- * restarting the remote UI with valid credentials; a shell 403 requires reopening the URL printed
- * by the current `ui` process.
+ * One terminal interceptor state for failures that must stop all polling: an authentication
+ * rejection (401), rate limiting (429), or the shell's expired local session (403). Each requires
+ * reopening the URL printed by a current `ui` process.
  *
  * The sandboxed View-bytes route's 403 is separate: iframe navigation does not pass through this
  * fetch interceptor. The SSE reconnect probe writes here only when the ordinary session-gated

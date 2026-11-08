@@ -49,7 +49,7 @@ Options:
   --json             Emit compact JSON instead of TOON on success
   -h, --help         Show this help
 
-This command is local-only. It never syncs and has no --remote mode.
+This command is local-only. It never syncs.
 `;
 
 const PATH_LIMIT = 15;

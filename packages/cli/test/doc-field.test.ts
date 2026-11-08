@@ -262,23 +262,6 @@ test("doc field read hints retain an explicit local route when executed outside 
   }
 });
 
-test("doc field read hints share the explicit remote option shape", async t => {
-  const { serve } = await import("@superbee/server");
-  const f = await fixture(t);
-  const server = await serve({ bundle: f.bundle, port: 0 });
-  t.after(() => server.close());
-  const remote = `http://${server.host}:${server.port}`;
-  let output = "";
-  await doc(["field", "add", "notes/a", "tags", "remote-tag", "--remote", remote, "--json"], { stdout: text => { output += text; } });
-  const receipt = JSON.parse(output);
-  const argv = parseCommandLine(receipt.help[0]);
-  assert.ok(argv.includes(`--remote=${remote}`));
-  assert.ok(!argv.some(arg => arg.startsWith("--dir")));
-  let read = "";
-  await doc(argv.slice(argv.indexOf("doc") + 1), { stdout: text => { read += text; } });
-  assert.match(read, /remote-tag/);
-});
-
 test("doc field replace-all replaces a Kind-declared list in the given order, strictly; add, remove and unset are refused for it", async t => {
   const f = await fixture(t);
   await writeDoc(f.bundle, { id: "conventions/item", frontmatter: { type: "Convention", title: "Item", governs: "Item", fields: { required: ["title"], optional: ["labels", "note"], types: { labels: "string-list" } } }, body: "" });

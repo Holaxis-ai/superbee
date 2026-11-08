@@ -118,7 +118,6 @@ export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
     // --check only reports whether the indexes are current; it writes nothing.
     when: (args) => !args.some((token) => token === "--check" || token.startsWith("--check=")),
   },
-  { words: ["serve"], reason: "not_syncable", why: "the served bundle accepts writes and deletes that do not sync" },
   { words: ["ui"], reason: "not_syncable", why: "the local app writes Views, which do not sync, and conventions outside the kind and recipe commands" },
   { words: ["init"], reason: "checkout_target", why: "the folder is a hosted checkout, not a local bundle" },
 ] satisfies RefusalRow[]).map((row): RefusalRow => Object.freeze({ ...row, words: Object.freeze([...row.words]) })));
@@ -133,13 +132,13 @@ function matchRow(command: string, args: readonly string[]): RefusalRow | undefi
   });
 }
 
-/** The `--dir` value, and whether `--remote` or help was asked for; a malformed argv is left to the command. */
+/** The `--dir` value, and whether help was asked for; a malformed argv is left to the command. */
 function scan(args: readonly string[]): { dir: string | undefined; skip: boolean } {
   let dir: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index]!;
     if (token === "--") break;
-    if (token === "--help" || token === "-h" || token === "--remote" || token.startsWith("--remote=")) return { dir, skip: true };
+    if (token === "--help" || token === "-h") return { dir, skip: true };
     if (token === "--dir") dir = args[index + 1];
     else if (token.startsWith("--dir=")) dir = token.slice("--dir=".length);
   }

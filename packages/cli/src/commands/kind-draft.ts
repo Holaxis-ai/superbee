@@ -16,7 +16,7 @@ import {
   KindAuthoringError, prepareKindDraft, prepareKindDraftMutation, prepareKindDismissal,
   appliedKindDraftWarnings, draftPromotions,
 } from "@superbee/core/kind-authoring";
-import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { openBundle } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { commandFragment, commandQuoted, commandToken, type CommandText } from "../command-text.js";
@@ -25,17 +25,15 @@ import { render, resolveMode, type OutputFlags } from "../output.js";
 
 export interface KindDraftFlags extends OutputFlags {
   dir?: string;
-  remote?: string;
   actor?: string;
   apply?: string;
   reason?: string;
 }
 
-/** The `--dir`/`--remote` echo every emitted command carries (offers/recipes rows' pattern). */
-function targetSuffix(values: Pick<KindDraftFlags, "dir" | "remote">): CommandText {
+/** The `--dir` echo every emitted command carries (offers/recipes rows' pattern). */
+function targetSuffix(values: Pick<KindDraftFlags, "dir">): CommandText {
   let suffix = commandFragment``;
   if (values.dir !== undefined) suffix = commandFragment`${suffix} --dir ${commandToken(values.dir)}`;
-  if (values.remote !== undefined) suffix = commandFragment`${suffix} --remote ${commandToken(values.remote)}`;
   return suffix;
 }
 
@@ -78,7 +76,7 @@ export async function kindDraftCommand(
 ): Promise<void> {
   const inv = cliInvocation();
   const suffix = targetSuffix(values);
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir);
   const plan = await authoringRead(() => prepareKindDraft(bundle, type, { inferredBody, inferredDescription: (_type, count) => `Drafted by 'kind draft' from ${count} existing instance${count === 1 ? "" : "s"}.` }), type, values);
 
   if (values.apply === undefined) {
@@ -112,7 +110,7 @@ export async function kindDraftCommand(
     if (promotions.length > 0) receipt.promotions = promotions;
     receipt.note = `apply creates the Kind as drafted; promotions are separate follow-ups via '${inv} kind field ${commandQuoted(plan.type)} add <name> --required'`;
     receipt.plan_token = plan.token;
-    // O1 (design appendix): these exact bytes — the --dir/--remote echo and the acceptance-gate
+    // O1 (design appendix): these exact bytes — the --dir echo and the acceptance-gate
     // comment — are load-bearing for skill-less agents and pinned by test. The gate must sit
     // beside the command an agent would copy, not only in skill prose.
     receipt.apply = `${inv} kind draft ${commandQuoted(plan.type)} --apply ${commandToken(plan.token)}${suffix}   # after the human accepts`;
@@ -165,7 +163,7 @@ export async function kindDismissCommand(
 ): Promise<void> {
   const inv = cliInvocation();
   const suffix = targetSuffix(values);
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir);
   const prepared = await authoringRead(() => prepareKindDismissal(bundle, type, {
     actor: values.actor?.trim(),
     description: `Declined: '${type}' is deliberately unconstrained (recorded by 'kind dismiss').`,

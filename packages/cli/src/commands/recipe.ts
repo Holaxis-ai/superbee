@@ -17,7 +17,7 @@ import { recipeValidate } from "./recipe-validate.js";
 // `init`-only special case.
 import { parseArgs } from "node:util";
 import { loadKinds } from "@superbee/core";
-import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { openBundle } from "../bundle.js";
 import { assertActorAcceptedByBundle, resolveActor } from "../actor.js";
 import { CliError, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
@@ -33,7 +33,7 @@ export const RECIPE_USAGE = `superbee recipe — apply a recipe to this bundle
 
 Usage:
   superbee recipe validate <path> [--readme] [--json]
-  superbee recipe add <name-or-path> [--actor <name>] [--dir <path>] [--remote <url>]
+  superbee recipe add <name-or-path> [--actor <name>] [--dir <path>]
   superbee recipe evolve <name-or-path> [--apply <plan-token>] [--actor <name>] [options]
   superbee recipe evolve <name-or-path> --retirement-scan [--retirement-evidence <json>] [options]
   superbee recipe evolve <name-or-path> --remove-deprecated --retirement-scope cooperating-local-writers-v1 [--retirement-definition <id>] [--apply <token>] [options]
@@ -88,8 +88,6 @@ apply command: it records stamps only, which is how a bundle from before stamps 
 
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
-  --remote <url>        Talk to a wire-protocol server instead of a local bundle
-                         (mutually exclusive with --dir; remote access is always explicit)
   --retirement-scan   Read-only local declaration retirement evidence. Reports observed concepts,
                       exact versions, known supplied structural consumers and unknown external use.
                       No removal token or apply authority in this inspection mode.
@@ -141,7 +139,6 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
         args: argv,
         options: {
           dir: { type: "string" },
-          remote: { type: "string" },
           apply: { type: "string" },
           "retirement-scan": { type: "boolean" },
           "remove-deprecated": { type: "boolean" },
@@ -168,7 +165,6 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
   if (!removal && (values["retirement-scope"] !== undefined || values["retirement-definition"] !== undefined)) throw new CliError("USAGE", "retirement scope/definition require --remove-deprecated");
   if (removal && values["retirement-scope"] !== "cooperating-local-writers-v1") throw new CliError("USAGE", "--remove-deprecated requires --retirement-scope cooperating-local-writers-v1");
   if (values["retirement-definition"] !== undefined && !values["retirement-definition"].trim()) throw new CliError("USAGE", "--retirement-definition requires a nonempty definition ID");
-  if (removal && values.remote !== undefined) throw new CliError("USAGE", "declaration retirement apply supports plain local filesystem routes only");
   if (values.apply?.startsWith("retirement-apply/") && !removal) throw new CliError("USAGE", "a retirement apply token requires --remove-deprecated and explicit retirement scope");
   if (removal && values.apply !== undefined && !/^retirement-apply\/v1:sha256:[0-9a-f]{64}$/.test(values.apply)) throw new CliError("USAGE", "--apply requires the exact retirement-apply/v1 token from a ready retirement stage");
   const ref = positionals[0]?.trim();
@@ -192,14 +188,11 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
     });
   }
   // Before anything reads the bundle: in a hosted checkout, the recipe decides which refusal applies.
-  if (!removal && values.remote === undefined) await assertRecipeAllowedInHostedCheckout("recipe evolve", values.dir, loaded.recipe);
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
-  const bundle = removal ? await admitRecipeRetirementRoute(values.dir) : await openBundle(values.dir, remote);
+  if (!removal) await assertRecipeAllowedInHostedCheckout("recipe evolve", values.dir, loaded.recipe);
+  const bundle = removal ? await admitRecipeRetirementRoute(values.dir) : await openBundle(values.dir);
   const target: CommandText = values.dir !== undefined
     ? commandFragment` --dir ${commandQuoted(values.dir)}`
-    : remote !== undefined
-      ? commandFragment` --remote ${commandQuoted(remote)}`
-      : commandLiteral("");
+    : commandLiteral("");
   const planCommand = `${cliInvocation()} recipe evolve ${commandQuoted(ref)}${target}`;
   const exactPlanCommand = `${exactCliInvocation()} recipe evolve ${commandQuoted(ref)}${target}`;
 
@@ -288,7 +281,6 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
         args: argv,
         options: {
           dir: { type: "string" },
-          remote: { type: "string" },
           actor: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
@@ -319,9 +311,8 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
   }
 
   // Before anything reads the bundle: in a hosted checkout, the recipe decides which refusal applies.
-  if (values.remote === undefined) await assertRecipeAllowedInHostedCheckout("recipe add", values.dir, loaded.recipe);
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
-  const bundle = await openBundle(values.dir, remote);
+  await assertRecipeAllowedInHostedCheckout("recipe add", values.dir, loaded.recipe);
+  const bundle = await openBundle(values.dir);
   await assertActorAcceptedByBundle(bundle, actor);
   // Core's recipe lifecycle throws typed errors; classify them here, through the one CLI mapping,
   // so this command throws a CliError like every other command.
@@ -376,9 +367,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
   if (sourceDiffers > 0 || result.restamp_ids.length > 0) {
     const target: CommandText = values.dir !== undefined
       ? commandFragment` --dir ${commandQuoted(values.dir)}`
-      : remote !== undefined
-        ? commandFragment` --remote ${commandQuoted(remote)}`
-        : commandLiteral("");
+      : commandLiteral("");
     receipt.commands = { plan_evolution: `${cliInvocation()} recipe evolve ${commandQuoted(ref)}${target}` };
   }
   receipt.help = [`${cliInvocation()} recipes`, `${cliInvocation()} kinds`];

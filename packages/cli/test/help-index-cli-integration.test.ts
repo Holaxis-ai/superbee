@@ -67,7 +67,7 @@ for (const argv of [["--help"], ["-h"], ["help"]]) {
     // The footer pointers are still present, and readably wrapped (no single line runs the whole
     // bundle-resolution paragraph together).
     assert.match(out, /kinds are declared per-bundle/);
-    assert.match(out, /bundle resolution: HTTP is activated only by explicit --remote/);
+    assert.match(out, /bundle resolution: an explicit --dir wins/);
   });
 }
 

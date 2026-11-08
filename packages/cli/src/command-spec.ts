@@ -284,19 +284,19 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "bundleIdSet",
         leaves: [publicLeaf("bundleIdSet", "bundle id set", one, undefined, DIR_SURFACE)],
-        usage: "bundle id set <id> [--force] [--expected-version <v>] [--actor <n>] [--dir <path>] [--remote <url>]",
+        usage: "bundle id set <id> [--force] [--expected-version <v>] [--actor <n>] [--dir <path>]",
         summary:
           "Declare this bundle's portable id (bundle_id in docs/bundle, which it creates when missing, keeping every other field); refuses to change a different existing id without --force",
       },
       {
         id: "deps",
         leaves: [
-          publicLeaf("depsAdd", "deps add", one, 38, DIR_SURFACE),
+          publicLeaf("depsAdd", "deps add", one, 37, DIR_SURFACE),
           publicLeaf("depsRemove", "deps remove", one, undefined, DIR_SURFACE),
           publicLeaf("depsList", "deps list", zero, undefined, DIR_SURFACE),
         ],
         usage:
-          "deps (add <alias> --bundle-id <id> [--source <s>] [--pin <commit|sha256:digest>] [--path <rel>] [--replace] | remove <alias> | list [--limit <n>]) [--expected-version <v>] [--actor <n>] [--dir <path>] [--remote <url>]",
+          "deps (add <alias> --bundle-id <id> [--source <s>] [--pin <commit|sha256:digest>] [--path <rel>] [--replace] | remove <alias> | list [--limit <n>]) [--expected-version <v>] [--actor <n>] [--dir <path>]",
         summary:
           "Declare, remove or list the bundles this bundle links into (docs/dependencies, created when missing): every entry is checked by the same rules status applies, unknown keys are kept, and a declared alias is replaced only with --replace",
       },
@@ -329,7 +329,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "status",
         leaves: [publicLeaf("status", "status", zero, 18, DIR_SURFACE)],
-        usage: "status [--limit <n>] [--with <alias>=<path|label>]... [--with-deps] [--dir <path>] [--remote <url>]",
+        usage: "status [--limit <n>] [--with <alias>=<path|label>]... [--with-deps] [--dir <path>]",
         summary: "Read-only bundle health report (kind lint, unresolved links, orphans, staleness, graph lints)",
       },
     ],
@@ -341,14 +341,14 @@ export const CLI_COMMAND_GROUPS = [
         id: "docWrite",
         leaves: [publicLeaf("docWrite", "doc write", one, 4, DIR_BODY_FILE_SURFACE)],
         usage:
-          "doc write <id> --type <t> [--title <t>] [--stale-after <iso>] [--body <s> | --body-file <p>] [--actor <n>] [--dir <path>] [--remote <url>]",
+          "doc write <id> --type <t> [--title <t>] [--stale-after <iso>] [--body <s> | --body-file <p>] [--actor <n>] [--dir <path>]",
         summary: "Write a generic OKF concept document",
       },
       {
         id: "docUpdate",
         leaves: [publicLeaf("docUpdate", "doc update", one, undefined, DIR_BODY_FILE_DYNAMIC_SURFACE)],
         usage:
-          "doc update <id> [--<field> <value> ...] [--title <t>] [--type <t>] [--stale-after <iso>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--dir <path>] [--remote <url>]",
+          "doc update <id> [--<field> <value> ...] [--title <t>] [--type <t>] [--stale-after <iso>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--dir <path>]",
         summary: "Patch given fields (incl. kind-declared fields like --progress_status) of an existing doc, preserving the rest; optimistic-CAS with --expected-version",
       },
       {
@@ -360,13 +360,13 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("docFieldEdit", "doc field edit", two, undefined, DIR_FIELD_FILE_SURFACE),
           publicLeaf("docFieldReplaceAll", "doc field replace-all", two, undefined, DIR_FIELD_FILE_SURFACE),
         ],
-        usage: "doc field <set|add|remove|edit|replace-all> <id> <field> [value] [--from-file <path>] [--id <source-id> | --resource <resource>] [--expected-version <v>] [--actor <n>] [--strict] [--dir <path>] [--remote <url>]",
+        usage: "doc field <set|add|remove|edit|replace-all> <id> <field> [value] [--from-file <path>] [--id <source-id> | --resource <resource>] [--expected-version <v>] [--actor <n>] [--strict] [--dir <path>]",
         summary: "Set one supported non-collection field, add/remove tags or sources, edit one source, or explicitly replace a complete collection; edit and replace-all require an observed version",
       },
       {
         id: "docVerify",
         leaves: [publicLeaf("docVerify", "doc verify", one, undefined, DIR_SURFACE)],
-        usage: "doc verify <id> --actor <n> [--at <iso-8601>] [--expected-version <v>] [--dir <path>] [--remote <url>]",
+        usage: "doc verify <id> --actor <n> [--at <iso-8601>] [--expected-version <v>] [--dir <path>]",
         summary:
           "Append one OKF v0.2 verification event naming the resolved actor as verifier and report the derived trust tier (unverified / machine-confirmed / human-reviewed); body and generated provenance stay untouched",
       },
@@ -374,27 +374,27 @@ export const CLI_COMMAND_GROUPS = [
         id: "docRead",
         leaves: [publicLeaf("docRead", "doc read", one, undefined, DIR_DOC_READ_SURFACE)],
         usage:
-          "doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --rendered-out (<path> | -) | --field <name> | [--offset <n>] [--max-bytes <n>] [--expected-version <v>]] [--dir <path>] [--remote <url>]",
+          "doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --rendered-out (<path> | -) | --field <name> | [--offset <n>] [--max-bytes <n>] [--expected-version <v>]] [--dir <path>]",
         summary:
           "Read a doc, export its raw markdown/body/canonical rendered HTML, or print one raw field for scripting",
       },
       {
         id: "docOpen",
         leaves: [publicLeaf("docOpen", "doc open", one, undefined, DIR_SURFACE)],
-        usage: "doc open <id> [--new-tab] [--dir <path> | --remote <url>] [--port <n>] [--actor <name>]",
-        summary: "Open one exact authoritative document in a reusable managed local browser UI (explicit remote launches remain foreground)",
+        usage: "doc open <id> [--new-tab] [--dir <path>] [--port <n>] [--actor <name>]",
+        summary: "Open one exact authoritative document in a reusable managed local browser UI",
       },
       {
         id: "docHistory",
         leaves: [publicLeaf("docHistory", "doc history", one, undefined, DIR_SURFACE)],
-        usage: "doc history <id> [--limit <n> | --seq <n>] [--dir <path>] [--remote <url>]",
+        usage: "doc history <id> [--limit <n> | --seq <n>] [--dir <path>]",
         summary:
           "Show a doc's version history (newest first, capped at 20 by default — --limit 0 for all; a history-keeping backend returns the full attributed chain, a local bundle just the current revision; a hosted checkout reads the host's chain, and --seq <n> prints one version's content there) — the tokens for --expected-version (local)",
       },
       {
         id: "docDelete",
         leaves: [publicLeaf("docDelete", "doc delete", one, undefined, DIR_SURFACE)],
-        usage: "doc delete <id> [--expected-version <v>] [--actor <name>] [--dir <path>] [--remote <url>]",
+        usage: "doc delete <id> [--expected-version <v>] [--actor <name>] [--dir <path>]",
         summary: "Hard-delete a doc (idempotent: absent -> deleted:false, exit 0)",
       },
       {
@@ -408,13 +408,13 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "list",
         leaves: [listLeaf, publicAlias("query", "query", listLeaf, 11)],
-        usage: "list [--type <t>] [--tag <t>] [--field <k=v>] [--prefix <p>] [--open] [--limit <n>] [--dir <path>] [--remote <url>]",
+        usage: "list [--type <t>] [--tag <t>] [--field <k=v>] [--prefix <p>] [--open] [--limit <n>] [--dir <path>]",
         summary:
           "Query concepts newest-first by meaningful change time (alias: query) — a comma in --field's value is set membership (OR); --open excludes terminal instances (declared kinds only)",
       },
       {
         id: "search",
-        leaves: [publicLeaf("search", "search", one, 41, DIR_SURFACE)],
+        leaves: [publicLeaf("search", "search", one, 40, DIR_SURFACE)],
         usage: "search <query> [--type <t>] [--tag <t>] [--prefix <p>] [--match auto|all|any] [--limit <n>] [--cursor <token>] [--facets type,tags] [--dir <path>]",
         summary: "Search current local document text with ranked matches and bounded cursor pages",
       },
@@ -426,7 +426,7 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("linkList", "link list", zero, undefined, DIR_SURFACE),
         ],
         usage:
-          "link (add <from> <to> [--text <t>] [--bundle <alias>] [--actor <n>] | show <id> [--limit <n>] [--text <t>] [--with <alias>=<value>]... [--with-deps] | list [--from <id|prefix/>] [--to <id|prefix/>] [--text <t>] [--limit <n>]) [--dir <path>] [--remote <url>]",
+          "link (add <from> <to> [--text <t>] [--bundle <alias>] [--actor <n>] | show <id> [--limit <n>] [--text <t>] [--with <alias>=<value>]... [--with-deps] | list [--from <id|prefix/>] [--to <id|prefix/>] [--text <t>] [--limit <n>]) [--dir <path>]",
         summary:
           "Add a cross-link, show a concept's links + backlinks, or query the whole bundle's derived edge list filtered by from/to (id or prefix/, repeatable/union) and exact-match text",
       },
@@ -438,31 +438,31 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "artifactCreate",
         leaves: [publicLeaf("artifactCreate", "artifact create", one, 13, DIR_INGRESS_FILE_SURFACE)],
-        usage: "artifact create <file> --title <title> [--description <text>] [--supersedes <id>] [--actor <n>] [--dir <path>] [--remote <url>]",
+        usage: "artifact create <file> --title <title> [--description <text>] [--supersedes <id>] [--actor <n>] [--dir <path>]",
         summary: "Produce a shareable output (HTML) a human can view: one command promotes the bytes and writes the type:Artifact record. In a hosted checkout, use the canonical HTML target; bytes are acknowledged before the record is queued (record_pending until normal sync confirms). Hosted --supersedes is refused; each checkout retains at most 256 publication identities",
       },
       {
         id: "promote",
         leaves: [publicLeaf("promote", "promote", one, 5, DIR_INGRESS_FILE_SURFACE)],
-        usage: "promote <file> --doc-key <key> [--actor <actor>] [--content-type <mime>] [--expected-version <v>] [--dir <path>] [--remote <url>]",
+        usage: "promote <file> --doc-key <key> [--actor <actor>] [--content-type <mime>] [--expected-version <v>] [--dir <path>]",
         summary: "Move a local file's bytes into the store (a .md key routes through the engine; else a blob). In a hosted checkout, promote the canonical target path: the exact bytes and MIME are recorded before authentication, then only that request is submitted; an unchanged retry resumes it",
       },
       {
         id: "pull",
         leaves: [publicLeaf("pull", "pull", zero, 6, DIR_OUT_SURFACE)],
-        usage: "pull --doc-key <key> --out (<path> | -) [--from-host] [--dir <path>] [--remote <url>]",
+        usage: "pull --doc-key <key> --out (<path> | -) [--from-host] [--dir <path>]",
         summary: "Pull a doc's canonical form or a blob's raw bytes out of the store (the reverse of promote)",
       },
       {
         id: "blobs",
         leaves: [publicLeaf("blobs", "blobs", zero, 7, DIR_SURFACE)],
-        usage: "blobs [--prefix <p>] [--limit <n>] [--dir <path>] [--remote <url>]",
+        usage: "blobs [--prefix <p>] [--limit <n>] [--dir <path>]",
         summary: "List the store's blob (non-document) keys (documents are listed by 'list'/'query')",
       },
       {
         id: "delete",
         leaves: [publicLeaf("delete", "delete", zero, 8, DIR_SURFACE)],
-        usage: "delete --doc-key <key> [--expected-version <v>] [--actor <name>] [--dir <path>] [--remote <url>]",
+        usage: "delete --doc-key <key> [--expected-version <v>] [--actor <name>] [--dir <path>]",
         summary: "Hard-delete a doc or blob by key (outside a hosted checkout, idempotent: absent -> deleted:false, exit 0). Hosted ordinary files require clean preserved version+MIME pins and frozen exact-request delivery; they may remain incomplete",
       },
     ],
@@ -474,14 +474,14 @@ export const CLI_COMMAND_GROUPS = [
         id: "new",
         leaves: [publicLeaf("new", "new", two, 12, DIR_BODY_FILE_SURFACE)],
         usage:
-          'new "<Kind>" <id> --<field> <value> [...] [--stale-after <iso>] [--body <markdown> | --body-file <path>] [--link "<type>=<target-id>" ...] [--no-prefix] [--actor <n>] [--dir <path>] [--remote <url>]',
+          'new "<Kind>" <id> --<field> <value> [...] [--stale-after <iso>] [--body <markdown> | --body-file <path>] [--link "<type>=<target-id>" ...] [--no-prefix] [--actor <n>] [--dir <path>]',
         summary:
           "Create a new instance of a bundle-declared kind — initial Markdown may come from --body or --body-file (otherwise declared sections are scaffolded); validates strictly, and repeatable --link wires typed cross-links in the same step",
       },
       {
         id: "kinds",
         leaves: [publicLeaf("kinds", "kinds", zero, 14, DIR_SURFACE)],
-        usage: "kinds [--coverage [--kind <Kind>] [--now <ISO>]] [--dir <path>] [--remote <url>]",
+        usage: "kinds [--coverage [--kind <Kind>] [--now <ISO>]] [--dir <path>]",
         summary: "List the kind conventions this bundle declares (purpose, described fields, exact required body headings, typed-link vocabulary, horizon)",
       },
       {
@@ -490,33 +490,33 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("kindFieldAdd", "kind field add", two, 15, DIR_SURFACE),
           publicLeaf("kindFieldRemove", "kind field remove", two, undefined, DIR_SURFACE),
         ],
-        usage: 'kind field "<Kind>" (add <name> [--required] [--values <a,b,c>] [--type <type>] | remove <name>) [--dir <path>] [--remote <url>]',
+        usage: 'kind field "<Kind>" (add <name> [--required] [--values <a,b,c>] [--type <type>] | remove <name>) [--dir <path>]',
         summary: "Edit a kind's schema — add/remove a declared field or enum value on its convention (idempotent)",
       },
       {
         id: "kindDraft",
         leaves: [publicLeaf("kindDraft", "kind draft", one, undefined, DIR_SURFACE)],
-        usage: 'kind draft "<Type>" [--apply <plan-token>] [--actor <name>] [--dir <path>] [--remote <url>]',
+        usage: 'kind draft "<Type>" [--apply <plan-token>] [--actor <name>] [--dir <path>]',
         summary:
           "Draft a Kind for a recurring ungoverned type from its existing instances — read-only until --apply: measures the post-apply warning count, prices promotions, and emits one token-bound apply command",
       },
       {
         id: "kindDismiss",
         leaves: [publicLeaf("kindDismiss", "kind dismiss", one, undefined, DIR_SURFACE)],
-        usage: 'kind dismiss "<Type>" [--reason <text>] [--actor <name>] [--dir <path>] [--remote <url>]',
+        usage: 'kind dismiss "<Type>" [--reason <text>] [--actor <name>] [--dir <path>]',
         summary:
           "Record a deliberate decline of a Kind for an ungoverned type (a declaration-free convention) so no future session re-proposes it; reopen later with 'kind draft'",
       },
       {
         id: "recipes",
         leaves: [publicLeaf("recipes", "recipes", zero, 16, DIR_SURFACE)],
-        usage: "recipes [--dir <path>] [--remote <url>]",
+        usage: "recipes [--dir <path>]",
         summary: "Browse built-in recipes before or after init; with a bundle, also show whether each is already applied",
       },
       {
         id: "recipeAdd",
         leaves: [publicLeaf("recipeAdd", "recipe add", one, 17, DIR_RECIPE_ROOT_SURFACE)],
-        usage: "recipe add <name-or-path> [--actor <name>] [--dir <path>] [--remote <url>]",
+        usage: "recipe add <name-or-path> [--actor <name>] [--dir <path>]",
         summary: "Apply a recipe's content-free definitions — Kinds plus optional declared References and Views — idempotently",
       },
       {
@@ -565,38 +565,32 @@ export const CLI_COMMAND_GROUPS = [
       },
       {
         id: "sourceTest",
-        leaves: [publicLeaf("sourceTest", "source test", one, 42, { flags: pathFlags({ flag: "fixture", role: "ingress" }, { flag: "profile", role: "ingress" }), positionals: Object.freeze([Object.freeze({ index: 0, role: "recipe-source" as const })]) })],
+        leaves: [publicLeaf("sourceTest", "source test", one, 41, { flags: pathFlags({ flag: "fixture", role: "ingress" }, { flag: "profile", role: "ingress" }), positionals: Object.freeze([Object.freeze({ index: 0, role: "recipe-source" as const })]) })],
         usage: "source test <recipe-path> --fixture <directory> [--profile <local.mjs>] [--json]",
         summary: "Replay recorded source fixtures; --profile explicitly executes trusted local code",
       },
       {
         id: "recipeEvolve",
         leaves: [publicLeaf("recipeEvolve", "recipe evolve", one, undefined, { ...DIR_RECIPE_ROOT_SURFACE, flags: pathFlags(...BUNDLE_DIR, { flag: "retirement-evidence", role: "ingress" }) })],
-        usage: "recipe evolve <name-or-path> [--apply <plan-token> | --retirement-scan | --remove-deprecated --retirement-scope <scope>] [--retirement-definition <id>] [--retirement-evidence <json>] [--actor <name>] [--dir <path>] [--remote <url>]",
+        usage: "recipe evolve <name-or-path> [--apply <plan-token> | --retirement-scan | --remove-deprecated --retirement-scope <scope>] [--retirement-definition <id>] [--retirement-evidence <json>] [--actor <name>] [--dir <path>]",
         summary: "Plan/apply additive evolution or inspect read-only local declaration retirement evidence",
       },
     ],
   },
   {
-    group: "Remote",
+    group: "Interfaces and sync",
     commands: [
       {
-        id: "serve",
-        leaves: [publicLeaf("serve", "serve", zero, 19, DIR_SURFACE)],
-        usage: "serve [--dir <path>] [--host <h>] [--port <p>]",
-        summary: "Boot the reference wire-protocol server over a local bundle (loopback, no auth)",
-      },
-      {
         id: "ui",
-        leaves: [publicLeaf("ui", "ui", zero, 20, DIR_SURFACE)],
-        usage: "ui [--dir <path> | --remote <url>] [--port <p>] [--open] | ui --status [--dir <path>] [--limit <n>] | ui --stop [--dir <path>] [--actor <name>] [--abandon]",
+        leaves: [publicLeaf("ui", "ui", zero, 19, DIR_SURFACE)],
+        usage: "ui [--dir <path>] [--port <p>] [--open] | ui --status [--dir <path>] [--limit <n>] | ui --stop [--dir <path>] [--actor <name>] [--abandon]",
         summary:
           'Boot the local web UI over the bundle (same origin, loopback-only): READ the bundle\'s docs as rendered pages (frontmatter, cross-links you can follow, derived backlinks), LAUNCH its registered Views (type: View docs framed in sandboxed iframes with live updates; legacy Page-typed docs no longer register), and see a live activity feed, the bundle\'s sharing status, and your registered workspaces. The header shows the bundle\'s display name — derived from the project folder unless set explicitly: doc write docs/bundle --type "Bundle Name" --title "<name>"',
       },
       {
         id: "mcp",
         leaves: [
-          publicLeaf("mcp", "mcp", zero, 21, DIR_SURFACE),
+          publicLeaf("mcp", "mcp", zero, 20, DIR_SURFACE),
           publicLeaf("mcpInstall", "mcp install", zero),
           publicLeaf("mcpStatus", "mcp status", zero),
           publicLeaf("mcpUninstall", "mcp uninstall", zero),
@@ -606,8 +600,8 @@ export const CLI_COMMAND_GROUPS = [
       },
       {
         id: "viewList",
-        leaves: [publicLeaf("viewList", "view list", zero, 27, DIR_SURFACE)],
-        usage: "view list [--limit <n>] [--dir <path> | --remote <url>]",
+        leaves: [publicLeaf("viewList", "view list", zero, 26, DIR_SURFACE)],
+        usage: "view list [--limit <n>] [--dir <path>]",
         summary: "List the bundle's registered durable Views from the same catalog used by the web launcher and MCP list_views",
       },
       {
@@ -630,7 +624,7 @@ export const CLI_COMMAND_GROUPS = [
       },
       {
         id: "sync",
-        leaves: [publicLeaf("sync", "sync", zero, 22, DIR_SYNC_SURFACE)],
+        leaves: [publicLeaf("sync", "sync", zero, 21, DIR_SYNC_SURFACE)],
         usage: "sync [--establish [--yes] | --pull-only | --show-incoming <id> [--out <file> | --body-out <file>] | --inspect --doc <id> [--out <file>] | --resolve keep|take|revise --doc <id> | --restore-deletes | --accept-deletes <token> | --take-host-deletions <token> | --replace-links <id>] [--dir <path>] [--limit <n>]",
         summary:
           "Share the board branch with a remote — commits, pulls, and pushes (git tier; --pull-only skips commit+push). The remote repository must already exist: Superbee does not create it. After confirming the repository exists and origin/board does not, --establish is the separate explicit act that creates/pushes the board branch; it needs repository-specific push capability and branch-create policy clearance. If origin/board exists, plain `sync` joins it. Works both from a project's conventional bundle worktree and from a standalone clone whose tracked OKF root is attached to the shared board branch; a named board-<name> branch that commits a .superbee-board.json declaring that name is a second board in the same repository, synced from its own standalone clone against origin/board-<name>. A bundle folder already committed on the code branch is the same flag's hard case: preview first, --yes executes, and the folder's removal from the code branch rides a prepared side-branch commit you push and open as a PR. A bundle committed with code and NO board branch anywhere is the IN-TREE mode (read-side): full sync refuses (sharing rides your normal commit/push), --pull-only fetches the branch's tracking upstream and reports incoming board docs ('git pull' delivers them), and --establish converts to a dedicated board branch. A doc changed on both sides converges: teammate's version kept, yours exported; --show-incoming <id> (exclusive with --pull-only) prints the incoming version as of the last fetch; --inspect --doc <id> and --resolve keep|take|revise --doc <id> settle that saved conflict with the same verbs as a hosted checkout, and until then status reads needs_decision and every later sync lists it in saved_conflicts without changing the exit code; a repeat conflict keeps the earlier copy, and keep is refused when your copy also differs in frontmatter. A clone may declare a pre-push gate with git config superbee.syncGate '<command>': it runs on the rebased tree before every push that sends commits, and a failure holds the push (work committed locally, exit 5, code GATE_FAILED). A hosted checkout runs the same gate, read from Git configuration as seen from its folder and never from the host, after its pull and before anything is sent; a failure sends nothing (edits kept in the checkout, exit 5, code GATE_FAILED). A push that loses a race to another writer re-fetches, rebases, re-gates and retries (up to 5 attempts) and is reported as a race, never as a permission problem. Board-reading commands (list/doc read/status/home/link show) auto-run the ff-only pull when board state is >~5m stale — silent, bounded (~2s), never a push; SUPERBEE_NO_AUTOPULL=<any value, even 0> disables it. Hosted checkout (a folder made by `checkout`): sync sends edited documents whole and admitted tracked ordinary files as frozen opaque bytes with exact version/MIME pins under your own access and refreshes documents changed on the host, with one row per document (committed, conflict, held, refused, unknown, paused; non-zero exit until all are committed). A change to one document and a host change to another both land; a document changed on both sides is never merged but comes back as a conflict, resolved with --inspect --doc <id> then --resolve keep|take|revise --doc <id> (a resolution is recorded, then sent by the next plain sync). Tracked ordinary files use frozen bytes and exact MIME pins, with separate blob delivery counts; pull-only never submits them. A blobs: acceptance token targets only its exact held file set, without a full sync. A held mass delete is accepted only by the person, typing the count in their own terminal (--accept-deletes); --restore-deletes puts held document files back; --inspect --doc <file> and --resolve keep|take --doc <file> settle a tracked ordinary file's version conflict without resending the conflicted request. Uncertain blobs use original-identity lookup; absence alone never authorizes resubmission. Ordinary files are bounded at 16 MiB or a smaller host bound, and Artifact create acknowledges its bytes before queuing a record; normal sync confirms it. --take-host-deletions takes a mass deletion the pull refused. An edit that removes a link is held (dropped_links) until --replace-links <id> sends that one document's removal in that run.",
@@ -642,26 +636,26 @@ export const CLI_COMMAND_GROUPS = [
     commands: [
       {
         id: "version",
-        leaves: [publicLeaf("version", "version", zero, 26)],
+        leaves: [publicLeaf("version", "version", zero, 25)],
         usage: "version [--check] [--tag latest|next] [--json]",
         summary: "Show the complete local build/runtime identity, or perform one bounded read-only comparison against npm's exact latest/next release policy (published builds currently ship with this disabled: exits 1, policy_disabled, no network request)",
       },
       {
         id: "sessionStart",
-        leaves: [publicLeaf("sessionStart", "session-start", zero, 25, DIR_SURFACE)],
+        leaves: [publicLeaf("sessionStart", "session-start", zero, 24, DIR_SURFACE)],
         usage: "session-start [--dir <path>] [--no-update-check]",
         summary: "The SessionStart hook payload: pull then render; default TOON uses a nonblocking 24-hour cached latest check, while --no-update-check or SUPERBEE_NO_UPDATE_CHECK/NO_UPDATE_NOTIFIER/CI presence disables both display and refresh; npm receives only the public package request and ordinary network metadata, never installed version, cwd, bundle, actor, or usage data",
       },
       {
         id: "turnEnd",
-        leaves: [publicLeaf("turnEnd", "turn-end", zero, 33, DIR_SURFACE)],
+        leaves: [publicLeaf("turnEnd", "turn-end", zero, 32, DIR_SURFACE)],
         usage: "turn-end [--dir <path>] [--git-boards]",
         summary: "The end-of-turn hook payload: in a hosted checkout (or, with --git-boards, a shared Git board), sync once and hand a conflict or a sign-in link back to the agent; does nothing anywhere else; SUPERBEE_NO_TURN_SYNC=<any value> turns it off",
       },
       {
         id: "hook",
         leaves: [
-          publicLeaf("hookInstall", "hook install", zero, 23),
+          publicLeaf("hookInstall", "hook install", zero, 22),
           publicLeaf("hookStatus", "hook status", zero),
           publicLeaf("hookUninstall", "hook uninstall", zero),
         ],
@@ -671,7 +665,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "skill",
         leaves: [
-          publicLeaf("skillInstall", "skill install", zero, 24),
+          publicLeaf("skillInstall", "skill install", zero, 23),
           publicLeaf("skillStatus", "skill status", zero),
           publicLeaf("skillUninstall", "skill uninstall", zero),
         ],
@@ -681,7 +675,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "setup",
         leaves: [
-          publicLeaf("setup", "setup", zero, 28),
+          publicLeaf("setup", "setup", zero, 27),
           publicLeaf("setupMigrateState", "setup migrate-state", zero),
           publicLeaf("setupHardenState", "setup harden-state", zero),
           publicLeaf("setupQuarantineState", "setup quarantine-state", zero),
@@ -697,40 +691,40 @@ export const CLI_COMMAND_GROUPS = [
     commands: [
       {
         id: "login",
-        leaves: [publicLeaf("login", "login", zero, 29)],
+        leaves: [publicLeaf("login", "login", zero, 28)],
         usage: "login [--host <url>] [--client-id <id>] [--wait [--timeout <s>] | --loopback [--port <n>] [--timeout <s>]] [--json]",
         summary:
           "Sign in to hosted Superbee: device sign-in by default, never blocking — without a session it returns AUTH_REQUIRED (exit 4) with one link to relay, and re-running completes it; --wait polls within a bound, --loopback uses a bounded PKCE browser redirect; the refresh token goes to the OS credential store",
       },
       {
         id: "whoami",
-        leaves: [publicLeaf("whoami", "whoami", zero, 30)],
+        leaves: [publicLeaf("whoami", "whoami", zero, 29)],
         usage: "whoami [--host <url>] [--json]",
         summary: "Show the local hosted session (host, issuer, subject from unverified claims, expiry, credential store, pending sign-in); never prints a token",
       },
       {
         id: "logout",
-        leaves: [publicLeaf("logout", "logout", zero, 31)],
+        leaves: [publicLeaf("logout", "logout", zero, 30)],
         usage: "logout [--host <url>] [--json]",
         summary: "Revoke the hosted refresh token, delete the local session, and cancel a pending sign-in (idempotent)",
       },
       {
         id: "checkout",
-        leaves: [publicLeaf("checkout", "checkout", one, 32, DIR_SURFACE)],
+        leaves: [publicLeaf("checkout", "checkout", one, 31, DIR_SURFACE)],
         usage: "checkout (<bundle-id> [--host <url>] [--dir <folder>] [--workspace <id>] | --adopt <folder> [--host <url>] [--workspace <id>] | --release <folder>) [--json]",
         summary:
           "Mirror a hosted bundle into a new local folder you edit and then sync (sync sends your edits and brings in the host's): signs in if needed (AUTH_REQUIRED carries the link), the host defaults to your last sign-in only when it is the one host signed in (signed in to more than one, it is refused without --host), the binding stays in private state, and every command then runs on the folder; commands sync cannot send are refused there with 'do this in the app'; the folder carries a read-only .superbee/checkout.json marker that never routes; --adopt binds a moved, copied or restored checkout folder again; --release forgets a checkout and keeps its files",
       },
       {
         id: "export",
-        leaves: [publicLeaf("export", "export", zeroOrOne, 34, DIR_TO_SURFACE)],
+        leaves: [publicLeaf("export", "export", zeroOrOne, 33, DIR_TO_SURFACE)],
         usage: "export (<bundle-id> [--host <url>] [--workspace <id>] | [--dir <checkout>]) (--to <folder> | --in-place [--keep-unsent]) [--git] [--json]",
         summary:
           "Copy a hosted bundle out of hosted Superbee: every document, reserved file and blob at its latest revision, verified against the host's digest manifest before any file is written; --to writes a new local bundle into a new or empty folder (complete or not at all); --in-place converts a hosted checkout into a local bundle, adds what it lacks without overwriting a file, and forgets its binding; --git commits the result on a board branch; the hosted bundle is unchanged and history is not exported",
       },
       {
         id: "publish",
-        leaves: [publicLeaf("publish", "publish", zero, 35, DIR_SURFACE)],
+        leaves: [publicLeaf("publish", "publish", zero, 34, DIR_SURFACE)],
         usage: "publish --to hosted [--dir <bundle>] [--host <url>] [--workspace <id>] [--bundle-id <id>] [--name <name>] [--with-history] [--yes] [--json]",
         summary:
           "Move a local bundle or Git board to hosted Superbee: previews with no network (what travels, what stays, every host bound, the history plan); --yes signs in if needed, creates the bundle in your workspace (only you reach it until you share it with access grant or in the app) and converts the folder in place into a hosted checkout, unbinding a Git board (its branch stays); --with-history imports a board's Git history as labeled, unverified rows",
@@ -738,7 +732,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "op",
         leaves: [
-          publicLeaf("opList", "op list", zero, 36, DIR_SURFACE),
+          publicLeaf("opList", "op list", zero, 35, DIR_SURFACE),
           publicLeaf("opRun", "op run", one, undefined, DIR_LOCAL_RUN_SURFACE),
           publicLeaf("opRegister", "op register", one, undefined, DIR_PLUGIN_SURFACE),
           publicLeaf("opRegistered", "op registered", zero, undefined, DIR_SURFACE),
@@ -751,7 +745,7 @@ export const CLI_COMMAND_GROUPS = [
       },
       {
         id: "notify",
-        leaves: [publicLeaf("notify", "notify", oneOrTwo, 39, DIR_SURFACE)],
+        leaves: [publicLeaf("notify", "notify", oneOrTwo, 38, DIR_SURFACE)],
         usage: "notify <recipient> [<note>] [--kind needs_input|ready|review_requested|reply] [--doc <document-id>] [--thread <thread-id>] [--label <text> [--label-namespace <namespace>]] [--alert default|none] [--ticket <ticket>] [--dir <path> | --host <url> [--workspace <id>] [--bundle <bundle-id>]] [--json]",
         summary:
           "Put an item in a person's Superbee inbox as you, signed in to hosted Superbee (a hosted checkout's account and workspace, else your signed-in login and --workspace, the setup hosted default or your only workspace): <recipient> is self (an agent telling its person something) or a workspace member's principal id; --doc points it at a document of the checkout's bundle (or --bundle's) at the version the host holds; one ticket per send, and an unanswered send is retried with it and reported with it so --ticket settles it without a second item; hosted-only, with no local inbox: signed out it is refused with the one command that signs in",
@@ -759,7 +753,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "inbox",
         leaves: [
-          publicLeaf("inboxList", "inbox list", zero, 40, DIR_SURFACE),
+          publicLeaf("inboxList", "inbox list", zero, 39, DIR_SURFACE),
           publicLeaf("inboxThreads", "inbox threads", zero, undefined, DIR_SURFACE),
           publicLeaf("inboxOpen", "inbox open", one, undefined, DIR_SURFACE),
           publicLeaf("inboxAck", "inbox ack", one, undefined, DIR_SURFACE),
@@ -772,7 +766,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "access",
         leaves: [
-          publicLeaf("accessList", "access list", one, 37),
+          publicLeaf("accessList", "access list", one, 36),
           publicLeaf("accessGrant", "access grant", two),
           publicLeaf("accessRevoke", "access revoke", two),
         ],
@@ -782,7 +776,7 @@ export const CLI_COMMAND_GROUPS = [
       },
       {
         id: "workloadRegister",
-        leaves: [publicLeaf("workloadRegister", "workload register", zero, 43)],
+        leaves: [publicLeaf("workloadRegister", "workload register", zero, 42)],
         usage: "workload register [--name <name>] [--environment <name>] [--url <workspace-url>] [--no-open] [--json]",
         summary:
           "In a site repository, open the hosted workspace's workload app registration page filled in: the repository and owner ids and default branch from your local gh, the workflow, workspace and bundle from release.config.json, events schedule, repository_dispatch and workflow_dispatch, the bundle at read and, for a site that publishes to hosted, its <bundle> site line and reconcile.environment (else no environment); nothing is registered until a workspace administrator reviews the page and clicks Register; --no-open prints the link; then the App id goes in release.config.json reconcile.app (a site that only reads hosted content: the printed gh variable set HOSTED_APP_ID command)",

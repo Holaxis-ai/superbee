@@ -11,7 +11,6 @@ import { CLI_LEAVES, HOME_LEAF, PUBLIC_LEAVES, exactPositionalArity } from "../s
 import { CliError } from "../src/errors.js";
 import { assertLeafArity } from "../src/positional-arity.js";
 import { COMMAND_GROUPS } from "../src/reference.js";
-import { serve } from "../src/commands/serve.js";
 
 test("exact arity accepts its boundary without mutating input", () => {
   for (const leaf of [CLI_LEAVES.list, CLI_LEAVES.docWrite, CLI_LEAVES.linkAdd]) {
@@ -110,20 +109,4 @@ test("built init rejects surplus before creating its target", () => {
   assert.equal(result.status, 2, result.stdout + result.stderr);
   assert.match(result.stdout, /USAGE/);
   assert.throws(() => readFileSync(join(target, "index.md")));
-});
-
-test("serve surplus rejects before the injected listener authority is called", async () => {
-  let bootCalls = 0;
-  await assert.rejects(
-    () => serve(["extra"], {
-      stdout: () => undefined,
-      bootServer: async () => {
-        bootCalls++;
-        throw new Error("boot must be unreachable");
-      },
-      waitForShutdown: async () => undefined,
-    }),
-    (error: unknown) => error instanceof CliError && error.code === "USAGE",
-  );
-  assert.equal(bootCalls, 0);
 });

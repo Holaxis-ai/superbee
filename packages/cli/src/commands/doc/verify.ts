@@ -22,7 +22,6 @@ import {
   boardAttributionForRoute,
   openBundle,
   resolveLocalBundleRoute,
-  resolveRemoteFlag,
 } from "../../bundle.js";
 import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
@@ -47,7 +46,6 @@ export async function docVerify(argv: string[], deps: Partial<DocCliDeps>): Prom
         options: {
           at: { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           "expected-version": { type: "string" },
           actor: { type: "string" },
           json: { type: "boolean" },
@@ -112,10 +110,9 @@ export async function docVerify(argv: string[], deps: Partial<DocCliDeps>): Prom
     at = new Date(ms).toISOString();
   }
 
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
-  const route = remote === undefined ? await resolveLocalBundleRoute(values.dir) : undefined;
-  const bundle = route?.bundle ?? await openBundle(values.dir, remote);
-  if (route) await assertResolvedLocalRouteIdentity(route);
+  const route = await resolveLocalBundleRoute(values.dir);
+  const bundle = route.bundle;
+  await assertResolvedLocalRouteIdentity(route);
   id = await resolveConceptIdCliArgument(bundle, rawId);
   const mode = resolveMode(values);
 
@@ -148,7 +145,6 @@ export async function docVerify(argv: string[], deps: Partial<DocCliDeps>): Prom
     mode: "patch",
     onAbsent: "fail",
     registry,
-    remoteUrl: values.remote,
     strict: false,
     helpOnKindReject: `${cliInvocation()} kinds`,
     actor,

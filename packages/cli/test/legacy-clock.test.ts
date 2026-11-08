@@ -4,7 +4,6 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initBundle, readDoc, writeDoc, parseTimestamp } from "@superbee/core";
-import { serve } from "@superbee/server";
 import { doc } from "../src/commands/doc.js";
 import { newCommand } from "../src/commands/new.js";
 import { status } from "../src/commands/status.js";
@@ -34,44 +33,40 @@ async function run(command: Command, route: string[], timestamp: string, id = co
   return JSON.parse(output) as Record<string, unknown>;
 }
 
-for (const remote of [false, true]) {
-  for (const command of ["write", "new"] as const) {
-    test(`${command}: v0.2 raw legacy clock validates before normalization/no-op (${remote ? "remote" : "local"})`, async () => {
-      const { dir, bundle } = await fixture();
-      const server = remote ? await serve({ bundle, port: 0 }) : undefined;
-      const route = server ? ["--remote", `http://${server.host}:${server.port}`] : ["--dir", dir];
-      try {
-        const before = await readFile(path.join(dir, "existing.md"), "utf8");
-        for (const value of INVALID) {
-          await assert.rejects(run(command, route, value), (err: unknown) => {
-            assert.ok(err instanceof CliError);
-            assert.equal(err.code, "USAGE");
-            assert.match(err.message, /timestamp.*explicit UTC offset/);
-            return true;
-          }, `must refuse raw ${JSON.stringify(value)}`);
+for (const command of ["write", "new"] as const) {
+  test(`${command}: v0.2 raw legacy clock validates before normalization/no-op`, async () => {
+    const { dir, bundle } = await fixture();
+    const route = ["--dir", dir];
+    try {
+      const before = await readFile(path.join(dir, "existing.md"), "utf8");
+      for (const value of INVALID) {
+        await assert.rejects(run(command, route, value), (err: unknown) => {
+          assert.ok(err instanceof CliError);
+          assert.equal(err.code, "USAGE");
+          assert.match(err.message, /timestamp.*explicit UTC offset/);
+          return true;
+        }, `must refuse raw ${JSON.stringify(value)}`);
+        assert.equal(await readFile(path.join(dir, "existing.md"), "utf8"), before);
+        await assert.rejects(readFile(path.join(dir, "created.md")), { code: "ENOENT" });
+        if (command === "write") {
+          await assert.rejects(run(command, route, value, "existing"), /timestamp/);
           assert.equal(await readFile(path.join(dir, "existing.md"), "utf8"), before);
-          await assert.rejects(readFile(path.join(dir, "created.md")), { code: "ENOENT" });
-          if (command === "write") {
-            await assert.rejects(run(command, route, value, "existing"), /timestamp/);
-            assert.equal(await readFile(path.join(dir, "existing.md"), "utf8"), before);
-          }
         }
-        for (const [index, value] of VALID.entries()) {
-          const id = `valid-${index}`;
-          const receipt = await run(command, route, value, id);
-          assert.equal(receipt.id, id);
-          const saved = await readDoc(bundle, id);
-          assert.equal(Date.parse(String(saved.frontmatter.timestamp)), Date.parse(value));
-          let readOutput = "";
-          await doc(["read", id, ...route, "--json"], { stdout: (s) => { readOutput += s; } });
-          assert.equal(Date.parse(String(JSON.parse(readOutput).timestamp)), Date.parse(value));
-        }
-      } finally {
-        await server?.close();
-        await rm(dir, { recursive: true, force: true });
       }
-    });
-  }
+      for (const [index, value] of VALID.entries()) {
+        const id = `valid-${index}`;
+        const receipt = await run(command, route, value, id);
+        assert.equal(receipt.id, id);
+        const saved = await readDoc(bundle, id);
+        assert.equal(Date.parse(String(saved.frontmatter.timestamp)), Date.parse(value));
+        let readOutput = "";
+        await doc(["read", id, ...route, "--json"], { stdout: (s) => { readOutput += s; } });
+        assert.equal(Date.parse(String(JSON.parse(readOutput).timestamp)), Date.parse(value));
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 }
 
 for (const command of ["write", "new"] as const) {
@@ -87,7 +82,6 @@ for (const command of ["write", "new"] as const) {
 test("status: effective invalid legacy clocks are separate, bounded, edition-aware and read-only", async () => {
   for (const edition of ["0.1", "0.2"] as const) {
     const { dir, bundle } = await fixture(edition);
-    const server = await serve({ bundle, port: 0 });
     try {
       const rows: Record<string, string> = {
         existing: 'timestamp: "2026-09-08"',
@@ -101,7 +95,7 @@ test("status: effective invalid legacy clocks are separate, bounded, edition-awa
         await writeFile(path.join(dir, `${id}.md`), `---\ntype: Ungoverned\n${fields}\n---\nKeep body\n`);
       }
       const before = await Promise.all(Object.keys(rows).map((id) => readFile(path.join(dir, `${id}.md`), "utf8")));
-      for (const route of [["--dir", dir], ["--remote", `http://${server.host}:${server.port}`]]) {
+      for (const route of [["--dir", dir]]) {
         let output = "";
         await status([...route, "--limit", "1", "--json"], { stdout: (s) => { output += s; } });
         const result = JSON.parse(output);
@@ -120,7 +114,6 @@ test("status: effective invalid legacy clocks are separate, bounded, edition-awa
       }
       assert.deepEqual(await Promise.all(Object.keys(rows).map((id) => readFile(path.join(dir, `${id}.md`), "utf8"))), before);
     } finally {
-      await server.close();
       await rm(dir, { recursive: true, force: true });
     }
   }
@@ -160,53 +153,45 @@ test("legacy clock authoring and status help explain the edition-specific rule",
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-for (const remote of [false, true]) {
-  test(`write: repairing an imported date-only clock is substantive (${remote ? "remote" : "local"})`, async () => {
+test(`write: repairing an imported date-only clock is substantive`, async () => {
+  const { dir, bundle } = await fixture();
+  const route = ["--dir", dir];
+  try {
+    await writeFile(path.join(dir, "existing.md"), '---\ntype: Note\ntimestamp: "2026-09-08"\n---\nKeep body\n');
+    const repaired = "2026-09-08T00:00:00Z";
+    const receipt = await run("write", route, repaired, "existing");
+    assert.equal(receipt.changed, true);
+    assert.equal((await readDoc(bundle, "existing")).frontmatter.timestamp, repaired);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+for (const command of ["write", "new"] as const) {
+  test(`${command}: v0.2 hour-only offsets and equivalent no-ops`, async () => {
     const { dir, bundle } = await fixture();
-    const server = remote ? await serve({ bundle, port: 0 }) : undefined;
-    const route = server ? ["--remote", `http://${server.host}:${server.port}`] : ["--dir", dir];
+    const route = ["--dir", dir];
     try {
-      await writeFile(path.join(dir, "existing.md"), '---\ntype: Note\ntimestamp: "2026-09-08"\n---\nKeep body\n');
-      const repaired = "2026-09-08T00:00:00Z";
-      const receipt = await run("write", route, repaired, "existing");
-      assert.equal(receipt.changed, true);
-      assert.equal((await readDoc(bundle, "existing")).frontmatter.timestamp, repaired);
+      for (const [suffix, expectedUtc] of [["+06", "2026-09-08T06:30:00Z"], ["-06", "2026-09-08T18:30:00Z"]]) {
+        const value = `2026-09-08T12:30:00${suffix}`;
+        const id = suffix === "+06" ? "positive" : "negative";
+        await run(command, route, value, id);
+        const saved = await readDoc(bundle, id);
+        assert.equal(saved.frontmatter.timestamp, value);
+        assert.equal(parseTimestamp(saved.frontmatter.timestamp, "0.2"), Date.parse(expectedUtc!));
+        const before = await readFile(path.join(dir, `${id}.md`), "utf8");
+        for (const equivalent of [`${value}:00`, value]) {
+          let output = "";
+          await doc(["write", id, "--type", "Note", "--body", saved.body, "--timestamp", equivalent,
+            "--actor", "process:clock-test", "--json", ...route], { stdout: (s) => { output += s; } });
+          assert.equal(JSON.parse(output).changed, false);
+          assert.equal(await readFile(path.join(dir, `${id}.md`), "utf8"), before);
+        }
+      }
     } finally {
-      await server?.close();
       await rm(dir, { recursive: true, force: true });
     }
   });
-}
-
-for (const remote of [false, true]) {
-  for (const command of ["write", "new"] as const) {
-    test(`${command}: v0.2 hour-only offsets and equivalent no-ops (${remote ? "remote" : "local"})`, async () => {
-      const { dir, bundle } = await fixture();
-      const server = remote ? await serve({ bundle, port: 0 }) : undefined;
-      const route = server ? ["--remote", `http://${server.host}:${server.port}`] : ["--dir", dir];
-      try {
-        for (const [suffix, expectedUtc] of [["+06", "2026-09-08T06:30:00Z"], ["-06", "2026-09-08T18:30:00Z"]]) {
-          const value = `2026-09-08T12:30:00${suffix}`;
-          const id = suffix === "+06" ? "positive" : "negative";
-          await run(command, route, value, id);
-          const saved = await readDoc(bundle, id);
-          assert.equal(saved.frontmatter.timestamp, value);
-          assert.equal(parseTimestamp(saved.frontmatter.timestamp, "0.2"), Date.parse(expectedUtc!));
-          const before = await readFile(path.join(dir, `${id}.md`), "utf8");
-          for (const equivalent of [`${value}:00`, value]) {
-            let output = "";
-            await doc(["write", id, "--type", "Note", "--body", saved.body, "--timestamp", equivalent,
-              "--actor", "process:clock-test", "--json", ...route], { stdout: (s) => { output += s; } });
-            assert.equal(JSON.parse(output).changed, false);
-            assert.equal(await readFile(path.join(dir, `${id}.md`), "utf8"), before);
-          }
-        }
-      } finally {
-        await server?.close();
-        await rm(dir, { recursive: true, force: true });
-      }
-    });
-  }
 }
 
 test("write: v0.1 retains blank defaults, whitespace trimming, and legacy invalid-date errors", async () => {
@@ -233,30 +218,26 @@ test("write: v0.1 retains blank defaults, whitespace trimming, and legacy invali
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-for (const remote of [false, true]) {
-  test(`write: v0.2 validates trimmed inputs while preserving strict instant rules (${remote ? "remote" : "local"})`, async () => {
-    const { dir, bundle } = await fixture();
-    const server = remote ? await serve({ bundle, port: 0 }) : undefined;
-    const route = server ? ["--remote", `http://${server.host}:${server.port}`] : ["--dir", dir];
-    try {
-      for (const [index, instant] of ["2026-09-08T12:30:00Z", "2026-09-08T12:30:00+06"].entries()) {
-        const id = `trimmed-${index}`;
-        assert.equal((await run("write", route, ` \n${instant}\t `, id)).changed, true);
-        assert.equal((await readDoc(bundle, id)).frontmatter.timestamp, instant);
-        const before = await readFile(path.join(dir, `${id}.md`), "utf8");
-        const equivalent = instant.endsWith("Z") ? instant.replace(/Z$/, "+00:00") : `${instant}:00`;
-        assert.equal((await run("write", route, ` \t${equivalent}\n`, id)).changed, false);
+test(`write: v0.2 validates trimmed inputs while preserving strict instant rules`, async () => {
+  const { dir, bundle } = await fixture();
+  const route = ["--dir", dir];
+  try {
+    for (const [index, instant] of ["2026-09-08T12:30:00Z", "2026-09-08T12:30:00+06"].entries()) {
+      const id = `trimmed-${index}`;
+      assert.equal((await run("write", route, ` \n${instant}\t `, id)).changed, true);
+      assert.equal((await readDoc(bundle, id)).frontmatter.timestamp, instant);
+      const before = await readFile(path.join(dir, `${id}.md`), "utf8");
+      const equivalent = instant.endsWith("Z") ? instant.replace(/Z$/, "+00:00") : `${instant}:00`;
+      assert.equal((await run("write", route, ` \t${equivalent}\n`, id)).changed, false);
+      assert.equal(await readFile(path.join(dir, `${id}.md`), "utf8"), before);
+      for (const invalid of [" \n2026-09-08\t ", " \n2026-09-08T12:30:00\t ", " \t\n "]) {
+        await assert.rejects(run("write", route, invalid, id), /timestamp.*explicit UTC offset/);
         assert.equal(await readFile(path.join(dir, `${id}.md`), "utf8"), before);
-        for (const invalid of [" \n2026-09-08\t ", " \n2026-09-08T12:30:00\t ", " \t\n "]) {
-          await assert.rejects(run("write", route, invalid, id), /timestamp.*explicit UTC offset/);
-          assert.equal(await readFile(path.join(dir, `${id}.md`), "utf8"), before);
-          await assert.rejects(run("write", route, invalid, "invalid"), /timestamp.*explicit UTC offset/);
-          await assert.rejects(readFile(path.join(dir, "invalid.md")), { code: "ENOENT" });
-        }
+        await assert.rejects(run("write", route, invalid, "invalid"), /timestamp.*explicit UTC offset/);
+        await assert.rejects(readFile(path.join(dir, "invalid.md")), { code: "ENOENT" });
       }
-    } finally {
-      await server?.close();
-      await rm(dir, { recursive: true, force: true });
     }
-  });
-}
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

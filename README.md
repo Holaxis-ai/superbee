@@ -111,9 +111,9 @@ project before retrying.
 
 - **Project binding:** `.superbee.json` is a committed local pointer (`{ "bundle": "<path>" }`)
   for an out-of-tree directory and beats the conventional folder. A retired `.agentstate.json` is
-  refused with the rename fix rather than skipped. Remote access is never
-  ambient: pass `--remote <url>` explicitly. Legacy URL bindings and `AGENTSTATE_LITE_REMOTE`
-  fail with migration guidance instead of activating HTTP.
+  refused with the rename fix rather than skipped. A URL-valued binding, `--remote` and
+  `AGENTSTATE_LITE_REMOTE` are refused: use `checkout` for a hosted bundle or `--dir` for a
+  local one.
 - **Private workspace:** the bundle lives outside the repo (for example,
   `~/superbee-workspaces/<name>/`); a git-excluded binding points at it, and nothing enters the repo.
 - **Personal catalog:** register any local bundle under a user- or agent-defined label so it is
@@ -283,11 +283,11 @@ bundles remain supported without rewriting their declared edition.
   [`v0.4.3`](https://github.com/Holaxis-ai/superbee/blob/v0.4.3/scripts/migrate-legacy-view-names.mjs)
   renames them in place. Legacy folder locations stay recognized.) Authoring is still HTML/agent-driven rather than a
   polished end-user builder, so treat the surface as a preview.
-- **The public package ends at a generic remote boundary.** `serve` exposes a bundle through the
-  versioned wire protocol, and bundle commands can target a service explicitly with `--remote`.
-  A gated service may accept `SUPERBEE_API_KEY` or an already-provisioned stored per-origin
-  credential. This repository ships no hosted deployment, identity system, account-administration
-  commands, or cloud-provider package.
+- **The public package ends at a generic remote boundary.** The CLI's v0 remote client
+  (`--remote`) and its reference server command (`serve`) are removed; `npx superbee@0.4.5` still
+  runs them. The wire protocol remains the local UI's data path and the `@superbee/server/router`
+  host contract. This repository ships no hosted deployment, identity system,
+  account-administration commands, or cloud-provider package.
 - **Wire protocol v0.1** is evolving. One recorded caveat: a document's raw bytes
   re-serialize to canonical form over the wire; blobs are the byte-exact channel.
 - **Filesystem CAS is serialized across same-user local processes** with an external per-target runtime lock.
