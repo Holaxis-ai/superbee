@@ -509,11 +509,14 @@ transport that passes it.
 ## Bundle health
 
 `@superbee/core/bundle-health` computes the health report behind `superbee status` from a core
-`Bundle` on any backend: malformed documents, Kind lint and conformance debt, registry warnings,
-unresolved links, orphans, freshness and invalid timestamps, trust tiers, the two graph lints, the
-View surface, cross-bundle links, the OKF v0.1 upgrade finding and legacy naming. It uses no Node
-globals or builtins, so it runs in Node, a browser or a Worker. The caller presents the report;
-the CLI adds row caps, help text and its home and sync blocks.
+`Bundle` on any backend: malformed or unreadable documents, Kind lint and conformance debt,
+registry warnings, unresolved links, orphans, freshness and invalid timestamps, trust tiers, the two
+graph lints, the View surface, cross-bundle links and the OKF v0.1 upgrade finding. A link to a
+skipped document is not reported as unresolved. It uses no Node globals or builtins, so it runs in
+Node, a browser or a Worker. The caller presents the report; the CLI adds row caps, help text and
+its home and sync blocks. `@superbee/core/skip-reasons` exports `isPermissionDeniedSkip`, which
+tells a document the host refused to read (`permission denied (EACCES)` or `(EPERM)`) from a
+malformed one.
 
 ```ts
 import { MemoryBackend } from "@superbee/core/memory-backend";

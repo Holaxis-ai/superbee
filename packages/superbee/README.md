@@ -179,8 +179,8 @@ If you installed the earlier `@holaxis/aslite` package or its marketplace plugin
 run `npm uninstall -g @holaxis/aslite`. Existing `.agentstate-lite/` bundles keep working. Rename
 a `.agentstate.json` binding to `.superbee.json` (same contents), and rename the old environment
 variables (`AGENTSTATE_LITE_ACTOR`, `AGENTSTATE_LITE_API_KEY`, `ASLITE_NO_UPDATE_CHECK`,
-`AGENTSTATE_LITE_NO_AUTOPULL`) to their `SUPERBEE_*` names; Superbee refuses the old names with
-that fix.
+`AGENTSTATE_LITE_NO_AUTOPULL`) to their `SUPERBEE_*` names. An old name set without its new one is
+refused with that fix; beside its new one it is ignored.
 
 ## Learn more
 
