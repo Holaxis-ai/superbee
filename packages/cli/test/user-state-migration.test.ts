@@ -7,7 +7,6 @@ import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { loadCredentials, saveApiKeyForOrigin } from "../src/credentials.js";
 import { CliError } from "../src/errors.js";
 import {
   canonicalUserStateDir,
@@ -18,6 +17,7 @@ import {
   USER_STATE_MARKER_BYTES,
   USER_STATE_QUARANTINE_COMMAND,
   userStateDir,
+  writeUserStateFileAtomic0600,
 } from "../src/user-state.js";
 import { setupStateCapability } from "../src/setup-plan.js";
 import { inspectUserStateMigration, migrateUserState, migrationSourceRoots } from "../src/user-state-migration.js";
@@ -79,10 +79,9 @@ test("ordinary Superbee state is canonical-only and initializes an exact private
     await mkdir(legacy, { mode: 0o700 });
     await writeLegacy(join(legacy, "okf-config.json"), `${JSON.stringify({ remotes: { "https://old.example": { api_key: "old" } } })}\n`);
 
-    assert.equal(await loadCredentials(root), null, "ordinary reads never fall back to legacy state");
-    await saveApiKeyForOrigin("https://new.example", "new", root);
-    assert.equal((await loadCredentials(root))?.remotes?.["https://new.example"]?.api_key, "new");
-    assert.equal((await loadCredentials(root))?.remotes?.["https://old.example"], undefined);
+    // An ordinary state write initializes the canonical root and never reads the legacy one.
+    await writeUserStateFileAtomic0600(root, userStateDir(root), "probe.json", "{}\n");
+    await assert.rejects(stat(join(canonicalUserStateDir(root), "okf-config.json")), { code: "ENOENT" }, "ordinary state never falls back to legacy credentials");
     assert.equal(await readUserStateMarker(root), USER_STATE_MARKER_BYTES);
     assert.equal((await stat(canonicalUserStateDir(root))).mode & 0o777, 0o700);
     assert.equal((await stat(join(canonicalUserStateDir(root), "state.json"))).mode & 0o777, 0o600);

@@ -53,7 +53,7 @@ The command verifies the document exists and opens its trusted DocPage route in 
 It uses the same bounded Markdown renderer as the rest of Superbee; it does not export
 a second HTML copy or introduce another rendering path. Local launches return promptly and reuse one
 managed UI per exact bundle + actor. An already-open viewer offers the document without replacing
-what you are reading. Use --new-tab to request a separate tab. Explicit remote launches stay in the foreground. Use
+what you are reading. Use --new-tab to request a separate tab. Use
 'superbee ui --status' or 'superbee ui --stop' to inspect or stop a managed local UI.
 
 Options:

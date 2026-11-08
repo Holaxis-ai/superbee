@@ -135,34 +135,22 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
     return;
   }
 
-  // Bound the page like `list`/`status`/`blobs` do: `count` always reports the TRUE total (the
-  // filesystem backend's single-entry chain never triggers this). `versions` is already
-  // newest-first, so slicing from the front keeps the newest revision and drops only the oldest tail.
-  const total = versions.length;
-  const shown = limit > 0 ? versions.slice(0, limit) : versions;
-  const truncated = shown.length < total;
-
-  // Attributed history, newest-first (a history-keeping backend returns the full chain; the plain
-  // filesystem keeps none, so honestly returns just the single current revision). The newest token is
-  // offered inline as a ready-to-paste `--expected-version` for an optimistic update.
+  // A local bundle keeps no history: the filesystem backend returns the one current revision, so
+  // `--limit` never cuts anything here. The newest token is offered inline as a ready-to-paste
+  // `--expected-version` for an optimistic update.
   const out: Record<string, unknown> = {
     id,
-    count: total,
-    versions: shown.map((v) =>
+    count: versions.length,
+    versions: versions.map((v) =>
       v.agent === undefined
         ? { version: v.version, actor: v.actor, timestamp: v.timestamp }
         : { version: v.version, actor: v.actor, timestamp: v.timestamp, agent: v.agent },
     ),
+    help: [
+      "Local bundle: current version only; no prior versions are retained.",
+      `${cliInvocation()} doc update ${commandToken(id)} --expected-version ${commandToken(versions[0]!.version)}`,
+    ],
   };
-  if (truncated) out.shown = shown.length;
-
-  const help: string[] = [];
-  help.push("Local bundle: current version only; no prior versions are retained.");
-  if (truncated) {
-    help.push(truncationHelp(id, shown.length, total));
-  }
-  help.push(`${cliInvocation()} doc update ${commandToken(id)} --expected-version ${commandToken(versions[0]!.version)}`);
-  out.help = help;
 
   stdout(render(out, mode));
 }

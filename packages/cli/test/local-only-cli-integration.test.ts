@@ -57,12 +57,12 @@ function run(
 
 const SECRET_URL = "http://user:secret-token@legacy.example";
 
-test("built CLI: the retired remote variable refuses every command, even with --dir", async () => {
+test("built CLI: the retired remote variable is refused only where it used to choose the bundle", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "superbee-retired-remote-env-"));
   try {
-    for (const args of [["list", "--json"], ["list", "--dir", sampleBundle, "--json"]]) {
+    for (const args of [["list", "--json"], ["doc", "read", "a"], ["bundle", "id", "set", "x"]]) {
       const result = await run(args, cwd, SECRET_URL);
-      assert.equal(result.code, 2, result.stdout);
+      assert.equal(result.code, 2, `${args.join(" ")}: ${result.stdout}`);
       assert.match(result.stdout, /code: USAGE/);
       assert.match(result.stdout, /code: RETIRED_ENV/);
       assert.match(result.stdout, /AGENTSTATE_LITE_REMOTE is no longer read; remote access was removed\./);
@@ -70,11 +70,35 @@ test("built CLI: the retired remote variable refuses every command, even with --
       assert.match(result.stdout, /checkout <bundle-id>/);
       assert.doesNotMatch(result.stdout + result.stderr, /secret-token/);
     }
+    // An explicit --dir always won over it, so it is ignored there, silently, as before.
+    const withDir = await run(["list", "--dir", sampleBundle, "--json"], cwd, SECRET_URL);
+    assert.equal(withDir.code, 0, withDir.stdout);
+    assert.equal((JSON.parse(withDir.stdout) as { count: number }).count, 4);
+    assert.equal(withDir.stderr, "");
+    // A command that never read it is unaffected.
+    const version = await run(["version"], cwd, SECRET_URL);
+    assert.equal(version.code, 0, version.stdout);
+    assert.doesNotMatch(version.stdout + version.stderr, /RETIRED_ENV/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
 });
 
+test("built CLI: an option value spelled --remote is data, not the removed flag", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "superbee-remote-as-value-"));
+  try {
+    const bundle = path.join(cwd, "b");
+    assert.equal((await run(["init", "--dir", bundle], cwd)).code, 0);
+    const written = await run(["doc", "write", "notes/a", "--type", "Note", "--title=--remote", "--body", "x", "--dir", bundle, "--json"], cwd);
+    assert.equal(written.code, 0, written.stdout);
+    const updated = await run(["doc", "update", "notes/a", "--title", "--remote", "--dir", bundle, "--json"], cwd);
+    assert.equal(updated.code, 0, updated.stdout);
+    const read = await run(["doc", "read", "notes/a", "--field", "title", "--dir", bundle], cwd);
+    assert.equal(read.stdout.trim(), "--remote");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
 test("built CLI: --remote is refused before any work, wherever it appears", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "superbee-retired-remote-flag-"));
   try {

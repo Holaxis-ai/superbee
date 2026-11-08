@@ -11,6 +11,7 @@ import type { InstallScope } from "../src/install-scope.js";
 import {
   DEPRECATION_NOTICES,
   RETIRED_ENV,
+  RETIRED_REMOTE_ENV,
   RETIRED_UNUSED_ENV,
   renderDeprecationNotice,
   stderrIsReserved,
@@ -33,6 +34,7 @@ function cleanEnv(home: string, overrides: NodeJS.ProcessEnv = {}): NodeJS.Proce
   const env = isolatedUserEnv(home, { SUPERBEE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" });
   for (const [retired] of RETIRED_ENV) delete env[retired];
   for (const [retired] of RETIRED_UNUSED_ENV) delete env[retired];
+  delete env[RETIRED_REMOTE_ENV];
   // Fixes below really install, so no inherited override may point them at a real host config.
   for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR"]) delete env[name];
   env.XDG_CONFIG_HOME = join(home, ".config");
@@ -254,7 +256,7 @@ test("a skill folder install cannot claim stays named until the person deletes i
   assert.ok(!after.stderr.includes("DEPRECATED_LEGACY_SKILL_FOLDER"), after.stderr);
 }));
 
-test("session-start with --remote stays silent: hook commands never refuse", () => withFixture(async ({ home, project }) => {
+test("session-start with --remote writes nothing to stderr", () => withFixture(async ({ home, project }) => {
   const result = await run(["session-start", "--remote", "http://127.0.0.1:9"], project, cleanEnv(home));
   assert.equal(result.stderr, "");
 }));

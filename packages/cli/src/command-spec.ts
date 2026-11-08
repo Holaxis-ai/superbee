@@ -382,7 +382,7 @@ export const CLI_COMMAND_GROUPS = [
         id: "docOpen",
         leaves: [publicLeaf("docOpen", "doc open", one, undefined, DIR_SURFACE)],
         usage: "doc open <id> [--new-tab] [--dir <path>] [--port <n>] [--actor <name>]",
-        summary: "Open one exact authoritative document in a reusable managed local browser UI (explicit remote launches remain foreground)",
+        summary: "Open one exact authoritative document in a reusable managed local browser UI",
       },
       {
         id: "docHistory",
@@ -578,7 +578,7 @@ export const CLI_COMMAND_GROUPS = [
     ],
   },
   {
-    group: "Remote",
+    group: "Interfaces and sync",
     commands: [
       {
         id: "ui",

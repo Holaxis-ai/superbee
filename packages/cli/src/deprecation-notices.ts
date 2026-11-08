@@ -6,6 +6,7 @@
 // records and exit codes never change. The channel stays closed until the CLI entry opens it for a
 // command that leaves stderr free: importing this module, a private worker and a command whose
 // stderr is itself a contract all stay silent. See {@link stderrIsReserved}.
+import { parseArgs } from "node:util";
 import { SUPERBEE_NO_AUTOPULL_ENV } from "@superbee/board-git";
 import { SUPERBEE_ACTOR_ENV, SUPERBEE_NO_UPDATE_CHECK_ENV } from "./env-policy.js";
 import { CliError, toEnvelope } from "./errors.js";
@@ -36,8 +37,20 @@ export const RETIRED_ENV: readonly (readonly [retired: string, replacement: stri
   ["AGENTSTATE_LITE_NO_AUTOPULL", SUPERBEE_NO_AUTOPULL_ENV],
 ] as const);
 
-/** The retired ambient remote default. It has no replacement: remote access itself was removed. */
+/**
+ * The retired ambient remote default. It once chose a remote server when no `--dir` was given, so it
+ * is refused only there (see `bundle.ts`); beside an explicit `--dir` it never mattered and is
+ * ignored, as before.
+ */
 export const RETIRED_REMOTE_ENV = "AGENTSTATE_LITE_REMOTE";
+
+/** The refusal for {@link RETIRED_REMOTE_ENV}, raised where it used to select a server. */
+export function retiredRemoteEnvRefusal(): CliError {
+  return new CliError("USAGE", `${RETIRED_REMOTE_ENV} is no longer read; remote access was removed.`, {
+    help: `unset ${RETIRED_REMOTE_ENV} wherever it is set. ${remoteRoutes(cliInvocation())}`,
+    details: { code: "RETIRED_ENV", retired_env: [RETIRED_REMOTE_ENV] },
+  });
+}
 
 /**
  * Retired environment names with no replacement, because what read them was removed: why each is
@@ -45,7 +58,6 @@ export const RETIRED_REMOTE_ENV = "AGENTSTATE_LITE_REMOTE";
  */
 export const RETIRED_UNUSED_ENV: readonly (readonly [retired: string, why: string, fix: (cli: string) => string])[] = Object.freeze([
   ["AGENTSTATE_LITE_API_KEY", "nothing uses an API key", (cli: string) => `remove AGENTSTATE_LITE_API_KEY wherever it is set; it is no longer used. Hosted bundles use ${cli} login.`],
-  [RETIRED_REMOTE_ENV, "remote access was removed", (cli: string) => `unset ${RETIRED_REMOTE_ENV} wherever it is set. ${remoteRoutes(cli)}`],
 ] as const);
 
 /**
@@ -91,15 +103,46 @@ function remoteRoutes(cli: string): string {
 /** The last release that still carries the removed remote client and reference server. */
 const LAST_REMOTE_RELEASE = "superbee@0.4.5";
 
+/** The long options a leading flag block may carry before the command word, for {@link retiredInput}. */
+const LEADING_BLOCK_OPTIONS = {
+  dir: { type: "string" },
+  remote: { type: "string" },
+  json: { type: "boolean" },
+  "no-update-check": { type: "boolean" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
 /**
- * A removed flag or command in `argv`, before `--`. The flag counts anywhere so that a hoisted or
- * misplaced `--remote` is refused the same way; `serve` counts only as the command word.
+ * A removed command word, or `--remote` in a leading flag block (`superbee --remote <url> ...`),
+ * where no command parser runs. Inside a command, its own parser reports `--remote` through
+ * {@link retiredFlagInParse}, so an option VALUE spelled `--remote` is never mistaken for the flag.
  */
 export function retiredInput(argv: readonly string[]): "--remote" | "serve" | undefined {
   if (argv[0] === "serve") return "serve";
-  const end = argv.indexOf("--");
-  const scanned = end === -1 ? argv : argv.slice(0, end);
-  return scanned.some((arg) => arg === "--remote" || arg.startsWith("--remote=")) ? "--remote" : undefined;
+  if (!argv[0]?.startsWith("-")) return undefined;
+  let tokens;
+  try {
+    tokens = parseArgs({ args: [...argv], options: LEADING_BLOCK_OPTIONS, strict: false, allowPositionals: true, tokens: true }).tokens;
+  } catch {
+    return undefined;
+  }
+  for (const token of tokens) {
+    if (token.kind === "positional" || token.kind === "option-terminator") return undefined;
+    if (token.kind === "option" && token.name === "remote") return "--remote";
+  }
+  return undefined;
+}
+
+/**
+ * Whether a command parser met `--remote` as a flag: strict parsers reject it as an unknown option,
+ * lenient ones return it among their values.
+ */
+export function retiredFlagInParse(outcome: { error: unknown } | { values: object | undefined }): boolean {
+  if ("error" in outcome) {
+    const err = outcome.error as { code?: unknown; message?: unknown } | null;
+    return err?.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" && typeof err.message === "string" && /'--remote'/.test(err.message);
+  }
+  return outcome.values !== undefined && Object.hasOwn(outcome.values, "remote");
 }
 
 /** The refusal for {@link retiredInput}. The URL is never echoed: it may carry credentials. */
@@ -145,9 +188,32 @@ export function refuseRetiredEnv(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): boolean {
   const names = retiredEnvNames(env);
-  if (!names.length) return false;
-  writeEntryRefusal(argv, retiredEnvRefusal(names));
-  return true;
+  if (names.length) {
+    writeEntryRefusal(argv, retiredEnvRefusal(names));
+    return true;
+  }
+  if (Object.hasOwn(env, RETIRED_REMOTE_ENV) && selectedRemoteByDefault(argv)) {
+    writeEntryRefusal(argv, retiredRemoteEnvRefusal());
+    return true;
+  }
+  return false;
+}
+
+/** The commands whose bundle selection read {@link RETIRED_REMOTE_ENV} when no `--dir` was given. */
+const AMBIENT_REMOTE_COMMANDS: ReadonlySet<string> = new Set([
+  "artifact", "blobs", "delete", "deps", "doc", "kind", "kinds", "link", "list", "new", "promote",
+  "pull", "query", "recipe", "recipes", "search", "status", "ui", "view",
+]);
+
+/** Whether `argv` is a command that once let the retired remote default choose its bundle. */
+function selectedRemoteByDefault(argv: readonly string[]): boolean {
+  const command = argv[0];
+  const reads = command !== undefined
+    && (AMBIENT_REMOTE_COMMANDS.has(command) || (command === "bundle" && argv[1] === "id"));
+  if (!reads) return false;
+  const end = argv.indexOf("--");
+  const scanned = end === -1 ? argv : argv.slice(0, end);
+  return !scanned.some((arg) => arg === "--dir" || arg.startsWith("--dir="));
 }
 
 /** The `retired_env` line the hook path shows in place of refusing, or undefined when none apply. */

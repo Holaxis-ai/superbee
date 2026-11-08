@@ -66,17 +66,18 @@ A retired path is refused with its exact fix, through the same owner. A retired 
 (`AGENTSTATE_LITE_ACTOR`, `ASLITE_NO_UPDATE_CHECK`, `AGENTSTATE_LITE_NO_AUTOPULL`) set without its
 `SUPERBEE_*` replacement stops every command before any work with `USAGE`, exit 2, `details.code`
 `RETIRED_ENV` and the names in `details.retired_env`; beside its replacement it is ignored.
-`AGENTSTATE_LITE_API_KEY` and `AGENTSTATE_LITE_REMOTE` have no replacement, because what read them
-was removed: either one, set at all, refuses the same way. `SUPERBEE_API_KEY` is read by nothing and
-is ignored. The envelope goes where the command
+`AGENTSTATE_LITE_API_KEY` has no replacement, because nothing reads an API key now: set at all, it
+refuses the same way. `AGENTSTATE_LITE_REMOTE` once chose a remote server when a bundle command had
+no `--dir`; it refuses with `RETIRED_ENV` there and is ignored beside an explicit `--dir`, as it always
+was. `SUPERBEE_API_KEY` is read by nothing and is ignored. The envelope goes where the command
 puts its errors (stderr for `mcp` and the byte and raw value channels). `session-start`,
 `turn-end` and bare home never refuse: home shows a `retired_env` line and skips the update check
 and automatic pull. A `.agentstate.json` project binding is refused at the level where the walk
 finds it with `USAGE`, exit 2, `details.code` `RETIRED_PROJECT_BINDING` and the file in
 `details.binding`; home shows the same text as `project_binding_error`.
 
-The v0 remote client and its reference server command are removed. `--remote`, anywhere before
-`--`, stops every command before any work with `USAGE`, exit 2, `details.code` `RETIRED_FLAG` and
+The v0 remote client and its reference server command are removed. `--remote` where a command's
+parser reads a flag (never an option's value, never after `--`) stops the command before any work with `USAGE`, exit 2, `details.code` `RETIRED_FLAG` and
 `details.input` `--remote`; `superbee serve` does the same with `RETIRED_COMMAND` and `details.input`
 `serve`. The help names `checkout` for a hosted bundle, `--dir` for a local one and the last release
 that still has the old server. A URL-valued project binding is
