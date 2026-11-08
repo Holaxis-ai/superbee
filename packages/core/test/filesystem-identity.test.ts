@@ -244,7 +244,7 @@ test("AC-3(q): a prefix directory replaced between O-PROBE and its confirmation 
 
 test("alias refusal names a file leaf as a file and omits an unknown existing spelling", () => {
   const leaf = new FilesystemIdentityAliasError("concepts/A.md", "A.md", "a.md", "file");
-  assert.match(leaf.message, /^Path 'concepts\/A\.md' uses file 'A\.md', but file 'a\.md' already exists, and this disk treats names that differ only by case or Unicode form as the same name\. Use the existing spelling\.$/);
+  assert.match(leaf.message, /^Path 'concepts\/A\.md' uses file 'A\.md', but file 'a\.md' already exists, and this disk treats names that differ only by case as the same name\. Use the existing spelling\.$/);
   assert.equal(leaf.suggestedPath, "concepts/a.md");
   assert.equal(leaf.reason, "filesystem_alias");
   const unknown = new FilesystemIdentityAliasError("Concepts/x.md", "Concepts");
@@ -253,7 +253,8 @@ test("alias refusal names a file leaf as a file and omits an unknown existing sp
   assert.equal(unknown.suggestedPath, undefined);
   // Names that differ only by Unicode form print alike, so the message says how they differ.
   const nfd = new FilesystemIdentityAliasError("caf\u00e9/x.md", "caf\u00e9", "cafe\u0301", "folder", 0);
-  assert.match(nfd.message, /already exists, written in a different Unicode form, and this disk/);
+  assert.match(nfd.message, /already exists, written in a different Unicode form, and this disk treats names that differ only by Unicode form as/);
+  assert.match(new FilesystemIdentityAliasError("C\u00e9/x.md", "C\u00e9", "ce\u0301", "folder", 0).message, /differ only by case and Unicode form as/);
   assert.equal(nfd.suggestedPath, undefined, "a respelling that prints alike and is not canonical is no help");
   assert.equal(new FilesystemIdentityAliasError("a/license/x.md", "license", "LICENSE", "file", 1).suggestedPath, undefined);
   // The index, not the first equal spelling, places the suggestion.

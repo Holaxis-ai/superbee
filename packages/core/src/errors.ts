@@ -110,9 +110,13 @@ export class FilesystemIdentityAliasError extends InvalidInputError {
       : existing.normalize("NFC") === segment.normalize("NFC")
         ? `but ${kind} '${existing}' already exists, written in a different Unicode form`
         : `but ${kind} '${existing}' already exists`;
+    const difference = existing === undefined ? "case or Unicode form"
+      : existing.normalize("NFC") === segment.normalize("NFC") ? "Unicode form"
+        : existing.toLowerCase() === segment.toLowerCase() ? "case"
+          : "case and Unicode form";
     super(
       `Path '${rel}' uses ${kind} '${segment}', ${clash}, and this disk treats names that differ only ` +
-        `by case or Unicode form as the same name. Use the existing spelling.`,
+        `by ${difference} as the same name. Use the existing spelling.`,
     );
     this.name = "FilesystemIdentityAliasError";
     this.rel = rel;

@@ -724,6 +724,16 @@ export async function probeExact(
  */
 const SETTLED_AFTER_NS = 3_000_000_000n;
 
+/**
+ * Whether a directory witness can detect change at all. Some volumes report times that never
+ * move: macOS gives an exFAT volume's root directory mtime and ctime 0 forever. A time at or
+ * before the epoch is never a real modification of a bundle directory, so such a witness is
+ * treated as absent and its listing is neither kept nor reused.
+ */
+export function witnessCanDetectChange(witness: DirectoryWitness): boolean {
+  return witness.mtimeNs > 0n && witness.ctimeNs > 0n;
+}
+
 function witnessKey(witness: DirectoryWitness): string {
   return `${witness.dev}:${witness.ino}:${witness.mtimeNs}:${witness.ctimeNs}`;
 }
@@ -754,8 +764,12 @@ function witnessedListings(
   capacity = Infinity,
 ): { source: ListingSource; reused(): boolean } {
   let reused = false;
-  const witnessOf = port.directoryWitness?.bind(port);
-  if (witnessOf === undefined) return { source: freshListings(port), reused: () => false };
+  const portWitness = port.directoryWitness?.bind(port);
+  if (portWitness === undefined) return { source: freshListings(port), reused: () => false };
+  const witnessOf = async (dir: string): Promise<DirectoryWitness | null> => {
+    const witness = await portWitness(dir);
+    return witness !== null && witnessCanDetectChange(witness) ? witness : null;
+  };
   const settled = (witness: DirectoryWitness): boolean => {
     const nowNs = BigInt(Math.floor(now())) * 1_000_000n;
     const latest = witness.mtimeNs > witness.ctimeNs ? witness.mtimeNs : witness.ctimeNs;

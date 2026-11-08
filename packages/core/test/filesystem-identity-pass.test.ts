@@ -66,7 +66,7 @@ function scriptedTree(port: ScriptedPort, count: number): string[] {
 
 /** A scripted port plus a directory witness driven by a generation the test advances. */
 function witnessed(port: ScriptedPort): { port: FilesystemIdentityPort; bump(): void } {
-  let generation = 0n;
+  let generation = 1n; // a real, long-settled time: 0 is the never-moving witness the protocol distrusts
   const witness = async (dir: string): Promise<DirectoryWitness | null> =>
     port.node(dir) === null ? null : { dev: 1n, ino: BigInt(port.node(dir)!.ino), mtimeNs: generation, ctimeNs: generation };
   const wrapped: FilesystemIdentityPort = {
@@ -104,6 +104,27 @@ test("absent probes under one directory list its parent once, and a refusal neve
   await assert.rejects(() => probeExact(port, SCRIPTED_ROOT, "items/missing.md"), FilesystemIdentityAliasError);
   scripted.respell(path.join(SCRIPTED_ROOT, "Items"), "items");
   assert.deepEqual(await probeExact(port, SCRIPTED_ROOT, "items/missing.md"), { state: "absent" });
+});
+
+test("a frozen zero witness (an exFAT root on macOS) is never trusted: the alias is refused after a rename", async () => {
+  const scripted = new ScriptedPort({ aliasing: true });
+  const rels = scriptedTree(scripted, 3);
+  const { port: base } = witnessed(scripted);
+  const port: FilesystemIdentityPort = {
+    ...base,
+    directoryWitness: async (dir) => (scripted.node(dir) === null ? null : { dev: 1n, ino: BigInt(scripted.node(dir)!.ino), mtimeNs: 0n, ctimeNs: 0n }),
+  };
+  for (let index = 0; index < 5; index++) {
+    assert.deepEqual(await probeExact(port, SCRIPTED_ROOT, `items/missing-${index}.md`), { state: "absent" });
+  }
+  assert.equal(scripted.calls("entries"), 5, "nothing is kept under a witness that cannot change");
+  const pass = openObservationPass(port, SCRIPTED_ROOT, settledClock);
+  for (const rel of rels) await pass.observe(rel, (handle) => scripted.readAll(handle));
+  assert.deepEqual(await pass.finish(), []);
+
+  scripted.respell(path.join(SCRIPTED_ROOT, "items"), "Items");
+  await assert.rejects(() => probeExact(port, SCRIPTED_ROOT, "items/missing-0.md"), FilesystemIdentityAliasError);
+  await assert.rejects(() => pass.observe(rels[0]!, (handle) => scripted.readAll(handle)), FilesystemIdentityAliasError);
 });
 
 test("pass over a port without a directory witness makes exactly the single-read calls", async () => {
