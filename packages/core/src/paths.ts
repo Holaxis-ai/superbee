@@ -169,12 +169,23 @@ export function assertCanonicalNewDocumentId(id: ConceptId, exists: (candidate: 
  * and no whitespace or format character at a segment edge. Canonical text is returned unchanged.
  */
 export function canonicalizeIdText(text: string): string {
-  const edge = /^[\s\p{Cf}]+|[\s\p{Cf}]+$/gu;
   return text
     .normalize("NFC")
     .split("/")
-    .map((segment) => segment.replace(edge, "").replace(/(?![\u200c\u200d])\p{Cf}/gu, "").replace(edge, ""))
+    .map((segment) => trimIdEdge(trimIdEdge(segment).replace(/(?![\u200c\u200d])\p{Cf}/gu, "")))
     .join("/");
+}
+
+const ID_EDGE_CHAR = /^[\s\p{Cf}]$/u;
+
+/** Trim whitespace and format characters from both ends in linear time (no backtracking regex). */
+function trimIdEdge(segment: string): string {
+  const chars = Array.from(segment);
+  let start = 0;
+  let end = chars.length;
+  while (start < end && ID_EDGE_CHAR.test(chars[start]!)) start += 1;
+  while (end > start && ID_EDGE_CHAR.test(chars[end - 1]!)) end -= 1;
+  return chars.slice(start, end).join("");
 }
 
 /** A canonical, safe spelling of `id`, or undefined when cleaning it leaves no usable id. */
