@@ -15,6 +15,7 @@ import { sourceRunExpectation, type SourceRunExpectation } from "./expectation.j
 export { sourceRunExpectation } from "./expectation.js";
 export type { SourceRunExpectation } from "./expectation.js";
 import { assertPathOutsidePrivateState } from "../private-state-bundle-boundary.js";
+import { CliError } from "../errors.js";
 
 export const SOURCE_TEST_LIMITS = Object.freeze({ scenarios: 64, runs: 16, exchanges: 512 });
 
@@ -112,7 +113,11 @@ export async function testSourceForAuthor(recipeFolder: string, fixtureFolder: s
   if (!selected || !source) return fail("SOURCE_FIXTURE_TARGET_INVALID", "fixture.json", "The fixture must name a Connector and source carried by this recipe.");
   let profile:SourceProfile|undefined;
   try {profile = options.profile ? await explicitProfile(options.profile) : await (await selectSourceProfile(source.profile,options.stateInput))?.load();}
-  catch {return fail("PROFILE_NOT_AVAILABLE", `${selected.connector.id}.md`, "The registered profile is unavailable or changed; register the reviewed installed package explicitly.");}
+  catch (error) {
+    // The retired-pointer refusal is static text with its own recovery route; pass it through.
+    if (error instanceof CliError && error.details?.code === "RETIRED_SOURCE_PLUGIN_POINTER") return fail("RETIRED_SOURCE_PLUGIN_POINTER", `${selected.connector.id}.md`, `${error.message} ${error.help ?? ""}`.trim());
+    return fail("PROFILE_NOT_AVAILABLE", `${selected.connector.id}.md`, "The registered profile is unavailable or changed; register the reviewed installed package explicitly.");
+  }
   if (!profile || profile.id !== source.profile) return fail("PROFILE_NOT_AVAILABLE", options.profile ? "--profile" : `${selected.connector.id}.md`, "No matching built-in, accepted registered profile or valid explicitly selected local profile is available.");
   report.profile = { id: profile.id, version: profile.version, kind: profile.kind };
   const documents = [...loaded.recipe.docs, ...fixture.documents];

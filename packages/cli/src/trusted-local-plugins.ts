@@ -36,7 +36,8 @@ export interface LocalPluginPolicy<M, P extends PluginPointer> {
     decode(raw: string): P[];
     encode(rows: P[]): string;
     pointer(snapshot: PluginSnapshot<M>, generation: string): P;
-    verifyPointer(pointer: P, snapshot: PluginSnapshot<M>): void;
+    /** Runs before the generation is read, so a pointer the policy no longer reads refuses with its own fix. */
+    verifyPointer(pointer: P): void;
 }
 export const pluginFileRows = (files: PluginSnapshotFile[]) => files.map(f => ({ path: f.path, digest: `sha256:${createHash("sha256").update(f.bytes).digest("hex")}` }));
 
@@ -99,11 +100,11 @@ export function trustedLocalPlugins<M, P extends PluginPointer>(policy: LocalPlu
     }
     async function verified(a: P, input: UserStateInput): Promise<VerifiedPlugin<M, P>> {
         try {
+            policy.verifyPointer(a);
             const area = path.join(canonicalUserStateDir(input), policy.area);
             if (!privateStateEntryIsSafe(await lstat(area), "directory", input)) throw fail("path_unsafe");
             const root = path.join(area, a.generation), s = await capture(root, input);
             if (s.digest !== a.digest || policy.id(s.manifest) !== a.plugin) throw fail("changed");
-            policy.verifyPointer(a, s);
             return { root, pointer: a, ...s };
         } catch (e) { if (e instanceof CliError) throw e; throw fail("changed"); }
     }
@@ -158,7 +159,6 @@ export function trustedLocalPlugins<M, P extends PluginPointer>(policy: LocalPlu
         const root = await ensureUserStateRoot(input);
         return withCliFilesystemMutationLock(path.join(root, policy.active), async () => {
             const rows = await active(input), retained = rows.filter(a => a.plugin !== id);
-            // Retained legacy metadata may be discarded only after proving its original authority.
             for (const a of retained) await verified(a, input);
             await writeReadyUserStateFileAtomic0600(input, policy.active, policy.encode(retained) + "\n");
             return rows.some(a => a.plugin === id);

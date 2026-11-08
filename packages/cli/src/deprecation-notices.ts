@@ -13,7 +13,6 @@ import { cliInvocation } from "./invocation.js";
 import { renderErrorEnvelope } from "./output.js";
 
 export type DeprecationNoticeCode =
-  | "DEPRECATED_SOURCE_PLUGIN_POINTER"
   | "DEPRECATED_LEGACY_USER_STATE";
 
 export interface DeprecationNotice {
@@ -135,6 +134,18 @@ export function retiredInputRefusal(input: "--remote" | "serve"): CliError {
 }
 
 /**
+ * The refusal for a pre-v2 source plugin pointer (the single GitHub record 0.4.3 wrote). Registering
+ * or removing github replaces it; the accepted generation it named stays on disk.
+ */
+export function retiredSourcePluginPointerRefusal(): CliError {
+  const cli = cliInvocation();
+  return new CliError("USAGE", "The source plugin pointer source-plugin-github.json uses the retired pre-v2 format, which is no longer read.", {
+    help: `Re-register the GitHub plugin: run ${cli} source plugin register <built-folder>, then ${cli} source plugin register <built-folder> --accept <digest>. Or run ${cli} source plugin remove github to clear it. Neither deletes the old accepted copy.`,
+    details: { code: "RETIRED_SOURCE_PLUGIN_POINTER" },
+  });
+}
+
+/**
  * The CLI entry's refusal for `--remote` in a leading flag block with no command word to parse it.
  * The envelope goes where the command puts its errors, as for retired environment names.
  */
@@ -204,12 +215,6 @@ export function retiredEnvHomeLine(env: Readonly<Record<string, string | undefin
 }
 
 export const DEPRECATION_NOTICES: readonly DeprecationNotice[] = Object.freeze([
-  {
-    code: "DEPRECATED_SOURCE_PLUGIN_POINTER",
-    old: "the pre-v2 source plugin pointer",
-    replacement: "the v2 source plugin registry",
-    fix: (cli) => `run ${cli} source plugin register <built-folder> and accept its digest, which rewrites the pointer`,
-  },
   {
     code: "DEPRECATED_LEGACY_USER_STATE",
     old: "private state under ~/.agentstate or ~/.config/superbee",
