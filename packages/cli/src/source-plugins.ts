@@ -6,7 +6,7 @@ import { getSourceProfile, restJsonProfile, nextLinkTarget, SOURCE_PLUGIN_CORE_V
 import { unsupportedContent, type SourceProfile } from "@superbee/core/source-engine";
 import { parseRecipeFiles, type LoadResult } from "@superbee/core/recipes";
 import { CliError } from "./errors.js";
-import { emitDeprecationNotice } from "./deprecation-notices.js";
+import { retiredSourcePluginPointerRefusal } from "./deprecation-notices.js";
 import type { UserStateInput } from "./user-state.js";
 import { trustedLocalPlugins, pluginRecord as record, pluginExact as exact, pluginSlug as lexicalPluginSlug, pluginRelativePath, pluginPackage, pluginPointer, pluginFileRows, type PluginPointer, type PluginSnapshot } from "./trusted-local-plugins.js";
 
@@ -14,8 +14,7 @@ export const SOURCE_PLUGIN_TRUST = "Accepting trusts these reviewed local plugin
 const pluginSlug = (v: unknown): v is string => lexicalPluginSlug(v) && !["constructor", "prototype", "__proto__"].includes(v);
 interface ProfileDeclaration { id: string; version: number; entry: string }
 interface Manifest { name: string; version: string; superbeeIntegration: { contract: 1; id: string; core: string; profiles: ProfileDeclaration[]; recipes: Record<string, string> } }
-interface LegacyActive extends PluginPointer { package: string; version: string; contract: 1; core: string; profile: { id: string; version: number } }
-interface Active extends PluginPointer { legacy?: LegacyActive }
+interface Active extends PluginPointer { retired?: true }
 export function pluginRefusal(reason: string): CliError { return new CliError("USAGE", `Source plugin operation refused (${reason}).`, { details: { reason }, help: "Build a reviewed pinned integration folder externally, then run superbee source plugin register <built-folder> and explicitly accept its digest." }); }
 const refusal = (reason: string) => pluginRefusal(`plugin_${reason}`);
 function manifest(raw: string): Manifest {
@@ -36,7 +35,7 @@ function recipe(s: PluginSnapshot<Manifest>, name: string): LoadResult {
     const prefix = s.manifest.superbeeIntegration.recipes[name] + "/";
     return parseRecipeFiles(s.files.filter(f => f.path.startsWith(prefix)).map(f => ({ path: f.path.slice(prefix.length), bytes: f.bytes })), "registered source plugin", { okfVersion: "0.2" });
 }
-/** Retirement: tasks/retire-legacy-source-plugin-pointer-codec; decoding alone grants no authority. */
+/** v2 collection, or null (empty). A pre-v2 GitHub record decodes only so that registering or removing github can replace it. */
 function decodeSourcePointers(raw: string): Active[] {
     const a: unknown = JSON.parse(raw);
     if (a === null) return [];
@@ -44,14 +43,8 @@ function decodeSourcePointers(raw: string): Active[] {
         if (a.plugins.some(p => !record(p) || !exact(p, ["v", "plugin", "generation", "digest"]) || !pluginPointer(p) || !pluginSlug(p.plugin))) throw refusal("state_invalid");
         return a.plugins as Active[];
     }
-    if (!record(a) || !exact(a, ["v", "plugin", "generation", "digest", "package", "version", "contract", "core", "profile"]) || !pluginPointer(a) || a.plugin !== "github" || a.package !== "@superbee/integration-github" || typeof a.version !== "string" || a.contract !== 1 || typeof a.core !== "string" || !a.core || !record(a.profile) || !exact(a.profile, ["id", "version"]) || a.profile.id !== "github-issues" || !Number.isSafeInteger(a.profile.version) || (a.profile.version as number) < 1) throw refusal("state_invalid");
-    emitDeprecationNotice("DEPRECATED_SOURCE_PLUGIN_POINTER");
-    return [{ v: 1, plugin: a.plugin, generation: a.generation, digest: a.digest, legacy: a as unknown as LegacyActive }];
-}
-function verifySourcePointer(a: Active, s: PluginSnapshot<Manifest>) {
-    if (!a.legacy) return;
-    const old = a.legacy, m = s.manifest, d = m.superbeeIntegration, p = d.profiles[0];
-    if (m.name !== old.package || m.version !== old.version || d.core !== old.core || d.contract !== old.contract || d.profiles.length !== 1 || !p || p.id !== old.profile.id || p.version !== old.profile.version || p.entry !== "dist/profile.mjs" || !exact(d.recipes, ["source-feeds", "work-items"]) || d.recipes["source-feeds"] !== "recipes/source-feeds" || d.recipes["work-items"] !== "recipes/work-items") throw refusal("changed");
+    if (record(a) && a.v === 1 && a.plugin === "github") return [{ v: 1, plugin: "github", generation: "", digest: "", retired: true }];
+    throw refusal("state_invalid");
 }
 const lifecycle = trustedLocalPlugins<Manifest, Active>({
     active: "source-plugin-github.json", area: "source-plugins", refusal, parse: manifest,
@@ -62,7 +55,7 @@ const lifecycle = trustedLocalPlugins<Manifest, Active>({
     decode: decodeSourcePointers,
     encode: rows => JSON.stringify({ v: 2, plugins: rows.map(({ v, plugin, generation, digest }) => ({ v, plugin, generation, digest })) }),
     pointer: (s, generation) => ({ v: 1, plugin: s.manifest.superbeeIntegration.id, generation, digest: s.digest }),
-    verifyPointer: verifySourcePointer,
+    verifyPointer(a) { if (a.retired) throw retiredSourcePluginPointerRefusal(); },
 });
 function receipt(s: PluginSnapshot<Manifest>) { return { plugin: s.manifest.superbeeIntegration.id, package: s.manifest.name, version: s.manifest.version, contract: 1, core: s.manifest.superbeeIntegration.core, profiles: s.manifest.superbeeIntegration.profiles.map(({ id, version }) => ({ id, version })), digest: s.digest, files: pluginFileRows(s.files), trust: SOURCE_PLUGIN_TRUST }; }
 export async function registerSourcePlugin(folder: string, accept?: string, input: UserStateInput = homedir()): Promise<Record<string, unknown>> {

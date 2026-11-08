@@ -17,7 +17,6 @@ import {
   type DeprecationNoticeCode,
 } from "../src/deprecation-notices.js";
 import { canonicalUserStateDir, legacyUserStateDir } from "../src/user-state.js";
-import { pluginFixture, registerFixture } from "./source-plugin-fixture.js";
 import { isolatedUserEnv } from "./support/user-env.js";
 
 const CLI = fileURLToPath(new URL("../../superbee/dist/superbee.mjs", import.meta.url));
@@ -70,7 +69,6 @@ interface Fixture {
   home: string;
   project: string;
   /** The built plugin folder a source pointer row registered from. */
-  pluginRoot?: string;
 }
 
 async function withFixture(body: (fixture: Fixture) => Promise<void>): Promise<void> {
@@ -114,30 +112,6 @@ const LOCAL = ["list", "--dir", "bundle", "--json"];
 
 /** Exactly one trigger per table row: the compile-time map is the agreement with the table. */
 const TRIGGERS: Record<DeprecationNoticeCode, Trigger> = {
-  DEPRECATED_SOURCE_PLUGIN_POINTER: {
-    args: ["source", "plugin", "list", "--json"],
-    arrange: async (fixture) => {
-      const { base, home } = fixture;
-      const root = await pluginFixture(base);
-      fixture.pluginRoot = root;
-      await registerFixture(root, home);
-      const file = join(canonicalUserStateDir(home), "source-plugin-github.json");
-      const row = JSON.parse(await readFile(file, "utf8")).plugins[0];
-      const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
-      await writeJson(file, {
-        ...row,
-        package: manifest.name,
-        version: manifest.version,
-        contract: 1,
-        core: manifest.superbeeIntegration.core,
-        profile: { id: "github-issues", version: 1 },
-      });
-    },
-    applyFix: async (fixture) => {
-      const preview = await runFix(fixture, ["source", "plugin", "register", fixture.pluginRoot!, "--json"]);
-      await runFix(fixture, ["source", "plugin", "register", fixture.pluginRoot!, "--accept", JSON.parse(preview.stdout).digest, "--json"]);
-    },
-  },
   DEPRECATED_LEGACY_USER_STATE: {
     args: ["setup", "--host", "claude-code", "--json"],
     arrange: async ({ home }) => {

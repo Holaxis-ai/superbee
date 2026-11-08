@@ -75,6 +75,10 @@ puts its errors (stderr for `mcp` and the byte and raw value channels). `session
 and automatic pull. A `.agentstate.json` project binding is refused at the level where the walk
 finds it with `USAGE`, exit 2, `details.code` `RETIRED_PROJECT_BINDING` and the file in
 `details.binding`; home shows the same text as `project_binding_error`.
+A pre-v2 source plugin pointer (the single GitHub record 0.4.3 wrote) is refused by `source plugin
+list`, selection and any registration or removal of another plugin with `USAGE`, exit 2 and
+`details.code` `RETIRED_SOURCE_PLUGIN_POINTER`. Registering or removing `github` replaces it; the
+accepted snapshot it named stays on disk.
 
 The v0 remote client and its reference server command are removed. `--remote` where a command's
 parser reads a flag (never an option's value, never after `--`) stops the command before any work with `USAGE`, exit 2, `details.code` `RETIRED_FLAG` and
