@@ -16,6 +16,7 @@ import { appendVerificationEvent, type AppendVerificationOptions } from "./verif
 import { okfValuesEqual } from "./okf-authored-values.js";
 import { isRequestIdentity } from "./uncertain-write.js";
 import { InvalidInputError } from "./errors.js";
+import { assertCanonicalNewDocumentId, nonCanonicalDocumentId, suggestCanonicalDocumentId } from "./paths.js";
 import { kindDeprecationTransition } from "./kind-deprecation.js";
 import { KindConformanceError } from "./kind-conformance-error.js";
 import { undeclaredFieldWarnings } from "./kind-undeclared-fields.js";
@@ -35,6 +36,7 @@ import { versionedMutation } from "./mutation.js";
 import { VersionConflict } from "./versioning.js";
 import {
   backendFor,
+  existsDoc,
   readBundleOkfVersion,
   readDocVersioned,
   writeDocVersionedForEdition,
@@ -517,11 +519,19 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
     await opts.assertCandidate?.(existing === undefined ? undefined : structuredClone(existing), structuredClone(candidate), context);
     return candidate;
   };
-  const prepare = async (existing: OkfDocument | undefined, decisionNow: () => string) =>
-    prepareDocumentMutationCandidate(existing, await build(existing, decisionNow), {
+  const prepare = async (existing: OkfDocument | undefined, decisionNow: () => string) => {
+    // Every mode decides a create here with no existing document, so this is the one place a new
+    // id meets the canonical-spelling rule; ids that already exist stay editable.
+    if (existing === undefined && nonCanonicalDocumentId(opts.id) !== null) {
+      const suggested = suggestCanonicalDocumentId(opts.id);
+      const taken = suggested !== undefined && await existsDoc(opts.bundle, suggested);
+      assertCanonicalNewDocumentId(opts.id, () => taken);
+    }
+    return prepareDocumentMutationCandidate(existing, await build(existing, decisionNow), {
       mode: opts.mode, id: opts.id, registry: opts.registry, strict: opts.strict, okfVersion, now: decisionNow,
       actor: opts.actor, producer: opts.producer, persistActor, compareTimestamp, seedGenerationClock: seedClock,
     });
+  };
 
   if (opts.mode === "create-only") {
     // Fail closed: create-only issues NO read — its CAS basis is expect-absent — so there is no

@@ -10,7 +10,7 @@
  */
 
 import type { ConceptId } from "./types.js";
-import { InvalidInputError } from "./errors.js";
+import { InvalidInputError, NonCanonicalDocumentIdError } from "./errors.js";
 
 /** The two OKF reserved filenames, valid at any directory level (§3.1). */
 export const RESERVED_FILENAMES = ["index.md", "log.md"] as const;
@@ -149,6 +149,55 @@ export function nonCanonicalDocumentId(id: string): NonCanonicalDocumentId | nul
   if (segments.some((segment) => FORMAT_AT_EDGE.test(segment) || FORMAT_INSIDE.test(segment))) return "format_character";
   if (id !== id.normalize("NFC")) return "not_nfc";
   return null;
+}
+
+/**
+ * Refuse a NEW document id outside its canonical spelling (see {@link nonCanonicalDocumentId}).
+ * Callers apply this only where a document is about to be created; existing ids stay readable,
+ * writable and deletable. `exists` reports whether the suggested spelling is already a document,
+ * so the refusal never steers a create onto it.
+ */
+export function assertCanonicalNewDocumentId(id: ConceptId, exists: (candidate: ConceptId) => boolean = () => false): void {
+  const why = nonCanonicalDocumentId(id);
+  if (why === null) return;
+  const suggested = suggestCanonicalDocumentId(id);
+  throw new NonCanonicalDocumentIdError(id, why, suggested === undefined ? undefined : { id: suggested, exists: exists(suggested) });
+}
+
+/**
+ * Clean `text` toward the canonical spelling: NFC, no format characters except interior joiners,
+ * and no whitespace or format character at a segment edge. Canonical text is returned unchanged.
+ */
+export function canonicalizeIdText(text: string): string {
+  return text
+    .normalize("NFC")
+    .split("/")
+    .map((segment) => trimIdEdge(trimIdEdge(segment).replace(/(?![\u200c\u200d])\p{Cf}/gu, "")))
+    .join("/");
+}
+
+const ID_EDGE_CHAR = /^[\s\p{Cf}]$/u;
+
+/** Trim whitespace and format characters from both ends in linear time (no backtracking regex). */
+function trimIdEdge(segment: string): string {
+  const chars = Array.from(segment);
+  let start = 0;
+  let end = chars.length;
+  while (start < end && ID_EDGE_CHAR.test(chars[start]!)) start += 1;
+  while (end > start && ID_EDGE_CHAR.test(chars[end - 1]!)) end -= 1;
+  return chars.slice(start, end).join("");
+}
+
+/** A canonical, safe spelling of `id`, or undefined when cleaning it leaves no usable id. */
+export function suggestCanonicalDocumentId(id: string): string | undefined {
+  const candidate = canonicalizeIdText(id);
+  if (candidate === id || nonCanonicalDocumentId(candidate) !== null) return undefined;
+  try {
+    assertSafeConceptId(candidate);
+  } catch {
+    return undefined;
+  }
+  return isReservedFile(pathFromConceptId(candidate)) ? undefined : candidate;
 }
 
 /**
