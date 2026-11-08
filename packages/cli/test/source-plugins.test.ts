@@ -107,4 +107,8 @@ test("source test defaults to the same accepted synthetic profile through record
  await writeFile(join(folder,"fixture.json"),JSON.stringify({version:1,connector:"connectors/github",source:"issues",feed:syntheticFeedDoc.id,documents:[syntheticFeedDoc,{id:"conventions/source-feed",body:"",frontmatter:SOURCE_FEED_CONVENTION},{id:"conventions/signal",body:"",frontmatter:signalConvention("superbee_progress_status")}],scenarios:[{name:"errors.server",runs:[{exchanges:[{request:{method:"GET",url:"https://api.github.com/repos/example-org/widgets/issues"},response:{status:503,body:""}}]}],expect:[expected]}]}));
  const report=await testSourceForAuthor(join(root,"recipes/work-items"),folder,{stateInput:home});
  assert.deepEqual(report.profile,{id:"github-issues",version:1,kind:"extension"});assert.equal(report.execution,"recorded");assert.deepEqual(report.diagnostics,[]);assert.equal(report.scenarios.length,1);assert.ok(report.scenarios.every(s=>s.ok),JSON.stringify(report));assert.equal(report.missing.length,13);assert.equal(report.ok,false);
+ const pointer=join(canonicalUserStateDir(home),"source-plugin-github.json"), row=JSON.parse(await readFile(pointer,"utf8")).plugins[0];
+ await writeFile(pointer,JSON.stringify({...row,v:1,plugin:"github"}));
+ const retired=await testSourceForAuthor(join(root,"recipes/work-items"),folder,{stateInput:home});
+ assert.deepEqual(retired.diagnostics.map(d=>d.code),["RETIRED_SOURCE_PLUGIN_POINTER"]);assert.match(retired.diagnostics[0]!.message,/source plugin remove github/);
 }));

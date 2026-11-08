@@ -140,7 +140,7 @@ export function retiredInputRefusal(input: "--remote" | "serve"): CliError {
 export function retiredSourcePluginPointerRefusal(): CliError {
   const cli = cliInvocation();
   return new CliError("USAGE", "The source plugin pointer source-plugin-github.json uses the retired pre-v2 format, which is no longer read.", {
-    help: `Re-register the GitHub plugin: run ${cli} source plugin register <built-folder>, then ${cli} source plugin register <built-folder> --accept <digest>. Or run ${cli} source plugin remove github to clear it. Accepted snapshots are kept.`,
+    help: `Re-register the GitHub plugin: run ${cli} source plugin register <built-folder>, then ${cli} source plugin register <built-folder> --accept <digest>. Or run ${cli} source plugin remove github to clear it. Neither deletes the old accepted copy.`,
     details: { code: "RETIRED_SOURCE_PLUGIN_POINTER" },
   });
 }
