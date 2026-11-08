@@ -142,7 +142,7 @@ test("U3b BINDING: converge → show-incoming → doc update → sync — all th
     assert.equal(conflicted.err!.code, "CONFLICT");
     assert.equal(conflicted.err!.exitCode, 5);
     assert.ok(
-      conflicted.err!.message.startsWith("committed to the board locally — your work is saved."),
+      conflicted.err!.message.startsWith("Committed to the board locally. Your work is saved."),
       "composite safety framing (this run committed B's version first)",
     );
 
@@ -239,6 +239,106 @@ test("U3b: multi-commit local stack — the converging loop terminates, every co
     assert.equal(await readFile(exportPathFor(topo, homeB!, "tasks/seed-two.md"), "utf8"), bSeedTwo);
     const rows = (result.err!.details as { conflicts: { rows: Array<{ id?: string }> } }).conflicts.rows;
     assert.deepEqual(new Set(rows.map((r) => r.id)), new Set(["tasks/seed-one", "tasks/seed-two"]));
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+const BOB = { author: { name: "bob", email: "bob@example.invalid" } };
+
+/** The one saved-copy location for B's board, and the numbered tree a second copy would open. */
+function bExportsDir(topo: TwoCloneTopology, home: string): string {
+  return syncExportsDir(bundleKey({ remoteUrl: topo.origin, subpath: "", checkoutRoot: topo.b.board }), home);
+}
+
+test("a later local commit that replays cleanly over a conflicted doc is in the one saved copy, and the chain settles it", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(2);
+  const [homeA, homeB] = homes;
+  const opening = "# Seed one\n\nfirst paragraph\n\nsecond\n\nthird\n\nfourth\n\nfifth\n";
+  try {
+    await modifyBoardDoc(topo.a, "tasks/seed-one", { body: opening });
+    assert.equal((await runSync(homeA!, ["--dir", topo.a.root])).err, undefined);
+    assert.equal((await runSync(homeB!, ["--dir", topo.b.root, "--pull-only"])).err, undefined);
+    await modifyBoardDoc(topo.a, "tasks/seed-one", { body: opening.replace("first paragraph", "A first paragraph") });
+    assert.equal((await runSync(homeA!, ["--dir", topo.a.root])).err, undefined);
+
+    // B stacks two commits on the same doc: the first conflicts with A's edit, the second appends
+    // a paragraph far from it that replays cleanly on top of the kept upstream version.
+    const bOpening = opening.replace("first paragraph", "B first paragraph");
+    await modifyBoardDoc(topo.b, "tasks/seed-one", { body: bOpening });
+    commitBoard(topo.b, "board: bob 1", BOB);
+    await modifyBoardDoc(topo.b, "tasks/seed-one", { body: `${bOpening}\nB LATER PARAGRAPH\n` });
+    commitBoard(topo.b, "board: bob 2", BOB);
+    const bFinal = await readBoardFile(topo.b, "tasks/seed-one.md");
+
+    const conflicted = await runSync(homeB!, ["--dir", topo.b.root]);
+    assert.equal(conflicted.err?.code, "CONFLICT", conflicted.err?.message);
+    const row = conflictRows(conflicted.err!)[0]!;
+    assert.equal(row.yours, exportPathFor(topo, homeB!, "tasks/seed-one.md"), "one saved copy, in the first slot");
+    assert.equal(await readFile(row.yours as string, "utf8"), bFinal, "the saved copy is B's final version");
+    assert.equal(existsSync(`${bExportsDir(topo, homeB!)}.repeat`), false, "no second copy is saved");
+
+    for (const step of conflicted.err!.help!.split(" → ")) {
+      await runChainStep(homeB!, topo.b.root, step);
+    }
+    assertPristine(topo.b, "B after the reconcile chain");
+
+    // The chain settled the conflict: the next plain sync lists no saved copy and --inspect has
+    // nothing to show, so no later verb can apply a stale copy over the paragraph.
+    const after = await runSync(homeB!, ["--dir", topo.b.root, "--json"]);
+    assert.equal(after.err, undefined, after.err?.message);
+    assert.equal((JSON.parse(after.out) as Record<string, unknown>).saved_conflicts, undefined, after.out);
+    const inspected = await runSync(homeB!, ["--inspect", "--doc", "tasks/seed-one", "--dir", topo.b.root]);
+    assert.equal(inspected.err?.code, "NOT_FOUND", inspected.out);
+    const originDoc = git(topo.origin, ["show", "board:tasks/seed-one.md"]);
+    assert.match(originDoc, /B LATER PARAGRAPH/, "the later commit's paragraph is on the board");
+    assert.match(originDoc, /B first paragraph/, "the reconciled paragraph is on the board");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("a later local commit over a frontmatter conflict: the chain keeps its paragraph, and the one copy left holds it", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(2);
+  const [homeA, homeB] = homes;
+  try {
+    await modifyBoardDoc(topo.a, "tasks/seed-one", { frontmatter: { title: "A title" } });
+    assert.equal((await runSync(homeA!, ["--dir", topo.a.root])).err, undefined);
+
+    await modifyBoardDoc(topo.b, "tasks/seed-one", { frontmatter: { title: "B title" } });
+    commitBoard(topo.b, "board: bob 1", BOB);
+    await modifyBoardDoc(topo.b, "tasks/seed-one", { body: "# Seed one\n\nseed body\n\nB LATER PARAGRAPH\n" });
+    commitBoard(topo.b, "board: bob 2", BOB);
+    const bFinal = await readBoardFile(topo.b, "tasks/seed-one.md");
+
+    const conflicted = await runSync(homeB!, ["--dir", topo.b.root]);
+    assert.equal(conflicted.err?.code, "CONFLICT", conflicted.err?.message);
+    const row = conflictRows(conflicted.err!)[0]!;
+    assert.equal(await readFile(row.yours as string, "utf8"), bFinal, "the saved copy is B's final version");
+    assert.match(await readFile(row.yours_body as string, "utf8"), /B LATER PARAGRAPH/);
+
+    for (const step of conflicted.err!.help!.split(" → ")) {
+      await runChainStep(homeB!, topo.b.root, step);
+    }
+    const originDoc = git(topo.origin, ["show", "board:tasks/seed-one.md"]);
+    assert.match(originDoc, /B LATER PARAGRAPH/, "the later commit's paragraph survives the reconcile chain");
+    assert.match(originDoc, /title: A title/, "the teammate's kept title stays");
+
+    // B's retitle was surfaced, not applied, so one copy stays listed. It is B's final version, so
+    // whatever verb settles it later cannot take the paragraph back off the board.
+    const after = await runSync(homeB!, ["--dir", topo.b.root, "--json"]);
+    assert.equal(after.err, undefined, after.err?.message);
+    const listed = (JSON.parse(after.out) as { saved_conflicts: { rows: Array<{ saved_at: string; copies: number }> } }).saved_conflicts.rows;
+    assert.equal(listed.length, 1, after.out);
+    assert.equal(listed[0]!.copies, 1, after.out);
+    assert.equal(await readFile(listed[0]!.saved_at, "utf8"), bFinal);
+    const inspected = await runSync(homeB!, ["--inspect", "--doc", "tasks/seed-one", "--dir", topo.b.root, "--json"]);
+    assert.equal(inspected.err, undefined, inspected.err?.message);
+    assert.match(inspected.out, /B LATER PARAGRAPH/, "--inspect shows the copy with the paragraph");
   } finally {
     await cleanup();
     await topo.cleanup();

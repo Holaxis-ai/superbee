@@ -16,6 +16,8 @@ import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
+import { foldPath } from "@superbee/core";
+
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
 import {
@@ -207,18 +209,11 @@ function physicalCoordinate(
   }
 }
 
-/**
- * Folding rule for path components that do not exist yet: their future physical identity depends on
- * the containing filesystem's case and Unicode rules, so fold to the portable equivalence class.
- * This OVER-refuses a genuinely distinct `SUPERBEE` on a case-sensitive volume. That is retained
- * deliberately — do not "fix" it.
- */
-function fold(segment: string): string {
-  return segment.normalize("NFC").toLowerCase();
-}
-
+// Path components that do not exist yet take their future identity from the containing
+// filesystem's case and Unicode rules, so they fold to core's portable equivalence class. This
+// over-refuses a genuinely distinct `SUPERBEE` on a case-sensitive volume, deliberately.
 function foldedSegments(coordinate: PhysicalCoordinate): string[] {
-  return path.resolve(coordinate.anchorPath, ...coordinate.missing).split(path.sep).filter(Boolean).map(fold);
+  return path.resolve(coordinate.anchorPath, ...coordinate.missing).split(path.sep).filter(Boolean).map(foldPath);
 }
 
 function relateSegments(bundle: readonly string[], state: readonly string[]): PrivateStateRelation {
@@ -230,10 +225,34 @@ function relateSegments(bundle: readonly string[], state: readonly string[]): Pr
   return bundle.length < state.length ? "bundle-contains-state" : "bundle-inside-state";
 }
 
+function sameCoordinate(left: PhysicalCoordinate, right: PhysicalCoordinate): boolean {
+  return (
+    left.anchorKey === right.anchorKey &&
+    left.anchorPath === right.anchorPath &&
+    left.anchorChain.join("/") === right.anchorChain.join("/") &&
+    left.missing.join("/") === right.missing.join("/")
+  );
+}
+
 /** THE domain relation. Every private-state guard in the CLI answers to this one function. */
 export function relateToPrivateState(candidate: string, stateRoot: string): PrivateStateRelation {
-  const bundle = physicalCoordinate(path.resolve(candidate));
-  const state = physicalCoordinate(path.resolve(stateRoot), new Set(), true);
+  // The two sides are read one after the other, so an entry replaced between the reads would be
+  // compared under two different identities. Accept a pair only when re-reading both sides gives
+  // the same answer; a second disagreement fails closed rather than reporting `unrelated`.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const bundle = physicalCoordinate(path.resolve(candidate));
+    const state = physicalCoordinate(path.resolve(stateRoot), new Set(), true);
+    if (
+      sameCoordinate(bundle, physicalCoordinate(path.resolve(candidate))) &&
+      sameCoordinate(state, physicalCoordinate(path.resolve(stateRoot), new Set(), true))
+    ) {
+      return relateCoordinates(bundle, state);
+    }
+  }
+  throw runtimeFailure();
+}
+
+function relateCoordinates(bundle: PhysicalCoordinate, state: PhysicalCoordinate): PrivateStateRelation {
 
   // Undeterminable inode on EITHER side: compare normalized paths instead, and never conclude
   // `identical` from an inode collapse.
@@ -242,7 +261,7 @@ export function relateToPrivateState(candidate: string, stateRoot: string): Priv
   }
 
   if (bundle.anchorKey === state.anchorKey) {
-    return relateSegments(bundle.missing.map(fold), state.missing.map(fold));
+    return relateSegments(bundle.missing.map(foldPath), state.missing.map(foldPath));
   }
 
   // The `missing is empty` guards below are LOAD-BEARING. Without them an absent state root
@@ -259,10 +278,10 @@ export function relateToPrivateState(candidate: string, stateRoot: string): Priv
 }
 
 /**
- * Every private-state root the CLI guards, canonical first. Both the `superbee` and the
- * `@holaxis/aslite` builds guard the WHOLE set unconditionally: which root a given build WRITES is a
- * separate question from which roots a bundle may not collide with. The set only grows — a
- * superseded root stays guarded for as long as it remains a migration source.
+ * Every private-state root the CLI guards, canonical first. The WHOLE set is guarded
+ * unconditionally: which root the CLI WRITES is a separate question from which roots a bundle may
+ * not collide with. The set only grows — a superseded root stays guarded for as long as it remains
+ * a migration source.
  */
 export function guardedStateRoots(input: UserStateInput = homedir()): string[] {
   return [...resolveUserStatePolicy(input).guardedRoots];

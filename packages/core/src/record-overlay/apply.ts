@@ -404,9 +404,6 @@ export async function applyRecordOverlay(plan: OverlayPlan, ctx: ApplyContext): 
       if (contentEdition !== "0.2") {
         throw new OverlayRefusal(REFUSAL_CODES.INVALID_INPUT, "an owned list field is written by field actions, which need an OKF v0.2 bundle", { reason: "grouped-shape-needs-v0.2", field: Object.keys(step.fields).find((f) => listFields.has(f))! });
       }
-      // The planner never puts the upsert on a step that removes a field, so a step carrying both was not planned here.
-      const removed = step.sources !== undefined ? Object.entries(step.fields).find(([, v]) => v.to === undefined) : undefined;
-      if (removed) throw new OverlayRefusal(REFUSAL_CODES.INVALID_INPUT, "the grouped sources write cannot remove a field", { reason: "grouped-shape-removes-field", field: removed[0] });
       const properties = step.sources;
       return mutateDocument({
         ...base,

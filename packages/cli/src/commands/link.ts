@@ -21,8 +21,7 @@ import { renderUsage } from "../output.js";
 // blocking, since the link is already written by the time this check runs. The SAME `warnings[]`
 // carries a `LINK_TARGET_ABSENT` entry when the target has no document YET (dangling links stay
 // LEGAL — forward-declaration by design — this is receipt HONESTY, not a refusal); a present
-// target's receipt is unaffected. That check is LOCAL-bundle only (an extra `--remote` round trip
-// would tax every remote link add), so a `--remote` link-add receipt never carries it.
+// target's receipt is unaffected.
 //
 // The mutation itself (versioned-read → idempotency check → CAS write → lint) is factored into
 // the exported `addLink`, so `new --link` (`commands/new.ts`, one-step create+link) rides the
@@ -60,7 +59,7 @@ import {
   type Version,
   type ValidationWarning,
 } from "@superbee/core";
-import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { openBundle } from "../bundle.js";
 import { maybeAutoPull } from "../autopull.js";
 import { CliError, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
@@ -77,8 +76,6 @@ import { commandQuoted, commandToken } from "../command-text.js";
 /** The common flags every `link` subcommand accepts — appended to each verb's focused help. */
 const LINK_COMMON_OPTIONS = `Common options:
   --dir <path>         Bundle directory (default: discovered from the cwd)
-  --remote <url>       Talk to a wire-protocol server instead of a local bundle
-                       (mutually exclusive with --dir; remote access is always explicit)
   --json               Emit compact JSON instead of TOON
   -h, --help           Show this help`;
 
@@ -110,12 +107,10 @@ a mismatch or a same-spelling-different-case near miss attaches a 'warnings' arr
 envelope (exit 0 — the link is already written). An untyped --text (no declared match, any casing)
 or a conventions-free bundle never warns.
 
-Target-existence honesty (link add only, LOCAL bundles only): dangling links stay LEGAL — a link to
+Target-existence honesty (link add only): dangling links stay LEGAL — a link to
 a target with no document yet is a forward-declaration, by design. When the target is absent at link
 time, the success envelope attaches a 'warnings' array entry (code LINK_TARGET_ABSENT) so the receipt
-tells the truth; a link to an existing target's receipt is unchanged. Checked only against a local
---dir bundle (confirming existence costs a read that would be an extra network round trip over
---remote), so a --remote link-add receipt never carries this signal.
+tells the truth; a link to an existing target's receipt is unchanged.
 
 Cross-bundle links: with --bundle <alias> (or a <to> written as okf://<alias>/<id>.md), <to> is a
 concept id in the bundle declared as <alias> in this bundle's 'docs/dependencies', and the link is
@@ -129,7 +124,7 @@ Options:
   --keep-timestamp     Preserve the source's existing timestamp (default: refresh to now,
                        since adding a cross-link is a meaningful change)
   --actor <name>       Attribute a newly-added link in the source doc and backend history.
-                       Falls back to SUPERBEE_ACTOR (or legacy AGENTSTATE_LITE_ACTOR); an existing
+                       Falls back to SUPERBEE_ACTOR; an existing
                        link remains a true no-op. OKF v0.2 bundles accept only an OKF actor
                        (human:<id>, process:<id>, or <producer>/<version> such as openai/codex).
 ${LINK_COMMON_OPTIONS}
@@ -230,7 +225,7 @@ function docType(doc: OkfDocument): string {
  */
 async function lintLinkType(
   bundle: Bundle,
-  args: { sourceType: string; text: string; to: string; remoteUrl?: string },
+  args: { sourceType: string; text: string; to: string },
   registry: KindRegistry,
 ): Promise<ValidationWarning[]> {
   const declarations = collectLinkDeclarations(registry);
@@ -248,7 +243,7 @@ async function lintLinkType(
       if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
         targetResolved = false;
       } else {
-        throw classifyBundleError(err, args.remoteUrl);
+        throw classifyBundleError(err);
       }
     }
     const matched = exact.find((d) => d.governs === args.sourceType) ?? exact[0]!;
@@ -317,8 +312,7 @@ async function lintLinkType(
  * post-write `LINK_TARGET_ABSENT` warning, and any other read failure stays non-blocking here:
  * the post-write checks own it, and a degraded read must not refuse a legal link.
  */
-async function assertTargetNotAlias(bundle: Bundle, to: string, remoteUrl: string | undefined): Promise<void> {
-  if (remoteUrl !== undefined) return;
+async function assertTargetNotAlias(bundle: Bundle, to: string): Promise<void> {
   try {
     await readDoc(bundle, to);
   } catch (err) {
@@ -327,15 +321,13 @@ async function assertTargetNotAlias(bundle: Bundle, to: string, remoteUrl: strin
 }
 
 /**
- * Warn when a newly linked local target is absent. Remote deliberately skips this advisory to
- * avoid adding a HEAD request; non-absence read failures propagate to the post-write fallback.
+ * Warn when a newly linked target is absent. Non-absence read failures propagate to the
+ * post-write fallback.
  */
 async function targetAbsentWarning(
   bundle: Bundle,
   to: string,
-  remoteUrl: string | undefined,
 ): Promise<ValidationWarning | undefined> {
-  if (remoteUrl !== undefined) return undefined;
   try {
     await readDoc(bundle, to);
     return undefined;
@@ -398,9 +390,6 @@ export interface AddLinkOptions {
   text?: string;
   /** Preserve the source's existing timestamp instead of refreshing it to now(). */
   keepTimestamp?: boolean;
-  /** Threaded into `classifyBundleError` so a `--remote` mutation's AUTH_REQUIRED carries a
-   * copy-pastable hint (mirrors every other bundle-mutating command). */
-  remoteUrl?: string;
   /** Advisory attribution, already resolved at the CLI boundary. */
   actor?: string;
 }
@@ -480,7 +469,7 @@ export async function addLink(
     );
   }
 
-  await assertTargetNotAlias(bundle, normalizedTo, opts.remoteUrl);
+  await assertTargetNotAlias(bundle, normalizedTo);
 
   // Link addition is an ordinary body patch through the shared document mutation service. That
   // service owns CAS/retry, edition-aware clocks, actor persistence, no-op receipts, and Kind
@@ -495,7 +484,6 @@ export async function addLink(
     registry,
     strict: false,
     helpOnKindReject: `${cliInvocation()} kinds`,
-    remoteUrl: opts.remoteUrl,
     actor: opts.actor,
     persistActor: true,
     maxAttempts: LINK_ADD_MAX_ATTEMPTS,
@@ -542,9 +530,8 @@ export async function addLink(
         sourceType: sourceTypeAtWrite,
         text,
         to: normalizedTo,
-        remoteUrl: opts.remoteUrl,
       }, postWriteRegistry);
-      const absent = await targetAbsentWarning(bundle, normalizedTo, opts.remoteUrl);
+      const absent = await targetAbsentWarning(bundle, normalizedTo);
       if (absent) warnings.push(absent);
     } catch (err) {
       // The mutation is already durable and its version is known. Both checks above are
@@ -572,11 +559,11 @@ export async function addLink(
 }
 
 /** The bundle's `docs/dependencies` declaration, or an empty one when the doc is absent. */
-async function readDeclaredDependencies(bundle: Bundle, remoteUrl: string | undefined) {
+async function readDeclaredDependencies(bundle: Bundle) {
   try {
     return parseDependencies(await readDoc(bundle, DEPENDENCIES_DOC_ID));
   } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw classifyBundleError(err, remoteUrl);
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw classifyBundleError(err);
     return parseDependencies(null);
   }
 }
@@ -586,7 +573,6 @@ export interface AddQualifiedLinkOptions {
   bundle?: string;
   text?: string;
   keepTimestamp?: boolean;
-  remoteUrl?: string;
   actor?: string;
 }
 
@@ -661,7 +647,6 @@ export async function addQualifiedLink(
     registry,
     strict: false,
     helpOnKindReject: `${cliInvocation()} kinds`,
-    remoteUrl: opts.remoteUrl,
     actor: opts.actor,
     persistActor: true,
     maxAttempts: LINK_ADD_MAX_ATTEMPTS,
@@ -695,7 +680,7 @@ export async function addQualifiedLink(
 
   const warnings: ValidationWarning[] = [];
   try {
-    const declared = await readDeclaredDependencies(bundle, opts.remoteUrl);
+    const declared = await readDeclaredDependencies(bundle);
     if (!declared.dependencies.has(finalAlias)) {
       warnings.push({
         code: "LINK_ALIAS_UNDECLARED",
@@ -736,14 +721,14 @@ export async function addQualifiedLink(
 async function qualifiedOutboundRows(
   bundle: Bundle,
   links: readonly QualifiedLink[],
-  opts: { withValues: readonly string[]; withDeps: boolean; remote: boolean; remoteUrl?: string; home?: string },
+  opts: { withValues: readonly string[]; withDeps: boolean; home?: string },
 ): Promise<Record<string, unknown>[]> {
   const plain = (l: QualifiedLink): Record<string, unknown> => ({ text: l.text, bundle: l.ref?.alias ?? null, href: l.href });
   if (links.length === 0) return [];
   if (opts.withValues.length === 0 && !opts.withDeps) return links.map(plain);
-  const declared = await readDeclaredDependencies(bundle, opts.remoteUrl);
+  const declared = await readDeclaredDependencies(bundle);
   const bound = await resolveBundleBindings({
-    referringRoot: opts.remote ? null : bundle.root,
+    referringRoot: bundle.root,
     dependencies: declared.dependencies,
     withValues: opts.withValues,
     withDeps: opts.withDeps,
@@ -774,7 +759,6 @@ async function linkAdd(argv: string[], stdout: (s: string) => void): Promise<voi
           "keep-timestamp": { type: "boolean" },
           actor: { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -796,7 +780,7 @@ async function linkAdd(argv: string[], stdout: (s: string) => void): Promise<voi
   }
   const actor = resolveActor(values.actor, { help: `${cliInvocation()} link add ${commandToken(from)} ${commandToken(to)} --actor <name>` });
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir);
   const mode = resolveMode(values);
 
   if (values.bundle !== undefined || isQualifiedHref(to)) {
@@ -804,7 +788,6 @@ async function linkAdd(argv: string[], stdout: (s: string) => void): Promise<voi
       bundle: values.bundle,
       text: values.text,
       keepTimestamp: values["keep-timestamp"],
-      remoteUrl: values.remote,
       actor,
     });
     const receipt: Record<string, unknown> = result.changed
@@ -819,7 +802,6 @@ async function linkAdd(argv: string[], stdout: (s: string) => void): Promise<voi
   const result = await addLink(bundle, from, to, {
     text: values.text,
     keepTimestamp: values["keep-timestamp"],
-    remoteUrl: values.remote,
     actor,
   });
 
@@ -868,7 +850,6 @@ async function linkShow(
           with: { type: "string", multiple: true },
           "with-deps": { type: "boolean" },
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -921,10 +902,9 @@ async function linkShow(
   const impossibleExactId = rawId.endsWith("/");
   let id = impossibleExactId ? rawId : conceptIdFromCliArgument(rawId);
 
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
   // Opportunistic board freshness (autopull.ts): silent, fail-soft, detection-gated — see list.ts.
-  if (!remote) await (autoPull ?? maybeAutoPull)(values.dir);
-  const bundle = await openBundle(values.dir, remote);
+  await (autoPull ?? maybeAutoPull)(values.dir);
+  const bundle = await openBundle(values.dir);
   if (!impossibleExactId) id = await resolveConceptIdCliArgument(bundle, rawId);
 
   // Outbound links come from the source doc (missing doc → NOT_FOUND). Backlinks are derived over the
@@ -943,7 +923,7 @@ async function linkShow(
       qualified = parseQualifiedLinks(source);
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
-        throw classifyBundleError(err, values.remote);
+        throw classifyBundleError(err);
       }
       // ENOENT: no document at this id YET. NOT an error — a concept can be CITED before it is written
       // (backlinks are derived over the whole bundle and stay meaningful). Report `exists:false` so an
@@ -971,8 +951,6 @@ async function linkShow(
   const qualifiedRows = await qualifiedOutboundRows(bundle, qualified, {
     withValues: values.with ?? [],
     withDeps: values["with-deps"] === true,
-    remote: remote !== undefined,
-    remoteUrl: values.remote,
     ...(home === undefined ? {} : { home }),
   });
   const qualifiedShown = limit > 0 ? qualifiedRows.slice(0, limit) : qualifiedRows;
@@ -1032,9 +1010,7 @@ async function linkShow(
  * over core `queryEdges`. Row schema is AXI-minimal (`{from, to, text}` + `count`), no `--fields`
  * hatch (no consumer has asked for one yet). `--from`/`--to` are repeatable (union within the
  * flag, AND across the two flags) and each accept an exact id or a trailing-slash prefix. CLI
- * path aliases are resolved once before entering core's exact canonical selector contract. Over
- * `--remote`, `queryEdges` rides `query`'s existing whole-bundle `readMany` batch (exactly like
- * `backlinks`/`link show` already do today) — one round trip, no wire change.
+ * path aliases are resolved once before entering core's exact canonical selector contract.
  */
 async function linkList(argv: string[], stdout: (s: string) => void): Promise<void> {
   const { values } = parseLeafOrUsage(
@@ -1047,7 +1023,6 @@ async function linkList(argv: string[], stdout: (s: string) => void): Promise<vo
           text: { type: "string" },
           limit: { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -1102,7 +1077,7 @@ async function linkList(argv: string[], stdout: (s: string) => void): Promise<vo
     limit = Number(raw);
   }
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir);
 
   const resolveSelector = async (raw: string): Promise<string> => {
     if (raw.endsWith("/")) return `${conceptIdFromCliArgument(raw.replace(/\/+$/, ""))}/`;
@@ -1114,7 +1089,7 @@ async function linkList(argv: string[], stdout: (s: string) => void): Promise<vo
   ]);
 
   // The scope filter carries ONLY --from/--to, never --text: this fetches the from/to-scoped edge
-  // set in exactly ONE queryEdges call (one round trip over --remote) regardless of whether --text
+  // set in exactly ONE queryEdges call regardless of whether --text
   // is also given. --text is then applied as a local exact-match filter over that same
   // already-fetched list — so a zero-match --text query costs ONE scan, not two (the near-miss
   // hint below reuses these SAME scoped edges for its "texts present" list rather than re-scanning).
@@ -1129,7 +1104,7 @@ async function linkList(argv: string[], stdout: (s: string) => void): Promise<vo
     // cross-bundle link (invalid_ref in status), never a local one.
     scopedEdges = (await queryEdges(bundle, scopeFilter, { onSkip: row => skipped.push(row) })).filter((e) => !isQualifiedHref(e.href));
   } catch (err) {
-    throw classifyBundleError(err, values.remote);
+    throw classifyBundleError(err);
   }
 
   const edges = textFilter !== undefined ? scopedEdges.filter((e) => e.text === textFilter) : scopedEdges;

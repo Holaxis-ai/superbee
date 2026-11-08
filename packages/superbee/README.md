@@ -176,8 +176,13 @@ unsent edits and make a fresh checkout, as the error's help describes.
 
 If you installed the earlier `@holaxis/aslite` package or its marketplace plugin: install
 `superbee` alongside it, have your agent run `superbee setup` to migrate the integrations, then
-run `npm uninstall -g @holaxis/aslite`. Existing `.agentstate-lite/` bundles and
-`.agentstate.json` bindings keep working with no migration.
+run `npm uninstall -g @holaxis/aslite`. Existing `.agentstate-lite/` bundles keep working. Rename
+a `.agentstate.json` binding to `.superbee.json` (same contents), and rename the old environment
+variables (`AGENTSTATE_LITE_ACTOR`, `ASLITE_NO_UPDATE_CHECK`, `AGENTSTATE_LITE_NO_AUTOPULL`) to
+their `SUPERBEE_*` names. An old name set without its new one is refused with that fix; beside its
+new one it is ignored. Remove `AGENTSTATE_LITE_API_KEY` (refused while set) and
+`AGENTSTATE_LITE_REMOTE` (refused when a command has no `--dir`): nothing reads them. Hosted bundles
+use `superbee login`.
 
 ## Learn more
 

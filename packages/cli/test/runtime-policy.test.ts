@@ -286,21 +286,3 @@ test("deferred board attribution retains the constructing private-state context"
   await runWithRuntime(b, hook);
   assert.deepEqual(seen, ["A:actor", "A:actor"]);
 });
-
-test("a retained remote backend renders transport failure hints under its constructing host", async (t) => {
-  const { openBundle } = await import("../src/bundle.js");
-  const a = options("A", []), b = options("B", []);
-  const seen: string[] = [];
-  for (const [input, label] of [[a, "A"], [b, "B"]] as const) {
-    input.host.executableCandidates = () => { seen.push(label); return []; };
-  }
-  const ca = snapshotRuntimeOptions(a), cb = snapshotRuntimeOptions(b);
-  const remote = await runWithRuntime(ca, () => openBundle(undefined, "http://127.0.0.1:1"));
-  t.mock.method(globalThis, "fetch", async () => { throw new Error("synthetic transport failure"); });
-  for (const invoke of [<T>(fn: () => T) => fn(), <T>(fn: () => T) => runWithRuntime(cb, fn)]) {
-    seen.length = 0;
-    await assert.rejects(invoke(() => remote.backend!.read("missing")), /could not reach the remote bundle/);
-    assert.ok(seen.includes("A"));
-    assert.equal(seen.includes("B"), false);
-  }
-});

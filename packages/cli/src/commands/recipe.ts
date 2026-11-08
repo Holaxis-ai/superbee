@@ -17,7 +17,7 @@ import { recipeValidate } from "./recipe-validate.js";
 // `init`-only special case.
 import { parseArgs } from "node:util";
 import { loadKinds } from "@superbee/core";
-import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { openBundle } from "../bundle.js";
 import { assertActorAcceptedByBundle, resolveActor } from "../actor.js";
 import { CliError, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
@@ -35,7 +35,7 @@ export const RECIPE_USAGE = `superbee recipe — apply a recipe to this bundle
 
 Usage:
   superbee recipe validate <path> [--readme] [--json]
-  superbee recipe add <name-or-path> [--actor <name>] [--dir <path>] [--remote <url>]
+  superbee recipe add <name-or-path> [--actor <name>] [--dir <path>]
   superbee recipe add <recipe-or-cookbook-id> --index <path-or-https-url> [--cookbook] [options]
   superbee recipe evolve <name-or-path> [--apply <plan-token>] [--actor <name>] [options]
   superbee recipe evolve <name-or-path> --retirement-scan [--retirement-evidence <json>] [options]
@@ -110,8 +110,6 @@ Options:
   --index <path-or-https-url>
                         Install from a published recipe index instead of built-ins or folders (add only)
   --cookbook            Treat the positional as a cookbook id in --index (add only)
-  --remote <url>        Talk to a wire-protocol server instead of a local bundle
-                         (mutually exclusive with --dir; remote access is always explicit)
   --retirement-scan   Read-only local declaration retirement evidence. Reports observed concepts,
                       exact versions, known supplied structural consumers and unknown external use.
                       No removal token or apply authority in this inspection mode.
@@ -128,8 +126,7 @@ Options:
                       Missing evidence means unassessed consumers, never ecosystem clearance.
   --apply <plan-token>  Apply the exact ready token returned by 'recipe evolve' (evolve only)
   --actor <name>        Attribute installed or evolved document writes. Add resolves --actor over
-                        SUPERBEE_ACTOR, legacy AGENTSTATE_LITE_ACTOR, then absent; conflicting
-                        environment values refuse. OKF v0.2 bundles accept
+                        SUPERBEE_ACTOR, then absent. OKF v0.2 bundles accept
                         only an OKF actor: human:<id>, process:<id>, or <producer>/<version>
                         (e.g. openai/codex)
   --json                Emit compact JSON instead of TOON
@@ -168,7 +165,6 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
         args: argv,
         options: {
           dir: { type: "string" },
-          remote: { type: "string" },
           apply: { type: "string" },
           "retirement-scan": { type: "boolean" },
           "remove-deprecated": { type: "boolean" },
@@ -195,7 +191,6 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
   if (!removal && (values["retirement-scope"] !== undefined || values["retirement-definition"] !== undefined)) throw new CliError("USAGE", "retirement scope/definition require --remove-deprecated");
   if (removal && values["retirement-scope"] !== "cooperating-local-writers-v1") throw new CliError("USAGE", "--remove-deprecated requires --retirement-scope cooperating-local-writers-v1");
   if (values["retirement-definition"] !== undefined && !values["retirement-definition"].trim()) throw new CliError("USAGE", "--retirement-definition requires a nonempty definition ID");
-  if (removal && values.remote !== undefined) throw new CliError("USAGE", "declaration retirement apply supports plain local filesystem routes only");
   if (values.apply?.startsWith("retirement-apply/") && !removal) throw new CliError("USAGE", "a retirement apply token requires --remove-deprecated and explicit retirement scope");
   if (removal && values.apply !== undefined && !/^retirement-apply\/v1:sha256:[0-9a-f]{64}$/.test(values.apply)) throw new CliError("USAGE", "--apply requires the exact retirement-apply/v1 token from a ready retirement stage");
   const ref = positionals[0]?.trim();
@@ -219,14 +214,11 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
     });
   }
   // Before anything reads the bundle: in a hosted checkout, the recipe decides which refusal applies.
-  if (!removal && values.remote === undefined) await assertRecipeAllowedInHostedCheckout("recipe evolve", values.dir, loaded.recipe);
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
-  const bundle = removal ? await admitRecipeRetirementRoute(values.dir) : await openBundle(values.dir, remote);
+  if (!removal) await assertRecipeAllowedInHostedCheckout("recipe evolve", values.dir, loaded.recipe);
+  const bundle = removal ? await admitRecipeRetirementRoute(values.dir) : await openBundle(values.dir);
   const target: CommandText = values.dir !== undefined
     ? commandFragment` --dir ${commandQuoted(values.dir)}`
-    : remote !== undefined
-      ? commandFragment` --remote ${commandQuoted(remote)}`
-      : commandLiteral("");
+    : commandLiteral("");
   const planCommand = `${cliInvocation()} recipe evolve ${commandQuoted(ref)}${target}`;
   const exactPlanCommand = `${exactCliInvocation()} recipe evolve ${commandQuoted(ref)}${target}`;
 
@@ -315,7 +307,6 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void, indexDeps:
         args: argv,
         options: {
           dir: { type: "string" },
-          remote: { type: "string" },
           actor: { type: "string" },
           index: { type: "string" },
           cookbook: { type: "boolean" },
@@ -347,9 +338,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void, indexDeps:
   const actor = resolveActor(values.actor);
   const requestedTarget: CommandText = values.dir !== undefined
     ? commandFragment` --dir ${commandQuoted(values.dir)}`
-    : values.remote !== undefined
-      ? commandFragment` --remote ${commandQuoted(values.remote)}`
-      : commandLiteral("");
+    : commandLiteral("");
   const indexed = values.index !== undefined
     ? await verifiedFromIndex(values.index, ref, values.cookbook === true, requestedTarget, indexDeps)
     : undefined;
@@ -369,17 +358,12 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void, indexDeps:
 
   // Before anything reads the bundle: in a hosted checkout, the recipe decides which refusal applies.
   // Every cookbook member is checked before the first write.
-  if (values.remote === undefined) {
-    for (const recipe of recipes) await assertRecipeAllowedInHostedCheckout("recipe add", values.dir, recipe);
-  }
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
-  const bundle = await openBundle(values.dir, remote);
+  for (const recipe of recipes) await assertRecipeAllowedInHostedCheckout("recipe add", values.dir, recipe);
+  const bundle = await openBundle(values.dir);
   await assertActorAcceptedByBundle(bundle, actor);
   const target: CommandText = values.dir !== undefined
     ? commandFragment` --dir ${commandQuoted(values.dir)}`
-    : remote !== undefined
-      ? commandFragment` --remote ${commandQuoted(remote)}`
-      : commandLiteral("");
+    : commandLiteral("");
 
   if (indexed?.cookbook) {
     const rows: Record<string, unknown>[] = [];
@@ -568,8 +552,6 @@ async function installReceipt(
         : "");
   }
   if (sourceDiffers > 0 || result.restamp_ids.length > 0) {
-    if (evolve) receipt.commands = { plan_evolution: evolve };
-    else receipt.evolution_help = INDEX_EVOLUTION_HELP;
   }
   receipt.help = [`${cliInvocation()} recipes`, `${cliInvocation()} kinds`];
   return receipt;

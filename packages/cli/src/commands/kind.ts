@@ -4,13 +4,12 @@ import { renderUsage } from "../output.js";
 // declares; this SINGULAR `kind` command MUTATES one convention doc — the same plural-lists /
 // singular-mutates split as `recipes`/`recipe`.
 //
-// Before this, evolving a kind's schema meant hand-editing the convention's markdown frontmatter (or
-// pull→edit→promote over --remote) — the recurring maintenance-journey gap the cold-start usability
+// Before this, evolving a kind's schema meant hand-editing the convention's markdown frontmatter — the recurring maintenance-journey gap the cold-start usability
 // study surfaced in every round (C3). This closes it: it reads the governing convention doc (its id
 // comes from `loadKinds`), edits the raw `fields.{required,optional,values}` in place while preserving
 // everything else (governs/path/sections/body, and any `fields.*` sibling key it doesn't own — e.g.
-// `terminal` — carried through verbatim), and writes it back through the ordinary engine. Works
-// over `--dir` and `--remote` alike (it is just a doc read + write). Idempotent: adding an
+// `terminal` — carried through verbatim), and writes it back through the ordinary engine. It is just a
+// doc read + write. Idempotent: adding an
 // already-declared field, or removing an absent one, is a no-op that exits 0.
 import { parseArgs } from "node:util";
 import {
@@ -25,7 +24,7 @@ import {
   resolveKindFieldCoordinate,
   RESERVED_KIND_FIELD_NAMES,
 } from "@superbee/core";
-import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { openBundle } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { parseSelectorOrUsage, type SelectorResolution } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -73,7 +72,6 @@ Options:
   --apply <plan-token>  Apply the exact previously inspected draft plan ('draft' only)
   --reason <text>       Record why the Kind was declined ('dismiss' only)
   --dir <path>          Bundle directory (default: discovered from the cwd)
-  --remote <url>        Talk to a wire-protocol server instead of a local bundle
   --actor <name>        Attribute this write. OKF v0.2 bundles accept only an OKF actor:
                         human:<id>, process:<id>, or <producer>/<version> (e.g. openai/codex)
   --json                Emit compact JSON instead of TOON
@@ -106,7 +104,6 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
           apply: { type: "string" },
           reason: { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           actor: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
@@ -241,7 +238,7 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
     }
   }
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir);
   const [registry, okfVersion] = await Promise.all([loadKinds(bundle), readBundleOkfVersion(bundle)]);
   const target = registry.kinds.get(kindName);
   if (!target) {

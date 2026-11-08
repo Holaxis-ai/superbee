@@ -679,7 +679,7 @@ test("core/search answers the parity golden in a sandbox with only TextEncoder a
   assert.equal(result.errors.length, 0, JSON.stringify(result.errors, null, 2));
   const inputs = Object.keys(result.metafile!.inputs).map((input) => input.split(path.sep).join("/"));
   assert.deepEqual(
-    inputs.filter((input) => !/(?:^|\/)dist\/(?:search\/[a-z-]+|sha256|paths|errors|heads-digest|code-unit-order|document-scan|frontmatter-contract)\.js$/.test(input)),
+    inputs.filter((input) => !/(?:^|\/)dist\/(?:search\/[a-z-]+|sha256|paths|errors|heads-digest|code-unit-order|document-scan|skip-reasons|frontmatter-contract)\.js$/.test(input)),
     [],
     "the bundle holds only search and its approved pure scan, error, identity and path modules",
   );

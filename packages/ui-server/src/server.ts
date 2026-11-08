@@ -1,7 +1,7 @@
 import { DocumentOffers } from "./document-offers.js";
-// The reusable loopback UI node:http listener: one server, same origin, either mode. Every request
+// The reusable loopback UI node:http listener: one server, same origin. Every request
 // passes the Host allowlist, then the token/cookie session check, then
-// (for a mutation) the `X-Requested-With` check, before it ever reaches the router / proxy /
+// (for a mutation) the `X-Requested-With` check, before it ever reaches the router /
 // asset layer — see each helper module's own doc comment for why each gate exists.
 //
 // Reuses the server package's exported node:http adapter ({@link requestFromIncomingMessage} /
@@ -26,13 +26,13 @@ import { assertSafeBlobKey, loadKinds, queryEdges, queryHeads, readBundleOkfVers
 import { LEGACY_PAGE_MIGRATION_HELP } from "@superbee/core/bundle-health";
 import { parseRegistration } from "@superbee/core/page";
 import { isAllowedHost } from "./host.js";
+import { observeResponseCompletion } from "./response-completion.js";
 import { checkAuth, constantTimeEqual, mintSessionSecret, sessionCookieHeader } from "./session.js";
 import {
   BROWSER_LAUNCH_MAX_BODY_BYTES, BROWSER_LAUNCH_PATH, BrowserLaunchTickets,
   browserLaunchDocument, browserLaunchHeaders, parseBrowserLaunchTarget,
 } from "./browser-launch.js";
 import type { UiAssetHandler } from "./assets.js";
-import { proxyToRemote } from "./proxy.js";
 import { pageCsp, viewChildCsp } from "./pages.js";
 import {
   BRIDGE_HOST_CAPABILITIES,
@@ -60,15 +60,14 @@ import { VIEW_HOST_PATH, viewHostCsp, viewHostDocument } from "@superbee/view-ru
 import { SseHub } from "./events.js";
 import { startWatcher, type ChangeEvent, type WatcherHandle } from "./watch.js";
 
-/** Always loopback: a network-exposed key proxy is a different feature and security boundary. */
+/** Always loopback: a network-exposed UI is a different feature and security boundary. */
 const HOST = "127.0.0.1";
 
 /**
  * The home surface's sharing-chip state (designs/home-surface, the 9-row truth table). Declared
  * HERE as a plain data shape — ui-server owns the vocabulary; the CLI maps its board-channel
  * detection into it (the import-direction test forbids even type-only CLI/board-git imports).
- * The SPA owns the WORDS; this enum owns the states. `hosted` is the one state this runtime
- * derives itself (remote mode, from `remoteBase` — no injection involved).
+ * The SPA owns the WORDS; this enum owns the states.
  */
 export type SharingStateKind =
   | "private"
@@ -103,11 +102,7 @@ export interface WorkspaceSummaryEntry {
 
 interface CommonUiServerOptions {
   port?: number;
-  /**
-   * REQUIRED in both modes: the semantic bundle used by View launch, catalog, bridge, and
-   * engine-level reads. Remote mode supplies a RemoteBackend-backed bundle over `remoteBase`;
-   * the SPA's `/v0/*` data path still stays the reverse proxy.
-   */
+  /** The semantic bundle used by View launch, catalog, bridge, and engine-level reads. */
   bundle: Bundle;
   /** Consumer-owned canonical document renderer; this host never imports presentation code. */
   renderDocument: BridgeDocumentRenderer;
@@ -158,39 +153,19 @@ export interface UiManagementHandle {
   expireIfReady(): boolean;
 }
 
-export type UiServerOptions = CommonUiServerOptions &
-  (
-    | {
-        mode: "dir";
-        /** The in-process router mounted over the local bundle (`createRouter(bundle)`). */
-        router: (req: Request) => Promise<Response>;
-        /** Consumer-owned display-name policy; the runtime never imports CLI naming rules. */
-        resolveBundleDisplayName?: (bundle: Bundle) => Promise<string>;
-        /** Consumer-owned sharing classifier; absent means the shell makes no sharing claim. */
-        loadSharingSummary?: () => Promise<SharingSummary>;
-        /** Consumer-owned registered-workspace rows for the home surface. */
-        loadWorkspaces?: () => Promise<WorkspaceSummaryEntry[]>;
-        /** Process management exists only for CLI-owned local instances. */
-        management?: UiManagementOptions;
-        remoteBase?: never;
-        apiKey?: never;
-        watcherBootTimeoutMs?: never;
-      }
-    | {
-        mode: "remote";
-        /** The target origin's normalized base URL. */
-        remoteBase: string;
-        /** Stored API key for that origin, if any. */
-        apiKey?: string;
-        /** Override the remote watcher's boot-time initial-snapshot timeout. */
-        watcherBootTimeoutMs?: number;
-        router?: never;
-        resolveBundleDisplayName?: never;
-        loadSharingSummary?: never;
-        loadWorkspaces?: never;
-        management?: never;
-      }
-  );
+export interface UiServerOptions extends CommonUiServerOptions {
+  mode: "dir";
+  /** The in-process router mounted over the local bundle (`createRouter(bundle)`). */
+  router: (req: Request) => Promise<Response>;
+  /** Consumer-owned display-name policy; the runtime never imports CLI naming rules. */
+  resolveBundleDisplayName?: (bundle: Bundle) => Promise<string>;
+  /** Consumer-owned sharing classifier; absent means the shell makes no sharing claim. */
+  loadSharingSummary?: () => Promise<SharingSummary>;
+  /** Consumer-owned registered-workspace rows for the home surface. */
+  loadWorkspaces?: () => Promise<WorkspaceSummaryEntry[]>;
+  /** Process management exists only for CLI-owned local instances. */
+  management?: UiManagementOptions;
+}
 
 export interface UiServerHandle {
   host: string;
@@ -201,7 +176,7 @@ export interface UiServerHandle {
   close(): Promise<void>;
 }
 
-/** Per-run mutable state the request handler closes over: the page-nonce registry, the SSE fan-out, the change watcher, and the shutdown signal (aborts remote-mode upstream requests at close()). */
+/** Per-run mutable state the request handler closes over: the page-nonce registry, the SSE fan-out, the change watcher, and the shutdown signal. */
 interface UiRuntime {
   browserLaunches: BrowserLaunchTickets;
   documentOffers: DocumentOffers;
@@ -388,11 +363,11 @@ async function handleManagementRequest(
       await writeResponseToServerResponse(res, jsonError(409, "CONFLICT", "managed UI launch is already stopping"));
       return true;
     }
-    const finished = new Promise<void>((resolve) => res.once("finish", resolve));
+    const finished = observeResponseCompletion(res);
     await writeResponseToServerResponse(res, new Response(JSON.stringify({
       adopted: true,
       launch_nonce: options.management.identity.launch_nonce,
-    }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }));
+    }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } })).catch(() => undefined);
     await finished;
     runtime.management.finishAdopt();
     return true;
@@ -400,11 +375,11 @@ async function handleManagementRequest(
   if (url.pathname === "/__manage/stop" && req.method === "POST") {
     runtime.management.reserveStop();
     runtime.browserLaunches.clear();
-    const finished = new Promise<void>((resolve) => res.once("finish", resolve));
+    const finished = observeResponseCompletion(res);
     await writeResponseToServerResponse(res, new Response(JSON.stringify({
       stopping: true,
       launch_nonce: options.management.identity.launch_nonce,
-    }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }));
+    }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } })).catch(() => undefined);
     await finished;
     runtime.management.finishStop();
     return true;
@@ -479,14 +454,6 @@ function mintFailureResponse(options: UiServerOptions, registryId: string, error
       case "VIEW_INVALID_REGISTRATION":
         return jsonError(403, "FORBIDDEN", `'${registryId}' is not a valid type:View registration (the legacy type:Page name no longer registers; ${LEGACY_PAGE_MIGRATION_HELP})`);
       case "VIEW_ENTRY_READ_FAILED": {
-        const upstreamStatus = (error.storageCause as { status?: unknown } | undefined)?.status;
-        // Preserve the retired remote helper's public contract: an HTTP non-success while reading
-        // an entry was indistinguishable from absence. Transport failures had no status and remain
-        // runtime errors. This mode-specific translation belongs to the web adapter, not the
-        // shared launch authority; changing it should be a separate behavioral decision.
-        if (options.mode === "remote" && typeof upstreamStatus === "number") {
-          return jsonError(404, "NOT_FOUND", `no View bytes found for '${error.entryKey}'`);
-        }
         return jsonError(500, "RUNTIME", error.message);
       }
       case "VIEW_ENTRY_NOT_FOUND":
@@ -566,37 +533,25 @@ async function handleMint(req: Request, runtime: UiRuntime, options: UiServerOpt
 }
 
 /**
- * The SPA bootstrap endpoint: mode, the `--remote` origin (for `ReloginScreen`), and a friendly
- * bundle label for the launcher summary (shell header + bridge `hello.bundle.name`). NOT part of
+ * The SPA bootstrap endpoint: mode and a friendly bundle label for the launcher summary (shell header + bridge `hello.bundle.name`). NOT part of
  * the wire surface (no `/v0/` prefix, never proxied). Dir mode derives the label through THE
  * bundle display-name chain (`bundle-name.ts` — explicit doc, else parent-of-conventional-dir,
  * else root basename), read per request so a `doc write docs/bundle --title …` shows up on the
- * next load without a server restart. Remote mode keeps the origin host as the label.
+ * next load without a server restart.
  */
 async function configData(options: UiServerOptions): Promise<{
-  mode: "dir" | "remote";
-  remoteUrl: string | null;
+  mode: "dir";
   root: string | null;
   name: string;
   sharing: SharingSummary | null;
   workspaces: WorkspaceSummaryEntry[];
 }> {
-  const name =
-    options.mode === "dir"
-      ? options.resolveBundleDisplayName
-        ? await options.resolveBundleDisplayName(options.bundle)
-        : "bundle"
-      : (() => {
-          try {
-            return new URL(options.remoteBase!).host;
-          } catch {
-            return options.remoteBase ?? "remote";
-          }
-        })();
+  const name = options.resolveBundleDisplayName
+    ? await options.resolveBundleDisplayName(options.bundle)
+    : "bundle";
   return {
     mode: options.mode,
-    remoteUrl: options.mode === "remote" ? (options.remoteBase ?? null) : null,
-    root: options.mode === "dir" ? options.bundle.root : options.remoteBase,
+    root: options.bundle.root,
     name,
     sharing: await sharingSummary(options),
     workspaces: await workspacesSummary(options),
@@ -631,21 +586,11 @@ function documentOpenCommandResponse(options: UiServerOptions, url: URL): Respon
 }
 
 /**
- * The trust chip's state. Remote mode is derived HERE (`hosted` off remoteBase); dir mode is the
- * consumer's injected classification (absent loader = no claim, `null`). A THROWING loader is
+ * The trust chip's state: the consumer's injected classification (absent loader = no claim, `null`). A THROWING loader is
  * `unavailable`, never a fabricated "private" — a wrong "private" and a wrong "shared" are the
  * same trust bug (designs/home-surface, the truth-table rules).
  */
 async function sharingSummary(options: UiServerOptions): Promise<SharingSummary | null> {
-  if (options.mode === "remote") {
-    let host: string;
-    try {
-      host = new URL(options.remoteBase!).host;
-    } catch {
-      host = options.remoteBase ?? "remote";
-    }
-    return { kind: "hosted", remote: host, as_of: new Date().toISOString() };
-  }
   if (!options.loadSharingSummary) return null;
   try {
     return await options.loadSharingSummary();
@@ -660,7 +605,7 @@ async function sharingSummary(options: UiServerOptions): Promise<SharingSummary 
 
 /** The collapsed workspaces block's rows (dir mode, consumer-injected). Best-effort: a throwing loader is an empty list, never a failed config. */
 async function workspacesSummary(options: UiServerOptions): Promise<WorkspaceSummaryEntry[]> {
-  if (options.mode !== "dir" || !options.loadWorkspaces) return [];
+  if (!options.loadWorkspaces) return [];
   try {
     return await options.loadWorkspaces();
   } catch {
@@ -720,19 +665,15 @@ async function viewsResponse(options: UiServerOptions): Promise<Response> {
 
 /**
  * The bundle's derived edge list (graph-query-v0's `queryEdges`: proxied, never
- * reimplemented) for the bridge's `edges` request. Mode-aware exactly like `kindsResponse` above:
- * dir mode calls `queryEdges` over the mounted `Bundle`; remote mode calls it over the SAME
- * `RemoteBackend`-backed bundle `kindsResponse` already uses (`options.bundle`) — `queryEdges`
- * rides `query`+`readMany` under the hood, so this costs no new wire route on the reference server.
+ * reimplemented) for the bridge's `edges` request, over the mounted `Bundle`.
  * `from`/`to` are repeatable query params (array-union, mirroring `link list --from/--to`); `text`
  * is exact-match. Row schema is AXI-minimal (`{from, to, text}`), the SAME projection `link list`
  * applies — core's `Link` also carries `href` (the raw pre-resolution markdown target), an
  * internal detail no page needs.
  *
  * UNLIKE `kindsResponse` (an auxiliary display filter, correctly best-effort), edges is PRIMARY
- * data — a page's backlinks panel, say — so a `queryEdges` failure (most commonly a `--remote`
- * upstream outage) is mapped to a 502, mirroring `proxyToRemote`'s own transport-failure envelope,
- * rather than swallowed into a 200 `{edges:[],count:0}`: a real outage must read as an error, not
+ * data — a page's backlinks panel, say — so a `queryEdges` failure is mapped to a 502 rather than
+ * swallowed into a 200 `{edges:[],count:0}`: a real outage must read as an error, not
  * as "this bundle simply has no edges" (the branch's own silent-staleness standard, and the reason
  * `fetchEdges` throws on any non-2xx rather than best-effort-emptying like `fetchKinds`).
  */
@@ -830,7 +771,7 @@ async function trustedPayload(
 async function prepareAction(req: Request, options: UiServerOptions, runtime: UiRuntime): Promise<Response> {
   const payload = await trustedPayload(req, ["launchId", "action"]);
   if (payload instanceof Response) return payload;
-  if (options.mode !== "dir" || !runtime.actions) {
+  if (!runtime.actions) {
     const result: ActionTerminalResult = { status: "rejected", action: "document.set-field", message: "trusted View actions are available only in local --dir mode" };
     return actionJson(result);
   }
@@ -1020,16 +961,7 @@ async function handleRequest(
     }
     const nonce = decodeURIComponent(url.pathname.slice("/__page/".length));
     const served = await servePageBytes(options, runtime, nonce);
-    const completed = new Promise<boolean>((resolve) => {
-      const finish = (): void => { cleanup(); resolve(true); };
-      const close = (): void => { cleanup(); resolve(res.writableFinished); };
-      const cleanup = (): void => {
-        res.off("finish", finish);
-        res.off("close", close);
-      };
-      res.once("finish", finish);
-      res.once("close", close);
-    });
+    const completed = observeResponseCompletion(res);
     await writeResponseToServerResponse(res, served.response);
     if (served.deliveredLaunch && await completed) {
       runtime.deliveredLaunches.add(served.deliveredLaunch);
@@ -1110,10 +1042,7 @@ async function handleRequest(
   } else if (url.pathname === "/__ui/edges") {
     response = await edgesResponse(options, url);
   } else if (url.pathname.startsWith("/v0/")) {
-    response =
-      options.mode === "dir"
-        ? await options.router!(request)
-        : await proxyToRemote(request, options.remoteBase!, options.apiKey, runtime.shutdown.signal);
+    response = await options.router(request);
   } else {
     const asset = options.serveAsset(url.pathname, request.headers.get("accept-encoding"));
     response = new Response(asset.body, { status: asset.status, headers: asset.headers });
@@ -1125,10 +1054,8 @@ async function handleRequest(
 
 /**
  * Boot the change watcher for live updates, feeding each diff into the SSE hub. Best-effort: a
- * watcher that can't start (e.g. an unreachable remote at boot, or — tasks/ui-remote-watcher-boot-timeout
- * — a `--remote` upstream that never responds, now bounded by `startWatcher`'s boot-time timeout so
- * it THROWS instead of hanging) leaves the UI fully usable, just without live push. Either way the
- * failure is logged to stderr (`onError`) — never a silent no-watch and never a hung boot.
+ * watcher that can't start leaves the UI fully usable, just without live push. The failure is
+ * logged to stderr (`onError`) — never a silent no-watch and never a hung boot.
  */
 async function bootWatcher(options: UiServerOptions, sse: SseHub): Promise<WatcherHandle | undefined> {
   const onChange = (e: ChangeEvent): void => sse.broadcast(e);
@@ -1136,16 +1063,7 @@ async function bootWatcher(options: UiServerOptions, sse: SseHub): Promise<Watch
     process.stderr.write(`[ui watcher] ${err instanceof Error ? err.message : String(err)}\n`);
   };
   try {
-    return options.mode === "dir"
-      ? await startWatcher({ mode: "dir", bundle: options.bundle!, onChange, onError })
-      : await startWatcher({
-          mode: "remote",
-          remoteBase: options.remoteBase!,
-          apiKey: options.apiKey,
-          bootTimeoutMs: options.watcherBootTimeoutMs,
-          onChange,
-          onError,
-        });
+    return await startWatcher({ mode: "dir", bundle: options.bundle, onChange, onError });
   } catch (err) {
     onError(err);
     return undefined;
@@ -1191,14 +1109,11 @@ export async function bootUiServer(options: UiServerOptions): Promise<UiServerHa
         limits: BRIDGE_SERVICE_LIMITS,
       },
     }),
-    actions:
-      options.mode === "dir" && options.bundle
-        ? new TrustedActionService(
-            options.bundle,
-            new PageActionLaunchAuthority(options.bundle, launches, authorizations),
-            options.actor,
-          )
-        : undefined,
+    actions: new TrustedActionService(
+      options.bundle,
+      new PageActionLaunchAuthority(options.bundle, launches, authorizations),
+      options.actor,
+    ),
     sse: new SseHub(),
     shutdown: new AbortController(),
     ...(options.management ? { management: managementRuntime() } : {}),
@@ -1267,9 +1182,8 @@ export async function bootUiServer(options: UiServerOptions): Promise<UiServerHa
           // fresh never-ending stream (or a pipelined request keeps its socket active) and
           // `server.close()` blocks forever — the session-rotation restart hang.
           server.closeAllConnections();
-          // Remote mode: abort in-flight upstream requests — a slow remote must not stall
-          // shutdown, and the remote owns its own write coherence. Dir mode is untouched by
-          // this signal: an accepted LOCAL mutation finishes (see the drain below).
+          // An accepted local mutation is untouched by this signal and finishes (see the drain
+          // below).
           runtime.shutdown.abort();
           // Drain accepted server-side work BEFORE resolving: severing sockets stops CLIENTS,
           // but a handler already executing (e.g. a mutation inside the router) is our work —

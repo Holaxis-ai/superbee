@@ -8,7 +8,7 @@
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { conceptIdFromPath, parseMarkdown } from "@superbee/core";
-import { boardRefOf, isConceptDocPath, listSavedCopies, readDocBytesAtRef, type SavedCopy } from "@superbee/board-git";
+import { boardRefOf, isConceptDocPath, listSavedCopies, readDocBytesAtRef, runGitBytes, type SavedCopy } from "@superbee/board-git";
 import { commandFragment, commandToken, type CommandPrefix, type CommandText } from "./command-text.js";
 import { ENGINE_STAMPED_FIELDS, loadClaimPolicy, recordedOwner, type ClaimPolicy } from "./commands/sync/claim-conflict.js";
 import { defaultSyncStore } from "./cursor.js";
@@ -110,13 +110,54 @@ export interface UnsettledConflict {
   unreadable?: boolean;
 }
 
+/**
+ * The upstream bytes of many paths from one `git cat-file --batch`, null for a path absent there.
+ * A path this cannot answer with certainty (not a blob, an unexpected reply, a name a batch line
+ * cannot carry, or a failed read) is left out, and the caller reads it on its own as before.
+ */
+function upstreamBytes(boardPath: string, ref: string, relPaths: Iterable<string>): Map<string, Buffer | null> {
+  const found = new Map<string, Buffer | null>();
+  const specs = [...new Set(relPaths)].filter((relPath) => !/[\r\n]/.test(relPath)).map((relPath) => ({ relPath, spec: `${ref}:${relPath}` }));
+  if (specs.length === 0) return found;
+  let out: Buffer;
+  try {
+    const read = runGitBytes(boardPath, ["cat-file", "--batch"], { input: `${specs.map((row) => row.spec).join("\n")}\n` });
+    if (read.status !== 0) return found;
+    out = read.stdout;
+  } catch {
+    return found;
+  }
+  let offset = 0;
+  for (const { relPath, spec } of specs) {
+    const newline = out.indexOf(0x0a, offset);
+    if (newline === -1) break;
+    const header = out.subarray(offset, newline).toString("utf8");
+    if (header === `${spec} missing`) {
+      found.set(relPath, null);
+      offset = newline + 1;
+      continue;
+    }
+    const parts = /^[0-9a-f]+ (\S+) (\d+)$/.exec(header);
+    if (parts === null) break;
+    const size = Number(parts[2]);
+    if (newline + 1 + size > out.length) break;
+    if (parts[1] === "blob") found.set(relPath, Buffer.from(out.subarray(newline + 1, newline + 1 + size)));
+    offset = newline + 1 + size + 1;
+  }
+  return found;
+}
+
 async function classify(boardPath: string, key: string): Promise<{ unsettled: UnsettledConflict[]; carried: SavedCopy[]; lostClaims: { copy: SavedCopy; claim: SettledClaim }[] }> {
   const byPath = new Map<string, UnsettledConflict>();
   const carried: SavedCopy[] = [];
   const lostClaims: { copy: SavedCopy; claim: SettledClaim }[] = [];
   // Loaded at most once, and only when a saved copy is not already carried.
   let policy: ClaimPolicy | undefined;
-  for (const copy of listSavedCopies(defaultSyncStore.exportsDir(key))) {
+  // The upstream ref and versions are read once, for every copy, when the first copy needs them.
+  let upstreamRef: string | undefined;
+  let upstreamRead: Map<string, Buffer | null> | undefined;
+  const copies = listSavedCopies(defaultSyncStore.exportsDir(key));
+  for (const copy of copies) {
     let discardWith: UnsettledConflict["discardWith"] = "remove";
     let unreadable = false;
     // Reporting a copy can never stop a sync: what cannot be read stays listed, as unsettled.
@@ -139,7 +180,9 @@ async function classify(boardPath: string, key: string): Promise<{ unsettled: Un
           continue;
         }
       }
-      const upstream = readDocBytesAtRef(boardPath, `refs/remotes/${boardRefOf(boardPath)}`, copy.relPath);
+      upstreamRef ??= `refs/remotes/${boardRefOf(boardPath)}`;
+      upstreamRead ??= upstreamBytes(boardPath, upstreamRef, copies.map((row) => row.relPath));
+      const upstream = upstreamRead.has(copy.relPath) ? upstreamRead.get(copy.relPath)! : readDocBytesAtRef(boardPath, upstreamRef, copy.relPath);
       discardWith = current === null ? (upstream === null ? "take" : "remove") : upstream === null || !current.equals(upstream) ? "revise" : "take";
     } catch {
       unreadable = true;

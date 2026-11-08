@@ -17,6 +17,15 @@ function delimiterLineEnd(input: string, offset: number): number | null {
 }
 
 /**
+ * Whether the splitter would change `text` read as a whole document: a leading BOM is dropped and
+ * an exact opening delimiter line starts a frontmatter block. A serializer emitting no frontmatter
+ * must fence such a body, or the reader recovers different content.
+ */
+export function startsWithFrontmatterSyntax(text: string): boolean {
+  return text.startsWith("\uFEFF") || delimiterLineEnd(text, 0) !== null;
+}
+
+/**
  * Normalize one leading UTF-8 BOM, then split only exact `---` delimiter lines. Schema selection
  * and parsed-value validation remain the responsibility of each parser surface.
  */

@@ -1,6 +1,6 @@
 // Change detection for the loopback UI server's live-update surface (tasks/ui-pages-spike): take a
-// SNAPSHOT of every doc's + page-blob's version token, and on each filesystem event (`--dir`) or
-// poll tick (`--remote`) diff a fresh snapshot against the last to derive a minimal change delta,
+// SNAPSHOT of every doc's + page-blob's version token, and on each filesystem event diff a fresh
+// snapshot against the last to derive a minimal change delta,
 // which `server.ts` broadcasts to the shell over SSE. Version tokens are content-addressed, so a
 // changed token means changed bytes — no timestamps, no content compare.
 //
@@ -12,9 +12,6 @@ import { lstat } from "node:fs/promises";
 import path from "node:path";
 import { classifyChangedPath, listBlobs, readBlob, queryHeads, toPosix, type Bundle } from "@superbee/core";
 import { PAGE_BLOB_PREFIXES } from "./pages.js";
-
-/** The single-bundle reference router's bundle segment (mirrors the SPA client's `BUNDLE`). */
-const REMOTE_BUNDLE = "default";
 
 /** A point-in-time map of every doc id -> version and every page-blob key -> version. */
 export interface Snapshot {
@@ -85,32 +82,6 @@ export async function snapshotBundle(bundle: Bundle): Promise<Snapshot> {
   return { docs, blobs };
 }
 
-/**
- * Snapshot a remote over the wire: doc heads via the `GET /docs?fields=frontmatter` projection,
- * paginated to exhaustion. Remote page-blob hot-reload is a LABELED follow-up (v0 ships live DOC
- * updates over `--remote`; blob-change hot-reload stays local-mode only), so `blobs` is empty here.
- * `signal` cancels an in-flight request — the watcher aborts it on `stop()` instead of leaving a
- * dangling fetch past shutdown.
- */
-export async function snapshotRemote(base: string, apiKey?: string, signal?: AbortSignal): Promise<Snapshot> {
-  const docs = new Map<string, string>();
-  const headers: Record<string, string> = {};
-  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
-  let cursor: string | undefined;
-  do {
-    const url = new URL(`${base}/v0/bundles/${REMOTE_BUNDLE}/docs`);
-    url.searchParams.set("fields", "frontmatter");
-    url.searchParams.set("limit", "200");
-    if (cursor) url.searchParams.set("cursor", cursor);
-    const res = await fetch(url, { headers, signal });
-    if (!res.ok) throw new Error(`remote snapshot failed with status ${res.status}`);
-    const body = (await res.json()) as { docs: { id: string; version: string }[]; next_cursor: string | null };
-    for (const d of body.docs) docs.set(d.id, d.version);
-    cursor = body.next_cursor ?? undefined;
-  } while (cursor);
-  return { docs, blobs: new Map() };
-}
-
 export interface WatcherHandle {
   stop: () => Promise<void>;
 }
@@ -166,35 +137,13 @@ interface CommonWatcherOptions {
   onError?: (err: unknown) => void;
 }
 
-/**
- * Bound on `--remote` mode's boot-time INITIAL snapshot fetch: `startWatcher` is awaited directly by
- * `bootUiServer`, and a dead/unreachable upstream left this fetch on undici's default (~300s) timeout
- * — a hung remote hung the entire `ui` boot. Exported so a test can assert on the exact bound rather
- * than a magic number duplicated at the call site; `bootTimeoutMs` on `WatcherOptions` overrides it
- * (a test seam — production callers get this default).
- */
-export const DEFAULT_REMOTE_BOOT_TIMEOUT_MS = 5_000;
+export type WatcherOptions = CommonWatcherOptions & { mode: "dir"; bundle: Bundle; debounceMs?: number; watch?: WatchDirectory };
 
-export type WatcherOptions =
-  | (CommonWatcherOptions & { mode: "dir"; bundle: Bundle; debounceMs?: number; watch?: WatchDirectory })
-  | (CommonWatcherOptions & {
-      mode: "remote";
-      remoteBase: string;
-      apiKey?: string;
-      pollMs?: number;
-      /** Override {@link DEFAULT_REMOTE_BOOT_TIMEOUT_MS} for the boot-time initial snapshot only — never the ongoing poll. */
-      bootTimeoutMs?: number;
-    });
-
-async function takeSnapshot(opts: WatcherOptions, signal?: AbortSignal): Promise<Snapshot> {
-  return opts.mode === "dir" ? snapshotBundle(opts.bundle) : snapshotRemote(opts.remoteBase, opts.apiKey, signal);
-}
 
 /**
  * Start watching for changes, emitting a {@link ChangeEvent} to `opts.onChange` whenever a doc or
  * page blob's version token moves. `--dir` uses `fs.watch` recursively (debounced) plus periodic
- * reconciliation, resting at least 2s or ten times the last scan's duration after each scan;
- * `--remote` polls on a fixed interval. Awaits
+ * reconciliation, resting at least 2s or ten times the last scan's duration after each scan. Awaits
  * a baseline snapshot before resolving, so the first change is diffed against real state.
  *
  * A `--dir` hint the snapshot can see scans at once unless the last hint-answering scan is still
@@ -205,34 +154,23 @@ async function takeSnapshot(opts: WatcherOptions, signal?: AbortSignal): Promise
  * names, such as deleting a file created by link and unlink on macOS, waits for the periodic rest,
  * which is uncapped so that a costly scan keeps its CPU bound.
  *
- * Snapshot runs are SERIALIZED (tasks/ui-pages-spike P1 — remote concurrency): two overlapping
+ * Snapshot runs are SERIALIZED (tasks/ui-pages-spike P1): two overlapping
  * runs could complete out of order — the LATER-started (fresher) one lands first, then the
  * earlier (staler) one both emits a regression delta AND poisons `last` with the older state, so
  * the next tick re-emits the same change (the observed C -> B -> C). A tick that fires while a
- * run is in flight marks a rerun instead of overlapping; `stop()` aborts any in-flight remote
- * request and suppresses every later emission.
+ * run is in flight marks a rerun instead of overlapping; `stop()` suppresses every later emission.
  */
 export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle> {
-  const aborter = new AbortController();
-  // Only the BOOT-time initial snapshot is time-boxed — `--dir` mode never leaves the process
-  // (no bound needed), and `--remote` mode's ONGOING polls already recover on their own schedule
-  // (a stuck poll just means the next tick tries again); it is specifically the unbounded FIRST
-  // fetch, awaited synchronously by `bootUiServer`, that could hang boot forever. On timeout,
-  // `takeSnapshot` throws and `startWatcher`'s own promise rejects — the caller (`bootWatcher` in
-  // server.ts) already treats any boot-time throw as a best-effort watcher failure: log to stderr,
-  // resolve the UI boot WITHOUT a watcher rather than hang it.
-  const bootSignal =
-    opts.mode === "remote" ? AbortSignal.timeout(opts.bootTimeoutMs ?? DEFAULT_REMOTE_BOOT_TIMEOUT_MS) : aborter.signal;
   let lastScanMs = 0;
-  const timedSnapshot = async (signal: AbortSignal): Promise<Snapshot> => {
+  const timedSnapshot = async (): Promise<Snapshot> => {
     const started = performance.now();
     try {
-      return await takeSnapshot(opts, signal);
+      return await snapshotBundle(opts.bundle);
     } finally {
       lastScanMs = performance.now() - started;
     }
   };
-  let last = await timedSnapshot(bootSignal);
+  let last = await timedSnapshot();
   let stopped = false;
   let running = false;
   let rerun = false;
@@ -248,7 +186,7 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
     try {
       do {
         rerun = false;
-        const next = await timedSnapshot(aborter.signal);
+        const next = await timedSnapshot();
         if (stopped) return;
         const change = diffSnapshots(last, next);
         last = next;
@@ -262,106 +200,92 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
     }
   };
 
-  if (opts.mode === "dir") {
-    const debounceMs = opts.debounceMs ?? 150;
-    const bundle = opts.bundle;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    // A relevant hint no started scan has covered yet.
-    let hintPending = false;
-    let scanAnswersHint = false;
-    // Running from a hint-answering scan's settlement; later hints wait for it.
-    let hintRest: ReturnType<typeof setTimeout> | undefined;
-    const startScan = (): void => {
-      if (hintRest) clearTimeout(hintRest);
-      hintRest = undefined;
-      scanAnswersHint = hintPending;
-      hintPending = false;
-      void emitDiff();
-    };
-    const armDebounce = (): void => {
-      if (stopped) return;
-      // An armed timer stays armed: restarting it would let a stream of close hints starve the scan.
-      if (timer) return;
-      timer = setTimeout(() => {
-        timer = undefined;
-        hintPending = true;
-        if (!running && !hintRest) startScan();
-      }, debounceMs);
-      timer.unref?.();
-    };
-    const trigger = (filename?: string | null): void => {
-      if (stopped) return;
-      const relevant = hintCanChangeSnapshot(bundle, filename, () => last);
-      if (relevant === true) armDebounce();
-      else if (relevant !== false) void relevant.then((answer) => { if (answer) armDebounce(); });
-    };
+  const debounceMs = opts.debounceMs ?? 150;
+  const bundle = opts.bundle;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // A relevant hint no started scan has covered yet.
+  let hintPending = false;
+  let scanAnswersHint = false;
+  // Running from a hint-answering scan's settlement; later hints wait for it.
+  let hintRest: ReturnType<typeof setTimeout> | undefined;
+  const startScan = (): void => {
+    if (hintRest) clearTimeout(hintRest);
+    hintRest = undefined;
+    scanAnswersHint = hintPending;
+    hintPending = false;
+    void emitDiff();
+  };
+  const armDebounce = (): void => {
+    if (stopped) return;
+    // An armed timer stays armed: restarting it would let a stream of close hints starve the scan.
+    if (timer) return;
+    timer = setTimeout(() => {
+      timer = undefined;
+      hintPending = true;
+      if (!running && !hintRest) startScan();
+    }, debounceMs);
+    timer.unref?.();
+  };
+  const trigger = (filename?: string | null): void => {
+    if (stopped) return;
+    const relevant = hintCanChangeSnapshot(bundle, filename, () => last);
+    if (relevant === true) armDebounce();
+    else if (relevant !== false) void relevant.then((answer) => { if (answer) armDebounce(); });
+  };
 
-    let watcher: ReturnType<WatchDirectory> | undefined;
-    // A successful native watch is not a delivery guarantee. Keep the same serialized snapshot
-    // path running even without hints, including after a transient scan error or attachment gap.
-    let reconciliation: ReturnType<typeof setTimeout> | undefined;
-    const restMs = (): number => Math.max(2000, 10 * lastScanMs);
-    const scheduleReconciliation = (): void => {
-      if (stopped) return;
-      if (reconciliation) clearTimeout(reconciliation);
-      reconciliation = setTimeout(() => {
-        reconciliation = undefined;
-        // Periodic ticks must not keep a large, unchanged bundle scanning without a pause.
-        if (running) return; // the active scan rearms on settlement
-        startScan();
-      }, restMs());
-      reconciliation.unref?.();
-    };
-    // Every scan, failed or not, pushes the next periodic scan a full rest away. Scaling with
-    // measured cost keeps large bundles from spending most of their time taking snapshots. Only a
-    // hint-answering scan makes later hints wait, and for at most the cap; a periodic scan does not,
-    // or a lone edit would wait for up to a whole rest on a watcher that had seen no other change.
-    // Each wait is a timer armed at settlement, so a stall or a machine sleep before that point
-    // cannot use it up, and nothing compares timestamps taken on either side of one.
-    onSettled = (): void => {
-      if (stopped) return;
-      if (scanAnswersHint) {
-        hintRest = setTimeout(() => {
-          hintRest = undefined;
-          if (hintPending && !running) startScan();
-        }, Math.min(restMs(), HELD_HINT_MAX_WAIT_MS));
-        hintRest.unref?.();
-      }
-      scheduleReconciliation();
-      if (hintPending && !hintRest) startScan();
-    };
-    scheduleReconciliation();
-    try {
-      watcher = (opts.watch ?? watchDirectory)(opts.bundle.root, trigger);
-      watcher.on("error", () => {
-        watcher?.close();
-        watcher = undefined;
-      });
-    } catch {
-      // Periodic reconciliation remains active if native watching is unavailable.
+  let watcher: ReturnType<WatchDirectory> | undefined;
+  // A successful native watch is not a delivery guarantee. Keep the same serialized snapshot
+  // path running even without hints, including after a transient scan error or attachment gap.
+  let reconciliation: ReturnType<typeof setTimeout> | undefined;
+  const restMs = (): number => Math.max(2000, 10 * lastScanMs);
+  const scheduleReconciliation = (): void => {
+    if (stopped) return;
+    if (reconciliation) clearTimeout(reconciliation);
+    reconciliation = setTimeout(() => {
+      reconciliation = undefined;
+      // Periodic ticks must not keep a large, unchanged bundle scanning without a pause.
+      if (running) return; // the active scan rearms on settlement
+      startScan();
+    }, restMs());
+    reconciliation.unref?.();
+  };
+  // Every scan, failed or not, pushes the next periodic scan a full rest away. Scaling with
+  // measured cost keeps large bundles from spending most of their time taking snapshots. Only a
+  // hint-answering scan makes later hints wait, and for at most the cap; a periodic scan does not,
+  // or a lone edit would wait for up to a whole rest on a watcher that had seen no other change.
+  // Each wait is a timer armed at settlement, so a stall or a machine sleep before that point
+  // cannot use it up, and nothing compares timestamps taken on either side of one.
+  onSettled = (): void => {
+    if (stopped) return;
+    if (scanAnswersHint) {
+      hintRest = setTimeout(() => {
+        hintRest = undefined;
+        if (hintPending && !running) startScan();
+      }, Math.min(restMs(), HELD_HINT_MAX_WAIT_MS));
+      hintRest.unref?.();
     }
-
-    return {
-      stop: async () => {
-        stopped = true;
-        if (timer) clearTimeout(timer);
-        if (hintRest) clearTimeout(hintRest);
-        watcher?.close();
-        watcher = undefined;
-        if (reconciliation) clearTimeout(reconciliation);
-        aborter.abort();
-      },
-    };
+    scheduleReconciliation();
+    if (hintPending && !hintRest) startScan();
+  };
+  scheduleReconciliation();
+  try {
+    watcher = (opts.watch ?? watchDirectory)(opts.bundle.root, trigger);
+    watcher.on("error", () => {
+      watcher?.close();
+      watcher = undefined;
+    });
+  } catch {
+    // Periodic reconciliation remains active if native watching is unavailable.
   }
 
-  const pollMs = opts.pollMs ?? 3000;
-  const timer = setInterval(() => void emitDiff(), pollMs);
-  timer.unref?.();
   return {
     stop: async () => {
       stopped = true;
-      clearInterval(timer);
-      aborter.abort(); // cancel any in-flight snapshot request — nothing dangles past shutdown
+      if (timer) clearTimeout(timer);
+      if (hintRest) clearTimeout(hintRest);
+      watcher?.close();
+      watcher = undefined;
+      if (reconciliation) clearTimeout(reconciliation);
     },
   };
 }

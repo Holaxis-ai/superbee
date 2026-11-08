@@ -56,7 +56,7 @@ test("helpIndexText: carries the tool description and a usage line (context subc
 test("helpIndexText: the kinds + bundle-resolution footer pointers still appear, as wrapped prose (not one giant unbroken line)", () => {
   const text = helpIndexText(INV);
   assert.match(text, /kinds are declared per-bundle/);
-  assert.match(text, /bundle resolution: HTTP is activated only by explicit --remote/);
+  assert.match(text, /bundle resolution: an explicit --dir wins/);
   // The raw remoteEnvPointer() is authored as ONE long line (no embedded newlines) — if it still
   // appeared verbatim in the rendered text, the footer would not actually be wrapped.
   assert.ok(!text.includes(remoteEnvPointer()), "remoteEnvPointer must be wrapped across lines, not embedded unbroken");

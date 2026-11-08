@@ -296,6 +296,7 @@ test("the expected tarball set is the fixed base plus the references tree", () =
     "dist/publication/canonical-json.d.ts",
     "dist/publication/capture.d.ts",
     "dist/publication/errors.d.ts",
+    "dist/publication/external-link-policy.d.ts",
     "dist/publication/generated/publication-snapshot-v1.d.ts",
     "dist/publication/index.d.ts",
     "dist/publication/schema.d.ts",

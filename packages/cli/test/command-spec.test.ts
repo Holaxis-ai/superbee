@@ -12,7 +12,6 @@ import {
   type CommandSpecGroup,
 } from "../src/command-spec.js";
 import { KNOWN_COMMANDS, PUBLIC_HANDLERS, RUNTIME_COMMANDS } from "../src/cli.js";
-import { serve } from "../src/commands/serve.js";
 import { PROMOTE_USAGE } from "../src/commands/promote.js";
 import { DELETE_USAGE } from "../src/commands/delete.js";
 import { HOSTED_SYNC_USAGE } from "../src/hosted/sync.js";
@@ -38,7 +37,6 @@ test("reference, known names, exact handlers, and runtime registration are graph
   assert.deepEqual(referencePaths, projectedPaths);
   assert.strictEqual(KNOWN_COMMANDS, PUBLIC_COMMAND_NAMES);
   assert.deepEqual(Object.keys(PUBLIC_HANDLERS), PUBLIC_COMMAND_NAMES);
-  assert.strictEqual(PUBLIC_HANDLERS.serve, serve);
   assert.deepEqual(Object.keys(RUNTIME_COMMANDS), [...PUBLIC_COMMAND_NAMES, "home", "update"]);
 });
 
@@ -46,7 +44,7 @@ test("public command order preserves the user-facing unknown-command diagnostic"
   assert.deepEqual(PUBLIC_COMMAND_NAMES, [
     "init", "bundle", "catalog", "index", "doc", "promote", "pull", "blobs", "delete",
     "link", "list", "query", "new", "artifact", "kinds", "kind", "recipes", "recipe",
-    "status", "serve", "ui", "mcp", "sync", "hook", "skill", "session-start", "version", "view", "setup",
+    "status", "ui", "mcp", "sync", "hook", "skill", "session-start", "version", "view", "setup",
     "login", "whoami", "logout", "checkout", "turn-end", "export", "publish", "op", "access", "deps", "notify", "inbox", "search", "source", "workload",
   ]);
 });

@@ -1,5 +1,5 @@
 /** Explicit Node filesystem construction, independent of executable or CLI startup. */
-import { FilesystemBackend } from "./backend.js";
+import { FilesystemBackend, withFilesystemRootMutationLock } from "./backend.js";
 import { initBundle } from "./bundle.js";
 import { captureFilesystemHostPolicy, type FilesystemHostPolicy } from "./filesystem-host.js";
 import {
@@ -17,6 +17,12 @@ export interface FilesystemRuntime {
   initBundle(root: string, options?: InitBundleOptions): Promise<Bundle>;
   withMutationLock<T>(target: string, body: () => Promise<T>, options?: Omit<FilesystemMutationLockOptions, "hostPolicy">): Promise<T>;
   mutationLockPath(target: string, portableRoot?: string): string;
+  /**
+   * Run `body` holding the same root lock every document write to the bundle at `root` holds, so
+   * an outside step that moves files under the bundle (a Git rebase, say) is ordered with writes.
+   * `body` must not write through a backend for the same root: that write would wait on this lock.
+   */
+  withRootMutationLock<T>(root: string, body: () => Promise<T>): Promise<T>;
 }
 
 /** Each runtime retains its selected host; it never changes another consumer's defaults. */
@@ -28,6 +34,8 @@ export function createFilesystemRuntime(policy?: FilesystemHostPolicy): Filesyst
     withMutationLock: <T>(target: string, body: () => Promise<T>, options?: Omit<FilesystemMutationLockOptions, "hostPolicy">) =>
       withFilesystemMutationLock(target, body, { ...options, hostPolicy }),
     mutationLockPath: (target: string, portableRoot?: string) => filesystemMutationLockPath(target, portableRoot, hostPolicy),
+    withRootMutationLock: <T>(root: string, body: () => Promise<T>) =>
+      withFilesystemRootMutationLock(root, body, hostPolicy),
   });
 }
 

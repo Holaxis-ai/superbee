@@ -11,7 +11,7 @@
 //     — the OKF data model legitimately allows arbitrary strings there);
 //   • a concept id may contain any byte that is not path traversal, so a conflicted id arriving from
 //     a shared board is authored by a REMOTE PEER;
-//   • `.agentstate.json`'s `bundle` binding is authored by whoever wrote the repository, not by the
+//   • `.superbee.json`'s `bundle` binding is authored by whoever wrote the repository, not by the
 //     person running the command.
 //
 // Interpolating such a value into a command string bare, or inside double quotes, produces a string

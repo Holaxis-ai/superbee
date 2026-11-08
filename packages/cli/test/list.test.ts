@@ -8,12 +8,11 @@
  * per-kind code; proven against TWO distinct kinds (Task, Ticket) below.
  *
  * Fork B (filter): `--field key=value`, repeatable, ANDed, implemented as a core `QueryFilter`
- * facet (`fields`) so it rides `readMany` over `--remote` for free, same as the pre-existing
+ * facet (`fields`), same as the pre-existing
  * `type`/`tags` facets.
  *
  * Runs command functions in-process (no subprocess) against a real temp filesystem bundle,
- * mirroring `kinds.test.ts`'s/`doc.test.ts`'s pattern; the `--remote` parity test additionally
- * boots a real `@superbee/server` `serve()` instance, mirroring `remote.test.ts`.
+ * mirroring `kinds.test.ts`'s/`doc.test.ts`'s pattern.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -22,7 +21,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { initBundle, writeDoc, CONVENTION_TYPE, type Bundle } from "@superbee/core";
-import { serve, type ServerHandle } from "@superbee/server";
 
 import { list } from "../src/commands/list.js";
 import { CliError } from "../src/errors.js";
@@ -221,14 +219,6 @@ test("list orders meaningful change time newest-first after filters and before l
     const limited = await runJson(["--type", "Context Note", "--limit", "3", "--dir", dir]);
     assert.equal(limited.count, expected.length);
     assert.deepEqual((limited.docs as Array<{ id: string }>).map((row) => row.id), expected.slice(0, 3));
-
-    const handle: ServerHandle = await serve({ bundle, port: 0 });
-    try {
-      const remote = await runJson(["--type", "Context Note", "--limit", "0", "--remote", `http://${handle.host}:${handle.port}`]);
-      assert.deepEqual(remote, local);
-    } finally {
-      await handle.close();
-    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -462,23 +452,6 @@ test("list --type Task --field status=done: filter AND kind-aware columns compos
   }
 });
 
-test("--field over --remote: same result set as --dir against a live serve()", async () => {
-  const { dir, cleanup } = await makeTwoKindBundle();
-  try {
-    const handle: ServerHandle = await serve({ bundle: { root: dir }, port: 0 });
-    const url = `http://${handle.host}:${handle.port}`;
-    try {
-      const local = await runJson(["--type", "Task", "--field", "status=todo", "--dir", dir]);
-      const remote = await runJson(["--type", "Task", "--field", "status=todo", "--remote", url]);
-      assert.deepEqual(remote, local);
-    } finally {
-      await handle.close();
-    }
-  } finally {
-    await cleanup();
-  }
-});
-
 // ── tasks/list-field-sets.md: comma = set membership (OR) within one --field ──────────────────
 
 test("list --field status=todo,doing (comma = OR within one field): matches EITHER value", async () => {
@@ -554,23 +527,6 @@ test("list --field status= (bare, no comma at all): USAGE (exit 2) with the TAIL
         return true;
       },
     );
-  } finally {
-    await cleanup();
-  }
-});
-
-test("--field comma-OR over --remote: same result set as --dir (reader-side post-filter is transparent over the wire)", async () => {
-  const { dir, cleanup } = await makeTwoKindBundle();
-  try {
-    const handle: ServerHandle = await serve({ bundle: { root: dir }, port: 0 });
-    const url = `http://${handle.host}:${handle.port}`;
-    try {
-      const local = await runJson(["--type", "Task", "--field", "status=todo,doing", "--dir", dir]);
-      const remote = await runJson(["--type", "Task", "--field", "status=todo,doing", "--remote", url]);
-      assert.deepEqual(remote, local);
-    } finally {
-      await handle.close();
-    }
   } finally {
     await cleanup();
   }
@@ -666,23 +622,6 @@ test("list --open: a bundle where NO kind declares any terminal set is a structu
       Array.isArray(help) && help.some((h) => /no kind declares terminal values — --open filtered nothing/.test(h)),
       `expected the --open no-op help line, got ${JSON.stringify(help)}`,
     );
-  } finally {
-    await cleanup();
-  }
-});
-
-test("--open over --remote: same result set as --dir against a live serve() (the terminal-exclusion filter is transparent over the wire, same as the comma-OR post-filter)", async () => {
-  const { dir, cleanup } = await makeTerminalBundle();
-  try {
-    const handle: ServerHandle = await serve({ bundle: { root: dir }, port: 0 });
-    const url = `http://${handle.host}:${handle.port}`;
-    try {
-      const local = await runJson(["--type", "Task", "--open", "--dir", dir]);
-      const remote = await runJson(["--type", "Task", "--open", "--remote", url]);
-      assert.deepEqual(remote, local);
-    } finally {
-      await handle.close();
-    }
   } finally {
     await cleanup();
   }

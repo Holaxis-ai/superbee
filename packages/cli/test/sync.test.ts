@@ -74,6 +74,7 @@ import {
   pushBoard,
   readBoardFile,
   wedgeMidRebase,
+  markSyncStartedRebase,
   writeBoardDoc,
   git,
   type BoardRepo,
@@ -404,7 +405,7 @@ test("pushFailureMessage: only contextualized update pushes get permission-aware
   assert.equal(pushFailureMessage(network), PUSH_FAIL_SAFETY_MESSAGE, "pre-push fetch failures retain established copy");
   assert.equal(
     PUSH_FAIL_ACCESS_MESSAGE,
-    "committed to the board locally — your work is saved. The remote did not accept the update " +
+    "Committed to the board locally. Your work is saved. The remote did not accept the update " +
       "to origin/board. Verify the active HTTPS/SSH identity, repository-specific Write access, and " +
       "board-update policy; re-run sync only after one of those conditions changes.",
   );
@@ -471,7 +472,7 @@ test("pushFailureMessage: a non-fast-forward TRANSIENT keeps its actionable retr
   );
   assert.equal(
     pushFailureMessage(race),
-    "committed to the board locally — your work is saved. " +
+    "Committed to the board locally. Your work is saved. " +
       "a teammate pushed to the board at the same time — re-run sync to incorporate their changes and retry",
   );
 });
@@ -480,7 +481,7 @@ test("pushFailureMessage: any OTHER push-failure code still reassures, with its 
   const busy = new CliError("GIT_BUSY", "another git process is using this repository — retry once it finishes");
   const msg = pushFailureMessage(busy);
   assert.notEqual(msg, PUSH_FAIL_SAFETY_MESSAGE, "not the auth/network-specific exact string");
-  assert.ok(msg.startsWith("committed to the board locally — your work is saved."));
+  assert.ok(msg.startsWith("Committed to the board locally. Your work is saved."));
   assert.ok(msg.includes(busy.message));
 });
 
@@ -1034,6 +1035,7 @@ test("sync: a legitimate standalone checkout heals an interrupted board rebase b
     const localBefore = git(wedged, ["rev-parse", "HEAD"]).trim();
     git(wedged, ["fetch", "origin"]);
     assert.notEqual(gitTry(wedged, ["rebase", `origin/${BOARD_BRANCH}`]).status, 0);
+    markSyncStartedRebase(wedged);
     const rebasePath = path.resolve(wedged, git(wedged, ["rev-parse", "--git-path", "rebase-merge"]).trim());
     assert.equal(existsSync(rebasePath), true, "fixture is genuinely mid-rebase");
 
@@ -1310,7 +1312,7 @@ test("sync: commit-then-conflict — the run's OWN commit lands, then the envelo
     );
     assert.equal(
       result.err!.message,
-      "committed to the board locally — your work is saved. " +
+      "Committed to the board locally. Your work is saved. " +
         `doc tasks/seed-one — teammate's version kept; yours saved at ${exportPath} — reconcile with doc update`,
     );
     assert.ok(JSON.stringify(result.err!.details ?? {}).includes("tasks/seed-one"), "conflict rows carry the doc id");
@@ -1351,7 +1353,7 @@ test("sync: push-fail after a successful commit -> PARTIAL envelope leading with
     assert.ok(result.err, "expected a thrown (handled) CliError");
     assert.equal(result.err!.exitCode, 1);
     assert.match(result.out, /^warning:/);
-    assert.match(result.out, /committed to the board locally — your work is saved\./);
+    assert.match(result.out, /Committed to the board locally. Your work is saved\./);
     assert.match(result.out, /committed: 1/);
     assert.match(result.out, /pushed: 0/);
     assert.match(result.out, /details:/);
@@ -1661,7 +1663,7 @@ test("sync: FINDING 3 — a commit that lands, then a fetch failure, still gets 
     const before = boardHead(topo.b);
     const result = await runSync(homes[0]!, ["--dir", topo.b.root]);
     assert.ok(result.err, "expected a thrown CliError");
-    assert.match(result.err!.message, /committed to the board locally — your work is saved/);
+    assert.match(result.err!.message, /Committed to the board locally. Your work is saved/);
     const after = boardHead(topo.b);
     assert.notEqual(after, before, "the commit genuinely landed locally despite the fetch failure");
 
@@ -1993,7 +1995,7 @@ test("sync: loud provisioning — a FRESH provision followed by a broken-origin 
   try {
     // Break origin AFTER the initial clone already fetched refs/remotes/origin/board (mirrors
     // FINDING 3's own technique): provisioning succeeds from that pre-fetched local ref (needs no
-    // network), but STEP 3's own `fetch` inside fetchRebaseResolving then fails for real.
+    // network), but STEP 3's own `fetch` inside fetchBoard then fails for real.
     git(topo.a.root, ["remote", "set-url", "origin", "/nonexistent-origin-xyz"]);
     const result = await runSync(homes[0]!, ["--dir", topo.a.root]);
     assert.ok(result.err, "expected a thrown CliError");

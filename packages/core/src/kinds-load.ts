@@ -5,6 +5,7 @@
  * reads a bundle through `bundle-ops.ts`'s runtime-neutral delegation, never the Node entry, so it
  * stays browser-safe (`@superbee/core/bundle-health` runs it in any runtime). One registry.
  */
+import { isPermissionDeniedSkip } from "./skip-reasons.js";
 import { MalformedDocumentError } from "./frontmatter-contract.js";
 import { query, readBundleOkfVersion } from "./bundle-ops.js";
 import {
@@ -35,7 +36,9 @@ export async function loadKinds(bundle: Bundle): Promise<KindRegistry> {
     onSkip: ({ id, reason }) =>
       warnings.push({
         code: "KIND_CONVENTION_MALFORMED",
-        message: `skipped kind convention '${id}' with unparseable frontmatter: ${reason}`,
+        message: isPermissionDeniedSkip({ reason })
+          ? `skipped kind convention '${id}' that could not be read: ${reason}`
+          : `skipped kind convention '${id}' with unparseable frontmatter: ${reason}`,
         field: id,
         severity: "warning",
       }),

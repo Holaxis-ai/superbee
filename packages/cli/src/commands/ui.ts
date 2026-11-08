@@ -1,17 +1,10 @@
 import { offerManagedDocument } from "../ui/managed-authority.js";
 import { currentHost, captureRuntimeCallback } from "../runtime-context.js";
-// `superbee ui [--dir <path> | --remote <url>] [--port <n>] [--open]` — boot the local
-// web UI (plans/ui-v1.md rev 3.2): the SPA plus a same-origin `/v0/*` surface, either the
-// reference router mounted in-process over a local bundle (`--dir`) or a reverse proxy onto a
-// deployed remote (`--remote`) with conditional Bearer injection. The SPA never knows which.
+// `superbee ui [--dir <path>] [--port <n>] [--open]` — boot the local
+// web UI (plans/ui-v1.md rev 3.2): the SPA plus a same-origin `/v0/*` surface, the reference
+// router mounted in-process over a local bundle.
 //
-// Source resolution follows the explicit-only remote rule (`resolveRemoteFlag`: only `--remote`
-// activates HTTP; otherwise local bundle discovery) — EXCEPT `ui` builds its OWN
-// remote handling (the reverse proxy in `@superbee/ui-server`) rather than routing through
-// `openBundle`'s `RemoteBackend` path, since the SPA needs the raw `/v0/*` wire surface
-// same-origin, not the engine-level `StorageBackend` abstraction.
-//
-// AXI shape mirrors `serve.ts`: the TOON receipt (the resolved, TOKENIZED url — carries the
+// AXI shape: the TOON receipt (the resolved, TOKENIZED url — carries the
 // per-run session secret the first load exchanges for a cookie) prints FIRST, then the command
 // stays in the foreground until SIGINT/SIGTERM close the listener cleanly.
 import { parseArgs } from "node:util";
@@ -28,12 +21,8 @@ import {
   openBundle,
   resolveLocalBundleRoute,
   resolveLocalBundleTarget,
-  resolveRemoteFlag,
-  resolveApiKeyEnv,
 } from "../bundle.js";
 import { resolveConceptIdCliArgument } from "../concept-id.js";
-import { normalizeServer } from "../config.js";
-import { getApiKeyForOrigin } from "../credentials.js";
 import { bootUiServer as bootUiServerDefault, type UiServerHandle, type UiServerOptions } from "../ui/server.js";
 import { writeUiUrlFile, clearUiUrlFile } from "../ui/url-file.js";
 import { CliError } from "../errors.js";
@@ -57,17 +46,16 @@ import {
 export const UI_USAGE = `superbee ui — boot the local web UI over the bundle: read its docs as rendered pages (cross-links, backlinks), launch its registered Views (type: View docs framed sandboxed with live updates; legacy type: Page docs are not registered), and see live activity, sharing status, and your workspaces
 
 Usage:
-  superbee ui [--dir <path> | --remote <url>] [--port <n>] [--actor <name>] [--open]
+  superbee ui [--dir <path>] [--port <n>] [--actor <name>] [--open]
   superbee ui --status [--dir <path>] [--limit <n>]
   superbee ui --stop [--dir <path>] [--actor <name>] [--abandon]
 
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd) — mounts the
                          reference router in-process
-  --remote <url>         Reverse-proxy /v0/* to a deployed remote instead (explicit only)
   --port <p>            Port to bind (default: 0 — an OS-assigned ephemeral port)
   --actor <name>        Advisory identity for human-confirmed local View actions. Precedence:
-                         --actor > SUPERBEE_ACTOR > AGENTSTATE_LITE_ACTOR (legacy) > absent. On an
+                         --actor > SUPERBEE_ACTOR > absent. On an
                          OKF v0.2 bundle a confirmed write needs an OKF actor (human:<id>,
                          process:<id>, or <producer>/<version>).
                          Read-only Views need none
@@ -155,11 +143,8 @@ function mapBootError(err: unknown, port: number, commandPath = "ui"): CliError 
   return new CliError("RUNTIME", message);
 }
 
-type UiEntry = { kind: "launcher" } | { kind: "document" };
-
 const UI_PARSE_OPTIONS = {
   dir: { type: "string" },
-  remote: { type: "string" },
   port: { type: "string" },
   actor: { type: "string" },
   open: { type: "boolean" },
@@ -175,7 +160,6 @@ const UI_PARSE_OPTIONS = {
 interface ParsedUiArgs {
   values: {
     dir?: string;
-    remote?: string;
     port?: string;
     actor?: string;
     open?: boolean;
@@ -207,7 +191,7 @@ export async function ui(argv: string[], deps: Partial<UiCliDeps> = {}): Promise
     await runManagedUiControl(parsed, deps);
     return;
   }
-  await runUi(parsed, deps, { kind: "launcher" });
+  await runUi(parsed, deps);
 }
 
 /** Open one exact document through the existing web DocPage; exported for the `doc open` adapter. */
@@ -221,11 +205,6 @@ export async function openDocumentUi(argv: string[], deps: Partial<UiCliDeps> = 
     return;
   }
   if (parsed.values.abandon) throw new CliError("USAGE", "doc open does not accept --abandon");
-  const remoteFlag = await resolveRemoteFlag(parsed.values.remote, parsed.values.dir);
-  if (remoteFlag !== undefined) {
-    await runUi(parsed, deps, { kind: "document" });
-    return;
-  }
   await presentManagedLocalDocument(parsed, deps);
 }
 
@@ -278,7 +257,7 @@ export async function presentManagedLocalDocument(
       lifecycle: { state: "unverified" },
     };
   } catch (error) {
-    throw readErrorToCliError(error, documentId, undefined);
+    throw readErrorToCliError(error, documentId);
   }
   const actor = resolveActor(values.actor, { help: `${cliInvocation()} doc open --actor <name>` });
   const requestedPort = parsedPort(values.port, `doc open ${rawDocumentId}`);
@@ -324,19 +303,16 @@ export async function presentManagedLocalDocument(
 /** Exact local View entry; session enrollment never substitutes for the shell's View approval. */
 export async function presentManagedLocalView(
   rawViewId: string,
-  values: { dir?: string; remote?: string; actor?: string; json?: boolean; "no-open"?: boolean },
+  values: { dir?: string; actor?: string; json?: boolean; "no-open"?: boolean },
   deps: Partial<UiCliDeps>,
 ): Promise<void> {
-  if (await resolveRemoteFlag(values.remote, values.dir) !== undefined) {
-    throw new CliError("USAGE", "view open supports only a selected local bundle", { help: `${cliInvocation()} view open --help` });
-  }
   if (values["no-open"] && !values.json) throw new CliError("USAGE", "view open --no-open requires --json for its private one-use handoff");
   const route = await resolveLocalBundleRoute(values.dir);
   await assertResolvedLocalRouteIdentity(route);
   const viewId = await resolveConceptIdCliArgument(route.bundle, rawViewId);
   let read;
   try { read = await readDocVersioned(route.bundle, viewId); }
-  catch (error) { throw readErrorToCliError(error, viewId, undefined); }
+  catch (error) { throw readErrorToCliError(error, viewId); }
   if (!parseRegistration(read.doc.id, read.doc.frontmatter)) {
     throw new CliError("USAGE", `'${viewId}' is not a valid registered View`);
   }
@@ -366,7 +342,6 @@ async function runManagedUiControl(
   deps: Partial<UiCliDeps>,
 ): Promise<void> {
   if (values.status && values.stop) throw new CliError("USAGE", "--status and --stop are mutually exclusive");
-  if (values.remote !== undefined) throw new CliError("USAGE", "managed UI status and stop are local-only; --remote remains foreground");
   if (values.port !== undefined || values.open || positionals.length > 0) {
     throw new CliError("USAGE", "ui --status/--stop accept only their documented --dir, --actor, --limit, --abandon, and --json options");
   }
@@ -422,7 +397,7 @@ async function runManagedUiControl(
   }, resolveMode(values)));
 }
 
-async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliDeps>, entry: UiEntry): Promise<void> {
+async function runUi({ values }: ParsedUiArgs, deps: Partial<UiCliDeps>): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
   const bootUiServer = deps.bootUiServer ?? bootUiServerDefault;
   const waitForShutdown = deps.waitForShutdown ?? defaultWaitForShutdown;
@@ -430,10 +405,9 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
   const writeUrlFile = deps.writeUrlFile ?? ((url: string) => writeUiUrlFile(url));
   const clearUrlFile = deps.clearUrlFile ?? ((url: string) => clearUiUrlFile(url));
 
-  const rawDocumentId = entry.kind === "document" ? positionals[0]! : undefined;
-  const commandPath = entry.kind === "document" ? `doc open ${rawDocumentId}` : "ui";
+  const commandPath = "ui";
 
-  let port = 0; // rev 3.2: --port defaults to 0 (OS-assigned), unlike `serve`'s stable 4818 default
+  let port = 0; // rev 3.2: --port defaults to 0 (OS-assigned)
   const explicitPort = values.port !== undefined;
   if (values.port !== undefined) {
     const raw = values.port.trim();
@@ -445,74 +419,29 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
     port = Number(raw);
   }
 
-  const remoteFlag = await resolveRemoteFlag(values.remote, values.dir);
   const actor = resolveActor(values.actor, { help: `${cliInvocation()} ${commandWords(commandPath)} --actor <name>` });
   const renderDocumentOpenCommand = captureRuntimeCallback((id: string): string | null => {
-    const source = remoteFlag ?? bundle.root;
+    const source = bundle.root;
     if (!isRenderableToken(id) || !isRenderableToken(source)) return null;
-    const sourceFlag = remoteFlag ? "--remote" : "--dir";
     const actorFlag = actor === undefined
       ? commandFragment``
       : commandFragment` --actor ${commandToken(actor)}`;
     return explicitPort
-      ? `${cliInvocation()} doc open ${sourceFlag} ${commandToken(source)} --port ${commandToken(String(port))}${actorFlag} -- ${commandToken(id)}`
-      : `${cliInvocation()} doc open ${sourceFlag} ${commandToken(source)}${actorFlag} -- ${commandToken(id)}`;
+      ? `${cliInvocation()} doc open --dir ${commandToken(source)} --port ${commandToken(String(port))}${actorFlag} -- ${commandToken(id)}`
+      : `${cliInvocation()} doc open --dir ${commandToken(source)}${actorFlag} -- ${commandToken(id)}`;
   });
-  let options: UiServerOptions;
-  let rootLabel: string;
-  let bundle: Bundle;
-
-  if (remoteFlag) {
-    if (values.dir) {
-      throw new CliError("USAGE", "--remote and --dir are mutually exclusive", {
-        help: `${cliInvocation()} ${commandWords(commandPath)} --remote <url>`,
-      });
-    }
-    let base: string;
-    let origin: string;
-    try {
-      const resolved = normalizeServer(remoteFlag);
-      base = resolved.base;
-      origin = resolved.resource;
-    } catch (err) {
-      throw new CliError("USAGE", err instanceof Error ? err.message : String(err), {
-        help: `${cliInvocation()} ${commandWords(commandPath)} --remote http://127.0.0.1:4818`,
-      });
-    }
-    const envKey = resolveApiKeyEnv();
-    const apiKey = envKey || (await getApiKeyForOrigin(origin));
-    // Registered Views, kind/edge reads, and the trusted bridge share the SAME semantic
-    // RemoteBackend bundle every other engine-aware command uses over --remote; the SPA's /v0
-    // transport path stays the raw proxy.
-    bundle = await openBundle(undefined, remoteFlag);
-    options = { mode: "remote", port, remoteBase: base, apiKey, bundle, actor, renderDocumentOpenCommand };
-    rootLabel = base;
-  } else {
-    bundle = deps.localBundle ?? await openBundle(values.dir);
-    const router = createRouter(bundle);
-    options = {
-      mode: "dir",
-      port,
-      router,
-      bundle,
-      actor,
-      renderDocumentOpenCommand,
-      ...(deps.management ? { management: deps.management } : {}),
-      ...(deps.sessionCookieName ? { sessionCookieName: deps.sessionCookieName } : {}),
-    };
-    rootLabel = bundle.root;
-  }
-
-  let documentId: string | undefined;
-  if (rawDocumentId !== undefined) {
-    const resolvedDocumentId = await resolveConceptIdCliArgument(bundle, rawDocumentId);
-    documentId = resolvedDocumentId;
-    try {
-      await readDocVersioned(bundle, resolvedDocumentId);
-    } catch (error) {
-      throw readErrorToCliError(error, resolvedDocumentId, values.remote);
-    }
-  }
+  const bundle: Bundle = deps.localBundle ?? await openBundle(values.dir);
+  const options: UiServerOptions = {
+    mode: "dir",
+    port,
+    router: createRouter(bundle),
+    bundle,
+    actor,
+    renderDocumentOpenCommand,
+    ...(deps.management ? { management: deps.management } : {}),
+    ...(deps.sessionCookieName ? { sessionCookieName: deps.sessionCookieName } : {}),
+  };
+  const rootLabel = bundle.root;
 
   // Tab-restart friendliness (tasks/ui-pages-spike): with no explicit --port, PREFER a stable
   // per-bundle loopback port so a re-launched `ui` over the same bundle lands on the SAME
@@ -544,10 +473,6 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
 
   const launchUrl = new URL(`http://${handle.host}:${handle.port}/`);
   launchUrl.searchParams.set("token", handle.token);
-  if (documentId !== undefined) {
-    launchUrl.searchParams.set("view", "doc");
-    launchUrl.searchParams.set("id", documentId);
-  }
   const url = launchUrl.toString();
 
   // Record this run's tokenized URL for one-click re-entry after a restart.
@@ -564,7 +489,6 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
         url,
         mode: options.mode,
         root: rootLabel,
-        ...(documentId !== undefined ? { document: documentId } : {}),
         auth:
           "per-run session SECRET, minted fresh each boot; the first load exchanges the URL token for an HttpOnly, SameSite=Strict cookie. The current TOKENIZED URL — a live credential while this run lasts, since it embeds the token — is written to private user state for one-click re-entry and cleared on clean shutdown; a crash leaves only a stale URL whose token dies with this process (the secret rotates next boot)",
         help: [
@@ -578,7 +502,7 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
     ),
   );
 
-  if (values.open || documentId !== undefined) openBrowser(url);
+  if (values.open) openBrowser(url);
 
   // Stay in the foreground; SIGINT/SIGTERM (or the injected waitForShutdown) close the listener
   // cleanly and this resolves — exit 0. No request logs to stdout by default.

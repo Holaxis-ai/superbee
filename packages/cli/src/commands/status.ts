@@ -15,9 +15,10 @@ import { renderUsage } from "../output.js";
 // storage path, so ids are structurally unique per backend — there is nothing to detect.
 import { parseArgs } from "node:util";
 import { bundleHealth, type BundleHealthReport } from "@superbee/core/bundle-health";
+import { isPermissionDeniedSkip } from "@superbee/core";
 import { resolveBundleBindings, type BindingProblem } from "../bundle-bindings.js";
 import { trustCountsRowFromCounts } from "../trust.js";
-import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { openBundle } from "../bundle.js";
 import { hostedCheckoutAt, maybeAutoPull } from "../autopull.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
@@ -34,7 +35,7 @@ import { unsettledConflicts, unsettledRow } from "../saved-conflicts.js";
 export const STATUS_USAGE = `superbee status — read-only whole-bundle health report (bundle lint)
 
 Usage:
-  superbee status [--limit <n>] [--with <alias>=<path|label>]... [--with-deps] [--dir <path> | --remote <url>]
+  superbee status [--limit <n>] [--with <alias>=<path|label>]... [--with-deps] [--dir <path>]
 
 Runs, in ONE pass over the bundle: a kind-conformance lint (against any declared conventions/,
 reusing the SAME validator 'doc write'/'new' use), an unresolved-link scan (a link whose target
@@ -61,9 +62,11 @@ declared 'path', only inside this bundle's git repository. A relative '../' link
 is not followed; write it as okf:// instead.
 
 Category semantics (one line each):
-  malformed          A document whose YAML frontmatter cannot be parsed at all — it is skipped by
-                      every scan (so it never blinds this report) and named here with the parser
-                      error; fix its YAML or remove the file. This is the headline finding.
+  malformed          A document whose YAML frontmatter cannot be parsed at all, or that could not
+                      be read (reason "permission denied (EACCES)" or "(EPERM)") — it is skipped by
+                      every scan (so it never blinds this report) and named here with its reason;
+                      fix its YAML, make the file readable, or remove it. Links to it are not
+                      reported as unresolved. This is the headline finding.
   deprecated_usage   Stored deprecated field/value/link occurrences (informational, not Kind
                       conformance debt or a retirement/non-use certificate). Reads remain valid.
   kind_warnings      Frontmatter/section violations against a doc's OWN declared kind (a per-doc
@@ -199,8 +202,7 @@ In a hosted checkout (a folder made by 'checkout'), the 'sync' block reads:
 A 'help' list names 'sync' when there is something to send, resolve or pull.
 
 This is a whole-bundle read (one registry load + one query + one root-index read + two
-prefix-scoped blob listings, batched) — acceptable for an explicitly batch-analysis command;
-over --remote it remains a bounded set of requests, not a per-doc round trip.
+prefix-scoped blob listings, batched) — acceptable for an explicitly batch-analysis command.
 
 Exit is ALWAYS 0 once the analysis runs: findings are reports, not errors. (A --fail-on-findings CI
 flag is a recorded future item, not built here.)
@@ -210,8 +212,6 @@ Options:
   --with <alias>=<value>  Bind a copy of a declared dependency: a path or a catalog label (repeatable)
   --with-deps             Bind each declared dependency 'path' inside this bundle's git repository
   --dir <path>            Bundle directory (default: discovered from the cwd)
-  --remote <url>          Talk to a wire-protocol server instead of a local bundle
-                         (mutually exclusive with --dir; remote access is always explicit)
   --json                  Emit compact JSON instead of TOON
   -h, --help              Show this help
 `;
@@ -337,7 +337,11 @@ function statusRecord(
   // Row-list blocks are omitted when empty (matching `kinds`/`doc write`'s existing omit-if-empty
   // convention) so a clean bundle's report stays a short summary, not nine empty categories.
   if (deprecatedUsage.total > 0) { out.deprecated_usage = deprecatedUsage.total; out.deprecated_usage_rows = deprecatedUsage; }
-  if (malformed.total > 0) out.malformed_docs = malformed;
+  if (malformed.total > 0) {
+    out.malformed_docs = report.malformed.some(isPermissionDeniedSkip)
+      ? { ...malformed, help: "a row whose reason is permission denied could not be read: make the file readable by your user" }
+      : malformed;
+  }
   if (lint.total > 0) out.kind_lint = lint;
   if (conformanceDebt.total > 0) {
     out.conformance_debt_docs = {
@@ -407,7 +411,6 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
         options: {
           limit: { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           with: { type: "string", multiple: true },
           "with-deps": { type: "boolean" },
           json: { type: "boolean" },
@@ -431,13 +434,12 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     limit = Number(raw);
   }
 
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
   // A hosted checkout reports its sync state from local state only: no automatic pull, so the
   // report never waits on the network and its staleness is the checkout's own.
   const home = deps.home ?? homedir();
-  const hosted = remote ? null : await hostedCheckoutAt(values.dir, home).catch(() => null);
+  const hosted = await hostedCheckoutAt(values.dir, home).catch(() => null);
   // Opportunistic board freshness (autopull.ts): silent, fail-soft, detection-gated — see list.ts.
-  if (!remote && !hosted) await (deps.autoPull ?? maybeAutoPull)(values.dir);
+  if (!hosted) await (deps.autoPull ?? maybeAutoPull)(values.dir);
   // One clock judges both the hosted checkout's staleness and the report's freshness.
   const now = (deps.now ?? (() => new Date()))();
   // Loaded only in a hosted checkout, so an ordinary status never loads the sync engine.
@@ -446,12 +448,12 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     : null;
   let bundle;
   try {
-    bundle = await openBundle(values.dir, remote);
+    bundle = await openBundle(values.dir);
   } catch (error) {
     // A fresh clone of a project that shares a board has no bundle yet; `init` there mints a
     // divergent second one. Home and setup give the board-aware advice, so status gives theirs.
     // Only the unbound discovery default is rewritten; a binding's own recovery stays as it is.
-    if (error instanceof CliError && error.code === "NOT_FOUND" && values.dir === undefined && !remote
+    if (error instanceof CliError && error.code === "NOT_FOUND" && values.dir === undefined
       && String(error.help) === `${cliInvocation()} init --create-only --dir .superbee`) {
       const { buildBoardBlock, defaultLoadBoardStatus } = await import("./home.js");
       const firstContact = buildBoardBlock(await defaultLoadBoardStatus(), undefined, cliInvocation()).firstContact;
@@ -468,7 +470,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     ...(hosted ? { selfBundleId: hosted.bundle_id } : {}),
     bindings: async (declared) => {
       const resolved = await resolveBundleBindings({
-        referringRoot: remote ? null : bundle.root,
+        referringRoot: bundle.root,
         dependencies: declared.dependencies,
         withValues: values.with ?? [],
         withDeps: values["with-deps"] === true,
@@ -484,10 +486,6 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     const record: Record<string, unknown> = { home: "hosted", sync: hostedReport.sync, ...out };
     if (hostedReport.help.length > 0) record.help = hostedReport.help;
     stdout(render(record, resolveMode(values)));
-    return;
-  }
-  if (remote) {
-    stdout(render(out, resolveMode(values)));
     return;
   }
   // Where this bundle lives, and for a Git board what the next sync would move: local Git only, no fetch.

@@ -4,9 +4,8 @@ import type { UserStateEnvironment, UserStatePolicy } from "./runtime-types.js";
 export type { UserStateEnvironment, UserStatePolicy } from "./runtime-types.js";
 // One authority for private, user-scoped CLI state.
 //
-// The selected host policy supplies Superbee's private root. The POSIX default is ~/.superbee-state. The separately published Aslite bridge keeps its historical
-// ~/.agentstate root until that bridge is retired. Ordinary readers never consult a superseded
-// root; only setup's explicit migration module may inspect them.
+// The selected host policy supplies Superbee's private root. The POSIX default is ~/.superbee-state. Ordinary readers never consult a
+// superseded root; only setup's explicit migration module may inspect them.
 import { randomBytes } from "node:crypto";
 import {
   chmodSync,
@@ -41,7 +40,6 @@ import { homedir } from "node:os";
 import path, { dirname, isAbsolute, join, relative, sep } from "node:path";
 
 import { } from "@superbee/core";
-import { staticBuildIdentity } from "./build-identity.js";
 import { CliError } from "./errors.js";
 
 /**
@@ -75,7 +73,6 @@ export function homeRelativeDisplay(home: string, target: string): string {
 }
 
 export const LEGACY_USER_STATE_DIR_NAME = ".agentstate";
-export const LEGACY_BRIDGE_PACKAGE_NAME = "@holaxis/aslite";
 export const USER_STATE_MARKER_FILE_NAME = "state.json";
 export const USER_STATE_MARKER = Object.freeze({ product: "superbee", schema_version: 1 as const });
 export const USER_STATE_MARKER_BYTES = `${JSON.stringify(USER_STATE_MARKER)}\n`;
@@ -85,6 +82,39 @@ const FILE_MODE = 0o600;
 const MARKER_MAX_BYTES = 256;
 const STATE_ROOT_GITIGNORE_FILE_NAME = ".gitignore";
 const STATE_ROOT_GITIGNORE_BYTES = "*\n";
+
+/** The journal an interrupted `setup migrate-state` leaves in the canonical root. */
+export const USER_STATE_MIGRATION_JOURNAL_FILE_NAME = ".migration.json";
+
+/**
+ * The one refusal for a canonical root without this product's marker. Only a root that passes
+ * setup's own interrupted-migration proof is sent to `migrate-state`; anything else (including a
+ * journal that proof rejects) is sent to `setup`, which diagnoses it. The proof lives in the
+ * migration module, loaded here only on this refusal path; ordinary state readers stay single-root.
+ */
+export async function unrecognizedStateRootError(root: string, input: UserStateInput | undefined): Promise<CliError> {
+  let interrupted = false;
+  try {
+    const { inspectUserStateMigration } = await import("./user-state-migration.js");
+    interrupted = (await inspectUserStateMigration(input ?? homedir())).state === "migratable";
+  } catch {
+    interrupted = false;
+  }
+  return stateRootRefusal(root, interrupted);
+}
+
+function stateRootRefusal(root: string, interrupted: boolean): CliError {
+  const bin = distributionBinName();
+  return interrupted
+    ? new CliError("RUNTIME", `${root} is unfinished: a state migration was interrupted.`, {
+        details: { reason: "state_migration_interrupted", path: root },
+        help: `Run \`${bin} setup migrate-state\` to finish it. Your old state files are not changed. Then re-run this command.`,
+      })
+    : new CliError("RUNTIME", `${root} is not recognized as Superbee state.`, {
+        details: { reason: "state_root_unrecognized", path: root },
+        help: `Run \`${bin} setup\` to see what is wrong and the fix. Then re-run this command.`,
+      });
+}
 
 export type UserStateInput=string|UserStateEnvironment;
 export class UserStatePolicyUnavailable extends Error {
@@ -104,12 +134,8 @@ export function legacyUserStateDir(input?:UserStateInput):string{return currentP
 export function supersededUserStateDirs(input?:UserStateInput):string[]{return [...currentPrivateStateHost().supersededRoots(userStateEnvironment(input))];}
 export function userStatePathDisplay(input:UserStateInput,target:string):string{return currentPrivateStateHost().displayPath(userStateEnvironment(input),target);}
 
-export function userStateDirForPackage(input: UserStateInput, packageName: string): string {
-  return packageName === LEGACY_BRIDGE_PACKAGE_NAME ? legacyUserStateDir(input) : canonicalUserStateDir(input);
-}
-
 export function userStateDir(input: UserStateInput = homedir()): string {
-  return userStateDirForPackage(input, staticBuildIdentity().package.name);
+  return canonicalUserStateDir(input);
 }
 
 function errno(error: unknown): string | undefined {
@@ -378,7 +404,7 @@ async function publishCanonicalRoot(
   }
   const marker = await inspectUserStateMarker(root, input);
   if (!marker.recognized) {
-    throw new Error("canonical Superbee user-state root is not owned by this product");
+    throw await unrecognizedStateRootError(root, input);
   }
 }
 
@@ -397,7 +423,7 @@ async function initializeCanonicalRoot(
 
   const marker = await inspectUserStateMarker(root, input);
   if (!marker.recognized) {
-    throw new Error("canonical Superbee user-state root is not owned by this product");
+    throw await unrecognizedStateRootError(root, input);
   }
   // Ownership is proven, so drifted permissions are repaired rather than refused — the directory
   // first, so the marker is re-tightened inside an already-private root. A root already at 0700
@@ -455,26 +481,13 @@ async function withUserStateWriteRefusal<T>(input: UserStateInput | undefined, b
   }
 }
 
-/** Ensure the running package's one writable state root exists and is safe. */
+/** Ensure the one writable state root exists and is safe. */
 export async function ensureUserStateRoot(input: UserStateInput = homedir()): Promise<string> {
   return withUserStateWriteRefusal(input, () => ensureUserStateRootUnwrapped(input));
 }
 
 async function ensureUserStateRootUnwrapped(input: UserStateInput): Promise<string> {
-  const packageName = staticBuildIdentity().package.name;
-  const policy = resolveUserStatePolicy(input);
-  const root = userStateDirForPackage(input, packageName);
-  if (packageName === LEGACY_BRIDGE_PACKAGE_NAME) {
-    try {
-      await mkdir(root, { mode: DIR_MODE });
-    } catch (error) {
-      if (errno(error) !== "EEXIST") throw error;
-    }
-    await assertRealDirectory(root);
-    if (currentPrivateStateHost().enforcePrivateMode) await chmod(root, DIR_MODE);
-    await ensureStateRootGitignore(root, input);
-    return root;
-  }
+  const root = canonicalUserStateDir(input);
   await initializeCanonicalRoot(root, input);
   return root;
 }
@@ -484,11 +497,7 @@ export async function ensureUserStateRootForTest(
   input: UserStateInput,
   hooks: UserStateRootInitializationHooks,
 ): Promise<string> {
-  const packageName = staticBuildIdentity().package.name;
-  if (packageName === LEGACY_BRIDGE_PACKAGE_NAME) {
-    throw new Error("the canonical-root initialization seam is unavailable to the legacy bridge");
-  }
-  const root = userStateDirForPackage(input, packageName);
+  const root = canonicalUserStateDir(input);
   await initializeCanonicalRoot(root, input, hooks);
   return root;
 }
@@ -523,21 +532,8 @@ function writeMarkerExclusiveSync(root: string, input?: UserStateInput): void {
  * deliberately makes no cross-process initialization guarantee; callers must serialize its use.
  */
 export function ensureUserStateRootSync(input: UserStateInput = homedir()): string {
-  const packageName = staticBuildIdentity().package.name;
   const policy = resolveUserStatePolicy(input);
-  const root = userStateDirForPackage(input, packageName);
-  if (packageName === LEGACY_BRIDGE_PACKAGE_NAME) {
-    try {
-      mkdirSync(root, { mode: DIR_MODE });
-    } catch (error) {
-      if (errno(error) !== "EEXIST") throw error;
-    }
-    ensureRealDirectorySync(root);
-    if (currentPrivateStateHost().enforcePrivateMode) chmodSync(root, DIR_MODE);
-    ensureStateRootGitignoreSync(root, input);
-    return root;
-  }
-
+  const root = canonicalUserStateDir(input);
   const parent = dirname(root);
   try {
     mkdirSync(parent, { recursive: true, mode: DIR_MODE });
@@ -571,10 +567,10 @@ export function ensureUserStateRootSync(input: UserStateInput = homedir()): stri
   try {
     marker = readFileSync(join(root, USER_STATE_MARKER_FILE_NAME), "utf8");
   } catch {
-    throw new Error("canonical Superbee user-state root is not owned by this product");
+    throw stateRootRefusal(root, false);
   }
   if (marker !== USER_STATE_MARKER_BYTES) {
-    throw new Error("canonical Superbee user-state root is not owned by this product");
+    throw stateRootRefusal(root, false);
   }
   if (currentPrivateStateHost().enforcePrivateMode) {
     chmodSync(root, DIR_MODE);
@@ -644,7 +640,7 @@ export async function inspectCanonicalUserStateRoot(input: UserStateInput = home
 
 async function assertCanonicalUserStateRootReady(input: UserStateInput): Promise<void> {
   if (await inspectCanonicalUserStateRoot(input) !== "ready") {
-    throw new Error("canonical Superbee user-state root is not owned by this product");
+    throw await unrecognizedStateRootError(canonicalUserStateDir(input), input);
   }
 }
 
@@ -696,15 +692,14 @@ async function assertPrivateDirectoryChain(root: string, file: string, input?: U
   }
 }
 
-/** Read one record only after the running package's root proves its exact ownership boundary. */
+/** Read one record only after the canonical root proves its exact ownership boundary. */
 export async function readUserStateFile(
   input: UserStateInput,
   file: string,
   maxBytes: number,
   signal?: AbortSignal,
 ): Promise<string> {
-  const packageName = staticBuildIdentity().package.name;
-  const root = userStateDirForPackage(input, packageName);
+  const root = canonicalUserStateDir(input);
   assertInsideRoot(root, file);
   // An absent record is absent regardless of whether a separate setup pass would diagnose the
   // surrounding root as incomplete. This keeps unrelated read-only operations (for example an
@@ -716,27 +711,17 @@ export async function readUserStateFile(
     if (errno(error) === "ENOENT") throw missingStateError(file);
     throw error;
   }
-  if (packageName === LEGACY_BRIDGE_PACKAGE_NAME) {
-    try {
-      await assertRealDirectory(root);
-    } catch (error) {
-      if (errno(error) === "ENOENT") throw missingStateError(file);
-      throw error;
-    }
-  } else {
-    const state = await inspectCanonicalUserStateRoot(input);
-    if (state === "absent") throw missingStateError(file);
-    if (state === "conflict") throw new Error("canonical Superbee user-state root is not owned by this product");
-  }
+  const state = await inspectCanonicalUserStateRoot(input);
+  if (state === "absent") throw missingStateError(file);
+  if (state === "conflict") throw await unrecognizedStateRootError(root, input);
   await assertPrivateDirectoryChain(root, file, input);
   return readPrivateStateFile(file, maxBytes, signal, input);
 }
 
 export function inspectUserStateRootSync(input: UserStateInput = homedir()): UserStateRootState {
-  const packageName = staticBuildIdentity().package.name;
   const policy = resolveUserStatePolicy(input);
   if (policy.state === "blocked") return "conflict";
-  const root = userStateDirForPackage(input, packageName);
+  const root = canonicalUserStateDir(input);
   try {
     ensureRealDirectorySync(root);
     const rootStatus = lstatSync(root);
@@ -747,7 +732,6 @@ export function inspectUserStateRootSync(input: UserStateInput = homedir()): Use
   } catch (error) {
     return errno(error) === "ENOENT" ? "absent" : "conflict";
   }
-  if (packageName === LEGACY_BRIDGE_PACKAGE_NAME) return "ready";
   let descriptor: number | undefined;
   try {
     const marker = join(root, USER_STATE_MARKER_FILE_NAME);

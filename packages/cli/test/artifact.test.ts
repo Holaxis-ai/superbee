@@ -167,7 +167,7 @@ test("create --supersedes: a cross-dir / missing / non-Artifact target is reject
     assert.ok(!existsSync(path.join(dir, "artifacts")), "no artifacts/ created on a rejected supersede");
 
     // An existing artifacts/ doc that is NOT type:Artifact must not be flipped.
-    const bundle = await openBundle(dir, undefined);
+    const bundle = await openBundle(dir);
     await writeDoc(bundle, { id: "artifacts/plain", frontmatter: { type: "Doc", title: "Plain" }, body: "" });
     await assert.rejects(
       runJson(["create", html, "--title", "Y", "--supersedes", "artifacts/plain", "--dir", dir, "--actor", "process:test"]),
@@ -204,7 +204,7 @@ test("create: an orphaned blob does not brick a later create — it picks a fres
   const { dir, html, cleanup } = await makeBundle();
   try {
     // Simulate a prior failed run: a promoted blob with no record beside it.
-    const bundle = await openBundle(dir, undefined);
+    const bundle = await openBundle(dir);
     await writeBlob(bundle, "artifacts/report.html", Buffer.from("orphan"), "text/html", { expectedVersion: null });
 
     // A create titled "Report" must NOT collide on the stray blob's expect-absent write — it advances.

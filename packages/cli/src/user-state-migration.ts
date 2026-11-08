@@ -1,6 +1,7 @@
 import { currentPrivateStateHost, distributionBinName, currentDistribution, currentHost } from "./runtime-context.js";
 // Explicit, one-shot migration from Superbee's historical operational-state root into its one
-// canonical root. This module is imported only by `setup`; ordinary state readers stay single-root.
+// canonical root. Imported by `setup`, and lazily by the unrecognized-root refusal in user-state.ts
+// for its interrupted-migration proof; ordinary state readers stay single-root.
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import {
@@ -19,7 +20,6 @@ import { basename, dirname, join } from "node:path";
 
 import { parseCatalog } from "./catalog.js";
 import { CATALOG_FILE_NAME } from "./catalog.js";
-import { staticBuildIdentity } from "./build-identity.js";
 import { assertMigratableCredentials, CRED_FILE_NAME } from "./credentials.js";
 import { CliError } from "./errors.js";
 import {
@@ -29,7 +29,6 @@ import {
   hasExactUserStateMarker,
   inspectCanonicalUserStateRoot,
   inspectCanonicalUserStateRootDetail,
-  LEGACY_BRIDGE_PACKAGE_NAME,
   legacyUserStateDir,
   readPrivateStateFile,
   resolveUserStatePolicy,
@@ -40,6 +39,7 @@ import {
   USER_STATE_HARDEN_COMMAND,
   USER_STATE_MARKER_BYTES,
   USER_STATE_MARKER_FILE_NAME,
+  USER_STATE_MIGRATION_JOURNAL_FILE_NAME,
   USER_STATE_QUARANTINE_COMMAND,
 } from "./user-state.js";
 import { SYNC_EXPORTS_DIR_NAME } from "@superbee/board-git";
@@ -47,7 +47,7 @@ import { SYNC_STATE_DIR_NAME } from "./cursor.js";
 import { assertMigratableViewAuthorization } from "./ui/view-authorizations.js";
 
 const VIEW_AUTHORIZATION_DIR_NAME = "view-authorizations";
-const MIGRATION_JOURNAL_FILE_NAME = ".migration.json";
+const MIGRATION_JOURNAL_FILE_NAME = USER_STATE_MIGRATION_JOURNAL_FILE_NAME;
 const MIGRATION_JOURNAL_SCHEMA = 1;
 const FILE_MODE = 0o600;
 const DIR_MODE = 0o700;
@@ -313,9 +313,6 @@ async function interruptedMigrationRecords(input: UserStateInput): Promise<Migra
 }
 
 export async function inspectUserStateMigration(input: UserStateInput = homedir()): Promise<UserStateMigrationInspection> {
-  if (staticBuildIdentity().package.name === LEGACY_BRIDGE_PACKAGE_NAME) {
-    return { state: "ready", reason: "the separately published Aslite bridge retains its legacy state root", records: 0 };
-  }
   const policy = resolveUserStatePolicy(input);
   if (policy.state === "blocked") {
     return {
@@ -704,9 +701,6 @@ export async function migrateUserState(
   input: UserStateInput = homedir(),
   hooks: UserStateMigrationHooks = {},
 ): Promise<UserStateMigrationReceipt> {
-  if (staticBuildIdentity().package.name === LEGACY_BRIDGE_PACKAGE_NAME) {
-    throw new CliError("NOT_IMPLEMENTED", "state migration is available only from the Superbee package", { help: "npm install -g superbee" });
-  }
   const policy = resolveUserStatePolicy(input);
   if (policy.state === "blocked") {
     throw new CliError("CONFLICT", policy.reason ?? "the selected host private-state location is unavailable", { help: `${distributionBinName()} setup` });

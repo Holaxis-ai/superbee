@@ -5,7 +5,7 @@
  * free text does not.
  */
 import type { KindConvention } from "../kinds.js";
-import { relativeHref } from "../links.js";
+import { extractMarkdownLinks, relativeHref } from "../links.js";
 import { assertSafeConceptId } from "../paths.js";
 
 const LINE_BREAKS = /\r\n|[\r\n\u0085\u2028\u2029]/g;
@@ -31,15 +31,27 @@ export function signalLinkTexts(signalKind: KindConvention | undefined, targetKi
   return { fromFeed, about };
 }
 
+/**
+ * Text kept literal in markdown: backslashes and brackets are escaped and a `(` after a `]` too,
+ * so record or finding text never forms a link the link parser would read as a relationship.
+ */
+export function literalText(text: string): string {
+  return text.replace(/[\\[\]]/g, "\\$&").replace(/\]\(/g, "]\\(");
+}
+
+/** One line of literal text, so record or finding text never adds lines, headings or links to a Signal body. */
 export function observationLine(observedAt: unknown, changeKind: unknown, digest: unknown, summary: unknown): string {
-  return `- ${observedAt} · ${changeKind} · ${digest} · ${summary}`;
+  return literalText(oneLine(`- ${observedAt} · ${changeKind} · ${digest} · ${summary}`));
 }
 
 export const linkLine = (text: string, fromId: string, targetId: string): string => `[${text}](${relativeHref(fromId, targetId)})`;
 export const overlayLine = (id: string): string => `${OVERLAY_PREFIX}${id}\``;
 export const relatedLine = (id: string, reason?: string): string => `${RELATED_PREFIX}${id}\`${reason === undefined ? "" : ` (${reason})`}`;
+/** Record values reach the hint as written, on one line and unable to form a link. */
+const hintValue = (value: unknown): string => literalText(oneLine(String(value)));
+
 export const adoptionHint = (targetKind: unknown, provider: unknown, externalId: unknown): string =>
-  `To overlay this record, give a document of Kind "${targetKind}" the source entry \`resource: ${provider}\`, \`id: ${externalId}\`.`;
+  `To overlay this record, give a document of Kind "${hintValue(targetKind)}" the source entry \`resource: ${hintValue(provider)}\`, \`id: ${hintValue(externalId)}\`.`;
 
 export function signalBody(links: readonly string[], hint: string | undefined, line: string): string {
   return `${links.join("\n")}\n${hint === undefined ? "" : `\n${hint}\n`}\n# Observations\n\n${line}\n`;
@@ -112,14 +124,14 @@ export function isPlannedSignalBody(
 }
 
 /**
- * A collapse's observation line is the planner's: rendered from the update's own `observed_at`,
- * `diff_summary` and the step's digest, around the change kind it records.
+ * A collapse's observation line is the planner's: one line of literal text rendered from the
+ * update's own `observed_at`, `diff_summary` and the step's digest, around the change kind it
+ * records, and holding no link.
  */
 export function isPlannedObservation(line: string, set: Record<string, unknown>, digest: string): boolean {
-  if (typeof set.observed_at !== "string" || typeof set.diff_summary !== "string") return false;
-  const prefix = `- ${set.observed_at} · `;
-  const suffix = ` · ${digest} · ${set.diff_summary}`;
-  if (line.length <= prefix.length + suffix.length || !line.startsWith(prefix) || !line.endsWith(suffix)) return false;
-  const kind = line.slice(prefix.length, line.length - suffix.length);
-  return kind === set.change_kind || !LINE_BREAK.test(kind);
+  if (typeof set.observed_at !== "string" || typeof set.diff_summary !== "string" || LINE_BREAK.test(line)) return false;
+  if (extractMarkdownLinks(line).length) return false;
+  const prefix = literalText(oneLine(`- ${set.observed_at} · `));
+  const suffix = literalText(oneLine(` · ${digest} · ${set.diff_summary}`));
+  return line.length > prefix.length + suffix.length && line.startsWith(prefix) && line.endsWith(suffix);
 }

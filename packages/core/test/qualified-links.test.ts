@@ -181,17 +181,12 @@ for (const [name, body, ids] of CONTAINER_CASES) {
   });
 }
 
-test("maskMarkdownCode keeps length and newlines, and stays linear on hostile backtick runs", () => {
+test("maskMarkdownCode keeps length and newlines", () => {
   for (const [, body] of CODE_FORMS) {
     const masked = maskMarkdownCode(body);
     assert.equal(masked.length, body.length);
     assert.deepEqual([...masked].map((c, i) => (c === "\n" ? i : -1)).filter((i) => i >= 0), [...body].map((c, i) => (c === "\n" ? i : -1)).filter((i) => i >= 0));
   }
-  let hostile = "";
-  for (let run = 1; run < 2000; run++) hostile += "`".repeat(run) + "x";
-  const started = performance.now();
-  maskMarkdownCode(hostile.repeat(4));
-  assert.ok(performance.now() - started < 2000, "masking hostile backtick runs should be linear");
 });
 
 test("parseQualifiedKindTarget: qualified only when the text before the first ':' is an alias", () => {

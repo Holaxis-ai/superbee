@@ -486,7 +486,7 @@ test("revise refuses on the upstream version whatever the clocks say", async () 
   }
 });
 
-test("a raw file conflicting at two stops keeps both versions, and the receipt names the last", async () => {
+test("a raw file conflicting at two stops keeps one copy, the run's final version", async () => {
   const f = await fixture();
   try {
     const file = (repo: TwoCloneTopology["a"]) => path.join(repo.board, "data.json");
@@ -503,9 +503,9 @@ test("a raw file conflicting at two stops keeps both versions, and the receipt n
     const run = await runSync(f.homeB, ["--dir", f.topo.b.root, "--json"]);
     assert.equal(run.err?.exitCode, 5);
     const rows = (run.err?.details?.conflicts as { rows: Record<string, string>[] }).rows;
+    assert.equal(rows[0]!.yours, path.join(exportsOf(f.topo, f.homeB), "data.json"));
     assert.match(await readFile(rows[0]!.yours!, "utf8"), /B2/);
-    assert.match(await readFile(path.join(exportsOf(f.topo, f.homeB), "data.json"), "utf8"), /B1/);
-    assert.equal((await syncBlock(f.topo, f.homeB)).sync.saved_copies, 2);
+    assert.equal((await syncBlock(f.topo, f.homeB)).sync.saved_copies, 1);
   } finally {
     await f.cleanup();
   }

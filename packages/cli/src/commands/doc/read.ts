@@ -15,7 +15,7 @@ import {
   type OkfDocument,
   type Version,
 } from "@superbee/core";
-import { openBundle, resolveRemoteFlag } from "../../bundle.js";
+import { openBundle } from "../../bundle.js";
 import { maybeAutoPull } from "../../autopull.js";
 import { CliError, toExit, asHandled } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
@@ -30,7 +30,6 @@ import {
   readErrorToCliError,
 } from "./common.js";
 import { attachBodyPreview, BODY_PREVIEW_RESERVED_KEYS } from "../../body-replace-guards.js";
-import { MAX_BODY_CHARS, MAX_NODES } from "@superbee/markdown-renderer";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 import { assertSafeNonDocumentOutTarget, inBundlePollutionWarning } from "../egress.js";
 import { bodyPage, PAGE_DEFAULT_BYTES, PAGE_MAX_BYTES, PAGE_MIN_BYTES } from "../../body-pages.js";
@@ -72,7 +71,6 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
           "max-bytes": { type: "string" },
           "expected-version": { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -165,11 +163,10 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
   }
   const field = values.field?.trim();
 
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
   // Opportunistic board freshness (autopull.ts): silent, fail-soft, detection-gated — see list.ts.
   // Runs on the READ verb only (never doc write/update/delete — the trigger is for reads).
-  if (!remote) await (deps.autoPull ?? maybeAutoPull)(values.dir);
-  const bundle = await openBundle(values.dir, remote);
+  await (deps.autoPull ?? maybeAutoPull)(values.dir);
+  const bundle = await openBundle(values.dir);
   id = await resolveConceptIdCliArgument(bundle, rawId);
 
   // Body-only byte channel: one versioned read owns BOTH the semantic parsed body and the CAS token
@@ -197,7 +194,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
       try {
         ({ doc: parsed, version } = await readDocVersioned(bundle, id));
       } catch (err) {
-        throw readErrorToCliError(err, id, values.remote);
+        throw readErrorToCliError(err, id);
       }
       const bytes = Buffer.from(parsed.body, "utf8");
       const result: Record<string, unknown> = {
@@ -247,7 +244,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     try {
       ({ doc: parsed, version } = await readDocVersioned(bundle, id));
     } catch (err) {
-      throw readErrorToCliError(err, id, values.remote);
+      throw readErrorToCliError(err, id);
     }
     const rendered = renderDocumentToStaticHtml({ id: parsed.id, body: parsed.body });
     const bytes = Buffer.from(rendered.html, "utf8");
@@ -260,17 +257,14 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
       version,
       bounded: rendered.bounded,
     };
-    // `bounded` alone is a boolean a publisher has no reason to read as "your page is INCOMPLETE".
-    // The bounds are quoted from the renderer's exported constants because the document adapter
-    // deliberately returns ONLY {html, bounded} (its own contract test pins that key set), and this
-    // call passes no `limits` override — so the constants ARE what the walk enforced.
-    // Truncation is lossy egress, so disclose it the way the default render does: a warning plus a
-    // pointer at the complete raw channel.
+    // `bounded` alone is a boolean a publisher has no reason to read as "this page is limited".
+    // Limited output is lossy egress, so disclose it the way the default render does: a warning
+    // plus a pointer at the complete raw channel.
     if (rendered.bounded) {
       result.warning =
-        `The rendered HTML is TRUNCATED: this document exceeds the shared renderer's bounds ` +
-        `(${MAX_BODY_CHARS} body characters / ${MAX_NODES} nodes), so ` +
-        `the tail of the body is NOT present in the output. Use --out for the complete raw markdown.`;
+        `The rendered HTML shows this document in a limited form: it exceeds the shared renderer's ` +
+        `limits, so the output may be cut short or show plain source text. ` +
+        `Use --out for the complete raw markdown.`;
       result.help = [`${cliInvocation()} doc read ${commandToken(id)} --out <file>`];
     }
     if (streamMode) {
@@ -295,7 +289,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
       try {
         ({ doc: parsed, version } = await readDocVersioned(bundle, id));
       } catch (err) {
-        throw readErrorToCliError(err, id, values.remote);
+        throw readErrorToCliError(err, id);
       }
       stdout(formatFieldValue(resolveField(parsed, version, field, id)));
     } catch (err) {
@@ -315,7 +309,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     try {
       ({ doc: parsed, version } = await readDocVersioned(bundle, id));
     } catch (err) {
-      throw readErrorToCliError(err, id, values.remote);
+      throw readErrorToCliError(err, id);
     }
     const fm = parsed.frontmatter as Record<string, unknown>;
     // AXI §3 detail view: show EVERY frontmatter field (kind-declared ones like `status`/`priority`
@@ -410,7 +404,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
       try {
         parsed = await readDoc(bundle, id);
       } catch (err) {
-        throw readErrorToCliError(err, id, values.remote);
+        throw readErrorToCliError(err, id);
       }
       bytes = Buffer.from(stringifyDoc(parsed.frontmatter, parsed.body), "utf8");
       rel = pathFromConceptId(id);
@@ -423,7 +417,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
         rel = pathFromConceptId(id);
         bytes = await fs.readFile(path.join(bundle.root, rel));
       } catch (err) {
-        throw readErrorToCliError(err, id, values.remote);
+        throw readErrorToCliError(err, id);
       }
     }
     const contentType = inferContentTypeFromDocKey(rel) ?? "text/markdown; charset=utf-8";

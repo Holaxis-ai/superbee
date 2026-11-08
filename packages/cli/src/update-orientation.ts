@@ -30,7 +30,8 @@ import {
   parseStrictSemver,
   type UpdateCheckResult,
 } from "./update-check.js";
-import { LEGACY_NO_UPDATE_CHECK_ENV, SUPERBEE_NO_UPDATE_CHECK_ENV } from "./env-policy.js";
+import { SUPERBEE_NO_UPDATE_CHECK_ENV } from "./env-policy.js";
+import { retiredEnvNames } from "./deprecation-notices.js";
 
 export const UPDATE_CACHE_SCHEMA = "aslite.update-cache.v1";
 export const UPDATE_LEASE_SCHEMA = "aslite.update-lease.v1";
@@ -227,7 +228,7 @@ export function isPassiveUpdateSuppressed(
   return (
     argv.includes("--no-update-check") ||
     Object.hasOwn(env, SUPERBEE_NO_UPDATE_CHECK_ENV) ||
-    Object.hasOwn(env, LEGACY_NO_UPDATE_CHECK_ENV) ||
+    retiredEnvNames(env).length > 0 ||
     Object.hasOwn(env, "NO_UPDATE_NOTIFIER") ||
     Object.hasOwn(env, "CI")
   );

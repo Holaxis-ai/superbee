@@ -3,8 +3,7 @@ import { renderUsage } from "../output.js";
 //
 // Thin wrapper over core `queryHeads(bundle, { type?, tags?, prefix?, fields? })` (the filter facets
 // are ANDed; reserved index.md/log.md are always excluded) — HEAD projections (id + frontmatter +
-// version), never bodies: every row here reads only frontmatter, and over `--remote` the backend
-// push-down keeps bodies off the wire entirely. Results default to a UNIFORM, flat row shape
+// version), never bodies: every row here reads only frontmatter. Results default to a UNIFORM, flat row shape
 // ({ id, type, title, timestamp }) so TOON renders them as a compact scannable table; the full
 // frontmatter + body of any row is available via `superbee doc read <id>`.
 //
@@ -19,8 +18,7 @@ import { renderUsage } from "../output.js";
 //     for `--open` or the version-aware logical `progress_status` field, so ordinary unscoped/explicit
 //     projections retain the lean path. `--fields` ALWAYS overrides (an explicit projection wins).
 //   - `--field key=value` filter (Fork B, repeatable, ANDed): a generic core QueryFilter facet (any
-//     kind, any field), not CLI-side — so it rides the engine's one filter locus over --remote for
-//     free, same as the existing type/tags facets (applied to pushed-down heads, never bodies).
+//     kind, any field), not CLI-side — so it rides the engine's one filter locus, same as the existing type/tags facets (applied to pushed-down heads, never bodies).
 //
 // Field-query semantics:
 //
@@ -50,8 +48,9 @@ import {
   projectKindForAuthoring,
   type KindRegistry,
   type QueryFilter,
+  isPermissionDeniedSkip,
 } from "@superbee/core";
-import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { openBundle } from "../bundle.js";
 import { maybeAutoPull } from "../autopull.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -95,8 +94,6 @@ Options:
   --limit <n>          Cap the newest-first rows returned (default: 100; 0 = unlimited). A truncated
                        result reports \`shown\` alongside the total \`count\`.
   --dir <path>         Bundle directory (default: discovered from the cwd)
-  --remote <url>       Talk to a wire-protocol server instead of a local bundle
-                       (mutually exclusive with --dir; remote access is always explicit)
   --json               Emit compact JSON instead of TOON
   -h, --help           Show this help
 
@@ -124,7 +121,6 @@ const LIST_OPTIONS = {
   open: { type: "boolean" },
   limit: { type: "string" },
   dir: { type: "string" },
-  remote: { type: "string" },
   json: { type: "boolean" },
   help: { type: "boolean", short: "h" },
 } as const;
@@ -235,17 +231,14 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     .map((f) => f.trim())
     .filter((f) => f && !DEFAULT_KEYS.has(f));
 
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
   // Opportunistic board freshness (autopull.ts): a LOCAL read of a provisioned board checkout
   // whose awareness cache has gone stale runs the time-boxed ff-only pull FIRST, so this very
-  // read serves fresh state. Silent, fail-soft, detection-gated (never provisions), and skipped
-  // entirely for a --remote read (the board is a git-tier local concept).
-  if (!remote) await (deps.autoPull ?? maybeAutoPull)(values.dir);
-  const bundle = await openBundle(values.dir, remote);
+  // read serves fresh state. Silent, fail-soft, detection-gated (never provisions).
+  await (deps.autoPull ?? maybeAutoPull)(values.dir);
+  const bundle = await openBundle(values.dir);
   // A corrupt document (unparseable YAML frontmatter) is skipped and reported, never allowed to
   // fail the whole scan — one bad file must not blind the agent to every other doc (AXI §5/§6).
-  // Head projections, not full docs: every row below reads only id + frontmatter, and over
-  // `--remote` the push-down means bodies never cross the wire (frontmatter-projection pass).
+  // Head projections, not full docs: every row below reads only id + frontmatter.
   const skipped: { id: string; reason: string }[] = [];
   let docs = await queryHeads(bundle, filter, { onSkip: (s) => skipped.push(s) });
 
@@ -434,9 +427,13 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
   }
   if (skipped.length > 0) {
     out.skipped = skipped;
-    help.push(
-      `${skipped.length} document(s) skipped (unparseable frontmatter) — run \`${cliInvocation()} doc read <id>\` for the full error, then fix the YAML`,
-    );
+    const denied = skipped.filter(isPermissionDeniedSkip).length;
+    if (skipped.length > denied) {
+      help.push(
+        `${skipped.length - denied} document(s) skipped (unparseable frontmatter) — run \`${cliInvocation()} doc read <id>\` for the full error, then fix the YAML`,
+      );
+    }
+    if (denied > 0) help.push(`${denied} document(s) skipped (could not be read: permission denied); make those files readable by your user`);
   }
   // --open on a bundle with zero terminal declarations is a structural no-op (nothing to exclude) —
   // said explicitly so the flag is never silently meaningless.
@@ -448,7 +445,7 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
   // schema change: output columns key on the invocation, not on current bundle contents. The
   // registry load is gated behind uniformity and the
   // absence of --type/--fields, so mixed/unscoped scans (and every conventions-free bundle) pay
-  // nothing; when it fires over --remote it costs one thin conventions/ round-trip.
+  // nothing.
   if (!kindCols && !fieldsFlagGiven && !filter.type && docs.length > 0) {
     const first = docs[0]!.frontmatter.type;
     const uniformType = typeof first === "string" && first !== "" && docs.every((d) => d.frontmatter.type === first);

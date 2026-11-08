@@ -2,7 +2,7 @@ import { renderUsage } from "../output.js";
 // `superbee recipes` — list built-in recipes before or after a bundle exists, including
 // whether each is already applied when a bundle is available.
 //
-// Mirrors `kinds.ts` (read-only, --dir/--remote, TOON, a `count`). A recipe bundles one or more
+// Mirrors `kinds.ts` (read-only, --dir, TOON, a `count`). A recipe bundles one or more
 // kind-convention docs (with bodies) an agent can install onto a bundle in one shot; `recipe add
 // <name-or-path>` is the apply verb (packages/cli/src/commands/recipe.ts). `init` applies the
 // default recipe (`context-notes`) via the same generic machinery unless `--recipe none` is
@@ -18,7 +18,6 @@ import {
   findBundleRoot,
   openBundle,
   resolveProjectBinding,
-  resolveRemoteFlag,
 } from "../bundle.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -40,7 +39,7 @@ import { commandFragment, commandLiteral, commandQuoted, commandToken, type Comm
 export const RECIPES_USAGE = `superbee recipes — browse built-in recipes before or after init
 
 Usage:
-  superbee recipes [--dir <path>] [--remote <url>]
+  superbee recipes [--dir <path>]
 
 A recipe is a folder ('recipe.md' manifest + 'conventions/*.md' docs) that 'recipe add
 <name-or-path>' installs onto a bundle in one shot — idempotently (re-adding an already-applied
@@ -61,8 +60,6 @@ wrote, or conventions written before stamps.
 
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
-  --remote <url>        Talk to a wire-protocol server instead of a local bundle
-                         (mutually exclusive with --dir; remote access is always explicit)
   --json                Emit compact JSON instead of TOON
   -h, --help            Show this help
 `;
@@ -91,19 +88,16 @@ export interface RecipesCliDeps {
   stdout: (s: string) => void;
   cwd: string;
   openBundle: typeof openBundle;
-  resolveRemoteFlag: typeof resolveRemoteFlag;
   resolveProjectBinding: typeof resolveProjectBinding;
   findBundleRoot: typeof findBundleRoot;
 }
 
 interface RecipeCommandTarget {
   dir?: string;
-  remote?: string;
 }
 
 function commandTargetSuffix(target: RecipeCommandTarget): CommandText {
   if (target.dir !== undefined) return commandFragment` --dir ${commandQuoted(target.dir)}`;
-  if (target.remote !== undefined) return commandFragment` --remote ${commandQuoted(target.remote)}`;
   return commandLiteral("");
 }
 
@@ -117,10 +111,9 @@ export function recipeInventoryRow(
 ): Record<string, unknown> {
   const targetSuffix = commandTargetSuffix(target);
   const commands: Record<string, string> = {};
-  // The wire protocol has no create-bundle endpoint, so a remote-scoped inventory must not emit a
-  // local init command disguised as an action on the selected remote. An existing local bundle is
-  // likewise add-only: create-only against that same target is guaranteed to refuse.
-  if (target.remote === undefined && applied === null) {
+  // An existing local bundle is add-only: create-only against that same target is guaranteed to
+  // refuse.
+  if (applied === null) {
     commands.create_bundle = `${inv} init --create-only --recipe ${commandToken(recipe.id)}${commandTargetSuffix({ dir: CONVENTIONAL_BUNDLE_DIR_NAME })}`;
   }
   commands.add_to_bundle = `${inv} recipe add ${commandToken(recipe.id)}${targetSuffix}`;
@@ -149,24 +142,23 @@ export function recipeInventoryRow(
  * honest "nothing has been created here yet" state becomes an inventory-only success.
  */
 async function optionalBundle(
-  values: { dir?: string; remote?: string },
+  values: { dir?: string },
   deps: Pick<
     RecipesCliDeps,
-    "cwd" | "openBundle" | "resolveRemoteFlag" | "resolveProjectBinding" | "findBundleRoot"
+    "cwd" | "openBundle" | "resolveProjectBinding" | "findBundleRoot"
   >,
 ): Promise<Bundle | undefined> {
-  const remote = await deps.resolveRemoteFlag(values.remote, values.dir);
-  if (values.dir !== undefined || remote !== undefined) {
-    return deps.openBundle(values.dir, remote);
+  if (values.dir !== undefined) {
+    return deps.openBundle(values.dir);
   }
 
   // A binding is an explicit committed selection. If it is malformed or its target vanished,
   // openBundle must still fail loudly; it is not the bundle-free discovery state.
   const binding = await deps.resolveProjectBinding(deps.cwd);
-  if (binding !== null) return deps.openBundle(undefined, undefined);
+  if (binding !== null) return deps.openBundle(undefined);
 
   if ((await deps.findBundleRoot(deps.cwd)) === null) return undefined;
-  return deps.openBundle(undefined, undefined);
+  return deps.openBundle(undefined);
 }
 
 export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}): Promise<void> {
@@ -175,7 +167,6 @@ export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}
     stdout,
     cwd: deps.cwd ?? process.cwd(),
     openBundle: deps.openBundle ?? openBundle,
-    resolveRemoteFlag: deps.resolveRemoteFlag ?? resolveRemoteFlag,
     resolveProjectBinding: deps.resolveProjectBinding ?? resolveProjectBinding,
     findBundleRoot: deps.findBundleRoot ?? findBundleRoot,
   };
@@ -186,7 +177,6 @@ export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}
         args: argv,
         options: {
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -225,18 +215,15 @@ export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}
         loaded.recipe,
         appliedIds === undefined ? null : isRecipeApplied(loaded.recipe, appliedIds),
         inv,
-        { dir: values.dir, remote: values.remote },
+        { dir: values.dir },
         drift,
       ),
     );
   }
 
-  const addHelp = `${inv} recipe add <name-or-path>${commandTargetSuffix({
-    dir: values.dir,
-    remote: values.remote,
-  })}`;
+  const addHelp = `${inv} recipe add <name-or-path>${commandTargetSuffix({ dir: values.dir })}`;
   const help =
-    values.remote !== undefined || appliedIds !== undefined
+    appliedIds !== undefined
       ? [addHelp]
       : [
           `${inv} init --create-only --recipe <name>${commandTargetSuffix({ dir: CONVENTIONAL_BUNDLE_DIR_NAME })}`,
@@ -256,7 +243,7 @@ export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}
       stamps.unstamped = shown;
       if (shown.length < unstamped.length) {
         stamps.unstamped_shown = shown.length;
-        stamps.conventions_all = `${inv} list --type Convention --prefix conventions/ --limit 0${commandTargetSuffix({ dir: values.dir, remote: values.remote })}`;
+        stamps.conventions_all = `${inv} list --type Convention --prefix conventions/ --limit 0${commandTargetSuffix({ dir: values.dir })}`;
       }
       stamps.unstamped_help =
         "conventions no recipe wrote, or written before recipe stamps; a 'recipe evolve' apply stamps the ones its recipe declares" +

@@ -28,7 +28,7 @@ import { init } from "../src/commands/init.js";
 import {
   assertCreateOnlyTarget,
   createOnlyArbitrationLockKey,
-  PROJECT_BINDING_FILE_NAME,
+  RETIRED_PROJECT_BINDING_FILE_NAME,
   resolveProjectBinding,
   SUPERBEE_PROJECT_BINDING_FILE_NAME,
   withCreateOnlyTarget,
@@ -200,7 +200,7 @@ test("bindings: an existing bound bundle refuses; malformed and URL bindings kee
     const bound = path.join(base, "workspace");
     await runInit(["--dir", bound, "--recipe", "none"]);
     await mkdir(path.join(proj, "sub"), { recursive: true });
-    await writeFile(path.join(proj, ".agentstate.json"), `${JSON.stringify({ bundle: bound })}\n`);
+    await writeFile(path.join(proj, ".superbee.json"), `${JSON.stringify({ bundle: bound })}\n`);
     const err = await expectRefusal(
       ["--create-only", "--dir", path.join(proj, "sub", "new-bundle")],
       /project binding .* already resolves this location to the existing bundle/,
@@ -211,7 +211,7 @@ test("bindings: an existing bound bundle refuses; malformed and URL bindings kee
     const proj2 = path.join(base, "proj2");
     await mkdir(proj2, { recursive: true });
     await writeFile(
-      path.join(proj2, ".agentstate.json"),
+      path.join(proj2, ".superbee.json"),
       `${JSON.stringify({ bundle: path.join(base, "nowhere") })}\n`,
     );
     assert.equal((await runInit(["--create-only", "--dir", path.join(proj2, "nb")])).init, "ok");
@@ -219,7 +219,7 @@ test("bindings: an existing bound bundle refuses; malformed and URL bindings kee
     // Malformed JSON binding: the existing fail-closed USAGE error, unchanged wording family.
     const proj3 = path.join(base, "proj3");
     await mkdir(proj3, { recursive: true });
-    await writeFile(path.join(proj3, ".agentstate.json"), "{not json");
+    await writeFile(path.join(proj3, ".superbee.json"), "{not json");
     const malformed = await expectRefusal(
       ["--create-only", "--dir", path.join(proj3, "nb")],
       /malformed project binding/,
@@ -230,10 +230,10 @@ test("bindings: an existing bound bundle refuses; malformed and URL bindings kee
     const proj4 = path.join(base, "proj4");
     await mkdir(proj4, { recursive: true });
     await writeFile(
-      path.join(proj4, ".agentstate.json"),
+      path.join(proj4, ".superbee.json"),
       `${JSON.stringify({ bundle: "https://example.com/b" })}\n`,
     );
-    const url = await expectRefusal(["--create-only", "--dir", path.join(proj4, "nb")], /URL bindings/);
+    const url = await expectRefusal(["--create-only", "--dir", path.join(proj4, "nb")], /cannot use a URL; remote access was removed/);
     assert.equal(url.code, "USAGE");
 
     // The preferred binding participates in the same strict create-only discovery.
@@ -249,7 +249,8 @@ test("bindings: an existing bound bundle refuses; malformed and URL bindings kee
     );
     assert.equal(preferred.code, "ALREADY_EXISTS");
 
-    // Both names at one level are an ambiguity before either target is considered.
+    // A retired name at a level refuses before either target is considered, alone or beside the
+    // current name.
     const proj6 = path.join(base, "proj6");
     await mkdir(proj6, { recursive: true });
     await writeFile(
@@ -257,14 +258,21 @@ test("bindings: an existing bound bundle refuses; malformed and URL bindings kee
       `${JSON.stringify({ bundle: bound })}\n`,
     );
     await writeFile(
-      path.join(proj6, PROJECT_BINDING_FILE_NAME),
+      path.join(proj6, RETIRED_PROJECT_BINDING_FILE_NAME),
       `${JSON.stringify({ bundle: bound })}\n`,
     );
     const conflict = await expectRefusal(
       ["--create-only", "--dir", path.join(proj6, "new-bundle")],
-      /conflicting project bindings/,
+      /has both \.superbee\.json and the retired \.agentstate\.json, which is no longer read/,
     );
     assert.equal(conflict.code, "USAGE");
+    await rm(path.join(proj6, SUPERBEE_PROJECT_BINDING_FILE_NAME));
+    const retired = await expectRefusal(
+      ["--create-only", "--dir", path.join(proj6, "new-bundle")],
+      /uses the retired name \.agentstate\.json, which is no longer read/,
+    );
+    assert.equal(retired.code, "USAGE");
+    assert.match(String(retired.help), /^rename it to \.superbee\.json \(same contents\): mv /);
   } finally {
     await rm(base, { recursive: true, force: true });
   }
@@ -279,7 +287,7 @@ test("create-only binding discovery matches ordinary discovery for symlinked bin
     await mkdir(symlinkedBindingProject, { recursive: true });
     await mkdir(emptyBoundTarget);
     await writeFile(bindingSource, `${JSON.stringify({ bundle: emptyBoundTarget })}\n`);
-    const symlinkedBindingFile = path.join(symlinkedBindingProject, ".agentstate.json");
+    const symlinkedBindingFile = path.join(symlinkedBindingProject, ".superbee.json");
     await symlink(bindingSource, symlinkedBindingFile);
     assert.deepEqual(await resolveProjectBinding(symlinkedBindingProject), {
       file: symlinkedBindingFile,
@@ -300,7 +308,7 @@ test("create-only binding discovery matches ordinary discovery for symlinked bin
     await mkdir(targetAliasProject, { recursive: true });
     await symlink(emptyBoundTarget, targetAlias);
     await writeFile(
-      path.join(targetAliasProject, ".agentstate.json"),
+      path.join(targetAliasProject, ".superbee.json"),
       `${JSON.stringify({ bundle: targetAlias })}\n`,
     );
     assert.equal((await resolveProjectBinding(targetAliasProject))?.target, targetAlias);
@@ -318,13 +326,13 @@ test("create-only binding discovery matches ordinary discovery for symlinked bin
   }
 });
 
-test("create-only rejects binding symlinks to FIFOs promptly for both supported names", async (t) => {
+test("create-only rejects a binding symlink to a FIFO promptly", async (t) => {
   const base = await tempDir();
   try {
     const fifo = path.join(base, "binding-source");
     execFileSync("mkfifo", [fifo]);
 
-    for (const name of [SUPERBEE_PROJECT_BINDING_FILE_NAME, PROJECT_BINDING_FILE_NAME]) {
+    for (const name of [SUPERBEE_PROJECT_BINDING_FILE_NAME]) {
       await t.test(name, async () => {
         const project = path.join(base, name.slice(1, -5));
         const target = path.join(project, "new-bundle");
@@ -364,7 +372,7 @@ test("stable direct and symlink binding targets to the same non-directory both p
         const project = path.join(base, `${shape}-project`);
         await mkdir(project);
         await writeFile(
-          path.join(project, ".agentstate.json"),
+          path.join(project, ".superbee.json"),
           `${JSON.stringify({ bundle: boundTarget })}\n`,
         );
 
@@ -401,7 +409,7 @@ test("binding target effective snapshots follow symlinks exactly once and reuse 
         const newBundle = path.join(project, "new-bundle");
         await mkdir(project);
         await writeFile(
-          path.join(project, ".agentstate.json"),
+          path.join(project, ".superbee.json"),
           `${JSON.stringify({ bundle: boundTarget })}\n`,
         );
         let statCalls = 0;
@@ -448,7 +456,7 @@ test("binding target observer rejects witnessed shape and identity transitions",
           shape === "symlink" ? path.join(physicalBase, "observed-directory-alias") : observedDirectory;
         if (shape === "symlink") await symlink(observedDirectory, boundTarget);
         await writeFile(
-          path.join(project, ".agentstate.json"),
+          path.join(project, ".superbee.json"),
           `${JSON.stringify({ bundle: boundTarget })}\n`,
         );
 
@@ -519,7 +527,7 @@ test("binding target observer faults retain exact operation, path, and fs code",
           }
         }
         await writeFile(
-          path.join(project, ".agentstate.json"),
+          path.join(project, ".superbee.json"),
           `${JSON.stringify({ bundle: boundTarget })}\n`,
         );
 
@@ -592,7 +600,7 @@ test("binding targets that disappear after realpath fail closed for direct and s
           shape === "symlink" ? path.join(base, "empty-bound-target-alias") : logicalBoundTarget;
         if (shape === "symlink") await symlink(logicalBoundTarget, boundTarget);
         await writeFile(
-          path.join(project, ".agentstate.json"),
+          path.join(project, ".superbee.json"),
           `${JSON.stringify({ bundle: boundTarget })}\n`,
         );
 
@@ -1306,7 +1314,7 @@ test("strict create-only observations surface operation, path, and fs code", asy
     await mkdir(conventional);
     const upwardConventional = path.join(physicalBase, ".agentstate-lite");
     await mkdir(upwardConventional);
-    const binding = path.join(physicalBase, ".agentstate.json");
+    const binding = path.join(physicalBase, ".superbee.json");
     await writeFile(binding, `${JSON.stringify({ bundle: path.join(physicalBase, "elsewhere") })}\n`);
     const rows = [
       { operation: "realpath", path: target, deps: { realpath: async () => { throw Object.assign(new Error("injected"), { code: "EIO" }); } } },

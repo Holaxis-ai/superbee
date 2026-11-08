@@ -25,7 +25,7 @@ import { renderUsage } from "../output.js";
 // path self-logs either — D8).
 import { parseArgs } from "node:util";
 import { deleteBlob, conceptIdFromPath, VersionConflict } from "@superbee/core";
-import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag } from "../bundle.js";
+import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute } from "../bundle.js";
 import { assertActorAcceptedByBundle, resolveActor } from "../actor.js";
 import { boardPostPersistHook } from "../board-attribution.js";
 import { deleteMutatedDoc } from "../mutate.js";
@@ -70,8 +70,6 @@ Options:
   --actor <name>            Document route only: advisory board attribution (flag > actor environment).
                             v0.2 requires an OKF actor; blob deletion ignores this option/environment.
   --dir <path>              Bundle directory (default: discovered from the cwd)
-  --remote <url>            Talk to a wire-protocol server instead of a local bundle (mutually
-                            exclusive with --dir; remote access is always explicit)
   --json                    Emit compact JSON instead of TOON
   -h, --help                Show this help
 `;
@@ -100,7 +98,6 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
           "expected-version": { type: "string" },
           actor: { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -133,10 +130,9 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
     );
   }
 
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
   const home = deps.hosted?.auth?.home ?? deps.home ?? homedir(), cwd = deps.cwd ?? deps.hosted?.cwd ?? process.cwd();
   if (deps.home !== undefined && deps.hosted?.auth !== undefined && deps.home !== deps.hosted.auth.home) throw new CliError("USAGE", "offline admission and hosted delivery must use the same private-state home");
-  if (!remote && !isDocRouteKey(key)) {
+  if (!isDocRouteKey(key)) {
     const pending = await admitOfflineBlob({ operation: "delete", key, ...(values.dir === undefined ? {} : { dir: values.dir }), ...(rawExpected === undefined ? {} : { expectedVersion: rawExpected.trim() }), home, cwd });
     if (pending) {
       const { finishAdmittedBlob } = await import("../hosted/sync.js");
@@ -146,8 +142,8 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
     }
   }
   const docRoute = isDocRouteKey(key);
-  const route = docRoute && remote === undefined ? await resolveLocalBundleRoute(values.dir) : undefined;
-  const bundle = route?.bundle ?? await openBundle(values.dir, remote);
+  const route = docRoute ? await resolveLocalBundleRoute(values.dir) : undefined;
+  const bundle = route?.bundle ?? await openBundle(values.dir);
   if (route) await assertResolvedLocalRouteIdentity(route);
   const mode: OutputMode = resolveMode(values);
   const expectedVersion = rawExpected?.trim();
@@ -164,13 +160,13 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
       await assertActorAcceptedByBundle(bundle, actor);
       const onPersisted = boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor);
       if (route) await assertResolvedLocalRouteIdentity(route);
-      deleted = await deleteMutatedDoc({ bundle, id, expectedVersion, remoteUrl: values.remote, onPersisted,
-        staleHead: (error) => deleteErrorToCliError(error, key, values.remote) });
+      deleted = await deleteMutatedDoc({ bundle, id, expectedVersion, onPersisted,
+        staleHead: (error) => deleteErrorToCliError(error, key) });
     } else {
       deleted = await deleteBlob(bundle, key, expectedVersion ? { expectedVersion } : undefined);
     }
   } catch (err) {
-    throw deleteErrorToCliError(err, key, values.remote);
+    throw deleteErrorToCliError(err, key);
   }
 
   // AXI P6: deleting an ABSENT key is SUCCESS (deleted:false), never NOT_FOUND — exit 0 either way.
@@ -185,7 +181,7 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
 }
 
 /** Map a delete failure to a structured CliError, mirroring `promote`'s error-classification posture. */
-function deleteErrorToCliError(err: unknown, key: string, remoteUrl?: string): CliError {
+function deleteErrorToCliError(err: unknown, key: string): CliError {
   if (err instanceof CliError) return err;
   if (err instanceof VersionConflict) {
     return new CliError(
@@ -200,5 +196,5 @@ function deleteErrorToCliError(err: unknown, key: string, remoteUrl?: string): C
   }
   // Anything else lands on the one boundary: a typed InvalidInputError (reserved-id,
   // unsafe-id) → USAGE, a RemoteError by ITS code, an unexpected failure → RUNTIME.
-  return classifyBundleError(err, remoteUrl);
+  return classifyBundleError(err);
 }

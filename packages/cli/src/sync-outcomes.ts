@@ -172,7 +172,8 @@ function sharingDetailsFor(err: CliError, context: SharingContext): SharingDetai
       possible_causes: ["repository-write", "branch-policy"],
     };
   }
-  if (err.code === "TRANSIENT" && err.details?.reason !== "non-fast-forward") {
+  // A timeout names no cause: a slow upload and a dead link look the same from here.
+  if (err.code === "TRANSIENT" && err.details?.reason !== "non-fast-forward" && err.details?.reason !== "timeout") {
     return { ...base, cause_certainty: "best-effort", possible_causes: ["network"] };
   }
   return base;
@@ -901,5 +902,27 @@ export function syncVerbNotApplicable(flags: readonly string[], home: SyncHome, 
   return new CliError("USAGE", `${spelled.join(", ")} ${flags.length === 1 ? "is" : "are"} not applicable in a ${home} bundle: ${why}`, {
     details: { reason: "not_applicable", home, flags: spelled },
     help,
+  });
+}
+
+/**
+ * A git rebase in the board checkout that sync did not start (a person's own, or one an older
+ * superbee left without the marker), which sync never aborts or drives. A rebase a killed sync
+ * left is healed instead.
+ */
+export function rebaseInProgressRefusal(folder: string, inv: CommandPrefix): CliError {
+  return new CliError(
+    "CONFLICT",
+    `a git rebase is in progress in ${commandToken(folder)} that this sync did not start; finish it with \`git rebase --continue\` or \`git rebase --abort\`, then run \`${inv} sync\``,
+    { details: { reason: "rebase_in_progress", folder, retryable: false } },
+  );
+}
+
+/** A board folder's sync lock whose holder is gone but which cannot be reclaimed automatically. */
+export function syncLockOrphaned(lockPath: string, pid: number | null): CliError {
+  const lock = commandToken(lockPath);
+  const owner = pid === null ? "has no readable owner" : `belongs to PID ${pid}, which is now a different program`;
+  return new CliError("CONFLICT", `A sync lock in ${lock} ${owner}. Make sure no superbee sync is running, then delete ${lock}.`, {
+    details: { reason: "lock_orphaned", lock: lockPath, ...(pid === null ? {} : { holder_pid: pid }), retryable: false },
   });
 }

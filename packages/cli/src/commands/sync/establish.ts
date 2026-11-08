@@ -9,7 +9,7 @@ import { isProvisioned } from "../../board-runtime.js";
 // The committed-folder case (preview-first, `--yes`-gated) is ./establish-committed.ts.
 import { existsSync, lstatSync, readdirSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
-import { query } from "@superbee/core";
+import { isPermissionDeniedSkip, query } from "@superbee/core";
 
 import { looksLikeBundle, resolveProjectBinding, TOP_LEVEL_BUNDLE_MOVE } from "../../bundle.js";
 import { CliError, classifyBundleError } from "../../errors.js";
@@ -489,23 +489,35 @@ async function publishGreenfieldBoard(
 }
 
 /**
- * Refuse a first publication that would carry a document whose frontmatter does not parse: once
- * on the shared board it breaks every teammate's reader. Ordinary sync holds such a document and
- * publishes the rest; a first publication is one snapshot of the whole bundle, so it stops before
- * anything is published or moved.
+ * Refuse a first publication that would carry a document whose frontmatter does not parse, or
+ * that the host refused to read: once on the shared board a malformed document breaks every
+ * teammate's reader, and an unreadable one would be left behind. Ordinary sync holds such a
+ * document and publishes the rest; a first publication is one snapshot of the whole bundle, so
+ * it stops before anything is published or moved. Each cause gets its own advice.
  */
 async function assertNoMalformedDocuments(boardPath: string, inv: CommandPrefix): Promise<void> {
-  const malformed: { id: string; reason: string }[] = [];
-  await query({ root: boardPath }, {}, { onSkip: ({ id, reason }) => malformed.push({ id, reason }) });
-  if (malformed.length === 0) return;
-  malformed.sort((a, b) => a.id.localeCompare(b.id));
+  const skipped: { id: string; reason: string }[] = [];
+  await query({ root: boardPath }, {}, { onSkip: ({ id, reason }) => skipped.push({ id, reason }) });
+  if (skipped.length === 0) return;
+  skipped.sort((a, b) => a.id.localeCompare(b.id));
+  const denied = skipped.filter(isPermissionDeniedSkip);
+  const malformed = skipped.filter((row) => !isPermissionDeniedSkip(row));
+  const problems: string[] = [];
+  const fixes: string[] = [];
+  if (malformed.length > 0) {
+    problems.push(`${malformed.length} document(s) have invalid YAML frontmatter (${malformed.map((row) => row.id).join(", ")})`);
+    fixes.push("fix the lines between the --- markers (quote any value that contains ': ')");
+  }
+  if (denied.length > 0) {
+    problems.push(`${denied.length} document(s) could not be read (${denied.map((row) => `${row.id}: ${row.reason}`).join(", ")})`);
+    fixes.push("make those files readable by your user");
+  }
   throw new CliError(
     "USAGE",
-    `${malformed.length} document(s) have invalid YAML frontmatter (${malformed.map((row) => row.id).join(", ")}); ` +
-      `nothing was published or moved`,
+    `${problems.join("; ")}; nothing was published or moved`,
     {
-      help: `fix the lines between the --- markers (quote any value that contains ': '), check with ${inv} status, then run ${inv} sync --establish again`,
-      details: { malformed },
+      help: `${fixes.join(" and ")}, check with ${inv} status, then run ${inv} sync --establish again`,
+      details: { malformed, ...(denied.length > 0 ? { unreadable: denied } : {}) },
     },
   );
 }

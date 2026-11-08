@@ -9,28 +9,11 @@ import { commandLiteral, commandToken } from "./command-text.js";
 /** One help-line sentence for every `--actor` flag; the forms text itself lives in core. */
 export const ACTOR_FORMS_HELP = `On an OKF v0.2 bundle the value must be an OKF actor: ${OKF_ACTOR_FORMS}.`;
 
-/**
- * The legacy environment variable, spelled here rather than imported: `env-policy.ts` imports
- * `errors.ts`, which imports this module. A test pins the literal to the exported constant.
- */
-const LEGACY_ACTOR_VARIABLE = "AGENTSTATE_LITE_ACTOR";
-
-/**
- * The clause that keeps an env repair from leaving a conflicting legacy value behind (the resolver
- * refuses two different values, so the next write would fail for a new reason). A real command
- * separator: prose ("and unset X") pasted into a shell is one export statement that silently
- * exports the words as variables. Shared by the refusal help and the orientation hint.
- */
-function legacyEnvCleanup(env: NodeJS.ProcessEnv): string {
-  return env[LEGACY_ACTOR_VARIABLE] === undefined ? "" : `; unset ${LEGACY_ACTOR_VARIABLE}`;
-}
-
 /** A refusal that says what to type instead of what was rejected, plus the once-only env fix. */
 export function actorRefusal(
   actor: string,
-  options: { preferHuman?: boolean; env?: NodeJS.ProcessEnv } = {},
+  options: { preferHuman?: boolean } = {},
 ): { message: string; help: string } {
-  const legacyCleanup = legacyEnvCleanup(options.env ?? process.env);
   const suggestion = suggestOkfActor(actor);
   let options_ = [suggestion.primary, ...suggestion.alternatives];
   if (options.preferHuman) {
@@ -48,19 +31,19 @@ export function actorRefusal(
     // Nothing usable could be derived: show the forms, never a pasteable placeholder identity.
     return {
       message,
-      help: `rerun with --actor ${commandLiteral("<actor>")} in one of those forms, or set it once: export SUPERBEE_ACTOR=${commandLiteral("<actor>")}${legacyCleanup}`,
+      help: `rerun with --actor ${commandLiteral("<actor>")} in one of those forms, or set it once: export SUPERBEE_ACTOR=${commandLiteral("<actor>")}`,
     };
   }
   const fix = options_[0]!;
   return {
     message,
-    help: `rerun with --actor ${commandToken(fix)}, or set it once: export SUPERBEE_ACTOR=${commandToken(fix)}${legacyCleanup}`,
+    help: `rerun with --actor ${commandToken(fix)}, or set it once: export SUPERBEE_ACTOR=${commandToken(fix)}`,
   };
 }
 
 /**
  * How the ambient actor resolved for orientation: a value, nothing, or an environment the resolver
- * itself refused (a blank variable, or two variables that disagree) — carried as the resolver's own
+ * itself refused (a blank variable) — carried as the resolver's own
  * diagnostic so orientation never guesses which variable is at fault.
  */
 export type ResolvedActorState =
@@ -69,11 +52,7 @@ export type ResolvedActorState =
   | { kind: "unusable"; diagnostic: string };
 
 /** Orientation line for `home`/`session-start`: how the resolved actor will fare on a v0.2 bundle. */
-export function describeResolvedActor(
-  state: ResolvedActorState,
-  options: { env?: NodeJS.ProcessEnv } = {},
-): { actor: string; actor_help?: string } {
-  const legacyCleanup = legacyEnvCleanup(options.env ?? process.env);
+export function describeResolvedActor(state: ResolvedActorState): { actor: string; actor_help?: string } {
   if (state.kind === "unset") {
     return {
       actor: "unset (writes record process:superbee)",
@@ -94,7 +73,7 @@ export function describeResolvedActor(
     actor,
     actor_help: placeholder
       // The pasteable span ends the line: trailing prose would break a whole-line paste.
-      ? `'${actor}' is not an OKF actor; writes to this v0.2 bundle will be refused — set a real one (${OKF_ACTOR_FORMS}): export SUPERBEE_ACTOR=${commandLiteral("<actor>")}${legacyCleanup}`
-      : `'${actor}' is not an OKF actor; writes to this v0.2 bundle will be refused — use ${spelled}: export SUPERBEE_ACTOR=${commandToken(primary)}${legacyCleanup}`,
+      ? `'${actor}' is not an OKF actor; writes to this v0.2 bundle will be refused — set a real one (${OKF_ACTOR_FORMS}): export SUPERBEE_ACTOR=${commandLiteral("<actor>")}`
+      : `'${actor}' is not an OKF actor; writes to this v0.2 bundle will be refused — use ${spelled}: export SUPERBEE_ACTOR=${commandToken(primary)}`,
   };
 }

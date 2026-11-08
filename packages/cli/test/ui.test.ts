@@ -1,8 +1,7 @@
 /**
  * `agentstate-lite ui` — the CLI command that boots the local web UI (plans/ui-v1.md rev 3.2).
- * Runs the command function in-process against a real temp filesystem bundle, mirroring
- * `serve.test.ts`'s pattern exactly (injectable `bootUiServer`/`waitForShutdown`, no real OS
- * signals, no lingering listener after a test exits).
+ * Runs the command function in-process against a real temp filesystem bundle (injectable
+ * `bootUiServer`/`waitForShutdown`, no real OS signals, no lingering listener after a test exits).
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -15,7 +14,6 @@ import { EventEmitter } from "node:events";
 import { spawnSync, type ChildProcess, type spawn as spawnType } from "node:child_process";
 
 import { initBundle, writeDoc } from "@superbee/core";
-import { serve } from "@superbee/server";
 import { defaultOpenBrowser, ui } from "../src/commands/ui.js";
 import { docOpen } from "../src/commands/doc/open.js";
 import { bootUiServer } from "../src/ui/server.js";
@@ -27,7 +25,7 @@ test("abandon is rejected outside ui stop before opening a bundle or listener", 
   const usage = (error: unknown) => error instanceof CliError && error.code === "USAGE" && /abandon/.test(error.message);
   await assert.rejects(() => ui(["--abandon", "--dir", "/missing/probe-bundle"]), usage);
   await assert.rejects(() => ui(["--status", "--abandon", "--dir", "/missing/probe-bundle"]), usage);
-  await assert.rejects(() => docOpen(["docs/core", "--abandon", "--remote", "http://127.0.0.1:1"]), usage);
+  await assert.rejects(() => docOpen(["docs/core", "--abandon", "--dir", "/missing/probe-bundle"]), usage);
 });
 
 async function makeFixtureBundle(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
@@ -266,32 +264,6 @@ test("managed authority converges canonically while preserving the selected lexi
   }
 });
 
-test("explicit remote doc open remains a foreground launch", async () => {
-  const { dir, cleanup } = await makeFixtureBundle();
-  await writeDoc({ root: dir }, { id: "docs/remote", frontmatter: { type: "Doc", title: "Remote" }, body: "# Remote" });
-  const remote = await serve({ bundle: { root: dir }, port: 0 });
-  let waited = false;
-  let mode: string | undefined;
-  try {
-    await docOpen(["docs/remote", "--remote", `http://${remote.host}:${remote.port}`, "--json"], {
-      stdout: () => {},
-      bootUiServer: async (options) => {
-        mode = options.mode;
-        return { host: "127.0.0.1", port: 49154, token: "remote-ui-token", close: async () => {} };
-      },
-      waitForShutdown: async () => { waited = true; },
-      openBrowser: () => {},
-      writeUrlFile: async () => {},
-      clearUrlFile: async () => {},
-    });
-    assert.equal(mode, "remote");
-    assert.equal(waited, true);
-  } finally {
-    await remote.close();
-    await cleanup();
-  }
-});
-
 test("the recovery command keeps an option-shaped document id positional", async () => {
   const { dir, cleanup } = await makeFixtureBundle();
   await writeDoc(
@@ -424,27 +396,6 @@ test("ui --dir <missing>: NOT_FOUND (exit 6), delegated from openBundle", async 
     );
   } finally {
     await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("ui --dir x --remote y: USAGE — mutually exclusive, same as every other remote-capable command", async () => {
-  const { dir, cleanup } = await makeFixtureBundle();
-  try {
-    await assert.rejects(
-      () =>
-        ui(["--dir", dir, "--remote", "http://127.0.0.1:4818"], {
-          bootUiServer,
-          waitForShutdown: () => Promise.resolve(),
-          openBrowser: () => {},
-        }),
-      (err: unknown) => {
-        assert.ok(err instanceof CliError);
-        assert.equal(err.code, "USAGE");
-        return true;
-      },
-    );
-  } finally {
-    await cleanup();
   }
 });
 

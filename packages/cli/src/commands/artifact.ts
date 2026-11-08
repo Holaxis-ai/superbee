@@ -35,7 +35,7 @@ import {
   type Bundle,
   type Frontmatter,
 } from "@superbee/core";
-import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag, type BoardAttribution } from "../bundle.js";
+import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute, type BoardAttribution } from "../bundle.js";
 import { mutateDoc } from "../mutate.js";
 import { boardPostPersistHook } from "../board-attribution.js";
 import { assertActorAcceptedByBundle, resolveActor } from "../actor.js";
@@ -66,7 +66,6 @@ Options:
   --description <text>  Optional one-line description
   --supersedes <id>     Mark a prior artifact superseded and link this one 'supersedes' it
   --dir <path>          Operate on a local bundle at <path>
-  --remote <url>        Operate on a remote bundle
   --actor <name>        Attribute the write to <name>. OKF v0.2 bundles accept only an OKF actor:
                         human:<id>, process:<id>, or <producer>/<version> (e.g. openai/codex)
   --json                TOON/JSON receipt
@@ -77,7 +76,6 @@ const ARTIFACT_CREATE_OPTIONS = {
   description: { type: "string" },
   supersedes: { type: "string" },
   dir: { type: "string" },
-  remote: { type: "string" },
   actor: { type: "string" },
   json: { type: "boolean" },
   help: { type: "boolean", short: "h" },
@@ -146,39 +144,35 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
 
   const mode: OutputMode = values.json ? "json" : "default";
   const dir = values.dir as string | undefined;
-  const remoteUrl = values.remote as string | undefined;
-  const remote = await resolveRemoteFlag(remoteUrl, dir);
-  if (remote === undefined) {
-    if (deps.home !== undefined && deps.hosted?.auth && deps.home !== deps.hosted.auth.home) throw new CliError("USAGE", "Artifact admission and delivery must use the same private-state home");
-    const home = deps.home ?? deps.hosted?.auth?.home ?? homedir(), cwd = deps.cwd ?? deps.hosted?.cwd ?? process.cwd();
-    const { resolveLocalBundleTarget } = await import("../bundle.js");
-    const target = await resolveLocalBundleTarget(dir, cwd);
-    const binding = await bindingForPath(home, target.canonicalRoot);
-    if (binding) {
-      const actor = resolveActor(values.actor as string | undefined, {
-        help: `${cliInvocation()} artifact create <file> --title <title> --actor <name>`,
-      });
-      if (!actor) throw new CliError("USAGE", "hosted Artifact requires --actor (or SUPERBEE_ACTOR)");
-      if (values.supersedes !== undefined) throw new CliError("USAGE", "hosted Artifact --supersedes is not supported; no bytes were submitted");
-      const { queueHostedArtifact } = await import("../hosted/sync.js");
-      const description = (values.description as string | undefined)?.trim();
-      const resume = commandFragment`${cliInvocation()} artifact create ${commandToken(path.resolve(cwd, file))} --title ${commandToken(title)} --actor ${commandToken(actor)} --dir ${commandToken(binding.path)}${description ? commandFragment` --description ${commandToken(description)}` : commandFragment``}`;
-      let receipt: Record<string, unknown>;
-      try {
-        receipt = await queueHostedArtifact(binding, { file, title, actor, ...(description ? { description } : {}) }, { ...deps.hosted, auth: deps.hosted?.auth ?? defaultHostedAuthDeps(home), cwd, stdout }, resume);
-      } catch (error) {
-        if (error instanceof CliError && error.details?.reason === "artifact_record_committed_local_placement_incomplete") {
-          stdout(render(error.details, mode));
-          throw Object.assign(new CliError(error.code, error.message, { details: error.details, help: error.help, handled: true }), { cause: error });
-        }
-        throw error;
+  if (deps.home !== undefined && deps.hosted?.auth && deps.home !== deps.hosted.auth.home) throw new CliError("USAGE", "Artifact admission and delivery must use the same private-state home");
+  const home = deps.home ?? deps.hosted?.auth?.home ?? homedir(), cwd = deps.cwd ?? deps.hosted?.cwd ?? process.cwd();
+  const { resolveLocalBundleTarget } = await import("../bundle.js");
+  const target = await resolveLocalBundleTarget(dir, cwd);
+  const binding = await bindingForPath(home, target.canonicalRoot);
+  if (binding) {
+    const actor = resolveActor(values.actor as string | undefined, {
+      help: `${cliInvocation()} artifact create <file> --title <title> --actor <name>`,
+    });
+    if (!actor) throw new CliError("USAGE", "hosted Artifact requires --actor (or SUPERBEE_ACTOR)");
+    if (values.supersedes !== undefined) throw new CliError("USAGE", "hosted Artifact --supersedes is not supported; no bytes were submitted");
+    const { queueHostedArtifact } = await import("../hosted/sync.js");
+    const description = (values.description as string | undefined)?.trim();
+    const resume = commandFragment`${cliInvocation()} artifact create ${commandToken(path.resolve(cwd, file))} --title ${commandToken(title)} --actor ${commandToken(actor)} --dir ${commandToken(binding.path)}${description ? commandFragment` --description ${commandToken(description)}` : commandFragment``}`;
+    let receipt: Record<string, unknown>;
+    try {
+      receipt = await queueHostedArtifact(binding, { file, title, actor, ...(description ? { description } : {}) }, { ...deps.hosted, auth: deps.hosted?.auth ?? defaultHostedAuthDeps(home), cwd, stdout }, resume);
+    } catch (error) {
+      if (error instanceof CliError && error.details?.reason === "artifact_record_committed_local_placement_incomplete") {
+        stdout(render(error.details, mode));
+        throw Object.assign(new CliError(error.code, error.message, { details: error.details, help: error.help, handled: true }), { cause: error });
       }
-      stdout(render(receipt, mode));
-      if (receipt.artifact === "blob_pending") throw new CliError("TRANSIENT", "Artifact blob outcome is unresolved; record was not queued", { details: receipt, handled: true, help: String(resume) });
-      return;
+      throw error;
     }
+    stdout(render(receipt, mode));
+    if (receipt.artifact === "blob_pending") throw new CliError("TRANSIENT", "Artifact blob outcome is unresolved; record was not queued", { details: receipt, handled: true, help: String(resume) });
+    return;
   }
-  // Local/wire routes retain their external reader. Hosted input takes only the bounded
+  // Local routes retain their external reader. Hosted input takes only the bounded
   // no-follow acquisition above; its bytes must never pass through this legacy read.
   let bytes: Buffer;
   try {
@@ -197,8 +191,8 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
   const actor = resolveActor(values.actor as string | undefined, {
     help: `${cliInvocation()} artifact create <file> --title <title> --actor <name>`,
   });
-  const route = remote === undefined ? await resolveLocalBundleRoute(dir) : undefined;
-  const bundle: Bundle = route?.bundle ?? await openBundle(dir, remote);
+  const route = await resolveLocalBundleRoute(dir);
+  const bundle: Bundle = route?.bundle ?? await openBundle(dir);
   const attribution: BoardAttribution = route ? boardAttributionForRoute(route) : { kind: "none" };
   if (route) await assertResolvedLocalRouteIdentity(route);
   // Before the blob is promoted: the record write would refuse a non-conforming actor, but by then
@@ -275,7 +269,6 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
       id,
       mode: "create-only",
       registry,
-      remoteUrl,
       strict: true,
       helpOnKindReject: `${cliInvocation()} kinds`,
       actor,
@@ -320,7 +313,6 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
         id: supersedes,
         mode: "patch",
         registry,
-        remoteUrl,
         strict: false,
         helpOnKindReject: `${cliInvocation()} kinds`,
         actor,

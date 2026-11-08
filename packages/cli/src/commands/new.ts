@@ -28,7 +28,7 @@ import { renderUsage } from "../output.js";
 // SAME `node:util` `parseArgs` every other command uses (retiring the former hand-rolled
 // tokenizer, whose glued/malformed-flag error used to misdirect — see below).
 //
-// Phase 1 (lenient discovery): a `strict:false` parse over ONLY the control flags (dir/remote/
+// Phase 1 (lenient discovery): a `strict:false` parse over ONLY the control flags (dir/
 // actor/json/help) extracts the leading `Kind` positional (and opens the bundle + loads the
 // registry). Phase 2 (authoritative): a STRICT `parseArgs` re-parse, built from the loaded kind's
 // declared fields (`{ type: "string", multiple: true }` each), any version-aware logical aliases,
@@ -65,7 +65,7 @@ import {
   type ValidationWarning,
 } from "@superbee/core";
 import { resolveConceptIdCliArgument } from "../concept-id.js";
-import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag, type ResolvedLocalRoute } from "../bundle.js";
+import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute, type ResolvedLocalRoute } from "../bundle.js";
 import { CliError, asHandled, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage, parseNewSchemaPhaseOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -113,15 +113,12 @@ Options:
   --stale-after <iso>   Set the expiration instant (OKF v0.2 only), independent of Kind fields.
                        Requires a valid date, time, and zone, e.g. 2026-09-07T12:00:00Z.
   --dir <path>          Bundle directory (default: discovered from the cwd)
-  --remote <url>        Talk to a wire-protocol server instead of a local bundle
-                         (mutually exclusive with --dir; remote access is always explicit)
   --actor <name>         Attribute this write using the bundle's compatible advisory field, used
                          by per-doc sync receipts and version history for a persisting backend.
                          On an OKF v0.2 bundle the value must be an OKF actor (human:<id>,
                          process:<id>, or <producer>/<version> such as openai/codex).
-                         Precedence: --actor > SUPERBEE_ACTOR >
-                         legacy AGENTSTATE_LITE_ACTOR > absent. A present-but-blank flag or
-                         environment value is a USAGE error (exit 2).
+                         Precedence: --actor > SUPERBEE_ACTOR > absent. A present-but-blank
+                         flag or environment value is a USAGE error (exit 2).
   --body <markdown>     Use inline Markdown as the complete initial body. Mutually exclusive with
                        --body-file. The supplied body is validated strictly against the kind's
                        declared sections before anything is written.
@@ -172,7 +169,6 @@ function hasOwn(record: object, key: PropertyKey): boolean {
  */
 const NEW_CONTROL_OPTIONS = {
   dir: { type: "string" },
-  remote: { type: "string" },
   actor: { type: "string" },
   link: { type: "string", multiple: true },
   body: { type: "string" },
@@ -224,8 +220,8 @@ function parseLinkFlagValue(raw: string): ParsedLinkFlag {
 
 /**
  * Phase 1 runs `strict:false`, which yields boolean `true` (not `undefined`, and no throw) for a
- * CONFIGURED value flag given no value as the final argv token — e.g. `new Task x --dir`. `--dir`/
- * `--remote` are consumed BEFORE the authoritative Phase-2 strict parse (they open the bundle the
+ * CONFIGURED value flag given no value as the final argv token — e.g. `new Task x --dir`. `--dir` is
+ * consumed BEFORE the authoritative Phase-2 strict parse (they open the bundle the
  * kind is loaded from), so a boolean here would reach `openBundle` and crash it ('paths[0] must be a
  * string') as a RUNTIME (off the capped taxonomy) instead of the clean USAGE Phase 2 would give.
  * Reject it here, returning the narrowed `string | undefined` so no unsound cast is needed.
@@ -367,7 +363,7 @@ function renderKindHelp(
     `To ADD a field: ${inv} kind field ${commandToken(kind.governs)} add <name> [--required] [--values <a,b,c>].\n\n` +
     `Options:\n` +
     `  --stale-after <iso>  Expiration instant (OKF v0.2 only); valid date, time, and zone required\n` +
-    `  --actor <name>   Attribute the write (overrides SUPERBEE_ACTOR; legacy AGENTSTATE_LITE_ACTOR remains supported).\n` +
+    `  --actor <name>   Attribute the write (overrides SUPERBEE_ACTOR).\n` +
     `                   OKF v0.2 bundles accept only human:<id>, process:<id>, or <producer>/<version> (e.g. openai/codex)\n` +
     `  --body <markdown>\n` +
     `                   Use inline Markdown as the complete initial body; mutually exclusive with\n` +
@@ -381,7 +377,6 @@ function renderKindHelp(
     `                   target is allowed)\n` +
     `  --no-prefix      Use <id> verbatim (skip the auto path prefix above)\n` +
     `  --dir <path>     Bundle directory (default: discovered from the cwd)\n` +
-    `  --remote <url>   Talk to a wire-protocol server instead of a local bundle\n` +
     `  --json           Emit compact JSON instead of TOON\n` +
     `  -h, --help       Show this help\n`
   );
@@ -412,16 +407,14 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   }
 
   const preDir = controlFlagValue(pre.values.dir, "dir");
-  const preRemote = controlFlagValue(pre.values.remote, "remote");
   // `--help` must work anywhere: if the bundle can't be opened, fall back to the generic reference
   // rather than erroring on a bundle lookup the user didn't ask to perform.
   let bundle;
   let route: ResolvedLocalRoute | undefined;
   let attribution: ReturnType<typeof boardAttributionForRoute> = { kind: "none" };
   try {
-    const remote = await resolveRemoteFlag(preRemote, preDir);
-    route = remote === undefined ? await resolveLocalBundleRoute(preDir) : undefined;
-    bundle = route?.bundle ?? await openBundle(preDir, remote);
+    route = await resolveLocalBundleRoute(preDir);
+    bundle = route?.bundle ?? await openBundle(preDir);
     attribution = route ? boardAttributionForRoute(route) : { kind: "none" };
   } catch (err) {
     if (pre.values.help) {
@@ -608,7 +601,6 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   const targetId = values["no-prefix"]
     ? id
     : await resolveConceptIdCliArgument(bundle, rawId, { prefix: kind.path });
-  const remote = values.remote as string | undefined;
 
   // "create-only" mode: expect-absent CAS, the same closed-create-race pattern the CLI's recipe
   // machinery (`installRecipe`) uses. A pre-existing doc at `targetId` maps to a structured, actionable
@@ -621,15 +613,10 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     id: targetId,
     mode: "create-only",
     registry,
-    remoteUrl: remote,
     strict: true,
     helpOnKindReject:
       `${cliInvocation()} new ${commandQuoted(kind.governs)} --help` +
-      (preDir !== undefined
-        ? ` --dir ${commandQuoted(preDir)}`
-        : preRemote !== undefined
-          ? ` --remote ${commandQuoted(preRemote)}`
-          : ""),
+      (preDir !== undefined ? ` --dir ${commandQuoted(preDir)}` : ""),
     actor,
     persistActor: true,
     // Board self-attribution (PR C): fires only after the expect-absent CAS create persisted.
@@ -718,7 +705,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
       });
     }
     try {
-      const added = await addLink(bundle, saved.id, target, { text: type, remoteUrl: remote, actor });
+      const added = await addLink(bundle, saved.id, target, { text: type, actor });
       finalVersion = added.version;
       if (added.warnings) warnings.push(...added.warnings);
       linkResults.push({
@@ -730,7 +717,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
       });
       satisfiedOutboundTypes.add(type);
     } catch (err) {
-      const classified = classifyBundleError(err, remote);
+      const classified = classifyBundleError(err);
       linkResults.push({
         type,
         target,

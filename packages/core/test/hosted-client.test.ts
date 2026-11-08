@@ -85,11 +85,10 @@ const json = (body: unknown, status = 200) => Response.json(body, { status });
 
 // ── target ─────────────────────────────────────────────────────────────────────────────────
 
-test("syncRoutePrefix: the API audience, an agent connection, and no family for anything else", () => {
+test("syncRoutePrefix: the API audience, and no family for anything else", () => {
   assert.equal(syncRoutePrefix({ origin: ORIGIN, audience: `${ORIGIN}/mcp` }), "/sync/v1");
-  const agent = "/agents/0b5c8a2e-1f3d-4c6b-9a7e-2d4f6b8a0c1e";
-  assert.equal(syncRoutePrefix({ origin: ORIGIN, audience: `${ORIGIN}${agent}/mcp` }), `${agent}/sync/v1`);
-  assert.equal(syncRoutePrefix({ origin: ORIGIN, audience: `${ORIGIN}/agents/not-a-uuid/mcp` }), null);
+  // The retired per-agent audience has no sync family.
+  assert.equal(syncRoutePrefix({ origin: ORIGIN, audience: `${ORIGIN}/agents/0b5c8a2e-1f3d-4c6b-9a7e-2d4f6b8a0c1e/mcp` }), null);
   assert.equal(syncRoutePrefix({ origin: ORIGIN, audience: `${ORIGIN}/other` }), null);
 });
 
@@ -127,7 +126,7 @@ test("qualifyingCarrier: a raw body to a bundle-scoped route is refused; an unsc
 });
 
 test("qualifyingCarrier: only exact blob upload routes qualify one bare bundle header and preserve every other request option", async () => {
-  for (const prefix of ["/sync/v1", "/agents/0b5c8a2e-1f3d-4c6b-9a7e-2d4f6b8a0c1e/sync/v1"]) {
+  for (const prefix of ["/sync/v1"]) {
     const signal = new AbortController().signal, body = new Uint8Array([0, 255, 128, 13, 10]);
     const seen: {route: string; bytes: Uint8Array; signal: AbortSignal; options: any}[] = [];
     const inner = {json: async () => assert.fail("json"), stream: async () => assert.fail("stream"), bytes: async (route: string, bytes: Uint8Array, signal: AbortSignal, options: any) => {
@@ -173,15 +172,6 @@ test("qualifyingCarrier: only exact blob upload routes qualify one bare bundle h
       assert.equal(request.headers.get("x-superbee-via"), "codex");
     }
   }
-});
-
-test("an agent-connection prefix routes every request under it", async () => {
-  const prefix = "/agents/0b5c8a2e-1f3d-4c6b-9a7e-2d4f6b8a0c1e/sync/v1";
-  const { fetch, sent } = serving({ whoami: "whoami-200" });
-  const client = clientOf(fetch, { target: { origin: ORIGIN, syncPrefix: prefix } });
-  assert.equal(client.prefix, prefix);
-  await client.whoami();
-  assert.equal(sent[0]?.path, `${prefix}/whoami`);
 });
 
 test("a malformed sync prefix or a missing credential provider is refused at construction", () => {

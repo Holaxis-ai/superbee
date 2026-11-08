@@ -17,6 +17,12 @@ export interface SyncCliDeps {
   writeStdoutBytes: (data: Uint8Array) => void;
   /** The installed-hook probe behind the one-time onboarding hint (default hook.ts's {@link hookInstalled}). */
   hookInstalled: () => boolean;
+  /**
+   * An absolute time (epoch ms) by which this sync's fetch and push must end. A caller running
+   * under an outer kill (the Stop hook) passes it so sync reports instead of being cut off; a
+   * person's own sync leaves it unset and gets the ordinary per-op budgets.
+   */
+  networkDeadline: number;
 }
 
 /**

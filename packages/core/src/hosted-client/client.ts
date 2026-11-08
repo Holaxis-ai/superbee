@@ -94,15 +94,14 @@ import {
 
 const IDENTITY_BYTES = 64 * 1024;
 const BUNDLES_BYTES = 256 * 1024;
-const AGENT_AUDIENCE_PATH = /^\/agents\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/mcp$/;
 
 /** Where a hosted client sends its requests. */
 export interface HostedClientTarget {
   /** The host's origin, such as `https://mcp.getsuperbee.com`; routes resolve against it. */
   readonly origin: string;
   /**
-   * The sync family's path prefix: `/sync/v1` for the Superbee API, or `/agents/<id>/sync/v1` for
-   * an agent connection. {@link syncRoutePrefix} derives it from a protected-resource audience.
+   * The sync family's path prefix, `/sync/v1` for the Superbee API. {@link syncRoutePrefix}
+   * derives it from a protected-resource audience.
    */
   readonly syncPrefix: string;
 }
@@ -302,17 +301,13 @@ export interface HostedClient {
 
 /**
  * The sync family under a protected resource's audience: `/sync/v1` for the Superbee API
- * (`<origin>/mcp`), `/agents/<uuid>/sync/v1` for an agent connection. Null for any other
- * audience, which has no sync family.
+ * (`<origin>/mcp`). Null for any other audience, which has no sync family.
  */
 export function syncRoutePrefix(resource: { readonly origin: string; readonly audience: string }): string | null {
   const { origin, audience } = resource;
   // The audience must be on the origin itself, not on another host whose name merely starts the same.
   if (!audience.startsWith(origin) || (audience.length > origin.length && audience[origin.length] !== "/")) return null;
-  const audiencePath = audience.slice(origin.length);
-  if (audiencePath === "/mcp") return "/sync/v1";
-  if (AGENT_AUDIENCE_PATH.test(audiencePath)) return `${audiencePath.slice(0, -"/mcp".length)}/sync/v1`;
-  return null;
+  return audience.slice(origin.length) === "/mcp" ? "/sync/v1" : null;
 }
 
 function syncReadRoutes(prefix: string): HostedReadRoutes {

@@ -5,43 +5,14 @@
  * whole view — never a banner over stale data, since stale task state under a dead session is
  * actively misleading.
  */
-import { useEffect, useState } from "react";
 import type { InterceptorStatus } from "../query/interceptor.js";
 
-interface UiConfig {
-  mode: "dir" | "remote";
-  remoteUrl: string | null;
-}
-
-/** Best-effort read of the ui server's own local (non-wire-protocol) bootstrap endpoint — see `packages/ui-server/src/server.ts`'s `/__ui/config`. Never throws; falls back to `null` so this screen always renders something. */
-function useUiConfig(): UiConfig | null {
-  const [config, setConfig] = useState<UiConfig | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/__ui/config", { credentials: "same-origin" })
-      .then((res) => (res.ok ? (res.json() as Promise<UiConfig>) : null))
-      .then((c) => {
-        if (!cancelled) setConfig(c);
-      })
-      .catch(() => {
-        /* best-effort — the screen below has a sensible fallback */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  return config;
-}
-
 export function ReloginScreen({ kind }: { kind: Exclude<InterceptorStatus, "ok"> }) {
-  const config = useUiConfig();
-  const remoteUrl = config?.remoteUrl ?? "<url>";
-
   if (kind === "rate_limited") {
     return (
       <div className="relogin-screen" role="alert">
         <h1>Rate limited</h1>
-        <p>Too many requests reached the remote recently. Polling has stopped. Reload this page after a moment.</p>
+        <p>Too many requests reached the server recently. Polling has stopped. Reload this page after a moment.</p>
       </div>
     );
   }
@@ -61,13 +32,11 @@ export function ReloginScreen({ kind }: { kind: Exclude<InterceptorStatus, "ok">
 
   return (
     <div className="relogin-screen" role="alert">
-      <h1>Sign-in required</h1>
+      <h1>Access refused</h1>
       <p>
-        Your API key was rejected or has expired. Polling has stopped. Set <code>SUPERBEE_API_KEY</code> in the
-        environment that launches the CLI, rerun the same <code>ui --remote</code> invocation that opened this page, then
-        open the fresh URL it prints.
+        The server refused this tab&rsquo;s requests. Polling has stopped. Go back to the terminal, rerun the{" "}
+        <code>ui</code> command, then open the fresh URL it prints.
       </p>
-      <p>Remote: <code>{remoteUrl}</code></p>
     </div>
   );
 }

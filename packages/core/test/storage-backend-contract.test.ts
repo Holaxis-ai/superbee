@@ -13,7 +13,6 @@ import { IntentHoldConflict, IntentStateConflict } from "../src/journaled-backen
 import { MemoryBackend } from "../src/memory-backend.js";
 import { RemoteBackend } from "../src/remote-backend.js";
 import type { StorageBackend } from "../src/types.js";
-import { normalizeDocumentBodyForStorage } from "../src/frontmatter.js";
 import { contentVersion, VersionConflict, versionOfBytes } from "../src/versioning.js";
 import { registerJournaledBackendContract } from "./journaled-backend-contract.js";
 import {
@@ -71,23 +70,6 @@ const CONTRACTS = [
   { name: REMOTE_CONTRACT_SUBJECT, create: remoteFixture, retention: "retained" as const, localYamlValues: false },
   { name: "IndexedDbBackend", create: indexedDbFixture, retention: "current-only" as const, localYamlValues: true },
 ];
-
-test("MemoryBackend frontmatter read contract: metadata decoding does not reinterpret delimiter-leading bodies", async () => {
-  const backend = new MemoryBackend();
-  for (const [index, body] of ["---\nvalue: body text\n---\nbody", "\uFEFF---\nvalue: body text\n---\nbody"].entries()) {
-    const value = { id: `metadata/body-${index}`, frontmatter: {}, body };
-    const version = await backend.write(value.id, value);
-    assert.equal(version, contentVersion(value));
-    for (const read of [await backend.read(value.id), ...(await backend.readMany([value.id]))]) {
-      assert.equal(read.version, version);
-      assert.deepEqual(read.doc.frontmatter, {});
-      // The delimiter-leading body survives INTACT — only the serializer's trailing newline is
-      // added, the same canonical shape every adapter reports (see the base contract's
-      // serialized-body row). No part of it is re-read as metadata.
-      assert.equal(read.doc.body, normalizeDocumentBodyForStorage(body));
-    }
-  }
-});
 
 test("MemoryBackend frontmatter read contract: returned metadata and version describe the same getter snapshot", async () => {
   const backend = new MemoryBackend();

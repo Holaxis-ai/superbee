@@ -15,7 +15,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { initBundle, readDoc, readBlob, writeDoc, writeBlob, readDocVersioned } from "@superbee/core";
-import { serve, type ServerHandle } from "@superbee/server";
 
 import { deleteCommand, type DeleteCliDeps } from "../src/commands/delete.js";
 import { docDelete } from "../src/commands/doc/delete.js";
@@ -27,7 +26,7 @@ import { testInvocation } from "./support/command-prefix.js";
 const OLD_TS = "2020-01-01T00:00:00.000Z";
 
 async function withDeleteActorEnv<T>(env: NodeJS.ProcessEnv, run: () => Promise<T>): Promise<T> {
-  const keys = ["SUPERBEE_ACTOR", "AGENTSTATE_LITE_ACTOR"] as const;
+  const keys = ["SUPERBEE_ACTOR"] as const;
   const before = keys.map(key => process.env[key]);
   for (const key of keys) {
     if (env[key] === undefined) delete process.env[key];
@@ -50,12 +49,10 @@ for (const surface of DOCUMENT_DELETE_SURFACES) {
   for (const row of [
     { name: "v0.1 free-form configured actor", edition: "0.1", env: { SUPERBEE_ACTOR: "legacy name" }, flags: [], refused: false },
     { name: "v0.2 canonical environment actor", edition: "0.2", env: { SUPERBEE_ACTOR: "human:canonical" }, flags: [], refused: false },
-    { name: "v0.2 legacy environment actor", edition: "0.2", env: { AGENTSTATE_LITE_ACTOR: "human:legacy" }, flags: [], refused: false },
-    { name: "explicit actor overrides environment", edition: "0.2", env: { SUPERBEE_ACTOR: "invalid", AGENTSTATE_LITE_ACTOR: "also invalid" }, flags: ["--actor", "human:explicit"], refused: false },
+    { name: "explicit actor overrides environment", edition: "0.2", env: { SUPERBEE_ACTOR: "invalid" }, flags: ["--actor", "human:explicit"], refused: false },
     { name: "missing actor is allowed", edition: "0.2", env: {}, flags: [], refused: false },
     { name: "invalid configured actor", edition: "0.2", env: { SUPERBEE_ACTOR: "invalid" }, flags: [], refused: true },
     { name: "blank configured actor", edition: "0.2", env: { SUPERBEE_ACTOR: " " }, flags: [], refused: true },
-    { name: "conflicting configured actors", edition: "0.2", env: { SUPERBEE_ACTOR: "human:one", AGENTSTATE_LITE_ACTOR: "human:two" }, flags: [], refused: true },
     { name: "blank explicit actor", edition: "0.2", env: {}, flags: ["--actor", " "], refused: true },
     { name: "invalid configured actor still refuses absence", edition: "0.2", env: { SUPERBEE_ACTOR: "invalid" }, flags: [], refused: true, absent: true },
   ] as const) {
@@ -96,10 +93,10 @@ for (const surface of DOCUMENT_DELETE_SURFACES) {
   });
 }
 
-test("delete blob route ignores invalid, blank and conflicting document attribution", async () => {
+test("delete blob route ignores invalid and blank document attribution", async () => {
   const { dir, cleanup } = await makeBundle();
   try {
-    for (const env of [{ SUPERBEE_ACTOR: "invalid" }, { SUPERBEE_ACTOR: " " }, { SUPERBEE_ACTOR: "human:one", AGENTSTATE_LITE_ACTOR: "human:two" }]) {
+    for (const env of [{ SUPERBEE_ACTOR: "invalid" }, { SUPERBEE_ACTOR: " " }] as NodeJS.ProcessEnv[]) {
       await writeBlob({ root: dir }, "keep.bin", new Uint8Array([1, 2, 3]));
       const receipt = await withDeleteActorEnv(env, () => runDelete(["--doc-key", "keep.bin", "--dir", dir, "--actor", " "]));
       assert.equal(receipt.route, "blob");
@@ -131,11 +128,6 @@ async function runDelete(argv: string[], deps: Partial<DeleteCliDeps> = {}): Pro
   let out = "";
   await deleteCommand([...argv, "--json"], { stdout: (s) => (out += s), ...deps });
   return JSON.parse(out) as Record<string, unknown>;
-}
-
-async function bootServer(dir: string): Promise<{ url: string; close: () => Promise<void> }> {
-  const handle: ServerHandle = await serve({ bundle: { root: dir }, port: 0 });
-  return { url: `http://${handle.host}:${handle.port}`, close: () => handle.close() };
 }
 
 // ── doc route ──────────────────────────────────────────────────────────────
@@ -295,41 +287,6 @@ test("delete --help: prints usage and does not touch a bundle", async () => {
   let out = "";
   await deleteCommand(["--help"], { stdout: (s) => (out += s) });
   assert.match(out, /superbee delete/);
-});
-
-// ── --remote parity ────────────────────────────────────────────────────────
-
-test("delete --doc-key --remote: round-trip parity with the same operation run locally via --dir (doc + blob routes)", async () => {
-  const localDir = await tempDir();
-  const remoteDir = await tempDir();
-  try {
-    await initBundle(localDir);
-    await initBundle(remoteDir);
-    for (const root of [localDir, remoteDir]) {
-      await writeDoc({ root }, { id: "concepts/a", frontmatter: { type: "Concept", timestamp: OLD_TS }, body: "x" });
-      await writeBlob({ root }, "artifacts/b.bin", new TextEncoder().encode("y"));
-    }
-    const server = await bootServer(remoteDir);
-    try {
-      const localDoc = await runDelete(["--doc-key", "concepts/a.md", "--dir", localDir]);
-      const remoteDoc = await runDelete(["--doc-key", "concepts/a.md", "--remote", server.url]);
-      assert.equal(remoteDoc.deleted, localDoc.deleted);
-      assert.equal(remoteDoc.deleted, true);
-
-      const localBlob = await runDelete(["--doc-key", "artifacts/b.bin", "--dir", localDir]);
-      const remoteBlob = await runDelete(["--doc-key", "artifacts/b.bin", "--remote", server.url]);
-      assert.equal(remoteBlob.deleted, localBlob.deleted);
-      assert.equal(remoteBlob.deleted, true);
-
-      await assert.rejects(() => readDoc({ root: remoteDir }, "concepts/a"));
-      assert.equal(await readBlob({ root: remoteDir }, "artifacts/b.bin"), null);
-    } finally {
-      await server.close();
-    }
-  } finally {
-    await rm(localDir, { recursive: true, force: true });
-    await rm(remoteDir, { recursive: true, force: true });
-  }
 });
 
 // ── registration ─────────────────────────────────────────────────────────────

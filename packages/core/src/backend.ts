@@ -77,7 +77,7 @@ import type {
   VersionInfo,
   WriteOptions,
 } from "./types.js";
-import type { FilesystemBackendOptions } from "./filesystem-host.js";
+import type { FilesystemBackendOptions, FilesystemHostPolicy } from "./filesystem-host.js";
 
 const publicationContexts = new WeakMap<FilesystemBackend, { root: string; port: FilesystemIdentityPort }>();
 
@@ -150,6 +150,16 @@ function reservedPath(dir: string, name: ReservedFilename): string {
  * absolute directory. Concept documents are markdown files at `<id>.md`; reserved
  * files live at `<dir>/index.md` and `<dir>/log.md`.
  */
+/**
+ * Run `body` holding the root lock every backend write to the bundle at `root` holds, for an outside
+ * step that moves files under the root (a Git rebase, say), so writes land before or after it,
+ * never inside it. `body` receives no capability and must not write through a backend for the same
+ * root: that write would wait on this lock.
+ */
+export function withFilesystemRootMutationLock<T>(root: string, body: () => Promise<T>, hostPolicy?: FilesystemHostPolicy): Promise<T> {
+  return createFilesystemMutationCoordinator(createNodeFilesystemIdentityPort(hostPolicy), path.resolve(root), hostPolicy).run(body);
+}
+
 export class FilesystemBackend implements StorageBackend {
   readonly #root: string;
   readonly #port: FilesystemIdentityPort;

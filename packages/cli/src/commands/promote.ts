@@ -38,9 +38,8 @@ import { renderUsage } from "../output.js";
 // A6/A9 context: for a LOCAL `--dir` bundle this is a convenience only — the files ARE the store
 // (local-first) — but routing a `.md` file through the engine still doubles as IMPORT+NORMALIZE
 // (frontmatter key order, edition-aware metadata policy, kind validation),
-// exactly as `doc write` would.
-// Over `--remote`, the verbs are load-bearing: there is no other way to get bytes into a served
-// bundle. Principle: commands are the control channel, files are the content channel.
+// exactly as `doc write` would. Principle: commands are the control channel, files are the content
+// channel.
 import { parseArgs } from "node:util";
 import {
   writeBlob,
@@ -51,7 +50,7 @@ import {
   VersionConflict,
   type Bundle,
 } from "@superbee/core";
-import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { openBundle } from "../bundle.js";
 import { CliError, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -89,8 +88,7 @@ as IMPORT+NORMALIZE (edition-aware frontmatter normalization and kind validation
 write'. Current v0.2 creates seed generated metadata when a usable clock is absent; meaningful
 edits update content provenance, while no-ops preserve the stored version, clocks and attribution.
 Unknown metadata and semantic title values survive normalization; source YAML quoting may change.
-Explicit v0.1 bundles retain their historical defaulted timestamp. Over --remote it is load-bearing:
-there is no other way to get bytes into a served bundle.
+Explicit v0.1 bundles retain their historical defaulted timestamp.
 
 In a hosted checkout, an ordinary-file source must already be the canonical target pathname
 inside that checkout. Its frozen bytes and MIME are durable before authentication; an unchanged
@@ -111,8 +109,7 @@ Options:
                             key's extension, else application/octet-stream (hosted replacement preserves observed MIME)
   --expected-version <v>   Compare-and-swap token from a prior pull/promote receipt (omit = expect-
                             absent create; see CAS above)
-  --actor <actor>          Revision attribution: --actor overrides environment; SUPERBEE_ACTOR and
-                            legacy AGENTSTATE_LITE_ACTOR must agree when both are set. Blank values
+  --actor <actor>          Revision attribution: --actor overrides SUPERBEE_ACTOR. Blank values
                             are refused. With neither set, attribution is absent. In v0.2, use
                             human:<id>, process:<id>, or <producer>/<version>. Local/wire blobs
                             forward attribution to storage; filesystem blobs have no actor history.
@@ -134,8 +131,6 @@ Options:
                             written; keep the link in the file, or pass this to drop it deliberately.
                             The expect-absent CREATE route is never guarded.
   --dir <path>              Bundle directory (default: discovered from the cwd)
-  --remote <url>            Talk to a wire-protocol server instead of a local bundle (mutually
-                            exclusive with --dir; remote access is always explicit)
   --json                    Emit compact JSON instead of TOON
   -h, --help                Show this help
 `;
@@ -168,7 +163,6 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
           strict: { type: "boolean" },
           actor: { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -218,10 +212,9 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
     }
   }
 
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
   const home = deps.hosted?.auth?.home ?? deps.home ?? homedir(), cwd = deps.cwd ?? deps.hosted?.cwd ?? process.cwd();
   if (deps.home !== undefined && deps.hosted?.auth !== undefined && deps.home !== deps.hosted.auth.home) throw new CliError("USAGE", "offline admission and hosted delivery must use the same private-state home");
-  if (!remote && !docRoute) {
+  if (!docRoute) {
     const pending = await admitOfflineBlob({ operation: "promote", key, ...(values.actor === undefined ? {} : { explicitActor: values.actor }), ...(values.dir === undefined ? {} : { dir: values.dir }), source: file, ...(values["expected-version"] === undefined ? {} : { expectedVersion: values["expected-version"] }), ...(values["content-type"] === undefined ? {} : { contentType: values["content-type"] }), home, cwd });
     if (pending) {
       const { finishAdmittedBlob } = await import("../hosted/sync.js");
@@ -231,7 +224,7 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
     }
   }
   const actor = resolveActor(values.actor, { help: `${cliInvocation()} promote <file> --doc-key <key> --actor <actor>` });
-  const bundle = await openBundle(values.dir, remote);
+  const bundle = await openBundle(values.dir);
   const mode = resolveMode(values);
   // I9: promote v1 supports token-CAS only via --expected-version; omitting it means EXPECT-ABSENT
   // create (null), never an unconditional last-writer-wins overwrite.
@@ -251,11 +244,10 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
       },
       stdout,
       mode,
-      values.remote,
     );
     return;
   }
-  await promoteBlob(file, key, bundle, { expectedVersion, contentType: values["content-type"], actor }, stdout, mode, values.remote);
+  await promoteBlob(file, key, bundle, { expectedVersion, contentType: values["content-type"], actor }, stdout, mode);
 }
 
 async function promoteDoc(
@@ -265,7 +257,6 @@ async function promoteDoc(
   opts: { expectedVersion: string | null; actor?: string; strict: boolean; acceptTruncatedBody: boolean; replaceLinks: boolean },
   stdout: (s: string) => void,
   mode: OutputMode,
-  remoteUrl?: string,
 ): Promise<void> {
   let raw: string;
   try {
@@ -304,7 +295,6 @@ async function promoteDoc(
       mode: opts.expectedVersion === null ? "create-only" : "replace-document",
       onAbsent: "create",
       registry,
-      remoteUrl,
       actor: opts.actor,
       strict: opts.strict,
       helpOnKindReject: `${cliInvocation()} kinds`,
@@ -317,12 +307,12 @@ async function promoteDoc(
       // Retain source clock spellings until the current mutation edition is known on each attempt.
       buildCandidate: (_existing, context) => parseMarkdown(raw, file, { okfVersion: context.okfVersion }),
       errors: {
-        alreadyExists: (error) => promoteWriteErrorToCliError(error, key, file, remoteUrl),
-        staleHead: (error) => promoteWriteErrorToCliError(error, key, file, remoteUrl),
+        alreadyExists: (error) => promoteWriteErrorToCliError(error, key, file),
+        staleHead: (error) => promoteWriteErrorToCliError(error, key, file),
       },
     });
   } catch (err) {
-    throw promoteWriteErrorToCliError(err, key, file, remoteUrl);
+    throw promoteWriteErrorToCliError(err, key, file);
   }
 
   const receipt: Record<string, unknown> = {
@@ -350,7 +340,6 @@ async function promoteBlob(
   opts: { expectedVersion: string | null; contentType: string | undefined; actor?: string },
   stdout: (s: string) => void,
   mode: OutputMode,
-  remoteUrl?: string,
 ): Promise<void> {
   await assertActorAcceptedByBundle(bundle, opts.actor);
   let bytes: Buffer;
@@ -364,7 +353,7 @@ async function promoteBlob(
   try {
     version = await writeBlob(bundle, key, bytes, opts.contentType, { expectedVersion: opts.expectedVersion, actor: opts.actor });
   } catch (err) {
-    throw promoteWriteErrorToCliError(err, key, file, remoteUrl);
+    throw promoteWriteErrorToCliError(err, key, file);
   }
 
   const receipt: Record<string, unknown> = {
@@ -400,7 +389,7 @@ function promoteFileReadError(err: unknown, file: string): CliError {
  * `new` uses; a stale explicit token maps to `STALE_HEAD` — both are exit 5 (CONFLICT), but the
  * `code` and message differ so an agent (or a human) understands WHICH happened.
  */
-function promoteWriteErrorToCliError(err: unknown, key: string, file: string, remoteUrl?: string): CliError {
+function promoteWriteErrorToCliError(err: unknown, key: string, file: string): CliError {
   if (err instanceof CliError) return err;
   if (err instanceof VersionConflict) {
     const current = err.actual;
@@ -429,5 +418,5 @@ function promoteWriteErrorToCliError(err: unknown, key: string, file: string, re
   // Anything else lands on the one boundary: a typed InvalidInputError (reserved-id, unsafe-id,
   // empty type) → USAGE, a RemoteError by ITS code (AUTH_REQUIRED/FORBIDDEN/…), an unexpected
   // failure → RUNTIME.
-  return classifyBundleError(err, remoteUrl);
+  return classifyBundleError(err);
 }

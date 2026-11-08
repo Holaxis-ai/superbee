@@ -98,8 +98,7 @@ all, and the shell, not the View, enforces it:
 - `access: bundle-read`: a **data view**. The read requests above are answered.
 - `access: bundle-propose`: an **interactive view**. The same reads plus the narrow v1 proposal,
   each proposal confirmed in trusted shell chrome. Start the shell with `superbee ui --actor <name>`
-  (or set `SUPERBEE_ACTOR`; `AGENTSTATE_LITE_ACTOR` remains a supported compatibility input) to
-  enable proposals.
+  (or set `SUPERBEE_ACTOR`) to enable proposals.
 - `access: none`: a **content view**. Every bundle-data request answers `FORBIDDEN` before any
   bundle data is touched. It may still use `open-page` navigation.
 - `bridge` is the legacy spelling of this field and is no longer read: a doc declaring only the

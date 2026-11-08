@@ -11,7 +11,7 @@ import {
   projectKindForAuthoring,
   resolveKindFieldCoordinate,
 } from "@superbee/core";
-import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag } from "../../bundle.js";
+import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, resolveLocalBundleRoute } from "../../bundle.js";
 import { parseDocUpdateTokensOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
 import { assertLeafArity } from "../../positional-arity.js";
@@ -34,7 +34,7 @@ import {
 import { commandToken } from "../../command-text.js";
 import { assertStaleAfterEdition, parseStaleAfter } from "../../stale-after.js";
 
-/** The `doc update` STANDARD patch fields; excludes control flags (--keep-timestamp/--strict/--dir/--remote/…). */
+/** The `doc update` STANDARD patch fields; excludes control flags (--keep-timestamp/--strict/--dir/…). */
 const DOC_UPDATE_FIELD_FLAGS = ["title", "description", "type", "stale-after", "body", "body-file"] as const;
 
 /** `doc update` standard value flags that consume the next token (or `=value`) as a single string. */
@@ -120,7 +120,6 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
           body: { type: "string" },
           "body-file": { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           "expected-version": { type: "string" },
           actor: { type: "string" },
           "keep-timestamp": { type: "boolean" },
@@ -306,10 +305,9 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     );
   }
 
-  const remote = await resolveRemoteFlag(p.remote, p.dir);
-  const route = remote === undefined ? await resolveLocalBundleRoute(p.dir) : undefined;
-  const bundle = route?.bundle ?? await openBundle(p.dir, remote);
-  if (route) await assertResolvedLocalRouteIdentity(route);
+  const route = await resolveLocalBundleRoute(p.dir);
+  const bundle = route.bundle;
+  await assertResolvedLocalRouteIdentity(route);
   id = await resolveConceptIdCliArgument(bundle, rawId);
   const mode = resolveMode({ json: p.json });
 
@@ -335,7 +333,6 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     mode: "patch",
     onAbsent: "fail",
     registry,
-    remoteUrl: p.remote,
     strict,
     helpOnKindReject: `${cliInvocation()} kinds`,
     actor,

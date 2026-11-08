@@ -1,9 +1,8 @@
 import { isOkfActor, readBundleOkfVersion, type Bundle } from "@superbee/core";
 import { CliError } from "./errors.js";
 import { actorRefusal } from "./actor-guidance.js";
-import { LEGACY_ACTOR_ENV, SUPERBEE_ACTOR_ENV, resolveCompatibleScalarEnv } from "./env-policy.js";
+import { SUPERBEE_ACTOR_ENV, resolveScalarEnv } from "./env-policy.js";
 
-export const ACTOR_ENV = LEGACY_ACTOR_ENV;
 export { SUPERBEE_ACTOR_ENV };
 
 export interface ResolveActorOptions {
@@ -16,9 +15,8 @@ export interface ResolveActorOptions {
 /** Resolve advisory attribution once at the CLI boundary: explicit flag > environment > absent. */
 export function resolveActor(explicit: string | undefined, opts: ResolveActorOptions = {}): string | undefined {
   if (explicit === undefined) {
-    return resolveCompatibleScalarEnv({
-      canonical: SUPERBEE_ACTOR_ENV,
-      legacy: ACTOR_ENV,
+    return resolveScalarEnv({
+      name: SUPERBEE_ACTOR_ENV,
       label: "actor identity",
       env: opts.env,
       help: opts.help,

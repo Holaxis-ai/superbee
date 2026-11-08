@@ -3,8 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { initBundle, loadKinds, parseMarkdown, prepareDocumentMutationCandidate, readDoc, stringifyDoc, MemoryBackend, type WriteOptions, type Frontmatter } from "@superbee/core";
-import { serve } from "@superbee/server";
+import { initBundle, loadKinds, parseMarkdown, prepareDocumentMutationCandidate, readDoc, stringifyDoc, type Frontmatter } from "@superbee/core";
 import { promote } from "../src/commands/promote.js";
 import { pull } from "../src/commands/pull.js";
 
@@ -18,24 +17,19 @@ async function run(argv: string[]): Promise<Record<string, unknown>> {
 const actorRows = [
   { name: "explicit overrides environment", explicit: " process:explicit ", env: "process:environment", expected: "process:explicit" },
   { name: "canonical environment", env: " process:environment ", expected: "process:environment" },
-  { name: "legacy environment", legacy: "process:legacy", expected: "process:legacy" },
   { name: "default", expected: undefined },
 ] as const;
 
 test("promote attribution agrees with shared policy across edition, actor, create, update and no-op rows", async t => {
-  const saved = { canonical: process.env.SUPERBEE_ACTOR, legacy: process.env.AGENTSTATE_LITE_ACTOR };
+  const saved = process.env.SUPERBEE_ACTOR;
   try {
-    for (const remote of [false, true]) for (const edition of ["0.1", "0.2"] as const) for (const row of actorRows) await t.test(`${remote ? "wire" : "local"} ${edition}: ${row.name}`, async () => {
-      delete process.env.SUPERBEE_ACTOR; delete process.env.AGENTSTATE_LITE_ACTOR;
+    for (const edition of ["0.1", "0.2"] as const) for (const row of actorRows) await t.test(`${edition}: ${row.name}`, async () => {
+      delete process.env.SUPERBEE_ACTOR;
       if ("env" in row) process.env.SUPERBEE_ACTOR = row.env;
-      if ("legacy" in row) process.env.AGENTSTATE_LITE_ACTOR = row.legacy;
       const dir = await mkdtemp(path.join(tmpdir(), "promote-attribution-"));
-      let close: (() => Promise<void>) | undefined;
       try {
         const bundle = await initBundle(path.join(dir, "bundle"), { okfVersion: edition });
-        const server = remote ? await serve({ bundle, port: 0 }) : undefined;
-        close = server ? () => server.close() : undefined;
-        const target = server ? ["--remote", `http://${server.host}:${server.port}`] : ["--dir", bundle.root];
+        const target = ["--dir", bundle.root];
         const registry = await loadKinds(bundle);
         const file = path.join(dir, "source.md");
         const frontmatter: Frontmatter = { type: "Spec", title: 'A "quoted": title', x_unknown: { nested: ["kept", 7] },
@@ -68,45 +62,10 @@ test("promote attribution agrees with shared policy across edition, actor, creat
           if (phase === "no-op") { assert.equal(receipt.version, version); assert.deepEqual(stored, previous); assert.equal(prepared.changed, false); }
           previous = stored; version = receipt.version as string;
         }
-      } finally { await close?.(); await rm(dir, { recursive: true, force: true }); }
+      } finally { await rm(dir, { recursive: true, force: true }); }
     });
   } finally {
-    if (saved.canonical === undefined) delete process.env.SUPERBEE_ACTOR; else process.env.SUPERBEE_ACTOR = saved.canonical;
-    if (saved.legacy === undefined) delete process.env.AGENTSTATE_LITE_ACTOR; else process.env.AGENTSTATE_LITE_ACTOR = saved.legacy;
-  }
-});
-
-test("promote blob forwards actor/CAS through wire storage and leaves byte identity unchanged", async t => {
-  const saved = { canonical: process.env.SUPERBEE_ACTOR, legacy: process.env.AGENTSTATE_LITE_ACTOR };
-  try {
-    for (const edition of ["0.1", "0.2"] as const) for (const row of actorRows) await t.test(`${edition}: ${row.name}`, async () => {
-      delete process.env.SUPERBEE_ACTOR; delete process.env.AGENTSTATE_LITE_ACTOR;
-      if ("env" in row) process.env.SUPERBEE_ACTOR = row.env;
-      if ("legacy" in row) process.env.AGENTSTATE_LITE_ACTOR = row.legacy;
-      const backend = new MemoryBackend(), seen: WriteOptions[] = [];
-      await backend.writeReserved("", "index.md", `---\nokf_version: '${edition}'\n---\n# Test\n`);
-      const original = backend.writeBlob.bind(backend);
-      backend.writeBlob = async (key, bytes, mime, options = {}) => { seen.push(options); return original(key, bytes, mime, options); };
-      const server = await serve({ bundle: { root: "mem://promote-actor", backend }, port: 0 });
-      const dir = await mkdtemp(path.join(tmpdir(), "promote-blob-actor-"));
-      try {
-        const file = path.join(dir, "blob.bin"); await writeFile(file, "first");
-        const args = [file, "--doc-key", "blob.bin", "--remote", `http://${server.host}:${server.port}`, ...("explicit" in row ? ["--actor", row.explicit] : [])];
-        const created = await run(args);
-        assert.equal(seen.at(-1)?.expectedVersion, null);
-        assert.equal(seen.at(-1)?.actor, row.expected ?? "unknown");
-        await writeFile(file, "second");
-        const updated = await run([...args, "--expected-version", created.version as string]);
-        assert.equal(seen.at(-1)?.expectedVersion, created.version);
-        assert.equal(seen.at(-1)?.actor, row.expected ?? "unknown");
-        const unchanged = await run([...args, "--expected-version", updated.version as string]);
-        assert.equal(unchanged.version, updated.version);
-        assert.deepEqual(Buffer.from((await backend.readBlob("blob.bin"))!.bytes), Buffer.from("second"));
-      } finally { await server.close(); await rm(dir, { recursive: true, force: true }); }
-    });
-  } finally {
-    if (saved.canonical === undefined) delete process.env.SUPERBEE_ACTOR; else process.env.SUPERBEE_ACTOR = saved.canonical;
-    if (saved.legacy === undefined) delete process.env.AGENTSTATE_LITE_ACTOR; else process.env.AGENTSTATE_LITE_ACTOR = saved.legacy;
+    if (saved === undefined) delete process.env.SUPERBEE_ACTOR; else process.env.SUPERBEE_ACTOR = saved;
   }
 });
 

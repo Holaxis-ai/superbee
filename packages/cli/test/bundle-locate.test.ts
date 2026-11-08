@@ -8,7 +8,6 @@ import { initBundle } from "@superbee/core";
 
 import {
   openBundle,
-  PROJECT_BINDING_FILE_NAME,
   SUPERBEE_PROJECT_BINDING_FILE_NAME,
 } from "../src/bundle.js";
 import { bundleCommand } from "../src/commands/bundle.js";
@@ -35,7 +34,7 @@ test("bundle locate: explicit --dir wins and identifies the same physical root o
     const project = path.join(root, "project");
     await mkdir(project);
     await initBundle(path.join(project, ".agentstate-lite"));
-    await writeFile(path.join(project, PROJECT_BINDING_FILE_NAME), JSON.stringify({ bundle: ".agentstate-lite" }));
+    await writeFile(path.join(project, SUPERBEE_PROJECT_BINDING_FILE_NAME), JSON.stringify({ bundle: ".agentstate-lite" }));
 
     const receipt = await runJson(["locate", "--dir", linked], project);
     assert.deepEqual(receipt, {

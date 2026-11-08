@@ -4,11 +4,11 @@ import { renderUsage } from "../output.js";
 // Blobs are opaque byte artifacts (generated HTML, images, binary assets) addressed by key — the
 // non-'.md' half of the store that 'promote'/'pull'/'delete --doc-key' operate on ONE key at a time.
 // This is their enumeration surface, symmetric with `list`/`query` for documents: `listBlobs` already
-// exists on the StorageBackend seam AND on RemoteBackend + the wire (GET /blobs), so this command is a
-// thin, backend-agnostic consumer — it rides `--remote` for free, exactly like `list`.
+// exists on the StorageBackend seam, so this command is a thin, backend-agnostic consumer, exactly
+// like `list`.
 import { parseArgs } from "node:util";
 import { listBlobs } from "@superbee/core";
-import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { openBundle } from "../bundle.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
@@ -18,7 +18,7 @@ import { cliInvocation } from "../invocation.js";
 export const BLOBS_USAGE = `superbee blobs — list the store's blob (non-document) keys
 
 Usage:
-  superbee blobs [--prefix <p>] [--limit <n>] [--dir <path> | --remote <url>]
+  superbee blobs [--prefix <p>] [--limit <n>] [--dir <path>]
 
 Blobs are opaque byte artifacts (generated HTML, images, …) addressed by key — the non-'.md' half
 of the store that 'promote'/'pull'/'delete --doc-key' operate on individually. This lists their
@@ -29,8 +29,6 @@ Options:
   --limit <n>     Cap the number of keys returned (default: 100; 0 = unlimited). A truncated result
                   reports 'shown' alongside the total 'count'.
   --dir <path>    Bundle directory (default: discovered from the cwd)
-  --remote <url>  Talk to a wire-protocol server instead of a local bundle
-                  (mutually exclusive with --dir; remote access is always explicit)
   --json          Emit compact JSON instead of TOON
   -h, --help      Show this help
 `;
@@ -50,7 +48,6 @@ export async function blobs(argv: string[], deps: Partial<BlobsCliDeps> = {}): P
           prefix: { type: "string" },
           limit: { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -76,7 +73,7 @@ export async function blobs(argv: string[], deps: Partial<BlobsCliDeps> = {}): P
     limit = Number(raw);
   }
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir);
   const keys = (await listBlobs(bundle, values.prefix?.trim() || undefined)).slice().sort();
 
   const total = keys.length;

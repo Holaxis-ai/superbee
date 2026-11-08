@@ -239,8 +239,7 @@ export function toEnvelope(err: CliError): ErrorEnvelope {
  *    with `details.frontmatter` carrying its stable `code` and the `document` when known.
  *  - `VersionConflict` that escaped a call site's own translation -> STALE_HEAD (5), with
  *    `{expected, actual}` details.
- *  - `RemoteError` -> by ITS server-derived `code`: AUTH_REQUIRED -> exit 4 with an
- *    `SUPERBEE_API_KEY` fixing hint; RUNTIME and VERSION_MISSING (a 5xx, or an
+ *  - `RemoteError` -> by ITS server-derived `code`: AUTH_REQUIRED -> exit 4; RUNTIME and VERSION_MISSING (a 5xx, or an
  *    intermediary stripping the version header — retry/report, not a caller mistake) -> RUNTIME
  *    (1); FORBIDDEN -> FORBIDDEN (USAGE's exit 2, distinct code — re-authenticating grants no
  *    role); NOT_FOUND -> NOT_FOUND (6); LAST_ADMIN -> LAST_ADMIN (CONFLICT's exit 5). An
@@ -261,7 +260,7 @@ export function frontmatterDetails(err: MalformedDocumentError): Record<string, 
   return { frontmatter: { code: err.code, ...(err.context !== undefined ? { document: err.context } : {}) } };
 }
 
-export function classifyBundleError(err: unknown, remoteUrl?: string): CliError {
+export function classifyBundleError(err: unknown): CliError {
   if (err instanceof CliError) return err;
   if (isBoardGitError(err)) return cliErrorFromBoardGit(err);
   if (err instanceof RecipeLifecycleError) return cliErrorFromRecipeLifecycle(err);
@@ -284,11 +283,7 @@ export function classifyBundleError(err: unknown, remoteUrl?: string): CliError 
   }
   if (err instanceof RemoteError) {
     if (err.code === "AUTH_REQUIRED") {
-      return new CliError("AUTH_REQUIRED", err.message, {
-        help:
-          `set SUPERBEE_API_KEY=<key> and retry the same command against --remote ${remoteUrl ? commandToken(remoteUrl) : commandLiteral("<url>")}; ` +
-          "an already-provisioned stored per-origin credential is also accepted",
-      });
+      return new CliError("AUTH_REQUIRED", err.message);
     }
     if (err.code === "RUNTIME" || err.code === "VERSION_MISSING") {
       return new CliError("RUNTIME", err.message);

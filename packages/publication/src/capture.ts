@@ -18,7 +18,7 @@ import {
   readRawFilesystemReserved,
 } from "@superbee/core/publication-filesystem";
 import { parseRegistration, resolveDeclaredAccess } from "@superbee/core/page";
-import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
+import { renderDocumentToStaticHtml, renderMarkdownToStaticHtml } from "@superbee/markdown-renderer/static";
 import { admitActiveView } from "@superbee/view-runtime";
 
 import { canonicalJson } from "./canonical-json.js";
@@ -28,8 +28,10 @@ import {
   PUBLICATION_BRIDGE_V0,
   type CapturePublicationSnapshotOptionsV1,
   type PublicationJsonValue,
+  type PublicationCapturedSnapshotHandleV1,
   type PublicationObjectRefV1,
-  type PublicationSnapshotHandleV1,
+  type PublicationRenderDocumentOptionsV1,
+  type PublicationRenderedDocumentV1,
   type PublicationSnapshotV1,
 } from "./types.js";
 
@@ -253,7 +255,19 @@ async function readInventory(
   return { documents, reserved, blobs };
 }
 
-class SnapshotHandle implements PublicationSnapshotHandleV1 {
+function parseDocumentSource(bytes: Uint8Array, id: string, okfEdition: string): ReturnType<typeof parseMarkdown> {
+  try {
+    const raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return parseMarkdown(raw, `${id}.md`, { okfVersion: okfEdition });
+  } catch (error) {
+    throw new PublicationError("MALFORMED_DOCUMENT", "a publication document is malformed", {
+      subject: id,
+      cause: error,
+    });
+  }
+}
+
+class SnapshotHandle implements PublicationCapturedSnapshotHandleV1 {
   private closed = false;
   private readonly refs: Set<string>;
   private readonly serializedManifest: Uint8Array;
@@ -289,6 +303,25 @@ class SnapshotHandle implements PublicationSnapshotHandleV1 {
       throw new PublicationError("OBJECT_DIGEST_MISMATCH", "the snapshot object no longer matches its reference", { subject: ref.digest });
     }
     return bytes.slice();
+  }
+
+  async renderDocument(
+    id: string,
+    options: PublicationRenderDocumentOptionsV1 = {},
+  ): Promise<PublicationRenderedDocumentV1> {
+    if (this.closed) throw new PublicationError("HANDLE_CLOSED", "the publication snapshot handle is closed");
+    const row = this.manifest.documents.find((document) => document.id === id);
+    if (!row) throw new PublicationError("OBJECT_MISSING", "the document is not part of this snapshot", { subject: id });
+    const parsed = parseDocumentSource(await this.readObject(row.source), id, this.manifest.source.okfEdition);
+    try {
+      const rendered = renderMarkdownToStaticHtml(parsed.body, { fromId: id, externalLinks: options.externalLinks });
+      return { html: rendered.html, bounded: rendered.bounded };
+    } catch (error) {
+      throw new PublicationError("RENDER_FAILED", "a publication document could not be rendered", {
+        subject: id,
+        cause: error,
+      });
+    }
   }
 
   serializeManifest(): Uint8Array {
@@ -371,16 +404,7 @@ function buildSnapshot(first: RawInventory): SnapshotHandle {
   }
 
   for (const row of first.documents) {
-    let parsed: ReturnType<typeof parseMarkdown>;
-    try {
-      const raw = new TextDecoder("utf-8", { fatal: true }).decode(row.bytes);
-      parsed = parseMarkdown(raw, `${row.id}.md`, { okfVersion: okfEdition });
-    } catch (error) {
-      throw new PublicationError("MALFORMED_DOCUMENT", "a publication document is malformed", {
-        subject: row.id,
-        cause: error,
-      });
-    }
+    const parsed = parseDocumentSource(row.bytes, row.id, okfEdition);
     if (typeof parsed.frontmatter.type !== "string" || !parsed.frontmatter.type.trim()) {
       throw new PublicationError("MALFORMED_DOCUMENT", "a publication document requires a non-empty type", {
         subject: row.id,
@@ -503,7 +527,7 @@ export interface CapturePublicationRuntimeOptions {
 export async function capturePublicationSnapshot(
   options: CapturePublicationSnapshotOptionsV1,
   runtimeOptions: CapturePublicationRuntimeOptions = {},
-): Promise<PublicationSnapshotHandleV1> {
+): Promise<PublicationCapturedSnapshotHandleV1> {
   if (options.schema !== PUBLICATION_SNAPSHOT_V1) {
     throw new PublicationError("CAPABILITY_UNAVAILABLE", "the requested publication snapshot schema is unsupported");
   }

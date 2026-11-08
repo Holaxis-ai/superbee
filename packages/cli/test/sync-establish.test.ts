@@ -251,6 +251,40 @@ test("--establish refuses a bundle holding a document with invalid frontmatter: 
   }
 });
 
+test("--establish refuses a bundle holding a document it may not read: says it could not be read, never invalid YAML", {
+  // chmod cannot deny a read to root, and Windows ignores the mode.
+  skip: process.platform === "win32" || process.getuid?.() === 0,
+}, async () => {
+  const topo = await makeGreenfieldTopology();
+  const { home, cleanup } = await tempHome();
+  const denied = path.join(topo.a.board, "notes", "locked.md");
+  try {
+    await initPlainBundleDir(topo.a);
+    await writeBoardDoc(topo.a, "notes/hello", { frontmatter: { type: "Note", title: "Hello" }, body: "# Hello\n" });
+    await mkdir(path.join(topo.a.board, "notes"), { recursive: true });
+    await writeFile(path.join(topo.a.board, "notes", "bad.md"), "---\ntype: Note\ntitle: Bad: unquoted\n---\nbody\n");
+    await writeFile(denied, "---\ntype: Note\ntitle: Locked\n---\nbody\n");
+    await chmod(denied, 0o000);
+
+    const { err } = await runSync(home, ["--establish", "--dir", topo.a.root]);
+    assert.equal(err?.code, "USAGE");
+    assert.equal(
+      err!.message,
+      "1 document(s) have invalid YAML frontmatter (notes/bad); 1 document(s) could not be read (notes/locked: permission denied (EACCES)); nothing was published or moved",
+    );
+    assert.match(err!.help ?? "", /fix the lines between the --- markers .* and make those files readable by your user/);
+    assert.notEqual(
+      gitTry(topo.origin, ["rev-parse", "--verify", "--quiet", `refs/heads/${BOARD_BRANCH}`]).status,
+      0,
+      "origin never gets a board",
+    );
+  } finally {
+    await chmod(denied, 0o644).catch(() => {});
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
 test("combo 1: user code + the working tree survive establish untouched", async () => {
   const topo = await makeGreenfieldTopology();
   const { home, cleanup } = await tempHome();
@@ -1134,13 +1168,13 @@ test("establish refusal: a 'board/…' namespace branch blocks (uncreatable-ref 
   }
 });
 
-test("establish refusal: a project binding (.agentstate.json) pointing elsewhere refuses — out of the git-sync tier by design", async () => {
+test("establish refusal: a project binding (.superbee.json) pointing elsewhere refuses — out of the git-sync tier by design", async () => {
   const topo = await makeGreenfieldTopology();
   const { home, cleanup } = await tempHome();
   const elsewhere = await mkdtemp(path.join(tmpdir(), "aslite-establish-elsewhere-"));
   try {
     await initPlainBundleDir(topo.a);
-    await writeFile(path.join(topo.a.root, ".agentstate.json"), JSON.stringify({ bundle: elsewhere }));
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: elsewhere }));
     const { err } = await runSync(home, ["--establish", "--dir", topo.a.root]);
     assert.equal(err?.code, "RUNTIME");
     assert.match(err?.message ?? "", /project binding/);

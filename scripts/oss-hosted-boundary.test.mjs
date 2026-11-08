@@ -109,13 +109,12 @@ test("OSS build and lockfile carry no hosted deployment dependency", async () =>
 // This source-only gate owns generic wire package placement and the public/legacy split. Runtime
 // registration is proved by the server and CLI relational tests rather than by pinning handlers.
 test("generic wire source authorities remain public after hosted extraction", async () => {
-  const [remoteBackend, router, legacyRouter, serverIndex, serverPackage, serveCommand] = await Promise.all([
+  const [remoteBackend, router, legacyRouter, serverIndex, serverPackage] = await Promise.all([
     readFile(path.join(root, "packages/core/src/remote-backend.ts"), "utf8"),
     readFile(path.join(root, "packages/server/src/router.ts"), "utf8"),
     readFile(path.join(root, "packages/server/src/legacy-router.ts"), "utf8"),
     readFile(path.join(root, "packages/server/src/index.ts"), "utf8"),
     readFile(path.join(root, "packages/server/package.json"), "utf8").then(JSON.parse),
-    readFile(path.join(root, "packages/cli/src/commands/serve.ts"), "utf8"),
   ]);
 
   assert.match(remoteBackend, /export class RemoteBackend/);
@@ -132,6 +131,4 @@ test("generic wire source authorities remain public after hosted extraction", as
     types: "./dist/router.d.ts",
     default: "./dist/router.js",
   });
-  assert.match(serveCommand, /export\s+(?:async\s+)?function\s+serve\s*\(/);
-  assert.match(serveCommand, /from\s+["']@superbee\/server["']/);
 });

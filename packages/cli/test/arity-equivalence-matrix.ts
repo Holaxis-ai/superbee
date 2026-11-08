@@ -149,7 +149,6 @@ export const BEHAVIOR_ASSIGNMENTS = [
   ordinary("sourceSnapshotBind", 1),
   ordinary("sourceSnapshotRun", 1),
   ordinary("sourceSnapshotCheck", 1),
-  ordinary("serve", 0),
   ordinary("ui", 0),
   ordinary("mcp", 0, { errorChannel: "stderr" }),
   ordinary("mcpInstall", 0),

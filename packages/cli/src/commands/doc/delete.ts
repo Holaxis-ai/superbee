@@ -2,7 +2,7 @@ import { renderUsage } from "../../output.js";
 // `doc delete <id>` — see `../doc.ts`'s header comment; hard-delete, idempotent, non-cascading.
 import { parseArgs } from "node:util";
 import { pathFromConceptId, isReservedFile } from "@superbee/core";
-import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag } from "../../bundle.js";
+import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, resolveLocalBundleRoute } from "../../bundle.js";
 import { CliError, classifyBundleError } from "../../errors.js";
 import { assertActorAcceptedByBundle, resolveActor } from "../../actor.js";
 import { boardPostPersistHook } from "../../board-attribution.js";
@@ -26,7 +26,6 @@ export async function docDelete(argv: string[], deps: Partial<DocCliDeps>): Prom
           "expected-version": { type: "string" },
           actor: { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -72,10 +71,9 @@ export async function docDelete(argv: string[], deps: Partial<DocCliDeps>): Prom
     );
   }
 
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
-  const route = remote === undefined ? await resolveLocalBundleRoute(values.dir) : undefined;
-  const bundle = route?.bundle ?? await openBundle(values.dir, remote);
-  if (route) await assertResolvedLocalRouteIdentity(route);
+  const route = await resolveLocalBundleRoute(values.dir);
+  const bundle = route.bundle;
+  await assertResolvedLocalRouteIdentity(route);
   id = await resolveConceptIdCliArgument(bundle, rawId);
 
   // Belt-and-suspenders after `.md` ambiguity resolution and any future resolver changes.
@@ -92,13 +90,13 @@ export async function docDelete(argv: string[], deps: Partial<DocCliDeps>): Prom
   try {
     await assertActorAcceptedByBundle(bundle, actor);
   } catch (error) {
-    throw classifyBundleError(error, values.remote);
+    throw classifyBundleError(error);
   }
   const onPersisted = boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor);
 
   if (route) await assertResolvedLocalRouteIdentity(route);
   const deleted = await deleteMutatedDoc({
-    bundle, id, expectedVersion, remoteUrl: values.remote, onPersisted,
+    bundle, id, expectedVersion, onPersisted,
     staleHead: (err) => new CliError(
       "STALE_HEAD",
       `'${id}' has moved since --expected-version ${commandToken(String(err.expected))} was read (current: ` +

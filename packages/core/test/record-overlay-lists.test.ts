@@ -151,6 +151,26 @@ test("with entry properties the upsert rides in the same write as the list", asy
   assert.deepEqual(w.contentBackend.writes, [ITEM]);
 });
 
+test("a reopen with a relabel and a provider property change carries the upsert: unset, replace-all and the entry in one write", async () => {
+  const { w, policy } = await itemWorld();
+  await w.put(ITEM, { ...itemDoc({ state_category: "done", close_reason: "completed", labels: ["bug"] }), sources: [{ resource: PROVIDER, id: ID, project: "old" }] });
+  w.contentBackend.writes = [];
+  const before = { title: "Crash on save", state_category: "done", close_reason: "completed", labels: ["bug"] };
+  const after = { title: "Crash on save", state_category: "todo", labels: ["bug", "regression"] };
+  const plan = await planRecordOverlay({
+    content: w.content, ops: w.ops, policy, observedAt: AT, sameBundle: true,
+    changes: [changed(before, after, ["close_reason", "labels", "state_category"])],
+    hooks: { sourceProperties: () => ({ project: "new" }) },
+  });
+  assert.deepEqual((plan.steps[0] as { sources?: unknown }).sources, { project: "new" });
+  const r = await applyRecordOverlay(plan, ctxOf(w, policy));
+  assert.equal(r.results[0]!.outcome, "applied", JSON.stringify(r.results[0]));
+  const { doc } = await w.read(ITEM);
+  assert.equal(Object.hasOwn(doc.frontmatter, "close_reason"), false);
+  assert.deepEqual([doc.frontmatter.state_category, doc.frontmatter.labels, doc.frontmatter.sources], ["todo", ["bug", "regression"], [{ resource: PROVIDER, id: ID, project: "new" }]]);
+  assert.deepEqual(w.contentBackend.writes, [ITEM], "one write");
+});
+
 test("an owned list must arrive normalized: out of order, repeated or non-text is held INVALID_INPUT, value-free", async () => {
   const { w, policy } = await itemWorld();
   const version = await w.put(ITEM, itemDoc({ labels: ["a"] }));

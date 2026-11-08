@@ -1,5 +1,4 @@
 import { readRegularFileNoFollowSync } from "./nofollow-read.js";
-import { captureRuntimeCallback } from "./runtime-context.js";
 import { configuredBundle } from "./filesystem-runtime.js";
 import { withCliFilesystemMutationLock as withFilesystemMutationLock } from "./filesystem-runtime.js";
 import { currentHost, currentDistribution, distributionPackageName, distributionBinName } from "./runtime-context.js";
@@ -13,25 +12,12 @@ import { currentHost, currentDistribution, distributionPackageName, distribution
 // an indexed bundle without making an index-less directory an ambient guess. `init` uses
 // `resolveTargetDir` instead (it CREATES the bundle, so the dir need not already exist).
 //
-// `--remote <url>` is the OTHER way to resolve a bundle: it produces a
-// `{ root: <url>, backend: RemoteBackend }` handle wired to a `docs/WIRE-PROTOCOL.md` v0 server
-// (`superbee serve`). The sentinel `root` is the URL itself — it can never collide with a
-// real filesystem path, while still giving consumers a stable display identity (the
-// tri-backend tests' `mem://…` roots are the same pattern). An EXPLICIT `--remote`
-// flag and an EXPLICIT `--dir` flag remain mutually exclusive (a USAGE error) — that combination
-// contradicts the caller's own stated intent and cannot be silently resolved either way.
-//
-// HTTP activation is explicit: only `--remote <url>` produces a RemoteBackend. The retired
-// `AGENTSTATE_LITE_REMOTE` variable is detected after explicit flags and rejected with migration
-// guidance; an explicit `--dir` or `--remote` remains authoritative and suppresses that legacy
-// ambient state.
-//
-// `.superbee.json` and the supported legacy `.agentstate.json` are COMMITTED, project-scoped LOCAL
-// pointers: `{ "bundle": "<path>" }` at a project root, discovered in ONE walk up from the cwd.
-// At each level both names are inspected together: one wins, while both fail closed rather than
-// guessing. The nearest level wins overall. The binding rung sits between explicit flags and cwd
+// `.superbee.json` is a COMMITTED, project-scoped LOCAL pointer: `{ "bundle": "<path>" }` at a
+// project root, discovered in ONE walk up from the cwd; the nearest one wins. The retired
+// `.agentstate.json` is no longer read: the walk refuses at the level where it finds one, with the
+// rename fix, rather than skipping it toward a different bundle. The binding rung sits between explicit flags and cwd
 // discovery: explicit
-// `--remote`/`--dir` -> the local project binding -> the cwd walk (which checks each ancestor's own
+// `--dir` -> the local project binding -> the cwd walk (which checks each ancestor's own
 // `index.md` first, then its canonical `.superbee/index.md` or legacy
 // `.agentstate-lite/index.md`). Explicit beats committed
 // beats discovered, and within discovery an enclosing bundle beats the conventional project folder
@@ -41,16 +27,8 @@ import { currentHost, currentDistribution, distributionPackageName, distribution
 // non-string `bundle`) is a USAGE CliError naming the file — never a silent fallthrough to the next
 // rung, because a committed-but-broken binding is a real repo mistake the user must see.
 //
-// URL-valued bindings are rejected at the parser with an explicit-`--remote` migration hint. Local
-// bindings are consumed by `openBundle`'s cwd-discovery fallback, which keeps bare commands local.
-//
-// API-key sourcing for an explicitly gated remote: `openRemoteBundle` sources a bearer token for
-// the resolved remote's ORIGIN in priority order — (1) the `AGENTSTATE_LITE_API_KEY` env var
-// (a session-wide override, no credentials-file write needed for scripts/CI), then (2) the
-// already-provisioned origin-keyed entry stored (`credentials.ts`'s
-// `getApiKeyForOrigin`). Neither is required: the reference `serve()` ignores the
-// `Authorization` header entirely (no auth enforced there), so an ungated local bundle works
-// exactly as before with no key configured.
+// URL-valued bindings are refused at the parser: remote access was removed. Local bindings are
+// consumed by `openBundle`'s cwd-discovery fallback, which keeps bare commands local.
 import {
   BOARD_BRANCH,
   BOARD_REF,
@@ -74,28 +52,18 @@ import path from "node:path";
 import {
   parseMarkdown,
   FilesystemMutationLockError,
-  RemoteBackend,
-  RemoteError,
   VersionConflict,
   type Bundle,
-  type FetchLike,
   type FilesystemMutationLockOptions,
 } from "@superbee/core";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
-import { normalizeServer } from "./config.js";
-import { getApiKeyForOrigin } from "./credentials.js";
 import {
   assertBundleOutsidePrivateState,
   assertSearchDirOutsidePrivateState,
 } from "./private-state-bundle-boundary.js";
 import { type BoundBoardOwner, validateBoundBoardOwner } from "./bound-board-owner.js";
-import {
-  LEGACY_API_KEY_ENV,
-  SUPERBEE_API_KEY_ENV,
-  resolveCompatibleScalarEnv,
-} from "./env-policy.js";
-import { commandLiteral, commandToken } from "./command-text.js";
+import { commandToken } from "./command-text.js";
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -191,8 +159,8 @@ export async function assertPlainInitTarget(dirFlag: string | undefined): Promis
  * cwd walk with NO configuration —
  * the folder alone is enough, the way `git` treats `.git`. It is the DEFAULT home for a
  * project's workspace bundle (committed, so it collaborates across clones), while
- * `.agentstate.json` remains the explicit override for anything unconventional (a remote
- * URL, an out-of-tree directory) and — being an explicit committed pointer — beats it.
+ * `.superbee.json` remains the explicit override for anything unconventional (an out-of-tree
+ * directory) and — being an explicit committed pointer — beats it.
  */
 // The one sanctioned reverse edge (board-git A1): the discovery layer consumes the git
 // channel's BUNDLE_DIR constant, so the conventional folder name has ONE owner.
@@ -251,13 +219,8 @@ export async function findBundleRoot(start: string): Promise<string | null> {
 /** The preferred committed project-scoped pointer filename (see the module header). */
 export const SUPERBEE_PROJECT_BINDING_FILE_NAME = ".superbee.json";
 
-/** The supported pre-rename pointer filename. Kept exported for compatibility and fixtures. */
-export const PROJECT_BINDING_FILE_NAME = ".agentstate.json";
-
-const PROJECT_BINDING_FILE_NAMES = [
-  SUPERBEE_PROJECT_BINDING_FILE_NAME,
-  PROJECT_BINDING_FILE_NAME,
-] as const;
+/** The pre-rename pointer filename: no longer read, refused with the rename fix. */
+export const RETIRED_PROJECT_BINDING_FILE_NAME = ".agentstate.json";
 
 /**
  * A resolved project binding — see the module header for the full precedence story.
@@ -327,29 +290,10 @@ export type BoardAttribution =
   | { readonly kind: "none" }
   | { readonly kind: "board"; readonly stateKey: string };
 
-interface BindingUriIntent {
-  detail: string;
-  suggestedRemote?: string;
-}
-
-function bindingUriIntent(value: string): BindingUriIntent | null {
-  if (/^[A-Za-z]:(?!\/\/)/.test(value)) return null;
-  if (value.startsWith("//")) {
-    return { detail: `protocol-relative URL ${value}` };
-  }
-  const match = /^([A-Za-z][A-Za-z0-9+.-]*):/.exec(value);
-  if (!match) return null;
-  const scheme = match[1]!.toLowerCase();
-  if (scheme !== "http" && scheme !== "https") {
-    return { detail: `unsupported URI scheme "${scheme}" in ${value}` };
-  }
-  try {
-    const url = new URL(value);
-    if (url.protocol === `${scheme}:`) return { detail: `remote URL ${value}`, suggestedRemote: value };
-  } catch {
-    // The scheme establishes URI intent even when the URL itself is malformed.
-  }
-  return { detail: `invalid ${scheme} URL ${value}` };
+/** Whether a binding value is a URL or other URI rather than a filesystem path. */
+function isBindingUri(value: string): boolean {
+  if (/^[A-Za-z]:(?!\/\/)/.test(value)) return false;
+  return value.startsWith("//") || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(value);
 }
 
 /** Parse one project binding identically for ordinary discovery and strict create-only discovery. */
@@ -373,13 +317,15 @@ function parseProjectBinding(file: string, raw: string): ProjectBinding {
     );
   }
   const value = rawBundle.trim();
-  const uriIntent = bindingUriIntent(value);
-  if (uriIntent) {
-    const remote = uriIntent.suggestedRemote ?? "<url>";
+  if (isBindingUri(value)) {
+    // The URL is never echoed: it may carry credentials.
     throw new CliError(
       "USAGE",
-      `project binding ${file} cannot use ${uriIntent.detail}; URL bindings no longer activate remotes — pass --remote ${commandToken(remote)} explicitly or replace "bundle" with a filesystem path`,
-      { help: `${cliInvocation()} <command> --remote ${commandToken(remote)}` },
+      `project binding ${file} cannot use a URL; remote access was removed`,
+      {
+        help: `Set "bundle" in ${commandToken(file)} to a local path, or run ${cliInvocation()} checkout <bundle-id>.`,
+        details: { code: "RETIRED_URL_BINDING", binding: file },
+      },
     );
   }
   return { file, target: path.resolve(path.dirname(file), value) };
@@ -420,13 +366,25 @@ async function readProjectBindingFile(file: string): Promise<string> {
   }
 }
 
-function projectBindingConflict(dir: string): CliError {
-  const preferred = path.join(dir, SUPERBEE_PROJECT_BINDING_FILE_NAME);
-  const legacy = path.join(dir, PROJECT_BINDING_FILE_NAME);
+/**
+ * A level holding the retired name refuses, so a rename never silently retargets the walk. The
+ * message names the fix too: home and session-start show only the message.
+ */
+function retiredProjectBindingRefusal(dir: string, alsoCurrent: boolean): CliError {
+  const retired = path.join(dir, RETIRED_PROJECT_BINDING_FILE_NAME);
+  const current = path.join(dir, SUPERBEE_PROJECT_BINDING_FILE_NAME);
+  const details = { code: "RETIRED_PROJECT_BINDING", binding: retired };
+  if (alsoCurrent) {
+    return new CliError(
+      "USAGE",
+      `${dir} has both ${SUPERBEE_PROJECT_BINDING_FILE_NAME} and the retired ${RETIRED_PROJECT_BINDING_FILE_NAME}, which is no longer read; delete ${RETIRED_PROJECT_BINDING_FILE_NAME}`,
+      { help: `delete ${retired} after checking that ${current} points at the bundle you want, then run the command again`, details },
+    );
+  }
   return new CliError(
     "USAGE",
-    `conflicting project bindings at ${dir}: found both ${preferred} and ${legacy}; remove one instead of relying on an ambiguous target`,
-    { help: `remove one binding, or pass --dir <bundle-path> explicitly` },
+    `project binding ${retired} uses the retired name ${RETIRED_PROJECT_BINDING_FILE_NAME}, which is no longer read; rename it to ${SUPERBEE_PROJECT_BINDING_FILE_NAME} (same contents)`,
+    { help: `rename it to ${SUPERBEE_PROJECT_BINDING_FILE_NAME} (same contents): mv ${commandToken(retired)} ${commandToken(current)}`, details },
   );
 }
 
@@ -445,26 +403,23 @@ async function ordinaryBindingEntryExists(file: string): Promise<boolean> {
 }
 
 async function ordinaryProjectBindingAtLevel(dir: string): Promise<string | null> {
-  const observed = await Promise.all(
-    PROJECT_BINDING_FILE_NAMES.map(async (name) => {
-      const file = path.join(dir, name);
-      return { file, present: await ordinaryBindingEntryExists(file) };
-    }),
-  );
-  const present = observed.filter((entry) => entry.present);
-  if (present.length > 1) throw projectBindingConflict(dir);
-  return present[0]?.file ?? null;
+  const file = path.join(dir, SUPERBEE_PROJECT_BINDING_FILE_NAME);
+  const [current, retired] = await Promise.all([
+    ordinaryBindingEntryExists(file),
+    ordinaryBindingEntryExists(path.join(dir, RETIRED_PROJECT_BINDING_FILE_NAME)),
+  ]);
+  if (retired) throw retiredProjectBindingRefusal(dir, current);
+  return current ? file : null;
 }
 
 /**
  * Discover + parse + validate the nearest project binding walking up from `startDir` (default
- * cwd). Each level inspects `.superbee.json` and `.agentstate.json` together; both at one level are
- * an explicit conflict, while either at a nearer level wins over either name farther away. Returns
- * `null` when neither exists anywhere up-tree (the common case; NOT an error). When one IS found,
+ * cwd). The nearest `.superbee.json` wins; a level holding the retired `.agentstate.json` refuses
+ * with the rename fix instead of being skipped. Returns `null` when none exists anywhere up-tree (the common case; NOT an error). When one IS found,
  * it is read and validated immediately: an unreadable file, invalid JSON, or a missing/empty/
  * non-string `bundle` field is a real committed mistake — thrown as a USAGE CliError (exit 2)
- * naming the file, never swallowed into a silent `null`. A URL value is rejected: remote access
- * requires an explicit `--remote`. A filesystem path is resolved against the binding file's OWN
+ * naming the file, never swallowed into a silent `null`. A URL value is refused: remote access
+ * was removed. A filesystem path is resolved against the binding file's OWN
  * directory (never the cwd — see the module header on clone-portability).
  */
 export async function resolveProjectBinding(startDir: string = process.cwd()): Promise<ProjectBinding | null> {
@@ -476,161 +431,6 @@ export async function resolveProjectBinding(startDir: string = process.cwd()): P
     if (parent === dir) return null;
     dir = parent;
   }
-}
-
-/** Statuses a hosted Superbee host answers to a wire-protocol route it does not serve. */
-const HOSTED_PROBE_STATUSES = new Set([401, 403, 404, 405]);
-/** The hosted MCP resource's protected-resource metadata (RFC 9728): what a hosted host serves. */
-export const HOSTED_PROBE_PATH = "/.well-known/oauth-protected-resource/mcp";
-const HOSTED_PROBE_TIMEOUT_MS = 3_000;
-
-/** True when `origin` answers the hosted MCP resource's metadata: a hosted Superbee host. */
-async function isHostedSuperbee(origin: string): Promise<boolean> {
-  try {
-    const response = await globalThis.fetch(`${origin}${HOSTED_PROBE_PATH}`, {
-      headers: { accept: "application/json" },
-      redirect: "manual",
-      signal: AbortSignal.timeout(HOSTED_PROBE_TIMEOUT_MS),
-    });
-    if (!response.ok) return false;
-    const body = (await response.json()) as { resource?: unknown };
-    return typeof body.resource === "string";
-  } catch {
-    return false;
-  }
-}
-
-function hostedRemoteRefusal(remote: string, origin: string): CliError {
-  return new CliError(
-    "USAGE",
-    `${remote} is a hosted Superbee URL, not a wire-protocol server: --remote reaches only 'superbee serve'; use 'superbee checkout' for a hosted bundle`,
-    {
-      details: { reason: "hosted_url", remote, host: origin },
-      help: `${cliInvocation()} checkout <bundle-id> --host ${commandToken(origin)}`,
-    },
-  );
-}
-
-/**
- * Wrap a fetch-like transport so a transport-level failure (ECONNREFUSED, DNS, timeout — `fetch`
- * rejects with a plain `TypeError` for all of these) surfaces as a `CliError("RUNTIME", …)` with a
- * `serve` hint BEFORE it reaches command code. Without this, a command's catch-all (e.g. `link`'s,
- * `doc write`'s) would misclassify an unreachable server as a USAGE error (exit 2) instead of a
- * retryable RUNTIME fault (exit 1) — wrong-but-plausible, since both look like "a plain Error" to
- * a generic catch. HTTP-level failures (404/412/5xx) are UNCHANGED: they still resolve to a normal
- * `Response` that `RemoteBackend` maps itself (see `core/src/remote-backend.ts`).
- *
- * One exception: when the FIRST response is a 401, 403, 404 or 405, the origin is probed once for
- * the hosted MCP resource's metadata. A hosted Superbee host answers it, and then every request
- * fails at once with "use checkout" instead of a wire-protocol error or a `serve` hint. The probe
- * runs at most once per invocation and never against a server that answered the first request.
- */
-function wrapTransportErrors(remote: string, origin: string): FetchLike {
-  let hosted: boolean | undefined;
-  return captureRuntimeCallback(async (request: Request): Promise<Response> => {
-    if (hosted) throw hostedRemoteRefusal(remote, origin);
-    let response: Response;
-    try {
-      response = await globalThis.fetch(request);
-    } catch (err) {
-      throw new CliError(
-        "RUNTIME",
-        `could not reach the remote bundle at ${remote} (${err instanceof Error ? err.message : String(err)})`,
-        { help: `${cliInvocation()} serve --dir <path>` },
-      );
-    }
-    if (hosted === undefined) {
-      hosted = HOSTED_PROBE_STATUSES.has(response.status) ? await isHostedSuperbee(origin) : false;
-      if (hosted) throw hostedRemoteRefusal(remote, origin);
-    }
-    return response;
-  });
-}
-
-/** Session-wide override for the `--remote` API key. See {@link openRemoteBundle}. */
-export const API_KEY_ENV_VAR = LEGACY_API_KEY_ENV;
-export const SUPERBEE_API_KEY_ENV_VAR = SUPERBEE_API_KEY_ENV;
-
-export function resolveApiKeyEnv(env: Readonly<Record<string, string | undefined>> = process.env): string | undefined {
-  return resolveCompatibleScalarEnv({
-    canonical: SUPERBEE_API_KEY_ENV_VAR,
-    legacy: API_KEY_ENV_VAR,
-    label: "API key",
-    env,
-  });
-}
-
-/**
- * Resolve a `--remote <url>` bundle: a `RemoteBackend` wired to the wire-protocol v0 reference
- * server, using the same http(s) URL discipline `config.ts`'s `normalizeServer` applies to
- * remote credential lookup (a malformed/non-http(s) URL is a USAGE error, exit 2). The bundle-path segment
- * is a fixed `"default"` — the single-bundle reference router ignores it; meaningful only for a
- * future multi-bundle deployment (no `--bundle` flag exists yet; out of scope).
- *
- * Sources a bearer `authToken` for the resolved origin: `SUPERBEE_API_KEY` or legacy
- * `AGENTSTATE_LITE_API_KEY` env var first, else an already-provisioned origin-keyed
- * credentials-file entry. If both environment variables are set to different non-empty values,
- * resolution fails before any request and does not print either secret. Neither
- * is required — an ungated bundle (the reference `serve()`) ignores the header either way.
- */
-async function openRemoteBundle(remoteFlag: string): Promise<Bundle> {
-  let base: string;
-  let origin: string;
-  try {
-    const resolved = normalizeServer(remoteFlag);
-    base = resolved.base;
-    origin = resolved.resource;
-  } catch (err) {
-    throw new CliError("USAGE", err instanceof Error ? err.message : String(err), {
-      help: `${cliInvocation()} <command> --remote http://127.0.0.1:4818`,
-    });
-  }
-  const envKey = resolveApiKeyEnv();
-  const authToken = envKey || (await getApiKeyForOrigin(origin));
-  const backend = new RemoteBackend({
-    baseUrl: base,
-    bundle: "default",
-    fetchImpl: wrapTransportErrors(base, origin),
-    authToken,
-  });
-  return { root: base, backend };
-}
-
-/** Retired remote-default environment variable, retained only for an actionable migration error. */
-export const REMOTE_ENV_VAR = "AGENTSTATE_LITE_REMOTE";
-
-/**
- * Resolve the effective `--remote` value. Only an explicit flag can return a URL. An explicit
- * `--dir` wins locally. With neither flag, a present legacy `AGENTSTATE_LITE_REMOTE` is rejected
- * with migration guidance, and a reached project binding is parsed solely to reject malformed or
- * URL-valued bindings before local discovery consumes a valid path binding.
- *
- * `openBundle`'s `--remote`/`--dir` mutual-exclusion check therefore only ever fires for an
- * explicit `--remote` FLAG (not an env- or binding-derived one) alongside an explicit `--dir` — the
- * one combination that is a genuine, unresolvable contradiction of the caller's own stated intent.
- * Every remote-capable command calls THIS (passing its OWN `dirFlag` too) before `openBundle`, never
- * `openBundle` directly with a raw `values.remote` — except `init` (explicitly rejects `--remote`,
- * no create-bundle endpoint exists) and `serve` (always boots over a LOCAL bundle; picking up an
- * ambient remote default there would be actively wrong, not a convenience), which must NOT call this.
- * `home`'s local dashboard read is a THIRD such exception, for the same reason it already skips the
- * env default (see the module header's URL-binding note).
- */
-export async function resolveRemoteFlag(
-  remoteFlag: string | undefined,
-  dirFlag: string | undefined,
-): Promise<string | undefined> {
-  if (remoteFlag !== undefined) return remoteFlag;
-  if (dirFlag !== undefined) return undefined; // explicit --dir wins over legacy ambient state
-  if (process.env[REMOTE_ENV_VAR] !== undefined) {
-    const legacy = process.env[REMOTE_ENV_VAR]?.trim();
-    throw new CliError(
-      "USAGE",
-      `${REMOTE_ENV_VAR} ambient remote selection is retired; pass --remote <url> explicitly`,
-      { help: `${cliInvocation()} <command> --remote ${legacy ? commandToken(legacy) : commandLiteral("<url>")}` },
-    );
-  }
-  await resolveProjectBinding();
-  return undefined;
 }
 
 async function canonicalDirectoryRoot(
@@ -978,26 +778,13 @@ async function strictProjectBinding(
   let dir = start;
   for (;;) {
     await assertObservedDirectory(io, dir, phase, createdDirectories);
-    const observed = await Promise.all(
-      PROJECT_BINDING_FILE_NAMES.map(async (name) => {
-        const file = path.join(dir, name);
-        const info = await optionalLstat(
-          io,
-          file,
-          phase,
-          "lstat-binding",
-          createdDirectories,
-        );
-        return { file, info };
-      }),
-    );
-    const present = observed.filter(
-      (entry): entry is { file: string; info: Stats } => entry.info !== null,
-    );
-    if (present.length > 1) throw projectBindingConflict(dir);
-    const selected = present[0];
-    if (selected) {
-      const { file, info } = selected;
+    const file = path.join(dir, SUPERBEE_PROJECT_BINDING_FILE_NAME);
+    const [info, retired] = await Promise.all([
+      optionalLstat(io, file, phase, "lstat-binding", createdDirectories),
+      optionalLstat(io, path.join(dir, RETIRED_PROJECT_BINDING_FILE_NAME), phase, "lstat-binding", createdDirectories),
+    ]);
+    if (retired) throw retiredProjectBindingRefusal(dir, info !== null);
+    if (info) {
       if (!info.isFile() && !info.isSymbolicLink()) {
         throw new CliError("USAGE", `malformed project binding ${file}: expected a regular file`, {
           help: `fix or remove ${file}`,
@@ -1936,30 +1723,15 @@ export function boardAttributionForRoute(route: ResolvedLocalRoute): BoardAttrib
 }
 
 /**
- * Resolve the {@link Bundle} an OKF command should operate on: `--remote <url>` wins (mutually
- * exclusive with `--dir`, checked here — a USAGE error, exit 2, if both are given); otherwise the
- * existing filesystem discovery applies. With `--dir`, an existing requested directory is the
+ * Resolve the {@link Bundle} an OKF command should operate on by filesystem discovery. With `--dir`, an existing requested directory is the
  * exact bundle boundary even when OKF's optional root index is absent; an indexed direct
  * conventional child keeps the established project-directory shorthand. It never selects an
  * ancestor. Without either,
- * a committed `.agentstate.json` directory-type binding applies next (item 43 follow-on — see the
+ * a committed `.superbee.json` directory-type binding applies next (item 43 follow-on — see the
  * module header); only then does discovery walk up from the cwd. Throws a NOT_FOUND CliError (exit
  * 6) when no LOCAL bundle is found — the fixing command points at `superbee init`.
- *
- * Callers pass `remoteFlag` through {@link resolveRemoteFlag} first, so any truthy value here is an
- * explicit `--remote` flag and the mutual-exclusion error below is unambiguous.
  */
-export async function openBundle(dirFlag: string | undefined, remoteFlag?: string): Promise<Bundle> {
-  if (remoteFlag !== undefined) {
-    if (dirFlag !== undefined) {
-      throw new CliError(
-        "USAGE",
-        "--remote and --dir are mutually exclusive",
-        { help: `${cliInvocation()} <command> --remote <url>` },
-      );
-    }
-    return openRemoteBundle(remoteFlag);
-  }
+export async function openBundle(dirFlag: string | undefined): Promise<Bundle> {
   const route = await resolveLocalBundleRoute(dirFlag);
   await assertResolvedLocalRouteIdentity(route);
   return route.bundle;

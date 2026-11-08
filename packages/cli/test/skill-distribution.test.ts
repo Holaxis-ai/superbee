@@ -195,7 +195,6 @@ test("the shipped View authoring reference teaches Superbee commands while prese
   );
   assert.match(reference, /`superbee ui --actor <name>`/);
   assert.match(reference, /set `SUPERBEE_ACTOR`/);
-  assert.match(reference, /`AGENTSTATE_LITE_ACTOR` remains a\s+supported compatibility input/);
   assert.match(reference, /superbee blobs --prefix views\//);
   assert.match(reference, /superbee new "View" my-view/);
   assert.doesNotMatch(reference, /\baslite (?:status|ui|blobs|pull|promote|new)\b/);

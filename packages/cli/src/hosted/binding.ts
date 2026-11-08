@@ -27,10 +27,10 @@ export interface CheckoutBinding {
   readonly checkout_id: string;
   /** The checkout folder's canonical absolute path. */
   readonly path: string;
-  /** The hosted origin and the token audience (`<origin>/mcp`, or an agent connection's `/mcp` URL). */
+  /** The hosted origin and the token audience (`<origin>/mcp`). */
   readonly origin: string;
   readonly audience: string;
-  /** The sync route family under that audience, e.g. `/sync/v1` or `/agents/<uuid>/sync/v1`. */
+  /** The sync route family under that audience, `/sync/v1`. */
   readonly routes: string;
   /** The workspace (tenant) that serves the bundle, when the identity reaches exactly one or one was named. */
   readonly workspace: string | null;

@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { initBundle, writeDoc, type OkfDocument } from "@superbee/core";
 
 // HERMETIC CWD + HOME: `home()` peeks at project bindings from the cwd and at the user-scoped
-// workspace catalog, so a REAL `.agentstate.json` anywhere above the test process's cwd — including
+// workspace catalog, so a REAL `.superbee.json` anywhere above the test process's cwd — including
 // the repo's own untracked one — leaks into every in-process test in this file and changes the
 // dashboard/remote-pointer output; a real ~/.superbee-state/catalog.json would likewise leak catalog
 // entries. node --test runs each file in its own process, so module-top temp roots make the file
@@ -181,7 +181,7 @@ test("board-state gate: any firstContact line (unprovisioned/window/conflict) su
     `board found for this repo — run \`${INVOKE} sync\` to join it (never init)`,
     "board window: origin/board exists while the bundle is still committed at HEAD — pull first",
   ]) {
-    const view = buildHomeView(BASE_DEPS, summary, undefined, undefined, undefined, { firstContact });
+    const view = buildHomeView(BASE_DEPS, summary, undefined, undefined, { firstContact });
     const bundle = view.bundle as Record<string, unknown>;
     assert.equal(bundle.offers, undefined);
     assert.equal(bundle.offers_help, undefined);
@@ -697,17 +697,11 @@ test("A1.7b byType ordering (REAL summarizeDocs): count desc, then type asc", ()
   assert.deepEqual(Object.keys(summary.byType), ["Concept", "Design", "Note"]);
 });
 
-test("A1.8 home omits hosted credential identity while an explicit remote still orients bundle reads", () => {
+test("A1.8 home omits hosted credential identity and has no remote block", () => {
   const local = buildHomeView(BASE_DEPS, null);
   assert.equal(local.auth, undefined);
   assert.equal(local.remotes, undefined);
-
-  const scoped = buildHomeView(BASE_DEPS, null, "https://ex.workers.dev");
-  assert.equal(scoped.auth, undefined);
-  assert.deepEqual((scoped.remote as Record<string, unknown>).help, [
-    `${INVOKE} list --remote https://ex.workers.dev`,
-    `${INVOKE} status --remote https://ex.workers.dev`,
-  ]);
+  assert.equal(local.remote, undefined);
 });
 
 test("A1.10 unreadable bundle (present but a doc failed to read): status:unreadable, NOT the init hint", () => {
@@ -755,7 +749,7 @@ test("A1.11 a malformed doc is named in the bundle block; the rest of the bundle
   }
 });
 
-test("A1.12 project binding (directory-type, item 43 follow-on): home's dashboard resolves via the committed .agentstate.json and annotates the bundle block with `via`", async () => {
+test("A1.12 project binding (directory-type, item 43 follow-on): home's dashboard resolves via the committed .superbee.json and annotates the bundle block with `via`", async () => {
   const root = await tempDir();
   try {
     const sharedBundle = path.join(root, "shared");
@@ -766,7 +760,7 @@ test("A1.12 project binding (directory-type, item 43 follow-on): home's dashboar
     );
     const projectDir = path.join(root, "project"); // no bundle of its own here — only a binding
     await mkdir(projectDir, { recursive: true });
-    await writeFile(path.join(projectDir, ".agentstate.json"), JSON.stringify({ bundle: "../shared" }));
+    await writeFile(path.join(projectDir, ".superbee.json"), JSON.stringify({ bundle: "../shared" }));
 
     const origCwd = process.cwd();
     try {
@@ -774,7 +768,7 @@ test("A1.12 project binding (directory-type, item 43 follow-on): home's dashboar
       let out = "";
       await home([], { stdout: (s) => (out += s) });
       assert.ok(out.includes("notes/hello"), "the dashboard should reflect the BOUND directory, not the (bundle-less) project dir");
-      assert.ok(out.includes(".agentstate.json"), "the bundle block should note which file drove resolution");
+      assert.ok(out.includes(".superbee.json"), "the bundle block should note which file drove resolution");
     } finally {
       process.chdir(origCwd);
     }
@@ -818,7 +812,7 @@ test("preferred .superbee.json binding scopes home and is named in the via recei
   }
 });
 
-test("same-level old/new binding conflict remains non-fatal in home and withholds initialization guidance", async () => {
+test("a retired .agentstate.json beside .superbee.json is non-fatal in home and withholds initialization guidance", async () => {
   const projectDir = await tempDir();
   try {
     await writeFile(path.join(projectDir, ".superbee.json"), JSON.stringify({ bundle: "one" }));
@@ -830,7 +824,7 @@ test("same-level old/new binding conflict remains non-fatal in home and withhold
       let out = "";
       await home(["--json"], { stdout: (s) => (out += s) });
       const view = JSON.parse(out) as Record<string, unknown>;
-      assert.match(String(view.project_binding_error), /conflicting project bindings/);
+      assert.match(String(view.project_binding_error), /has both \.superbee\.json and the retired \.agentstate\.json, which is no longer read; delete \.agentstate\.json/);
       assert.equal(view.getting_started, undefined);
       assert.equal(view.bundle, undefined);
     } finally {
@@ -848,7 +842,7 @@ test("A1.12b disappeared project-binding target outside Git: scoped init recover
     const projectDir = path.join(physicalRoot, "project");
     const missingBundle = path.join(physicalRoot, "missing bundle");
     await mkdir(projectDir, { recursive: true });
-    await writeFile(path.join(projectDir, ".agentstate.json"), JSON.stringify({ bundle: "../missing bundle" }));
+    await writeFile(path.join(projectDir, ".superbee.json"), JSON.stringify({ bundle: "../missing bundle" }));
 
     const origCwd = process.cwd();
     try {
@@ -909,21 +903,21 @@ test("A1.12c resolved binding with no summary: home falls back to the resolver's
   }
 });
 
-test("A1.13 project binding URL: home surfaces explicit --remote migration guidance and never fetches", async () => {
+test("A1.13 project binding URL: home surfaces the refusal without echoing the URL and never fetches", async () => {
   const projectDir = await tempDir();
   try {
     // Nothing listens on this port — home must only render the local-safe migration error.
-    await writeFile(path.join(projectDir, ".agentstate.json"), JSON.stringify({ bundle: "http://127.0.0.1:1" }));
+    await writeFile(path.join(projectDir, ".superbee.json"), JSON.stringify({ bundle: "http://127.0.0.1:1" }));
 
     const origCwd = process.cwd();
     try {
       process.chdir(projectDir);
       let out = "";
       await home([], { stdout: (s) => (out += s) });
-      assert.ok(out.includes("http://127.0.0.1:1"));
-      assert.ok(out.includes(".agentstate.json"));
+      assert.ok(!out.includes("http://127.0.0.1:1"));
+      assert.ok(out.includes(".superbee.json"));
       assert.ok(out.includes("project_binding_error"));
-      assert.ok(out.includes("pass --remote"));
+      assert.ok(out.includes("remote access was removed"));
       assert.ok(out.includes("fix or remove the binding before initializing or browsing recipes"));
       assert.ok(!out.includes("getting_started"));
     } finally {
@@ -937,7 +931,7 @@ test("A1.13 project binding URL: home surfaces explicit --remote migration guida
 test("A1.14 malformed project binding: home NEVER throws and withholds unsafe getting-started commands", async () => {
   const projectDir = await tempDir();
   try {
-    await writeFile(path.join(projectDir, ".agentstate.json"), "not json at all");
+    await writeFile(path.join(projectDir, ".superbee.json"), "not json at all");
 
     const origCwd = process.cwd();
     try {
@@ -949,7 +943,7 @@ test("A1.14 malformed project binding: home NEVER throws and withholds unsafe ge
       } catch {
         threw = true;
       }
-      assert.equal(threw, false, "a malformed .agentstate.json must never crash the SessionStart hook");
+      assert.equal(threw, false, "a malformed .superbee.json must never crash the SessionStart hook");
       assert.ok(out.includes("project_binding_error"));
       assert.ok(out.includes("fix or remove the binding before initializing or browsing recipes"));
       assert.ok(!out.includes("getting_started"));

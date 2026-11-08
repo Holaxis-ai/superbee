@@ -1,7 +1,7 @@
 /**
  * Grep gate for THE INVARIANT's attribute surface: in the renderer source, an `href` attribute is
- * assigned from exactly two producers, the same-origin document route builder and the external
- * allowlist's admitted value, and a URL's serialization (`.href`) is read only inside the allowlist
+ * assigned from exactly two producers, the same-origin document route builder and the external link
+ * policy's admitted value, and a URL's serialization (`.href`) is read only inside the admission
  * function. A third producer, or a `.href` read anywhere else, is a new path from markdown to an
  * attribute and fails here before any rendering test has to notice.
  */
@@ -21,7 +21,7 @@ function code(file) {
     .replace(/^(\s*)\/\/.*$/gm, "$1");
 }
 
-test("every href attribute in the renderer source is built by documentHref or admitted by the allowlist", () => {
+test("every href attribute in the renderer source is built by documentHref or admitted by the link policy", () => {
   const seen = [];
   for (const file of files) {
     for (const match of code(file).matchAll(/\bhref=\{\s*([^\s}]+)/g)) {
@@ -35,10 +35,10 @@ test("every href attribute in the renderer source is built by documentHref or ad
   ]);
 });
 
-test("the allowlist's `external` binding comes only from admitExternalLink", () => {
+test("the `external` binding comes only from admitExternalLink", () => {
   const content = code(path.join(src, "index.tsx"));
   const bindings = [...content.matchAll(/\bconst external\s*=\s*([^;]+);/g)].map((match) => match[1].trim());
-  assert.deepEqual(bindings, ["admitExternalLink(raw, state.options.externalLinkHosts)"]);
+  assert.deepEqual(bindings, ["admitExternalLink(raw, state.options.externalLinks)"]);
 });
 
 test("a URL serialization (.href) is read only inside admitExternalLink and its entry normalizer", () => {
@@ -52,7 +52,7 @@ test("a URL serialization (.href) is read only inside admitExternalLink and its 
       if (/\.href\b/.test(line)) {
         assert.ok(
           fn === "admitExternalLink" || fn === "normalizeAllowedHost",
-          `${path.basename(file)}:${i + 1} reads .href outside the allowlist: ${line.trim()}`,
+          `${path.basename(file)}:${i + 1} reads .href outside link admission: ${line.trim()}`,
         );
       }
     }

@@ -43,13 +43,13 @@ Options:
   --dir <path>       Local bundle directory (default: discovered from the cwd)
   --check            Report drift/refusal without writing; clean is exit 0, otherwise exit 5
   --force            Adopt and replace unmarked/malformed index files explicitly
-  --actor <name>     Attribute changed writes (overrides SUPERBEE_ACTOR; legacy
-                     AGENTSTATE_LITE_ACTOR remains supported). OKF v0.2 bundles accept only an
-                     OKF actor: human:<id>, process:<id>, or <producer>/<version> (e.g. openai/codex)
+  --actor <name>     Attribute changed writes (overrides SUPERBEE_ACTOR). OKF v0.2 bundles accept
+                     only an OKF actor: human:<id>, process:<id>, or <producer>/<version> (e.g.
+                     openai/codex)
   --json             Emit compact JSON instead of TOON on success
   -h, --help         Show this help
 
-This command is local-only. It never syncs and has no --remote mode.
+This command is local-only. It never syncs.
 `;
 
 const PATH_LIMIT = 15;

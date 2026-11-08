@@ -153,13 +153,6 @@ test("each method posts its operation's input to <prefix>/attention/<operationId
   }
 });
 
-test("an agent connection's inbox is under its own sync prefix", async () => {
-  const prefix = "/agents/0b2f6c3e-1d4a-4b5c-9e8f-7a6b5c4d3e2f/sync/v1";
-  const { fetch, sent } = host((_path) => ok("inbox.summary.v1", { waitingThreads: { count: 0, capped: false }, unreadUpdates: { count: 0, capped: false }, newestSeq: 0 }));
-  await inboxOf(fetch, { syncPrefix: prefix }).summary();
-  assert.equal(sent[0]!.path, `${prefix}/attention/inbox.summary.v1`);
-});
-
 test("a send mints one UUIDv7 ticket, carries via, and returns the receipt with its ticket", async () => {
   const { fetch, sent } = host(() => ok("attention.request.v1", { itemId: "item-9", threadId: THREAD, itemRevision: 1, replayed: false, delivery: { inApp: "visible", email: "off" } }));
   const before = Date.now();

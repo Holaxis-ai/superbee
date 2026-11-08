@@ -2,7 +2,7 @@ import { parseArgs } from "node:util";
 import { versionOfBytes } from "@superbee/core";
 import { backendFor } from "@superbee/core/bundle-ops";
 import { SEARCH_MAX_OUTPUT_BYTES, searchSourceFromBackend, searchDocuments, validateSearchRequest, SearchInputError, SearchLimitError } from "@superbee/core/search";
-import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { openBundle } from "../bundle.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { CliError } from "../errors.js";
@@ -19,13 +19,12 @@ Searches current local bytes, including unsent checkout edits. Default limit: 10
 Unreadable documents are omitted and reported under skipped; storage failures still stop the search.
 Prefixes are literal canonical bundle-relative ID prefixes; a trailing / is allowed.
 Use --cursor with the same query, filters and unchanged bundle to continue.
---remote is unavailable; select a local folder or checkout with --dir.
 Read a full match with superbee doc read <id>.
 `;
 const OPTIONS = {
   type: { type: "string" }, tag: { type: "string" }, prefix: { type: "string" },
   match: { type: "string" }, limit: { type: "string" }, cursor: { type: "string" },
-  facets: { type: "string" }, dir: { type: "string" }, remote: { type: "string" },
+  facets: { type: "string" }, dir: { type: "string" },
   json: { type: "boolean" }, help: { type: "boolean", short: "h" },
 } as const;
 
@@ -36,8 +35,6 @@ export async function search(argv: string[], deps: { stdout?: (s: string) => voi
     CLI_LEAVES.search, { optionNames: Object.keys(OPTIONS) },
   );
   if (values.help) { stdout(renderUsage(SEARCH_USAGE)); return; }
-  if (await resolveRemoteFlag(values.remote, values.dir) !== undefined)
-    throw new CliError("USAGE", "Search requires a local bundle or checkout; --remote search is unavailable.");
   try {
     const request = validateSearchRequest({
       query: positionals[0],
