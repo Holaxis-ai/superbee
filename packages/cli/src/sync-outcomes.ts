@@ -126,7 +126,7 @@ function sharingDetailsFor(err: CliError, context: SharingContext): SharingDetai
         possible_causes: ["url", "authentication", "visibility", "repository-read"],
       };
     }
-    if (err.code === "TRANSIENT") {
+    if (err.code === "TRANSIENT" && err.details?.reason !== "timeout") {
       return {
         ...LOCAL_ESTABLISH_PREFLIGHT,
         cause_certainty: "best-effort",

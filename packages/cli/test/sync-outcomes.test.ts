@@ -354,6 +354,18 @@ test("permission-aware sharing adapter preserves the CliError contract and emits
       },
     },
     {
+      name: "preflight timeout names no cause",
+      error: new CliError("TRANSIENT", "timed out", { details: { op: "fetch", reason: "timeout", retryable: true } }),
+      context: { operation: "establish-preflight" as const },
+      expected: {
+        operation: "establish-preflight",
+        remote_repository: "unknown",
+        remote_board: "unknown",
+        repository_creation: "external-if-absent",
+        local_work: "preserved",
+      },
+    },
+    {
       name: "create access",
       error: new CliError("AUTH_REQUIRED", "denied", { details: { op: "push", best_effort: true } }),
       context: { operation: "create-board" as const, remote_board: "absent-confirmed" as const },
