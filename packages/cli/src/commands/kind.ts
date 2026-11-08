@@ -60,8 +60,9 @@ each optional-field/section promotion, and prints one exact apply command bound 
 Applying requires that token; any instance write, edition change, or schema change in between
 refuses with STALE_HEAD and the fresh-draft command. Apply only after the human accepts.
 When a governs-only convention already names the type (a dismissal or a hand-authored record),
-draft redrafts it in place: the id and title are kept, and any description or body it would
-replace is listed under replaces_prose, with current and proposed text, before apply.
+draft redrafts it in place: the id, title and every frontmatter key the draft does not own are
+kept; any description or body it would replace is listed under replaces_prose, and any other
+existing value it changes under replaces_fields, with current and proposed values, before apply.
 
 'kind dismiss' records a deliberate human decline as a declaration-free convention (governs only,
 zero validation obligations) so no future session re-proposes a Kind for that type — on any

@@ -107,13 +107,14 @@ export async function kindDraftCommand(
     }
     if (plan.redraftOver) receipt.redrafts = plan.redraftOver.id;
     if (plan.replacesProse.length > 0) receipt.replaces_prose = plan.replacesProse;
+    if (plan.replacesFields.length > 0) receipt.replaces_fields = plan.replacesFields;
     const promotions = draftPromotions(plan.candidateKind, plan.stats);
     if (promotions.length > 0) receipt.promotions = promotions;
     const applies = plan.redraftOver
-      ? `apply rewrites '${plan.candidateDoc.id}' as drafted, keeping its title`
+      ? `apply rewrites '${plan.candidateDoc.id}' as drafted, keeping its title and every frontmatter key the draft does not own`
       : "apply creates the Kind as drafted";
-    const replaced = plan.replacesProse.length > 0
-      ? `; it overwrites the current text under replaces_prose, so restore anything worth keeping with '${inv} doc update ${commandToken(plan.candidateDoc.id)}' after apply`
+    const replaced = plan.replacesProse.length > 0 || plan.replacesFields.length > 0
+      ? `; it overwrites the current values under replaces_prose and replaces_fields, so restore anything worth keeping with '${inv} doc update ${commandToken(plan.candidateDoc.id)}' after apply`
       : "";
     receipt.note = `${applies}${replaced}; promotions are separate follow-ups via '${inv} kind field ${commandQuoted(plan.type)} add <name> --required'`;
     receipt.plan_token = plan.token;

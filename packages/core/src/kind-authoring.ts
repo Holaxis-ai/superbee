@@ -296,6 +296,7 @@ export function draftPlanToken(input: {
   stats: DraftInstanceStats;
   warnings: number;
   replaces?: readonly ReplacedProse[];
+  replacesFields?: readonly ReplacedField[];
 }): string {
   return `sha256:${sha256HexOfUtf8(JSON.stringify(input))}`;
 }
@@ -364,6 +365,20 @@ export interface ReplacedProse {
   proposed: string;
 }
 
+/** An existing frontmatter value a redraft changes; `proposed` is null when the key is removed. */
+export interface ReplacedField {
+  field: string;
+  current: unknown;
+  proposed: unknown;
+}
+
+/** Keys a draft writes; every other existing key is carried over by a redraft. */
+const DRAFT_OWNED_KEYS = ["type", "title", "governs", "description", "path", "fields", "sections"] as const;
+
+function defineKey(target: Frontmatter, key: string, value: unknown): void {
+  Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
+}
+
 export interface KindDraftPlan {
   type: string;
   okfVersion: string;
@@ -375,6 +390,8 @@ export interface KindDraftPlan {
   catalog: CatalogConvention | undefined;
   /** Redraft only: authored description/body the candidate overwrites. The title is kept. */
   replacesProse: ReplacedProse[];
+  /** Redraft only: existing frontmatter values (other than description) the candidate changes. */
+  replacesFields: ReplacedField[];
   stats: DraftInstanceStats;
   instances: OkfDocument[];
   warnings: number;
@@ -438,19 +455,31 @@ export async function prepareKindDraft(bundle: Bundle, type: string, text: KindA
   // A redraft upgrades the EXISTING governing record in place, wherever it lives — a
   // hand-authored governs-only convention at a non-canonical id keeps its id (never two
   // conventions for one kind; the slug id is only for true creates).
-  // Its authored title is display identity and survives. Description and body cannot simply
-  // survive: a dismissal record's prose states the decline the redraft reverses, so the plan names
-  // every overwrite and the token binds the current text the reviewer saw.
+  // Every existing frontmatter key the draft does not own survives (owner, tags, x_* and unknown
+  // keys), as does the authored title. Description and body cannot simply survive: a dismissal
+  // record's prose states the decline the redraft reverses. The plan names every owned value it
+  // changes, and the token binds the merged candidate plus those current values.
   const replacesProse: ReplacedProse[] = [];
+  const replacesFields: ReplacedField[] = [];
   if (existing) {
     const current = await readDoc(bundle, existing.id);
-    const title = current.frontmatter.title;
-    const frontmatter = { ...candidateDoc.frontmatter };
-    if (typeof title === "string" && title.trim() !== "") {
-      frontmatter.title = title;
-      candidateKind = { ...candidateKind, title };
+    const owned = new Set([...DRAFT_OWNED_KEYS, ...Object.keys(candidateDoc.frontmatter)]);
+    const frontmatter: Frontmatter = { type: CONVENTION_TYPE };
+    for (const [key, value] of Object.entries(current.frontmatter)) {
+      if (!owned.has(key) && !isManagedDocumentMetadataField(key)) defineKey(frontmatter, key, structuredClone(value));
     }
+    for (const [key, value] of Object.entries(candidateDoc.frontmatter)) defineKey(frontmatter, key, value);
+    const title = current.frontmatter.title;
+    if (typeof title === "string" && title.trim() !== "") frontmatter.title = title;
     candidateDoc = { ...candidateDoc, id: existing.id, frontmatter };
+    const reparsed = parseConventionDoc({ id: candidateDoc.id, frontmatter, body: candidateDoc.body });
+    if (reparsed.ok) candidateKind = reparsed.kind;
+    for (const key of [...owned].sort()) {
+      if (key === "description" || !Object.hasOwn(current.frontmatter, key)) continue;
+      const was = current.frontmatter[key];
+      const next = Object.hasOwn(frontmatter, key) ? frontmatter[key] : null;
+      if (JSON.stringify(was) !== JSON.stringify(next)) replacesFields.push({ field: key, current: was, proposed: next });
+    }
     const description = current.frontmatter.description;
     const proposedDescription = typeof frontmatter.description === "string" ? frontmatter.description : "";
     if (typeof description === "string" && description.trim() !== "" && description !== proposedDescription) {
@@ -464,6 +493,7 @@ export async function prepareKindDraft(bundle: Bundle, type: string, text: KindA
   const token = draftPlanToken({
     target: candidateDoc.id, candidate: candidateDoc, okfVersion, stats, warnings,
     ...(replacesProse.length > 0 ? { replaces: replacesProse } : {}),
+    ...(replacesFields.length > 0 ? { replacesFields } : {}),
   });
   return {
     type,
@@ -474,6 +504,7 @@ export async function prepareKindDraft(bundle: Bundle, type: string, text: KindA
     candidateKind,
     catalog,
     replacesProse,
+    replacesFields,
     stats,
     instances,
     warnings,

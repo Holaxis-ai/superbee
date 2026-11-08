@@ -422,7 +422,7 @@ test("kind draft: redrafts over a dismissal and REPLACES the decline prose — n
     const replaces = plan.replaces_prose as Array<{ field: string; current: string; proposed: string }>;
     assert.deepEqual(replaces.map((row) => row.field), ["description", "body"]);
     assert.match(replaces[1]!.current, /plans stay freeform/);
-    assert.match(String(plan.note), /^apply rewrites 'conventions\/plan' as drafted, keeping its title; it overwrites the current text under replaces_prose/);
+    assert.match(String(plan.note), /^apply rewrites 'conventions\/plan' as drafted, keeping its title and every frontmatter key the draft does not own; it overwrites the current values under replaces_prose and replaces_fields/);
     const applied = await runKind(["draft", "Plan", "--apply", plan.plan_token as string, "--dir", dir]);
     assert.equal(applied.changed, true);
 
@@ -587,6 +587,41 @@ test("kind draft: redraft over a hand-authored governs-only convention at a NON-
     const governing = (await loadKinds({ root: dir })).kinds.get("Memo")!;
     assert.equal(governing.id, "conventions/weird-memo-record");
     assert.deepEqual(governing.fields.required, ["title"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("kind draft: redraft keeps frontmatter the draft does not own, lists owned changes, and binds both into the token (review)", async () => {
+  const { dir, cleanup } = await tempBundle();
+  try {
+    await seed(dir, "memos/m1", { type: "Memo", title: "m1" });
+    await seed(dir, "memos/m2", { type: "Memo", title: "m2" });
+    const authored = {
+      type: CONVENTION_TYPE, title: "Memo records", governs: "Memo", owner: "human:ada",
+      tags: ["ops"], related: ["memos/m1"], x_recipe: "house-style", x_note: { kept: true },
+      sections: [],
+    };
+    await seed(dir, "conventions/memo", authored, "Memos are short.\n");
+
+    const plan = await runKind(["draft", "Memo", "--dir", dir]);
+    assert.deepEqual(plan.replaces_fields, [{ field: "sections", current: [], proposed: null }]);
+    const stale = plan.plan_token as string;
+    await seed(dir, "conventions/memo", { ...authored, tags: ["ops", "edited"] }, "Memos are short.\n");
+    const err = await kindError(["draft", "Memo", "--apply", stale, "--dir", dir]);
+    assert.equal(err.code, "STALE_HEAD");
+
+    const fresh = await runKind(["draft", "Memo", "--dir", dir]);
+    await runKind(["draft", "Memo", "--apply", fresh.plan_token as string, "--dir", dir]);
+    const doc = await readDoc({ root: dir }, "conventions/memo");
+    assert.equal(doc.frontmatter.title, "Memo records");
+    assert.equal(doc.frontmatter.owner, "human:ada");
+    assert.deepEqual(doc.frontmatter.tags, ["ops", "edited"]);
+    assert.deepEqual(doc.frontmatter.related, ["memos/m1"]);
+    assert.equal(doc.frontmatter.x_recipe, "house-style");
+    assert.deepEqual(doc.frontmatter.x_note, { kept: true });
+    assert.equal(doc.frontmatter.sections, undefined);
+    assert.deepEqual((await loadKinds({ root: dir })).kinds.get("Memo")!.fields.required, ["title"]);
   } finally {
     await cleanup();
   }
