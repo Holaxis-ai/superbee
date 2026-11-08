@@ -12,8 +12,8 @@ import path from "node:path";
 import { createServer as createHttpServer, type Server, type ServerResponse } from "node:http";
 import { connect } from "node:net";
 
-import { deleteDoc, initBundle, readDoc, writeBlob, writeDoc, RemoteBackend, type Bundle } from "@superbee/core";
-import { createRouter, serve, type ServerHandle } from "@superbee/server";
+import { deleteDoc, initBundle, readDoc, writeBlob, writeDoc, type Bundle } from "@superbee/core";
+import { createRouter } from "@superbee/server";
 import { bootUiServer, type UiServerHandle } from "../src/ui/server.js";
 import {
   PageLaunchRegistry,
@@ -160,17 +160,6 @@ test("isEmptyChange: true iff nothing moved on either side", () => {
   assert.equal(isEmptyChange(diffSnapshots(snap({ a: "v1" }), snap({ a: "v2" }))), false);
 });
 
-// ── remote watcher: serialized polls + abort on stop (P1 — remote concurrency) ─
-
-function listenOn(server: Server): Promise<string> {
-  return new Promise((resolve) => {
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address() as { port: number };
-      resolve(`http://127.0.0.1:${addr.port}`);
-    });
-  });
-}
-
 async function waitFor(cond: () => boolean, ms = 5_000): Promise<void> {
   const deadline = Date.now() + ms;
   while (!cond()) {
@@ -178,125 +167,6 @@ async function waitFor(cond: () => boolean, ms = 5_000): Promise<void> {
     await new Promise((r) => setTimeout(r, 10));
   }
 }
-
-test("P1: remote watcher polls NEVER overlap — a slow stale read cannot emit a C->B->C regression", async () => {
-  const staleDocs = [{ id: "doc", version: "vA" }];
-  const freshDocs = [{ id: "doc", version: "vB" }];
-  // Request 1 is the baseline (state A). Request 2 simulates a poll that STARTED before a write
-  // and answers with the STALE state only 250ms later. Every request after that sees the fresh
-  // state B immediately. Unserialized polls would interleave: a fast fresh poll lands (emit B),
-  // then the slow stale one lands (emit a REGRESSION back to A and poison `last`), then the next
-  // tick re-emits B — the observed C -> B -> C.
-  let requestNo = 0;
-  let active = 0;
-  let maxConcurrent = 0;
-  const server = createHttpServer((_req, res) => {
-    requestNo++;
-    active++;
-    maxConcurrent = Math.max(maxConcurrent, active);
-    const finish = (docs: { id: string; version: string }[]): void => {
-      active--;
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ docs, next_cursor: null }));
-    };
-    if (requestNo === 1) finish(staleDocs);
-    else if (requestNo === 2) setTimeout(() => finish(staleDocs), 250);
-    else finish(freshDocs);
-  });
-  const origin = await listenOn(server);
-  try {
-    const emitted: string[] = [];
-    const watcher = await startWatcher({
-      mode: "remote",
-      remoteBase: origin,
-      pollMs: 30,
-      onChange: (e) => emitted.push(...e.docs.changed.map((c) => c.version)),
-    });
-    // Several poll ticks elapse WHILE request 2 is still held open, then plenty for the catch-up.
-    await new Promise((r) => setTimeout(r, 600));
-    await watcher.stop();
-
-    assert.equal(maxConcurrent, 1, "two snapshot requests must never be in flight at once");
-    assert.deepEqual(emitted, ["vB"], `exactly one forward change, no stale re-emission (got: ${emitted.join(",") || "none"})`);
-  } finally {
-    server.close();
-  }
-});
-
-test("P1: stop() ABORTS an in-flight snapshot request instead of leaving it dangling past shutdown", async () => {
-  let requestNo = 0;
-  let hungRes: ServerResponse | undefined;
-  let hungClosed = false;
-  const server = createHttpServer((_req, res) => {
-    requestNo++;
-    if (requestNo === 1) {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ docs: [], next_cursor: null }));
-      return;
-    }
-    // Never answer — the ONLY way this request ends is the client tearing it down.
-    hungRes = res;
-    res.once("close", () => {
-      hungClosed = true;
-    });
-  });
-  const origin = await listenOn(server);
-  try {
-    const errors: unknown[] = [];
-    const watcher = await startWatcher({
-      mode: "remote",
-      remoteBase: origin,
-      pollMs: 20,
-      onChange: () => {},
-      onError: (err) => errors.push(err),
-    });
-    await waitFor(() => hungRes !== undefined); // a poll is now genuinely in flight
-    await watcher.stop();
-    await waitFor(() => hungClosed); // ...and the abort tore it down server-visibly
-    assert.equal(errors.length, 0, "an abort at shutdown is shutdown, not an error to report");
-  } finally {
-    server.close();
-  }
-});
-
-test("startWatcher: a --remote upstream whose BOOT snapshot never responds REJECTS within the bound, not hangs (tasks/ui-remote-watcher-boot-timeout)", async () => {
-  // Never touches `res` at all — the ONLY way this request ends is the client's own boot-time
-  // timeout firing (undici's default is ~300s; unbound, this would hang `startWatcher` forever,
-  // which `bootUiServer` awaits directly — the exact disease this fix closes).
-  const server = createHttpServer(() => {});
-  const origin = await listenOn(server);
-  try {
-    const start = Date.now();
-    let rejection: unknown;
-    let hitSafetyCeiling = false;
-    // A generous 2s SAFETY ceiling around the real ~100ms test bound (never the production
-    // default) — if the fix regresses, this trips instead of the test itself hanging forever.
-    await Promise.race([
-      startWatcher({ mode: "remote", remoteBase: origin, bootTimeoutMs: 100, onChange: () => {} }).catch((err: unknown) => {
-        rejection = err;
-      }),
-      new Promise<void>((resolve) => {
-        const t = setTimeout(() => {
-          hitSafetyCeiling = true;
-          resolve();
-        }, 2_000);
-        t.unref?.();
-      }),
-    ]);
-    const elapsedMs = Date.now() - start;
-
-    assert.equal(hitSafetyCeiling, false, "startWatcher hung past the test's 2s safety ceiling — the boot-time bound did not fire");
-    assert.ok(rejection, "startWatcher must REJECT (not resolve) when its boot snapshot times out");
-    assert.equal(
-      (rejection as Error).name,
-      "TimeoutError",
-      `expected AbortSignal.timeout()'s TimeoutError to fire the rejection; got: ${String(rejection)}`,
-    );
-    assert.ok(elapsedMs < 1_000, `startWatcher took ${elapsedMs}ms to reject — expected near its OWN ~100ms bound, not a slower fallback`);
-  } finally {
-    server.close();
-  }
-});
 
 // ── privilege split (end-to-end over a real listener) ─────────────────────────
 
@@ -587,69 +457,6 @@ test("ONE-PREDICATE: serve-time re-verification rides the same predicate — an 
   }
 });
 
-test("bootUiServer: a --remote upstream that never responds on boot does not hang the UI boot — bounded, degraded-but-honest signal (tasks/ui-remote-watcher-boot-timeout)", async () => {
-  // Never touches `res` — the watcher's boot-time snapshot fetch against this origin can only end
-  // by timing itself out; `bootUiServer` must never wait that out.
-  const server = createHttpServer(() => {});
-  const origin = await listenOn(server);
-
-  const stderrChunks: string[] = [];
-  const originalWrite = process.stderr.write.bind(process.stderr);
-  process.stderr.write = ((chunk: unknown) => {
-    stderrChunks.push(String(chunk));
-    return true;
-  }) as typeof process.stderr.write;
-
-  try {
-    const start = Date.now();
-    let handle: UiServerHandle | undefined;
-    let hitSafetyCeiling = false;
-    await Promise.race([
-      bootUiServer({
-        mode: "remote",
-        port: 0,
-        remoteBase: origin,
-        bundle: { root: origin, backend: new RemoteBackend({ baseUrl: origin, bundle: "default", maxRetries: 0 }) },
-        // Test-only override (never the production ~5s default) — keeps this test fast.
-        watcherBootTimeoutMs: 100,
-        sessionSecret: SECRET,
-      }).then((h) => {
-        handle = h;
-      }),
-      new Promise<void>((resolve) => {
-        const t = setTimeout(() => {
-          hitSafetyCeiling = true;
-          resolve();
-        }, 2_000);
-        t.unref?.();
-      }),
-    ]);
-    const elapsedMs = Date.now() - start;
-    process.stderr.write = originalWrite;
-
-    try {
-      assert.equal(hitSafetyCeiling, false, "bootUiServer hung past the test's 2s safety ceiling — the boot never returned");
-      assert.ok(handle, "bootUiServer must resolve to a handle even when the watcher degrades");
-      assert.ok(elapsedMs < 1_000, `bootUiServer took ${elapsedMs}ms — expected near the watcher's own ~100ms boot bound`);
-      // Degraded-but-HONEST: the timeout is surfaced (never a silent no-watch), and the UI is
-      // otherwise fully usable — a basic authenticated request still succeeds.
-      assert.ok(
-        stderrChunks.some((line) => line.includes("[ui watcher]") && /timeout/i.test(line)),
-        `expected a "[ui watcher] ... timeout ..." stderr line; got: ${JSON.stringify(stderrChunks)}`,
-      );
-      const res = await fetch(`http://${handle!.host}:${handle!.port}/__ui/config`, {
-        headers: { cookie: `aslite_ui_session=${SECRET}` },
-      });
-      assert.equal(res.status, 200, "the UI must remain fully usable even though the watcher degraded");
-    } finally {
-      if (handle) await handle.close();
-    }
-  } finally {
-    process.stderr.write = originalWrite;
-    server.close();
-  }
-});
-
 test("LOCATION-SURVIVAL: the watcher's snapshot covers views/ blobs — a views/ hot-reload is observable, legacy-located pages/ unchanged", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "agentstate-lite-ui-views-watch-"));
   try {
@@ -777,63 +584,6 @@ test("edges endpoint: session-gated, serves core's queryEdges over the mounted b
     assert.deepEqual(none, { edges: [], count: 0 });
   } finally {
     await cleanup();
-  }
-});
-
-test("edges endpoint: serves core's queryEdges over a RemoteBackend bundle (remote mode) — same plumbing kindsResponse uses", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "agentstate-lite-ui-edges-remote-"));
-  let remoteHandle: ServerHandle | undefined;
-  let uiHandle: UiServerHandle | undefined;
-  try {
-    const bundle: Bundle = { root: dir };
-    await initBundle(dir);
-    await writeDoc(bundle, { id: "tasks/a", frontmatter: { type: "Task", title: "A" }, body: "See [also b](b.md)." });
-    await writeDoc(bundle, { id: "tasks/b", frontmatter: { type: "Task", title: "B" }, body: "" });
-
-    remoteHandle = await serve({ bundle, port: 0 });
-    const remoteBase = `http://${remoteHandle.host}:${remoteHandle.port}`;
-    const remoteBundle: Bundle = { root: remoteBase, backend: new RemoteBackend({ baseUrl: remoteBase, bundle: "default" }) };
-
-    uiHandle = await bootUiServer({ mode: "remote", port: 0, remoteBase, bundle: remoteBundle, sessionSecret: SECRET });
-    const origin = `http://${uiHandle.host}:${uiHandle.port}`;
-
-    const res = await fetch(`${origin}/__ui/edges`, { headers: { cookie: `aslite_ui_session=${SECRET}` } });
-    assert.equal(res.status, 200);
-    const body = (await res.json()) as { edges: { from: string; to: string; text: string }[]; count: number };
-    assert.equal(body.count, 1);
-    assert.deepEqual(body.edges, [{ from: "tasks/a", to: "tasks/b", text: "also b" }]);
-  } finally {
-    await uiHandle?.close();
-    await remoteHandle?.close();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("edges endpoint: a remote-upstream OUTAGE surfaces as a non-2xx error, never a 200 {edges:[]} (review fold-in — edges is primary data, not a display filter)", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "agentstate-lite-ui-edges-outage-"));
-  let uiHandle: UiServerHandle | undefined;
-  try {
-    // Boot a REAL reference server, note its origin, then close it — the origin now genuinely
-    // refuses connections (ECONNREFUSED), mirroring the review's exact repro ("killing the
-    // reference server").
-    const bundle: Bundle = { root: dir };
-    await initBundle(dir);
-    const remoteHandle = await serve({ bundle, port: 0 });
-    const remoteBase = `http://${remoteHandle.host}:${remoteHandle.port}`;
-    await remoteHandle.close();
-
-    const remoteBundle: Bundle = { root: remoteBase, backend: new RemoteBackend({ baseUrl: remoteBase, bundle: "default" }) };
-    uiHandle = await bootUiServer({ mode: "remote", port: 0, remoteBase, bundle: remoteBundle, sessionSecret: SECRET });
-    const origin = `http://${uiHandle.host}:${uiHandle.port}`;
-
-    const res = await fetch(`${origin}/__ui/edges`, { headers: { cookie: `aslite_ui_session=${SECRET}` } });
-    assert.notEqual(res.status, 200, "an unreachable remote must NOT read as a successful empty edge list");
-    assert.ok(res.status >= 500, `expected an error status, got ${res.status}`);
-    const body = (await res.json()) as { error?: { code: string } };
-    assert.ok(body.error, "a non-2xx edges response carries the wire error envelope, not a bare {edges:[]}");
-  } finally {
-    await uiHandle?.close();
-    await rm(dir, { recursive: true, force: true });
   }
 });
 

@@ -29,6 +29,5 @@ Options:
                    target is allowed)
   --no-prefix      Use <id> verbatim (skip the auto path prefix above)
   --dir <path>     Bundle directory (default: discovered from the cwd)
-  --remote <url>   Talk to a wire-protocol server instead of a local bundle
   --json           Emit compact JSON instead of TOON
   -h, --help       Show this help

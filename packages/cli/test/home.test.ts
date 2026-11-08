@@ -181,7 +181,7 @@ test("board-state gate: any firstContact line (unprovisioned/window/conflict) su
     `board found for this repo — run \`${INVOKE} sync\` to join it (never init)`,
     "board window: origin/board exists while the bundle is still committed at HEAD — pull first",
   ]) {
-    const view = buildHomeView(BASE_DEPS, summary, undefined, undefined, undefined, { firstContact });
+    const view = buildHomeView(BASE_DEPS, summary, undefined, undefined, { firstContact });
     const bundle = view.bundle as Record<string, unknown>;
     assert.equal(bundle.offers, undefined);
     assert.equal(bundle.offers_help, undefined);
@@ -697,17 +697,11 @@ test("A1.7b byType ordering (REAL summarizeDocs): count desc, then type asc", ()
   assert.deepEqual(Object.keys(summary.byType), ["Concept", "Design", "Note"]);
 });
 
-test("A1.8 home omits hosted credential identity while an explicit remote still orients bundle reads", () => {
+test("A1.8 home omits hosted credential identity and has no remote block", () => {
   const local = buildHomeView(BASE_DEPS, null);
   assert.equal(local.auth, undefined);
   assert.equal(local.remotes, undefined);
-
-  const scoped = buildHomeView(BASE_DEPS, null, "https://ex.workers.dev");
-  assert.equal(scoped.auth, undefined);
-  assert.deepEqual((scoped.remote as Record<string, unknown>).help, [
-    `${INVOKE} list --remote https://ex.workers.dev`,
-    `${INVOKE} status --remote https://ex.workers.dev`,
-  ]);
+  assert.equal(local.remote, undefined);
 });
 
 test("A1.10 unreadable bundle (present but a doc failed to read): status:unreadable, NOT the init hint", () => {
@@ -909,7 +903,7 @@ test("A1.12c resolved binding with no summary: home falls back to the resolver's
   }
 });
 
-test("A1.13 project binding URL: home surfaces explicit --remote migration guidance and never fetches", async () => {
+test("A1.13 project binding URL: home surfaces the refusal without echoing the URL and never fetches", async () => {
   const projectDir = await tempDir();
   try {
     // Nothing listens on this port — home must only render the local-safe migration error.
@@ -920,10 +914,10 @@ test("A1.13 project binding URL: home surfaces explicit --remote migration guida
       process.chdir(projectDir);
       let out = "";
       await home([], { stdout: (s) => (out += s) });
-      assert.ok(out.includes("http://127.0.0.1:1"));
+      assert.ok(!out.includes("http://127.0.0.1:1"));
       assert.ok(out.includes(".superbee.json"));
       assert.ok(out.includes("project_binding_error"));
-      assert.ok(out.includes("pass --remote"));
+      assert.ok(out.includes("remote access was removed"));
       assert.ok(out.includes("fix or remove the binding before initializing or browsing recipes"));
       assert.ok(!out.includes("getting_started"));
     } finally {

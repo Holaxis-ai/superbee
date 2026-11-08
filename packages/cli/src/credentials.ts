@@ -5,9 +5,8 @@
 // (same field names, same atomic temp-file-then-rename write with 0600/0700 perms), but the FILE is
 // deliberately SEPARATE — `okf-config.json`, NOT canonical AgentState's `credentials.json` — so
 // Superbee never overwrites (nor reads as its own) the canonical AgentState CLI's OAuth credential
-// on the same machine. What Superbee stores: per-origin `--remote` API keys (`remotes`) only — the
-// OAuth/PKCE/loopback flow AND the legacy `login --token` bearer store (`server`/`access_token`) are
-// both gone; the live remote auth is a per-origin API key against a gated wire-protocol deployment.
+// on the same machine. What Superbee stores: per-origin API keys (`remotes`) only, kept so
+// state migration carries them; the removed `--remote` client was their only reader.
 //
 // The write is ATOMIC: the JSON is written to a freshly O_EXCL-created temp file (mode 0600) in the
 // same 0700 dir, then renamed over okf-config.json — so the secret is never momentarily exposed at
@@ -24,8 +23,8 @@ export interface Credentials {
    * (`new URL(remoteUrl).origin`, e.g. `https://my-worker.example.workers.dev`) — origin-keyed
    * from birth (a recorded design commitment: a single-slot shape would break the moment a
    * caller talks to more than one gated remote, e.g. a staging + a production deployment).
-   * Provisioned outside the default CLI; read by `bundle.ts`'s `--remote`
-   * resolution to source the `RemoteBackend` `authToken`. This is the SOLE credential shape — the
+   * Provisioned outside the default CLI; the removed `--remote` client was the reader. This is the
+   * SOLE credential shape — the
    * legacy `server`/`access_token` bearer fields were removed (the live remote auth is a per-origin
    * API key, not a stored bearer token).
    */

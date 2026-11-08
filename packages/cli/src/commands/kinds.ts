@@ -20,7 +20,7 @@ import {
   readBundleOkfVersion,
   type KindConvention,
 } from "@superbee/core";
-import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { openBundle } from "../bundle.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
@@ -29,7 +29,7 @@ import { cliInvocation } from "../invocation.js";
 export const KINDS_USAGE = `superbee kinds — list the kind conventions declared by this bundle
 
 Usage:
-  superbee kinds [--dir <path>] [--remote <url>]
+  superbee kinds [--dir <path>]
   superbee kinds --coverage [--kind <Kind>] [--now <ISO instant or date>] [--dir <path>] [--json]
 
 A kind convention is a plain OKF doc (type: Convention) under conventions/ declaring a document
@@ -122,8 +122,6 @@ Options:
   --kind <Kind>        Select one exact declared type (requires --coverage)
   --now <ISO>          Fixed UTC date or explicit-zone instant for coverage (requires --coverage)
   --dir <path>          Bundle directory (default: discovered from the cwd)
-  --remote <url>        Talk to a wire-protocol server instead of a local bundle
-                         (mutually exclusive with --dir; remote access is always explicit)
   --json                Emit compact JSON instead of TOON
   -h, --help            Show this help
 `;
@@ -187,7 +185,6 @@ export async function kinds(argv: string[], deps: Partial<KindsCliDeps> = {}): P
           kind: { type: "string" },
           now: { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -203,12 +200,11 @@ export async function kinds(argv: string[], deps: Partial<KindsCliDeps> = {}): P
   if (!values.coverage && (values.kind !== undefined || values.now !== undefined)) {
     throw new CliError("USAGE", "--kind and --now require --coverage");
   }
-  if (values.coverage && values.remote !== undefined) throw new CliError("USAGE", "Kind coverage reads local bundles only; omit --remote");
   const nowText = values.now;
   const nowMs = nowText === undefined ? Date.now() : parseTimestamp(/^\d{4}-\d{2}-\d{2}$/.test(nowText) ? `${nowText}T00:00:00Z` : nowText, "0.2");
   if (nowMs === null) throw new CliError("USAGE", "--now requires a valid ISO date or explicit-zone instant");
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir);
   const [registry, okfVersion] = await Promise.all([
     loadKinds(bundle),
     readBundleOkfVersion(bundle),

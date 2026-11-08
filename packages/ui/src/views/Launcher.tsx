@@ -242,9 +242,6 @@ export function Launcher() {
         <p className="launcher-meta">
           {config ? (
             <>
-              {/* Local is the default experience and needs no badge; only the remote exception
-                  is worth flagging up front (mechanics live behind "where is this?"). */}
-              {config.mode === "remote" && <span className="pill">remote</span>}
               {chip && (
                 <span className={chip.className} title={chip.title ?? (config.sharing ? `as of ${formatWhen(config.sharing.as_of) ?? config.sharing.as_of}` : undefined)}>
                   {chip.text}
@@ -268,17 +265,15 @@ export function Launcher() {
         {config && whereOpen && (
           <dl className="where-panel">
             <div>
-              <dt>{config.mode === "remote" ? "Server" : "Folder"}</dt>
+              <dt>Folder</dt>
               <dd>
-                <code>{config.root ?? config.remoteUrl ?? "unknown"}</code>
+                <code>{config.root ?? "unknown"}</code>
               </dd>
             </div>
             <div>
               <dt>Serving</dt>
               <dd>
-                {config.mode === "remote"
-                  ? "reverse proxy to the server above — this window only (127.0.0.1)"
-                  : "local folder · this computer only (127.0.0.1, per-run session)"}
+                local folder · this computer only (127.0.0.1, per-run session)
               </dd>
             </div>
             <div>

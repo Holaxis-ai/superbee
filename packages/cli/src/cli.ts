@@ -32,7 +32,6 @@ import { recipes } from "./commands/recipes.js";
 import { recipe } from "./commands/recipe.js";
 import { source } from "./commands/source.js";
 import { status } from "./commands/status.js";
-import { serve } from "./commands/serve.js";
 import { ui } from "./commands/ui.js";
 import { mcp } from "./commands/mcp.js";
 import { sync } from "./commands/sync.js";
@@ -67,7 +66,7 @@ import { cliInvocation } from "./invocation.js";
 import { PUBLIC_COMMAND_NAMES, type PublicCommandName } from "./command-spec.js";
 import { parseArgs } from "node:util";
 import { commandWords } from "./command-text.js";
-import { openDeprecationNotices, refuseRetiredEnv } from "./deprecation-notices.js";
+import { openDeprecationNotices, refuseRetiredEnv, refuseRetiredInput } from "./deprecation-notices.js";
 export { cliVersion } from "./build-identity.js";
 
 export const KNOWN_COMMANDS = PUBLIC_COMMAND_NAMES;
@@ -130,7 +129,6 @@ export const PUBLIC_HANDLERS = Object.freeze({
   recipes,
   recipe,
   status,
-  serve,
   ui,
   mcp,
   sync,
@@ -190,15 +188,15 @@ export const RUNTIME_COMMANDS = Object.freeze({
  *
  * Help family: no command (bare `axi`) renders the offline home view (exit 0); `--help`/`-h`/`help`
  * render the COMMAND_GROUPS reference (exit 0). A leading flag before a command writes a USAGE
- * envelope and sets exit 2 — EXCEPT a global-flags-only invocation (`--remote <url>`/`--dir <path>`
- * with no subcommand), which renders the home view scoped to that remote/dir (exit 0). Everything
+ * envelope and sets exit 2 — EXCEPT a global-flags-only invocation (`--dir <path>` with no
+ * subcommand), which renders the home view scoped to that dir (exit 0). Everything
  * else routes through `runAxiCli`, whose `formatError`
  * preserves the full CliError exit taxonomy (0/1/2/4/5/6) and TOON error envelope; the SDK sets
  * `process.exitCode` (never `process.exit`), so the rich taxonomy survives end-to-end.
  */
 /**
- * True when `argv` is ONLY home-compatible global flags (`--remote <url>` / `--dir <path>` /
- * `--json` / `--no-update-check`) with NO positional subcommand — the canonical `superbee --remote <url>` an agent
+ * True when `argv` is ONLY home-compatible global flags (`--dir <path>` / `--json` /
+ * `--no-update-check`) with NO positional subcommand — the canonical `superbee --dir <path>` an agent
  * runs to orient against a bundle. Such an invocation routes to the home view rather than the
  * "options must follow the command" USAGE error (which is for a real flag-before-command like
  * `--dir x list`, or an unknown flag like `--bogus`). Any parse failure returns false.
@@ -208,7 +206,6 @@ function isGlobalOnlyHomeInvocation(argv: string[]): boolean {
     const { positionals } = parseArgs({
       args: argv,
       options: {
-        remote: { type: "string" },
         dir: { type: "string" },
         json: { type: "boolean" },
         "no-update-check": { type: "boolean" },
@@ -243,7 +240,6 @@ export function hoistLeadingGlobalFlags(argv: string[]): string[] | null {
       strict: false,
       allowPositionals: true,
       options: {
-        remote: { type: "string" },
         dir: { type: "string" },
         json: { type: "boolean" },
         "no-update-check": { type: "boolean" },
@@ -286,13 +282,16 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
 
+  // A removed flag or command fails before any routing, wherever the flag sits.
+  if (refuseRetiredInput(argv)) return;
+
   // A leading flag (e.g. `axi --dir <path> list`) is a common mistake: options are per-command and
   // must FOLLOW the subcommand. Give an actionable hint rather than the opaque "unknown command:
   // --dir". (Version and help aliases are handled above; this is for the rest.) Exit 2.
   if (command.startsWith("-")) {
-  // `superbee --remote <url>` (or `--dir <path>`) with NO subcommand is the canonical
-    // "orient me against this bundle" invocation, not a flags-before-command mistake — route it to
-    // the home view (scoped to that remote/dir) instead of erroring. A real leading flag before a
+    // `superbee --dir <path>` with NO subcommand is the canonical "orient me against this bundle"
+    // invocation, not a flags-before-command mistake — route it to the home view (scoped to that
+    // dir) instead of erroring. A real leading flag before a
     // command (`--dir x list`) or an unknown flag (`--bogus`) still gets the actionable USAGE hint.
     if (isGlobalOnlyHomeInvocation(argv)) {
       openDeprecationNotices(argv);

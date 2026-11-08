@@ -28,7 +28,7 @@ import { render, renderUsage, resolveMode } from "../output.js";
 export const BUNDLE_ID_SET_USAGE = `superbee bundle id set — declare this bundle's portable id
 
 Usage:
-  superbee bundle id set <id> [--force] [--expected-version <v>] [--actor <name>] [--dir <path> | --remote <url>]
+  superbee bundle id set <id> [--force] [--expected-version <v>] [--actor <name>] [--dir <path>]
 
 Writes bundle_id into docs/bundle, the document a bundle names itself in. Another bundle's
 docs/dependencies names this bundle by that id, and 'status --with' checks the two agree.
@@ -69,7 +69,6 @@ export async function bundleId(argv: string[], stdout: (s: string) => void): Pro
           "expected-version": { type: "string" },
           actor: { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -91,10 +90,10 @@ export async function bundleId(argv: string[], stdout: (s: string) => void): Pro
     );
   }
   const retry = `${cliInvocation()} bundle id set ${commandToken(id)}`;
-  const rerun = `${retry}${givenFlags([["force", values.force], ["actor", values.actor], ["dir", values.dir], ["remote", values.remote]])}`;
+  const rerun = `${retry}${givenFlags([["force", values.force], ["actor", values.actor], ["dir", values.dir]])}`;
   const expectedVersion = expectedVersionFlag(values["expected-version"], `${retry} --expected-version <v>`);
   const actor = resolveActor(values.actor, { help: `${retry} --actor <name>` });
-  const target = await openDeclarationTarget(values.dir, values.remote);
+  const target = await openDeclarationTarget(values.dir);
 
   let created = false;
   let previous: unknown = null;
@@ -106,7 +105,6 @@ export async function bundleId(argv: string[], stdout: (s: string) => void): Pro
     registry: await loadKinds(target.bundle),
     strict: false,
     helpOnKindReject: `${cliInvocation()} kinds`,
-    remoteUrl: target.remoteUrl,
     actor,
     persistActor: true,
     ...(expectedVersion === undefined ? {} : { expectedVersion }),

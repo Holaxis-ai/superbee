@@ -4,13 +4,13 @@ import { renderUsage } from "../output.js";
 //
 // ROUTES BY TARGET, symmetric with `promote` (A6, I8): a `--doc-key` ending `.md` (case-insensitive,
 // B6) is a DOC — delivered as the CANONICAL OKF re-serialization via `readDocVersioned` + core's
-// `stringifyDoc` (the ONE serializer), UNIFORMLY for both `--dir` and `--remote`. This is
+// `stringifyDoc` (the ONE serializer). This is
 // deliberately different from `doc read --out`'s LOCAL path (which streams raw on-disk bytes): `pull`
 // is built fresh on the ENGINE API and is backend-agnostic by design. For an ENGINE-WRITTEN doc this
 // is byte-identical to the original (`stringifyDoc` is exactly what `writeDoc` used to produce the
 // on-disk bytes in the first place); a hand-edited file with idiosyncratic YAML formatting (unusual
 // quoting, key order, comments) round-trips to the canonical form, not its original bytes — the SAME
-// documented divergence `doc read --out --remote` already carries, now also true of `pull --dir` for
+// documented divergence holds for `pull --dir` on
 // docs (say so in the usage text, don't just leave it implicit).
 //
 // B7: NO byte-verification on the doc route. `FilesystemBackend`'s doc version is a hash of ON-DISK
@@ -45,7 +45,7 @@ import {
   blobVersion,
   type Bundle,
 } from "@superbee/core";
-import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { openBundle } from "../bundle.js";
 import { CliError, toExit, asHandled, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -66,13 +66,13 @@ Usage:
 
 Routes by the --doc-key's target (case-insensitive), symmetric with 'promote':
   A key ending '.md' is a DOC: delivered as the CANONICAL OKF re-serialization (core's ONE
-  serializer), for BOTH --dir and --remote. For an engine-written doc this is byte-identical to the
+  serializer). For an engine-written doc this is byte-identical to the
   original; a hand-edited file with unusual YAML formatting round-trips to the canonical form, not
   its original bytes. The receipt's 'version' is the store's CURRENT version token (no byte-verify
   on this route, B7) — pass it straight to a follow-up 'promote --expected-version' to update it
   safely.
   Any OTHER key is a BLOB: raw bytes, self-verified against the returned version (a real integrity
-  check — catches transport corruption over --remote too, not just a local tautology).
+  check, not a local tautology).
 
 In a hosted checkout, the default still reads the local working copy; its blob content_type is
 inferred from the filename. --from-host explicitly reads the bound host's current blob instead,
@@ -93,10 +93,8 @@ Options:
   --out <path>          Write bytes to this local path
   --out -               Stream raw bytes to stdout; receipt -> stderr
   --from-host           Read a blob's verified bytes and stored MIME from a bound hosted checkout's
-                         host (not documents, a local/Git bundle, or --remote)
+                         host (not documents or a local/Git bundle)
   --dir <path>          Bundle directory (default: discovered from the cwd)
-  --remote <url>        Talk to a wire-protocol server instead of a local bundle (mutually
-                         exclusive with --dir; remote access is always explicit)
   --json                Emit compact JSON instead of TOON
   -h, --help            Show this help
 `;
@@ -139,14 +137,14 @@ interface PullResult {
   fields: Record<string, unknown>;
 }
 
-async function pullDoc(bundle: Bundle, key: string, remoteUrl?: string): Promise<PullResult> {
+async function pullDoc(bundle: Bundle, key: string): Promise<PullResult> {
   const canonicalPath = key.slice(0, -3) + ".md";
   const id = conceptIdFromPath(canonicalPath);
   let result: Awaited<ReturnType<typeof readDocVersioned>>;
   try {
     result = await readDocVersioned(bundle, id);
   } catch (err) {
-    throw readErrorToCliError(err, id, remoteUrl);
+    throw readErrorToCliError(err, id);
   }
   const raw = stringifyDoc(result.doc.frontmatter, result.doc.body);
   const bytes = Buffer.from(raw, "utf8");
@@ -162,12 +160,12 @@ async function pullDoc(bundle: Bundle, key: string, remoteUrl?: string): Promise
   };
 }
 
-async function pullBlob(bundle: Bundle, key: string, remoteUrl?: string): Promise<PullResult> {
+async function pullBlob(bundle: Bundle, key: string): Promise<PullResult> {
   let result: Awaited<ReturnType<typeof readBlob>>;
   try {
     result = await readBlob(bundle, key);
   } catch (err) {
-    throw classifyBundleError(err, remoteUrl);
+    throw classifyBundleError(err);
   }
   if (result === null) {
     throw new CliError("NOT_FOUND", `no blob at key '${key}'`, {
@@ -208,7 +206,6 @@ export async function pull(argv: string[], deps: Partial<PullCliDeps> = {}): Pro
           out: { type: "string" },
           "from-host": { type: "boolean" },
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -237,17 +234,17 @@ export async function pull(argv: string[], deps: Partial<PullCliDeps> = {}): Pro
   // through a plain 0644 write, and brick every later private-state command — reached by a READ.
   if (out !== "-") assertPathOutsidePrivateState(path.resolve(out));
 
-  if (values["from-host"] && (values.remote !== undefined || isDocRouteKey(key))) {
-    throw new CliError("USAGE", "--from-host reads blobs from a bound hosted checkout; it cannot be used with --remote or a .md key");
+  if (values["from-host"] && isDocRouteKey(key)) {
+    throw new CliError("USAGE", "--from-host reads blobs from a bound hosted checkout; it cannot be used with a .md key");
   }
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir);
   const mode: OutputMode = resolveMode(values);
   const streamMode = out === "-";
   const docRoute = isDocRouteKey(key);
 
   const runToTarget = async (): Promise<void> => {
     const result = values["from-host"] ? await pullHostedBlob(bundle, key, out, !!values.json, deps)
-      : docRoute ? await pullDoc(bundle, key, values.remote) : await pullBlob(bundle, key, values.remote);
+      : docRoute ? await pullDoc(bundle, key) : await pullBlob(bundle, key);
     const receipt: Record<string, unknown> = { pull: "read", key, ...result.fields, out };
 
     // A10: pull's receipt hints a ready-to-paste `promote --expected-version <token>` with the

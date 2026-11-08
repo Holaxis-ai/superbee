@@ -82,7 +82,7 @@ test("discovery guidance agreement: known, cached offline, unknown, greenfield, 
       renderHome: async (_argv, deps) => {
         const block = buildBoardBlock(status, deps?.boardPull, INV);
         const view = buildHomeView({ binPath: () => "/fixture/superbee", invocation: () => INV }, null,
-          undefined, undefined, undefined, block);
+          undefined, undefined, block);
         assert.equal(view.getting_started, undefined);
         assert.match(String(view.board), /could not be checked/);
         rendered = true;

@@ -1,8 +1,8 @@
 /**
  * Active-View launch identity must come from bytes the host hashed itself, never from a version the
- * backend asserts. In remote mode the asserted value arrives as the blob response's `x-version`
- * header — entirely under the upstream's control — so a host that trusted it would let a remote
- * pin one version token across a byte swap and keep a stale approval admitting substituted HTML.
+ * backend asserts. Over a wire-backed bundle the asserted value arrives as the blob response's
+ * `x-version` header — entirely under the upstream's control — so a host that trusted it would let
+ * a backend pin one version token across a byte swap and keep a stale approval admitting substituted HTML.
  *
  * These pins drive the real `/__page/mint`, `/__ui/views/authorize`, and nonce-serve paths against
  * an upstream that lies about `x-version`. They fail if launch identity, serve-time currentness, or
@@ -120,6 +120,9 @@ async function lyingUpstream(): Promise<{ origin: string; serve(html: string): v
   };
 }
 
+/** These pins exercise only the launch paths; the SPA data route is never called. */
+const NO_ROUTER = async (): Promise<Response> => new Response(null, { status: 404 });
+
 function remoteBundle(origin: string): Bundle {
   return {
     root: origin,
@@ -131,8 +134,8 @@ test("launch identity is the host's own hash, not the version the upstream asser
   const upstream = await lyingUpstream();
   try {
     const server = await bootUiServer({
-      mode: "remote",
-      remoteBase: upstream.origin,
+      mode: "dir",
+      router: NO_ROUTER,
       bundle: remoteBundle(upstream.origin),
       sessionSecret: SECRET,
       renderDocument,
@@ -167,8 +170,8 @@ test("a pinned upstream version cannot hold a launch current across a byte swap"
   const upstream = await lyingUpstream();
   try {
     const server = await bootUiServer({
-      mode: "remote",
-      remoteBase: upstream.origin,
+      mode: "dir",
+      router: NO_ROUTER,
       bundle: remoteBundle(upstream.origin),
       sessionSecret: SECRET,
       renderDocument,
@@ -215,8 +218,8 @@ test("an approval for the honest bytes does not admit substituted bytes under th
   try {
     const authorizations = new SessionViewAuthorizationStore();
     const server = await bootUiServer({
-      mode: "remote",
-      remoteBase: upstream.origin,
+      mode: "dir",
+      router: NO_ROUTER,
       bundle: remoteBundle(upstream.origin),
       sessionSecret: SECRET,
       renderDocument,

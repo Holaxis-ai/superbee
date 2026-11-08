@@ -11,12 +11,11 @@ import {
   readDoc,
   writeDoc,
   CONVENTION_TYPE,
-  MemoryBackend,
+  FilesystemBackend,
   type Bundle,
   type OkfDocument,
   type Version,
 } from "@superbee/core";
-import { serve, type ServerHandle } from "@superbee/server";
 import { installRecipe } from "@superbee/core/recipe-lifecycle";
 import { CONTEXT_NOTES_RECIPE } from "../src/recipe-source.js";
 import { kind } from "../src/commands/kind.js";
@@ -24,10 +23,18 @@ import { list } from "../src/commands/list.js";
 import { status } from "../src/commands/status.js";
 import { CliError } from "../src/errors.js";
 
-/** Boot the reference server over `bundle` (a real socket listener, ephemeral port). */
-async function bootServerOverBundle(bundle: Bundle): Promise<{ url: string; close: () => Promise<void> }> {
-  const handle: ServerHandle = await serve({ bundle, port: 0 });
-  return { url: `http://${handle.host}:${handle.port}`, close: () => handle.close() };
+type WriteFn = (id: string, d: OkfDocument, options?: { expectedVersion?: Version | null }) => Promise<Version>;
+
+/**
+ * Route every write the CLI makes through the FilesystemBackend it constructs to `wrap`, which
+ * receives the unpatched write and the backend, until the returned restore runs.
+ */
+function patchLocalWrites(wrap: (originalWrite: WriteFn, backend: FilesystemBackend) => WriteFn): () => void {
+  const original = FilesystemBackend.prototype.write;
+  FilesystemBackend.prototype.write = async function (this: FilesystemBackend, id, d, options) {
+    return wrap((i, doc, o) => original.call(this, i, doc, o), this)(id, d, options);
+  };
+  return () => { FilesystemBackend.prototype.write = original; };
 }
 
 async function seeded(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
@@ -444,24 +451,20 @@ test("schema-evolution journey: kind field add --required makes status re-lint E
 // re-reads the winner's write and re-applies its OWN edit on top — both fields survive.
 
 // These two tests inject a competing write DETERMINISTICALLY at the exact moment our own write
-// attempts to land — the same `backend.write` wrapper technique `doc.test.ts`'s coupleRead racer
-// tests and `link.test.ts`'s addLink racer tests use — rather than relying on real concurrent
-// `Promise.all` timing, which does not reliably reproduce this race (two real HTTP round-trips
-// over loopback do not reliably overlap on the read/write critical section).
+// attempts to land, wrapping the local backend's write, rather than relying on real concurrent
+// `Promise.all` timing, which does not reliably reproduce this race.
 
 test("kind field: a competing writer's field-add (a DIFFERENT field) lands between our read and write — Defect A: both fields survive, not just the last writer's", async () => {
-  const backend = new MemoryBackend();
-  const bundle: Bundle = { root: "mem://kind-field-merge-race", backend };
-  await installRecipe(bundle, CONTEXT_NOTES_RECIPE); // declares the Context Note kind
+  const { dir, cleanup } = await seeded();
+  const bundle: Bundle = { root: dir }; // declares the Context Note kind
   const registry = await loadKinds(bundle);
   const convId = registry.kinds.get("Context Note")!.id;
 
   // The FIRST time our own write attempts a real CAS write for the convention doc, inject a race:
   // a separate writer adds a DIFFERENT field first, using OUR OWN read's version (so it wins),
   // leaving our own write's token stale.
-  const originalWrite = backend.write.bind(backend);
   let injected = false;
-  backend.write = (async (id: string, d: OkfDocument, options?: { expectedVersion?: Version | null }) => {
+  const restore = patchLocalWrites((originalWrite, backend) => async (id, d, options) => {
     if (id === convId && !injected && options?.expectedVersion) {
       injected = true;
       const current = await backend.read(convId);
@@ -476,12 +479,11 @@ test("kind field: a competing writer's field-add (a DIFFERENT field) lands betwe
       );
     }
     return originalWrite(id, d, options);
-  }) as typeof backend.write;
+  });
 
-  const server = await bootServerOverBundle(bundle);
   try {
     let out = "";
-    await kind(["field", "Context Note", "add", "field-a", "--remote", server.url, "--json"], { stdout: (s) => (out += s) });
+    await kind(["field", "Context Note", "add", "field-a", "--dir", dir, "--json"], { stdout: (s) => (out += s) });
     const result = JSON.parse(out) as Record<string, unknown>;
     assert.equal(result.changed, true);
 
@@ -492,23 +494,22 @@ test("kind field: a competing writer's field-add (a DIFFERENT field) lands betwe
     assert.ok(optional.includes("field-a"), "our own field survived");
     assert.ok(optional.includes("field-b"), "the competing writer's field survived (Defect A fix)");
   } finally {
-    await server.close();
+    restore();
+    await cleanup();
   }
 });
 
 test("kind field: a competing 'doc update'-style title edit lands between our read and write — never silently clobbered", async () => {
-  const backend = new MemoryBackend();
-  const bundle: Bundle = { root: "mem://kind-field-vs-title-race", backend };
-  await installRecipe(bundle, CONTEXT_NOTES_RECIPE);
+  const { dir, cleanup } = await seeded();
+  const bundle: Bundle = { root: dir };
   const registry = await loadKinds(bundle);
   const convId = registry.kinds.get("Context Note")!.id;
 
   // Same injection technique, but the competing write is an UNRELATED field (a title edit — the
   // shape a concurrent `doc update` to the SAME convention would make), never touching `fields` at
   // all — proving the fix isn't merely "two field edits happen to merge" but a genuine CAS retry.
-  const originalWrite = backend.write.bind(backend);
   let injected = false;
-  backend.write = (async (id: string, d: OkfDocument, options?: { expectedVersion?: Version | null }) => {
+  const restore = patchLocalWrites((originalWrite, backend) => async (id, d, options) => {
     if (id === convId && !injected && options?.expectedVersion) {
       injected = true;
       const current = await backend.read(convId);
@@ -519,12 +520,11 @@ test("kind field: a competing 'doc update'-style title edit lands between our re
       );
     }
     return originalWrite(id, d, options);
-  }) as typeof backend.write;
+  });
 
-  const server = await bootServerOverBundle(bundle);
   try {
     let out = "";
-    await kind(["field", "Context Note", "add", "field-c", "--remote", server.url, "--json"], { stdout: (s) => (out += s) });
+    await kind(["field", "Context Note", "add", "field-c", "--dir", dir, "--json"], { stdout: (s) => (out += s) });
     const result = JSON.parse(out) as Record<string, unknown>;
     assert.equal(result.changed, true);
 
@@ -533,7 +533,8 @@ test("kind field: a competing 'doc update'-style title edit lands between our re
     assert.ok(optional.includes("field-c"), "our own field survived");
     assert.equal(conv.frontmatter.title, "Raced title", "the competing writer's title edit survived");
   } finally {
-    await server.close();
+    restore();
+    await cleanup();
   }
 });
 
@@ -550,17 +551,15 @@ test("kind field: a competing 'doc update'-style title edit lands between our re
 // `governs === kindName` on EVERY attempt and refuses (STALE_HEAD) if it no longer holds.
 
 test("kind field: a competing writer renames the convention's 'governs' between attempts — refuses (STALE_HEAD) instead of editing the wrong kind's schema (P1 review fix)", async () => {
-  const backend = new MemoryBackend();
-  const bundle: Bundle = { root: "mem://kind-field-governs-rename-race", backend };
-  await installRecipe(bundle, CONTEXT_NOTES_RECIPE);
+  const { dir, cleanup } = await seeded();
+  const bundle: Bundle = { root: dir };
   const registry = await loadKinds(bundle);
   const convId = registry.kinds.get("Context Note")!.id;
 
   // The FIRST time our own write attempts a real CAS write for the convention doc, a competing
   // writer renames its 'governs' first, using OUR OWN read's version (so it wins).
-  const originalWrite = backend.write.bind(backend);
   let injected = false;
-  backend.write = (async (id: string, d: OkfDocument, options?: { expectedVersion?: Version | null }) => {
+  const restore = patchLocalWrites((originalWrite, backend) => async (id, d, options) => {
     if (id === convId && !injected && options?.expectedVersion) {
       injected = true;
       const current = await backend.read(convId);
@@ -571,13 +570,12 @@ test("kind field: a competing writer renames the convention's 'governs' between 
       );
     }
     return originalWrite(id, d, options);
-  }) as typeof backend.write;
+  });
 
-  const server = await bootServerOverBundle(bundle);
   try {
     await assert.rejects(
       () =>
-        kind(["field", "Context Note", "add", "field-d", "--remote", server.url, "--json"], { stdout: () => {} }),
+        kind(["field", "Context Note", "add", "field-d", "--dir", dir, "--json"], { stdout: () => {} }),
       (err: unknown) => {
         assert.ok(err instanceof CliError);
         assert.equal(err.code, "STALE_HEAD");
@@ -594,7 +592,8 @@ test("kind field: a competing writer renames the convention's 'governs' between 
     const optional = (fields?.optional as string[] | undefined) ?? [];
     assert.ok(!optional.includes("field-d"), "our own field must NOT have been added to the renamed convention");
   } finally {
-    await server.close();
+    restore();
+    await cleanup();
   }
 });
 
@@ -629,27 +628,30 @@ test("kind field add --values: a DIFFERENT enum split that happens to join-colli
 });
 
 test("kind redraft refuses a concurrent declaration-bearing replacement on its fresh retry", async () => {
-  const backend = new MemoryBackend();
-  const bundle: Bundle = { root: "mem://redraft-race", backend };
-  await writeDoc(bundle, { id: "plans/a", frontmatter: { type: "Plan", title: "A" }, body: "# Summary\n\nplan\n" });
-  await writeDoc(bundle, { id: "conventions/plan", frontmatter: { type: "Convention", title: "Plan", governs: "Plan" }, body: "Dismissed\n" });
-  const server = await bootServerOverBundle(bundle);
+  const dir = await mkdtemp(path.join(tmpdir(), "aslite-kind-redraft-race-"));
+  const bundle: Bundle = { root: dir };
+  let restore = (): void => {};
   try {
-    const proposal = await runKind(["draft", "Plan", "--remote", server.url]);
-    const originalWrite = backend.write.bind(backend);
+    await initBundle(dir);
+    await writeDoc(bundle, { id: "plans/a", frontmatter: { type: "Plan", title: "A" }, body: "# Summary\n\nplan\n" });
+    await writeDoc(bundle, { id: "conventions/plan", frontmatter: { type: "Convention", title: "Plan", governs: "Plan" }, body: "Dismissed\n" });
+    const proposal = await runKind(["draft", "Plan", "--dir", dir]);
     let injected = false;
-    backend.write = async (id, next, options = {}) => {
+    restore = patchLocalWrites((originalWrite, backend) => async (id, next, options = {}) => {
       if (id === "conventions/plan" && !injected && options.expectedVersion) {
         injected = true;
         const current = await backend.read(id);
         await originalWrite(id, { ...current.doc, frontmatter: { ...current.doc.frontmatter, fields: { required: ["title"] } }, body: "Concurrent schema\n" }, options);
       }
       return originalWrite(id, next, options);
-    };
-    await assert.rejects(() => runKind(["draft", "Plan", "--apply", proposal.plan_token as string, "--remote", server.url]), /no longer a declaration-free/);
+    });
+    await assert.rejects(() => runKind(["draft", "Plan", "--apply", proposal.plan_token as string, "--dir", dir]), /no longer a declaration-free/);
     assert.equal(injected, true);
     const current = await readDoc(bundle, "conventions/plan");
     assert.deepEqual(current.frontmatter.fields, { required: ["title"] });
     assert.equal(current.body, "Concurrent schema\n");
-  } finally { await server.close(); }
+  } finally {
+    restore();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

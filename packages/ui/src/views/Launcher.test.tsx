@@ -44,10 +44,10 @@ const BUNDLE_ROOT = "/tmp/bundle";
  * the other turns one of the two assertions red.
  */
 const AUTHORING_JARGON = ["type: View", "type: Page", "views/", "examples/views/"] as const;
-const BASE_CONFIG: UiConfig = { mode: "dir", remoteUrl: null, root: BUNDLE_ROOT, name: "bundle", sharing: null, workspaces: [] };
+const BASE_CONFIG: UiConfig = { mode: "dir", root: BUNDLE_ROOT, name: "bundle", sharing: null, workspaces: [] };
 
 vi.mock("../api/pages.js", () => ({
-  fetchConfig: vi.fn(async () => ({ mode: "dir", remoteUrl: null, root: "/tmp/bundle", name: "bundle", sharing: null, workspaces: [] })),
+  fetchConfig: vi.fn(async () => ({ mode: "dir", root: "/tmp/bundle", name: "bundle", sharing: null, workspaces: [] })),
   listPages: vi.fn(async () => []),
   invalidateKinds: vi.fn(),
 }));
@@ -451,29 +451,6 @@ describe("home surface", () => {
       await flush();
     });
     expect(container.querySelector(".orientation")!.textContent).toContain("What is Superbee?");
-  });
-
-  it("never shows local privacy onboarding in remote mode, even when config.root carries the remote URL", async () => {
-    vi.mocked(fetchConfig).mockResolvedValue({
-      ...BASE_CONFIG,
-      mode: "remote",
-      remoteUrl: "https://host.example",
-      root: "https://host.example",
-      sharing: { kind: "hosted", remote: "host.example", as_of: "2026-07-21T12:00:00.000Z" },
-    });
-    await render();
-    // The remote exception IS badged up front.
-    expect(container.querySelector(".launcher-meta .pill")?.textContent).toBe("remote");
-    expect(container.querySelector(".orientation")).toBeNull();
-    // The reopen affordance is gated with the orientation itself — its copy makes the same
-    // local-bundle privacy promise, so remote mode gets neither.
-    expect(container.querySelector(".about-btn")).toBeNull();
-
-    await act(async () => {
-      (container.querySelector(".where-btn") as HTMLButtonElement).click();
-      await flush();
-    });
-    expect(container.querySelector(".where-panel")?.textContent).toContain("https://host.example");
   });
 
   it("refetches sharing config at evidence expiry without an SSE document event", async () => {

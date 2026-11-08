@@ -3,7 +3,7 @@ import { renderUsage } from "../../output.js";
 // the stdin-detection rule this verb's body-source guard depends on.
 import { parseArgs } from "node:util";
 import { loadKinds, SUPERBEE_UPDATED_BY_FIELD, type Frontmatter, type OkfDocument } from "@superbee/core";
-import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag } from "../../bundle.js";
+import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute } from "../../bundle.js";
 import { CliError } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
@@ -50,7 +50,6 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
           strict: { type: "boolean" },
           actor: { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -114,10 +113,9 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   if (values.tag && values.tag.length > 0) frontmatter.tags = values.tag;
   if (values.timestamp?.trim()) frontmatter.timestamp = values.timestamp.trim();
 
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
-  const route = remote === undefined ? await resolveLocalBundleRoute(values.dir) : undefined;
-  const bundle = route?.bundle ?? await openBundle(values.dir, remote);
-  if (route) await assertResolvedLocalRouteIdentity(route);
+  const route = await resolveLocalBundleRoute(values.dir);
+  const bundle = route.bundle;
+  await assertResolvedLocalRouteIdentity(route);
   id = await resolveConceptIdCliArgument(bundle, rawId);
   const isConventionPath = id.startsWith("conventions/");
 
@@ -157,7 +155,6 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     id,
     mode: "overwrite",
     registry,
-    remoteUrl: values.remote,
     strict: Boolean(values.strict),
     helpOnKindReject: `${cliInvocation()} kinds`,
     actor,

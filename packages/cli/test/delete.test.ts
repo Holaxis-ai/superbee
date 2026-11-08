@@ -15,7 +15,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { initBundle, readDoc, readBlob, writeDoc, writeBlob, readDocVersioned } from "@superbee/core";
-import { serve, type ServerHandle } from "@superbee/server";
 
 import { deleteCommand, type DeleteCliDeps } from "../src/commands/delete.js";
 import { docDelete } from "../src/commands/doc/delete.js";
@@ -129,11 +128,6 @@ async function runDelete(argv: string[], deps: Partial<DeleteCliDeps> = {}): Pro
   let out = "";
   await deleteCommand([...argv, "--json"], { stdout: (s) => (out += s), ...deps });
   return JSON.parse(out) as Record<string, unknown>;
-}
-
-async function bootServer(dir: string): Promise<{ url: string; close: () => Promise<void> }> {
-  const handle: ServerHandle = await serve({ bundle: { root: dir }, port: 0 });
-  return { url: `http://${handle.host}:${handle.port}`, close: () => handle.close() };
 }
 
 // ── doc route ──────────────────────────────────────────────────────────────
@@ -293,41 +287,6 @@ test("delete --help: prints usage and does not touch a bundle", async () => {
   let out = "";
   await deleteCommand(["--help"], { stdout: (s) => (out += s) });
   assert.match(out, /superbee delete/);
-});
-
-// ── --remote parity ────────────────────────────────────────────────────────
-
-test("delete --doc-key --remote: round-trip parity with the same operation run locally via --dir (doc + blob routes)", async () => {
-  const localDir = await tempDir();
-  const remoteDir = await tempDir();
-  try {
-    await initBundle(localDir);
-    await initBundle(remoteDir);
-    for (const root of [localDir, remoteDir]) {
-      await writeDoc({ root }, { id: "concepts/a", frontmatter: { type: "Concept", timestamp: OLD_TS }, body: "x" });
-      await writeBlob({ root }, "artifacts/b.bin", new TextEncoder().encode("y"));
-    }
-    const server = await bootServer(remoteDir);
-    try {
-      const localDoc = await runDelete(["--doc-key", "concepts/a.md", "--dir", localDir]);
-      const remoteDoc = await runDelete(["--doc-key", "concepts/a.md", "--remote", server.url]);
-      assert.equal(remoteDoc.deleted, localDoc.deleted);
-      assert.equal(remoteDoc.deleted, true);
-
-      const localBlob = await runDelete(["--doc-key", "artifacts/b.bin", "--dir", localDir]);
-      const remoteBlob = await runDelete(["--doc-key", "artifacts/b.bin", "--remote", server.url]);
-      assert.equal(remoteBlob.deleted, localBlob.deleted);
-      assert.equal(remoteBlob.deleted, true);
-
-      await assert.rejects(() => readDoc({ root: remoteDir }, "concepts/a"));
-      assert.equal(await readBlob({ root: remoteDir }, "artifacts/b.bin"), null);
-    } finally {
-      await server.close();
-    }
-  } finally {
-    await rm(localDir, { recursive: true, force: true });
-    await rm(remoteDir, { recursive: true, force: true });
-  }
 });
 
 // ── registration ─────────────────────────────────────────────────────────────

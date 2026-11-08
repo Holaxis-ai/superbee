@@ -1,5 +1,6 @@
 // The one owner of retired and retiring paths: a table of what is going away, what replaces it and
-// the exact fix, plus one way to emit a row, and the refusal for environment names already retired.
+// the exact fix, plus one way to emit a row, and the refusals for retired environment names, flags
+// and commands.
 //
 // A notice is one prose line on stderr, the channel `autopull.ts` already uses for notes, so stdout
 // records and exit codes never change. The channel stays closed until the CLI entry opens it for a
@@ -17,9 +18,7 @@ export type DeprecationNoticeCode =
   | "DEPRECATED_LEGACY_HOOK"
   | "DEPRECATED_LEGACY_SKILL_FOLDER"
   | "DEPRECATED_LEGACY_MCP_REGISTRATION"
-  | "DEPRECATED_LEGACY_USER_STATE"
-  | "DEPRECATED_REMOTE_FLAG"
-  | "DEPRECATED_SERVE";
+  | "DEPRECATED_LEGACY_USER_STATE";
 
 export interface DeprecationNotice {
   /** Stable identifier an agent or script can match on; the prose around it may change. */
@@ -38,27 +37,93 @@ export const RETIRED_ENV: readonly (readonly [retired: string, replacement: stri
   ["AGENTSTATE_LITE_NO_AUTOPULL", SUPERBEE_NO_AUTOPULL_ENV],
 ] as const);
 
+/** The retired ambient remote default. It has no replacement: remote access itself was removed. */
+export const RETIRED_REMOTE_ENV = "AGENTSTATE_LITE_REMOTE";
+
 /**
  * Retired names that are set while their replacement is not: the only case where ignoring the old
  * name would silently change behavior. Presence counts, even empty; a value is never read.
  */
 export function retiredEnvNames(env: Readonly<Record<string, string | undefined>> = process.env): string[] {
-  return RETIRED_ENV
+  const names = RETIRED_ENV
     .filter(([retired, replacement]) => Object.hasOwn(env, retired) && !Object.hasOwn(env, replacement))
     .map(([retired]) => retired);
+  return Object.hasOwn(env, RETIRED_REMOTE_ENV) ? [...names, RETIRED_REMOTE_ENV] : names;
 }
 
 /** The refusal for {@link retiredEnvNames}: names only, so an API key never reaches the output. */
 export function retiredEnvRefusal(names: readonly string[]): CliError {
   const pairs = RETIRED_ENV.filter(([retired]) => names.includes(retired));
-  const listed = pairs.map(([retired]) => retired).join(" and ");
-  const message = `${listed} ${pairs.length === 1 ? "is" : "are"} no longer read; Superbee reads only `
-    + `${pairs.map(([, replacement]) => replacement).join(" and ")}.`;
-  const renames = pairs.map(([retired, replacement]) => `${retired} to ${replacement}`).join(" and ");
-  return new CliError("USAGE", message, {
-    help: `rename ${renames} wherever it is set (shell profile, CI, hook or MCP config), same value, then run the command again.`,
-    details: { code: "RETIRED_ENV", retired_env: pairs.map(([retired]) => retired) },
+  const remote = names.includes(RETIRED_REMOTE_ENV);
+  const sentences: string[] = [];
+  const fixes: string[] = [];
+  if (pairs.length) {
+    sentences.push(`${pairs.map(([retired]) => retired).join(" and ")} ${pairs.length === 1 ? "is" : "are"} no longer read; Superbee reads only `
+      + `${pairs.map(([, replacement]) => replacement).join(" and ")}.`);
+    const renames = pairs.map(([retired, replacement]) => `${retired} to ${replacement}`).join(" and ");
+    fixes.push(`rename ${renames} wherever it is set (shell profile, CI, hook or MCP config), same value, then run the command again.`);
+  }
+  if (remote) {
+    sentences.push(`${RETIRED_REMOTE_ENV} is no longer read; remote access was removed.`);
+    fixes.push(`unset ${RETIRED_REMOTE_ENV} wherever it is set. ${remoteRoutes(cliInvocation())}`);
+  }
+  return new CliError("USAGE", sentences.join(" "), {
+    help: fixes.join(" "),
+    details: { code: "RETIRED_ENV", retired_env: [...pairs.map(([retired]) => retired), ...(remote ? [RETIRED_REMOTE_ENV] : [])] },
   });
+}
+
+/** The routes away from the removed `--remote` client, shared by every refusal that names it. */
+function remoteRoutes(cli: string): string {
+  return `Hosted bundle: ${cli} checkout <bundle-id>. Local bundle: --dir <path>.`;
+}
+
+/** The last release that still carries the removed remote client and reference server. */
+const LAST_REMOTE_RELEASE = "superbee@0.4.5";
+
+/**
+ * A removed flag or command in `argv`, before `--`. The flag counts anywhere so that a hoisted or
+ * misplaced `--remote` is refused the same way; `serve` counts only as the command word.
+ */
+export function retiredInput(argv: readonly string[]): "--remote" | "serve" | undefined {
+  if (argv[0] === "serve") return "serve";
+  const end = argv.indexOf("--");
+  const scanned = end === -1 ? argv : argv.slice(0, end);
+  return scanned.some((arg) => arg === "--remote" || arg.startsWith("--remote=")) ? "--remote" : undefined;
+}
+
+/** The refusal for {@link retiredInput}. The URL is never echoed: it may carry credentials. */
+export function retiredInputRefusal(input: "--remote" | "serve"): CliError {
+  const cli = cliInvocation();
+  if (input === "serve") {
+    return new CliError("USAGE", "superbee serve was removed.", {
+      help: `Use --dir <path>, and ${cli} ui --dir <path> for the browser. Old server: npx ${LAST_REMOTE_RELEASE} serve --dir <path>.`,
+      details: { code: "RETIRED_COMMAND", input },
+    });
+  }
+  return new CliError("USAGE", "--remote was removed.", {
+    help: `${remoteRoutes(cli)} Old server: npx ${LAST_REMOTE_RELEASE} <command> --remote <url>.`,
+    details: { code: "RETIRED_FLAG", input },
+  });
+}
+
+/**
+ * The CLI entry's refusal for a removed flag or command, before any work. The envelope goes where
+ * the command puts its errors, as for retired environment names.
+ */
+export function refuseRetiredInput(argv: readonly string[]): boolean {
+  // The hook commands own their streams and must not fail a session.
+  if (argv[0] === "session-start" || argv[0] === "turn-end") return false;
+  const input = retiredInput(argv);
+  if (!input) return false;
+  writeEntryRefusal(argv, retiredInputRefusal(input));
+  return true;
+}
+
+function writeEntryRefusal(argv: readonly string[], error: CliError): void {
+  const stderr = argv[0] === "mcp" || requestsRawField(argv) || requestsByteChannel(argv);
+  (stderr ? process.stderr : process.stdout).write(renderErrorEnvelope(toEnvelope(error)));
+  process.exitCode = 2;
 }
 
 /**
@@ -71,9 +136,7 @@ export function refuseRetiredEnv(
 ): boolean {
   const names = retiredEnvNames(env);
   if (!names.length) return false;
-  const stderr = argv[0] === "mcp" || requestsRawField(argv) || requestsByteChannel(argv);
-  (stderr ? process.stderr : process.stdout).write(renderErrorEnvelope(toEnvelope(retiredEnvRefusal(names))));
-  process.exitCode = 2;
+  writeEntryRefusal(argv, retiredEnvRefusal(names));
   return true;
 }
 
@@ -120,18 +183,6 @@ export const DEPRECATION_NOTICES: readonly DeprecationNotice[] = Object.freeze([
     old: "private state under ~/.agentstate or ~/.config/superbee",
     replacement: "the canonical Superbee state root",
     fix: (cli) => `run ${cli} setup migrate-state, which copies it and leaves the old files in place`,
-  },
-  {
-    code: "DEPRECATED_REMOTE_FLAG",
-    old: "--remote and its RemoteBackend client",
-    replacement: "a hosted checkout or a local bundle",
-    fix: (cli) => `run ${cli} checkout <bundle-id> for a hosted bundle, or pass --dir <path> for a local one`,
-  },
-  {
-    code: "DEPRECATED_SERVE",
-    old: "superbee serve",
-    replacement: "direct local access",
-    fix: (cli) => `pass --dir <path> to commands that read this bundle, and run ${cli} ui --dir <path> for the browser`,
   },
 ]);
 

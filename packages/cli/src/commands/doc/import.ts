@@ -4,7 +4,7 @@
 // `resumeDocumentTransfer`, and `planDocumentRefresh` / `applyDocumentRefresh` for --refresh): this module parses flags, binds the source copy the way
 // `status --with` does, renders, and maps typed failures. Without `--apply` it is read-only and
 // prints the plan with its token, the `kind draft` / `recipe evolve` convention: what applies is
-// exactly what was shown. Local bundles and git boards only; `--remote` and hosted checkouts are
+// exactly what was shown. Local bundles and git boards only; hosted checkouts are
 // refused before any read.
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
@@ -75,7 +75,7 @@ Reference-style definitions ([x]: ../f.md) are copied unchanged and listed as re
 
 The source alias must be declared in this bundle's docs/dependencies ('superbee deps add') and
 the copy must declare the same bundle_id ('superbee bundle id set'). This bundle must be a local
-bundle or Git board: --remote and hosted checkouts are refused.
+bundle or Git board: hosted checkouts are refused.
 
 Options:
   --from <alias>          The declared alias of the source bundle                     [required]
@@ -172,7 +172,6 @@ export async function docImport(argv: string[], deps: Partial<DocCliDeps> & { ho
           actor: { type: "string" },
           limit: { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -185,11 +184,6 @@ export async function docImport(argv: string[], deps: Partial<DocCliDeps> & { ho
     return;
   }
   const inv = cliInvocation();
-  if (values.remote !== undefined) {
-    throw new CliError("USAGE", "doc import writes local bundles and git boards only; --remote is not supported", {
-      help: `${inv} doc import --help`,
-    });
-  }
   const alias = values.from?.trim();
   if (!alias) {
     throw new CliError("USAGE", "doc import requires --from <alias>, the declared alias of the source bundle", {

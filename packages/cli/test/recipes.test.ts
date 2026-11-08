@@ -15,9 +15,7 @@
  *  5. Malformed manifest / not-found / empty -> structured CliError("USAGE"), exit 2, no stack.
  *  7. Conventions-free / gate-3 unaffected: `init --recipe none` is bare.
  *
- * Plus the pre-existing `status` kind-horizon coupling and Fork-4 generic-path parity proofs, and
- * `--remote` parity for `recipe add` — updated for the widened `LoadedRecipe` shape, unchanged in
- * spirit. Runs command functions in-process (no subprocess) against a real temp filesystem bundle.
+ * Plus the pre-existing `status` kind-horizon coupling and Fork-4 generic-path parity proofs. Runs command functions in-process (no subprocess) against a real temp filesystem bundle.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -48,7 +46,6 @@ import {
   type WriteOptions,
 } from "@superbee/core";
 import { parseRegistration, PAGE_REGISTRY_PREFIX, VIEW_REGISTRY_PREFIX } from "@superbee/core/page";
-import { serve, type ServerHandle } from "@superbee/server";
 
 import { init } from "../src/commands/init.js";
 import { recipeInventoryRow, recipes } from "../src/commands/recipes.js";
@@ -2714,110 +2711,6 @@ test("Fork-4: 'new \"Context Note\" <id>' creates a governed instance under the 
     assert.equal(rows[0]!.id, "context-notes/cycle-x");
   } finally {
     await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("--remote: recipe add against a served bundle, idempotent parity with the same operation run locally", async () => {
-  const localDir = await tempDir();
-  const remoteDir = await tempDir();
-  try {
-    await initBundle(localDir);
-    await initBundle(remoteDir);
-    const handle: ServerHandle = await serve({ bundle: { root: remoteDir }, port: 0 });
-    const url = `http://${handle.host}:${handle.port}`;
-    try {
-      const localAdd = await runJson(recipe, ["add", "context-notes", "--dir", localDir]);
-      const remoteAdd = await runJson(recipe, ["add", "context-notes", "--remote", url]);
-      assert.equal(remoteAdd.changed, true);
-      assert.equal(localAdd.id, remoteAdd.id);
-
-      // Second add over --remote is a changed:false no-op, same as local.
-      const remoteAddAgain = await runJson(recipe, ["add", "context-notes", "--remote", url]);
-      assert.equal(remoteAddAgain.changed, false);
-
-      const localRecipes = await runJson(recipes, ["--dir", localDir]);
-      const remoteRecipes = await runJson(recipes, ["--remote", url]);
-      assert.equal(remoteRecipes.count, localRecipes.count);
-      const remoteRows = remoteRecipes.recipes as Array<Record<string, unknown>>;
-      const localRows = localRecipes.recipes as Array<Record<string, unknown>>;
-      assert.deepEqual(
-        remoteRows.map(({ commands: _, ...row }) => row),
-        localRows.map(({ commands: _, ...row }) => row),
-      );
-      assert.deepEqual(remoteRows[0]!.commands, {
-        add_to_bundle: `${cliInvocation()} recipe add context-notes --remote ${shellArg(url)}`,
-      });
-      assert.deepEqual(remoteRecipes.help, [
-        `${cliInvocation()} recipe add <name-or-path> --remote ${shellArg(url)}`,
-      ]);
-    } finally {
-      await handle.close();
-    }
-  } finally {
-    await rm(localDir, { recursive: true, force: true });
-    await rm(remoteDir, { recursive: true, force: true });
-  }
-});
-
-test("--remote: recipe evolve plans and applies through the same state-bound CAS authority", async () => {
-  const remoteDir = await tempDir();
-  try {
-    await initBundle(remoteDir);
-    await installRecipe({ root: remoteDir }, CONTEXT_NOTES_RECIPE, { now: T });
-    const installed = await readDoc({ root: remoteDir }, "conventions/context-note");
-    const olderFrontmatter = { ...installed.frontmatter };
-    delete olderFrontmatter.browse_collapsed;
-    await writeDoc({ root: remoteDir }, { ...installed, frontmatter: olderFrontmatter });
-
-    const handle: ServerHandle = await serve({ bundle: { root: remoteDir }, port: 0 });
-    const url = `http://${handle.host}:${handle.port}`;
-    try {
-      const plan = await runJson(recipe, ["evolve", "context-notes", "--remote", url]);
-      assert.equal(plan.ready, true);
-      assert.equal(plan.changed, true);
-      assert.equal((plan.counts as Record<string, unknown>).updates, 1);
-      assert.deepEqual(
-        (plan.definitions as Array<Record<string, unknown>>)[0]!.added_paths,
-        ["/frontmatter/browse_collapsed"],
-      );
-
-      const applied = await runJson(recipe, [
-        "evolve", "context-notes", "--apply", String(plan.plan_token), "--remote", url,
-      ]);
-      assert.equal(applied.recipe, "evolved");
-      assert.equal(applied.changed, true);
-      assert.equal((await loadKinds({ root: remoteDir })).kinds.get("Context Note")?.browseCollapsed, true);
-    } finally {
-      await handle.close();
-    }
-  } finally {
-    await rm(remoteDir, { recursive: true, force: true });
-  }
-});
-
-test("--remote: portable recipe installs and rechecks its Page pair through the storage seam", async () => {
-  const remoteDir = await tempDir();
-  try {
-    await initBundle(remoteDir);
-    const handle: ServerHandle = await serve({ bundle: { root: remoteDir }, port: 0 });
-    const url = `http://${handle.host}:${handle.port}`;
-    try {
-      const first = await runJson(recipe, ["add", REVIEW_WORKFLOW_RECIPE, "--remote", url]);
-      assert.equal(first.changed, true);
-      const pages = first.pages as Array<Record<string, unknown>>;
-      assert.equal(pages[0]!.entry_changed, true);
-      assert.equal(pages[0]!.registry_changed, true);
-
-      const second = await runJson(recipe, ["add", REVIEW_WORKFLOW_RECIPE, "--remote", url]);
-      assert.equal(second.changed, false);
-      const secondPages = second.pages as Array<Record<string, unknown>>;
-      assert.equal(secondPages[0]!.entry_changed, false);
-      assert.equal(secondPages[0]!.registry_changed, false);
-    } finally {
-      await handle.close();
-    }
-  } finally {
-    await rm(remoteDir, { recursive: true, force: true });
   }
 });
 

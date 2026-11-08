@@ -3,14 +3,10 @@
  * `doc read --out`. Covers the A6 routing split (a `.md` --doc-key goes through the engine as a
  * doc; every other key is a blob), the B6 case-insensitive `.md` check, B7 (no doc-route
  * byte-verify), B8 (the shared kind-validation helper), I5 (`--out -` purity), I8/I9/I10 (per-route
- * flag/error shapes), and A8's edit-iterate acceptance loop (local AND remote — the latter is the
- * unit's canonical demo per A12).
+ * flag/error shapes), and A8's edit-iterate acceptance loop.
  *
  * Runs command functions in-process against a real temp filesystem bundle (mirrors
- * `doc.test.ts`/`link.test.ts`'s pattern); the remote acceptance test boots a real
- * `@superbee/server` `serve()` instance and also drives a few raw `fetch` calls directly
- * against it to verify server-side behavior (served bytes/content-type, which route a `.md` promote
- * actually rode) beyond what the CLI's own receipt claims.
+ * `doc.test.ts`/`link.test.ts`'s pattern).
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -19,7 +15,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { initBundle, readDoc, readBlob } from "@superbee/core";
-import { serve, type ServerHandle } from "@superbee/server";
 
 import { promote, type PromoteCliDeps } from "../src/commands/promote.js";
 import { doc as docCommand } from "../src/commands/doc.js";
@@ -73,12 +68,6 @@ async function runPull(argv: string[], deps: Partial<PullCliDeps> = {}): Promise
   let out = "";
   await pull([...argv, "--json"], { stdout: (s) => (out += s), ...deps });
   return JSON.parse(out) as Record<string, unknown>;
-}
-
-/** Boot the reference server over a filesystem bundle rooted at `dir`. */
-async function bootServer(dir: string): Promise<{ url: string; close: () => Promise<void> }> {
-  const handle: ServerHandle = await serve({ bundle: { root: dir }, port: 0 });
-  return { url: `http://${handle.host}:${handle.port}`, close: () => handle.close() };
 }
 
 // ── blob route ─────────────────────────────────────────────────────────────
@@ -839,8 +828,7 @@ test("promote/pull are registered in KNOWN_COMMANDS and the command reference", 
   const artifacts = ref.commands["Artifacts"] ?? [];
   assert.ok(artifacts.some((l) => l.startsWith("promote ")));
   assert.ok(artifacts.some((l) => l.startsWith("pull ")));
-  assert.match(ref.remoteEnv, /HTTP is activated only by explicit --remote/);
-  assert.match(ref.remoteEnv, /retired AGENTSTATE_LITE_REMOTE/);
+  assert.match(ref.remoteEnv, /--remote and the retired AGENTSTATE_LITE_REMOTE variable are refused/);
 });
 
 // ── A8: the edit-iterate acceptance loop ────────────────────────────────────
@@ -892,218 +880,6 @@ test("A8 acceptance (LOCAL, blob): promote v1 -> pull (receipt carries v1) -> ed
     );
   } finally {
     await cleanup();
-    await rm(work, { recursive: true, force: true });
-  }
-});
-
-test("A8 acceptance (REMOTE, canonical demo per A12): the SAME edit-iterate loop over a real serve() instance — a raw GET serves the NEW bytes with the correct content-type, and the .md promote is verified to ride PUT /docs (I8), never /blobs", async () => {
-  const dir = await tempDir();
-  const work = await tempDir();
-  try {
-    await initBundle(dir);
-    const server = await bootServer(dir);
-    try {
-      // --- blob half: promote -> pull -> edit -> promote --expected-version -> GET serves NEW bytes ---
-      const file = path.join(work, "report.html");
-      await writeFile(file, "<html>v1 remote</html>");
-      const promoted1 = await runPromote([file, "--doc-key", "artifacts/report.html", "--remote", server.url]);
-      const v1 = promoted1.version as string;
-
-      const pulledOut = path.join(work, "pulled.html");
-      const pulled = await runPull(["--doc-key", "artifacts/report.html", "--out", pulledOut, "--remote", server.url]);
-      assert.equal(pulled.version, v1);
-
-      await writeFile(pulledOut, "<html>v2 remote edited</html>");
-      const promoted2 = await runPromote([
-        pulledOut,
-        "--doc-key",
-        "artifacts/report.html",
-        "--expected-version",
-        v1,
-        "--remote",
-        server.url,
-      ]);
-      const v2 = promoted2.version as string;
-      assert.notEqual(v2, v1);
-
-      // The DoD #2 acceptance test, literally: a raw HTTP GET against the reference server returns
-      // the EXACT new bytes with the right Content-Type — not routed through the CLI's own pull.
-      const res = await fetch(`${server.url}/v0/bundles/default/blobs/artifacts/report.html`);
-      assert.equal(res.status, 200);
-      assert.match(res.headers.get("content-type") ?? "", /^text\/html/);
-      assert.equal(await res.text(), "<html>v2 remote edited</html>");
-      // Production repair (Stage-1 Unit 2b): X-Version carries the bare token (primary,
-      // edge-proof); ETag now carries the RFC-7232-quoted form (this pinned the pre-fix bare
-      // ETag, itself the defect Cloudflare's edge strips under Brotli compression).
-      assert.equal(res.headers.get("x-version"), v2);
-      assert.equal(res.headers.get("etag"), `"${v2}"`);
-
-      // A second promote still citing v1 -> CONFLICT (exit 5) with the current version.
-      await assert.rejects(
-        () =>
-          promote(
-            [
-              pulledOut,
-              "--doc-key",
-              "artifacts/report.html",
-              "--expected-version",
-              v1,
-              "--remote",
-              server.url,
-              "--json",
-            ],
-            {},
-          ),
-        (err: unknown) => {
-          assert.ok(err instanceof CliError);
-          assert.equal(err.exitCode, 5);
-          assert.equal((err.details as { actual: string }).actual, v2);
-          return true;
-        },
-      );
-
-      // --- .md half: promote rides PUT /docs, never /blobs (I8) ---
-      const mdFile = path.join(work, "spec.md");
-      await writeFile(mdFile, "---\ntype: Spec\ntitle: Remote spec\n---\n\nRemote body.\n");
-      const docPromoted = await runPromote([mdFile, "--doc-key", "specs/remote.md", "--remote", server.url]);
-      assert.equal(docPromoted.route, "doc");
-
-      const docRes = await fetch(`${server.url}/v0/bundles/default/docs/specs/remote`);
-      assert.equal(docRes.status, 200);
-      const docBody = (await docRes.json()) as { frontmatter: { type: string } };
-      assert.equal(docBody.frontmatter.type, "Spec");
-
-      // The SAME key was never written as a blob — the blob route rejects '.md' keys categorically.
-      const blobRes = await fetch(`${server.url}/v0/bundles/default/blobs/specs/remote.md`);
-      assert.equal(blobRes.status, 400);
-    } finally {
-      await server.close();
-    }
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-    await rm(work, { recursive: true, force: true });
-  }
-});
-
-// ── retired AGENTSTATE_LITE_REMOTE migration boundary ──────────────────────
-
-test("promote/pull reject legacy AGENTSTATE_LITE_REMOTE instead of activating HTTP", async () => {
-  const dir = await tempDir();
-  const work = await tempDir();
-  const prior = process.env.AGENTSTATE_LITE_REMOTE;
-  try {
-    await initBundle(dir);
-    const server = await bootServer(dir);
-    try {
-      const file = path.join(work, "x.txt");
-      await writeFile(file, "hello");
-
-      process.env.AGENTSTATE_LITE_REMOTE = server.url;
-      for (const run of [
-        () => runPromote([file, "--doc-key", "artifacts/x.txt"]),
-        () => runPull(["--doc-key", "artifacts/x.txt", "--out", path.join(work, "pulled.txt")]),
-      ]) {
-        await assert.rejects(run, (err: unknown) => {
-          assert.ok(err instanceof CliError);
-          assert.equal(err.code, "USAGE");
-          assert.match(err.message, /AGENTSTATE_LITE_REMOTE ambient remote selection is retired/);
-          assert.match(err.help ?? "", new RegExp(`--remote ${server.url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
-          return true;
-        });
-      }
-    } finally {
-      await server.close();
-    }
-  } finally {
-    if (prior === undefined) delete process.env.AGENTSTATE_LITE_REMOTE;
-    else process.env.AGENTSTATE_LITE_REMOTE = prior;
-    await rm(dir, { recursive: true, force: true });
-    await rm(work, { recursive: true, force: true });
-  }
-});
-
-test("an explicit --remote flag wins outright over a BOGUS AGENTSTATE_LITE_REMOTE env value (flag beats env — actually exercised, not just asserted by title)", async () => {
-  const dir = await tempDir();
-  const work = await tempDir();
-  const prior = process.env.AGENTSTATE_LITE_REMOTE;
-  try {
-    await initBundle(dir);
-    const server = await bootServer(dir);
-    try {
-      const file = path.join(work, "x.txt");
-      await writeFile(file, "hello");
-
-      // The env value is BOGUS (nothing listens there) — if the flag did not win, this
-      // would fail with a transport RUNTIME error, not succeed.
-      process.env.AGENTSTATE_LITE_REMOTE = "http://127.0.0.1:1";
-      const p = await runPromote([file, "--doc-key", "artifacts/x.txt", "--remote", server.url]);
-      assert.equal(p.promote, "written");
-    } finally {
-      await server.close();
-    }
-  } finally {
-    if (prior === undefined) delete process.env.AGENTSTATE_LITE_REMOTE;
-    else process.env.AGENTSTATE_LITE_REMOTE = prior;
-    await rm(dir, { recursive: true, force: true });
-    await rm(work, { recursive: true, force: true });
-  }
-});
-
-test("design resolution (explicit beats ambient): an explicit --dir wins SILENTLY over an ambient AGENTSTATE_LITE_REMOTE default (no error) — operates on the LOCAL dir, not the env-named remote", async () => {
-  const localDir = await tempDir();
-  const remoteDir = await tempDir();
-  const work = await tempDir();
-  const prior = process.env.AGENTSTATE_LITE_REMOTE;
-  try {
-    await initBundle(localDir);
-    await initBundle(remoteDir);
-    const server = await bootServer(remoteDir);
-    try {
-      const file = path.join(work, "x.txt");
-      await writeFile(file, "local content");
-
-      process.env.AGENTSTATE_LITE_REMOTE = server.url;
-      // --dir given, no --remote flag: must NOT error, and must operate on localDir, not
-      // the env-named remote server.
-      const p = await runPromote([file, "--doc-key", "artifacts/x.txt", "--dir", localDir]);
-      assert.equal(p.promote, "written");
-
-      const stored = await readBlob({ root: localDir }, "artifacts/x.txt");
-      assert.ok(stored, "the blob must have landed in the LOCAL dir");
-      assert.equal(Buffer.from(stored!.bytes).toString("utf8"), "local content");
-
-      // The env-named REMOTE bundle must be untouched.
-      const remoteStored = await readBlob({ root: remoteDir }, "artifacts/x.txt");
-      assert.equal(remoteStored, null);
-    } finally {
-      await server.close();
-    }
-  } finally {
-    if (prior === undefined) delete process.env.AGENTSTATE_LITE_REMOTE;
-    else process.env.AGENTSTATE_LITE_REMOTE = prior;
-    await rm(localDir, { recursive: true, force: true });
-    await rm(remoteDir, { recursive: true, force: true });
-    await rm(work, { recursive: true, force: true });
-  }
-});
-
-test("an EXPLICIT --remote together with an EXPLICIT --dir remains a USAGE conflict (the one combination that still errors, regardless of AGENTSTATE_LITE_REMOTE)", async () => {
-  const dir = await tempDir();
-  const work = await tempDir();
-  try {
-    await initBundle(dir);
-    const file = path.join(work, "x.txt");
-    await writeFile(file, "hello");
-    await assert.rejects(
-      () => promote([file, "--doc-key", "artifacts/x.txt", "--dir", dir, "--remote", "http://127.0.0.1:4818", "--json"], {}),
-      (err: unknown) => {
-        assert.ok(err instanceof CliError);
-        assert.equal(err.code, "USAGE");
-        return true;
-      },
-    );
-  } finally {
-    await rm(dir, { recursive: true, force: true });
     await rm(work, { recursive: true, force: true });
   }
 });

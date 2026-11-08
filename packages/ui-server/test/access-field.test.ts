@@ -1,16 +1,15 @@
 /**
  * End-to-end pins for the CURRENT `access:` registry field (no legacy `bridge:` anywhere in these
  * fixtures) across every security call site that resolves it: mint capability derivation, nonce
- * serve-time revalidation (dir mode via launchIsCurrent, remote mode inline), and the
+ * serve-time revalidation (via launchIsCurrent), and the
  * bundle-propose action gate. Discarding `access` at any one of those sites must turn at least one
  * of these tests red — the legacy-field fixtures elsewhere cannot see that mutation.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createServer, request } from "node:http";
-import type { AddressInfo } from "node:net";
+import { request } from "node:http";
 
-import { MemoryBackend, RemoteBackend, readDocVersioned, writeBlob, writeDoc, type Bundle } from "@superbee/core";
+import { MemoryBackend, readDocVersioned, writeBlob, writeDoc, type Bundle } from "@superbee/core";
 import { createRouter } from "@superbee/server";
 import { bootUiServer, type UiServerHandle } from "../src/server.js";
 
@@ -198,63 +197,5 @@ test("REJECTION PIN (dir mode): a legacy bridge-only registry doc resolves acces
     assert.equal((await readDocVersioned(bundle, "tasks/alpha")).doc.frontmatter.status, "todo", "no write happened");
   } finally {
     await server.close();
-  }
-});
-
-test("access-only registry doc (remote mode): the inline serve-time revalidation resolves `access` — the nonce keeps serving", async () => {
-  const bytes = Buffer.from(HTML, "utf8");
-  const remote = createServer((req, res) => {
-    const url = new URL(req.url ?? "/", "http://127.0.0.1");
-    if (url.pathname.endsWith("/docs")) {
-      const docs =
-        url.searchParams.get("type") === "View"
-          ? [{ id: "views-registry/board", version: "v1", frontmatter: { type: "View", title: "Board", entry: "views/board.html", access: "bundle-read" } }]
-          : [];
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ docs, next_cursor: null }));
-      return;
-    }
-    if (url.pathname.endsWith("/docs/views-registry/board")) {
-      res.writeHead(200, { "content-type": "application/json", "x-version": "v1" });
-      res.end(JSON.stringify({
-        id: "views-registry/board",
-        frontmatter: { type: "View", title: "Board", entry: "views/board.html", access: "bundle-read" },
-        body: "",
-      }));
-      return;
-    }
-    if (url.pathname.includes("/blobs/")) {
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "x-version": "bv1" });
-      res.end(bytes);
-      return;
-    }
-    res.writeHead(404, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: { code: "NOT_FOUND", message: "not found" } }));
-  });
-  const remoteOrigin = await new Promise<string>((resolve) => {
-    remote.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${(remote.address() as AddressInfo).port}`));
-  });
-  try {
-    const server = await bootUiServer({
-      mode: "remote",
-      remoteBase: remoteOrigin,
-      bundle: {
-        root: remoteOrigin,
-        backend: new RemoteBackend({ baseUrl: remoteOrigin, bundle: "default", maxRetries: 0 }),
-      },
-      sessionSecret: SECRET,
-      renderDocument,
-      viewAuthorization: PREAUTHORIZED_VIEWS,
-    });
-    try {
-      const launch = await mintLaunch(server, "views-registry/board");
-      const served = await fetchPage(server, launch.url);
-      assert.equal(served.status, 200, "remote serve revalidation must resolve the capability from `access`");
-      assert.equal(served.text, HTML);
-    } finally {
-      await server.close();
-    }
-  } finally {
-    remote.close();
   }
 });

@@ -3,7 +3,7 @@ import { renderUsage } from "../../output.js";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { docVersions, parseMarkdown, type VersionInfo } from "@superbee/core";
-import { openBundle, resolveRemoteFlag } from "../../bundle.js";
+import { openBundle } from "../../bundle.js";
 import { CliError } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
@@ -39,7 +39,6 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
           limit: { type: "string" },
           seq: { type: "string" },
           dir: { type: "string" },
-          remote: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -85,18 +84,17 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
     }
   }
 
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
-  // A hosted checkout reads the host's chain; an explicit --remote wins over the folder's binding.
+  // A hosted checkout reads the host's chain.
   const home = deps.hosted?.auth?.home ?? homedir();
-  const checkout = remote ? null : await hostedCheckoutAt(values.dir, home).catch(() => null);
+  const checkout = await hostedCheckoutAt(values.dir, home).catch(() => null);
   if (seq !== undefined && !checkout) {
-    throw new CliError("USAGE", "--seq reads one version from a hosted checkout's history; a local bundle or --remote has no such history", {
+    throw new CliError("USAGE", "--seq reads one version from a hosted checkout's history; a local bundle has no such history", {
       details: { reason: "no_hosted_history" },
       help: `${cliInvocation()} doc read ${commandToken(id)}`,
     });
   }
 
-  const bundle = await openBundle(values.dir, remote);
+  const bundle = await openBundle(values.dir);
   id = await resolveConceptIdCliArgument(bundle, rawId);
   const mode = resolveMode(values);
 
@@ -117,7 +115,7 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
   try {
     versions = await docVersions(bundle, id);
   } catch (err) {
-    throw readErrorToCliError(err, id, values.remote);
+    throw readErrorToCliError(err, id);
   }
 
   if (versions.length === 0) {
@@ -159,7 +157,7 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
   if (truncated) out.shown = shown.length;
 
   const help: string[] = [];
-  if (!remote) help.push("Local bundle: current version only; no prior versions are retained.");
+  help.push("Local bundle: current version only; no prior versions are retained.");
   if (truncated) {
     help.push(truncationHelp(id, shown.length, total));
   }

@@ -6,7 +6,7 @@
  * undeclared-link-type warning (teach, never block), a dangling target (allowed, same as `link
  * add`), malformed-value USAGE rejection (nothing written), the receipt shape, a post-creation
  * link failure (doc stays created, the failing entry is named, non-zero exit), the existing
- * create-only/ALREADY_EXISTS behavior composing unaffected, and --remote parity.
+ * create-only/ALREADY_EXISTS behavior composing unaffected.
  *
  * Runs command functions in-process (no subprocess) against a real temp filesystem bundle,
  * mirroring `kinds.test.ts`'s pattern.
@@ -22,8 +22,7 @@ import {
   writeDoc,
   readDoc,
   readDocVersioned,
-  docVersions,
-  MemoryBackend,
+  FilesystemBackend,
   CONVENTION_TYPE,
   type ConceptId,
   type Bundle,
@@ -32,7 +31,6 @@ import {
   type Version,
   type WriteOptions,
 } from "@superbee/core";
-import { serve, type ServerHandle } from "@superbee/server";
 
 import { newCommand } from "../src/commands/new.js";
 import { CliError } from "../src/errors.js";
@@ -78,21 +76,34 @@ async function makeTaskBundle(): Promise<{ dir: string; bundle: Bundle; cleanup:
   return { dir, bundle, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
-/** A hard-case backend: the link write lands, then only the advisory registry read fails. */
-class PostWriteLintFailureBackend extends MemoryBackend {
-  private failConventionReads = false;
-
-  override async write(id: ConceptId, doc: OkfDocument, options: WriteOptions = {}): Promise<Version> {
-    const version = await super.write(id, doc, options);
-    if (id === "tasks/review" && doc.body.includes("[depends on]")) this.failConventionReads = true;
+/**
+ * A hard case on the local backend: the link write lands, then only the advisory registry read
+ * fails. Patches the FilesystemBackend the CLI constructs for the duration of `body`.
+ */
+async function withPostWriteLintFailure(body: () => Promise<void>): Promise<void> {
+  const write = FilesystemBackend.prototype.write;
+  const read = FilesystemBackend.prototype.read;
+  const readMany = FilesystemBackend.prototype.readMany;
+  let failConventionReads = false;
+  FilesystemBackend.prototype.write = async function (this: FilesystemBackend, id: ConceptId, doc: OkfDocument, options?: WriteOptions): Promise<Version> {
+    const version = await write.call(this, id, doc, options);
+    if (id === "tasks/review" && doc.body.includes("[depends on]")) failConventionReads = true;
     return version;
-  }
-
-  override async read(id: ConceptId): Promise<ReadResult> {
-    if (this.failConventionReads && id === "conventions/task") {
-      throw new Error("injected post-write lint read failure");
-    }
-    return super.read(id);
+  };
+  FilesystemBackend.prototype.read = async function (this: FilesystemBackend, id: ConceptId): Promise<ReadResult> {
+    if (failConventionReads && id === "conventions/task") throw new Error("injected post-write lint read failure");
+    return read.call(this, id);
+  };
+  FilesystemBackend.prototype.readMany = async function (this: FilesystemBackend, ids: ConceptId[]): Promise<ReadResult[]> {
+    if (failConventionReads && ids.includes("conventions/task")) throw new Error("injected post-write lint read failure");
+    return readMany.call(this, ids);
+  };
+  try {
+    await body();
+  } finally {
+    FilesystemBackend.prototype.write = write;
+    FilesystemBackend.prototype.read = read;
+    FilesystemBackend.prototype.readMany = readMany;
   }
 }
 
@@ -178,34 +189,22 @@ test("new --body-file + --link: local authoring enters through one command and r
 });
 
 test("new --link: a post-write advisory-lint failure preserves success and the truthful final version", async () => {
-  const backend = new PostWriteLintFailureBackend();
-  const bundle: Bundle = { root: "mem://new-link-lint-failure", backend };
-  await writeDoc(bundle, {
-    id: "conventions/task",
-    frontmatter: {
-      type: CONVENTION_TYPE,
-      governs: "Task",
-      path: "tasks/",
-      fields: { required: ["title"], optional: [] },
-      links: { "depends on": "Task" },
-      timestamp: T,
-    },
-    body: "A task.",
-  });
-  const handle = await serve({ bundle, port: 0 });
-  const url = `http://${handle.host}:${handle.port}`;
+  const { dir, bundle, cleanup } = await makeTaskBundle();
   try {
-    await runJson(newCommand, ["Task", "source", "--title", "Source", "--remote", url]);
-    const result = await runJson(newCommand, [
-      "Task",
-      "review",
-      "--title",
-      "Review",
-      "--link",
-      "depends on=tasks/source",
-      "--remote",
-      url,
-    ]);
+    let result: Record<string, unknown> = {};
+    await withPostWriteLintFailure(async () => {
+      await runJson(newCommand, ["Task", "source", "--title", "Source", "--dir", dir]);
+      result = await runJson(newCommand, [
+        "Task",
+        "review",
+        "--title",
+        "Review",
+        "--link",
+        "depends on=tasks/source",
+        "--dir",
+        dir,
+      ]);
+    });
 
     const finalHead = await readDocVersioned(bundle, "tasks/review");
     assert.equal(result.version, finalHead.version);
@@ -216,7 +215,7 @@ test("new --link: a post-write advisory-lint failure preserves success and the t
     assert.equal(warnings[0]!.code, "LINK_LINT_UNAVAILABLE");
     assert.match(String(warnings[0]!.message), /link was written/);
   } finally {
-    await handle.close();
+    await cleanup();
   }
 });
 
@@ -239,55 +238,18 @@ test("new --body-file: unreadable input fails before creation", async () => {
   }
 });
 
-test("new --link: one resolved actor consistently attributes both create and link writes over remote", async () => {
-  const bundle: Bundle = { root: "mem://new-link-actor", backend: new MemoryBackend() };
-  await writeDoc(bundle, {
-    id: "conventions/task",
-    frontmatter: {
-      type: CONVENTION_TYPE,
-      title: "Task",
-      governs: "Task",
-      path: "tasks/",
-      fields: { required: ["title"], optional: [] },
-      links: { "depends on": "Task" },
-      timestamp: T,
-    },
-    body: "A unit of work.",
-  });
-  const handle: ServerHandle = await serve({ bundle, port: 0 });
-  const url = `http://${handle.host}:${handle.port}`;
+test("new --link: one resolved actor consistently attributes both create and link writes", async () => {
+  const { dir, bundle, cleanup } = await makeTaskBundle();
   try {
-    await withActorEnv(" env-new ", async () => {
-      await runJson(newCommand, ["Task", "t1", "--title", "T1", "--remote", url]);
-      await runJson(newCommand, [
-        "Task",
-        "t2",
-        "--title",
-        "T2",
-        "--link",
-        "depends on=tasks/t1",
-        "--remote",
-        url,
-      ]);
-      await runJson(newCommand, [
-        "Task",
-        "t3",
-        "--title",
-        "T3",
-        "--link",
-        "depends on=tasks/t1",
-        "--actor",
-        "flag-new",
-        "--remote",
-        url,
-      ]);
+    await withActorEnv(" process:env-new ", async () => {
+      await runJson(newCommand, ["Task", "t1", "--title", "T1", "--dir", dir]);
+      await runJson(newCommand, ["Task", "t2", "--title", "T2", "--link", "depends on=tasks/t1", "--dir", dir]);
+      await runJson(newCommand, ["Task", "t3", "--title", "T3", "--link", "depends on=tasks/t1", "--actor", "process:flag-new", "--dir", dir]);
     });
-    assert.equal((await readDoc(bundle, "tasks/t2")).frontmatter.actor, "env-new");
-    assert.deepEqual((await docVersions(bundle, "tasks/t2")).map((v) => v.actor), ["env-new", "env-new"]);
-    assert.equal((await readDoc(bundle, "tasks/t3")).frontmatter.actor, "flag-new");
-    assert.deepEqual((await docVersions(bundle, "tasks/t3")).map((v) => v.actor), ["flag-new", "flag-new"]);
+    assert.equal((await readDoc(bundle, "tasks/t2")).frontmatter.superbee_updated_by, "process:env-new");
+    assert.equal((await readDoc(bundle, "tasks/t3")).frontmatter.superbee_updated_by, "process:flag-new");
   } finally {
-    await handle.close();
+    await cleanup();
   }
 });
 
@@ -667,62 +629,5 @@ test("new --link: re-running the exact same new+--link on an id that already exi
     assert.equal(matches.length, 1);
   } finally {
     await cleanup();
-  }
-});
-
-test("--remote: new --link against a served bundle, parity with the same operation run locally", async () => {
-  const localDir = await tempDir();
-  const remoteDir = await tempDir();
-  try {
-    const localBundle: Bundle = { root: localDir };
-    const remoteBundle: Bundle = { root: remoteDir };
-    await initBundle(localDir);
-    await initBundle(remoteDir);
-    const taskConvention = {
-      type: CONVENTION_TYPE,
-      title: "Task",
-      governs: "Task",
-      path: "tasks/",
-      fields: { required: ["title"], optional: [] },
-      links: { "depends on": "Task" },
-      timestamp: T,
-    };
-    await writeDoc(localBundle, { id: "conventions/task", frontmatter: taskConvention, body: "A unit of work." });
-    await writeDoc(remoteBundle, { id: "conventions/task", frontmatter: taskConvention, body: "A unit of work." });
-
-    const handle: ServerHandle = await serve({ bundle: remoteBundle, port: 0 });
-    const url = `http://${handle.host}:${handle.port}`;
-    try {
-      await runJson(newCommand, ["Task", "t1", "--title", "T1", "--dir", localDir]);
-      await runJson(newCommand, ["Task", "t1", "--title", "T1", "--remote", url]);
-
-      const localResult = await runJson(newCommand, [
-        "Task",
-        "t2",
-        "--title",
-        "T2",
-        "--link",
-        "depends on=tasks/t1",
-        "--dir",
-        localDir,
-      ]);
-      const remoteResult = await runJson(newCommand, [
-        "Task",
-        "t2",
-        "--title",
-        "T2",
-        "--link",
-        "depends on=tasks/t1",
-        "--remote",
-        url,
-      ]);
-      assert.equal(remoteResult.id, localResult.id);
-      assert.deepEqual(remoteResult.links, localResult.links);
-    } finally {
-      await handle.close();
-    }
-  } finally {
-    await rm(localDir, { recursive: true, force: true });
-    await rm(remoteDir, { recursive: true, force: true });
   }
 });

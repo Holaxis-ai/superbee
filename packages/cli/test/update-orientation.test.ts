@@ -81,12 +81,12 @@ const HOME_BASELINE_TOON = [
   '  "Documents & links": "doc write, doc update, doc field, doc verify, doc read, doc open, doc history, doc delete, doc import, list, search, link"',
   '  Artifacts: "artifact create, promote, pull, blobs, delete"',
   '  Kinds: "new, kinds, kind field, kind draft, kind dismiss, recipes, recipe add, recipe validate, source plugin register, source plugin list, source plugin remove, source bind, source run, source snapshot bind, source snapshot run, source snapshot check, source test, recipe evolve"',
-  '  Remote: "serve, ui, mcp, view list, view open, view read, view update, sync"',
+  '  Remote: "ui, mcp, view list, view open, view read, view update, sync"',
   '  Session: "version, session-start, turn-end, hook install|status|uninstall, skill install|status|uninstall, setup"',
   '  Hosted: "login, whoami, logout, checkout, export, publish, op, notify, inbox, access, workload register, workload exec, bundle retire"',
   "commands_help: run `superbee <command> --help` (or `superbee --help`) for full usage",
   "kinds: kinds are declared per-bundle — run `superbee kinds` to list them",
-  'remote_env: "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit --dir wins, then a committed .superbee.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. A retired .agentstate.json binding is refused with the rename fix. URL-valued bindings and the retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly"',
+  'remote_env: "bundle resolution: an explicit --dir wins, then a committed .superbee.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. A retired .agentstate.json binding is refused with the rename fix. URL-valued bindings, --remote and the retired AGENTSTATE_LITE_REMOTE variable are refused; use checkout for a hosted bundle"',
   "",
 ].join("\n");
 
@@ -105,14 +105,14 @@ const HOME_BASELINE_JSON = `${JSON.stringify({
     "Documents & links": "doc write, doc update, doc field, doc verify, doc read, doc open, doc history, doc delete, doc import, list, search, link",
     Artifacts: "artifact create, promote, pull, blobs, delete",
     Kinds: "new, kinds, kind field, kind draft, kind dismiss, recipes, recipe add, recipe validate, source plugin register, source plugin list, source plugin remove, source bind, source run, source snapshot bind, source snapshot run, source snapshot check, source test, recipe evolve",
-    Remote: "serve, ui, mcp, view list, view open, view read, view update, sync",
+    Remote: "ui, mcp, view list, view open, view read, view update, sync",
     Session: "version, session-start, turn-end, hook install|status|uninstall, skill install|status|uninstall, setup",
     Hosted: "login, whoami, logout, checkout, export, publish, op, notify, inbox, access, workload register, workload exec, bundle retire",
   },
   commands_help: "run `superbee <command> --help` (or `superbee --help`) for full usage",
   kinds: "kinds are declared per-bundle — run `superbee kinds` to list them",
   remote_env:
-    "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit --dir wins, then a committed .superbee.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. A retired .agentstate.json binding is refused with the rename fix. URL-valued bindings and the retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly",
+    "bundle resolution: an explicit --dir wins, then a committed .superbee.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. A retired .agentstate.json binding is refused with the rename fix. URL-valued bindings, --remote and the retired AGENTSTATE_LITE_REMOTE variable are refused; use checkout for a hosted bundle",
 })}\n`;
 
 // Derive the quoted token from the shipped renderer and escape it for the serialized baselines.
@@ -790,7 +790,6 @@ test("home bytes stay exact and notice is one five-field block immediately after
   const withNotice = buildHomeView(
     deps,
     null,
-    undefined,
     undefined,
     undefined,
     undefined,

@@ -73,6 +73,15 @@ and automatic pull. A `.agentstate.json` project binding is refused at the level
 finds it with `USAGE`, exit 2, `details.code` `RETIRED_PROJECT_BINDING` and the file in
 `details.binding`; home shows the same text as `project_binding_error`.
 
+The v0 remote client and its reference server command are removed. `--remote`, anywhere before
+`--`, stops every command before any work with `USAGE`, exit 2, `details.code` `RETIRED_FLAG` and
+`details.input` `--remote`; `superbee serve` does the same with `RETIRED_COMMAND` and `details.input`
+`serve`. The help names `checkout` for a hosted bundle, `--dir` for a local one and the last release
+that still has the old server. `AGENTSTATE_LITE_REMOTE` is a retired environment name with no
+replacement: it refuses with `RETIRED_ENV` whenever it is set. A URL-valued project binding is
+refused with `RETIRED_URL_BINDING` and the file in `details.binding`; no refusal echoes the URL.
+`session-start` and `turn-end` never refuse. See `packages/cli/test/local-only-cli-integration.test.ts`.
+
 ## Standing mutation invariant
 
 All public mutations are idempotent at their advertised semantic boundary. Repeating a request that
@@ -367,7 +376,7 @@ plan with a `plan_token`; `--apply <token>` recomputes the plan from fresh reads
 the token still matches. Writes are create-only. `--refresh <record-id>` follows the same plan and
 apply steps, writes each copy only if it is still the version the plan saw, and reports a copy edited
 since the record wrote it as a `target_edited` conflict unless named with `--overwrite` or `--skip`.
-`--resume <record-id>` finishes an interrupted run. `--remote` and hosted checkouts are `USAGE`.
+`--resume <record-id>` finishes an interrupted run. Hosted checkouts are `USAGE`.
 
 Exit 5 codes: `TRANSFER_CONFLICT` (the plan has conflicts, with rows in `details.conflicts`),
 `TRANSFER_PLAN_CHANGED` (the token no longer matches, with `details.expected_plan` and

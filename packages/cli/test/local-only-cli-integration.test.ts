@@ -1,4 +1,4 @@
-/** Built-CLI proof that only an explicit --remote flag can activate HTTP. */
+/** Built-CLI proof that removed remote inputs refuse actionably and bundle resolution stays local. */
 import test, { before } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
@@ -7,7 +7,6 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { serve, type ServerHandle } from "@superbee/server";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliPackageRoot = path.resolve(here, "../../superbee");
@@ -29,7 +28,7 @@ interface RunResult {
 function run(
   args: string[],
   cwd: string,
-  legacyRemote: string | null = "http://legacy.example",
+  legacyRemote: string | null = null,
   timeout?: number,
 ): Promise<RunResult> {
   const env: NodeJS.ProcessEnv = {
@@ -56,65 +55,91 @@ function run(
   });
 }
 
-test("built CLI: env-only bare command errors with migration guidance", async () => {
-  const cwd = await mkdtemp(path.join(tmpdir(), "aslite-local-only-env-"));
-  try {
-    const result = await run(["list", "--json"], cwd);
-    assert.equal(result.code, 2);
-    assert.match(result.stdout, /AGENTSTATE_LITE_REMOTE ambient remote selection is retired/);
-    assert.match(result.stdout, /--remote http:\/\/legacy\.example/);
-  } finally {
-    await rm(cwd, { recursive: true, force: true });
-  }
-});
+const SECRET_URL = "http://user:secret-token@legacy.example";
 
-test("built CLI: explicit --dir suppresses the legacy env and stays local", async () => {
-  const result = await run(["list", "--dir", sampleBundle, "--json"], repoRoot);
-  assert.equal(result.code, 0, result.stderr || result.stdout);
-  assert.equal((JSON.parse(result.stdout) as { count: number }).count, 4);
-});
-
-test("built CLI: empty explicit target flags preserve presence and never fall through to ambient or discovered state", async () => {
-  const cwd = await mkdtemp(path.join(tmpdir(), "aslite-local-only-empty-flags-"));
+test("built CLI: the retired remote variable refuses every command, even with --dir", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "superbee-retired-remote-env-"));
   try {
-    for (const remoteArgs of [["--remote", ""], ["--remote="]]) {
-      const result = await run(["list", ...remoteArgs, "--json"], cwd);
-      assert.equal(result.code, 2);
-      assert.match(result.stdout, /remote URL is required|invalid (?:server|remote) URL/i);
-      assert.doesNotMatch(result.stdout, /AGENTSTATE_LITE_REMOTE ambient|no OKF bundle found/);
+    for (const args of [["list", "--json"], ["list", "--dir", sampleBundle, "--json"]]) {
+      const result = await run(args, cwd, SECRET_URL);
+      assert.equal(result.code, 2, result.stdout);
+      assert.match(result.stdout, /code: USAGE/);
+      assert.match(result.stdout, /code: RETIRED_ENV/);
+      assert.match(result.stdout, /AGENTSTATE_LITE_REMOTE is no longer read; remote access was removed\./);
+      assert.match(result.stdout, /unset AGENTSTATE_LITE_REMOTE/);
+      assert.match(result.stdout, /checkout <bundle-id>/);
+      assert.doesNotMatch(result.stdout + result.stderr, /secret-token/);
     }
-
-    const emptyDir = await run(["list", "--dir", "", "--json"], cwd);
-    assert.equal(emptyDir.code, 0, emptyDir.stderr || emptyDir.stdout);
-    assert.equal((JSON.parse(emptyDir.stdout) as { count: number }).count, 0);
-    assert.doesNotMatch(emptyDir.stdout, /AGENTSTATE_LITE_REMOTE ambient/);
-
-    const bothEmpty = await run(["list", "--remote=", "--dir", "", "--json"], cwd);
-    assert.equal(bothEmpty.code, 2);
-    assert.match(bothEmpty.stdout, /--remote and --dir are mutually exclusive/);
-    assert.doesNotMatch(bothEmpty.stdout, /AGENTSTATE_LITE_REMOTE ambient|no OKF bundle found/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
 });
 
-test("built CLI: a reached URL binding errors actionably, while a local binding still resolves", async () => {
-  const cwd = await mkdtemp(path.join(tmpdir(), "aslite-local-only-binding-"));
+test("built CLI: --remote is refused before any work, wherever it appears", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "superbee-retired-remote-flag-"));
   try {
-    const remoteValues = ["http://binding.example", "x://remote.example/bundle"];
+    const shapes = [
+      ["list", "--remote", SECRET_URL, "--json"],
+      ["list", `--remote=${SECRET_URL}`],
+      ["--remote", SECRET_URL],
+      ["--remote", SECRET_URL, "list"],
+      ["doc", "write", "a", "--type", "Note", "--remote", SECRET_URL, "--dir", sampleBundle],
+      ["ui", "--remote", SECRET_URL],
+    ];
+    for (const args of shapes) {
+      const result = await run(args, cwd);
+      assert.equal(result.code, 2, `${args.join(" ")}: ${result.stdout}`);
+      assert.match(result.stdout, /message: "--remote was removed\."/);
+      assert.match(result.stdout, /code: RETIRED_FLAG/);
+      assert.match(result.stdout, /input: "--remote"/);
+      assert.match(result.stdout, /Hosted bundle: .+ checkout <bundle-id>\. Local bundle: --dir <path>\. Old server: npx superbee@0\.4\.5 <command> --remote <url>\./);
+      assert.doesNotMatch(result.stdout + result.stderr, /secret-token/);
+    }
+    // After `--`, the token is data, not the removed flag.
+    const literal = await run(["list", "--dir", sampleBundle, "--json", "--", "--remote"], cwd);
+    assert.doesNotMatch(literal.stdout, /RETIRED_FLAG/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("built CLI: an MCP host started with --remote sees the refusal on stderr, never on the protocol stream", async () => {
+  const result = await run(["mcp", "--remote", SECRET_URL], repoRoot);
+  assert.equal(result.code, 2);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /code: RETIRED_FLAG/);
+  assert.doesNotMatch(result.stderr, /secret-token/);
+});
+
+test("built CLI: superbee serve is refused with the local and pinned routes", async () => {
+  for (const args of [["serve"], ["serve", "--dir", sampleBundle, "--port", "0"]]) {
+    const result = await run(args, repoRoot);
+    assert.equal(result.code, 2, result.stdout);
+    assert.match(result.stdout, /message: superbee serve was removed\./);
+    assert.match(result.stdout, /code: RETIRED_COMMAND/);
+    assert.match(result.stdout, /input: serve/);
+    assert.match(result.stdout, /Use --dir <path>, and .+ ui --dir <path> for the browser\. Old server: npx superbee@0\.4\.5 serve --dir <path>\./);
+  }
+});
+
+test("built CLI: a reached URL binding is refused without echoing it, while a local binding still resolves", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "superbee-retired-url-binding-"));
+  try {
+    const remoteValues = ["http://user:secret-token@binding.example", "x://remote.example/bundle"];
     // Drive-shaped input is still an unsupported URI scheme on supported hosts.
     remoteValues.push("C://remote.example/bundle");
     for (const value of remoteValues) {
       await writeFile(path.join(cwd, ".superbee.json"), JSON.stringify({ bundle: value }));
-      const remoteBinding = await run(["list", "--json"], cwd, null);
+      const remoteBinding = await run(["list", "--json"], cwd);
       assert.equal(remoteBinding.code, 2);
-      assert.match(remoteBinding.stdout, /project binding .* cannot use (?:remote URL|unsupported URI scheme)/);
-      assert.match(remoteBinding.stdout, /URL bindings no longer activate remotes/);
-      assert.ok(remoteBinding.stdout.includes(value));
+      assert.match(remoteBinding.stdout, /project binding .* cannot use a URL; remote access was removed/);
+      assert.match(remoteBinding.stdout, /RETIRED_URL_BINDING/);
+      assert.match(remoteBinding.stdout, /Set \\?"bundle\\?" in .* to a local path, or run .+ checkout <bundle-id>\./);
+      assert.ok(!remoteBinding.stdout.includes(value));
     }
 
     await writeFile(path.join(cwd, ".superbee.json"), JSON.stringify({ bundle: sampleBundle }));
-    const localBinding = await run(["list", "--json"], cwd, null);
+    const localBinding = await run(["list", "--json"], cwd);
     assert.equal(localBinding.code, 0, localBinding.stderr || localBinding.stdout);
     assert.equal((JSON.parse(localBinding.stdout) as { count: number }).count, 4);
   } finally {
@@ -134,18 +159,5 @@ test("built CLI: a FIFO project binding is rejected promptly instead of blocking
     assert.ok(result.stdout.includes(binding));
   } finally {
     await rm(cwd, { recursive: true, force: true });
-  }
-});
-
-test("built CLI: explicit --remote suppresses the legacy env and completes a real server round trip", async () => {
-  let handle: ServerHandle | undefined;
-  try {
-    handle = await serve({ bundle: { root: sampleBundle }, port: 0 });
-    const remote = `http://${handle.host}:${handle.port}`;
-    const result = await run(["list", "--remote", remote, "--json"], repoRoot);
-    assert.equal(result.code, 0, result.stderr || result.stdout);
-    assert.equal((JSON.parse(result.stdout) as { count: number }).count, 4);
-  } finally {
-    await handle?.close();
   }
 });

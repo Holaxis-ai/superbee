@@ -11,8 +11,6 @@ import type { HostedAccountDeps } from "../../hosted/account.js";
 /** The common flags every `doc` verb accepts — appended to each verb's focused help (§10). */
 const COMMON_OPTIONS = `Common options:
   --dir <path>         Bundle directory (default: discovered from the cwd)
-  --remote <url>       Talk to a wire-protocol server instead of a local bundle
-                       (mutually exclusive with --dir; remote access is always explicit)
   --json               Emit compact JSON instead of TOON
   -h, --help           Show this help`;
 
@@ -60,8 +58,6 @@ what you are reading. Use --new-tab to request a separate tab. Explicit remote l
 
 Options:
   --dir <path>         Bundle directory (default: discovered from the cwd)
-  --remote <url>       Display a document from an explicit remote bundle
-                       (mutually exclusive with --dir; remote access is always explicit)
   --new-tab            Open a separate browser tab instead of offering it to the current viewer
   --port <p>           Require this port for a new managed UI (default: OS-assigned and then reused)
   --actor <name>       Advisory identity for any later human-confirmed View actions in this UI.
@@ -253,14 +249,12 @@ Options:
                          superbee doc read <id> --offset <next_offset> --expected-version <head_version> --json
   --out <path>         Write the doc's raw markdown bytes to a file (bypasses context).
                        Use --out - to stream raw bytes to stdout (the receipt goes to stderr).
-                       Over --remote, bytes are the canonical OKF re-serialization (no raw-bytes
-                       wire endpoint yet — see docs/WIRE-PROTOCOL.md open questions).
                        For a local (--dir) bundle, a resolved --out path landing INSIDE the bundle
                        root gets a loud 'warning' field on the receipt: a non-reserved .md path
                        will be re-ingested as a concept doc on the next bundle walk; a reserved
                        filename (index.md/log.md) will instead CLOBBER that file outright; any
                        other (non-.md) path is inert (no warning) — the write still proceeds in
-                       every case; not applicable to --out - or to --remote.
+                       every case; not applicable to --out -.
   --body-out <path>    Write ONLY the parsed markdown body (no YAML frontmatter) as UTF-8. The
                        receipt includes the version from the SAME read, so the safe edit cycle is:
                          superbee doc read <id> --body-out <path-outside-bundle> --json
@@ -362,7 +356,7 @@ advisory attribution, or "unattributed" when none is present. generated.by names
 producer and is not used as the version's mutator. The newest version is the token to
 pass to --expected-version for an optimistic doc update/delete.
 
-In a hosted checkout (and without --remote) the chain is the host's: every sent version, each with
+In a hosted checkout the chain is the host's: every sent version, each with
 its seq (1 = the first write), the principal id that made it, and the agent label it named. The
 host's newest version is not the folder's compare-and-swap base, so no --expected-version line is
 offered there. A document created in the checkout has history once sync sends it.
@@ -376,7 +370,7 @@ Options:
                         stops at ${HOSTED_HISTORY_CEILING.toLocaleString("en-US")}.
   --seq <n>             Hosted checkout only: show version <n> — its row, frontmatter and a
                         bounded body preview; with --json, its row and the whole stored content.
-                        Refused on a local bundle and with --remote.
+                        Refused on a local bundle.
 ${COMMON_OPTIONS}
 
 Examples:
@@ -566,7 +560,7 @@ export async function defaultReadStdin(): Promise<StdinReadResult> {
 }
 
 /** Map a filesystem ENOENT (missing concept file) to NOT_FOUND; classify anything else via `classifyBundleError`. */
-export function readErrorToCliError(err: unknown, id: string, remoteUrl?: string): CliError {
+export function readErrorToCliError(err: unknown, id: string): CliError {
   if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
     return new CliError("NOT_FOUND", `no concept document at id '${id}'`, {
       help: `${cliInvocation()} list`,
@@ -575,5 +569,5 @@ export function readErrorToCliError(err: unknown, id: string, remoteUrl?: string
   // A corrupt document (unparseable YAML) → RUNTIME (exit 1), not the USAGE default: handled
   // centrally in classifyBundleError so read/write/update/history/link all agree (a valid
   // invocation hitting bad stored data is not a usage error).
-  return classifyBundleError(err, remoteUrl);
+  return classifyBundleError(err);
 }

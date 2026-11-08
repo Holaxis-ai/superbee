@@ -2,8 +2,7 @@
  * `/__ui/config` sharing/workspaces contract (designs/home-surface, PR-B): the consumer-injected
  * loaders pass through verbatim; a THROWING sharing loader reads as `unavailable` — NEVER a
  * fabricated "private" (the truth-table's fail-honest rule); a throwing workspaces loader reads
- * as an empty list; an absent loader makes no claim (`sharing: null`); remote mode derives
- * `hosted` in the runtime itself with no injection.
+ * as an empty list; an absent loader makes no claim (`sharing: null`).
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -146,28 +145,6 @@ test("an absent loader makes NO claim (sharing null), and workspaces default to 
     const config = await fetchConfig(server);
     assert.equal(config.sharing, null);
     assert.deepEqual(config.workspaces, []);
-  } finally {
-    await server.close();
-  }
-});
-
-test("remote mode derives hosted from remoteBase in the runtime — no injection involved", async () => {
-  const server = await bootUiServer({
-    mode: "remote",
-    remoteBase: "http://127.0.0.1:1", // never dialed by the config route
-    bundle: memoryBundle(),
-    sessionSecret: SECRET,
-    renderDocument,
-    serveAsset: stubAsset,
-    watcherBootTimeoutMs: 1, // the live watcher's boot probe fails fast and is tolerated
-  });
-  try {
-    const config = await fetchConfig(server);
-    const sharing = config.sharing as SharingSummary;
-    assert.equal(sharing.kind, "hosted");
-    assert.equal(sharing.remote, "127.0.0.1:1");
-    assert.equal(sharing.refresh_after_ms, undefined, "hosted state is stable for this run and does not poll config");
-    assert.deepEqual(config.workspaces, [], "workspaces are a dir-mode block");
   } finally {
     await server.close();
   }

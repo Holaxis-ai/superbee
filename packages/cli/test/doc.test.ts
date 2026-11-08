@@ -32,9 +32,7 @@
  * case — a deliberate in-bundle copy or reserved-file re-export is conceivable.
  *
  * Runs command functions in-process (no subprocess) against a real temp filesystem bundle, mirroring
- * `link.test.ts`/`kinds.test.ts`'s pattern. The CAS-retry test additionally boots a real
- * `@superbee/server` `serve()` instance over a `MemoryBackend` bundle, mirroring
- * `remote.test.ts`'s multi-writer convergence tests.
+ * `link.test.ts`/`kinds.test.ts`'s pattern.
  *
  * Test-authoring note: a body-less `doc write`/`doc update` call with NO `readStdin` override falls
  * through to `defaultReadStdin`, which reads REAL `process.stdin` and hangs under `node --test`
@@ -59,12 +57,13 @@ import {
   loadKinds,
   parseLinks,
   MemoryBackend,
+  FilesystemBackend,
   CONVENTION_TYPE,
   type Bundle,
   type OkfDocument,
   type Version,
+  type WriteOptions,
 } from "@superbee/core";
-import { serve, type ServerHandle } from "@superbee/server";
 import { encode } from "@toon-format/toon";
 import { MAX_BODY_CHARS } from "@superbee/markdown-renderer";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
@@ -161,10 +160,29 @@ async function runDoc(argv: string[], deps: Partial<DocCliDeps> = {}): Promise<R
   return JSON.parse(out) as Record<string, unknown>;
 }
 
-/** Boot the reference server over `bundle` (a real socket listener, ephemeral port). */
-async function bootServerOverBundle(bundle: Bundle): Promise<{ url: string; close: () => Promise<void> }> {
-  const handle: ServerHandle = await serve({ bundle, port: 0 });
-  return { url: `http://${handle.host}:${handle.port}`, close: () => handle.close() };
+/**
+ * Run `body` while the CLI's first local write that `when` matches is preceded by `compete`, a
+ * concurrent writer racing through the same FilesystemBackend the CLI constructs.
+ */
+async function withCompetingLocalWrite(
+  when: (id: string, options: WriteOptions | undefined) => boolean,
+  compete: (backend: FilesystemBackend, options: WriteOptions | undefined) => Promise<void>,
+  body: () => Promise<void>,
+): Promise<void> {
+  const original = FilesystemBackend.prototype.write;
+  let injected = false;
+  FilesystemBackend.prototype.write = async function (this: FilesystemBackend, id, d, options) {
+    if (!injected && when(id, options)) {
+      injected = true;
+      await compete(this, options);
+    }
+    return original.call(this, id, d, options);
+  };
+  try {
+    await body();
+  } finally {
+    FilesystemBackend.prototype.write = original;
+  }
 }
 
 // ── F1: doc write's body-blanking guard ─────────────────────────────────────────────────────────
@@ -345,33 +363,6 @@ test("doc write: an identical repeat is changed:false, preserves version and mti
     assert.equal((await stat(file)).mtimeMs, before.mtimeMs);
   } finally {
     await cleanup();
-  }
-});
-
-test("doc write --remote: an identical repeat is changed:false and does not append backend history", async () => {
-  const bundle: Bundle = { root: "mem://doc-write-noop-remote", backend: new MemoryBackend() };
-  const server = await bootServerOverBundle(bundle);
-  try {
-    const args = [
-      "write",
-      "concepts/a",
-      "--type",
-      "Concept",
-      "--body",
-      "Same body.",
-      "--timestamp",
-      T,
-      "--remote",
-      server.url,
-    ];
-    const first = await runDoc(args);
-    const repeated = await runDoc(args.map((arg) => arg === T ? "2026-07-01T00:00:00Z" : arg));
-    assert.equal(first.changed, true);
-    assert.equal(repeated.changed, false);
-    assert.equal(repeated.version, first.version);
-    assert.equal((await docVersions(bundle, "concepts/a")).length, 1);
-  } finally {
-    await server.close();
   }
 });
 
@@ -952,139 +943,117 @@ test("mutateDoc overwrite: the historical '--replace-links' shape (a candidate t
 // PASS with the fix.
 
 test("doc write F1 guard: re-evaluated on EVERY attempt — a competing writer fills an EMPTY body concurrently, and our own bodyless write refuses (USAGE) instead of silently blanking it", async () => {
-  const backend = new MemoryBackend();
-  const bundle: Bundle = { root: "mem://write-f1-race", backend };
-  await writeDoc(bundle, {
-    id: "a",
-    frontmatter: { type: "Concept", title: "Original", timestamp: OLD_TS },
-    body: "",
-  });
-
-  // The FIRST time our own write attempts a real CAS write for 'a', a competing writer fills the
-  // (currently empty) body with non-empty content first, using OUR OWN read's version (so it wins).
-  const originalWrite = backend.write.bind(backend);
-  let injected = false;
-  backend.write = (async (id: string, d: OkfDocument, options?: { expectedVersion?: Version | null }) => {
-    if (id === "a" && !injected && options?.expectedVersion) {
-      injected = true;
-      const current = await backend.read("a");
-      await originalWrite(
-        "a",
-        { ...current.doc, body: "Competing non-empty body." },
-        { expectedVersion: options.expectedVersion },
-      );
-    }
-    return originalWrite(id, d, options);
-  }) as typeof backend.write;
-
-  const server = await bootServerOverBundle(bundle);
+  const { dir, cleanup } = await makeBundle();
+  const bundle: Bundle = { root: dir };
   try {
-    await assert.rejects(
-      () =>
-        doc(["write", "a", "--type", "Concept", "--remote", server.url, "--json"], {
+    await writeDoc(bundle, {
+      id: "a",
+      frontmatter: { type: "Concept", title: "Original", timestamp: OLD_TS },
+      body: "",
+    });
+    // The FIRST time our own write attempts a real CAS write for 'a', a competing writer fills the
+    // (currently empty) body with non-empty content first, using OUR OWN read's version (so it wins).
+    await withCompetingLocalWrite(
+      (id, options) => id === "a" && Boolean(options?.expectedVersion),
+      async (backend, options) => {
+        const current = await backend.read("a");
+        await backend.write("a", { ...current.doc, body: "Competing non-empty body." }, { expectedVersion: options!.expectedVersion });
+      },
+      () => assert.rejects(
+        () => doc(["write", "a", "--type", "Concept", "--dir", dir, "--json"], {
           stdout: () => {},
           readStdin: async () => undefined,
         }),
-      (err: unknown) => {
-        assert.ok(err instanceof CliError);
-        assert.equal(err.code, "USAGE");
-        assert.match(err.message, /non-empty body/);
-        return true;
-      },
+        (err: unknown) => {
+          assert.ok(err instanceof CliError);
+          assert.equal(err.code, "USAGE");
+          assert.match(err.message, /non-empty body/);
+          return true;
+        },
+      ),
     );
     // The competing writer's body was never blanked — our write refused before ever landing.
-    const after = await readDoc(bundle, "a");
-    assert.equal(after.body, "Competing non-empty body.\n");
+    assert.equal((await readDoc(bundle, "a")).body, "Competing non-empty body.\n");
   } finally {
-    await server.close();
+    await cleanup();
   }
 });
 
 test("doc write schema-loss guard: re-evaluated on EVERY attempt — a competing writer concurrently creates the target as a real kind Convention, and our own (non-Convention) write refuses instead of silently overwriting its schema", async () => {
-  const backend = new MemoryBackend();
-  const bundle: Bundle = { root: "mem://write-schema-loss-race", backend };
-
-  // The FIRST time our own write attempts its expect-absent CREATE, a competing writer creates the
-  // SAME id as a real Convention doc first (also expect-absent, so it wins the race).
-  const originalWrite = backend.write.bind(backend);
-  let injected = false;
-  backend.write = (async (id: string, d: OkfDocument, options?: { expectedVersion?: Version | null }) => {
-    if (id === "conventions/widget" && !injected && options?.expectedVersion === null) {
-      injected = true;
-      await originalWrite(
-        "conventions/widget",
-        {
-          id: "conventions/widget",
-          frontmatter: {
-            type: "Convention",
-            governs: "Widget",
-            path: "widgets/",
-            fields: { required: ["title"] },
-            timestamp: OLD_TS,
-          },
-          body: "A widget kind.",
-        },
-        { expectedVersion: null },
-      );
-    }
-    return originalWrite(id, d, options);
-  }) as typeof backend.write;
-
-  const server = await bootServerOverBundle(bundle);
+  const { dir, cleanup } = await makeBundle();
+  const bundle: Bundle = { root: dir };
   try {
-    await assert.rejects(
-      () =>
-        doc(["write", "conventions/widget", "--type", "Concept", "--remote", server.url, "--json"], {
+    // The FIRST time our own write attempts its expect-absent CREATE, a competing writer creates the
+    // SAME id as a real Convention doc first (also expect-absent, so it wins the race).
+    await withCompetingLocalWrite(
+      (id, options) => id === "conventions/widget" && options?.expectedVersion === null,
+      async (backend) => {
+        await backend.write(
+          "conventions/widget",
+          {
+            id: "conventions/widget",
+            frontmatter: {
+              type: "Convention",
+              governs: "Widget",
+              path: "widgets/",
+              fields: { required: ["title"] },
+              timestamp: OLD_TS,
+            },
+            body: "A widget kind.",
+          },
+          { expectedVersion: null },
+        );
+      },
+      () => assert.rejects(
+        () => doc(["write", "conventions/widget", "--type", "Concept", "--dir", dir, "--json"], {
           stdout: () => {},
           readStdin: async () => undefined,
         }),
-      (err: unknown) => {
-        assert.ok(err instanceof CliError);
-        assert.equal(err.code, "USAGE");
-        assert.match(err.message, /drop the convention's schema/);
-        return true;
-      },
+        (err: unknown) => {
+          assert.ok(err instanceof CliError);
+          assert.equal(err.code, "USAGE");
+          assert.match(err.message, /drop the convention's schema/);
+          return true;
+        },
+      ),
     );
     // The concurrently-created convention survived, untouched — our write refused before landing.
     const after = await readDoc(bundle, "conventions/widget");
     assert.equal(after.frontmatter.type, "Convention");
     assert.equal(after.frontmatter.governs, "Widget");
   } finally {
-    await server.close();
+    await cleanup();
   }
 });
 
 test("doc write dropped_fields: re-evaluated on EVERY attempt — a competing writer concurrently adds a NEW frontmatter field, and the receipt honestly names it among the dropped fields instead of misreporting from a stale peek", async () => {
-  const backend = new MemoryBackend();
-  const bundle: Bundle = { root: "mem://write-dropped-fields-race", backend };
-  await writeDoc(bundle, { id: "a", frontmatter: { type: "Concept", status: "todo", timestamp: OLD_TS }, body: "" });
-
-  // The FIRST time our own write attempts a real CAS write, a competing writer adds a NEW field
-  // ('priority') on top of the existing one ('status'), using OUR OWN read's version (so it wins).
-  const originalWrite = backend.write.bind(backend);
-  let injected = false;
-  backend.write = (async (id: string, d: OkfDocument, options?: { expectedVersion?: Version | null }) => {
-    if (id === "a" && !injected && options?.expectedVersion) {
-      injected = true;
-      const current = await backend.read("a");
-      await originalWrite(
-        "a",
-        { ...current.doc, frontmatter: { ...current.doc.frontmatter, priority: "high" } },
-        { expectedVersion: options.expectedVersion },
-      );
-    }
-    return originalWrite(id, d, options);
-  }) as typeof backend.write;
-
-  const server = await bootServerOverBundle(bundle);
+  const { dir, cleanup } = await makeBundle();
+  const bundle: Bundle = { root: dir };
   try {
-    const result = await runDoc(["write", "a", "--type", "Concept", "--remote", server.url]);
+    await writeDoc(bundle, { id: "a", frontmatter: { type: "Concept", status: "todo", timestamp: OLD_TS }, body: "" });
+    // The FIRST time our own write attempts a real CAS write, a competing writer adds a NEW field
+    // ('priority') on top of the existing one ('status'), using OUR OWN read's version (so it wins).
+    let result: Record<string, unknown> = {};
+    await withCompetingLocalWrite(
+      (id, options) => id === "a" && Boolean(options?.expectedVersion),
+      async (backend, options) => {
+        const current = await backend.read("a");
+        await backend.write(
+          "a",
+          { ...current.doc, frontmatter: { ...current.doc.frontmatter, priority: "high" } },
+          { expectedVersion: options!.expectedVersion },
+        );
+      },
+      async () => {
+        result = await runDoc(["write", "a", "--type", "Concept", "--dir", dir]);
+      },
+    );
     assert.equal(result.doc, "written");
     // BOTH fields are reported dropped — 'priority' (added by the competing writer, AFTER our stale
     // peek would have been taken) as well as 'status' (present from the start).
     assert.deepEqual((result.dropped_fields as string[]).sort(), ["priority", "status"]);
   } finally {
-    await server.close();
+    await cleanup();
   }
 });
 
@@ -1140,31 +1109,17 @@ test("doc write --actor: recorded in version history on a PERSISTING backend (Me
   assert.equal(history[0]!.actor, "alice");
 });
 
-test("doc write: SUPERBEE_ACTOR fallback reaches frontmatter and remote version history; flag wins", async () => {
-  const bundle: Bundle = { root: "mem://doc-write-actor-env", backend: new MemoryBackend() };
-  const server = await bootServerOverBundle(bundle);
+test("doc write: SUPERBEE_ACTOR fallback reaches frontmatter; flag wins", async () => {
+  const { dir, cleanup } = await makeBundle();
   try {
     await withActorEnv(" env-user ", async () => {
-      await runDoc(["write", "concepts/env", "--type", "Concept", "--body", "env", "--remote", server.url]);
-      await runDoc([
-        "write",
-        "concepts/flag",
-        "--type",
-        "Concept",
-        "--body",
-        "flag",
-        "--actor",
-        "flag-user",
-        "--remote",
-        server.url,
-      ]);
+      await runDoc(["write", "concepts/env", "--type", "Concept", "--body", "env", "--dir", dir]);
+      await runDoc(["write", "concepts/flag", "--type", "Concept", "--body", "flag", "--actor", "flag-user", "--dir", dir]);
     });
-    assert.equal((await readDoc(bundle, "concepts/env")).frontmatter.actor, "env-user");
-    assert.equal((await docVersions(bundle, "concepts/env"))[0]!.actor, "env-user");
-    assert.equal((await readDoc(bundle, "concepts/flag")).frontmatter.actor, "flag-user");
-    assert.equal((await docVersions(bundle, "concepts/flag"))[0]!.actor, "flag-user");
+    assert.equal((await readDoc({ root: dir }, "concepts/env")).frontmatter.actor, "env-user");
+    assert.equal((await readDoc({ root: dir }, "concepts/flag")).frontmatter.actor, "flag-user");
   } finally {
-    await server.close();
+    await cleanup();
   }
 });
 
@@ -1732,44 +1687,6 @@ test("doc update: logical --progress_status resolves to legacy v0.1 storage with
   }
 });
 
-test("doc update: status transition via a kind-declared --<field> flag over --remote (MemoryBackend, real enforced CAS)", async () => {
-  const bundle: Bundle = { root: "mem://doc-update-kind-field-remote", backend: new MemoryBackend() };
-  await writeDoc(bundle, {
-    id: "conventions/task",
-    frontmatter: {
-      type: CONVENTION_TYPE,
-      title: "Task",
-      governs: "Task",
-      path: "tasks/",
-      fields: {
-        required: ["title", "status"],
-        optional: ["priority", "assignee", "description"],
-        values: { status: ["todo", "in_progress", "blocked", "done", "canceled"] },
-      },
-      timestamp: T,
-    },
-    body: "A trackable unit of work.",
-  });
-  await writeDoc(bundle, {
-    id: "tasks/x",
-    frontmatter: { type: "Task", title: "Ship it", status: "in_progress", priority: "high", timestamp: OLD_TS },
-    body: "",
-  });
-  const server = await bootServerOverBundle(bundle);
-  try {
-    const result = await runDoc(["update", "tasks/x", "--status", "done", "--remote", server.url]);
-    assert.equal(result.doc, "updated");
-    assert.equal(result.changed, true);
-
-    const after = await readDoc(bundle, "tasks/x");
-    assert.equal(after.frontmatter.status, "done");
-    assert.equal(after.frontmatter.title, "Ship it");
-    assert.equal(after.frontmatter.priority, "high");
-  } finally {
-    await server.close();
-  }
-});
-
 test("doc update: multiple kind-declared fields patched in one call", async () => {
   const { dir, cleanup } = await makeTaskBundle();
   try {
@@ -2137,37 +2054,27 @@ test("doc update: repeated kind-declared assignments name the arity error", asyn
 });
 
 /**
- * CAS retry, not regressed: N concurrent `doc update`s to the SAME doc through one real server over
- * a `MemoryBackend` bundle (real enforced compare-and-swap). Every
+ * CAS retry, not regressed: N concurrent `doc update`s to the SAME local doc (the filesystem
+ * backend enforces compare-and-swap). Every
  * writer's patch is independent (each sets a distinct --title), so every individual call must land
  * (`doc: "updated"`) within `doc update`'s bounded retry budget, none exhausting it into STALE_HEAD.
  * Writer count is 5 to match `DOC_UPDATE_MAX_ATTEMPTS = 5` (doc.ts) for the same worst-case-4-
  * conflicts-per-writer reasoning `remote.test.ts` documents for `link add` — do not raise the writer
  * count without also reasoning about the retry budget.
  */
-test("doc update: CAS retry — N concurrent updates to the SAME doc through one server (MemoryBackend: real enforced CAS) all land, exit 0", async () => {
-  const bundle: Bundle = { root: "mem://doc-update-cas-test", backend: new MemoryBackend() };
-  await writeDoc(bundle, { id: "shared", frontmatter: { type: "Concept", title: "Shared", timestamp: T }, body: "Shared body." });
-  const server = await bootServerOverBundle(bundle);
+test("doc update: CAS retry — N concurrent updates to the SAME local doc all land, exit 0", async () => {
+  const { dir, cleanup } = await makeBundle();
   try {
+    await writeDoc({ root: dir }, { id: "shared", frontmatter: { type: "Concept", title: "Shared", timestamp: T }, body: "Shared body." });
     const writers = ["W1", "W2", "W3", "W4", "W5"];
-    const results = await Promise.all(
-      writers.map(async (w) => {
-        let out = "";
-        await doc(["update", "shared", "--title", w, "--remote", server.url, "--json"], {
-          stdout: (s) => (out += s),
-          readStdin: async () => undefined,
-        });
-        return JSON.parse(out) as Record<string, unknown>;
-      }),
-    );
+    const results = await Promise.all(writers.map((w) => runDoc(["update", "shared", "--title", w, "--dir", dir])));
     for (const r of results) {
       assert.equal(r.doc, "updated", `expected every concurrent update to land, got ${JSON.stringify(r)}`);
     }
-    const finalDoc = await readDoc(bundle, "shared");
+    const finalDoc = await readDoc({ root: dir }, "shared");
     assert.ok(writers.includes(finalDoc.frontmatter.title as string), "final title must be one of the writers' values");
   } finally {
-    await server.close();
+    await cleanup();
   }
 });
 
@@ -2382,93 +2289,37 @@ test("doc update --actor: an identical patch with the SAME actor stays a no-op (
 });
 
 test("doc update: ambient actor attributes a substantive patch but never manufactures an identical or empty update", async () => {
-  const bundle: Bundle = { root: "mem://doc-update-env-noop", backend: new MemoryBackend() };
-  await writeDoc(
-    bundle,
-    { id: "tasks/x", frontmatter: { type: "Task", title: "X", status: "todo", actor: "alice", timestamp: T }, body: "" },
-    { actor: "alice" },
-  );
-  const server = await bootServerOverBundle(bundle);
+  const { dir, cleanup } = await makeTaskBundle();
+  const bundle: Bundle = { root: dir };
   try {
+    await writeDoc(
+      bundle,
+      { id: "tasks/x", frontmatter: { type: "Task", title: "X", status: "todo", actor: "alice", timestamp: T }, body: "" },
+      { actor: "alice" },
+    );
     await withActorEnv("bob", async () => {
       const before = await readDocVersioned(bundle, "tasks/x");
-      const historyBefore = await docVersions(bundle, "tasks/x");
-      const noOp = await runDoc(["update", "tasks/x", "--title", "X", "--remote", server.url]);
+      const noOp = await runDoc(["update", "tasks/x", "--title", "X", "--dir", dir]);
       assert.equal(noOp.changed, false);
       const afterNoOp = await readDocVersioned(bundle, "tasks/x");
       assert.equal(afterNoOp.version, before.version);
       assert.equal(afterNoOp.doc.frontmatter.actor, "alice");
-      assert.equal((await docVersions(bundle, "tasks/x")).length, historyBefore.length);
 
       await assert.rejects(
-        () => runDoc(["update", "tasks/x", "--remote", server.url]),
+        () => runDoc(["update", "tasks/x", "--dir", dir]),
         (err: unknown) => err instanceof CliError && err.code === "USAGE" && /at least one field/.test(err.message),
       );
 
-      const changed = await runDoc(["update", "tasks/x", "--title", "Y", "--remote", server.url]);
+      const changed = await runDoc(["update", "tasks/x", "--title", "Y", "--dir", dir]);
       assert.equal(changed.changed, true);
     });
-    const saved = await readDoc(bundle, "tasks/x");
-    assert.equal(saved.frontmatter.actor, "bob");
-    assert.equal((await docVersions(bundle, "tasks/x"))[0]!.actor, "bob");
-  } finally {
-    await server.close();
-  }
-});
-
-test("doc update --actor over --remote: succeeds AND persists actor into frontmatter through the wire (X-Actor threads separately; server is filesystem-backed so the on-disk doc is assertable)", async () => {
-  const { dir, cleanup } = await makeTaskBundle();
-  try {
-    await writeDoc({ root: dir }, { id: "tasks/x", frontmatter: { type: "Task", title: "X", status: "todo", timestamp: T }, body: "" });
-    const server = await bootServerOverBundle({ root: dir });
-    try {
-      const result = await runDoc(["update", "tasks/x", "--status", "done", "--actor", "alice", "--remote", server.url]);
-      assert.equal(result.doc, "updated");
-      assert.equal(result.changed, true);
-      // Reviewer issue 3: the server IS filesystem-backed over `dir`, so remote-path frontmatter
-      // persistence is directly assertable — pinning the wire parity the unit exists for.
-      const after = await readDoc({ root: dir }, "tasks/x");
-      assert.equal(after.frontmatter.actor, "alice", "actor persisted into frontmatter through the remote path");
-    } finally {
-      await server.close();
-    }
+    assert.equal((await readDoc(bundle, "tasks/x")).frontmatter.actor, "bob");
   } finally {
     await cleanup();
   }
 });
 
 // ── doc history: renders agent alongside actor when a backend recorded one ─────────────────────
-
-test("doc history --remote: a revision recorded WITH agent renders both actor and agent; a revision with no agent omits the field", async () => {
-  const bundle: Bundle = { root: "mem://doc-history-agent-test", backend: new MemoryBackend() };
-  // Seed directly against the engine (bypassing the CLI's write path — the CLI never sends
-  // X-Agent itself; only the auth'd worker manufactures it) so the backend's history carries a
-  // real agent-attested revision, exactly the shape a worker-backed remote would hand back.
-  await writeDoc(bundle, { id: "concepts/agented", frontmatter: { type: "Concept", timestamp: T }, body: "one" }, {
-    actor: "root",
-    agent: "collab-3",
-  });
-  await writeDoc(bundle, { id: "concepts/unagented", frontmatter: { type: "Concept", timestamp: T }, body: "one" }, {
-    actor: "root",
-  });
-
-  const server = await bootServerOverBundle(bundle);
-  try {
-    const agented = await runDoc(["history", "concepts/agented", "--remote", server.url]);
-    const agentedVersions = agented.versions as Array<{ actor: string; agent?: string }>;
-    assert.equal(agentedVersions.length, 1);
-    assert.equal(agentedVersions[0]!.actor, "root");
-    assert.equal(agentedVersions[0]!.agent, "collab-3");
-
-    const unagented = await runDoc(["history", "concepts/unagented", "--remote", server.url]);
-    const unagentedVersions = unagented.versions as Array<{ actor: string; agent?: string }>;
-    assert.equal(unagentedVersions.length, 1);
-    assert.equal(unagentedVersions[0]!.actor, "root");
-    assert.ok(!("agent" in unagentedVersions[0]!), "no agent recorded -> no agent field in the rendered row");
-  } finally {
-    await server.close();
-  }
-});
 
 test("doc history over --dir reports unattributed and current-version-only for a document without mutation attribution", async () => {
   const { dir, cleanup } = await makeBundle();
@@ -2485,95 +2336,19 @@ test("doc history over --dir reports unattributed and current-version-only for a
   }
 });
 
-test("doc history over --remote against serve() (no auth, a HISTORY-KEEPING backend): --actor threads through and stays actor, agent stays absent — the reference server never manufactures X-Agent", async () => {
-  const bundle: Bundle = { root: "mem://doc-history-no-auth-test", backend: new MemoryBackend() };
-  await writeDoc(bundle, { id: "concepts/x", frontmatter: { type: "Concept", timestamp: T }, body: "one" });
-  const server = await bootServerOverBundle(bundle);
-  try {
-    await runDoc(["update", "concepts/x", "--title", "X", "--actor", "collab-3", "--remote", server.url]);
-    const result = await runDoc(["history", "concepts/x", "--remote", server.url]);
-    const versions = result.versions as Array<{ actor: string; agent?: string }>;
-    assert.equal(versions[0]!.actor, "collab-3", "no auth -> --actor is still recorded as the plain actor");
-    assert.ok(!("agent" in versions[0]!), "no auth means no withActor split -> agent stays absent");
-  } finally {
-    await server.close();
-  }
-});
-
-// ── doc history --limit: bounds the version chain (AXI unbounded-output gap, tasks/doc-history-cap) ─
-//
-// The filesystem backend is single-version (it keeps no history), so ONLY a real history-keeping
-// backend can exercise the cap. These tests boot a real `serve()` over a `MemoryBackend` bundle (a
-// REAL enforced version chain — see this repo's dual-backend tests), mirroring the existing --remote
-// doc-history tests above, and write the doc directly against the engine N times to build a long
-// chain without going through the CLI's write path.
-
-/** Write `n` sequential versions of `id` directly against the engine bundle. */
-async function writeNVersions(bundle: Bundle, id: string, n: number): Promise<void> {
-  for (let i = 0; i < n; i++) {
-    await writeDoc(bundle, { id, frontmatter: { type: "Concept", timestamp: T }, body: `v${i}` });
-  }
-}
-
-test("doc history --limit: default caps a long chain at 20, reports the TRUE total, and the truncation help names both a higher --limit and the --limit 0 all-escape", async () => {
-  const bundle: Bundle = { root: "mem://doc-history-cap-default", backend: new MemoryBackend() };
-  await writeNVersions(bundle, "concepts/many", 25);
-  const server = await bootServerOverBundle(bundle);
-  try {
-    const result = await runDoc(["history", "concepts/many", "--remote", server.url]);
-    assert.equal(result.count, 25, "count reports the TRUE total (all versions), not the shown page (a)");
-    assert.equal(result.shown, 20, "default cap is 20 (b, shown count)");
-    assert.equal((result.versions as unknown[]).length, 20, "the page itself is capped to 20 rows");
-    const help = result.help as string[];
-    assert.ok(
-      help.some((h) => /showing 20 of 25/.test(h) && /--limit 0/.test(h) && /--limit/.test(h)),
-      "truncation help names the escape: a higher --limit, or --limit 0 for all (c)",
-    );
-  } finally {
-    await server.close();
-  }
-});
-
-test("doc history --limit 0: the all-escape returns every version, uncapped, with no shown field", async () => {
-  const bundle: Bundle = { root: "mem://doc-history-cap-zero", backend: new MemoryBackend() };
-  await writeNVersions(bundle, "concepts/many", 25);
-  const server = await bootServerOverBundle(bundle);
-  try {
-    const result = await runDoc(["history", "concepts/many", "--remote", server.url, "--limit", "0"]);
-    assert.equal(result.count, 25);
-    assert.equal((result.versions as unknown[]).length, 25, "--limit 0 returns ALL versions (d)");
-    assert.equal(result.shown, undefined, "nothing was truncated, so no shown field leaks in");
-  } finally {
-    await server.close();
-  }
-});
-
-test("doc history --limit <n>: an explicit in-between limit shows exactly n rows, still newest-first", async () => {
-  const bundle: Bundle = { root: "mem://doc-history-cap-mid", backend: new MemoryBackend() };
-  await writeNVersions(bundle, "concepts/many", 25);
-  const server = await bootServerOverBundle(bundle);
-  try {
-    const result = await runDoc(["history", "concepts/many", "--remote", server.url, "--limit", "10"]);
-    assert.equal(result.count, 25);
-    assert.equal(result.shown, 10);
-    const versions = result.versions as Array<{ timestamp: string }>;
-    assert.equal(versions.length, 10, "an explicit between-cap --limit shows exactly that many (e)");
-  } finally {
-    await server.close();
-  }
-});
+// ── doc history --limit: argument validation (the cap itself is pinned in hosted-doc-history.test.ts,
+// the one history-keeping route) ─
 
 test("doc history --limit: a non-integer value is a clean USAGE error (exit 2) carrying THIS command's own message, not a crash", async () => {
-  const bundle: Bundle = { root: "mem://doc-history-cap-bad-limit", backend: new MemoryBackend() };
-  await writeDoc(bundle, { id: "concepts/one", frontmatter: { type: "Concept", timestamp: T }, body: "x" });
-  const server = await bootServerOverBundle(bundle);
+  const { dir, cleanup } = await makeBundle();
+  await writeDoc({ root: dir }, { id: "concepts/one", frontmatter: { type: "Concept", timestamp: T }, body: "x" });
   try {
     // These three reach OUR validation (node's parseArgs happily hands them through as plain
     // string values), so they carry the exact tool-native message.
     for (const bad of ["abc", "1.5", ""]) {
       await assert.rejects(
         () =>
-          doc(["history", "concepts/one", "--remote", server.url, "--limit", bad, "--json"], {
+          doc(["history", "concepts/one", "--dir", dir, "--limit", bad, "--json"], {
             readStdin: async () => undefined,
           }),
         (err: unknown) => {
@@ -2586,19 +2361,18 @@ test("doc history --limit: a non-integer value is a clean USAGE error (exit 2) c
       );
     }
   } finally {
-    await server.close();
+    await cleanup();
   }
 });
 
 test("doc history --limit: a NEGATIVE value is still a clean USAGE error (exit 2), even though node's own parseArgs intercepts a dash-led token before it reaches our validation (matches this repo's existing --limit convention — see sync.test.ts's identical carve-out)", async () => {
-  const bundle: Bundle = { root: "mem://doc-history-cap-negative-limit", backend: new MemoryBackend() };
-  await writeDoc(bundle, { id: "concepts/one", frontmatter: { type: "Concept", timestamp: T }, body: "x" });
-  const server = await bootServerOverBundle(bundle);
+  const { dir, cleanup } = await makeBundle();
+  await writeDoc({ root: dir }, { id: "concepts/one", frontmatter: { type: "Concept", timestamp: T }, body: "x" });
   try {
     for (const bad of ["-1", "-20"]) {
       await assert.rejects(
         () =>
-          doc(["history", "concepts/one", "--remote", server.url, "--limit", bad, "--json"], {
+          doc(["history", "concepts/one", "--dir", dir, "--limit", bad, "--json"], {
             readStdin: async () => undefined,
           }),
         (err: unknown) => {
@@ -2610,17 +2384,16 @@ test("doc history --limit: a NEGATIVE value is still a clean USAGE error (exit 2
       );
     }
   } finally {
-    await server.close();
+    await cleanup();
   }
 });
 
 test("doc history --limit 0 is treated as the all-escape, not an error: exits 0 with count===shown-worth of versions", async () => {
-  const bundle: Bundle = { root: "mem://doc-history-cap-zero-not-error", backend: new MemoryBackend() };
-  await writeDoc(bundle, { id: "concepts/one", frontmatter: { type: "Concept", timestamp: T }, body: "x" });
-  const server = await bootServerOverBundle(bundle);
+  const { dir, cleanup } = await makeBundle();
+  await writeDoc({ root: dir }, { id: "concepts/one", frontmatter: { type: "Concept", timestamp: T }, body: "x" });
   try {
     let out = "";
-    await doc(["history", "concepts/one", "--remote", server.url, "--limit", "0", "--json"], {
+    await doc(["history", "concepts/one", "--dir", dir, "--limit", "0", "--json"], {
       stdout: (s) => (out += s),
       readStdin: async () => undefined,
     });
@@ -2628,7 +2401,7 @@ test("doc history --limit 0 is treated as the all-escape, not an error: exits 0 
     assert.equal(result.count, 1);
     assert.equal((result.versions as unknown[]).length, 1);
   } finally {
-    await server.close();
+    await cleanup();
   }
 });
 
@@ -3519,32 +3292,6 @@ test("doc read --field '' (blank): USAGE (exit 2), never silently falls back to 
   }
 });
 
-test("doc read --field over --remote: parity with the identical field read locally via --dir", async () => {
-  const { dir, cleanup } = await makeBundle();
-  try {
-    await writeDoc({ root: dir }, { id: "concepts/a", frontmatter: { type: "Concept", title: "A", timestamp: T }, body: "Body." });
-    const server = await bootServerOverBundle({ root: dir });
-    try {
-      let localOut = "";
-      await doc(["read", "concepts/a", "--field", "title", "--dir", dir], {
-        stdout: (s) => (localOut += s),
-        readStdin: async () => undefined,
-      });
-      let remoteOut = "";
-      await doc(["read", "concepts/a", "--field", "title", "--remote", server.url], {
-        stdout: (s) => (remoteOut += s),
-        readStdin: async () => undefined,
-      });
-      assert.equal(remoteOut, localOut);
-      assert.equal(remoteOut, "A\n");
-    } finally {
-      await server.close();
-    }
-  } finally {
-    await cleanup();
-  }
-});
-
 // ── doc read --body-out: composable body-only edit channel ─────────────────────────────────────
 
 test("doc read --body-out writes ONLY parsed body bytes and returns the version from that read", async () => {
@@ -3660,37 +3407,28 @@ test("doc read --body-out receipt version rejects a stale edit after a concurren
   }
 });
 
-test("doc read --body-out - keeps stdout body-only and has local/remote parity", async () => {
+test("doc read --body-out - keeps stdout body-only", async () => {
   const { dir, cleanup } = await makeBundle();
   try {
     await writeDoc(
       { root: dir },
       { id: "concepts/a", frontmatter: { type: "Concept", title: "never stdout", timestamp: T }, body: "Body only.\n" },
     );
-    const server = await bootServerOverBundle({ root: dir });
-    try {
-      const capture = async (location: string[]): Promise<{ body: Buffer; receipt: Record<string, unknown> }> => {
-        const chunks: Uint8Array[] = [];
-        let stderrOut = "";
-        let textStdout = "";
-        await doc(["read", "concepts/a", "--body-out", "-", ...location, "--json"], {
-          stdout: (s) => (textStdout += s),
-          stderr: (s) => (stderrOut += s),
-          writeStdoutBytes: (bytes) => chunks.push(bytes),
-        });
-        assert.equal(textStdout, "");
-        return { body: Buffer.concat(chunks), receipt: JSON.parse(stderrOut) as Record<string, unknown> };
-      };
-      const local = await capture(["--dir", dir]);
-      const remote = await capture(["--remote", server.url]);
-      assert.equal(local.body.toString("utf8"), (await readDoc({ root: dir }, "concepts/a")).body);
-      assert.deepEqual(remote.body, local.body);
-      assert.equal(remote.receipt.version, local.receipt.version);
-      assert.equal(remote.receipt.size_bytes, local.receipt.size_bytes);
-      assert.equal(remote.receipt.body_out, "-");
-    } finally {
-      await server.close();
-    }
+    const capture = async (location: string[]): Promise<{ body: Buffer; receipt: Record<string, unknown> }> => {
+      const chunks: Uint8Array[] = [];
+      let stderrOut = "";
+      let textStdout = "";
+      await doc(["read", "concepts/a", "--body-out", "-", ...location, "--json"], {
+        stdout: (s) => (textStdout += s),
+        stderr: (s) => (stderrOut += s),
+        writeStdoutBytes: (bytes) => chunks.push(bytes),
+      });
+      assert.equal(textStdout, "");
+      return { body: Buffer.concat(chunks), receipt: JSON.parse(stderrOut) as Record<string, unknown> };
+    };
+    const local = await capture(["--dir", dir]);
+    assert.equal(local.body.toString("utf8"), (await readDoc({ root: dir }, "concepts/a")).body);
+    assert.equal(local.receipt.body_out, "-");
   } finally {
     await cleanup();
   }
@@ -3802,36 +3540,28 @@ test("doc read channel conflicts name ONLY the flags passed and point back at on
   }
 });
 
-test("doc read --rendered-out - keeps stdout HTML-only with local/remote parity", async () => {
+test("doc read --rendered-out - keeps stdout HTML-only", async () => {
   const { dir, cleanup } = await makeBundle();
   try {
     await writeDoc(
       { root: dir },
       { id: "concepts/a", frontmatter: { type: "Concept", title: "never stdout", timestamp: T }, body: "**Rendered.**\n" },
     );
-    const server = await bootServerOverBundle({ root: dir });
-    try {
-      const capture = async (location: string[]): Promise<{ html: string; receipt: Record<string, unknown> }> => {
-        const chunks: Uint8Array[] = [];
-        let stderrOut = "";
-        let textStdout = "";
-        await doc(["read", "concepts/a", "--rendered-out", "-", ...location, "--json"], {
-          stdout: (s) => (textStdout += s),
-          stderr: (s) => (stderrOut += s),
-          writeStdoutBytes: (bytes) => chunks.push(bytes),
-        });
-        assert.equal(textStdout, "");
-        return { html: Buffer.concat(chunks).toString("utf8"), receipt: JSON.parse(stderrOut) as Record<string, unknown> };
-      };
-      const local = await capture(["--dir", dir]);
-      const remote = await capture(["--remote", server.url]);
-      assert.equal(local.html, "<div data-aslite-rendered-document=\"\"><p><strong>Rendered.</strong></p></div>");
-      assert.equal(remote.html, local.html);
-      assert.equal(remote.receipt.version, local.receipt.version);
-      assert.equal(remote.receipt.content_type, "text/html; charset=utf-8");
-    } finally {
-      await server.close();
-    }
+    const capture = async (location: string[]): Promise<{ html: string; receipt: Record<string, unknown> }> => {
+      const chunks: Uint8Array[] = [];
+      let stderrOut = "";
+      let textStdout = "";
+      await doc(["read", "concepts/a", "--rendered-out", "-", ...location, "--json"], {
+        stdout: (s) => (textStdout += s),
+        stderr: (s) => (stderrOut += s),
+        writeStdoutBytes: (bytes) => chunks.push(bytes),
+      });
+      assert.equal(textStdout, "");
+      return { html: Buffer.concat(chunks).toString("utf8"), receipt: JSON.parse(stderrOut) as Record<string, unknown> };
+    };
+    const local = await capture(["--dir", dir]);
+    assert.equal(local.html, "<div data-aslite-rendered-document=\"\"><p><strong>Rendered.</strong></p></div>");
+    assert.equal(local.receipt.content_type, "text/html; charset=utf-8");
   } finally {
     await cleanup();
   }
@@ -4135,27 +3865,6 @@ test("doc read F3: --out - (stream mode) never carries the warning, even though 
   }
 });
 
-test("doc read F3: a --remote bundle never carries the warning (bundle.root is a URL, not a filesystem path)", async () => {
-  const dir = await tempDir();
-  const outDir = await tempDir();
-  try {
-    await initBundle(dir);
-    await writeDoc({ root: dir }, { id: "concepts/a", frontmatter: { type: "Concept", timestamp: OLD_TS }, body: "Body." });
-    const server = await bootServerOverBundle({ root: dir });
-    try {
-      const out = path.join(outDir, "remote-copy.md");
-      const result = await runDoc(["read", "concepts/a", "--out", out, "--remote", server.url]);
-      assert.equal(result.doc, "read");
-      assert.equal("warning" in result, false);
-    } finally {
-      await server.close();
-    }
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-    await rm(outDir, { recursive: true, force: true });
-  }
-});
-
 // ── doc delete (DELETE operation) ───────────────────────────────────────────────────────────────
 
 test("doc delete: removes an existing doc — deleted:true, exit 0, and the doc is genuinely gone", async () => {
@@ -4279,39 +3988,6 @@ test("doc delete: non-cascading — other docs' links to the deleted id are left
     assert.match(source.body, /\[Target\]\(target\.md\)/);
   } finally {
     await cleanup();
-  }
-});
-
-test("doc delete --remote: round-trip parity with the same operation run locally via --dir", async () => {
-  const localDir = await tempDir();
-  const remoteDir = await tempDir();
-  try {
-    await initBundle(localDir);
-    await initBundle(remoteDir);
-    for (const root of [localDir, remoteDir]) {
-      await writeDoc({ root }, { id: "concepts/a", frontmatter: { type: "Concept", timestamp: OLD_TS }, body: "Body." });
-    }
-    const server = await bootServerOverBundle({ root: remoteDir });
-    try {
-      const local = await runDoc(["delete", "concepts/a", "--dir", localDir]);
-      const remote = await runDoc(["delete", "concepts/a", "--remote", server.url]);
-      assert.equal(remote.deleted, local.deleted);
-      assert.equal(remote.deleted, true);
-
-      await assert.rejects(() => readDoc({ root: localDir }, "concepts/a"));
-      await assert.rejects(() => readDoc({ root: remoteDir }, "concepts/a"));
-
-      // Idempotent absent-delete parity too.
-      const localAbsent = await runDoc(["delete", "concepts/a", "--dir", localDir]);
-      const remoteAbsent = await runDoc(["delete", "concepts/a", "--remote", server.url]);
-      assert.equal(localAbsent.deleted, false);
-      assert.equal(remoteAbsent.deleted, false);
-    } finally {
-      await server.close();
-    }
-  } finally {
-    await rm(localDir, { recursive: true, force: true });
-    await rm(remoteDir, { recursive: true, force: true });
   }
 });
 

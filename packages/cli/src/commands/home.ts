@@ -11,8 +11,7 @@ import { resolveProvisionedBoardPath } from "../board-runtime.js";
 // whether a bundle is present OR not and whether the bundle read succeeds OR fails (it never
 // throws).
 //
-// RENDER GUARANTEE: the dashboard path passes only a local directory to `openBundle`; an explicit
-// `--remote` produces an offline pointer and never constructs a RemoteBackend here. The local read
+// RENDER GUARANTEE: the dashboard path passes only a local directory to `openBundle`. The local read
 // is CHEAP (ONE `query()` — the sanctioned single bundle walk; NO `loadKinds`, NO
 // `freshness`, NO graph/backlink walk) and DOUBLE-GUARDED: the default summarizer swallows any
 // throw into `null` (no bundle, permissions, malformed bundle — all become "no bundle"), and
@@ -38,8 +37,8 @@ import { resolveProvisionedBoardPath } from "../board-runtime.js";
 // pull every board-reading command shares. Everything the old guarantee protected still holds
 // structurally: the RENDER itself (everything below the trigger) is fs + local-git only and never
 // blocked by the pull (the trigger is bounded and fail-soft, and with the network off it degrades
-// to at most one bounded fetch attempt per staleness window); a `--remote`-scoped home never
-// triggers it, and neither does ANY session-start-driven render — session-start passes a defined
+// to at most one bounded fetch attempt per staleness window); no session-start-driven render
+// triggers it — session-start passes a defined
 // `deps.boardPull` on EVERY path, including its no-repo/no-board/pull-threw ones, precisely so
 // its own budget race stays the only network bound in that flow (test-pinned). Home still NEVER
 // provisions and still exits 0 in every case. (2) eligible default TOON may synchronously inspect
@@ -103,7 +102,7 @@ import {
 } from "@superbee/board-git";
 import { maybeAutoPull } from "../autopull.js";
 import { CliError } from "../errors.js";
-import { emitDeprecationNotice, retiredEnvHomeLine } from "../deprecation-notices.js";
+import { retiredEnvHomeLine } from "../deprecation-notices.js";
 import { parseLeafOrUsage } from "../args.js";
 import { HOME_LEAF } from "../command-spec.js";
 import { unsettledConflicts, unsettledMessage, unsettledRow, type UnsettledConflict } from "../saved-conflicts.js";
@@ -123,7 +122,7 @@ import {
 export const HOME_USAGE = `superbee home — render the local orientation view
 
 Usage:
-  superbee home [--dir <path> | --remote <url>] [--json] [--no-update-check]
+  superbee home [--dir <path>] [--json] [--no-update-check]
 
 Default TOON output may display a previously validated latest-track release notice and launch one
 detached refresh at most once per 24-hour attempt window. On builds with supported-release checks
@@ -141,7 +140,6 @@ requirement; current, absent, unmanaged, conflicting, or unreadable installs sta
 
 Options:
   --dir <path>       Orient from this local directory
-  --remote <url>     Show offline guidance for this explicit remote
   --json             Emit stable compact JSON; suppress npm release notices and refresh only
   --no-update-check  Disable both cached notice display and detached refresh for this run
   -h, --help         Show this help
@@ -151,7 +149,6 @@ NO_UPDATE_NOTIFIER, or CI.
 `;
 
 const HOME_OPTIONS = {
-  remote: { type: "string" },
   dir: { type: "string" },
   json: { type: "boolean" },
   "no-update-check": { type: "boolean" },
@@ -319,8 +316,7 @@ export interface HomeDeps {
    * The opportunistic board-freshness trigger (see the module header's OPPORTUNISTIC FRESHNESS
    * note). Default: autopull.ts's `maybeAutoPull` with `requireBoardBundle: false` (home has no
    * single target bundle — it always renders the board block). Never runs when `boardPull` is
-   * present — and session-start passes one on EVERY path, even no-board/failed ones — or for a
-   * `--remote`-scoped view.
+   * present — and session-start passes one on EVERY path, even no-board/failed ones.
    */
   autoPull: (dir?: string) => Promise<unknown>;
   /** Read the machine-local workspace catalog. Fs-only; failures never fail the home render. */
@@ -394,7 +390,7 @@ export function summarizeDocs(
 }
 
 /**
- * The default `summarizeBundle`: a LOCAL-only bundle discovery (`openBundle(undefined, undefined)` —
+ * The default `summarizeBundle`: a LOCAL-only bundle discovery (`openBundle(undefined)` —
  * never constructs a `RemoteBackend`) + ONE `queryHeads()` scan, folded by {@link summarizeDocs}
  * (the dashboard is a frontmatter-only consumer — head projections are its natural shape, and if
  * this path ever gains a remote variant, bodies stay off the wire by construction). The two
@@ -410,7 +406,7 @@ export async function defaultSummarizeBundle(
 ): Promise<BundleSummary | UnreadableBundle | ConflictedBundle | null> {
   let bundle;
   try {
-    bundle = route?.bundle ?? await openBundle(dir, undefined);
+    bundle = route?.bundle ?? await openBundle(dir);
     if (route) await assertResolvedLocalRouteIdentity(route);
   } catch (err) {
     if (err instanceof CliError && err.code === "NOT_FOUND") return null;
@@ -895,7 +891,6 @@ export function buildHomeView(
     env?: NodeJS.ProcessEnv;
   },
   summary?: BundleSummary | UnreadableBundle | ConflictedBundle | null,
-  remote?: string,
   binding?: HomeBindingNote,
   bindingError?: string,
   board?: { block?: string | Record<string, unknown>; firstContact?: string },
@@ -922,21 +917,7 @@ export function buildHomeView(
   const retiredEnv = retiredEnvHomeLine(deps.env ?? process.env);
   if (retiredEnv) view.retired_env = retiredEnv;
 
-  if (remote) {
-    // Scoped to a remote bundle: an OFFLINE orientation pointer (home never fetches — it is the
-    // every-session hook payload and must stay cheap). No local bundle block, no `init` nudge; point
-    // the agent at the commands that DO read the remote. Resolves the #6 gap where the canonical
-    // `superbee --remote <url>` invocation errored instead of orienting.
-    const remoteBlock: Record<string, unknown> = {
-      url: remote,
-      help: [
-        `${inv} list --remote ${commandToken(remote)}`,
-        `${inv} status --remote ${commandToken(remote)}`,
-      ],
-    };
-    if (binding && binding.target === remote) remoteBlock.via = binding.file;
-    view.remote = remoteBlock;
-  } else if (summary && "conflict" in summary) {
+  if (summary && "conflict" in summary) {
     view.bundle = {
       root: summary.root,
       status: "conflict",
@@ -951,8 +932,6 @@ export function buildHomeView(
       status: "unreadable",
       help: `a document in this bundle could not be read — run \`${deps.invocation()} list\` to surface the parse error`,
     };
-    // `remote` is guaranteed falsy in this branch (the `if (remote)` branch above already returned),
-    // so a present `binding` here can only be the directory-type half — see the module header.
     if (binding) bundleBlock.via = binding.file;
     view.bundle = bundleBlock;
   } else if (summary) {
@@ -1101,10 +1080,7 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
   );
 
   // Parse the home-compatible global flags. Best-effort — an unknown/bad flag just yields the bare
-  // local view (home NEVER throws). `--remote <url>` scopes the view to a remote (offline: a pointer
-  // + next-steps, NOT a fetch — the every-session hook payload must stay cheap); `--dir <path>`
-  // summarizes THAT directory's bundle instead of the CWD.
-  let remote: string | undefined;
+  // local view (home NEVER throws). `--dir <path>` summarizes THAT directory's bundle instead of the CWD.
   let dir: string | undefined;
   // Keep the binding-selected bundle path distinct from `dir`: the latter is also the board
   // ingress selector. Replacing it with the concrete binding target would make later helpers
@@ -1115,7 +1091,6 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
   let helpMode = false;
   try {
     const parsed = parseHomeArgs(argv);
-    remote = parsed.values.remote;
     explicitDir = parsed.values.dir;
     dir = explicitDir;
     summaryDir = explicitDir;
@@ -1128,11 +1103,9 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
     stdout(renderUsage(HOME_USAGE));
     return;
   }
-  // Home only points at a remote and never opens one, so it has to name this itself.
-  if (remote !== undefined) emitDeprecationNotice("DEPRECATED_REMOTE_FLAG");
 
   // A committed project binding (see the module header's PROJECT-BINDING PEEK) is consulted ONLY
-  // when the caller passed NEITHER --remote NOR --dir themselves — the same suppression rule every
+  // when the caller did not pass --dir — the same suppression rule every
   // other rung already follows. Fs-only; never a fetch, preserving the OFFLINE GUARANTEE regardless
   // of what the binding names. A local binding scopes the summarize() call; a URL or malformed file
   // must never crash the
@@ -1141,7 +1114,7 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
   let bindingError: string | undefined;
   let localRoutingFailure = false;
   let localRoute = deps.localRoute;
-  if (!remote && !dir) {
+  if (!dir) {
     try {
       const found = await resolveProjectBinding();
       if (found) {
@@ -1166,11 +1139,10 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
   }
   const pendingBoundBoard = localRoute?.kind === "bound-board" && localRoute.readiness !== "ready";
 
-  // Opportunistic board freshness (module header, OPPORTUNISTIC FRESHNESS): plain LOCAL home only —
-  // never for a --remote scope, and never when session-start already pulled in-process
+  // Opportunistic board freshness (module header, OPPORTUNISTIC FRESHNESS): never when session-start already pulled in-process
   // (deps.boardPull present). Double-guarded like everything else here: the default trigger never
   // throws, and an injected/misbehaving one is caught so it can never fail the session.
-  if (!remote && !bindingError && !localRoutingFailure && !pendingBoundBoard && deps.boardPull === undefined) {
+  if (!bindingError && !localRoutingFailure && !pendingBoundBoard && deps.boardPull === undefined) {
     try {
       await (deps.autoPull ?? ((d?: string) => maybeAutoPull(d, {
         requireBoardBundle: false,
@@ -1183,10 +1155,8 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
 
   const summarize = deps.summarizeBundle ?? (() => defaultSummarizeBundle(summaryDir, localRoute));
 
-  // A --remote scope does NOT summarize (offline guarantee — the remote block orients toward the
-  // fetching commands instead). Local / `--dir` scopes read the bundle as before.
   let summary: BundleSummary | UnreadableBundle | ConflictedBundle | null = null;
-  if (!remote && !bindingError && !localRoutingFailure) {
+  if (!bindingError && !localRoutingFailure) {
     try {
       summary = await summarize();
     } catch {
@@ -1247,10 +1217,9 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
     if (workspaceTimer) clearTimeout(workspaceTimer);
   }
 
-  // The board block — skipped for a --remote scope (the board is a git-tier LOCAL
-  // concept). Double-guarded like everything else here: a throwing probe yields no board block.
+  // The board block. Double-guarded like everything else here: a throwing probe yields no board block.
   let board: { block?: string | Record<string, unknown>; firstContact?: string } | undefined;
-  if (!remote && !bindingError && !localRoutingFailure && !pendingBoundBoard) {
+  if (!bindingError && !localRoutingFailure && !pendingBoundBoard) {
     try {
       const status = deps.loadBoardStatus
         ? await deps.loadBoardStatus(dir)
@@ -1300,7 +1269,6 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
           },
         },
         summary,
-        remote,
         binding,
         bindingError,
         board,

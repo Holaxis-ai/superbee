@@ -7,9 +7,7 @@ import type { Bundle } from "@superbee/core";
 import {
   assertResolvedLocalRouteIdentity,
   boardAttributionForRoute,
-  openBundle,
   resolveLocalBundleRoute,
-  resolveRemoteFlag,
   type ResolvedLocalRoute,
 } from "./bundle.js";
 import { boardPostPersistHook } from "./board-attribution.js";
@@ -20,22 +18,19 @@ import type { MutateErrorHooks } from "./mutate.js";
 
 export interface DeclarationTarget {
   bundle: Bundle;
-  route: ResolvedLocalRoute | undefined;
-  remoteUrl: string | undefined;
+  route: ResolvedLocalRoute;
 }
 
-/** The same bundle selection `doc update` makes: `--remote`, else the resolved local route. */
-export async function openDeclarationTarget(dir: string | undefined, remoteFlag: string | undefined): Promise<DeclarationTarget> {
-  const remoteUrl = await resolveRemoteFlag(remoteFlag, dir);
-  const route = remoteUrl === undefined ? await resolveLocalBundleRoute(dir) : undefined;
-  const bundle = route?.bundle ?? (await openBundle(dir, remoteUrl));
-  if (route) await assertResolvedLocalRouteIdentity(route);
-  return { bundle, route, remoteUrl };
+/** The same bundle selection `doc update` makes: the resolved local route. */
+export async function openDeclarationTarget(dir: string | undefined): Promise<DeclarationTarget> {
+  const route = await resolveLocalBundleRoute(dir);
+  await assertResolvedLocalRouteIdentity(route);
+  return { bundle: route.bundle, route };
 }
 
 /** The board self-attribution hook for a substantive write, decided before persistence. */
 export function declarationPersistHook(target: DeclarationTarget, actor: string | undefined): (() => Promise<void>) | undefined {
-  return boardPostPersistHook(target.route ? boardAttributionForRoute(target.route) : { kind: "none" }, actor);
+  return boardPostPersistHook(boardAttributionForRoute(target.route), actor);
 }
 
 /** A present-but-blank `--expected-version` is a USAGE error, never a silent downgrade to no CAS. */
@@ -90,7 +85,5 @@ export const DECLARATION_COMMON_OPTIONS = `  --expected-version <v>  Compare-and
                        only an OKF actor: human:<id>, process:<id>, or <producer>/<version>
                        (e.g. openai/codex)
   --dir <path>         Bundle directory (default: discovered from the cwd)
-  --remote <url>       Talk to a wire-protocol server instead of a local bundle
-                       (mutually exclusive with --dir)
   --json               Emit compact JSON instead of TOON
   -h, --help           Show this help`;

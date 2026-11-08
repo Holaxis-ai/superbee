@@ -1,8 +1,10 @@
 # Superbee wire protocol
 
 This file is the repository authority for the currently implemented Superbee storage seam over
-HTTP. It documents the protocol implemented by `@superbee/server` and consumed by
-`RemoteBackend`; code and tests are behavior evidence, not separate protocol specifications.
+HTTP. It documents the protocol implemented by `@superbee/server` and consumed by the local UI
+(`superbee ui`) and `RemoteBackend`; code and tests are behavior evidence, not separate protocol
+specifications. The CLI's `--remote` client and `superbee serve` command were removed; the library
+`RemoteBackend` and `serve()` remain until their own removal.
 
 The current route prefix is `/v0`. Blob routes are an additive v0.1 capability under that prefix.
 The protocol is pre-1.0 and may change, but a change is not implemented until this contract and its
@@ -167,7 +169,7 @@ posture under a recorded request key replays the prior outcome rather than execu
 
 The document route transports a parsed document as JSON, not the original Markdown byte stream.
 `RemoteBackend.read()` reconstructs the requested ID with the returned frontmatter/body and retains
-the server's content-addressed version token. A CLI `doc read --out` over `--remote` therefore emits
+the server's content-addressed version token. A client export over the wire therefore emits
 Superbee's canonical OKF serialization. It is byte-identical to a local export for an engine-written
 canonical document, but external formatting, YAML key order, quoting, or whitespace may not survive
 a remote round trip even when document meaning does. The version header identifies server state; it
@@ -444,8 +446,8 @@ suites exercise the semantics through the router, `RemoteBackend`, and a real so
 | WIRE-PROOF-05 | Reserved file get/put only. | `packages/server/src/router.ts::reserved file name must be index.md or log.md` | `packages/core/test/wire-protocol.test.ts::reserved files have no delete route` |
 | WIRE-PROOF-06 | Blob collection and raw byte member routes. | `packages/server/src/router.ts::case "blob-read"` | `packages/core/test/wire-protocol.test.ts::REAL socket GET returns EXACT bytes` |
 | WIRE-PROOF-07 | Reference server is loopback by default and unauthenticated. | `packages/server/src/serve.ts::NO AUTH in v0` | `packages/core/test/wire-protocol.test.ts::serve() boots a real node:http listener` |
-| WIRE-PROOF-08 | Remote canonical export differs from an original-byte guarantee. | `packages/cli/src/commands/doc/common.ts::canonical OKF re-serialization` | `packages/cli/test/remote.test.ts::canonical re-serialization is byte-identical` |
-| WIRE-PROOF-09 | Missing version transport fails closed. | `packages/core/src/remote-backend.ts::VERSION_MISSING` | `packages/cli/test/remote-auth.test.ts::response stripped of BOTH version headers` |
+| WIRE-PROOF-08 | Canonical export differs from an original-byte guarantee. | `packages/cli/src/commands/pull.ts::CANONICAL OKF re-serialization` | `packages/cli/test/promote-pull.test.ts::delivers the CANONICAL re-serialization` |
+| WIRE-PROOF-09 | Missing version transport fails closed. | `packages/core/src/remote-backend.ts::VERSION_MISSING` | `packages/core/test/remote-version-transport.test.ts::a response with NEITHER X-Version NOR ETag throws a loud RemoteError(VERSION_MISSING)` |
 | WIRE-PROOF-10 | Identified writes apply once while their record is kept, replay it, and are looked up by key; past retention a premise that matches again is applied again. | `packages/server/src/router.ts::id: "operation-lookup"`; `packages/server/src/operation-outcomes.ts::class MemoryOperationOutcomeStore` | `packages/core/test/wire-protocol.test.ts::identified PUT is applied once`; `packages/browser-local/test/sync.test.ts::lost acknowledgement: the fixture applies then drops the response`; `packages/core/test/wire-protocol.test.ts::a byte-identical revert to the premise's content lets a resubmission apply a second time`; `packages/core/test/wire-protocol.test.ts::a guarded write whose answer is lost is retried under the same minted Idempotency-Key` |
 | WIRE-PROOF-11 | Heads digest, `304` on `If-None-Match`, and deletions visible as missing ids. | `packages/server/src/router.ts::id: "docs-heads"`; `packages/core/src/heads-digest.ts::export function headsDigest` | `packages/core/test/wire-protocol.test.ts::GET /heads lists every id and version under the documented digest`; `packages/core/test/wire-protocol.test.ts::RemoteBackend.heads maps 304 to null` |
 | WIRE-PROOF-12 | Snapshot streams terminated NDJSON; a cut body or count mismatch is truncation. | `packages/server/src/router.ts::id: "docs-snapshot"`; `packages/server/src/serve.ts::pipeline(Readable.fromWeb` | `packages/core/test/wire-protocol.test.ts::GET /snapshot streams header, docs in id order, and end`; `packages/core/test/wire-protocol.test.ts::a snapshot cut after 40 lines`; `packages/core/test/wire-protocol.test.ts::serve() streams a 500-document snapshot` |

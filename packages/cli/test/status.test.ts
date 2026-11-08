@@ -2,9 +2,7 @@
  * `agentstate-lite status` — the read-only whole-bundle health report.
  *
  * Runs the command function in-process (no subprocess) against a real temp filesystem bundle,
- * mirroring `kinds.test.ts`'s / `link.test.ts`'s pattern. The `--remote` parity test additionally
- * boots a real `@superbee/server` `serve()` instance, mirroring `kinds.test.ts`'s own
- * `--remote` test.
+ * mirroring `kinds.test.ts`'s / `link.test.ts`'s pattern.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -14,7 +12,6 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { initBundle, writeBlob, writeDoc, type Bundle } from "@superbee/core";
-import { serve, type ServerHandle } from "@superbee/server";
 import { decode } from "@toon-format/toon";
 
 import { status } from "../src/commands/status.js";
@@ -1574,50 +1571,6 @@ test("status: TOON (agent-facing default, no --json) renders the summary keys", 
       "missing_expected_links:",
     ]) {
       assert.ok(out.includes(key), `expected TOON output to contain '${key}', got:\n${out}`);
-    }
-  } finally {
-    await cleanup();
-  }
-});
-
-test("--remote: status against a served bundle is identical to the same bundle read locally", async () => {
-  const { dir, cleanup } = await makeFixtureBundle();
-  try {
-    // A served bundle has no home of its own; the rest of the report must be identical.
-    const { home: _home, sync: _sync, ...local } = await runJson(["--dir", dir]);
-    const handle: ServerHandle = await serve({ bundle: { root: dir } as Bundle, port: 0 });
-    try {
-      const url = `http://${handle.host}:${handle.port}`;
-      const remote = await runJson(["--remote", url]);
-      // Every field is deterministic EXCEPT `stale_docs[].age_ms`, which is `now - timestamp`
-      // recomputed at each invocation's own instant — the two calls run moments apart, so the
-      // raw ms values legitimately differ. Compare those separately (both exceed the horizon,
-      // and are within a generous jitter window of each other) and deep-equal everything else.
-      const localStale = (local.stale_docs as { rows: Record<string, unknown>[] } | undefined)?.rows ?? [];
-      const remoteStale = (remote.stale_docs as { rows: Record<string, unknown>[] } | undefined)?.rows ?? [];
-      assert.equal(remoteStale.length, localStale.length);
-      for (let i = 0; i < localStale.length; i++) {
-        assert.equal(remoteStale[i]!.id, localStale[i]!.id);
-        assert.equal(remoteStale[i]!.horizon_ms, localStale[i]!.horizon_ms);
-        assert.ok((localStale[i]!.age_ms as number) > (localStale[i]!.horizon_ms as number));
-        assert.ok((remoteStale[i]!.age_ms as number) > (remoteStale[i]!.horizon_ms as number));
-        assert.ok(
-          Math.abs((remoteStale[i]!.age_ms as number) - (localStale[i]!.age_ms as number)) < 5_000,
-          "age_ms should be within a few seconds across the two invocations",
-        );
-      }
-      const stripAge = (v: Record<string, unknown>): Record<string, unknown> => {
-        const clone = structuredClone(v);
-        if (clone.stale_docs) {
-          (clone.stale_docs as { rows: Record<string, unknown>[] }).rows = (
-            clone.stale_docs as { rows: Record<string, unknown>[] }
-          ).rows.map(({ age_ms, ...rest }) => rest);
-        }
-        return clone;
-      };
-      assert.deepEqual(stripAge(remote), stripAge(local));
-    } finally {
-      await handle.close();
     }
   } finally {
     await cleanup();

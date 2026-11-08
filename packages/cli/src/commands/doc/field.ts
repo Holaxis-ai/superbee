@@ -7,7 +7,7 @@ import { commandFragment, commandToken, commandWords } from "../../command-text.
 import { cliInvocation } from "../../invocation.js";
 import { CliError } from "../../errors.js";
 import { readExternalTextFile } from "../../external-file.js";
-import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag } from "../../bundle.js";
+import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute } from "../../bundle.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
 import { resolveActor } from "../../actor.js";
 import { boardPostPersistHook } from "../../board-attribution.js";
@@ -48,7 +48,7 @@ replacement: pull --doc-key <id>.md --out <file>, edit, then promote.
 Use 'superbee doc field <action> --help' for focused input and version rules.
 `;
 function help(action: Action): string {
-  return `superbee doc field ${action} - ${descriptions[action]}\n\nUsage:\n  superbee doc field ${action} <id> <field> ${action === "edit" || action === "replace-all" ? "" : "[value] "}[options]\n\nOptions:\n  --from-file <path>   One complete JSON/YAML value; never combined with a literal\n  --id <source-id>     Exact source ID (including an empty existing ID)\n  --resource <value>   Exact resource fallback for one ID-less source\n  --expected-version <v>  Observed document version; required for edit/replace-all\n  --actor <actor>      Revision attribution\n  --strict             Reject Kind warnings (declared Kind fields are always strict)\n  --dir <path>         Bundle directory\n  --remote <url>       Explicit wire server (exclusive with --dir)\n  --json               Emit compact JSON instead of TOON\n  -h, --help           Show this help without reading a bundle\n\nLiteral strings are never split on commas or parsed as key/value pairs. Put flags\nbefore -- when passing a dash-leading literal. Field actions never read stdin.\nResource selection refuses an ID-bearing entry and directs you to its ID.\nAmbiguous sources require a unique ID or deliberate versioned whole-list repair.\nA mapping assignment replaces that complete mapping; it cannot hide a nested list.\nUse sources replace-all for source properties containing lists, or complete-document\nreplacement for other nested collections: pull --doc-key <id>.md --out <file>,\nedit that file, then promote <file> --doc-key <id>.md\n--expected-version <version-from-pull>. Field actions preserve the document body.\n`;
+  return `superbee doc field ${action} - ${descriptions[action]}\n\nUsage:\n  superbee doc field ${action} <id> <field> ${action === "edit" || action === "replace-all" ? "" : "[value] "}[options]\n\nOptions:\n  --from-file <path>   One complete JSON/YAML value; never combined with a literal\n  --id <source-id>     Exact source ID (including an empty existing ID)\n  --resource <value>   Exact resource fallback for one ID-less source\n  --expected-version <v>  Observed document version; required for edit/replace-all\n  --actor <actor>      Revision attribution\n  --strict             Reject Kind warnings (declared Kind fields are always strict)\n  --dir <path>         Bundle directory\n  --json               Emit compact JSON instead of TOON\n  -h, --help           Show this help without reading a bundle\n\nLiteral strings are never split on commas or parsed as key/value pairs. Put flags\nbefore -- when passing a dash-leading literal. Field actions never read stdin.\nResource selection refuses an ID-bearing entry and directs you to its ID.\nAmbiguous sources require a unique ID or deliberate versioned whole-list repair.\nA mapping assignment replaces that complete mapping; it cannot hide a nested list.\nUse sources replace-all for source properties containing lists, or complete-document\nreplacement for other nested collections: pull --doc-key <id>.md --out <file>,\nedit that file, then promote <file> --doc-key <id>.md\n--expected-version <version-from-pull>. Field actions preserve the document body.\n`;
 }
 
 export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
@@ -63,7 +63,7 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
   const fail = (message: string): never => { throw new CliError("USAGE", message, { help: helpCommand }); };
   const config = {
     args: argv.slice(1), tokens: true, allowPositionals: true,
-    options: { "from-file": { type: "string" }, id: { type: "string" }, resource: { type: "string" }, "expected-version": { type: "string" }, actor: { type: "string" }, dir: { type: "string" }, remote: { type: "string" }, strict: { type: "boolean" }, json: { type: "boolean" }, help: { type: "boolean", short: "h" } },
+    options: { "from-file": { type: "string" }, id: { type: "string" }, resource: { type: "string" }, "expected-version": { type: "string" }, actor: { type: "string" }, dir: { type: "string" }, strict: { type: "boolean" }, json: { type: "boolean" }, help: { type: "boolean", short: "h" } },
   } as const;
   const { values, positionals, tokens } = action === "set" ? parseLeafOrUsage(() => parseArgs(config), CLI_LEAVES.docFieldSet)
     : action === "add" ? parseLeafOrUsage(() => parseArgs(config), CLI_LEAVES.docFieldAdd)
@@ -97,12 +97,11 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
     if (literal !== undefined || fromFile !== undefined) fail("Source remove accepts a selector, not a value.");
   } else if (literal === undefined && fromFile === undefined) fail("Supply one literal value or --from-file.");
   if ((action === "edit" || action === "replace-all" || (action === "add" && field === "sources")) && fromFile === undefined) fail("This action requires one complete JSON/YAML value through --from-file.");
-  const routeFlag = values.dir !== undefined ? commandFragment` --dir=${commandToken(values.dir)}` : values.remote !== undefined ? commandFragment` --remote=${commandToken(values.remote)}` : commandFragment``;
+  const routeFlag = values.dir !== undefined ? commandFragment` --dir=${commandToken(values.dir)}` : commandFragment``;
   const actor = resolveActor(values.actor, { help: helpCommand });
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
-  const route = remote === undefined ? await resolveLocalBundleRoute(values.dir) : undefined;
-  const bundle = route?.bundle ?? await openBundle(values.dir, remote);
-  if (route) await assertResolvedLocalRouteIdentity(route);
+  const route = await resolveLocalBundleRoute(values.dir);
+  const bundle = route.bundle;
+  await assertResolvedLocalRouteIdentity(route);
   id = await resolveConceptIdCliArgument(bundle, rawId);
   let value: unknown = literal;
   if (fromFile !== undefined) {
@@ -124,7 +123,7 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
       bundle, id, mode: "patch", onAbsent: "fail", registry,
       strict: Boolean(values.strict) || (action === "set" && !isStandardDocumentSetField(field, edition)) || kindList,
       helpOnKindReject: `${cliInvocation()} kinds`, actor, persistActor: true,
-      expectedVersion: expectedVersion?.trim(), remoteUrl: values.remote,
+      expectedVersion: expectedVersion?.trim(),
       input: (existing, context) => {
         if (context.okfVersion !== edition) fail("The bundle edition changed; retry against its current declaration.");
         if (action === "set") {

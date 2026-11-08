@@ -233,7 +233,7 @@ test("--seq shows that version as a record with a bounded body preview; with --j
 
 test("--seq is refused outside a hosted checkout, before anything is read", async () => {
   const plain = await realpath(await mkdtemp(path.join(tmpdir(), "sb-dochist-local-")));
-  for (const argv of [["notes/one", "--seq", "1", "--dir", plain], ["notes/one", "--seq", "1", "--remote", "http://127.0.0.1:9"]]) {
+  for (const argv of [["notes/one", "--seq", "1", "--dir", plain]]) {
     const error = await rejects(() => doc(["history", ...argv], { stdout: () => assert.fail("nothing is printed") }));
     assert.equal(error.code, "USAGE");
     assert.equal(error.details?.reason, "no_hosted_history");
@@ -282,33 +282,6 @@ test("a bundle the host no longer serves is the checkout's conflict, as sync rep
   assert.match(large.help ?? "", /--limit 10/);
   const largeVersion = await rejects(() => history(h, [h.id, "--seq", "1"], refusing("result_too_large")));
   assert.match(largeVersion.help ?? "", /doc read/);
-});
-
-test("an explicit --remote wins over the checkout's binding: the remote path runs and no request reaches the checkout's host", async () => {
-  const h = await harness();
-  const deps = { stdout: () => {}, hosted: { auth: h.auth, fetch: h.host.fetch } };
-  // Inside the checkout, without --dir: the binding would be found, and --remote still decides.
-  const cwd = process.cwd();
-  process.chdir(h.folder);
-  try {
-    const remote = await rejects(() => doc(["history", h.id, "--remote", "http://127.0.0.1:9"], deps));
-    assert.equal(remote.code, "RUNTIME");
-    assert.match(remote.message, /could not reach the remote bundle at http:\/\/127\.0\.0\.1:9/);
-    assert.deepEqual(h.host.requests, []);
-    // The same folder without --remote reads the checkout's host.
-    const out: string[] = [];
-    await doc(["history", h.id, "--json"], { ...deps, stdout: (text) => void out.push(text) });
-    assert.equal((JSON.parse(out.join("")) as { count: number }).count, 1);
-    assert.ok(historyRequests(h.host).length > 0);
-  } finally {
-    process.chdir(cwd);
-  }
-  // --remote with --dir is the command's own usage refusal, before either is read.
-  h.host.requests.length = 0;
-  const both = await rejects(() => doc(["history", h.id, "--remote", "http://127.0.0.1:9", "--dir", h.folder], deps));
-  assert.equal(both.code, "USAGE");
-  assert.match(both.message, /--remote and --dir are mutually exclusive/);
-  assert.deepEqual(h.host.requests, []);
 });
 
 test("a document the host lists no versions for says so, with a help line", async () => {

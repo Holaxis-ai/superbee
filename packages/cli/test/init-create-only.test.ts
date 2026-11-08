@@ -233,7 +233,7 @@ test("bindings: an existing bound bundle refuses; malformed and URL bindings kee
       path.join(proj4, ".superbee.json"),
       `${JSON.stringify({ bundle: "https://example.com/b" })}\n`,
     );
-    const url = await expectRefusal(["--create-only", "--dir", path.join(proj4, "nb")], /URL bindings/);
+    const url = await expectRefusal(["--create-only", "--dir", path.join(proj4, "nb")], /cannot use a URL; remote access was removed/);
     assert.equal(url.code, "USAGE");
 
     // The preferred binding participates in the same strict create-only discovery.
