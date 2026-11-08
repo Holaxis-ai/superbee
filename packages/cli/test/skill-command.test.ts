@@ -7,7 +7,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
-  cpSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -27,7 +26,7 @@ import path from "node:path";
 import {
   SKILL_MANIFEST_FILENAME,
   isSafeManifestEntry,
-  legacySkillTargets,
+  retiredSkillFolderState,
   resolveSkillAssets,
   skill,
   skillRefreshScopes,
@@ -175,14 +174,6 @@ test("skill refresh scopes reuse managed-byte classification and self-clear afte
   await runSkill(["install"], { cwd, home, executable });
   assert.deepEqual(skillRefreshScopes({ cwd, home, env: {}, executable }), []);
 
-  for (const host of [".claude", ".codex"] as const) moveCanonicalToLegacy(cwd, host);
-  const legacy = legacySkillTargets("project", { cwd, home, env: {} });
-  writeFileSync(path.join(legacy.codex, "SKILL.md"), "stale legacy\n");
-  assert.deepEqual(skillRefreshScopes({ cwd, home, env: {}, executable }), ["project"]);
-
-  await runSkill(["install"], { cwd, home, executable });
-  assert.deepEqual(skillRefreshScopes({ cwd, home, env: {}, executable }), []);
-
   writeFileSync(path.join(cwd, ".codex", "skills", "superbee", "SKILL.md"), "stale\n");
   assert.deepEqual(skillRefreshScopes({ cwd, home, env: {}, executable }), ["project"]);
 
@@ -231,19 +222,9 @@ test("skill refresh scopes prescribe only a preflight-proven install", async () 
     writeFileSync(path.join(dir, "foreign.md"), "not managed\n");
     assert.deepEqual(skillRefreshScopes({ ...fixture, env: {} }), []);
   }
-
-  {
-    const fixture = await arrange();
-    const canonical = skillTargets("project", fixture);
-    const legacy = legacySkillTargets("project", fixture);
-    writeFileSync(path.join(canonical.codex, "SKILL.md"), "stale\n");
-    mkdirSync(path.dirname(legacy.codex), { recursive: true });
-    cpSync(canonical.codex, legacy.codex, { recursive: true });
-    assert.deepEqual(skillRefreshScopes({ ...fixture, env: {} }), []);
-  }
 });
 
-test("old-only owned installs migrate atomically to canonical and status reports both paths", async () => {
+test("install deletes an unedited old aslite folder once the current skill is in place", async () => {
   const { base, executable } = scratch();
   const cwd = path.join(base, "project");
   await runSkill(["install"], { cwd, executable });
@@ -251,62 +232,50 @@ test("old-only owned installs migrate atomically to canonical and status reports
 
   const before = await runSkill(["status"], { cwd, executable });
   assert.equal(before.skill.hosts.claude_code.canonical.state, "absent");
-  assert.equal(before.skill.hosts.claude_code.legacy.state, "installed");
-  assert.match(before.skill.hosts.claude_code.canonical.path, /skills[\\/]superbee$/);
-  assert.match(before.skill.hosts.claude_code.legacy.path, /skills[\\/]aslite$/);
+  assert.equal(before.skill.hosts.claude_code.legacy, undefined);
+  assert.equal(retiredSkillFolderState(hostSkillDir(cwd, ".claude", "aslite")), "unedited");
 
   const receipt = await runSkill(["install"], { cwd, executable });
-  assert.equal(receipt.skill.hosts.claude_code.migrated, true);
-  assert.equal(receipt.skill.hosts.codex.migrated, true);
+  assert.deepEqual(receipt.skill.notes, [
+    `Removed old aslite skill from ${hostSkillDir(cwd, ".claude", "aslite")}.`,
+    `Removed old aslite skill from ${hostSkillDir(cwd, ".codex", "aslite")}.`,
+  ]);
   for (const host of [".claude", ".codex"] as const) {
     assert.equal(existsSync(hostSkillDir(cwd, host, "aslite")), false);
     assert.ok(existsSync(path.join(hostSkillDir(cwd, host, "superbee"), "SKILL.md")));
   }
-  const manifest = JSON.parse(
-    readFileSync(path.join(hostSkillDir(cwd, ".claude", "superbee"), SKILL_MANIFEST_FILENAME), "utf8"),
-  );
-  assert.equal(manifest.schema, "aslite.skill-manifest.v2");
 });
 
-test("an old-only manifest-first partial install migrates and converges", async () => {
+test("an old aslite folder that differs from its receipt in any way is edited and stays", async () => {
   const { base, executable } = scratch();
   const cwd = path.join(base, "project");
-  await runSkill(["install"], { cwd, executable });
-  moveCanonicalToLegacy(cwd, ".claude");
   const legacyDir = hostSkillDir(cwd, ".claude", "aslite");
-  rmSync(path.join(legacyDir, "SKILL.md"));
-
-  const before = await runSkill(["status"], { cwd, executable });
-  assert.equal(before.skill.hosts.claude_code.legacy.state, "stale");
-  const receipt = await runSkill(["install"], { cwd, executable });
-  assert.equal(receipt.skill.hosts.claude_code.migrated, true);
-  assert.equal(readFileSync(path.join(hostSkillDir(cwd, ".claude", "superbee"), "SKILL.md"), "utf8"), ASSET_FILES["SKILL.md"]);
-  assert.equal(existsSync(legacyDir), false);
+  const variants: Array<[string, () => void]> = [
+    ["a recorded file is missing", () => rmSync(path.join(legacyDir, "SKILL.md"))],
+    ["a recorded file changed", () => writeFileSync(path.join(legacyDir, "SKILL.md"), "mine\n")],
+    ["an extra file", () => writeFileSync(path.join(legacyDir, "notes.md"), "mine\n")],
+    ["a receipt without digests", () => {
+      const manifestPath = path.join(legacyDir, SKILL_MANIFEST_FILENAME);
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      writeFileSync(manifestPath, JSON.stringify({ package: "aslite", version: "1.0.0", installed_by: "aslite skill install", files: manifest.files }));
+    }],
+    ["no receipt", () => rmSync(path.join(legacyDir, SKILL_MANIFEST_FILENAME))],
+  ];
+  for (const [label, edit] of variants) {
+    rmSync(cwd, { recursive: true, force: true });
+    await runSkill(["install"], { cwd, executable });
+    moveCanonicalToLegacy(cwd, ".claude");
+    edit();
+    const before = treeSnapshot(legacyDir);
+    assert.equal(retiredSkillFolderState(legacyDir), "edited", label);
+    const receipt = await runSkill(["install"], { cwd, executable });
+    assert.equal(receipt.skill.notes, undefined, label);
+    assertSameTree(before, treeSnapshot(legacyDir));
+    assert.ok(existsSync(path.join(hostSkillDir(cwd, ".claude", "superbee"), "SKILL.md")), label);
+  }
 });
 
-test("dual owned canonical and legacy installs fail closed without changing either tree", async () => {
-  const { base, executable } = scratch();
-  const cwd = path.join(base, "project");
-  await runSkill(["install"], { cwd, executable });
-  const canonical = hostSkillDir(cwd, ".claude", "superbee");
-  const legacy = hostSkillDir(cwd, ".claude", "aslite");
-  cpSync(canonical, legacy, { recursive: true });
-  const canonicalBefore = treeSnapshot(canonical);
-  const legacyBefore = treeSnapshot(legacy);
-
-  await assert.rejects(
-    () => runSkill(["install"], { cwd, executable }),
-    (err: unknown) => {
-      assert.ok(err instanceof CliError);
-      assert.match(JSON.stringify(err.details), /both canonical and legacy folders are owned/);
-      return true;
-    },
-  );
-  assertSameTree(canonicalBefore, treeSnapshot(canonical));
-  assertSameTree(legacyBefore, treeSnapshot(legacy));
-});
-
-test("foreign canonical blocks migration and leaves an owned legacy install untouched", async () => {
+test("a foreign canonical folder blocks install and leaves an unedited old aslite folder untouched", async () => {
   const { base, executable } = scratch();
   const cwd = path.join(base, "project");
   await runSkill(["install"], { cwd, executable });
@@ -323,41 +292,19 @@ test("foreign canonical blocks migration and leaves an owned legacy install unto
   assertSameTree(legacyBefore, treeSnapshot(legacy));
 });
 
-test("foreign legacy coexists with canonical install and is refused but preserved on uninstall", async () => {
+test("a foreign aslite folder is left alone by install and uninstall", async () => {
   const { base, executable } = scratch();
   const cwd = path.join(base, "project");
   const legacy = hostSkillDir(cwd, ".claude", "aslite");
   mkdirSync(legacy, { recursive: true });
   writeFileSync(path.join(legacy, "SKILL.md"), "# foreign legacy skill\n");
 
-  const receipt = await runSkill(["install"], { cwd, executable });
-  assert.equal(receipt.skill.hosts.claude_code.legacy_state_before, "unmanaged");
+  await runSkill(["install"], { cwd, executable });
   assert.ok(existsSync(path.join(hostSkillDir(cwd, ".claude", "superbee"), "SKILL.md")));
   assert.equal(readFileSync(path.join(legacy, "SKILL.md"), "utf8"), "# foreign legacy skill\n");
-  const status = await runSkill(["status"], { cwd, executable });
-  assert.equal(status.skill.hosts.claude_code.state, "installed");
-  assert.equal(status.skill.hosts.claude_code.legacy.state, "unmanaged");
-
-  await assert.rejects(() => runSkill(["uninstall"], { cwd, executable }), CliError);
+  await runSkill(["uninstall"], { cwd, executable });
   assert.equal(existsSync(hostSkillDir(cwd, ".claude", "superbee")), false);
   assert.equal(readFileSync(path.join(legacy, "SKILL.md"), "utf8"), "# foreign legacy skill\n");
-  assert.equal(existsSync(hostSkillDir(cwd, ".codex", "superbee")), false);
-});
-
-test("uninstall removes both canonical and legacy when both independently prove ownership", async () => {
-  const { base, executable } = scratch();
-  const cwd = path.join(base, "project");
-  await runSkill(["install"], { cwd, executable });
-  for (const host of [".claude", ".codex"] as const) {
-    cpSync(hostSkillDir(cwd, host, "superbee"), hostSkillDir(cwd, host, "aslite"), { recursive: true });
-  }
-
-  const receipt = await runSkill(["uninstall"], { cwd, executable });
-  assert.equal(receipt.skill.changed, true);
-  for (const host of [".claude", ".codex"] as const) {
-    assert.equal(existsSync(hostSkillDir(cwd, host, "superbee")), false);
-    assert.equal(existsSync(hostSkillDir(cwd, host, "aslite")), false);
-  }
 });
 
 test("skill install refuses a pre-existing unmanaged folder (nothing written there); the other host is still processed", async () => {
@@ -713,7 +660,6 @@ test("--scope user honors host relocation and --scope global remains an alias", 
   const aliasStatus = await runSkill(["status", "--scope", "global"], { home, env, executable });
   assert.equal(aliasStatus.skill.scope, "user");
   assert.equal(aliasStatus.skill.hosts.claude_code.canonical.state, "installed");
-  assert.equal(aliasStatus.skill.hosts.claude_code.legacy.state, "absent");
   assert.equal(aliasStatus.skill.hosts.opencode.canonical.state, "installed");
 
   await runSkill(["uninstall", "--scope", "global"], { home, env, executable });

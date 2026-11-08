@@ -17,7 +17,7 @@ const READY: SetupPlanInput = {
   cwd: "/work/project",
   distribution: { allowed: true, state: "durable_global", reason: "fixture", persistent: true },
   state: { state: "ready", reason: "fixture", records: 0 },
-  skill: { canonical: { state: "installed" }, legacy: { state: "absent" } },
+  skill: { canonical: { state: "installed" } },
   hook: { installed: true, compatibility: { state: "current", reason: "fixture" } },
   mcp: { state: "owned_current", reason: "fixture" },
   workspace: { bundle: "absent", catalog: "empty", selected_registered: false },

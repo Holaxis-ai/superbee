@@ -4,7 +4,7 @@ import { buildSetupPlan, type SetupAction, type SetupPlanInput } from "../src/se
 import { USER_STATE_QUARANTINE_COMMAND } from "../src/user-state.js";
 
 const VERSION = "1.2.3-rc.4";
-const CURRENT_SKILL = { canonical: { state: "installed" as const }, legacy: { state: "absent" as const } };
+const CURRENT_SKILL = { canonical: { state: "installed" as const } };
 const CURRENT_HOOK = { installed: true, compatibility: { state: "current" as const, reason: "current" } };
 
 function input(overrides: Partial<SetupPlanInput> = {}): SetupPlanInput {
@@ -55,7 +55,7 @@ test("OpenCode treats the managed Claude-compatible Skill as a required host cap
 
   const absent = buildSetupPlan(input({
     host: "opencode",
-    skill: { canonical: { state: "absent" }, legacy: { state: "absent" } },
+    skill: { canonical: { state: "absent" } },
   }));
   assert.deepEqual(next(absent).command, ["superbee", "skill", "install", "--scope", "user"]);
   assert.equal(absent.capabilities.find((capability) => capability.id === "skill")?.reason,
@@ -65,7 +65,7 @@ test("OpenCode treats the managed Claude-compatible Skill as a required host cap
 test("mutating setup actions are argv-based and declare their approval scope", () => {
   const migration = next(buildSetupPlan(input({
     state: { state: "migratable", reason: "validated legacy operational state is ready to migrate", records: 2 },
-    skill: { canonical: { state: "absent" }, legacy: { state: "absent" } },
+    skill: { canonical: { state: "absent" } },
   })));
   assert.deepEqual(migration, {
     action: "run", command: ["superbee", "setup", "migrate-state"],
@@ -74,7 +74,7 @@ test("mutating setup actions are argv-based and declare their approval scope", (
   });
 
   const projectSkill = next(buildSetupPlan(input({
-    scope: "project", skill: { canonical: { state: "absent" }, legacy: { state: "absent" } },
+    scope: "project", skill: { canonical: { state: "absent" } },
   })));
   assert.deepEqual(projectSkill.command, ["superbee", "skill", "install", "--scope", "project"]);
   assert.equal(projectSkill.mutates, true);
@@ -90,7 +90,7 @@ test("mutating setup actions are argv-based and declare their approval scope", (
 test("follow-up actions retain a no-download local invocation", () => {
   const action = next(buildSetupPlan(input({
     invocation: ["npx", "--no-install", "superbee"],
-    skill: { canonical: { state: "absent" }, legacy: { state: "absent" } },
+    skill: { canonical: { state: "absent" } },
   })));
   assert.deepEqual(action.command, ["npx", "--no-install", "superbee", "skill", "install", "--scope", "user"]);
   assert.equal(action.approval.required, true);
@@ -163,7 +163,7 @@ test("recognized state-permission repair remains a user-approved mutation", () =
 test("dependency order still yields exactly one action", () => {
   const distribution = next(buildSetupPlan(input({
     distribution: { allowed: false, state: "unknown", reason: "transient", persistent: false },
-    skill: { canonical: { state: "absent" }, legacy: { state: "absent" } }, mcp: { state: "absent", reason: "absent" },
+    skill: { canonical: { state: "absent" } }, mcp: { state: "absent", reason: "absent" },
   })));
   assert.deepEqual(distribution.command, ["npm", "install", "-g", `superbee@${VERSION}`]);
   assert.equal(distribution.approval.required, true);
@@ -181,7 +181,7 @@ test("dependency order still yields exactly one action", () => {
 
 test("foreign integrations fail closed onto unapproved read-only inspection", () => {
   const skill = next(buildSetupPlan(input({
-    skill: { canonical: { state: "unmanaged" }, legacy: { state: "absent" } },
+    skill: { canonical: { state: "unmanaged" } },
   })));
   assert.equal(skill.action, "inspect");
   assert.deepEqual(skill.command, ["superbee", "skill", "status", "--scope", "user"]);
@@ -273,7 +273,7 @@ test("first notes folder requires a project choice regardless of unrelated catal
 });
 
 test("user hook configuration progresses before project choice; project installs require selection", () => {
-  const absentSkill = { canonical: { state: "absent" as const }, legacy: { state: "absent" as const } };
+  const absentSkill = { canonical: { state: "absent" as const } };
   const missingHook = { installed: false, compatibility: { state: "absent" as const, reason: "absent" } };
   const workspace = { bundle: "absent" as const, catalog: "empty" as const, selected_registered: false };
   assert.deepEqual(next(buildSetupPlan(input({ workspace, hook: missingHook }))).command, ["superbee", "hook", "install", "--scope", "user"]);

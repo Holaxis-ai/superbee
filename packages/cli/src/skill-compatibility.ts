@@ -9,8 +9,8 @@ import type { ArtifactChannel } from "./build-identity.js";
 
 export const SKILL_MANIFEST_SCHEMA = "aslite.skill-manifest.v2" as const;
 export const SKILL_INSTALLER = "superbee skill install" as const;
-export const LEGACY_SKILL_INSTALLERS = ["aslite skill install"] as const;
-export const OWNED_SKILL_INSTALLERS = [SKILL_INSTALLER, ...LEGACY_SKILL_INSTALLERS] as const;
+/** Receipts the retired packages wrote, still read so `skill install` can remove an unedited old folder. */
+export const LEGACY_SKILL_INSTALLERS = ["aslite skill install", "agentstate-lite skill install"] as const;
 export const OWNED_SKILL_PACKAGES = ["superbee", "aslite", "@holaxis/aslite"] as const;
 
 export interface SkillSourceIdentity {
@@ -111,7 +111,7 @@ export function parseOwnedSkillManifest(value: unknown): OwnedSkillManifest | nu
   if (!isRecord(value)) return null;
   if (!(currentDistribution()?.ownedSkillPackages??OWNED_SKILL_PACKAGES).includes(value.package as never)) return null;
   if (typeof value.version !== "string" || value.version.length === 0) return null;
-  if (!(currentDistribution()?[`${distributionBinName()} skill install`,...currentDistribution()!.predecessorLayouts.flatMap(layout=>layout.bins.map(bin=>`${bin} skill install`))]:OWNED_SKILL_INSTALLERS).includes(value.installed_by as never)) return null;
+  if (![`${distributionBinName()} skill install`, ...LEGACY_SKILL_INSTALLERS].includes(value.installed_by as never)) return null;
   const files = parseOwnedFiles(value.files);
   if (files === null) return null;
   const base = {

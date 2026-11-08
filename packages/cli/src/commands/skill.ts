@@ -10,13 +10,14 @@ import { currentHost, currentDistribution, distributionPackageName, distribution
 // TARGETS: Claude Code + Codex through the ONE HOST_CONFIG_ROOTS authority (the same env-var
 // semantics `hook install --scope user` uses). OpenCode reuses the Claude-compatible project path
 // and the documented global ~/.claude path. Those are one physical target unless Claude Code has
-// been explicitly relocated, in which case each host needs its own managed copy. New installs use
-// skills/superbee; skills/aslite is inspected only for migration, status, and uninstall.
+// been explicitly relocated, in which case each host needs its own managed copy. Installs use
+// skills/superbee. An unedited skills/aslite folder left by the retired packages is deleted by
+// install; an edited one stays, with a RETIRED_SKILL_FOLDER warning.
 //
 // DESTRUCTIVE-WRITE DISCIPLINE (same boundary as hook.ts): install writes a manifest
 // (`.aslite-skill.json`: file list + package version + installed-by) inside the canonical folder
 // and REFUSES a canonical folder it does not manage (no manifest, a malformed manifest, or files
-// present that no manifest names). A foreign legacy folder coexists untouched. Uninstall removes
+// present that no manifest names). Uninstall removes
 // EXACTLY the manifested files + the manifest, then only empty directories. Reinstall is
 // idempotent/convergent: byte-stable, exit 0, changed:false when already current. Every write is
 // same-directory temp + rename (atomicWriteFileSync).
@@ -42,7 +43,7 @@ import { currentHost, currentDistribution, distributionPackageName, distribution
 // an empty one converges/uninstalls (rmdir); a non-empty one is a structured refusal — this tool
 // never recursive-deletes content no manifest names.
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { dirname, join } from "node:path";
@@ -78,6 +79,7 @@ import {
 import { normalizeInstallScope, type InstallScope } from "../install-scope.js";
 import { readRegularFileNoFollowSync, readRegularFileTextNoFollowSync } from "../nofollow-read.js";
 import { integrationChangeReceipt, type IntegrationHost } from "../integration-receipt.js";
+import { emitRetiredWarning, retiredSkillFolderInstallWarning, retiredSkillFolderWarning } from "../deprecation-notices.js";
 
 export { isSafeManifestEntry };
 
@@ -93,11 +95,10 @@ references/ folder — for Claude Code, Codex, and OpenCode. OpenCode shares the
 target unless Claude Code uses a relocated config root, so duplicate bytes are not written in the
 normal case. Its separate SessionStart integration is the plugin written by \`hook install\`.
 
-Install writes a manifest (${"`"}.aslite-skill.json${"`"}) inside the canonical superbee folder.
-An owned old-only aslite folder migrates atomically; an unmanaged legacy folder coexists untouched;
-an unmanaged canonical folder or dual owned folders are refused. Uninstall independently removes
-each proven-owned canonical or legacy folder and refuses foreign bytes. Reinstall is idempotent.
-\`status\` reports canonical and legacy path/state per host: absent | unmanaged | installed | stale
+Install writes a manifest (${"`"}.aslite-skill.json${"`"}) inside the superbee folder and refuses a
+folder it does not manage. It also deletes an unedited aslite folder left by the retired packages
+and warns about an edited one. Uninstall removes only proven-owned files and refuses foreign bytes.
+Reinstall is idempotent. \`status\` reports path/state per host: absent | unmanaged | installed | stale
 (byte-compare against this executable's own shipped assets). Codex host
 discovery is verified at USER scope (codex 0.144.x) — project-scope placement follows each
 host's documented convention.
@@ -117,7 +118,7 @@ The former spelling --scope global remains accepted as an alias for --scope user
 
 /** The installed skill folder name under each host's `skills/` directory. */
 export const SKILL_DIR_NAME = "superbee";
-/** Historical install folder retained only as a migration/uninstall input. */
+/** The folder the retired aslite packages installed; install deletes it when it is unedited. */
 export const LEGACY_SKILL_DIR_NAME = "aslite";
 /** The install-manifest filename written inside the target folder. */
 export const SKILL_MANIFEST_FILENAME = ".aslite-skill.json";
@@ -711,15 +712,7 @@ type ReadyInstallPathInspection = {
   preflight: Extract<InstallPreflight, { ok: true }>;
 };
 
-type HostInstallInspection =
-  | {
-      ok: true;
-      canonical: ReadyInstallPathInspection;
-      legacy: Extract<InstallPathInspection, { ok: true }>;
-      canonicalOwned: boolean;
-      legacyOwned: boolean;
-    }
-  | { ok: false; reason: string };
+type HostInstallInspection = ReadyInstallPathInspection | { ok: false; reason: string };
 
 function inspectInstallPath(dir: string, assets: SkillAssets, installCommand: string): InstallPathInspection {
   try {
@@ -734,69 +727,34 @@ function inspectInstallPath(dir: string, assets: SkillAssets, installCommand: st
 }
 
 /** Exact read-only authority/preflight used by both the installer and passive refresh guidance. */
-function inspectHostInstall(
-  canonicalDir: string,
-  legacyDir: string,
-  assets: SkillAssets,
-  installCommand: string,
-): HostInstallInspection {
+function inspectHostInstall(canonicalDir: string, assets: SkillAssets, installCommand: string): HostInstallInspection {
   const canonical = inspectInstallPath(canonicalDir, assets, installCommand);
-  const legacy = inspectInstallPath(legacyDir, assets, installCommand);
   if (!canonical.ok) return canonical;
-  if (!legacy.ok) return legacy;
   if (!canonical.preflight.ok) return canonical.preflight;
-
-  const canonicalOwned = canonical.status.state === "installed" || canonical.status.state === "stale";
-  const legacyOwned = legacy.status.state === "installed" || legacy.status.state === "stale";
-  if (legacyOwned && !legacy.preflight.ok) return legacy.preflight;
-  if (canonicalOwned && legacyOwned) {
-    return {
-      ok: false,
-      reason: `both canonical and legacy folders are owned (${canonicalDir}, ${legacyDir}) - refusing ambiguous convergence`,
-    };
-  }
-  return {
-    ok: true,
-    canonical: { ...canonical, preflight: canonical.preflight },
-    legacy,
-    canonicalOwned,
-    legacyOwned,
-  };
+  return { ...canonical, preflight: canonical.preflight };
 }
 
-type HostInstallResult =
-  | { ok: true; changed: boolean; migrated: boolean; legacyState: SkillState }
-  | { ok: false; reason: string };
-
-/** Inspect both host paths before mutation, then install or migrate only proven-owned bytes. */
-function installForHost(
-  canonicalDir: string,
-  legacyDir: string,
-  assets: SkillAssets,
-  installCommand: string,
-): HostInstallResult {
-  const inspected = inspectHostInstall(canonicalDir, legacyDir, assets, installCommand);
-  if (!inspected.ok) return inspected;
-  const { canonical, legacy, canonicalOwned, legacyOwned } = inspected;
-
-  if (!canonicalOwned && legacyOwned) {
-    // The paths share one host skills directory, so rename is atomic. Any interruption before it
-    // leaves the owned legacy install; any interruption after it leaves an owned canonical install.
-    sweepManagedDebris(canonicalDir, canonical.preflight.ownedForSweep);
-    removeEmptyDirectories(canonicalDir, true);
-    renameSync(legacyDir, canonicalDir);
-    const result = installIntoDir(canonicalDir, assets);
-    return result.ok
-      ? { ok: true, changed: true, migrated: true, legacyState: legacy.status.state }
-      : result;
+/**
+ * Whether an old aslite folder is byte for byte what its receipt recorded. Only an unedited one may
+ * be deleted; a receipt without digests cannot prove that, so it counts as edited.
+ */
+export function retiredSkillFolderState(dir: string): "absent" | "unedited" | "edited" {
+  if (nonDirectoryRefusal(dir) !== undefined) return "edited";
+  if (!existsSync(dir)) return "absent";
+  const manifest = readManifest(dir);
+  const files = listFilesRelative(dir).filter((file) => !isManagedDebris(file, sweepOwnership(manifest, [])));
+  if (files.length === 0) return "absent";
+  if (!manifest || manifest.kind !== "v2" || !manifest.receipt_valid || manifest.file_sha256 === null) return "edited";
+  const recorded = manifest.file_sha256;
+  const onDisk = files.filter((file) => file !== SKILL_MANIFEST_FILENAME).sort();
+  const listed = [...manifest.files].sort();
+  if (onDisk.length !== listed.length || onDisk.some((file, index) => file !== listed[index])) return "edited";
+  for (const file of onDisk) {
+    const read = readRegularFileNoFollowSync(join(dir, ...file.split("/")));
+    if (read.state !== "present") return "edited";
+    if (recorded[file] !== `sha256:${createHash("sha256").update(read.bytes).digest("hex")}`) return "edited";
   }
-
-  // An unmanaged legacy folder deliberately coexists. It never grants mutation authority and
-  // does not prevent a clean canonical install or refresh.
-  const result = installIntoDir(canonicalDir, assets, canonical.preflight);
-  return result.ok
-    ? { ok: true, changed: result.changed, migrated: false, legacyState: legacy.status.state }
-    : result;
+  return "unedited";
 }
 
 function statusOutput(dir: string, status: SkillStatusResult): Record<string, unknown> {
@@ -810,12 +768,13 @@ function statusOutput(dir: string, status: SkillStatusResult): Record<string, un
 
 export interface SkillHostStatus {
   canonical: SkillStatusResult;
-  legacy: SkillStatusResult;
 }
 
 export interface SkillStatusInspection {
   version: string;
+  scope: InstallScope;
   targets: SkillTargets;
+  /** Where the retired packages installed the skill, for the RETIRED_SKILL_FOLDER warning. */
   legacyTargets: SkillTargets;
   hosts: { claude_code: SkillHostStatus; codex: SkillHostStatus; opencode: SkillHostStatus };
 }
@@ -828,28 +787,52 @@ export function inspectSkillStatus(
   const assets = resolveSkillAssets(deps.executable);
   const targets = skillTargets(scope, deps);
   const legacyTargets = legacySkillTargets(scope, deps);
-  const inspect = (canonicalDir: string, legacyDir: string): SkillHostStatus => ({
+  const inspect = (canonicalDir: string): SkillHostStatus => ({
     canonical: skillStatusForDir(
       canonicalDir,
-      assets,
-      `${cliInvocation()} skill install --scope ${scope}`,
-    ),
-    legacy: skillStatusForDir(
-      legacyDir,
       assets,
       `${cliInvocation()} skill install --scope ${scope}`,
     ),
   });
   return {
     version: assets.version,
+    scope,
     targets,
     legacyTargets,
     hosts: {
-      claude_code: inspect(targets.claude, legacyTargets.claude),
-      codex: inspect(targets.codex, legacyTargets.codex),
-      opencode: inspect(targets.opencode, legacyTargets.opencode),
+      claude_code: inspect(targets.claude),
+      codex: inspect(targets.codex),
+      opencode: inspect(targets.opencode),
     },
   };
+}
+
+/**
+ * RETIRED_SKILL_FOLDER warnings for old aslite folders: an edited one Superbee leaves, and an
+ * unedited one `skill install` would delete. Read-only; it never throws.
+ */
+export function emitRetiredSkillWarnings(inspection: Pick<SkillStatusInspection, "scope" | "targets" | "legacyTargets">): void {
+  const { scope, targets, legacyTargets } = inspection;
+  const seen = new Set<string>();
+  for (const [canonicalDir, legacyDir] of [
+    [targets.claude, legacyTargets.claude],
+    [targets.codex, legacyTargets.codex],
+    [targets.opencode, legacyTargets.opencode],
+  ] as const) {
+    try {
+      const identity = skillTargetIdentity(legacyDir);
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      const state = retiredSkillFolderState(legacyDir);
+      if (state === "edited") {
+        emitRetiredWarning("RETIRED_SKILL_FOLDER", retiredSkillFolderWarning(collapseHomeDirectory(legacyDir), collapseHomeDirectory(canonicalDir)));
+      } else if (state === "unedited") {
+        emitRetiredWarning("RETIRED_SKILL_FOLDER", retiredSkillFolderInstallWarning(collapseHomeDirectory(legacyDir), `${cliInvocation()} skill install --scope ${scope}`));
+      }
+    } catch {
+      // Guidance never outranks the command.
+    }
+  }
 }
 
 /** Injectable seams, defaulting to production. */
@@ -867,8 +850,7 @@ export interface SkillDeps {
 
 /**
  * Fs-only refresh signal for the session orientation surface. Absent, unmanaged, and conflicted
- * folders stay quiet: setup owns onboarding and conflict diagnosis. Canonical or old-only legacy
- * stale installs surface only when the exact scope command passes every host's install preflight.
+ * folders stay quiet: setup owns onboarding and conflict diagnosis. Stale installs surface only when the exact scope command passes every host's install preflight.
  */
 export function skillRefreshScopes(
   deps: Pick<SkillDeps, "cwd" | "home" | "env" | "platform" | "executable"> = {},
@@ -883,30 +865,22 @@ export function skillRefreshScopes(
   for (const scope of ["user", "project"] as const) {
     try {
       const targets = skillTargets(scope, deps);
-      const legacyTargets = legacySkillTargets(scope, deps);
       const remedy = `${cliInvocation()} skill install --scope ${scope}`;
-      const hosts = [
-        [targets.claude, legacyTargets.claude],
-        [targets.codex, legacyTargets.codex],
-        [targets.opencode, legacyTargets.opencode],
-      ] as const;
-      const hostRows = hosts.map(([canonicalDir, legacyDir]) => ({
+      const hostRows = [targets.claude, targets.codex, targets.opencode].map((canonicalDir) => ({
         canonicalDir,
-        legacyDir,
-        identity: skillTargetPairIdentity(canonicalDir, legacyDir, deps.platform),
+        identity: skillTargetIdentity(canonicalDir, deps.platform),
       }));
       const distinctHosts = hostRows.filter((row, index, rows) =>
         rows.findIndex((candidate) => candidate.identity === row.identity) === index);
       let actionableStale = false;
       let installable = true;
-      for (const { canonicalDir, legacyDir } of distinctHosts) {
-        const inspected = inspectHostInstall(canonicalDir, legacyDir, assets, remedy);
+      for (const { canonicalDir } of distinctHosts) {
+        const inspected = inspectHostInstall(canonicalDir, assets, remedy);
         if (!inspected.ok) {
           installable = false;
           break;
         }
-        actionableStale ||= inspected.canonical.status.state === "stale"
-          || inspected.legacy.status.state === "stale";
+        actionableStale ||= inspected.status.state === "stale";
       }
       if (installable && actionableStale) {
         scopes.push(scope);
@@ -984,18 +958,15 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
     const inspection = inspectSkillStatus(scope, deps);
     const hosts: Record<string, unknown> = {};
     const rows = [
-      ["claude_code", inspection.targets.claude, inspection.legacyTargets.claude, inspection.hosts.claude_code],
-      ["codex", inspection.targets.codex, inspection.legacyTargets.codex, inspection.hosts.codex],
-      ["opencode", inspection.targets.opencode, inspection.legacyTargets.opencode, inspection.hosts.opencode],
+      ["claude_code", inspection.targets.claude, inspection.hosts.claude_code],
+      ["codex", inspection.targets.codex, inspection.hosts.codex],
+      ["opencode", inspection.targets.opencode, inspection.hosts.opencode],
     ] as const;
-    for (const [key, canonicalDir, legacyDir, status] of rows) {
-      hosts[key] = {
-        ...statusOutput(canonicalDir, status.canonical),
-        canonical: statusOutput(canonicalDir, status.canonical),
-        legacy: statusOutput(legacyDir, status.legacy),
-      };
+    for (const [key, canonicalDir, status] of rows) {
+      hosts[key] = { ...statusOutput(canonicalDir, status.canonical), canonical: statusOutput(canonicalDir, status.canonical) };
     }
     stdout(render({ skill: { action: "status", scope, version: inspection.version, hosts } }, mode));
+    emitRetiredSkillWarnings(inspection);
     return;
   }
 
@@ -1035,19 +1006,21 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
       );
     }
     const refusals: string[] = [];
+    const notes: string[] = [];
     const hosts: Record<string, unknown> = {};
     const changedByHost: Partial<Record<IntegrationHost, boolean>> = {};
     for (const { canonicalDir, legacyDir, identity } of distinctHostDirs) {
       // Any unexpected fs throw on one host becomes a structured refusal so the sibling host
       // still processes (same aggregation shape as hook install).
-      let result: HostInstallResult;
+      let result: InstallResult;
       try {
-        result = installForHost(
-          canonicalDir,
-          legacyDir,
-          assets,
-          `${cliInvocation()} skill install --scope ${scope}`,
-        );
+        const inspected = inspectHostInstall(canonicalDir, assets, `${cliInvocation()} skill install --scope ${scope}`);
+        result = inspected.ok ? installIntoDir(canonicalDir, assets, inspected.preflight) : inspected;
+        // The old folder goes only once the current skill is in place, and only when unedited.
+        if (result.ok && retiredSkillFolderState(legacyDir) === "unedited") {
+          const removed = uninstallFromDir(legacyDir);
+          if (removed.ok) notes.push(`Removed old aslite skill from ${collapseHomeDirectory(legacyDir)}.`);
+        }
       } catch (err) {
         result = { ok: false, reason: `unexpected error: ${err instanceof Error ? err.message : String(err)}` };
       }
@@ -1057,13 +1030,7 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
       }
       for (const { key } of aliasesFor(identity)) {
         changedByHost[key] = result.changed;
-        hosts[key] = {
-          path: collapseHomeDirectory(canonicalDir),
-          legacy_path: collapseHomeDirectory(legacyDir),
-          changed: result.changed,
-          migrated: result.migrated,
-          legacy_state_before: result.legacyState,
-        };
+        hosts[key] = { path: collapseHomeDirectory(canonicalDir), changed: result.changed };
       }
     }
     if (refusals.length > 0) {
@@ -1087,11 +1054,13 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
             source: collapseHomeDirectory(assets.root),
             ...lifecycle,
             hosts,
+            ...(notes.length > 0 ? { notes } : {}),
           },
         },
         mode,
       ),
     );
+    emitRetiredSkillWarnings({ scope, targets, legacyTargets });
     return;
   }
 
@@ -1099,13 +1068,10 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
   const refusals: string[] = [];
   const hosts: Record<string, unknown> = {};
   let changed = false;
-  for (const { canonicalDir, legacyDir, identity } of distinctHostDirs) {
-    const paths = [
-      ["canonical", canonicalDir],
-      ["legacy", legacyDir],
-    ] as const;
-    // Both path preflights finish before either path mutates. A refusal remains path-local: the
-    // other proven-owned path and the sibling host still process.
+  for (const { canonicalDir, identity } of distinctHostDirs) {
+    const paths = [["canonical", canonicalDir]] as const;
+    // The preflight finishes before the path mutates. A refusal stays local: the sibling host still
+    // processes.
     const prepared = paths.map(([label, dir]) => {
       try {
         return { label, dir, plan: preflightUninstallFromDir(dir) } as const;

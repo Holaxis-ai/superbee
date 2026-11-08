@@ -15,9 +15,6 @@ import { renderErrorEnvelope } from "./output.js";
 
 export type DeprecationNoticeCode =
   | "DEPRECATED_SOURCE_PLUGIN_POINTER"
-  | "DEPRECATED_LEGACY_HOOK"
-  | "DEPRECATED_LEGACY_SKILL_FOLDER"
-  | "DEPRECATED_LEGACY_MCP_REGISTRATION"
   | "DEPRECATED_LEGACY_USER_STATE";
 
 export interface DeprecationNotice {
@@ -207,35 +204,12 @@ export function retiredEnvHomeLine(env: Readonly<Record<string, string | undefin
   return `${refusal.message} This session skips the update check and automatic pull until it is fixed. Fix: ${refusal.help}`;
 }
 
-/** The install verbs default to project scope, so a fix must name the scope the old thing is in. */
-function scopedInstalls(cli: string, verb: "hook" | "skill", scopes: readonly InstallScope[]): string {
-  return scopes.map((scope) => `${cli} ${verb} install --scope ${scope}`).join(" and ");
-}
-
 export const DEPRECATION_NOTICES: readonly DeprecationNotice[] = Object.freeze([
   {
     code: "DEPRECATED_SOURCE_PLUGIN_POINTER",
     old: "the pre-v2 source plugin pointer",
     replacement: "the v2 source plugin registry",
     fix: (cli) => `run ${cli} source plugin register <built-folder> and accept its digest, which rewrites the pointer`,
-  },
-  {
-    code: "DEPRECATED_LEGACY_HOOK",
-    old: "a SessionStart hook written by aslite or agentstate-lite",
-    replacement: "the Superbee hook",
-    fix: (cli, scopes) => `run ${scopedInstalls(cli, "hook", scopes)} from a global install (npm install -g superbee), which replaces it`,
-  },
-  {
-    code: "DEPRECATED_LEGACY_SKILL_FOLDER",
-    old: "the aslite skill folder",
-    replacement: "the superbee skill folder",
-    fix: (cli, scopes) => `run ${scopedInstalls(cli, "skill", scopes)} from a global install (npm install -g superbee), which moves a Superbee-owned folder; delete the folder if it remains`,
-  },
-  {
-    code: "DEPRECATED_LEGACY_MCP_REGISTRATION",
-    old: "an aslite-views or agentstate-lite-experimental MCP registration",
-    replacement: "the superbee MCP registration",
-    fix: (cli) => `delete that entry from the host configuration, then run ${cli} mcp install --host <id> from a global install (npm install -g superbee)`,
   },
   {
     code: "DEPRECATED_LEGACY_USER_STATE",
@@ -251,6 +225,7 @@ const BYTE_CHANNEL_FLAGS = ["--out", "--body-out", "--rendered-out"];
 let open = false;
 let stderrErrorsAbsorbed = false;
 const shown = new Set<DeprecationNoticeCode>();
+const shownWarnings = new Set<string>();
 
 function requestsByteChannel(argv: readonly string[]): boolean {
   return argv.some((arg, index) =>
@@ -308,6 +283,41 @@ export function emitDeprecationNotice(
     process.stderr.write(renderDeprecationNotice(ROWS.get(code)!, cliInvocation(), locations, scopes));
   } catch {
     // A synchronous write failure is the same case.
+  }
+}
+
+/** Something a retired package left that Superbee leaves in place because the user edited it. */
+export type RetiredWarningCode = "RETIRED_HOOK" | "RETIRED_SKILL_FOLDER";
+
+export function retiredHookWarning(path: string): string {
+  return `${path} has a hook that runs aslite or agentstate-lite, and Superbee did not remove it because it was edited. It may fail or duplicate context. To remove it, delete that entry.`;
+}
+
+export function retiredPluginWarning(path: string): string {
+  return `${path} is the old agentstate-lite plugin, edited by hand. Delete it to stop it loading.`;
+}
+
+export function retiredSkillFolderWarning(dir: string, canonicalDir: string): string {
+  return `${dir} is the old aslite skill and has local edits, so Superbee left it. It teaches commands that no longer exist. Delete the folder. The current skill is at ${canonicalDir}.`;
+}
+
+export function retiredSkillFolderInstallWarning(dir: string, install: string): string {
+  return `${dir} is the old aslite skill. It teaches commands that no longer exist. Run ${install}, which deletes it.`;
+}
+
+/** One warning line on the notice channel, once per process per message. Never throws. */
+export function emitRetiredWarning(code: RetiredWarningCode, message: string): void {
+  const line = `superbee: warning: ${message} [${code}]`;
+  if (!open || shownWarnings.has(line)) return;
+  shownWarnings.add(line);
+  if (!stderrErrorsAbsorbed) {
+    stderrErrorsAbsorbed = true;
+    process.stderr.on("error", () => {});
+  }
+  try {
+    process.stderr.write(`${line.replace(/[\u0000-\u001f\u007f]/g, " ")}\n`);
+  } catch {
+    // A synchronous write failure costs only the warning.
   }
 }
 

@@ -64,10 +64,6 @@ export interface SetupSkillHostState {
     readonly state: SkillState;
     readonly compatibility?: { readonly state: SkillCompatibilityState };
   };
-  readonly legacy: {
-    readonly state: SkillState;
-    readonly compatibility?: { readonly state: SkillCompatibilityState };
-  };
 }
 
 export interface SetupHookHostState {
@@ -398,21 +394,7 @@ function skillCapability(input: SetupPlanInput): SetupCapability {
       command: `superbee skill status --scope ${input.scope}`,
     };
   }
-  const canonicalOwned = input.skill.canonical.state === "installed" || input.skill.canonical.state === "stale";
-  const legacyOwned = input.skill.legacy.state === "installed" || input.skill.legacy.state === "stale";
-  if (canonicalOwned && legacyOwned) {
-    return {
-      id: "skill",
-      requirement: "required",
-      state: "blocked",
-      reason: "both canonical and legacy Agent Skill folders are managed; inspect before convergence",
-      command: `superbee skill status --scope ${input.scope}`,
-    };
-  }
-  if (
-    input.skill.canonical.compatibility?.state === "newer_contract"
-    || input.skill.legacy.compatibility?.state === "newer_contract"
-  ) {
+  if (input.skill.canonical.compatibility?.state === "newer_contract") {
     return {
       id: "skill",
       requirement: "required",
@@ -444,9 +426,7 @@ function skillCapability(input: SetupPlanInput): SetupCapability {
     id: "skill",
     requirement: "required",
     state: "needs_action",
-    reason: legacyOwned
-      ? "a managed legacy Agent Skill is ready to migrate"
-      : input.skill.canonical.state === "stale"
+    reason: input.skill.canonical.state === "stale"
         ? "the managed Agent Skill does not match this CLI"
         : input.host === "opencode"
           ? "the Superbee Agent Skill is absent from OpenCode's Claude-compatible discovery path"
@@ -471,15 +451,6 @@ function mcpCapability(input: SetupPlanInput): SetupCapability {
       state: "needs_action",
       reason: input.mcp.reason,
       command: `superbee mcp install --host ${input.host}`,
-    };
-  }
-  if (input.mcp.state === "known_legacy") {
-    return {
-      id: "mcp",
-      requirement: "required",
-      state: "blocked",
-      reason: input.mcp.reason,
-      command: `superbee mcp status --host ${input.host}`,
     };
   }
   return {

@@ -19,7 +19,6 @@ if(isBareVersionFlag(argv[0])) {
  const runtime=createPosixCliRuntime({
   identity:staticBuildIdentity(),executablePath,assetRoot:dirname(dirname(executablePath)),
   install:{packageName:'superbee',entryRelativePath:'dist/superbee.mjs',bins:['superbee']},
-  predecessorLayouts:[{packageName:'@holaxis/aslite',entryRelativePath:'dist/superbee.mjs',bins:['aslite','agentstate-lite']}],
   ownedSkillPackages:['superbee','aslite','@holaxis/aslite'],updatesEnabled:true,
  });
  if(argv[0]==='__managed-ui-v1') {if(argv.length===1)await runtime.runManagedUiWorker();}

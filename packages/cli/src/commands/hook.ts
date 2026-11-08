@@ -43,7 +43,8 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { isAbsolute, join, normalize, sep } from "node:path";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { parseArgs } from "node:util";
 import {
   computeCodexConfigUpdate,
@@ -65,6 +66,7 @@ import {
   classifyHookCommand,
   classifyHookEntry,
   isOwnedHookCompatibility,
+  isRetiredHookCommand,
   renderGeneratedHookToken,
   tokenizeGeneratedHookCommand,
   type HookCompatibility,
@@ -78,6 +80,7 @@ import { readRegularFileTextNoFollowSync } from "../nofollow-read.js";
 import { inspectHookLaunchAvailability, type HookLaunchAvailability } from "../hook-launch-availability.js";
 import { integrationChangeReceipt, type IntegrationHost } from "../integration-receipt.js";
 import { readTurnEndGitBoards, recordTurnEndGitBoards } from "./turn-end.js";
+import { emitRetiredWarning, retiredHookWarning, retiredPluginWarning } from "../deprecation-notices.js";
 
 export const HOOK_USAGE = `superbee hook — manage the SessionStart board-aware hook
 
@@ -90,7 +93,9 @@ Installs (or removes) a SessionStart hook that runs \`session-start\` — a time
 board pull, then the home view — as ambient context at the start of every agent session, for
 Claude Code, Codex, AND OpenCode. Idempotent: re-installing the same hook is a no-op; uninstalling
 an absent hook is a no-op. Re-run install after upgrading from a pre-session-start version: the
-old hook rendered the home view without pulling the board first.
+old hook rendered the home view without pulling the board first. Install also replaces an
+unedited hook or OpenCode plugin written by aslite or agentstate-lite, and warns about an edited
+one (RETIRED_HOOK), which it leaves for you to delete.
 
 For npm distribution, install must run from a verified global install (\`npm install -g
 superbee\`). One-off npx execution remains supported for read-only/trial commands but cannot
@@ -128,7 +133,6 @@ The former spelling --scope global remains accepted as an alias for --scope user
 
 /** The canonical OpenCode marker. Marker presence alone never establishes ownership. */
 export const HOOK_MARKER = "superbee";
-const LEGACY_HOOK_MARKER = "agentstate-lite";
 
 /** Backward-compatible command-only ownership predicate, now backed by the exact token classifier. */
 export function isManagedHookCommand(command: string, platform: string = process.platform): boolean {
@@ -144,9 +148,9 @@ export const TURN_END_SUBCOMMAND = "turn-end";
 export const TURN_END_HOOK_TIMEOUT_SECONDS = 30;
 /** The OpenCode plugin filename (SDK naming convention for this marker) and its managed-file marker. */
 const OPENCODE_PLUGIN_FILENAME = "axi-superbee.js";
+/** Where the retired agentstate-lite packages wrote their OpenCode plugin. */
 const LEGACY_OPENCODE_PLUGIN_FILENAME = "axi-agentstate-lite.js";
 const OPENCODE_MANAGED_MARKER = `axi-sdk-js managed opencode plugin: ${HOOK_MARKER}`;
-const LEGACY_OPENCODE_MANAGED_MARKER = `axi-sdk-js managed opencode plugin: ${LEGACY_HOOK_MARKER}`;
 
 /**
  * Compose one generated shell command from an argv vector. Values outside the deliberately safe
@@ -539,6 +543,59 @@ export function readHookStatus(settings: HookSettings): { installed: boolean; co
     : { installed: status.installed, command: status.command };
 }
 
+/** A hook command that names a retired package, however it was edited. */
+const RETIRED_NAME = /(?:^|[\s/"'\\])(?:@holaxis\/)?(?:aslite|agentstate-lite)(?:[\s/."'\\]|$)/;
+
+/**
+ * Session hooks the retired packages left in one settings file: `exact` ones are unedited, and
+ * `hook install` replaces them; `edited` ones name an old package but are the user's own now.
+ */
+export function retiredHookEntries(settings: HookSettings): { exact: number; edited: number } {
+  const found = { exact: 0, edited: 0 };
+  const visit = (entry: HookEntry | undefined, location: "SessionStart" | "session_start", matcher?: unknown) => {
+    if (typeof entry?.command !== "string") return;
+    const owned = isOwnedHookCompatibility(
+      classifyHookEntry({ entry, location, matcher, timeoutSeconds: HOOK_TIMEOUT_SECONDS }),
+    );
+    const tokens = tokenizeGeneratedHookCommand(entry.command);
+    if (owned && tokens && isRetiredHookCommand(tokens)) found.exact += 1;
+    else if (!owned && RETIRED_NAME.test(entry.command)) found.edited += 1;
+  };
+  const hooks = settings.hooks;
+  if (Array.isArray(hooks?.SessionStart)) {
+    for (const group of hooks.SessionStart) {
+      if (Array.isArray(group?.hooks)) for (const entry of group.hooks) visit(entry, "SessionStart", group.matcher);
+    }
+  }
+  if (Array.isArray(hooks?.session_start)) for (const entry of hooks.session_start) visit(entry, "session_start");
+  return found;
+}
+
+/**
+ * The RETIRED_HOOK warnings for one scope: edited old hooks and an edited old OpenCode plugin,
+ * which Superbee leaves in place. Read-only and lenient; it never throws.
+ */
+export function retiredHookWarnings(targets: HookTargets): string[] {
+  const warnings: string[] = [];
+  try {
+    for (const path of [targets.claudeSettings, targets.codexHooks]) {
+      if (retiredHookEntries(readSettings(path)).edited > 0) warnings.push(retiredHookWarning(collapseHomeDirectory(path)));
+    }
+    const plugin = readOpenCodeHookStatus(targets.legacyOpencodePlugin);
+    if (plugin.compatibility.state === "unmanaged") {
+      warnings.push(retiredPluginWarning(collapseHomeDirectory(targets.legacyOpencodePlugin)));
+    }
+  } catch {
+    // Guidance never outranks the command.
+  }
+  return warnings;
+}
+
+/** Show {@link retiredHookWarnings} on stderr. */
+export function emitRetiredHookWarnings(targets: HookTargets): void {
+  for (const warning of retiredHookWarnings(targets)) emitRetiredWarning("RETIRED_HOOK", warning);
+}
+
 /** The per-runtime target files for one resolved scope. */
 export interface HookTargets {
   claudeSettings: string;
@@ -806,63 +863,20 @@ export function buildOpenCodePluginSource(
   });
 }
 
-/** Byte-for-byte reconstruction of the last ASLite args-aware generator. */
-function buildLegacyOpenCodePluginSource(
-  program: string,
-  commandArgs: string[] = [HOOK_SUBCOMMAND],
-  timeoutSeconds: number = HOOK_TIMEOUT_SECONDS,
-): string {
-  return buildOpenCodePluginTemplate({
-    program,
-    commandArgs,
-    timeoutSeconds,
-    marker: LEGACY_HOOK_MARKER,
-    managedMarker: LEGACY_OPENCODE_MANAGED_MARKER,
-    exportName: "AxiAgentstateLiteAmbientContextPlugin",
-    generatedComment:
-      "// Generated by `superbee hook install` (axi-sdk-js managed-marker compatible). It is safe\n" +
-      "// to edit only if you remove the managed marker above.",
-    runFunction: "runAxiSessionStart",
-  });
-}
+/**
+ * SHA-256 of each OpenCode plugin source the retired aslite and agentstate-lite packages wrote, with
+ * the per-install `command` and `commandArgs` lines blanked by {@link retiredPluginDigest}. A match
+ * whose command is a retired hook command is an unedited old plugin, which `hook install` removes.
+ */
+const RETIRED_OPENCODE_PLUGIN_SHA256: readonly string[] = [
+  "9a899eff9dc60e0210a40920a48b43b03396a7cc99d29cd97a76367ef8237fa0", // last args-aware generator
+  "d1780ea788f726cfcd985fdf7f8192a2acdc3a27318c6283315e64b8c03dfd1c", // published @holaxis/aslite pre.3
+  "5fa68b3da72d36d648f05c99b01303695f1f671aa4203d5316b5c7c374586a18", // pre-argv axi-sdk-js generator
+];
 
-/** Byte-for-byte reconstruction of the published @holaxis/aslite pre.3 args-aware generator. */
-function buildPublishedAsliteOpenCodePluginSource(
-  program: string,
-): string {
-  return buildOpenCodePluginTemplate({
-    program,
-    commandArgs: [HOOK_SUBCOMMAND],
-    timeoutSeconds: HOOK_TIMEOUT_SECONDS,
-    marker: LEGACY_HOOK_MARKER,
-    managedMarker: LEGACY_OPENCODE_MANAGED_MARKER,
-    exportName: "AxiAgentstateLiteAmbientContextPlugin",
-    generatedComment:
-      "// Generated by `agentstate-lite hook install` (axi-sdk-js managed-marker compatible). It is safe\n" +
-      "// to edit only if you remove the managed marker above.",
-    runFunction: "runAxiSessionStart",
-  });
-}
-
-function isPublishedAsliteOpenCodeProgram(program: string): boolean {
-  if (program === "aslite" || program === "agentstate-lite") return true;
-  if (!isAbsolute(program)) return false;
-  const portable = normalize(program).split(sep).join("/");
-  return /\/node_modules\/@holaxis\/aslite\/dist\/agentstate-lite\.mjs$/.test(portable);
-}
-
-/** Byte-for-byte reconstruction of the pre-argv axi-sdk-js generator for safe legacy ownership. */
-function buildLegacySdkOpenCodePluginSource(command: string, timeoutSeconds: number): string {
-  return buildOpenCodePluginTemplate({
-    program: command,
-    timeoutSeconds,
-    marker: LEGACY_HOOK_MARKER,
-    managedMarker: LEGACY_OPENCODE_MANAGED_MARKER,
-    exportName: "AxiAgentstateLiteAmbientContextPlugin",
-    generatedComment:
-      "// This file is generated by axi-sdk-js. It is safe to edit only if you remove the managed marker above.",
-    runFunction: "runAxiHomeView",
-  });
+function retiredPluginDigest(source: string): string {
+  const blanked = source.replace(/^const (command|commandArgs) = .*;$/gm, "const $1 = <>;");
+  return createHash("sha256").update(blanked).digest("hex");
 }
 
 interface OpenCodeHookStatus {
@@ -958,48 +972,15 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
 
   if (
     typeof command === "string" &&
-    Array.isArray(args) &&
-    args.every((arg) => typeof arg === "string") &&
-    typeof timeoutMs === "number" &&
-    Number.isInteger(timeoutMs) &&
-    (
-      comparableSource === buildLegacyOpenCodePluginSource(command, args as string[], timeoutMs / 1000)
-      || (
-        args.length === 1
-        && args[0] === HOOK_SUBCOMMAND
-        && timeoutMs === HOOK_TIMEOUT_SECONDS * 1000
-        && isPublishedAsliteOpenCodeProgram(command)
-        && comparableSource === buildPublishedAsliteOpenCodePluginSource(command)
-      )
-    )
-  ) {
-    const compatibility = classifyHookCommand(
-      [command, ...(args as string[])].map((token) => renderGeneratedHookToken(token)).join(" "),
-    );
-    if (!isOwnedHookCompatibility(compatibility)) return { installed: false, compatibility };
-    return {
-      installed: true,
-      compatibility: {
-        state: timeoutMs === HOOK_TIMEOUT_SECONDS * 1000 ? "legacy_identity" : "stale",
-        reason: "recognized generated OpenCode plugin uses the legacy ASLite identity",
-        remedy: `re-run \`${distributionBinName()} hook install\` from the durable global npm installation`,
-      },
-    };
-  }
-
-  if (
-    typeof command === "string" &&
-    args === undefined &&
-    typeof timeoutMs === "number" &&
-    Number.isInteger(timeoutMs) &&
-    comparableSource === buildLegacySdkOpenCodePluginSource(command, timeoutMs / 1000) &&
-    isOwnedHookCompatibility(classifyHookCommand(command))
+    (args === undefined || (Array.isArray(args) && args.every((arg) => typeof arg === "string"))) &&
+    RETIRED_OPENCODE_PLUGIN_SHA256.includes(retiredPluginDigest(comparableSource)) &&
+    isRetiredHookCommand([command, ...((args ?? []) as string[])])
   ) {
     return {
       installed: true,
       compatibility: {
-        state: "stale",
-        reason: "recognized pre-session-start axi-sdk-js plugin",
+        state: "legacy_identity",
+        reason: "recognized OpenCode plugin written by aslite or agentstate-lite; hook install removes it",
         remedy: `re-run \`${distributionBinName()} hook install\` from the durable global npm installation`,
       },
     };
@@ -1300,6 +1281,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
 
   if (sub === "status") {
     const inspection = inspectHookStatus(scope, deps);
+    emitRetiredHookWarnings(inspection.targets);
     const { claude_code: claude, codex, opencode } = inspection.hosts;
     stdout(
       render(
@@ -1398,6 +1380,8 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
       });
     }
     const command = launch.command;
+    const notes: string[] = [];
+    const replacedOld = (path: string) => notes.push(`Removed old aslite hook from ${collapseHomeDirectory(path)}. Installed superbee hook.`);
     const stopHosts: IntegrationHost[] = [];
     const changedByHost: Partial<Record<IntegrationHost, boolean>> = {};
     // Claude Code settings.json + Codex hooks.json: OUR SDK-modeled pure updater, recognizing
@@ -1432,6 +1416,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
           changed = changed || stopChanged;
         }
         if (changed) writeSettings(target, updated);
+        if (retiredHookEntries(read.settings).exact > 0) replacedOld(target);
         if (wantsStop) stopHosts.push(host);
         changedByHost[host] = changed;
       } catch (err) {
@@ -1456,7 +1441,9 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
         refusals.push(`${collapseHomeDirectory(targets.opencodePlugin)}: refusing to overwrite unmanaged OpenCode plugin`);
       } else {
         const installed = installOpenCodePlugin(targets.opencodePlugin, next);
+        if (currentStatus.compatibility.state === "legacy_identity") replacedOld(targets.opencodePlugin);
         const removedLegacy = removeOwnedOpenCodePlugin(targets.legacyOpencodePlugin);
+        if (removedLegacy) replacedOld(targets.legacyOpencodePlugin);
         changedByHost.opencode = installed || removedLegacy;
       }
     } catch (err) {
@@ -1499,6 +1486,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
           }
         : { installed: false, opt_in: `${cliInvocation()} hook install --turn-end-sync` },
       ...lifecycle,
+      ...(notes.length > 0 ? { notes } : {}),
       targets: {
         claude_code: collapseHomeDirectory(targets.claudeSettings),
         codex: collapseHomeDirectory(targets.codexHooks),
@@ -1506,6 +1494,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
       },
     };
     stdout(render({ hook: out }, mode));
+    emitRetiredHookWarnings(targets);
     return;
   }
 

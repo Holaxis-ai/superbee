@@ -1,7 +1,7 @@
 import { renderUsage } from "../output.js";
 // `superbee setup` — one read-only AXI conductor plus one explicit, bounded state-migration leaf.
 
-import { existsSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { unsafeProjectDir } from "../no-bundle-guidance.js";
 import { basename, dirname, resolve } from "node:path";
@@ -35,9 +35,9 @@ import {
   type SetupSkillHostState,
   type SetupWorkspaceState,
 } from "../setup-plan.js";
-import { inspectHookStatus, type HookStatusInspection } from "./hook.js";
+import { emitRetiredHookWarnings, inspectHookStatus, type HookStatusInspection } from "./hook.js";
 import { setupHosted } from "./setup-hosted.js";
-import { inspectSkillStatus, type SkillStatusInspection } from "./skill.js";
+import { emitRetiredSkillWarnings, inspectSkillStatus, type SkillStatusInspection } from "./skill.js";
 import {
   hardenUserState,
   quarantineUserState,
@@ -344,48 +344,12 @@ async function inspectAll(
   };
 }
 
-/**
- * An exact recognized hook from the old packages. A bare `superbee` command can also be stale or
- * path-bound, and is not what this notice is about, so a non-identity state must name an old binary.
- */
-function usesLegacyHookIdentity(status: Pick<HookStatusInspection["hosts"]["claude_code"], "installed" | "command" | "compatibility">): boolean {
-  if (!status.installed || status.compatibility.state === "current") return false;
-  return status.compatibility.state === "legacy_identity" || /(?:^|[\s/"'])(?:@holaxis\/)?(?:aslite|agentstate-lite)(?:[\s/."']|$)/.test(status.command ?? "");
-}
-
-function legacyHookLocations(inspection: HookStatusInspection | undefined): string[] {
-  if (!inspection) return [];
-  const { hosts, targets } = inspection;
-  return [
-    ...(usesLegacyHookIdentity(hosts.claude_code) ? [targets.claudeSettings] : []),
-    ...(usesLegacyHookIdentity(hosts.codex) ? [targets.codexHooks] : []),
-    ...(usesLegacyHookIdentity(hosts.opencode)
-      ? [existsSync(targets.legacyOpencodePlugin) ? targets.legacyOpencodePlugin : targets.opencodePlugin]
-      : []),
-  ];
-}
-
 /** What only setup can see: old host configuration that no ordinary command ever reads. */
-function emitSetupDeprecationNotices(inspection: SetupInspection, scope: InstallScope): void {
-  const selectedHooks = legacyHookLocations(inspection.hook);
-  const projectHooks = legacyHookLocations(inspection.projectHook ?? inspection.launchProjectHook);
-  if (selectedHooks.length || projectHooks.length) {
-    const scopes = [...(selectedHooks.length ? [scope] : []), ...(projectHooks.length ? ["project" as const] : [])];
-    emitDeprecationNotice("DEPRECATED_LEGACY_HOOK", [...selectedHooks, ...projectHooks], [...new Set(scopes)]);
+function emitSetupDeprecationNotices(inspection: SetupInspection): void {
+  for (const hook of [inspection.hook, inspection.projectHook ?? inspection.launchProjectHook]) {
+    if (hook) emitRetiredHookWarnings(hook.targets);
   }
-  if (inspection.skill) {
-    const { hosts, legacyTargets } = inspection.skill;
-    const folders = [
-      ...(hosts.claude_code.legacy.state !== "absent" ? [legacyTargets.claude] : []),
-      ...(hosts.codex.legacy.state !== "absent" ? [legacyTargets.codex] : []),
-      ...(hosts.opencode.legacy.state !== "absent" ? [legacyTargets.opencode] : []),
-    ];
-    if (folders.length) emitDeprecationNotice("DEPRECATED_LEGACY_SKILL_FOLDER", folders, [scope]);
-  }
-  const registrations = inspection.mcp.filter((row) => row.state === "known_legacy");
-  if (registrations.length) {
-    emitDeprecationNotice("DEPRECATED_LEGACY_MCP_REGISTRATION", registrations.map((row) => row.config ?? row.host));
-  }
+  if (inspection.skill) emitRetiredSkillWarnings(inspection.skill);
   if (inspection.state.state === "migratable") emitDeprecationNotice("DEPRECATED_LEGACY_USER_STATE");
 }
 
@@ -524,12 +488,12 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
   if (requestedHost) {
     const target = MCP_INSTALL_TARGETS.find((candidate) => candidate.id === requestedHost)!;
     const inspection = await inspectAll(scope, [target], deps, projectSelection);
-    emitSetupDeprecationNotices(inspection, scope);
+    emitSetupDeprecationNotices(inspection);
     stdout(render({ setup: planForHost(inspection, requestedHost, scope, deps.invocation().split(/\s+/), projectSelection, cwd, cwdOfferable) }, resolveMode(values)));
     return;
   }
   const inspection = await inspectAll(scope, MCP_INSTALL_TARGETS, deps, projectSelection);
-  emitSetupDeprecationNotices(inspection, scope);
+  emitSetupDeprecationNotices(inspection);
   const invocation = deps.invocation().split(/\s+/);
   const state = setupStateCapability(inspection.state);
   const stateNext = setupNextForCapability(state, invocation, cwd);
