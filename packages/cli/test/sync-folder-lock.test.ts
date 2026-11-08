@@ -16,6 +16,8 @@ import {
   makeTwoCloneTopology,
   divergeSameDoc,
   modifyBoardDoc,
+  commitBoard,
+  pushBoard,
   wedgeMidRebase,
   type TwoCloneTopology,
 } from "../../board-git/test/git-harness.js";
@@ -200,6 +202,57 @@ test("the root lock orders a document write after a sync's worktree step", async
     });
     assert.equal(await child, 0);
     assert.equal(existsSync(target), true);
+  } finally {
+    await done();
+  }
+});
+
+/**
+ * Run `command` once, inside the sync's fetch: the fetch runs between the commit and the rebase,
+ * with the root lock free, so this is a write landing there. Returns the file that marks it ran.
+ */
+function writeDuringFetch(topo: TwoCloneTopology, home: string, command: string): string {
+  const flag = path.join(home, "wrote");
+  const hook = path.join(home, "upload-pack.sh");
+  writeFileSync(hook, `#!/bin/sh\nif [ ! -e '${flag}' ]; then : > '${flag}'; ${command}; fi\nexec git-upload-pack "$@"\n`, { mode: 0o755 });
+  git(topo.b.board, ["config", "remote.origin.uploadpack", hook]);
+  return flag;
+}
+
+test("a document written between a sync's commit and its rebase is committed and sent, not a failed sync", async () => {
+  const { topo, home, done } = await fixture();
+  try {
+    await modifyBoardDoc(topo.a, "tasks/seed-one", { frontmatter: { title: "UPSTREAM EDIT" } });
+    commitBoard(topo.a, "board: A edits seed-one");
+    pushBoard(topo.a);
+    writeFileSync(path.join(topo.b.board, "notes/y1.md"), note("y1"));
+    const flag = writeDuringFetch(topo, home, `printf 'LATE WRITE\\n' >> '${path.join(topo.b.board, "tasks/seed-two.md")}'`);
+    const result = await runSync(home, ["--dir", topo.b.root]);
+    assert.equal(result.err, undefined, result.err?.message);
+    assert.equal(existsSync(flag), true, "the write landed during the sync");
+    assert.equal(gitTry(topo.b.board, ["status", "--porcelain"]).stdout, "");
+    assert.match(git(topo.origin, ["show", "board:tasks/seed-two.md"]), /LATE WRITE/);
+    assert.match(git(topo.origin, ["ls-tree", "-r", "--name-only", "board"]), /notes\/y1\.md/);
+  } finally {
+    await done();
+  }
+});
+
+test("private state written between a sync's commit and its rebase is refused before it is committed", async () => {
+  const { topo, home, done } = await fixture();
+  try {
+    writeFileSync(path.join(topo.b.board, "notes/y1.md"), note("y1"));
+    const origin = git(topo.origin, ["rev-parse", "board"]).trim();
+    const secret = path.join(topo.b.board, "misc/okf-config.json");
+    const flag = writeDuringFetch(topo, home, `mkdir -p '${path.dirname(secret)}' && printf '{}\\n' > '${secret}'`);
+    const result = await runSync(home, ["--dir", topo.b.root]);
+    assert.equal(existsSync(flag), true, "the write landed during the sync");
+    assert.equal(result.err?.code, "CONFLICT", result.err?.message);
+    assert.equal(result.err?.details?.stage, "files");
+    assert.equal(gitTry(topo.b.board, ["cat-file", "-e", "HEAD:misc/okf-config.json"]).status === 0, false, "never committed");
+    assert.equal(git(topo.b.board, ["diff", "--cached", "--name-only"]).trim(), "", "the index stays clean");
+    assert.equal(existsSync(secret), true, "the file is left in place");
+    assert.equal(git(topo.origin, ["rev-parse", "board"]).trim(), origin, "nothing was pushed");
   } finally {
     await done();
   }
