@@ -63,10 +63,12 @@ stderr) and `publish --json` (JSON progress lines). See
 `packages/cli/test/deprecation-notices.test.ts`.
 
 A retired path is refused with its exact fix, through the same owner. A retired environment name
-(`AGENTSTATE_LITE_ACTOR`, `AGENTSTATE_LITE_API_KEY`, `ASLITE_NO_UPDATE_CHECK`,
-`AGENTSTATE_LITE_NO_AUTOPULL`) set without its `SUPERBEE_*` replacement stops every command before
-any work with `USAGE`, exit 2, `details.code` `RETIRED_ENV` and the names in
-`details.retired_env`; beside its replacement it is ignored. The envelope goes where the command
+(`AGENTSTATE_LITE_ACTOR`, `ASLITE_NO_UPDATE_CHECK`, `AGENTSTATE_LITE_NO_AUTOPULL`) set without its
+`SUPERBEE_*` replacement stops every command before any work with `USAGE`, exit 2, `details.code`
+`RETIRED_ENV` and the names in `details.retired_env`; beside its replacement it is ignored.
+`AGENTSTATE_LITE_API_KEY` and `AGENTSTATE_LITE_REMOTE` have no replacement, because what read them
+was removed: either one, set at all, refuses the same way. `SUPERBEE_API_KEY` is read by nothing and
+is ignored. The envelope goes where the command
 puts its errors (stderr for `mcp` and the byte and raw value channels). `session-start`,
 `turn-end` and bare home never refuse: home shows a `retired_env` line and skips the update check
 and automatic pull. A `.agentstate.json` project binding is refused at the level where the walk
@@ -77,8 +79,7 @@ The v0 remote client and its reference server command are removed. `--remote`, a
 `--`, stops every command before any work with `USAGE`, exit 2, `details.code` `RETIRED_FLAG` and
 `details.input` `--remote`; `superbee serve` does the same with `RETIRED_COMMAND` and `details.input`
 `serve`. The help names `checkout` for a hosted bundle, `--dir` for a local one and the last release
-that still has the old server. `AGENTSTATE_LITE_REMOTE` is a retired environment name with no
-replacement: it refuses with `RETIRED_ENV` whenever it is set. A URL-valued project binding is
+that still has the old server. A URL-valued project binding is
 refused with `RETIRED_URL_BINDING` and the file in `details.binding`; no refusal echoes the URL.
 `session-start` and `turn-end` never refuse. See `packages/cli/test/local-only-cli-integration.test.ts`.
 
@@ -345,8 +346,9 @@ next full `sync` removes it and reports it once in `lost_claims_settled`, with t
 the copy's `your_owner`, on its receipt or its new conflict's `details`. Any other difference in the
 text stays listed, including a comment, an inline comment or multi-line value on the owner field, a
 state field, and a reordered key. A repeat conflict on one document keeps every earlier copy, the new copy landing beside
-it, except that bytes matching a saved copy are that copy; a rebase that stops on one document more
-than once saves each stop's version, and racing processes saving a copy each keep theirs. Copies are
+it, except that bytes matching a saved copy are that copy; each conflicted file gets one saved copy
+per sync run, the final local version when the local tip has the file, otherwise the last stop's
+copy, and racing processes saving a copy each keep theirs. Copies are
 kept per clone folder, so a known limit is that moving a clone leaves them under the old key,
 unreported. `--inspect` and `--resolve` take a document's copies oldest first, name the rest in
 `later_copies`, and a `take` while a later copy waits leaves the document alone. `--resolve keep` exits

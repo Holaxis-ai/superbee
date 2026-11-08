@@ -1,7 +1,6 @@
 import { CliError } from "./errors.js";
 
 export const SUPERBEE_ACTOR_ENV = "SUPERBEE_ACTOR";
-export const SUPERBEE_API_KEY_ENV = "SUPERBEE_API_KEY";
 export const SUPERBEE_NO_UPDATE_CHECK_ENV = "SUPERBEE_NO_UPDATE_CHECK";
 /** The agent a hosted sync names for its writes (`X-Superbee-Via`), such as `codex`. */
 export const SUPERBEE_VIA_ENV = "SUPERBEE_VIA";

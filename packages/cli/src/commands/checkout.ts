@@ -147,7 +147,7 @@ id another workspace gains is bound again in place with --adopt <folder> --host 
 <workspace>.
 
 Options:
-  --host <url>        Hosted Superbee URL (an origin, or an agent connection URL); default: your last sign-in, when it is the only host signed in
+  --host <url>        Hosted Superbee URL (an origin); default: your last sign-in, when it is the only host signed in
   --dir <folder>      Checkout folder (default: ./<bundle-id>)
   --workspace <id>    Your workspace that holds the bundle, by name or id: checked against your
                       memberships, recorded in the binding, and (on a host that names workspaces)

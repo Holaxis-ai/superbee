@@ -7,7 +7,7 @@
 // command that leaves stderr free: importing this module, a private worker and a command whose
 // stderr is itself a contract all stay silent. See {@link stderrIsReserved}.
 import { SUPERBEE_NO_AUTOPULL_ENV } from "@superbee/board-git";
-import { SUPERBEE_ACTOR_ENV, SUPERBEE_API_KEY_ENV, SUPERBEE_NO_UPDATE_CHECK_ENV } from "./env-policy.js";
+import { SUPERBEE_ACTOR_ENV, SUPERBEE_NO_UPDATE_CHECK_ENV } from "./env-policy.js";
 import { CliError, toEnvelope } from "./errors.js";
 import type { InstallScope } from "./install-scope.js";
 import { cliInvocation } from "./invocation.js";
@@ -32,7 +32,6 @@ export interface DeprecationNotice {
 /** Retired environment names and the Superbee name that replaced each one. */
 export const RETIRED_ENV: readonly (readonly [retired: string, replacement: string])[] = Object.freeze([
   ["AGENTSTATE_LITE_ACTOR", SUPERBEE_ACTOR_ENV],
-  ["AGENTSTATE_LITE_API_KEY", SUPERBEE_API_KEY_ENV],
   ["ASLITE_NO_UPDATE_CHECK", SUPERBEE_NO_UPDATE_CHECK_ENV],
   ["AGENTSTATE_LITE_NO_AUTOPULL", SUPERBEE_NO_AUTOPULL_ENV],
 ] as const);
@@ -41,20 +40,31 @@ export const RETIRED_ENV: readonly (readonly [retired: string, replacement: stri
 export const RETIRED_REMOTE_ENV = "AGENTSTATE_LITE_REMOTE";
 
 /**
- * Retired names that are set while their replacement is not: the only case where ignoring the old
- * name would silently change behavior. Presence counts, even empty; a value is never read.
+ * Retired environment names with no replacement, because what read them was removed: why each is
+ * unread, and the fix. Any presence is refused, so a stale setting cannot look like it still works.
+ */
+export const RETIRED_UNUSED_ENV: readonly (readonly [retired: string, why: string, fix: (cli: string) => string])[] = Object.freeze([
+  ["AGENTSTATE_LITE_API_KEY", "nothing uses an API key", (cli: string) => `remove AGENTSTATE_LITE_API_KEY wherever it is set; it is no longer used. Hosted bundles use ${cli} login.`],
+  [RETIRED_REMOTE_ENV, "remote access was removed", (cli: string) => `unset ${RETIRED_REMOTE_ENV} wherever it is set. ${remoteRoutes(cli)}`],
+] as const);
+
+/**
+ * Retired names that are set while their replacement is not, plus any retired name with no
+ * replacement: the cases where ignoring the old name would silently change behavior or mislead.
+ * Presence counts, even empty; a value is never read.
  */
 export function retiredEnvNames(env: Readonly<Record<string, string | undefined>> = process.env): string[] {
-  const names = RETIRED_ENV
-    .filter(([retired, replacement]) => Object.hasOwn(env, retired) && !Object.hasOwn(env, replacement))
-    .map(([retired]) => retired);
-  return Object.hasOwn(env, RETIRED_REMOTE_ENV) ? [...names, RETIRED_REMOTE_ENV] : names;
+  return [
+    ...RETIRED_ENV.filter(([retired, replacement]) => Object.hasOwn(env, retired) && !Object.hasOwn(env, replacement)).map(([retired]) => retired),
+    ...RETIRED_UNUSED_ENV.filter(([retired]) => Object.hasOwn(env, retired)).map(([retired]) => retired),
+  ];
 }
 
 /** The refusal for {@link retiredEnvNames}: names only, so an API key never reaches the output. */
 export function retiredEnvRefusal(names: readonly string[]): CliError {
   const pairs = RETIRED_ENV.filter(([retired]) => names.includes(retired));
-  const remote = names.includes(RETIRED_REMOTE_ENV);
+  const unused = RETIRED_UNUSED_ENV.filter(([retired]) => names.includes(retired));
+  const cli = cliInvocation();
   const sentences: string[] = [];
   const fixes: string[] = [];
   if (pairs.length) {
@@ -63,13 +73,13 @@ export function retiredEnvRefusal(names: readonly string[]): CliError {
     const renames = pairs.map(([retired, replacement]) => `${retired} to ${replacement}`).join(" and ");
     fixes.push(`rename ${renames} wherever it is set (shell profile, CI, hook or MCP config), same value, then run the command again.`);
   }
-  if (remote) {
-    sentences.push(`${RETIRED_REMOTE_ENV} is no longer read; remote access was removed.`);
-    fixes.push(`unset ${RETIRED_REMOTE_ENV} wherever it is set. ${remoteRoutes(cliInvocation())}`);
+  for (const [retired, why, fix] of unused) {
+    sentences.push(`${retired} is no longer read; ${why}.`);
+    fixes.push(fix(cli));
   }
   return new CliError("USAGE", sentences.join(" "), {
     help: fixes.join(" "),
-    details: { code: "RETIRED_ENV", retired_env: [...pairs.map(([retired]) => retired), ...(remote ? [RETIRED_REMOTE_ENV] : [])] },
+    details: { code: "RETIRED_ENV", retired_env: [...pairs, ...unused].map(([retired]) => retired) },
   });
 }
 

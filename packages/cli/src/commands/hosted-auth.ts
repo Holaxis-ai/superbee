@@ -72,7 +72,7 @@ ${CLIENT_ID_ENV}, then the host's metadata. The refresh token is kept in the OS 
 instead. ${ACCESS_TOKEN_ENV} (for CI) is used as given by hosted commands and is never stored.
 
 Options:
-  --host <url>        Hosted Superbee URL (an origin, or an agent connection URL)
+  --host <url>        Hosted Superbee URL (an origin)
   --client-id <id>    CLI client id for this host (provisional until the host publishes it)
   --wait              Poll until the person confirms, within --timeout
   --timeout <seconds> Bound for --wait and --loopback (default ${DEFAULT_WAIT_SECONDS}, max ${MAX_WAIT_SECONDS})

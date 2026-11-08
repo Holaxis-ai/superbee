@@ -11,7 +11,7 @@ import type { InstallScope } from "../src/install-scope.js";
 import {
   DEPRECATION_NOTICES,
   RETIRED_ENV,
-  RETIRED_REMOTE_ENV,
+  RETIRED_UNUSED_ENV,
   renderDeprecationNotice,
   stderrIsReserved,
   type DeprecationNoticeCode,
@@ -32,7 +32,7 @@ interface Run {
 function cleanEnv(home: string, overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env = isolatedUserEnv(home, { SUPERBEE_NO_UPDATE_CHECK: "1", SUPERBEE_NO_AUTOPULL: "1" });
   for (const [retired] of RETIRED_ENV) delete env[retired];
-  delete env[RETIRED_REMOTE_ENV];
+  for (const [retired] of RETIRED_UNUSED_ENV) delete env[retired];
   // Fixes below really install, so no inherited override may point them at a real host config.
   for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR"]) delete env[name];
   env.XDG_CONFIG_HOME = join(home, ".config");
@@ -345,6 +345,31 @@ test("a closed stderr reader costs the notice and never changes the exit code", 
     child.once("close", resolve);
   });
   assert.equal(code, 0);
+}));
+
+for (const [retired, why] of RETIRED_UNUSED_ENV) {
+  test(`${retired} has no replacement and is refused whenever it is set, even beside --dir, never printing the value`, () => withFixture(async ({ home, project }) => {
+    for (const value of ["secret-value", ""]) {
+      const result = await run(LOCAL, project, cleanEnv(home, { [retired]: value }));
+      assert.equal(result.code, 2, result.stdout);
+      assert.match(result.stdout, /code: RETIRED_ENV/);
+      assert.ok(result.stdout.includes(`${retired} is no longer read; ${why}.`), result.stdout);
+      assert.ok(!(result.stdout + result.stderr).includes("secret-value"), "a refusal never prints a value");
+    }
+  }));
+}
+
+test("AGENTSTATE_LITE_API_KEY names removal and login, never a rename to an unread SUPERBEE_API_KEY", () => withFixture(async ({ home, project }) => {
+  const result = await run(LOCAL, project, cleanEnv(home, { AGENTSTATE_LITE_API_KEY: "k", SUPERBEE_API_KEY: "k" }));
+  assert.equal(result.code, 2, result.stdout);
+  assert.match(result.stdout, /remove AGENTSTATE_LITE_API_KEY wherever it is set; it is no longer used\. Hosted bundles use .+ login\./);
+  assert.doesNotMatch(result.stdout, /SUPERBEE_API_KEY/);
+}));
+
+test("SUPERBEE_API_KEY is ignored silently: nothing reads it and nothing refuses it", () => withFixture(async ({ home, project }) => {
+  const result = await run(LOCAL, project, cleanEnv(home, { SUPERBEE_API_KEY: "k" }));
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(result.stderr, "");
 }));
 
 for (const [retired, replacement] of RETIRED_ENV) {
