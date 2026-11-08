@@ -7,7 +7,7 @@ import { commandFragment, commandToken, commandWords } from "../../command-text.
 import { cliInvocation } from "../../invocation.js";
 import { CliError } from "../../errors.js";
 import { readExternalTextFile } from "../../external-file.js";
-import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute } from "../../bundle.js";
+import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, resolveLocalBundleRoute } from "../../bundle.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
 import { resolveActor } from "../../actor.js";
 import { boardPostPersistHook } from "../../board-attribution.js";

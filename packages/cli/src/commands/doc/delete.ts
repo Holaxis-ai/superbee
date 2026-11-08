@@ -2,7 +2,7 @@ import { renderUsage } from "../../output.js";
 // `doc delete <id>` — see `../doc.ts`'s header comment; hard-delete, idempotent, non-cascading.
 import { parseArgs } from "node:util";
 import { pathFromConceptId, isReservedFile } from "@superbee/core";
-import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute } from "../../bundle.js";
+import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, resolveLocalBundleRoute } from "../../bundle.js";
 import { CliError, classifyBundleError } from "../../errors.js";
 import { assertActorAcceptedByBundle, resolveActor } from "../../actor.js";
 import { boardPostPersistHook } from "../../board-attribution.js";

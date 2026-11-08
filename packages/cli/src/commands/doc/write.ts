@@ -3,7 +3,7 @@ import { renderUsage } from "../../output.js";
 // the stdin-detection rule this verb's body-source guard depends on.
 import { parseArgs } from "node:util";
 import { loadKinds, SUPERBEE_UPDATED_BY_FIELD, type Frontmatter, type OkfDocument } from "@superbee/core";
-import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute } from "../../bundle.js";
+import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, resolveLocalBundleRoute } from "../../bundle.js";
 import { CliError } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
