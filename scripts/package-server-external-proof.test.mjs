@@ -65,12 +65,11 @@ test("packed server installs, typechecks, and round-trips through packaged core 
     assert.ok(serverPaths.includes("package.json"));
     assert.ok(serverPaths.includes("dist/index.js"));
     assert.ok(serverPaths.includes("dist/index.d.ts"));
-    assert.ok(serverPaths.includes("dist/legacy-router.js"));
-    assert.ok(serverPaths.includes("dist/legacy-router.d.ts"));
     assert.ok(serverPaths.includes("dist/router.js"));
     assert.ok(serverPaths.includes("dist/router.d.ts"));
-    assert.ok(serverPaths.includes("dist/serve.js"));
-    assert.ok(serverPaths.includes("dist/serve.d.ts"));
+    for (const removed of ["legacy-router", "serve"]) {
+      assert.ok(!serverPaths.some((file) => file.startsWith(`dist/${removed}.`)), `the server tarball must not carry dist/${removed}`);
+    }
     assert.ok(serverPaths.every((file) => file === "package.json" || file.startsWith("dist/")));
 
     await writeFile(
@@ -195,7 +194,7 @@ import * as serverRoot from "@superbee/server";
 import { createRouter } from "@superbee/server/router";
 
 for (const removed of ["serve", "createRouter", "createRouterForBackend", "requestFromIncomingMessage"]) {
-  assert.equal(removed in serverRoot, false, `@superbee/server must not export ${removed}`);
+  assert.equal(removed in serverRoot, false, "@superbee/server must not export " + removed);
 }
 const backend = new MemoryBackend();
 const router = createRouter({
