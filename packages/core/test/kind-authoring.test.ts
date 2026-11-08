@@ -82,6 +82,25 @@ test("dismiss is declaration-free/idempotent, redraft retains target and reports
   await assert.rejects(() => prepareKindDraft(bundle, "Research"), refusal("already-governed"));
 });
 
+test("redraft over hand-authored prose keeps the title and names every prose overwrite in the bound plan", async () => {
+  const { bundle, backend } = await fixture();
+  const authored = { type: "Convention", title: "Research findings", governs: "Research", description: "One finding per note." };
+  await backend.write("conventions/research", { id: "conventions/research", frontmatter: authored, body: "Cite the source.\n" });
+  const plan = await prepareKindDraft(bundle, "Research", { inferredBody: () => "Inferred.\n" });
+  assert.equal(plan.candidateDoc.frontmatter.title, "Research findings");
+  assert.equal(plan.candidateKind.title, "Research findings");
+  assert.deepEqual(plan.replacesProse, [
+    { field: "description", current: "One finding per note.", proposed: "Drafted from 1 existing instances." },
+    { field: "body", current: "Cite the source.\n", proposed: "Inferred.\n" },
+  ]);
+  // Editing the prose the reviewer saw invalidates the token even though the candidate is unchanged.
+  await backend.write("conventions/research", { id: "conventions/research", frontmatter: authored, body: "Cite two sources.\n" });
+  await assert.rejects(() => applyKindDraft(bundle, "Research", plan.token, { inferredBody: () => "Inferred.\n" }), refusal("plan-changed"));
+  const fresh = await prepareKindDraft(bundle, "Research", { inferredBody: () => "Inferred.\n" });
+  await applyKindDraft(bundle, "Research", fresh.token, { inferredBody: () => "Inferred.\n" });
+  assert.equal((await backend.read("conventions/research")).doc.frontmatter.title, "Research findings");
+});
+
 test("shared mutation spec rechecks bundle edition and fresh redraft declaration on a retry", async () => {
   class RacingBackend extends MemoryBackend {
     race = false;

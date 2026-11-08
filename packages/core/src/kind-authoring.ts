@@ -295,13 +295,15 @@ export function draftPlanToken(input: {
   okfVersion: string;
   stats: DraftInstanceStats;
   warnings: number;
+  replaces?: readonly ReplacedProse[];
+  replacesFields?: readonly ReplacedField[];
 }): string {
   return `sha256:${sha256HexOfUtf8(JSON.stringify(input))}`;
 }
 
 import { CONVENTION_TYPE, parseConventionDoc } from "./kinds.js";
 import { loadKinds } from "./kinds-load.js";
-import { query, readBundleOkfVersion } from "./bundle-ops.js";
+import { query, readBundleOkfVersion, readDoc } from "./bundle-ops.js";
 import { builtinNames, resolveBuiltinSync } from "./builtin-recipes.js";
 import { materializeRecipeForEdition } from "./recipe-lifecycle/install.js";
 import { droppedLinks } from "./body-replace-guards.js";
@@ -356,6 +358,27 @@ function catalogConventionForType(type: string, okfVersion: string): CatalogConv
   return undefined;
 }
 
+/** Existing prose a redraft overwrites; the plan names it so the reviewer sees the loss. */
+export interface ReplacedProse {
+  field: "description" | "body";
+  current: string;
+  proposed: string;
+}
+
+/** An existing frontmatter value a redraft changes; `proposed` is null when the key is removed. */
+export interface ReplacedField {
+  field: string;
+  current: unknown;
+  proposed: unknown;
+}
+
+/** Keys a draft writes; every other existing key is carried over by a redraft. */
+const DRAFT_OWNED_KEYS = ["type", "title", "governs", "description", "path", "fields", "sections"] as const;
+
+function defineKey(target: Frontmatter, key: string, value: unknown): void {
+  Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
+}
+
 export interface KindDraftPlan {
   type: string;
   okfVersion: string;
@@ -365,6 +388,10 @@ export interface KindDraftPlan {
   candidateDoc: { id: string; frontmatter: Frontmatter; body: string };
   candidateKind: KindConvention;
   catalog: CatalogConvention | undefined;
+  /** Redraft only: authored description/body the candidate overwrites. The title is kept. */
+  replacesProse: ReplacedProse[];
+  /** Redraft only: existing frontmatter values (other than description) the candidate changes. */
+  replacesFields: ReplacedField[];
   stats: DraftInstanceStats;
   instances: OkfDocument[];
   warnings: number;
@@ -428,9 +455,46 @@ export async function prepareKindDraft(bundle: Bundle, type: string, text: KindA
   // A redraft upgrades the EXISTING governing record in place, wherever it lives — a
   // hand-authored governs-only convention at a non-canonical id keeps its id (never two
   // conventions for one kind; the slug id is only for true creates).
-  if (existing) candidateDoc = { ...candidateDoc, id: existing.id };
+  // Every existing frontmatter key the draft does not own survives (owner, tags, x_* and unknown
+  // keys), as does the authored title. Description and body cannot simply survive: a dismissal
+  // record's prose states the decline the redraft reverses. The plan names every owned value it
+  // changes, and the token binds the merged candidate plus those current values.
+  const replacesProse: ReplacedProse[] = [];
+  const replacesFields: ReplacedField[] = [];
+  if (existing) {
+    const current = await readDoc(bundle, existing.id);
+    const owned = new Set([...DRAFT_OWNED_KEYS, ...Object.keys(candidateDoc.frontmatter)]);
+    const frontmatter: Frontmatter = { type: CONVENTION_TYPE };
+    for (const [key, value] of Object.entries(current.frontmatter)) {
+      if (!owned.has(key) && !isManagedDocumentMetadataField(key)) defineKey(frontmatter, key, structuredClone(value));
+    }
+    for (const [key, value] of Object.entries(candidateDoc.frontmatter)) defineKey(frontmatter, key, value);
+    const title = current.frontmatter.title;
+    if (typeof title === "string" && title.trim() !== "") frontmatter.title = title;
+    candidateDoc = { ...candidateDoc, id: existing.id, frontmatter };
+    const reparsed = parseConventionDoc({ id: candidateDoc.id, frontmatter, body: candidateDoc.body });
+    if (reparsed.ok) candidateKind = reparsed.kind;
+    for (const key of [...owned].sort()) {
+      if (key === "description" || !Object.hasOwn(current.frontmatter, key)) continue;
+      const was = current.frontmatter[key];
+      const next = Object.hasOwn(frontmatter, key) ? frontmatter[key] : null;
+      if (JSON.stringify(was) !== JSON.stringify(next)) replacesFields.push({ field: key, current: was, proposed: next });
+    }
+    const description = current.frontmatter.description;
+    const proposedDescription = typeof frontmatter.description === "string" ? frontmatter.description : "";
+    if (typeof description === "string" && description.trim() !== "" && description !== proposedDescription) {
+      replacesProse.push({ field: "description", current: description, proposed: proposedDescription });
+    }
+    if (current.body.trim() !== "" && current.body !== candidateDoc.body) {
+      replacesProse.push({ field: "body", current: current.body, proposed: candidateDoc.body });
+    }
+  }
   const warnings = warningsAfterApply(candidateKind, instances);
-  const token = draftPlanToken({ target: candidateDoc.id, candidate: candidateDoc, okfVersion, stats, warnings });
+  const token = draftPlanToken({
+    target: candidateDoc.id, candidate: candidateDoc, okfVersion, stats, warnings,
+    ...(replacesProse.length > 0 ? { replaces: replacesProse } : {}),
+    ...(replacesFields.length > 0 ? { replacesFields } : {}),
+  });
   return {
     type,
     okfVersion,
@@ -439,6 +503,8 @@ export async function prepareKindDraft(bundle: Bundle, type: string, text: KindA
     candidateDoc,
     candidateKind,
     catalog,
+    replacesProse,
+    replacesFields,
     stats,
     instances,
     warnings,
