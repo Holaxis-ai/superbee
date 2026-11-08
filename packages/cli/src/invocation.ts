@@ -2,8 +2,7 @@ import { commandToken } from "./command-text.js";
 import { currentHost, distributionLayouts, distributionPackageName } from "./runtime-context.js";
 // Resolve the running CLI's OWN invocation for emitted follow-up commands + the home-view identity.
 //
-// The CLI is a standalone, npm-publishable package (`superbee`; the successor installs only that
-// bin while legacy `aslite` / `agentstate-lite` invocations remain migration-recognized). Per AXI
+// The CLI is a standalone, npm-publishable package (`superbee`). Per AXI
 // §7/§10 a printed
 // follow-up command must be COPY-PASTE runnable and never a phantom path:
 //
@@ -30,8 +29,6 @@ import type { CommandPrefix, CommandText } from "./command-text.js";
 
 /** The npm package coordinate — the token used for the no-download npx fallback. */
 export const PACKAGE_NAME = "superbee";
-/** Recognized current and legacy bin names; only the first is installed by the successor package. */
-export const BIN_NAMES = ["superbee", "aslite", "agentstate-lite"] as const;
 
 /** Collapse a leading $HOME to `~` (e.g. /Users/me/x → ~/x). Non-home paths pass through verbatim. */
 export function collapseHomeDirectory(p: string): string {

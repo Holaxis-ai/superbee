@@ -10,7 +10,6 @@ configureSourceIdentity({ name: manifest.name, version: manifest.version });
 const runtime = createPosixCliRuntime({
   identity: staticBuildIdentity(), executablePath: BUILT_COMMAND, assetRoot: fileURLToPath(root),
   install: { packageName: "superbee", entryRelativePath: "dist/superbee.mjs", bins: ["superbee"] },
-  predecessorLayouts: [{ packageName: "@holaxis/aslite", entryRelativePath: "dist/superbee.mjs", bins: ["aslite", "agentstate-lite"] }],
   ownedSkillPackages: ["superbee", "aslite", "@holaxis/aslite"], updatesEnabled: true,
 });
 const input: Buffer[] = [];

@@ -404,7 +404,11 @@ test("edited published Aslite plugin parameters remain foreign and untouched", a
     fixture.replace('["session-start"]', '["session-stars"]'),
     fixture.replace('const command = "aslite";', 'const command = "superbee";'),
     fixture.replace('const command = "aslite";', 'const command = "/tmp/aslite";'),
+    // Code appended after a per-install value is an edit, though the value itself still parses.
+    fixture.replace('const commandArgs = ["session-start"];', 'const commandArgs = ["session-start"]; require("fs").writeFileSync("/tmp/mine", "x");'),
+    fixture.replace('const command = "aslite";', 'const command = "aslite"; console.log("mine");'),
   ];
+  for (const nearMatch of variants) assert.notEqual(nearMatch, fixture, "each variant really edits the fixture");
   for (const [index, nearMatch] of variants.entries()) {
     for (const action of ["status", "install", "uninstall"] as const) {
       const base = await mkdtemp(path.join(tmpdir(), `superbee-hook-opencode-pre3-near-match-${index}-${action}-`));

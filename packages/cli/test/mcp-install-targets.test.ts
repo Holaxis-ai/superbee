@@ -57,7 +57,7 @@ test("MCP install target IDs and aliases are stable and unambiguous", () => {
   assert.equal(new Set(names).size, names.length);
 });
 
-test("registration ownership is exact and legacy names remain migration-only candidates", () => {
+test("registration ownership is exact and any other name, old aslite ones included, is foreign", () => {
   const executable = stable.evidence.executable_path!;
   const runtime = stable.evidence.runtime_path!;
   const entry = (name: string, command = runtime, args: string[] = [executable, "mcp"]) => ({ name, command, args });
@@ -74,7 +74,7 @@ test("registration ownership is exact and legacy names remain migration-only can
   );
   assert.equal(classifyMcpRegistration(entry("superbee", "node", ["other.mjs", "mcp"]), stable).state, "foreign");
   assert.equal(classifyMcpRegistration(entry("superbee"), unknown).state, "unverified");
-  assert.equal(classifyMcpRegistration(entry("aslite-views"), stable).state, "known_legacy");
+  assert.equal(classifyMcpRegistration(entry("aslite-views"), stable).state, "foreign");
 });
 
 test("host config paths honor relocated roots and remain read-only", () => {

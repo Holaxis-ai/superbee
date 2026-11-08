@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { RETIRED_PROJECT_BINDING_FILE_NAME, SUPERBEE_PROJECT_BINDING_FILE_NAME } from "../src/bundle.js";
-import type { InstallScope } from "../src/install-scope.js";
 import {
   DEPRECATION_NOTICES,
   RETIRED_ENV,
@@ -100,8 +99,6 @@ interface Trigger {
   until?: RegExp;
   /** Where the notice must say it found the old thing. */
   names?: string;
-  /** The install scopes the fix must name. */
-  scopes?: readonly InstallScope[];
   arrange?: (fixture: Fixture) => Promise<void>;
   /** Do what the fix says. Returns the arguments that replace the old form, when the fix changes them. */
   applyFix: (fixture: Fixture) => Promise<string[] | void>;
@@ -112,10 +109,6 @@ async function runFix(fixture: Fixture, args: string[]): Promise<Run> {
   assert.equal(result.code, 0, `${args.join(" ")}: ${result.stdout}${result.stderr}`);
   return result;
 }
-
-const LEGACY_HOOK = {
-  hooks: { SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "aslite session-start", timeout: 10 }] }] },
-};
 
 const LOCAL = ["list", "--dir", "bundle", "--json"];
 
@@ -145,33 +138,6 @@ const TRIGGERS: Record<DeprecationNoticeCode, Trigger> = {
       await runFix(fixture, ["source", "plugin", "register", fixture.pluginRoot!, "--accept", JSON.parse(preview.stdout).digest, "--json"]);
     },
   },
-  DEPRECATED_LEGACY_HOOK: {
-    args: ["setup", "--host", "claude-code", "--json"],
-    names: "settings.json",
-    scopes: ["user"],
-    arrange: ({ home }) => writeJson(join(home, ".claude", "settings.json"), LEGACY_HOOK),
-    applyFix: async (fixture) => void await runFix(fixture, ["hook", "install", "--scope", "user"]),
-  },
-  DEPRECATED_LEGACY_SKILL_FOLDER: {
-    args: ["setup", "--host", "claude-code", "--json"],
-    names: join(".claude", "skills", "aslite"),
-    scopes: ["user"],
-    arrange: async (fixture) => {
-      await runFix(fixture, ["skill", "install", "--scope", "user"]);
-      const skills = join(fixture.home, ".claude", "skills");
-      await rename(join(skills, "superbee"), join(skills, "aslite"));
-    },
-    applyFix: async (fixture) => void await runFix(fixture, ["skill", "install", "--scope", "user"]),
-  },
-  DEPRECATED_LEGACY_MCP_REGISTRATION: {
-    args: ["setup", "--host", "opencode", "--json"],
-    names: "opencode.json",
-    arrange: ({ home }) => writeJson(join(home, ".config", "opencode", "opencode.json"), {
-      mcp: { "aslite-views": { type: "local", command: ["aslite", "mcp"] } },
-    }),
-    // `mcp install` needs the host's own binary, so the proof stops at the part the notice depends on.
-    applyFix: ({ home }) => writeJson(join(home, ".config", "opencode", "opencode.json"), { mcp: {} }),
-  },
   DEPRECATED_LEGACY_USER_STATE: {
     args: ["setup", "--host", "claude-code", "--json"],
     arrange: async ({ home }) => {
@@ -193,10 +159,10 @@ test("every row names the old thing, its replacement, a runnable fix and a uniqu
     assert.match(row.code, /^DEPRECATED_[A-Z_]+$/);
     assert.ok(row.old.trim(), row.code);
     assert.ok(row.replacement.trim(), row.code);
-    assert.ok(row.fix("superbee", ["user"]).trim().length > 10, row.code);
-    const rendered = renderDeprecationNotice(row, "superbee", ["/a\nforged"], ["user"]);
+    assert.ok(row.fix("superbee").trim().length > 10, row.code);
+    const rendered = renderDeprecationNotice(row, "superbee", ["/a\nforged"]);
     assert.equal(rendered.split("\n").length, 2, "one line, newline terminated");
-    assert.ok(rendered.includes(row.fix("superbee", ["user"])), row.code);
+    assert.ok(rendered.includes(row.fix("superbee")), row.code);
     assert.ok(rendered.includes(`[${row.code}]`), row.code);
   }
 });
@@ -207,7 +173,7 @@ for (const row of DEPRECATION_NOTICES) {
     await trigger.arrange?.(fixture);
     const result = await run(trigger.args, fixture.project, cleanEnv(fixture.home, trigger.env), trigger.until);
     assert.equal(result.stderr.split(`[${row.code}]`).length - 1, 1, result.stderr);
-    for (const words of row.fix("\0", trigger.scopes ?? []).split("\0")) assert.ok(result.stderr.includes(words), result.stderr);
+    for (const words of row.fix("\0").split("\0")) assert.ok(result.stderr.includes(words), result.stderr);
     if (trigger.names) assert.ok(result.stderr.includes(trigger.names), result.stderr);
     assert.ok(!result.stdout.includes(row.code), result.stdout);
   }));
@@ -223,43 +189,117 @@ for (const row of DEPRECATION_NOTICES) {
   }));
 }
 
-test("a project-scope legacy hook names --scope project, and that install clears it", () => withFixture(async (fixture) => {
-  const { home, project } = fixture;
-  const args = ["setup", "--host", "claude-code", "--scope", "project", "--json"];
-  await writeJson(join(project, ".claude", "settings.json"), LEGACY_HOOK);
-  const before = await run(args, project, cleanEnv(home));
-  assert.ok(before.stderr.includes("hook install --scope project"), before.stderr);
-  assert.ok(!before.stderr.includes("--scope user"), before.stderr);
-  await runFix(fixture, ["hook", "install", "--scope", "project"]);
-  const after = await run(args, project, cleanEnv(home));
-  assert.ok(!after.stderr.includes("DEPRECATED_LEGACY_HOOK"), after.stderr);
+const OLD_HOOK = { type: "command", command: "aslite session-start", timeout: 10 };
+const hookSettings = (...entries: unknown[]) => ({ hooks: { SessionStart: [{ matcher: "", hooks: entries }] } });
+const sessionStartCommands = async (file: string): Promise<string[]> =>
+  JSON.parse(await readFile(file, "utf8")).hooks.SessionStart.flatMap((group: { hooks: { command: string }[] }) =>
+    group.hooks.map((entry) => entry.command));
+const exists = (file: string) => stat(file).then(() => true, () => false);
+
+test("hook install replaces an unedited old aslite hook and says so, with no warning", () => withFixture(async (fixture) => {
+  const settings = join(fixture.home, ".claude", "settings.json");
+  await writeJson(settings, hookSettings(OLD_HOOK));
+  const result = await runFix(fixture, ["hook", "install", "--scope", "user"]);
+  assert.ok(result.stdout.includes("Removed old aslite hook from ~/.claude/settings.json. Installed superbee hook."), result.stdout);
+  assert.ok(!result.stderr.includes("RETIRED_HOOK"), result.stderr);
+  const commands = await sessionStartCommands(settings);
+  assert.equal(commands.length, 1);
+  assert.ok(!commands[0]!.includes("aslite"), commands[0]);
 }));
 
-test("a default setup also reaches a project-scope legacy hook and names its scope", () => withFixture(async ({ home, project }) => {
-  await writeJson(join(project, ".claude", "settings.json"), LEGACY_HOOK);
-  const result = await run(["setup", "--host", "claude-code", "--json"], project, cleanEnv(home));
-  assert.ok(result.stderr.includes("hook install --scope project"), result.stderr);
-  assert.ok(!result.stderr.includes("hook install --scope user"), result.stderr);
+test("hook install removes an unedited old agentstate-lite OpenCode plugin", () => withFixture(async (fixture) => {
+  const plugin = join(fixture.home, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
+  await mkdir(join(plugin, ".."), { recursive: true });
+  await writeFile(plugin, await readFile(new URL("./fixtures/opencode-aslite-pre3.js", import.meta.url), "utf8"));
+  const result = await runFix(fixture, ["hook", "install", "--scope", "user"]);
+  assert.ok(result.stdout.includes("Removed old aslite hook from ~/.config/opencode/plugins/axi-agentstate-lite.js."), result.stdout);
+  assert.equal(await exists(plugin), false);
+  assert.equal(await exists(join(plugin, "..", "axi-superbee.js")), true);
 }));
 
-test("--no-project still warns about the launch folder's legacy project hook", () => withFixture(async ({ home, project }) => {
-  await writeJson(join(project, ".claude", "settings.json"), LEGACY_HOOK);
-  const result = await run(["setup", "--host", "claude-code", "--no-project", "--json"], project, cleanEnv(home));
-  assert.ok(result.stderr.includes("hook install --scope project"), result.stderr);
+test("an edited old hook stays, installs beside it, and warns in hook install, hook status and setup without failing", () => withFixture(async (fixture) => {
+  const settings = join(fixture.home, ".claude", "settings.json");
+  const edited = { type: "command", command: "aslite session-start --verbose", timeout: 10 };
+  await writeJson(settings, hookSettings(edited));
+  const warning = "~/.claude/settings.json has a hook that runs aslite or agentstate-lite, and Superbee did not remove it because it was edited. It may fail or duplicate context. To remove it, delete that entry. [RETIRED_HOOK]";
+  const install = await runFix(fixture, ["hook", "install", "--scope", "user"]);
+  assert.ok(install.stderr.includes(warning), install.stderr);
+  assert.ok(!install.stdout.includes("Removed old"), install.stdout);
+  assert.ok(!install.stderr.includes("--verbose"), "never echoes the hook command");
+  const commands = await sessionStartCommands(settings);
+  assert.equal(commands.length, 2);
+  assert.equal(commands[0], edited.command);
+  for (const args of [["hook", "status", "--scope", "user"], ["setup", "--host", "claude-code", "--json"]]) {
+    const result = await run(args, fixture.project, cleanEnv(fixture.home));
+    assert.equal(result.code, 0, result.stdout + result.stderr);
+    assert.equal(result.stderr.split("[RETIRED_HOOK]").length - 1, 1, result.stderr);
+  }
+  const quiet = await run(["session-start"], fixture.project, cleanEnv(fixture.home));
+  assert.ok(!quiet.stderr.includes("RETIRED_HOOK"), quiet.stderr);
 }));
 
-test("a skill folder install cannot claim stays named until the person deletes it", () => withFixture(async (fixture) => {
-  const { home, project } = fixture;
-  const folder = join(home, ".claude", "skills", "aslite");
-  const args = ["setup", "--host", "claude-code", "--json"];
-  await mkdir(folder, { recursive: true });
-  await writeFile(join(folder, "SKILL.md"), "old\n");
+test("an edited old OpenCode plugin stays and warns", () => withFixture(async (fixture) => {
+  const plugin = join(fixture.home, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
+  await mkdir(join(plugin, ".."), { recursive: true });
+  const original = await readFile(new URL("./fixtures/opencode-aslite-pre3.js", import.meta.url), "utf8");
+  await writeFile(plugin, `${original}// mine\n`);
+  const result = await runFix(fixture, ["hook", "install", "--scope", "user"]);
+  assert.ok(result.stderr.includes("~/.config/opencode/plugins/axi-agentstate-lite.js has the old agentstate-lite plugin name but does not match a file Superbee wrote, so Superbee left it. Delete it to stop it loading. [RETIRED_HOOK]"), result.stderr);
+  assert.equal(await exists(plugin), true);
+}));
+
+test("skill install deletes an unedited old aslite skill folder and keeps an edited one with a warning", () => withFixture(async (fixture) => {
+  const skills = join(fixture.home, ".claude", "skills");
+  const old = join(skills, "aslite");
   await runFix(fixture, ["skill", "install", "--scope", "user"]);
-  const still = await run(args, project, cleanEnv(home));
-  assert.ok(still.stderr.includes("delete the folder if it remains"), still.stderr);
-  await rm(folder, { recursive: true });
-  const after = await run(args, project, cleanEnv(home));
-  assert.ok(!after.stderr.includes("DEPRECATED_LEGACY_SKILL_FOLDER"), after.stderr);
+  await rename(join(skills, "superbee"), old);
+  const removed = await runFix(fixture, ["skill", "install", "--scope", "user"]);
+  assert.ok(removed.stdout.includes("Removed old aslite skill from ~/.claude/skills/aslite."), removed.stdout);
+  assert.ok(!removed.stderr.includes("RETIRED_SKILL_FOLDER"), removed.stderr);
+  assert.equal(await exists(old), false);
+  assert.equal(await exists(join(skills, "superbee", "SKILL.md")), true);
+
+  await runFix(fixture, ["skill", "install", "--scope", "user"]);
+  await mkdir(old);
+  await writeFile(join(old, "SKILL.md"), "my notes\n");
+  const kept = await runFix(fixture, ["skill", "install", "--scope", "user"]);
+  const warning = "~/.claude/skills/aslite is the old aslite skill and has local edits, so Superbee left it. It teaches commands that no longer exist. Delete the folder. The current skill is at ~/.claude/skills/superbee. [RETIRED_SKILL_FOLDER]";
+  assert.ok(kept.stderr.includes(warning), kept.stderr);
+  assert.equal(await readFile(join(old, "SKILL.md"), "utf8"), "my notes\n");
+  const setup = await run(["setup", "--host", "claude-code", "--json"], fixture.project, cleanEnv(fixture.home));
+  assert.ok(setup.stderr.includes(warning), setup.stderr);
+}));
+
+test("an old skill folder that cannot be fully removed leaves the install in place and warns", { skip: process.getuid?.() === 0 }, () => withFixture(async (fixture) => {
+  const skills = join(fixture.home, ".claude", "skills");
+  const old = join(skills, "aslite");
+  await runFix(fixture, ["skill", "install", "--scope", "user"]);
+  await rename(join(skills, "superbee"), old);
+  const locked = join(old, "references");
+  await chmod(locked, 0o555);
+  let lockedAside = locked;
+  try {
+    const result = await runFix(fixture, ["skill", "install", "--scope", "user"]);
+    assert.ok(!result.stdout.includes("Removed old aslite skill"), result.stdout);
+    assert.match(result.stderr, /The current skill is installed at ~\/\.claude\/skills\/superbee, but ~\/\.claude\/skills\/aslite\.removing-[0-9a-z-]+, the old aslite skill, could not be fully removed\. It teaches commands that no longer exist\. Delete the folder\. \[RETIRED_SKILL_FOLDER\]/);
+    assert.ok(!result.stderr.includes("has local edits"), result.stderr);
+    assert.equal(result.stderr.split("[RETIRED_SKILL_FOLDER]").length - 1, 1, result.stderr);
+    assert.equal(await exists(join(skills, "superbee", "SKILL.md")), true);
+    const aside = (await readdir(skills)).find((name) => name.startsWith("aslite.removing-"));
+    assert.ok(aside, "the remains stay where the warning says");
+    lockedAside = join(skills, aside, "references");
+  } finally {
+    await chmod(lockedAside, 0o755).catch(() => chmod(locked, 0o755));
+  }
+}));
+
+test("old aslite MCP registration names are ignored like any other name", () => withFixture(async (fixture) => {
+  await writeJson(join(fixture.home, ".config", "opencode", "opencode.json"), {
+    mcp: { "aslite-views": { type: "local", command: ["aslite", "mcp"] } },
+  });
+  const result = await run(["setup", "--host", "opencode", "--json"], fixture.project, cleanEnv(fixture.home));
+  assert.ok(!/aslite|agentstate-lite|legacy/i.test(result.stderr), result.stderr);
+  assert.ok(!/known_legacy/.test(result.stdout), result.stdout);
 }));
 
 test("session-start with --remote writes nothing to stderr", () => withFixture(async ({ home, project }) => {

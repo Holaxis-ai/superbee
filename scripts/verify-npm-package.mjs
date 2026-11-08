@@ -1345,7 +1345,7 @@ async function runInstalledProof(spec) {
     assert.equal(skillStatus.skill.hosts.claude_code.state, "installed");
     assert.equal(skillStatus.skill.hosts.codex.state, "installed");
     assert.equal(skillStatus.skill.hosts.claude_code.canonical.state, "installed");
-    assert.equal(skillStatus.skill.hosts.claude_code.legacy.state, "absent");
+    assert.equal(skillStatus.skill.hosts.claude_code.legacy, undefined);
 
     // Follow the installed SKILL.md's own $REFS instruction from the project ROOT: the host
     // reports the skill base dir; REFS = <base>/references, and $REFS/<dest> resolves from any cwd.

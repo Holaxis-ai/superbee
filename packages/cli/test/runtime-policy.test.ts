@@ -41,7 +41,6 @@ const distribution: CliRuntimeOptions["distribution"] = {
     entryRelativePath: "dist/superbee.mjs",
     bins: ["superbee"],
   },
-  predecessorLayouts: [],
   ownedSkillPackages: ["superbee"],
   updatesEnabled: false,
 };
