@@ -211,7 +211,7 @@ test("catalog mutation refuses a root replaced after catalog.lock acquisition", 
           return id("1");
         },
       }),
-      /not owned by this product/,
+      /is not recognized as Superbee state/,
     );
     assert.deepEqual(await readFile(sentinelPath), sentinel);
     assert.deepEqual(await readdir(stateRoot), ["foreign-sentinel"]);

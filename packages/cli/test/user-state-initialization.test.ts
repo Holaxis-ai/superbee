@@ -15,7 +15,9 @@ import {
   inspectCanonicalUserStateRoot,
   USER_STATE_MARKER_BYTES,
   USER_STATE_MARKER_FILE_NAME,
+  USER_STATE_MIGRATION_JOURNAL_FILE_NAME,
 } from "../src/user-state.js";
+import { CliError } from "../src/errors.js";
 import { isolatedUserEnv } from "./support/user-env.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -234,7 +236,7 @@ test("killed creator leaves an unadopted byte-identical markerless root", async 
     await observer.next("attempting");
     const result = await observer.next("result");
     assert.equal(result.status, "rejected", observer.diagnostics());
-    assert.match(String(result.message), /not owned by this product/);
+    assert.match(String(result.message), /is not recognized as Superbee state/);
     assert.equal(await inspectCanonicalUserStateRoot(home), "conflict");
     assert.deepEqual(await readdir(expectedRoot), entriesBefore);
     assert.deepEqual(await readFile(sentinel), sentinelBytes);
@@ -256,7 +258,7 @@ test("persistent markerless root remains foreign after bounded initialization", 
     await writeFile(sentinel, "preserve me\n");
     const before = await readdir(stateRoot);
 
-    await assert.rejects(within(ensureUserStateRoot(home), 5_000), /not owned by this product/);
+    await assert.rejects(within(ensureUserStateRoot(home), 5_000), /is not recognized as Superbee state/);
     assert.deepEqual(await readdir(stateRoot), before);
     assert.equal(await readFile(sentinel, "utf8"), "preserve me\n");
     await assertAbsent(path.join(stateRoot, USER_STATE_MARKER_FILE_NAME));
@@ -265,6 +267,45 @@ test("persistent markerless root remains foreign after bounded initialization", 
     await rm(scratch, { recursive: true, force: true });
   }
 });
+
+for (const row of [
+  {
+    label: "a foreign root",
+    files: ["sentinel.txt"],
+    message: "is not recognized as Superbee state.",
+    reason: "state_root_unrecognized",
+    help: /^Run `superbee setup` to see what is wrong and the fix\. Then re-run this command\.$/,
+  },
+  {
+    label: "a root left by an interrupted migration",
+    files: [USER_STATE_MIGRATION_JOURNAL_FILE_NAME],
+    message: "is unfinished: a state migration was interrupted.",
+    reason: "state_migration_interrupted",
+    help: /^Run `superbee setup migrate-state` to finish it\. Your old state files are not changed\. Then re-run this command\.$/,
+  },
+]) {
+  test(`unmarked root refusal names the next step for ${row.label}`, async () => {
+    const { root: scratch, home } = await scratchHome("superbee-user-state-next-step-");
+    try {
+      const stateRoot = canonicalUserStateDir(home);
+      await mkdir(stateRoot, { recursive: true, mode: 0o700 });
+      for (const name of row.files) await writeFile(path.join(stateRoot, name), "{}\n", { mode: 0o600 });
+      await assert.rejects(within(ensureUserStateRoot(home), 5_000), (error: unknown) => {
+        assert.ok(error instanceof CliError);
+        assert.equal(error.code, "RUNTIME");
+        assert.equal(error.exitCode, 1);
+        assert.equal(error.message, `${stateRoot} ${row.message}`);
+        assert.ok(path.isAbsolute(String(error.details?.path)));
+        assert.deepEqual(error.details, { reason: row.reason, path: stateRoot });
+        assert.match(String(error.help), row.help);
+        return true;
+      });
+      await assertAbsent(path.join(stateRoot, USER_STATE_MARKER_FILE_NAME));
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+}
 
 test("initialization lock refuses a runtime namespace inside the canonical root before mutation", async () => {
   const { root: scratch, home } = await scratchHome("superbee-user-state-overlap-");

@@ -38,6 +38,7 @@ import {
   USER_STATE_HARDEN_COMMAND,
   USER_STATE_MARKER_BYTES,
   USER_STATE_MARKER_FILE_NAME,
+  USER_STATE_MIGRATION_JOURNAL_FILE_NAME,
   USER_STATE_QUARANTINE_COMMAND,
 } from "./user-state.js";
 import { SYNC_EXPORTS_DIR_NAME } from "@superbee/board-git";
@@ -45,7 +46,7 @@ import { SYNC_STATE_DIR_NAME } from "./cursor.js";
 import { assertMigratableViewAuthorization } from "./ui/view-authorizations.js";
 
 const VIEW_AUTHORIZATION_DIR_NAME = "view-authorizations";
-const MIGRATION_JOURNAL_FILE_NAME = ".migration.json";
+const MIGRATION_JOURNAL_FILE_NAME = USER_STATE_MIGRATION_JOURNAL_FILE_NAME;
 const MIGRATION_JOURNAL_SCHEMA = 1;
 const FILE_MODE = 0o600;
 const DIR_MODE = 0o700;
