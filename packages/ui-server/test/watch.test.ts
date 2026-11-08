@@ -505,6 +505,14 @@ test("native notifications name the changed path relative to the root, including
     watch: (dir, notify) => watchDirectory(dir, (filename) => { seen.push(filename); notify(filename); }),
   });
   t.after(() => handle.stop());
+  // macOS starts the FSEvents stream after fs.watch returns, so a write made at once can go
+  // unreported. Write a probe until the watcher reports one, then make the writes under test.
+  for (let waited = 0; waited < 15_000 && seen.length === 0; waited += 50) {
+    await writeFile(path.join(root, ".git", "ready"), String(waited));
+    await sleep(50);
+  }
+  assert.ok(seen.length > 0, "the native watcher reported no change within 15 s");
+  seen.length = 0;
   await writeFile(path.join(root, ".git", "index"), "x");
   await writeDoc(bundle, { id: "docs/native", frontmatter: { type: "Doc", title: "Native" }, body: "" });
   for (let waited = 0; waited < 15_000 && !events.some((e) => e.docs.changed.some((d) => d.id === "docs/native")); waited += 50) await sleep(50);
