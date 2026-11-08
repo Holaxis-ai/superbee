@@ -112,7 +112,7 @@ test("local resolver: one aliased id is target_missing for that link only, never
   assert.equal(b!.state, "resolved");
   const miss = unresolved(aliased!);
   assert.equal(miss.reason, "target_missing");
-  assert.match(miss.detail, /exact spelling/);
+  assert.match(miss.detail, /Use the existing spelling/);
 });
 
 /** A copy whose disk fails reading `beers/broken` (EIO), alongside the alias of `beers/a`. */

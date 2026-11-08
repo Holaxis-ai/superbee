@@ -87,19 +87,27 @@ export class OkfActorError extends InvalidInputError {
  * The requested bundle-relative path resolves, on a case- or normalization-insensitive
  * filesystem, to a directory entry spelled differently at `segment`. Every operation refuses it
  * so two distinct canonical ids can never read, compare-and-swap, or delete one physical file.
+ * `existing` is the on-disk spelling when exactly one listed entry folds to `segment`.
  */
 export class FilesystemIdentityAliasError extends InvalidInputError {
   readonly rel: string;
   readonly segment: string;
+  readonly existing: string | undefined;
 
-  constructor(rel: string, segment: string) {
+  constructor(rel: string, segment: string, existing?: string, leaf?: boolean) {
+    const segments = rel.split("/").filter((part) => part !== "" && part !== ".");
+    const noun = (leaf ?? segments[segments.length - 1] === segment) ? "file" : "folder";
+    const clash = existing === undefined
+      ? `but a ${noun} with that name in a different case or Unicode form already exists`
+      : `but ${noun} '${existing}' already exists`;
     super(
-      `Path '${rel}' does not match the exact spelling of an existing filesystem entry at segment ` +
-        `'${segment}'; ids that differ only by case or Unicode normalization cannot share one file.`,
+      `Path '${rel}' uses ${noun} '${segment}', ${clash}, and this disk treats names that differ only ` +
+        `by case or Unicode form as the same name. Use the existing spelling.`,
     );
     this.name = "FilesystemIdentityAliasError";
     this.rel = rel;
     this.segment = segment;
+    this.existing = existing;
   }
 }
 

@@ -400,19 +400,36 @@ function hasExact(listing: ListedEntry[], segment: string): boolean {
   return listing.some((entry) => entry.name === segment);
 }
 
+/** The one listed spelling other than `segment` that folds to it, for the refusal message only. */
+function existingSpelling(names: Iterable<string>, segment: string): string | undefined {
+  const folded = foldSegment(segment);
+  const matches = [...names].filter((name) => name !== segment && foldSegment(name) === folded);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function aliasRefusal(rel: string, segments: string[], index: number, names: Iterable<string>): FilesystemIdentityAliasError {
+  const segment = segments[index]!;
+  return new FilesystemIdentityAliasError(rel, segment, existingSpelling(names, segment), index === segments.length - 1);
+}
+
 /** What a verifying walk needs from a parent listing: exact-spelling membership. */
 interface ListingView {
   has(name: string): boolean;
+  names(): Iterable<string>;
 }
 
 /** Where a verifying walk gets each parent listing; `null` when the directory is absent. */
 type ListingSource = (dir: string) => Promise<ListingView | null>;
 
+function listingView(names: Set<string>): ListingView {
+  return { has: (name) => names.has(name), names: () => names };
+}
+
 /** One fresh `entries` call per use: the single-read protocol. */
 function freshListings(port: FilesystemIdentityPort): ListingSource {
   return async (dir) => {
     const listing = await port.entries(dir);
-    return listing === null ? null : { has: (name) => hasExact(listing, name) };
+    return listing === null ? null : { has: (name) => hasExact(listing, name), names: () => listing.map((entry) => entry.name) };
   };
 }
 
@@ -441,7 +458,7 @@ async function walkExact(
     if (probed === null) return { state: "absent", depth: index };
     const listing = await port.entries(parent);
     if (listing === null) return { state: "absent", depth: index };
-    if (!hasExact(listing, segment)) throw new FilesystemIdentityAliasError(rel, segment);
+    if (!hasExact(listing, segment)) throw aliasRefusal(rel, segments, index, listing.map((entry) => entry.name));
     if (index === segments.length - 1) return { state: "exact", leaf: probed };
     if (probed.kind !== "directory") return { state: "shape-mismatch", segment };
     parent = candidate;
@@ -457,25 +474,30 @@ export type Observation<T> = { state: "exact"; value: T } | { state: "absent" };
 
 type WalkVerdict = "continue" | "absent" | "restart";
 
-/** O-PROBE: walk `rel` root to leaf recording each segment's witness; `null` when any segment is absent. */
+/**
+ * O-PROBE: walk `rel` root to leaf recording each segment's witness. `complete` is false when a
+ * segment is absent (or a non-leaf segment is not a directory); `recorded` then holds the
+ * segments before it, which the caller still confirms so an alias spelling of an existing
+ * directory prefix is refused rather than reported as absent.
+ */
 async function recordWalk(
   port: FilesystemIdentityPort,
   rootResolved: string,
   segments: string[],
   rel: string,
-): Promise<ProbeResult[] | null> {
+): Promise<{ recorded: ProbeResult[]; complete: boolean }> {
   const recorded: ProbeResult[] = [];
   let parent = rootResolved;
   for (let index = 0; index < segments.length; index++) {
     const segment = segments[index]!;
     const candidate = path.join(parent, segment);
     const probed = await probeSegment(port, candidate, rel, segment);
-    if (probed === null) return null;
-    if (index < segments.length - 1 && probed.kind !== "directory") return null;
+    if (probed === null) return { recorded, complete: false };
+    if (index < segments.length - 1 && probed.kind !== "directory") return { recorded, complete: false };
     recorded.push(probed);
     parent = candidate;
   }
-  return recorded;
+  return { recorded, complete: true };
 }
 
 /**
@@ -499,9 +521,10 @@ async function confirmedWalk(
   recorded: ProbeResult[],
   handle: EntryWitness | null,
   listings: ListingSource = freshListings(port),
+  stopAt: number = segments.length,
 ): Promise<WalkVerdict | "exact"> {
   let parent = rootResolved;
-  for (let index = 0; index < segments.length; index++) {
+  for (let index = 0; index < stopAt; index++) {
     const segment = segments[index]!;
     const candidate = path.join(parent, segment);
     const listing = await listings(parent);
@@ -509,17 +532,36 @@ async function confirmedWalk(
     const listed = listing.has(segment);
     if (handle !== null && index === segments.length - 1) {
       const verdict = classifyLeaf({ listed, probe: await probeSegment(port, candidate, rel, segment), handle });
-      if (verdict === "aliased") throw new FilesystemIdentityAliasError(rel, segment);
+      if (verdict === "aliased") throw aliasRefusal(rel, segments, index, listing.names());
       return verdict === "replaced" ? "restart" : verdict;
     }
     if (index < segments.length - 1 || !listed) {
       const verdict = confirmAlias(listed, await probeSegment(port, candidate, rel, segment), recorded[index]!);
-      if (verdict === "aliased") throw new FilesystemIdentityAliasError(rel, segment);
+      if (verdict === "aliased") throw aliasRefusal(rel, segments, index, listing.names());
       if (verdict !== "continue") return verdict;
     }
     parent = candidate;
   }
   return "continue";
+}
+
+/**
+ * An incomplete O-PROBE is ABSENT only once the segments that did exist are confirmed under their
+ * exact spelling. Without this, `Concepts/new.md` beside an existing `concepts/` would read as
+ * absent while every mutation of it refuses the alias, so a caller that treats absence as
+ * "may be created later" would promise a write that can never succeed.
+ */
+async function confirmPrefix(
+  port: FilesystemIdentityPort,
+  rootResolved: string,
+  segments: string[],
+  rel: string,
+  recorded: ProbeResult[],
+  listings: ListingSource,
+): Promise<"absent" | "restart"> {
+  if (recorded.length === 0) return "absent";
+  const verdict = await confirmedWalk(port, rootResolved, segments, rel, recorded, null, listings, recorded.length);
+  return verdict === "restart" ? "restart" : "absent";
 }
 
 function countRestart(restarts: number, rel: string): number {
@@ -556,8 +598,14 @@ async function observeWith<T>(
   const target = path.join(rootResolved, ...segments);
 
   for (let restarts = 0; ; ) {
-    const recorded = await recordWalk(port, rootResolved, segments, rel);
-    if (recorded === null) return { state: "absent" };
+    const walk = await recordWalk(port, rootResolved, segments, rel);
+    if (!walk.complete) {
+      const prefix = await confirmPrefix(port, rootResolved, segments, rel, walk.recorded, listings);
+      if (prefix === "absent") return { state: "absent" };
+      restarts = countRestart(restarts, rel);
+      continue;
+    }
+    const recorded = walk.recorded;
     const verified = await confirmedWalk(port, rootResolved, segments, rel, recorded, null, listings);
     if (verified === "absent") return { state: "absent" };
     if (verified === "restart") {
@@ -609,8 +657,14 @@ export async function probeExact(
   const rootResolved = path.resolve(root);
 
   for (let restarts = 0; ; ) {
-    const recorded = await recordWalk(port, rootResolved, segments, rel);
-    if (recorded === null) return { state: "absent" };
+    const walk = await recordWalk(port, rootResolved, segments, rel);
+    if (!walk.complete) {
+      const prefix = await confirmPrefix(port, rootResolved, segments, rel, walk.recorded, freshListings(port));
+      if (prefix === "absent") return { state: "absent" };
+      restarts = countRestart(restarts, rel);
+      continue;
+    }
+    const recorded = walk.recorded;
     const leaf = recorded[recorded.length - 1]!;
     const verified = await confirmedWalk(port, rootResolved, segments, rel, recorded, null);
     const verdict = verified === "continue" ? await confirmedWalk(port, rootResolved, segments, rel, recorded, leaf) : verified;
@@ -722,7 +776,7 @@ export function openObservationPass(port: FilesystemIdentityPort, root: string, 
         const current = await witnessOf(dir);
         if (current !== null && witnessKey(current) === keep.witness) {
           reused = true;
-          return keep.names;
+          return listingView(keep.names);
         }
         kept.delete(dir);
       }
@@ -734,7 +788,7 @@ export function openObservationPass(port: FilesystemIdentityPort, root: string, 
       if (before !== null && after !== null && witnessKey(before) === witnessKey(after) && settled(after)) {
         kept.set(dir, { witness: witnessKey(after), names });
       }
-      return names;
+      return listingView(names);
     };
     return { source, reused: () => reused };
   };
@@ -897,7 +951,9 @@ async function mkdirExact(
     throw new FilesystemSymlinkEntryError(rel, segment);
   }
   const verdict = classifyMkdir(outcome, listing, segment, isTail);
-  if (verdict === "aliased") throw new FilesystemIdentityAliasError(rel, segment);
+  if (verdict === "aliased") {
+    throw new FilesystemIdentityAliasError(rel, segment, existingSpelling(listing.map((entry) => entry.name), segment), false);
+  }
   if (verdict === "shape-mismatch") throw new FilesystemShapeMismatchError(rel, segment);
 }
 
@@ -968,7 +1024,7 @@ async function createExactLeaf(
   }
   const listing = (await port.entries(path.dirname(target))) ?? [];
   if (hasExact(listing, leaf)) throw new ConcurrentReplacementError(rel, 1);
-  throw new FilesystemIdentityAliasError(rel, leaf);
+  throw new FilesystemIdentityAliasError(rel, leaf, existingSpelling(listing.map((entry) => entry.name), leaf), true);
 }
 
 /**

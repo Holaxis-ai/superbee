@@ -208,6 +208,48 @@ test("AC-3(b'): an aliased intermediate directory is refused at O-VERIFY with a 
   assert.equal(port.trace.at(-1), `probe(${CONCEPTS})`);
 });
 
+test("AC-3(p): an alias spelling of an existing directory prefix is refused even when the leaf is absent, by observation and probe alike", async () => {
+  const aliased = new ScriptedPort({ aliasing: true });
+  aliased.mkdirp(path.join(ROOT, "Concepts"));
+  const refusal = (err: unknown) =>
+    err instanceof FilesystemIdentityAliasError && err.segment === "concepts" && err.existing === "Concepts"
+    && /uses folder 'concepts', but folder 'Concepts' already exists/.test(err.message);
+  await assert.rejects(() => observe(aliased), refusal);
+  await assert.rejects(() => probeExact(aliased, ROOT, REL), refusal);
+  assert.equal(aliased.calls("open"), 0);
+
+  // Where the host does not equate the pair, `concepts/` is a distinct absent directory.
+  const exact = new ScriptedPort();
+  exact.mkdirp(path.join(ROOT, "Concepts"));
+  assert.deepEqual(await observe(exact), { state: "absent" });
+  assert.deepEqual(await probeExact(exact, ROOT, REL), { state: "absent" });
+
+  // The exactly spelled prefix with an absent leaf stays ABSENT on an aliasing host.
+  const present = new ScriptedPort({ aliasing: true });
+  present.mkdirp(CONCEPTS);
+  assert.deepEqual(await observe(present), { state: "absent" });
+  assert.deepEqual(await observe(present, "concepts/deeper/x.md"), { state: "absent" });
+});
+
+test("AC-3(q): a prefix directory replaced between O-PROBE and its confirmation restarts, and the restart decides", async () => {
+  const port = new ScriptedPort({ aliasing: true });
+  port.mkdirp(CONCEPTS);
+  port.after("probe", 2, () => {
+    port.remove(CONCEPTS);
+    port.mkdirp(path.join(ROOT, "Concepts"));
+  });
+  await assert.rejects(() => observe(port), FilesystemIdentityAliasError);
+  assert.equal(probeWalks(port), 2, "a different inode restarts once; the restart then confirms the alias");
+});
+
+test("alias refusal names a file leaf as a file and omits an unknown existing spelling", () => {
+  const leaf = new FilesystemIdentityAliasError("concepts/A.md", "A.md", "a.md", true);
+  assert.match(leaf.message, /^Path 'concepts\/A\.md' uses file 'A\.md', but file 'a\.md' already exists, and this disk treats names that differ only by case or Unicode form as the same name\. Use the existing spelling\.$/);
+  const unknown = new FilesystemIdentityAliasError("Concepts/x.md", "Concepts");
+  assert.match(unknown.message, /uses folder 'Concepts', but a folder with that name in a different case or Unicode form already exists/);
+  assert.equal(unknown.existing, undefined);
+});
+
 test("AC-3(m): O-PROBE ok recording 7; listing lacks the exact leaf; confirming probe absent: ABSENT, no open (the non-aliasing delete race)", async () => {
   const port = new ScriptedPort();
   port.file(TARGET, "body", 7);
