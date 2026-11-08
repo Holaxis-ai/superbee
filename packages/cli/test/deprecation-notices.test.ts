@@ -68,7 +68,6 @@ interface Fixture {
   base: string;
   home: string;
   project: string;
-  /** The built plugin folder a source pointer row registered from. */
 }
 
 async function withFixture(body: (fixture: Fixture) => Promise<void>): Promise<void> {
