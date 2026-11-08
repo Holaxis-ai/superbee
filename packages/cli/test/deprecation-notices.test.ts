@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -277,15 +277,19 @@ test("an old skill folder that cannot be fully removed leaves the install in pla
   await rename(join(skills, "superbee"), old);
   const locked = join(old, "references");
   await chmod(locked, 0o555);
+  let lockedAside = locked;
   try {
     const result = await runFix(fixture, ["skill", "install", "--scope", "user"]);
     assert.ok(!result.stdout.includes("Removed old aslite skill"), result.stdout);
-    assert.ok(result.stderr.includes("The current skill is installed at ~/.claude/skills/superbee, but ~/.claude/skills/aslite, the old aslite skill, could not be fully removed. It teaches commands that no longer exist. Delete the folder. [RETIRED_SKILL_FOLDER]"), result.stderr);
+    assert.match(result.stderr, /The current skill is installed at ~\/\.claude\/skills\/superbee, but ~\/\.claude\/skills\/aslite\.removing-[0-9a-z-]+, the old aslite skill, could not be fully removed\. It teaches commands that no longer exist\. Delete the folder\. \[RETIRED_SKILL_FOLDER\]/);
     assert.ok(!result.stderr.includes("has local edits"), result.stderr);
     assert.equal(result.stderr.split("[RETIRED_SKILL_FOLDER]").length - 1, 1, result.stderr);
     assert.equal(await exists(join(skills, "superbee", "SKILL.md")), true);
+    const aside = (await readdir(skills)).find((name) => name.startsWith("aslite.removing-"));
+    assert.ok(aside, "the remains stay where the warning says");
+    lockedAside = join(skills, aside, "references");
   } finally {
-    await chmod(locked, 0o755);
+    await chmod(lockedAside, 0o755).catch(() => chmod(locked, 0o755));
   }
 }));
 

@@ -43,7 +43,7 @@ import { currentHost, currentDistribution, distributionPackageName, distribution
 // an empty one converges/uninstalls (rmdir); a non-empty one is a structured refusal — this tool
 // never recursive-deletes content no manifest names.
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { dirname, join } from "node:path";
@@ -741,13 +741,14 @@ function inspectHostInstall(canonicalDir: string, assets: SkillAssets, installCo
 
 /**
  * Whether an old aslite folder is byte for byte what its receipt recorded. Only an unedited one may
- * be deleted; a receipt without digests cannot prove that, so it counts as edited.
+ * be deleted; a receipt without digests cannot prove that, so it counts as edited. Every file counts,
+ * temp-named ones included: nothing in an old folder is treated as disposable debris.
  */
 export function retiredSkillFolderState(dir: string): "absent" | "unedited" | "edited" {
   if (nonDirectoryRefusal(dir) !== undefined) return "edited";
   if (!existsSync(dir)) return "absent";
   const manifest = readManifest(dir);
-  const files = listFilesRelative(dir).filter((file) => !isManagedDebris(file, sweepOwnership(manifest, [])));
+  const files = listFilesRelative(dir);
   if (files.length === 0) return "absent";
   if (!manifest || manifest.kind !== "v2" || !manifest.receipt_valid || manifest.file_sha256 === null) return "edited";
   const recorded = manifest.file_sha256;
@@ -760,6 +761,40 @@ export function retiredSkillFolderState(dir: string): "absent" | "unedited" | "e
     if (recorded[file] !== `sha256:${createHash("sha256").update(read.bytes).digest("hex")}`) return "edited";
   }
   return "unedited";
+}
+
+type RetiredSkillRemoval =
+  | { outcome: "absent" | "removed" | "kept" }
+  | { outcome: "incomplete"; location: string };
+
+/**
+ * Remove an unedited old aslite folder. It is renamed aside first and verified again there, so an
+ * edit that lands after the first check is never deleted: a changed copy goes back where it was.
+ */
+function removeRetiredSkillFolder(dir: string): RetiredSkillRemoval {
+  if (retiredSkillFolderState(dir) !== "unedited") return { outcome: existsSync(dir) ? "kept" : "absent" };
+  const aside = `${dir}.removing-${process.pid}-${Date.now().toString(36)}`;
+  try {
+    renameSync(dir, aside);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { outcome: "absent" };
+    return { outcome: "incomplete", location: dir };
+  }
+  if (retiredSkillFolderState(aside) !== "unedited") {
+    try {
+      renameSync(aside, dir);
+      return { outcome: "kept" };
+    } catch {
+      return { outcome: "incomplete", location: aside };
+    }
+  }
+  try {
+    const removed = uninstallFromDir(aside);
+    if (removed.ok && !existsSync(aside)) return { outcome: "removed" };
+  } catch {
+    // Reported below with where the remains are.
+  }
+  return { outcome: "incomplete", location: aside };
 }
 
 function statusOutput(dir: string, status: SkillStatusResult): Record<string, unknown> {
@@ -1015,7 +1050,7 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
     }
     const refusals: string[] = [];
     const notes: string[] = [];
-    const incompleteRemovals: { legacyDir: string; canonicalDir: string }[] = [];
+    const incompleteRemovals: { legacyDir: string; location: string; canonicalDir: string }[] = [];
     const hosts: Record<string, unknown> = {};
     const changedByHost: Partial<Record<IntegrationHost, boolean>> = {};
     for (const { canonicalDir, legacyDir, identity } of distinctHostDirs) {
@@ -1034,15 +1069,14 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
       }
       // The old folder goes only once the current skill is in place, and only when unedited. A
       // failed removal never undoes or misreports the install that already succeeded.
+      let removal: RetiredSkillRemoval;
       try {
-        if (retiredSkillFolderState(legacyDir) === "unedited") {
-          const removed = uninstallFromDir(legacyDir);
-          if (!removed.ok) throw new Error(removed.reason);
-          notes.push(`Removed old aslite skill from ${collapseHomeDirectory(legacyDir)}.`);
-        }
+        removal = removeRetiredSkillFolder(legacyDir);
       } catch {
-        incompleteRemovals.push({ legacyDir, canonicalDir });
+        removal = { outcome: "incomplete", location: legacyDir };
       }
+      if (removal.outcome === "removed") notes.push(`Removed old aslite skill from ${collapseHomeDirectory(legacyDir)}.`);
+      if (removal.outcome === "incomplete") incompleteRemovals.push({ legacyDir, location: removal.location, canonicalDir });
       for (const { key } of aliasesFor(identity)) {
         changedByHost[key] = result.changed;
         hosts[key] = { path: collapseHomeDirectory(canonicalDir), changed: result.changed };
@@ -1075,8 +1109,8 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
         mode,
       ),
     );
-    for (const { legacyDir, canonicalDir } of incompleteRemovals) {
-      emitRetiredWarning("RETIRED_SKILL_FOLDER", retiredSkillFolderRemovalWarning(collapseHomeDirectory(legacyDir), collapseHomeDirectory(canonicalDir)));
+    for (const { location, canonicalDir } of incompleteRemovals) {
+      emitRetiredWarning("RETIRED_SKILL_FOLDER", retiredSkillFolderRemovalWarning(collapseHomeDirectory(location), collapseHomeDirectory(canonicalDir)));
     }
     emitRetiredSkillWarnings({ scope, targets, legacyTargets }, new Set(incompleteRemovals.map((row) => row.legacyDir)));
     return;

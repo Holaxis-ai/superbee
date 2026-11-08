@@ -19,6 +19,7 @@ import {
   symlinkSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -260,6 +261,7 @@ test("an old aslite folder that differs from its receipt in any way is edited an
       writeFileSync(manifestPath, JSON.stringify({ package: "aslite", version: "1.0.0", installed_by: "aslite skill install", files: manifest.files }));
     }],
     ["no receipt", () => rmSync(path.join(legacyDir, SKILL_MANIFEST_FILENAME))],
+    ["a temp-named file", () => writeFileSync(path.join(legacyDir, "SKILL.md.tmp-1-a-b"), "my notes\n")],
   ];
   for (const [label, edit] of variants) {
     rmSync(cwd, { recursive: true, force: true });
@@ -290,6 +292,38 @@ test("a foreign canonical folder blocks install and leaves an unedited old aslit
   await assert.rejects(() => runSkill(["install"], { cwd, executable }), CliError);
   assertSameTree(canonicalBefore, treeSnapshot(canonical));
   assertSameTree(legacyBefore, treeSnapshot(legacy));
+});
+
+test("an edit that lands while the old folder is being removed is kept, before or after it moves aside", async () => {
+  const mutableFs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+  const original = mutableFs.renameSync;
+  for (const when of ["before", "after"] as const) {
+    const { base, executable } = scratch();
+    const cwd = path.join(base, "project");
+    await runSkill(["install"], { cwd, executable });
+    moveCanonicalToLegacy(cwd, ".claude");
+    const legacyDir = hostSkillDir(cwd, ".claude", "aslite");
+    const edit = "\nmy edit saved during install\n";
+    let fired = false;
+    mutableFs.renameSync = ((from: string, to: string) => {
+      const aside = !fired && from === legacyDir;
+      if (aside && when === "before") mutableFs.appendFileSync(path.join(from, "SKILL.md"), edit);
+      original(from, to);
+      if (aside && when === "after") mutableFs.appendFileSync(path.join(to, "SKILL.md"), edit);
+      fired ||= aside;
+    }) as typeof mutableFs.renameSync;
+    syncBuiltinESMExports();
+    try {
+      const receipt = await runSkill(["install"], { cwd, executable });
+      assert.ok(fired, when);
+      assert.equal(receipt.skill.notes, undefined, when);
+    } finally {
+      mutableFs.renameSync = original;
+      syncBuiltinESMExports();
+    }
+    assert.ok(readFileSync(path.join(legacyDir, "SKILL.md"), "utf8").endsWith(edit), when);
+    assert.deepEqual(readdirSync(path.dirname(legacyDir)).sort(), ["aslite", "superbee"], when);
+  }
 });
 
 test("a foreign aslite folder is left alone by install and uninstall", async () => {
