@@ -251,7 +251,7 @@ test("first notes folder requires a project choice regardless of unrelated catal
     assert.equal(next(plan).command, undefined);
     assert.equal(next(plan).command_template, undefined);
     assert.deepEqual(next(plan).choices?.map((choice) => choice.command), [
-      ["superbee", "setup", "--host", "codex", "--scope", "user", "--no-project"],
+      ["superbee", "setup", "--host", "codex", "--scope", "user", "--no-project", "--json"],
     ], "without a known cwd only --no-project is runnable");
     assert.match(next(plan).description, /--no-project to set this up later/);
     assert.equal(next(plan).mutates, false);

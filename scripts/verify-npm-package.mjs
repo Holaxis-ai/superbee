@@ -1240,7 +1240,7 @@ async function runInstalledProof(spec) {
     assert.doesNotMatch(JSON.stringify(setupBeforeIntegrations), /<project-choice>/, "setup never shows a placeholder project command");
     const projectChoices = setupBeforeIntegrations.setup.capabilities.find((row) => row.id === "bundle").choices.map((choice) => choice.argv);
     // scratch holds the isolated home, so it is never offered as a project folder.
-    assert.deepEqual(projectChoices, [["superbee", "setup", "--host", "claude-code", "--scope", "user", "--no-project"]]);
+    assert.deepEqual(projectChoices, [["superbee", "setup", "--host", "claude-code", "--scope", "user", "--no-project", "--json"]]);
     assert.ok(!setupBeforeIntegrations.setup.capabilities.some((row) => row.command?.startsWith("superbee init ")));
 
     const chosenProject = path.join(scratch, "empty notes '$literal;");

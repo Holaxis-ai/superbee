@@ -318,7 +318,6 @@ test("the npm Skill keeps the AXI setup conductor and mutation boundary eager", 
   assert.match(renderedNpm, /launch directory alone is not a project choice/);
   assert.match(renderedNpm, /configured readiness, not a host restart or live MCP activation/);
   assert.match(renderedNpm, /Remember restart_required action receipts/);
-  assert.match(renderedNpm, /No-match file discovery\s+is normal absence/);
   assert.doesNotMatch(renderedNpm, /intended purpose, privacy, participants, and sharing boundary before creating/);
 });
 

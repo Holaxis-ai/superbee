@@ -106,8 +106,7 @@ the returned argv action from its literal action.cwd, reports what it is doing, 
 Do not ask the user to copy or run a setup command unless execution is unavailable. A catalog entry
 preserves a workspace for explicit selection; it never makes that workspace the current project.
 Before setup creates a first notes folder, pick one with the user: --project <dir> (absolute or .),
-or --no-project to finish user setup and pick later. Project scope needs a project folder. No-match file discovery
-is normal absence (rg exits 1); diagnose actual command or permission errors instead of hiding them.
+or --no-project to finish user setup and pick later. Project scope needs a project folder.
 Setup ready/complete describe configured readiness, not a host restart or live MCP activation.
 Remember restart_required action receipts even after a later setup inspection is ready; report
 integration as active only after an actual restart/reload and live MCP evidence. If restart is

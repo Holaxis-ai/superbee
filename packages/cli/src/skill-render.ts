@@ -136,8 +136,7 @@ function renderSkill(input: {packageName:string;binName:string}, internal: boole
   lines.push("Do not ask the user to copy or run a setup command unless execution is unavailable. A catalog entry");
   lines.push("preserves a workspace for explicit selection; it never makes that workspace the current project.");
   lines.push("Before setup creates a first notes folder, pick one with the user: --project <dir> (absolute or .),");
-  lines.push("or --no-project to finish user setup and pick later. Project scope needs a project folder. No-match file discovery");
-  lines.push("is normal absence (rg exits 1); diagnose actual command or permission errors instead of hiding them.");
+  lines.push("or --no-project to finish user setup and pick later. Project scope needs a project folder.");
   lines.push("Setup ready/complete describe configured readiness, not a host restart or live MCP activation.");
   lines.push("Remember restart_required action receipts even after a later setup inspection is ready; report");
   lines.push("integration as active only after an actual restart/reload and live MCP evidence. If restart is");

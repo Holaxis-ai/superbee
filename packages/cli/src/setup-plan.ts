@@ -612,10 +612,10 @@ function bundleCapability(input: SetupPlanInput): SetupCapability {
   if (selectedProject(input) === "unselected") {
     const choices: { argv: readonly string[]; description: string }[] = [];
     if (input.cwd !== undefined && input.cwdOfferable !== false) {
-      choices.push({ argv: inspectAgainArgv(input, ["--project", input.cwd]), description: `Use ${input.cwd} as the project folder.` });
+      choices.push({ argv: inspectAgainArgv(input, ["--project", input.cwd, "--json"]), description: `Use ${input.cwd} as the project folder.` });
     }
     if (input.scope === "user") {
-      choices.push({ argv: inspectAgainArgv(input, ["--no-project"]), description: "Finish setup now and pick a project folder later." });
+      choices.push({ argv: inspectAgainArgv(input, ["--no-project", "--json"]), description: "Finish setup now and pick a project folder later." });
     }
     return {
       id: "bundle", requirement: "recommended", state: "needs_action",

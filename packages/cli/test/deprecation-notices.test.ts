@@ -242,6 +242,12 @@ test("a default setup also reaches a project-scope legacy hook and names its sco
   assert.ok(!result.stderr.includes("hook install --scope user"), result.stderr);
 }));
 
+test("--no-project still warns about the launch folder's legacy project hook", () => withFixture(async ({ home, project }) => {
+  await writeJson(join(project, ".claude", "settings.json"), LEGACY_HOOK);
+  const result = await run(["setup", "--host", "claude-code", "--no-project", "--json"], project, cleanEnv(home));
+  assert.ok(result.stderr.includes("hook install --scope project"), result.stderr);
+}));
+
 test("a skill folder install cannot claim stays named until the person deletes it", () => withFixture(async (fixture) => {
   const { home, project } = fixture;
   const folder = join(home, ".claude", "skills", "aslite");

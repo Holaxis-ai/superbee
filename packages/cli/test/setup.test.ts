@@ -120,7 +120,7 @@ test("--no-project avoids ambient project and catalog discovery and retains inte
   assert.equal(plan.workspace.catalog_access, "not_checked");
   assert.equal(plan.verify.cwd, cwd);
   assert.ok(plan.verify.command.includes("--no-project"));
-  assert.deepEqual(calls, []);
+  assert.deepEqual(calls, ["project-hook", "project-hook"], "only the legacy-hook warning reads the launch folder's hook file");
 });
 
 test("hostless recovery keeps confirmed project choice in verification rather than recovery leaf argv", async () => {
@@ -154,7 +154,7 @@ test("unconfirmed project scope asks for selection before project inspectors or 
   assert.equal(plan.next.command, undefined);
   assert.equal(plan.next.command_template, undefined);
   assert.deepEqual(plan.next.choices.map((choice: { command: string[] }) => choice.command),
-    [["superbee", "setup", "--host", "codex", "--scope", "project", "--project", "/Users/private/project"]],
+    [["superbee", "setup", "--host", "codex", "--scope", "project", "--project", "/Users/private/project", "--json"]],
     "project scope offers only the runnable --project choice");
 });
 
@@ -167,9 +167,18 @@ test("unselected user scope offers two runnable choices and no placeholder", asy
   assert.equal(plan.next.action, "choose_value");
   assert.doesNotMatch(output, /<project-choice>/);
   assert.deepEqual(plan.next.choices.map((choice: { command: string[]; mutates: boolean }) => [choice.command, choice.mutates]), [
-    [["superbee", "setup", "--host", "claude-code", "--scope", "user", "--project", "/Users/private/project"], false],
-    [["superbee", "setup", "--host", "claude-code", "--scope", "user", "--no-project"], false],
+    [["superbee", "setup", "--host", "claude-code", "--scope", "user", "--project", "/Users/private/project", "--json"], false],
+    [["superbee", "setup", "--host", "claude-code", "--scope", "user", "--no-project", "--json"], false],
   ]);
+  for (const choice of plan.next.choices as Array<{ command: string[] }>) {
+    let chosen = "";
+    await setup(choice.command.slice(2), (() => {
+      const again = deps((text) => { chosen += text; });
+      again.resolveBundle = injected.resolveBundle;
+      return again;
+    })());
+    assert.ok(JSON.parse(chosen).setup, `running ${choice.command.join(" ")} as printed returns JSON`);
+  }
   assert.equal(plan.capabilities.find((row: { id: string }) => row.id === "bundle").reason,
     "Pick a folder for this project's notes: --project <dir>, or --no-project to set this up later.");
   assert.equal(plan.verify.description, "Check setup again. This reads files on disk only. Restart Claude Code to load Superbee.");

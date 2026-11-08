@@ -329,7 +329,8 @@ async function inspectAll(
     }
   }
   let launchProjectHook: HookStatusInspection | undefined;
-  if (projectSelection === "unselected" && !projectHook && targets.some((target) => target.id !== "claude-desktop")) {
+  // Without a chosen project folder, the launch folder's hook still loads, so it is read to warn.
+  if (projectSelection !== "confirmed" && !projectHook && targets.some((target) => target.id !== "claude-desktop")) {
     try {
       launchProjectHook = deps.inspectHook("project");
     } catch {
