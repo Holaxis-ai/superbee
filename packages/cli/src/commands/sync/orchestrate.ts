@@ -767,16 +767,19 @@ async function baselinePhase(board: SyncBoard, entryOriginRef?: string | null): 
 
 /** The commit phase (skipped for `--pull-only`): stage-and-commit, recording self actors. */
 async function commitPhase(board: SyncBoard, pullOnly: boolean): Promise<CommitResult> {
-  let commitResult: CommitResult = { committed: false, docs: [] };
-  if (!pullOnly) {
-    let deletedBy: string | undefined;
-    try { deletedBy = resolveActor(undefined); } catch { /* a blank actor variable never blocks a sync */ }
-    commitResult = await withSyncRootLock(board.boardPath, () => stageAndCommit(board.boardPath, deletedBy === undefined ? {} : { deletedBy }));
-    if (commitResult.committed && commitResult.docs.length > 0) {
-      // The actors THIS clone just committed are recorded per-clone, so the
-      // home render can filter self-authored rows out of the human "since" count.
-      await defaultSyncStore.recordSelfActors(board.key, commitResult.docs.map((d) => d.actor));
-    }
+  if (pullOnly) return { committed: false, docs: [] };
+  return withSyncRootLock(board.boardPath, () => commitLocal(board));
+}
+
+/** Stage and commit the worktree, recording self actors. The caller holds the root lock. */
+async function commitLocal(board: SyncBoard): Promise<CommitResult> {
+  let deletedBy: string | undefined;
+  try { deletedBy = resolveActor(undefined); } catch { /* a blank actor variable never blocks a sync */ }
+  const commitResult = stageAndCommit(board.boardPath, deletedBy === undefined ? {} : { deletedBy });
+  if (commitResult.committed && commitResult.docs.length > 0) {
+    // The actors THIS clone just committed are recorded per-clone, so the
+    // home render can filter self-authored rows out of the human "since" count.
+    await defaultSyncStore.recordSelfActors(board.key, commitResult.docs.map((d) => d.actor));
   }
   return commitResult;
 }
@@ -799,7 +802,7 @@ async function pullPhase(run: SyncRun, board: SyncBoard, commitResult: CommitRes
     }
     return;
   }
-  await convergingRebase(run, board, commitResult.committed);
+  await convergingRebase(run, board, commitResult);
 }
 
 /**
@@ -807,16 +810,26 @@ async function pullPhase(run: SyncRun, board: SyncBoard, commitResult: CommitRes
  * pull, and the re-pull after a lost push race. A conflict is the CONFLICT(5) terminal; nothing
  * is pushed after it.
  */
-async function convergingRebase(run: SyncRun, board: SyncBoard, committedThisRun: boolean): Promise<void> {
+async function convergingRebase(run: SyncRun, board: SyncBoard, commitResult: CommitResult): Promise<void> {
   const { boardPath, key, outcome } = board;
   // Every failure composes in one order: withProvisionAnnouncement, then throwPostCommitFailure.
   const fail = (err: CliError): Promise<never> =>
-    throwPostCommitFailure(withProvisionAnnouncement(err, outcome), committedThisRun, key, boardPath);
+    throwPostCommitFailure(withProvisionAnnouncement(err, outcome), commitResult.committed, key, boardPath);
   let rebaseOutcome: FetchRebaseResolvingOutcome;
   try {
     // The fetch moves no worktree file, so only the rebase holds the root lock writes take.
     fetchBoard(boardPath, networkBudget(run, NETWORK_TIMEOUT_MS));
-    rebaseOutcome = await withSyncRootLock(boardPath, () => rebaseResolving(boardPath, defaultSyncStore.exportsDir(key)));
+    rebaseOutcome = await withSyncRootLock(boardPath, async () => {
+      // A write may have landed while the root lock was free for the fetch; git refuses to
+      // rebase over it, so it joins this run's commit first.
+      const late = await commitLocal(board);
+      if (late.committed) {
+        commitResult.committed = true;
+        commitResult.docs.push(...late.docs);
+        commitResult.sha = late.sha;
+      }
+      return rebaseResolving(boardPath, defaultSyncStore.exportsDir(key));
+    });
   } catch (rawErr) {
     throw await fail(withUpstreamHelp(toCliError(rawErr, "rebase"), run.inv));
   }
@@ -927,7 +940,7 @@ async function pushPhase(
             help: `check out '${branch}' in ${board.boardPath}, then ${run.inv} sync`,
           });
         }
-        await convergingRebase(run, board, commitResult.committed);
+        await convergingRebase(run, board, commitResult);
         refuseMovedBoard(board.boardPath);
         delta = await deltaPhase(board, baseline);
         // The re-pull merged new upstream work into this clone's commits; hold a document that
