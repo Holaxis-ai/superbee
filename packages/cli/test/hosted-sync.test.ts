@@ -2753,3 +2753,54 @@ test("bounded document delivery cannot send a front-page edit introduced after i
   assert.equal(rowFor(result.receipt, "index.md")?.reason, "document_limit_scope");
   assert.equal(rowFor(result.receipt, "notes/alpha")?.state, "committed");
 });
+
+/** An artifact create whose blob create met a file another writer put on the host at the same path first. */
+async function artifactCreateConflict() {
+  const h = await harness(), wire = blobAuthority(h), a = await artifactCase(h, wire), theirs = Buffer.from("<p>theirs</p>"), mine = Buffer.from("<p>result</p>");
+  // The publication is admitted but nothing is sent (a sync gate refuses); meanwhile the host gains a file at its path.
+  const { execFileSync } = await import("node:child_process"); execFileSync("git", ["init", "-q", h.folder]); execFileSync("git", ["-C", h.folder, "config", "superbee.syncGate", "exit 3"]);
+  await assert.rejects(a.create(), (error: unknown) => error instanceof CliError && error.code === "GATE_FAILED");
+  execFileSync("git", ["-C", h.folder, "config", "--unset", "superbee.syncGate"]);
+  wire.objects.set(a.entry, { bytes: theirs, contentType: "text/html" });
+  h.fetch = wire.fetch;
+  await assert.rejects(a.create(), (error: unknown) => error instanceof CliError && /retained conflict evidence/.test(error.message));
+  return { h, wire, a, theirs, mine, file: path.join(h.folder, a.entry), next: path.join(h.folder, "artifacts/result-2.html") };
+}
+const lostCreate = (pageInFolder: boolean) => (error: unknown) => error instanceof CliError && error.code === "CONFLICT" && error.exitCode === 5 &&
+  (error.details as Record<string, unknown>).reason === "artifact_create_conflict_resolved" && (error.details as Record<string, unknown>).page_in_folder === pageInFolder &&
+  (error.details as Record<string, unknown>).next_entry === "artifacts/result-2.html" && /^artifacts\/result\.html was already taken on the host/.test(error.message) &&
+  String(error.help).includes("artifact create") && String(error.help).includes("result-2.html");
+
+test("an unresolved create conflict keeps the publication held; it is not mistaken for a resolved one", async () => {
+  const f = await artifactCreateConflict(), calls = f.wire.calls.length;
+  await assert.rejects(f.a.create(), (error: unknown) => error instanceof CliError && /retained conflict evidence/.test(error.message));
+  assert.equal(f.wire.calls.length, calls); assert.equal((await artifactPublications(f.h)).length, 1);
+});
+
+test("artifact create after a create conflict resolved with keep names the next free path, and the copy publishes; no bytes are lost", async () => {
+  const f = await artifactCreateConflict();
+  await runSync(f.h, ["--resolve", "keep", "--doc", f.a.entry]);
+  const calls = f.wire.calls.length;
+  await assert.rejects(f.a.create(), lostCreate(true));
+  await assert.rejects(f.a.create(), lostCreate(true), "the same answer on every rerun");
+  assert.equal(f.wire.calls.length, calls, "nothing was submitted");
+  assert.deepEqual(await readFile(f.file), f.mine, "your page stays in the folder");
+  assert.deepEqual(f.wire.objects.get(f.a.entry)?.bytes, f.theirs, "the host's file is untouched until a sync sends the kept file");
+  assert.equal((await artifactPublications(f.h)).length, 1, "the held publication stays as evidence");
+  await cp(f.file, f.next);
+  const { queueHostedArtifact } = await import("../src/hosted/sync.js"), { commandFragment } = await import("../src/command-text.js");
+  const binding = (await bindingForPath(f.h.home, f.h.folder))!;
+  await queueHostedArtifact(binding, { file: f.next, title: "Result", actor: "process:test" }, { auth: f.h.auth, cwd: f.h.cwd, fetch: f.wire.fetch, write: { sleep: instant, lookupDelayMs: 0, maxLookups: 1 }, sleep: instant }, commandFragment`sync`).catch(() => undefined);
+  assert.deepEqual(f.wire.objects.get("artifacts/result-2.html")?.bytes, f.mine, "the page lands under the new name");
+  assert.deepEqual(f.wire.objects.get(f.a.entry)?.bytes, f.theirs);
+});
+
+test("artifact create after a create conflict resolved with take says the page is no longer in the folder", async () => {
+  const f = await artifactCreateConflict();
+  await runSync(f.h, ["--resolve", "take", "--doc", f.a.entry]);
+  const calls = f.wire.calls.length;
+  await assert.rejects(f.a.create(), (error: unknown) => lostCreate(false)(error) && /no longer holds your page/.test((error as Error).message) && !String((error as CliError).help).startsWith("cp "));
+  assert.equal(f.wire.calls.length, calls);
+  assert.deepEqual(await readFile(f.file), f.theirs);
+  assert.deepEqual(f.wire.objects.get(f.a.entry)?.bytes, f.theirs);
+});
