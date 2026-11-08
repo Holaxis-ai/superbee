@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, utimesSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, realpath, rm, utimes } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -76,8 +76,9 @@ test("a refused lock root passes through unchanged, never as an orphaned session
     const lock = filesystemMutationLockPath(path.join(await realpath(sessionDirFor(home, sessionAccount(target))), "session"), undefined, filesystemHost);
     const root = path.dirname(lock);
 
-    // The session lock itself, left owner-less by a killed claim, is still the orphaned lock.
+    // The session lock itself, left with an unusable owner record, is still the orphaned lock.
     await mkdir(lock);
+    await writeFile(path.join(lock, "owner.json"), "{");
     await utimes(lock, old, old);
     const orphaned = await attempt().then(() => assert.fail("expected refusal"), (error: unknown) => error);
     assert.ok(orphaned instanceof CliError);

@@ -36,6 +36,7 @@ import {
   relateToPrivateState,
   type PrivateStateRelation,
 } from "../src/private-state-bundle-boundary.js";
+import { foldPath } from "@superbee/core";
 import { privilegedLinuxSkip, sudo } from "./support/privileged-linux.js";
 import { boundaryFixture, runCli, type BoundaryFixture } from "./support/private-state-fixtures.js";
 import { isolatedUserEnv } from "./support/user-env.js";
@@ -151,6 +152,45 @@ test("truth table — the state root does NOT exist (the first-run fixture)", ()
   });
 });
 
+// Replaces the state root with a fresh directory (new inode) immediately before chosen stats of
+// that exact path, so the replacement lands deterministically between the relation's reads. The
+// old directory is renamed aside and kept, so the filesystem cannot hand its inode to the new one.
+function relateUnderReplacement(swapBeforeStats: "second" | "every"): { relation?: string; error?: string } {
+  const root = scratch();
+  try {
+    const state = path.join(root, "state");
+    mkdirSync(state);
+    const probe = spawnSync(process.execPath, ["--import", fileURLToPath(new URL("./ts-loader.mjs", import.meta.url)), "--input-type=module", "-e", `
+      import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      const state = ${JSON.stringify(state)};
+      const mode = ${JSON.stringify(swapBeforeStats)};
+      const original = fs.statSync;
+      let calls = 0;
+      fs.statSync = (target, options) => {
+        if (target === state) {
+          calls += 1;
+          if (mode === 'every' ? calls > 1 : calls === 2) { fs.renameSync(state, state + '.old' + calls); fs.mkdirSync(state); }
+        }
+        return original(target, options);
+      };
+      syncBuiltinESMExports();
+      const { relateToPrivateState } = await import(${JSON.stringify(new URL("../src/private-state-bundle-boundary.ts", import.meta.url).href)});
+      try { process.stdout.write(JSON.stringify({ relation: relateToPrivateState(state, state) })); }
+      catch (error) { process.stdout.write(JSON.stringify({ error: error.code ?? String(error) })); }
+    `], { encoding: "utf8", timeout: 15_000 });
+    assert.equal(probe.status, 0, probe.stderr);
+    return JSON.parse(probe.stdout) as { relation?: string; error?: string };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("a state root replaced between the two reads is never reported unrelated to itself", () => {
+  assert.deepEqual(relateUnderReplacement("second"), { relation: "identical" });
+  assert.deepEqual(relateUnderReplacement("every"), { error: "RUNTIME" });
+});
+
 test("truth table — BOTH missing: identity folds to the portable equivalence class", () => {
   withHome((home) => {
     const state = canonicalUserStateDir(home);
@@ -160,6 +200,20 @@ test("truth table — BOTH missing: identity folds to the portable equivalence c
     assert.equal(relateToPrivateState(path.join(variant, "sub"), state), "bundle-inside-state");
     assert.equal(relateToPrivateState(path.join(home, "unrelated-name"), state), "unrelated");
     assert.equal(existsSync(state), false, "classification never creates anything");
+  });
+});
+
+test("truth table: a name core's foldPath joins with the state root is not a bypass", () => {
+  withHome((home) => {
+    const state = canonicalUserStateDir(home);
+    const base = path.basename(state);
+    assert.ok(base.includes("s"), "the derived fixture needs an s to respell");
+    // U+017F (long s) uppercases to S, so case-insensitive volumes treat it as s.
+    const variant = path.join(path.dirname(state), base.replace("s", "\u017F"));
+    assert.equal(foldPath(variant), foldPath(state), "foldPath is the one folding rule");
+    assert.equal(existsSync(state), false);
+    assert.equal(relateToPrivateState(variant, state), "identical");
+    assert.equal(relateToPrivateState(path.join(variant, "sub"), state), "bundle-inside-state");
   });
 });
 

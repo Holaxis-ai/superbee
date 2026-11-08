@@ -110,7 +110,9 @@ not the CLI/core `QueryFilter.fields` equality filter.
 
 With `malformed=skip`, a document whose stored frontmatter does not parse is left out of `docs`
 and `count`, and every page of that listing names it in `skipped: [{ id, reason }]` (absent when
-every document parsed), so one bad file never fails the listing. Without the parameter, a client
+every document parsed), so one bad file never fails the listing. A document the host refuses
+to read (`EACCES` or `EPERM`) is skipped the same way with the reason `permission denied (EACCES)`
+or `permission denied (EPERM)`; the host path never appears. Without the parameter, a client
 that cannot read `skipped` gets the listing's failure naming the document rather than silently
 losing it. `RemoteBackend.queryHeads` reports those rows through the scan's
 `onSkip`, and without one keeps the scan's fail-loud contract by raising `MalformedDocumentError`;

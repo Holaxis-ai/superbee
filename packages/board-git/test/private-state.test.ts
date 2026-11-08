@@ -15,6 +15,9 @@ import {
   pushBoardCommit,
   type PrivateStateEvidence,
 } from "../src/index.js";
+import { foldPath } from "@superbee/core";
+
+import { PRIVATE_STATE_CREDENTIAL_FILE_NAME, PRIVATE_STATE_ROOT_NAMES, privateStatePathEvidence } from "../src/private-state.js";
 import { BOARD_BRANCH, commitBoard, git, makeTwoCloneTopology, originBoardHead } from "./git-harness.js";
 
 const MARKER = '{"product":"superbee","schema_version":1}\n';
@@ -23,6 +26,9 @@ const MARKER = '{"product":"superbee","schema_version":1}\n';
 const ROWS: ReadonlyArray<readonly [string, string, string, PrivateStateEvidence | null]> = [
   ["canonical root folder, any file", "x/.superbee-state/anything.txt", "hi", "state_folder"],
   ["legacy root folder, case-folded", "x/.AgentState/catalog.json", "{}", "state_folder"],
+  ["root folder spelled with long s", "x/.\u017Fuperbee-state/a.json", "{}", "state_folder"],
+  ["legacy root folder spelled with long s", ".agent\u017Ftate/a.json", "{}", "state_folder"],
+  ["credential file spelled with dotless i", "okf-conf\u0131g.json", "x", "credential_file"],
   ["credential file by name", "okf-config.json", "", "credential_file"],
   ["credential file by name, case-folded", "a/OKF-Config.JSON", "x", "credential_file"],
   ["marker on its prefix even when truncated", "m.json", '{"product":"superbee","sch', "state_marker"],
@@ -46,6 +52,41 @@ const ROWS: ReadonlyArray<readonly [string, string, string, PrivateStateEvidence
 test("F8 detector: one row per evidence class, with controls", () => {
   for (const [label, relPath, bytes, expected] of ROWS) {
     assert.equal(privateStateFinding(relPath, Buffer.from(bytes, "utf8"))?.evidence ?? null, expected, label);
+  }
+});
+
+// Every single-code-point spelling that core's foldPath joins with a guarded name's letter.
+function foldVariants(name: string): string[] {
+  const variants: string[] = [];
+  const byFold = new Map<string, string[]>();
+  for (let cp = 0; cp <= 0xffff; cp += 1) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue;
+    const ch = String.fromCodePoint(cp);
+    const key = foldPath(ch);
+    const bucket = byFold.get(key);
+    if (bucket === undefined) byFold.set(key, [ch]);
+    else bucket.push(ch);
+  }
+  for (let index = 0; index < name.length; index += 1) {
+    for (const ch of byFold.get(foldPath(name[index]!)) ?? []) {
+      if (ch === name[index]) continue;
+      variants.push(name.slice(0, index) + ch + name.slice(index + 1));
+    }
+  }
+  return variants;
+}
+
+test("F8 detector agrees with foldPath: every name foldPath joins with a guarded name is caught", () => {
+  for (const root of PRIVATE_STATE_ROOT_NAMES) {
+    const variants = foldVariants(root);
+    assert.ok(variants.some((v) => v.includes("\u017F")), "the probe must include the long-s spelling");
+    for (const variant of variants) {
+      assert.equal(foldPath(variant), foldPath(root));
+      assert.equal(privateStatePathEvidence(`x/${variant}/a.json`)?.evidence, "state_folder", JSON.stringify(variant));
+    }
+  }
+  for (const variant of foldVariants(PRIVATE_STATE_CREDENTIAL_FILE_NAME)) {
+    assert.equal(privateStatePathEvidence(`a/${variant}`)?.evidence, "credential_file", JSON.stringify(variant));
   }
 });
 

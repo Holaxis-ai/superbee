@@ -124,6 +124,19 @@ next sync's gate. A receipt names a gate that passed
 unchanged. Evidence: `packages/cli/test/hosted-sync-gate.test.ts` and
 `packages/cli/test/sync-gate-retry.test.ts`.
 
+## One Git sync per board folder
+
+A Git `sync` holds one lock per clone for its whole run, so two syncs over one board folder never
+overlap. A sync that finds another one running waits up to 15 seconds, or about 250 ms under a
+deadline (the turn-end hook), then exits 0 with a skipped receipt: `status: skipped`,
+`reason: sync_busy`, `holder_pid`, `waited_ms`, and help saying the documents stay in the folder
+for the next sync. Document writes are ordered around the steps that move worktree files (stage and
+commit, rebase, abort, fast-forward), never inside them. A rebase a killed sync left is aborted by
+the next sync; a rebase a person started is refused with CONFLICT `reason: rebase_in_progress` and
+never touched. A lock whose holder is gone but cannot be reclaimed is CONFLICT
+`reason: lock_orphaned`, naming the lock to delete. Evidence:
+`packages/cli/test/sync-folder-lock.test.ts`.
+
 ## Kind field types are additive
 
 A Kind that declares no `fields.types` renders byte-identical output: `status`, `kinds`,

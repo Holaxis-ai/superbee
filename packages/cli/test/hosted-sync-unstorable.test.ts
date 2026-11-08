@@ -22,7 +22,7 @@ import { plantStoredDocument } from "./support/plant-stored-document.js";
 import { checkoutStoreDir } from "../src/hosted/binding.js";
 import { checkoutLockName } from "../src/hosted/binding.js";
 import { filesystemPushRoleLocks } from "@superbee/core/filesystem-push-role";
-import { versionOfBytes } from "@superbee/core";
+import { parseMarkdown, stringifyDoc, versionOfBytes } from "@superbee/core";
 import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
 
 const nested = (depth: number): unknown => {
@@ -609,26 +609,34 @@ test("a corrupt store log is refused the same way, and a held lock reports busy 
   assert.equal((await h.sync("--inspect", "--doc", "notes/alpha")).err?.details?.reason, "store_damaged");
 });
 
-test("a document whose stored form would not read back is held, and the checkout keeps working", async () => {
+// Before core fenced empty metadata, this body re-read as a frontmatter block, so the pull held it as
+// FRONTMATTER_MALFORMED. Every document the host can serve now stores and reads back exactly; the hold
+// path itself stays covered by the limit rows above.
+test("a body opening with a rule under empty frontmatter checks out, syncs and reads back exactly", async () => {
   const h = await harness();
   const body = "---\nSome prose after a rule\n";
-  const serve = () => h.host.docs.set("notes/rule", { frontmatter: {}, body, version: versionOfBytes(`rule${body}`), raw: body } as never);
-  serve();
+  const raw = stringifyDoc({} as never, body);
+  assert.equal(raw, `---\n---\n${body}`);
+  const version = versionOfBytes(raw);
+  h.host.docs.set("notes/rule", { frontmatter: {}, body, version, raw } as never);
 
   const created = await h.checkout();
-  assert.equal(created.err?.exitCode, 5);
-  assert.equal(heldRow(created, "notes/rule").reason, "FRONTMATTER_MALFORMED");
+  assert.equal(created.err, undefined, created.err?.message);
+  const placed = await readFile(h.file("notes/rule"), "utf8");
+  assert.equal(placed, raw);
+  assert.deepEqual(parseMarkdown(placed, "notes/rule"), { frontmatter: {}, body });
 
   await h.edit("notes/alpha", "alpha edited\n");
   const writes = h.host.writes.length;
   const synced = await h.sync();
-  assert.equal(synced.err?.exitCode, 5, "held, never store_damaged");
-  assert.equal(synced.err?.details?.reason, undefined);
-  assert.equal(heldRow(synced, "notes/rule").reason, "FRONTMATTER_MALFORMED");
-  assert.equal(h.host.writes.length, writes + 1, "the valid edit elsewhere is sent");
-  assert.equal(existsSync(h.file("notes/rule")), false);
+  assert.equal(synced.err, undefined, synced.err?.message);
+  assert.equal(h.host.writes.length, writes + 1, "only the edit elsewhere is sent");
+  assert.equal(h.host.docs.get("notes/rule")!.version, version, "the rule document is never rewritten");
+  assert.equal(await readFile(h.file("notes/rule"), "utf8"), raw);
 
-  h.host.put("notes/rule", { type: "Note", title: "Fixed" }, "fixed\n");
-  assert.equal((await h.sync()).err, undefined);
-  assert.match(await readFile(h.file("notes/rule"), "utf8"), /fixed/);
+  const again = await h.sync();
+  assert.equal(again.err, undefined, again.err?.message);
+  assert.equal(h.host.writes.length, writes + 1);
+  const binding = (await bindingForPath(h.home, h.folder))!;
+  assert.equal((await hostedStatus(binding, h.home)).sync.state, "clean");
 });

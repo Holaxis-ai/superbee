@@ -29,12 +29,12 @@
   "dependencies": {
     "@modelcontextprotocol/client": "^2.4.0",
     "@modelcontextprotocol/core": "^2.4.0",
-    "@modelcontextprotocol/ext-apps": "^2.0.3",
+    "@modelcontextprotocol/ext-apps": "^2.0.4",
     "@modelcontextprotocol/server": "^2.4.0",
     "@superbee/core": "*",
     "@superbee/markdown-renderer": "*",
     "@superbee/view-runtime": "*",
-    "zod": "^4.4.3"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",

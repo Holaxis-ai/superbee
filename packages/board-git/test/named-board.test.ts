@@ -13,9 +13,11 @@ import {
   boardBranchOf,
   boardRefOf,
   declaredBoardBranchAtRef,
-  fetchRebaseResolving,
+  fetchBoard as fetchRemoteBoard,
+  rebaseResolving,
   ffPull,
-  healStaleRebaseBeforeProvisioning,
+  wedgedBoardRebase,
+  abortStaleRebase,
   isBoardBranchName,
   isBoardGitError,
   isDeclaredBoardBranch,
@@ -38,6 +40,8 @@ import {
   publishNamedBoard,
   type BoardRepo,
 } from "./git-harness.js";
+
+const fetchThenRebaseResolving = (board: string, exportDir: string) => { fetchRemoteBoard(board); return rebaseResolving(board, exportDir); };
 
 const NAME = "board-fairport";
 
@@ -98,7 +102,7 @@ test("named boards: commit, rebase and push move only origin/board-<name>", asyn
 
     await modifyBoardDoc({ name: "a", root: a, board: a }, "tasks/seed-one", { body: "# From A\n" });
     assert.equal(stageAndCommit(a).committed, true);
-    assert.equal(fetchRebaseResolving(a, mkdtempSync(path.join(tmpdir(), "named-exports-"))).status, "clean");
+    assert.equal(fetchThenRebaseResolving(a, mkdtempSync(path.join(tmpdir(), "named-exports-"))).status, "clean");
     assert.equal(unpushedCount(a), 1);
     push(a);
     assert.equal(unpushedCount(a), 0);
@@ -108,7 +112,7 @@ test("named boards: commit, rebase and push move only origin/board-<name>", asyn
     // A second writer rebases onto origin/board-fairport (not origin/board) and pushes on top.
     await modifyBoardDoc({ name: "b", root: b, board: b }, "tasks/seed-two", { body: "# From B\n" });
     assert.equal(stageAndCommit(b).committed, true);
-    assert.equal(fetchRebaseResolving(b, mkdtempSync(path.join(tmpdir(), "named-exports-"))).status, "clean");
+    assert.equal(fetchThenRebaseResolving(b, mkdtempSync(path.join(tmpdir(), "named-exports-"))).status, "clean");
     push(b);
     assert.equal(git(topo.origin, ["rev-parse", NAME]).trim(), git(b, ["rev-parse", "HEAD"]).trim());
     assert.equal(gitTry(topo.origin, ["merge-base", "--is-ancestor", git(a, ["rev-parse", "HEAD"]).trim(), NAME]).status, 0);
@@ -210,7 +214,8 @@ test("named boards: a crashed rebase on a named board is recognized and healed i
 
     assert.equal(boardBranchOf(wedged), NAME, "a detached mid-rebase checkout keeps its board branch");
     assert.equal(isRecoverableStandaloneBoardCheckout(wedged), true);
-    healStaleRebaseBeforeProvisioning(wedged);
+    assert.equal(wedgedBoardRebase(wedged), wedged);
+    abortStaleRebase(wedged);
     assert.equal(git(wedged, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), NAME);
     assert.equal(git(wedged, ["rev-parse", "HEAD"]).trim(), localHead);
   } finally {

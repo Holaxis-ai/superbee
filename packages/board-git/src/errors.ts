@@ -89,6 +89,8 @@ export interface GitFailure {
   stderr: string;
   /** True when the per-op timeout killed the child (the wrapper's no-hang invariant fired). */
   timedOut?: boolean;
+  /** The budget the timeout enforced, when known; a fired timeout reports it. */
+  timeoutMs?: number;
   /** The spawn-level errno code (e.g. `ENOENT` = no git binary), when the process never ran. */
   spawnErrorCode?: string;
 }
@@ -164,7 +166,8 @@ function hasUnmergeableOriginRef(text: string): boolean {
  * where git offers one; the prose fallbacks are ordered so the more specific state wins:
  *
  *  - spawn `ENOENT` -> `GIT_MISSING`: git itself is not installed — a distinct, branchable code.
- *  - per-op timeout -> `TRANSIENT`: the no-hang invariant fired; retryable.
+ *  - per-op timeout -> `TRANSIENT` with `reason: "timeout"` and the budget: the no-hang invariant
+ *    fired; retryable. It names no cause, since a slow upload and a dead link look the same.
  *  - `index.lock` / "Another git process" -> `GIT_BUSY` with `details.retryable: true`.
  *  - a non-fast-forward push -> `TRANSIENT`: another writer advanced the board; re-run sync.
  *    This includes the receive-side race, where the branch moved after the remote advertised it:
@@ -190,8 +193,10 @@ export function classifyGitError(f: GitFailure): BoardGitError {
     });
   }
   if (f.timedOut || f.spawnErrorCode === "ETIMEDOUT") {
-    return new BoardGitError("TRANSIENT", `git ${op} timed out — the network or repository may be slow; retry`, {
-      details: { op, retryable: true },
+    const seconds = f.timeoutMs === undefined ? undefined : Math.ceil(f.timeoutMs / 1000);
+    const within = seconds === undefined ? "in time" : `within ${seconds} seconds`;
+    return new BoardGitError("TRANSIENT", `git ${op} did not finish ${within} and was stopped; retry`, {
+      details: { op, retryable: true, reason: "timeout", ...(f.timeoutMs === undefined ? {} : { timeout_ms: f.timeoutMs }) },
     });
   }
   if (/index\.lock|Another git process seems to be running/i.test(text)) {

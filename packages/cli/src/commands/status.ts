@@ -15,6 +15,7 @@ import { renderUsage } from "../output.js";
 // storage path, so ids are structurally unique per backend — there is nothing to detect.
 import { parseArgs } from "node:util";
 import { bundleHealth, type BundleHealthReport } from "@superbee/core/bundle-health";
+import { isPermissionDeniedSkip } from "@superbee/core";
 import { resolveBundleBindings, type BindingProblem } from "../bundle-bindings.js";
 import { trustCountsRowFromCounts } from "../trust.js";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
@@ -61,9 +62,11 @@ declared 'path', only inside this bundle's git repository. A relative '../' link
 is not followed; write it as okf:// instead.
 
 Category semantics (one line each):
-  malformed          A document whose YAML frontmatter cannot be parsed at all — it is skipped by
-                      every scan (so it never blinds this report) and named here with the parser
-                      error; fix its YAML or remove the file. This is the headline finding.
+  malformed          A document whose YAML frontmatter cannot be parsed at all, or that could not
+                      be read (reason "permission denied (EACCES)" or "(EPERM)") — it is skipped by
+                      every scan (so it never blinds this report) and named here with its reason;
+                      fix its YAML, make the file readable, or remove it. Links to it are not
+                      reported as unresolved. This is the headline finding.
   deprecated_usage   Stored deprecated field/value/link occurrences (informational, not Kind
                       conformance debt or a retirement/non-use certificate). Reads remain valid.
   kind_warnings      Frontmatter/section violations against a doc's OWN declared kind (a per-doc
@@ -337,7 +340,11 @@ function statusRecord(
   // Row-list blocks are omitted when empty (matching `kinds`/`doc write`'s existing omit-if-empty
   // convention) so a clean bundle's report stays a short summary, not nine empty categories.
   if (deprecatedUsage.total > 0) { out.deprecated_usage = deprecatedUsage.total; out.deprecated_usage_rows = deprecatedUsage; }
-  if (malformed.total > 0) out.malformed_docs = malformed;
+  if (malformed.total > 0) {
+    out.malformed_docs = report.malformed.some(isPermissionDeniedSkip)
+      ? { ...malformed, help: "a row whose reason is permission denied could not be read: make the file readable by your user" }
+      : malformed;
+  }
   if (lint.total > 0) out.kind_lint = lint;
   if (conformanceDebt.total > 0) {
     out.conformance_debt_docs = {

@@ -212,6 +212,7 @@ export type { FieldExpectation, FieldPrecondition } from "./document-preconditio
 // `list` is an alias of `query` (the `list/query` API surface).
 export { list } from "./bundle.js";
 export type { QueryOptions, SkippedDoc } from "./bundle.js";
+export { isPermissionDeniedSkip } from "./skip-reasons.js";
 
 // Head-projection scan + its canonical filter predicate — contracts documented at the
 // definition sites (bundle.ts/types.ts). The delete-tolerant batch read they share

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { MemoryBackend, type WriteOptions } from "@superbee/core";
+import { FilesystemBackend, MemoryBackend, type WriteOptions } from "@superbee/core";
 
 import {
   WIRE_ENDPOINTS,
@@ -282,5 +285,35 @@ test("successful and missing document/blob HEAD responses remain bodyless with t
     assert.equal(await response.text(), "", expected.path);
     assert.equal(response.headers.get("x-version") ?? undefined, expected.version, expected.path);
     assert.equal(response.headers.get("content-type") ?? undefined, expected.contentType, expected.path);
+  }
+});
+
+test("GET /docs with malformed=skip names a document it may not read in skipped; without it the listing still fails", {
+  // chmod cannot deny a read to root, and Windows ignores the mode.
+  skip: process.platform === "win32" || process.getuid?.() === 0,
+}, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "wire-docs-denied-"));
+  const denied = path.join(root, "notes", "denied.md");
+  try {
+    await mkdir(path.join(root, "notes"), { recursive: true });
+    await writeFile(path.join(root, "notes", "good.md"), "---\ntype: Concept\ntitle: Good\n---\nfine\n");
+    await writeFile(denied, "---\ntype: Concept\ntitle: Denied\n---\nhidden\n");
+    await chmod(denied, 0o000);
+    const backend = new FilesystemBackend(root);
+    const router = createRouter({ capabilities: CAPABILITIES, resolveContext: () => ({ backend, attribution: { actor: "test" } }) });
+
+    const strict = await router(request(`/v0/bundles/${BUNDLE_A}/docs?fields=frontmatter`));
+    assert.equal(strict.status, 500, "a client that did not opt in never gets a listing that silently lost a document");
+
+    const list = await router(request(`/v0/bundles/${BUNDLE_A}/docs?fields=frontmatter&malformed=skip`));
+    assert.equal(list.status, 200);
+    const body = (await list.json()) as { count: number; docs: Array<{ id: string }>; skipped: Array<{ id: string; reason: string }> };
+    assert.deepEqual(body.docs.map((row) => row.id), ["notes/good"]);
+    assert.equal(body.count, 1);
+    assert.deepEqual(body.skipped, [{ id: "notes/denied", reason: "permission denied (EACCES)" }]);
+    assert.doesNotMatch(JSON.stringify(body), new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "no host path leaves the server");
+  } finally {
+    await chmod(denied, 0o644).catch(() => {});
+    await rm(root, { recursive: true, force: true });
   }
 });

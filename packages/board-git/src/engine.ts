@@ -13,7 +13,7 @@ import {
   BOARD_REMOTE,
   BUNDLE_DIRS,
   bundleDirNameForProject,
-  abortStaleRebase,
+  clearStaleSyncRebaseMarker,
   detectStaleRebase,
   isRecoverableStandaloneBoardCheckout,
   repoTopLevel,
@@ -95,35 +95,54 @@ export function retargetBoardInterior(dir: string): string {
 }
 
 /**
- * Sync's step-0 entry self-heal runs before `provisionBoardWorktree`:
- * `isProvisioned` requires the `board` branch checked out, but a REBASE detaches HEAD, so a
- * genuinely-provisioned-but-wedged worktree would misclassify as a stray directory and the refusal
- * would fire before the heal ever ran. The probe touches ONLY a candidate proven as either (a) a
- * standalone root checkout with the exact branch/upstream/index/history authority contract, or
- * (b) its OWN linked-worktree root (`repoTopLevel` resolves back to itself — never a plain
- * subdirectory of the enclosing repo, whose shared git dir an abort would destroy). A standalone
- * nested repo at the conventional bundle path must never be healed. Best-effort otherwise: any
- * other failure is swallowed — a genuine problem resurfaces, classified, from
- * `provisionBoardWorktree` right after.
+ * Clear a stale sync-rebase marker from each checkout sync could treat as this project's board:
+ * the repository root (a standalone board clone) and its own conventional linked worktree.
+ * Best-effort, like {@link wedgedBoardRebase}; the caller holds the board folder's sync lock.
  */
-export function healStaleRebaseBeforeProvisioning(dir: string): void {
+export function clearStaleSyncRebaseMarkers(dir: string): void {
   try {
     const top = repoTopLevel(dir);
     if (!top) return;
-    if (isRecoverableStandaloneBoardCheckout(top)) {
-      abortStaleRebase(top);
-      return;
-    }
+    clearStaleSyncRebaseMarker(top);
     const candidateBoardPath = path.join(top, bundleDirNameForProject(top));
     if (!existsSync(candidateBoardPath)) return;
     const boardTop = repoTopLevel(candidateBoardPath);
-    if (!boardTop || realOrSame(boardTop) !== realOrSame(candidateBoardPath)) return;
-    if (!isLinkedWorktree(candidateBoardPath)) return;
-    if (detectStaleRebase(candidateBoardPath)) {
-      abortStaleRebase(candidateBoardPath);
+    if (boardTop && realOrSame(boardTop) === realOrSame(candidateBoardPath) && isLinkedWorktree(candidateBoardPath)) {
+      clearStaleSyncRebaseMarker(candidateBoardPath);
     }
   } catch {
-    /* best-effort probe only — see the doc comment above */
+    /* best-effort: a marker left here only makes a later hand-started rebase read as sync's own */
+  }
+}
+
+/**
+ * The board checkout wedged mid-rebase that sync's step-0 entry heal would act on, or null.
+ * The heal runs before `provisionBoardWorktree`:
+ * `isProvisioned` requires the `board` branch checked out, but a REBASE detaches HEAD, so a
+ * genuinely-provisioned-but-wedged worktree would misclassify as a stray directory and the refusal
+ * would fire before the heal ever ran. The probe names ONLY a candidate proven as either (a) a
+ * standalone root checkout with the exact branch/upstream/index/history authority contract, or
+ * (b) its OWN linked-worktree root (`repoTopLevel` resolves back to itself — never a plain
+ * subdirectory of the enclosing repo, whose shared git dir an abort would destroy). A standalone
+ * nested repo at the conventional bundle path is never named. Best-effort otherwise: any failure
+ * answers null, and a genuine problem resurfaces, classified, from `provisionBoardWorktree`.
+ *
+ * The caller aborts the rebase only when sync started it ({@link syncStartedRebase}) and only
+ * while holding the board folder's sync lock, which proves that sync is gone.
+ */
+export function wedgedBoardRebase(dir: string): string | null {
+  try {
+    const top = repoTopLevel(dir);
+    if (!top) return null;
+    if (isRecoverableStandaloneBoardCheckout(top)) return top;
+    const candidateBoardPath = path.join(top, bundleDirNameForProject(top));
+    if (!existsSync(candidateBoardPath)) return null;
+    const boardTop = repoTopLevel(candidateBoardPath);
+    if (!boardTop || realOrSame(boardTop) !== realOrSame(candidateBoardPath)) return null;
+    if (!isLinkedWorktree(candidateBoardPath)) return null;
+    return detectStaleRebase(candidateBoardPath) ? candidateBoardPath : null;
+  } catch {
+    return null;
   }
 }
 

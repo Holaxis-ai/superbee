@@ -41,11 +41,13 @@ for (const edition of ["0.1", "0.2"] as const) {
       const created = await run(w, [change(UID("201"), "new", null, { title: "Fair", start: "2026-11-01T10:00:00-04:00", venue_text: text }, DIGEST("1"))]);
       assert.deepEqual(outcomes(created.receipt), [["create-signal", "applied", undefined]], name);
       const target = created.receipt.results[0]!.target!;
-      assert.ok((await signalBody(w, target)).includes(text), name);
+      // The summary keeps the text as the feed gave it; the observation line holds it on one line.
+      assert.ok(String((await w.read(target, "ops")).doc.frontmatter.diff_summary).includes(text), name);
+      assert.ok((await signalBody(w, target)).includes("Room A upstairs"), name);
       const later = `${text} and the hall`;
       const collapsed = await run(w, [change(UID("201"), "changed", { title: "Fair", venue_text: text }, { title: "Fair", venue_text: later }, DIGEST("2"))], { observedAt: "2026-10-04T14:00:00Z" });
       assert.deepEqual(outcomes(collapsed.receipt), [["collapse-signal", "applied", undefined]], name);
-      assert.ok((await signalBody(w, target)).includes(later), name);
+      assert.ok((await signalBody(w, target)).includes("Room A upstairs and the hall"), name);
     }
   });
 
@@ -87,7 +89,7 @@ for (const edition of ["0.1", "0.2"] as const) {
     assert.deepEqual(outcomes(receipt), [["create-signal", "applied", undefined], ["create-signal", "applied", undefined], ["create-signal", "applied", undefined]]);
     const first = await signalBody(w, receipt.results[0]!.target!);
     assert.equal(first.match(/^Related document \(content bundle\): /gm)!.length, 10);
-    assert.ok(first.includes("A new food service permit\nat an address with ten Places"));
+    assert.ok(first.includes("A new food service permit at an address with ten Places"));
     const odd = await signalBody(w, receipt.results[1]!.target!);
     assert.deepEqual(odd.match(/^Related document .*$/gm), ["Related document (content bundle): `places/o`neill-pub`", "Related document (content bundle): `places/two words`"]);
     const again = await planFindings({ ops: w.ops, provider: "process:health-review", slug: "health", findings: [{ ...findings[0]!, facts: { permit: "p-1", moved: true } }], observedAt: "2026-10-04T14:00:00Z" });

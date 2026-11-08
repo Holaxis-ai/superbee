@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -112,5 +112,28 @@ test("query THROWS on a malformed doc by default (loud), but skips-and-reports w
     assert.equal(skipped.length, 1);
     assert.equal(skipped[0]?.id, "notes/bad");
     assert.ok((skipped[0]?.reason ?? "").length > 0);
+  });
+});
+
+/** chmod cannot deny a read to root, and Windows ignores the mode, so the denial is unreproducible there. */
+const CANNOT_DENY_READ = process.platform === "win32" || process.getuid?.() === 0;
+
+test("query skips-and-reports a document it may not read only with onSkip; the default scan still throws", { skip: CANNOT_DENY_READ }, async () => {
+  await withCorruptBundle(async (bundle) => {
+    await writeFile(path.join(bundle.root, "notes", "bad.md"), WELL_FORMED);
+    const denied = path.join(bundle.root, "notes", "denied.md");
+    await writeFile(denied, WELL_FORMED);
+    await chmod(denied, 0o000);
+    try {
+      await assert.rejects(() => query(bundle), (err: unknown) => (err as { code?: unknown }).code === "EACCES");
+
+      const skipped: SkippedDoc[] = [];
+      const docs = await query(bundle, {}, { onSkip: (s) => skipped.push(s) });
+      assert.deepEqual(docs.map((d) => d.id), ["notes/bad", "notes/good"]);
+      // The reason is a stable code, never the host path the filesystem error carries.
+      assert.deepEqual(skipped, [{ id: "notes/denied", reason: "permission denied (EACCES)" }]);
+    } finally {
+      await chmod(denied, 0o644);
+    }
   });
 });

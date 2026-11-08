@@ -54,7 +54,7 @@ test('closed artifact permits guarded author and registered profile loading', as
     const registered = `${imports}\n${registeredLoader.getText(ast)}\n${registeredSelector.getText(ast)}`;
     await assertClosedCliImports(registered);
     for (const [label,candidate] of [
-      ['no generation verification',registered.replace(/await lifecycle\d*\.verified\(a, input\)/, 'selected')],
+      ['no generation verification',registered.replace(/await lifecycle\d*\.verified\(\w+, input\d*\)/, 'selected')],
       ['different registered entry',registered.replace('declaration.entry)).href', 'selected.entry)).href')],
       ['unfrozen helpers',registered.replace('Object.freeze({','Object.assign({')],
       ['factory metadata unchecked',registered.replace(/\bp\d*\.kind !== "extension"/,'p.kind !== "generic"')],

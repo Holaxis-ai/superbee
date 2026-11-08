@@ -107,7 +107,7 @@ test("sync gate: a failing gate holds the push with the work committed; a passin
     const held = await runSync(path.join(state, "home"), ["--dir", topo.a.root]);
     assert.equal(held.err?.code, "GATE_FAILED");
     assert.equal(held.err?.exitCode, 5);
-    assert.match(held.out, /your work is saved\. The sync gate exited 3 on the rebased board, so nothing was pushed/);
+    assert.match(held.out, /Your work is saved\. The sync gate exited 3 on the rebased board, so nothing was pushed/);
     assert.match(held.out, /gate output line/, "the failing gate's output tail is reported");
     assert.match(held.out, /code: GATE_FAILED/, "the receipt names the code");
     assert.match(held.out, /help: "run the gate yourself/);
@@ -224,7 +224,7 @@ test("sync race: retries are bounded, keep the work, and classify the failure as
     assert.equal(result.err?.exitCode, 1);
     assert.equal(result.err?.details?.reason, "non-fast-forward");
     assert.equal(result.err?.details?.attempts, SYNC_PUSH_ATTEMPTS);
-    assert.match(result.err?.message ?? "", /your work is saved\. another writer pushed to the board each time sync tried/);
+    assert.match(result.err?.message ?? "", /Your work is saved\. another writer pushed to the board each time sync tried/);
     const sharing = result.err?.details?.sharing as Record<string, unknown>;
     assert.equal(sharing.possible_causes, undefined, "no permission or policy causes are suggested for a race");
     assert.equal(sharing.required_authority, undefined);

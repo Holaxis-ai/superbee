@@ -524,6 +524,8 @@ test("AC-12a: malformed identity-lock residue remains fail-closed with no partia
   try {
     await mkdir(filesystemMutationLockRoot(root), { recursive: true, mode: 0o700 });
     await mkdir(lockPath, { recursive: true });
+    // An unusable owner record: an empty lock directory would be removed as an abandoned claim.
+    await writeFile(path.join(lockPath, "owner.json"), "{");
     await assert.rejects(
       () => new FilesystemBackend(root).write("concepts/x", doc("concepts/x", "x")),
       (err: unknown) => {

@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
+import { connect } from "node:net";
 import { runInNewContext } from "node:vm";
 
 import { MemoryBackend, type Bundle } from "@superbee/core";
@@ -409,6 +411,30 @@ test("live-update streams reserve a browser connection for page loads and recove
     assert.equal((await fetch(url(server, "/events"), { headers, signal: replacement.signal })).status, 200);
   } finally {
     for (const controller of controllers) controller.abort();
+    await server.close();
+  }
+});
+
+test("a client that drops the connection mid-acknowledgement cannot strand a stop request", async () => {
+  const server = await boot();
+  try {
+    const stopping = server.management!.stopRequested.then(() => "stopping");
+    const socket = connect(server.port, server.host);
+    await once(socket, "connect");
+    socket.write(
+      "POST /__manage/stop HTTP/1.1\r\n" +
+      `Host: ${server.host}:${server.port}\r\n` +
+      `x-superbee-management-secret: ${MANAGEMENT}\r\n` +
+      `x-superbee-launch-nonce: ${NONCE}\r\n` +
+      "Content-Length: 0\r\n\r\n",
+    );
+    socket.resetAndDestroy();
+    const outcome = await Promise.race([
+      stopping,
+      new Promise<string>((resolve) => setTimeout(() => resolve("hung"), 2000)),
+    ]);
+    assert.equal(outcome, "stopping");
+  } finally {
     await server.close();
   }
 });

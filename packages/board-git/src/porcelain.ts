@@ -29,7 +29,7 @@
  *
  * IDENTITY FALLBACK: every commit-CREATING call (`stageAndCommit`, `snapshotBundleCommit`,
  * `flow.ts`'s `createBoardRootCommit`/`createRemovalCommit`, and every non-`--abort` rebase
- * invocation in `fetchRebase`/`fetchRebaseResolving` — a replay needs committer identity too)
+ * invocation in `fetchRebase`/`rebaseResolving` — a replay needs committer identity too)
  * prepends {@link identityFlags}'s per-invocation `-c user.*` args. `[]` on a machine with a
  * resolvable identity — byte-identical to before this existed; the synthetic identity only when
  * git itself could not construct one anywhere (fresh container / identity-less CI runner).
@@ -37,7 +37,7 @@
  * CONFLICT BOUNDARY: {@link fetchRebase} DETECTS a same-doc conflict — collects the conflicted ids
  * via `diff --name-only --diff-filter=U` — and `git rebase --abort`s cleanly (ZERO data movement;
  * kept for any consumer that must never move data). The converging mechanic is
- * {@link fetchRebaseResolving}: keep the upstream version, export the local version, and complete
+ * {@link rebaseResolving}: keep the upstream version, export the local version, and complete
  * the rebase.
  */
 import { captureBoardHostPolicy, type BoardHostPolicy } from "./host-policy.js";
@@ -300,6 +300,11 @@ const SCRUBBED_GIT_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] as cons
 const LOCAL_TIMEOUT_MS = 30_000;
 /** Budget for ops that touch the network (fetch/push/probe) — bounded, but tolerant of a slow remote. */
 export const NETWORK_TIMEOUT_MS = 60_000;
+/**
+ * Budget for a push: the upload of a large pending history can take minutes on an ordinary link,
+ * so it gets its own longer bound rather than sharing the fetch/probe budget.
+ */
+export const PUSH_TIMEOUT_MS = 600_000;
 
 export interface GitRunResult {
   status: number;
@@ -359,7 +364,7 @@ function gitEnv(rebase: boolean, connectTimeoutSeconds = 10, indexFile?: string)
  * path-parsing consumer at the one chokepoint, like LC_ALL=C does for prose. Every
  * `--name-status` invocation additionally passes `-z` (see {@link nameStatusRows}) so a TAB,
  * newline, or other control byte inside a path is immune too, matching the conflict list's
- * `--name-only -z` (see `fetchRebaseResolving`).
+ * `--name-only -z` (see `rebaseResolving`).
  */
 export function runGit(dir: string, args: string[], opts: RunOptions = {}): GitRunResult {
   const r = runGitBytes(dir, args, opts);
@@ -390,8 +395,9 @@ export function runGitBytes(dir: string, args: string[], opts: RunOptions = {}):
   // exists to bound. A non-positive timeout therefore classifies as an IMMEDIATE fired timeout
   // (TRANSIENT) without ever spawning: one chokepoint closing the class for every caller,
   // present and future, however their guard-to-spawn gaps decay.
-  if (opts.timeoutMs !== undefined && opts.timeoutMs <= 0) {
-    throw classifyGitError({ args, status: null, stdout: "", stderr: "", timedOut: true });
+  const timeoutMs = opts.timeoutMs ?? LOCAL_TIMEOUT_MS;
+  if (timeoutMs <= 0) {
+    throw classifyGitError({ args, status: null, stdout: "", stderr: "", timedOut: true, timeoutMs });
   }
   const repositoryArgs = [
     ...(opts.gitDir ? [`--git-dir=${opts.gitDir}`] : []),
@@ -410,7 +416,7 @@ export function runGitBytes(dir: string, args: string[], opts: RunOptions = {}):
     ...args,
   ], {
     env: gitEnv(opts.rebase ?? false, opts.connectTimeoutSeconds, opts.indexFile),
-    timeout: opts.timeoutMs ?? LOCAL_TIMEOUT_MS,
+    timeout: timeoutMs,
     input: opts.input,
     maxBuffer: 32 * 1024 * 1024,
   });
@@ -424,12 +430,13 @@ export function runGitBytes(dir: string, args: string[], opts: RunOptions = {}):
       stdout: stdout.toString("utf8"),
       stderr,
       timedOut: code === "ETIMEDOUT",
+      timeoutMs,
       spawnErrorCode: code ?? "SPAWN",
     });
   }
   // A killed child (e.g. timeout without an error object on some platforms) has status null.
   if (r.status === null) {
-    throw classifyGitError({ args, status: null, stdout: stdout.toString("utf8"), stderr, timedOut: true });
+    throw classifyGitError({ args, status: null, stdout: stdout.toString("utf8"), stderr, timedOut: true, timeoutMs });
   }
   return { status: r.status, stdout, stderr };
 }
@@ -651,7 +658,7 @@ export function rebaseWasFromBoardBranch(boardPath: string): boolean {
  * unrelated `git worktree add .superbee some-other-branch`), or one merely left on a plain
  * detached HEAD for an unrelated reason (no rebase in progress at all), would otherwise be
  * misreported as a successful "repaired" board checkout — and every downstream sync step
- * (`stageAndCommit`, `fetchRebaseResolving`, `push`) would then operate against content that was
+ * (`stageAndCommit`, `rebaseResolving`, `push`) would then operate against content that was
  * never the shared board. This is genuinely on
  * `board` when EITHER the branch is attached and literally `board`, OR HEAD is detached BECAUSE
  * of a wedged rebase that was itself started FROM `board` ({@link rebaseWasFromBoardBranch}) — any
@@ -1604,6 +1611,33 @@ export function detectStaleRebase(boardPath: string): boolean {
 /** Abort the wedged rebase, restoring the pre-rebase worktree. */
 export function abortStaleRebase(boardPath: string): void {
   mustGit(boardPath, ["rebase", "--abort"], { rebase: true });
+  rmSync(worktreeGitPath(boardPath, SYNC_REBASE_MARKER), { force: true });
+}
+
+/** Written beside the rebase state while sync's own rebase runs; see {@link rebaseResolving}. */
+const SYNC_REBASE_MARKER = "superbee-sync-rebase";
+
+/**
+ * True when the rebase in progress in `boardPath` was started by sync, which leaves a marker for
+ * its whole run. Only a sync holding the board folder's sync lock may act on the answer: the lock
+ * is what proves the sync that started it is gone.
+ */
+export function syncStartedRebase(boardPath: string): boolean {
+  return existsSync(worktreeGitPath(boardPath, SYNC_REBASE_MARKER));
+}
+
+/**
+ * Remove the marker a sync killed after its rebase ended (before it could remove the marker)
+ * left in `boardPath`. Without this, a rebase a person starts later would read as sync's own.
+ * A marker beside a rebase in progress is kept: that rebase is what it marks.
+ */
+export function clearStaleSyncRebaseMarker(boardPath: string): void {
+  if (!detectStaleRebase(boardPath)) rmSync(worktreeGitPath(boardPath, SYNC_REBASE_MARKER), { force: true });
+}
+
+/** The repository's git common-dir, realpathed: one per clone, shared by all its worktrees. */
+export function boardGitCommonDir(dir: string): string | null {
+  return gitCommonDir(dir);
 }
 
 // ── doc-change vocabulary ─────────────────────────────────────────────────────
@@ -2177,8 +2211,7 @@ export type FetchRebaseResolvingOutcome =
    * Same-doc conflicts were RESOLVED by the converging mechanic (upstream kept, local exported)
    * and the rebase COMPLETED — the worktree is never left mid-state; non-conflicted local commits
    * landed on top of `origin/board`. One entry per conflicted file (deduped across rebase stops:
-   * a doc conflicting at several stops reports its LAST export, the local FINAL content, and every
-   * stop's version stays saved).
+   * one saved copy per file per run, the local FINAL content).
    */
   | { status: "resolved"; conflicts: ResolvedConflict[] }
   /**
@@ -2195,8 +2228,13 @@ export type FetchRebaseResolvingOutcome =
  */
 const MAX_REBASE_STOPS = 1000;
 
+/** The network half of the converging pull: `git fetch --prune origin`. It moves no worktree file. */
+export function fetchBoard(boardPath: string, fetchTimeoutMs: number = NETWORK_TIMEOUT_MS): void {
+  mustGit(boardPath, ["fetch", "--prune", BOARD_REMOTE], { timeoutMs: fetchTimeoutMs });
+}
+
 /**
- * `git fetch --prune origin` then `git rebase origin/board`, RESOLVING same-doc conflicts with the
+ * `git rebase origin/board` after {@link fetchBoard}, RESOLVING same-doc conflicts with the
  * converging mechanic ({@link fetchRebase} keeps its detect-only shape for consumers that must
  * never move data).
  *
@@ -2206,8 +2244,9 @@ const MAX_REBASE_STOPS = 1000;
  * `--ours`/`--theirs`.
  *
  * The test-pinned sequence for each conflicted `<path>`:
- *   1. `git show :3:<path> > <export-file>` — FIRST (`:3:` = theirs-in-rebase = the LOCAL
- *      version → this is "yours saved").
+ *   1. Save yours FIRST: `git show <local tip>:<path>` when the pre-rebase tip has the path,
+ *      else (after the loop) the last stop's `git show :3:<path>` (`:3:` = theirs-in-rebase =
+ *      the LOCAL version) → this is "yours saved".
  *   2. `git checkout origin/board -- <path>` — keep the UPSTREAM (teammate's) version.
  *   3. `git add -- <path>`.
  * Then advance non-interactively: `GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true git rebase --continue`
@@ -2224,12 +2263,32 @@ const MAX_REBASE_STOPS = 1000;
  *
  * Export files land at `<exportDir>/<relPath>` with the blob's exact bytes and a
  * `<relPath minus .md>.body.md` body-only companion for parseable concept docs; a repeat conflict
- * on a path with a saved copy lands beside it without replacing it (`saved-copies.ts`). The
- * companion is the `doc update --body-file` input. Created 0700/0600; the caller passes a
+ * on a path with a saved copy lands beside it without replacing it (`saved-copies.ts`). Each
+ * conflicted path gets one copy per run: the pre-rebase local tip's version when the tip has the
+ * path, else the last stop's `:3:` version. The companion is the `doc update --body-file` input. Created 0700/0600; the caller passes a
  * per-bundle dir OUTSIDE the worktree (see cursor.ts `syncExportsDir`).
+ *
+ * It refuses a rebase already in progress rather than driving one it did not start, and marks the
+ * rebase as sync's own while it runs, so a later sync can tell a killed sync's rebase (healed)
+ * from one a person started (refused).
  */
-export function fetchRebaseResolving(boardPath: string, exportDir: string): FetchRebaseResolvingOutcome {
-  mustGit(boardPath, ["fetch", "--prune", BOARD_REMOTE], { timeoutMs: NETWORK_TIMEOUT_MS });
+export function rebaseResolving(boardPath: string, exportDir: string): FetchRebaseResolvingOutcome {
+  if (detectStaleRebase(boardPath)) {
+    throw new BoardGitError("CONFLICT", "a git rebase is already in progress in the board checkout; sync did not start another", {
+      details: { reason: "rebase_in_progress" },
+    });
+  }
+  const marker = worktreeGitPath(boardPath, SYNC_REBASE_MARKER);
+  writeFileSync(marker, `${process.pid}\n`);
+  try {
+    return rebaseResolvingMarked(boardPath, exportDir);
+  } finally {
+    // A rebase still in progress here is one a later sync heals; it keeps the marker that says so.
+    if (!detectStaleRebase(boardPath)) rmSync(marker, { force: true });
+  }
+}
+
+function rebaseResolvingMarked(boardPath: string, exportDir: string): FetchRebaseResolvingOutcome {
   const boardRef = boardRefOf(boardPath);
   // The fetch above is a LIVE view of origin, but there is no `origin/board` to rebase onto —
   // checked structurally (not by parsing rebase's failure prose) so this never collides with the
@@ -2241,6 +2300,8 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
   // commits nothing): a replayed commit needs COMMITTER identity too, the same failure class as a
   // plain commit — see porcelain.ts's module header site map.
   const idFlags = identityFlags(boardPath);
+  const tip = runGit(boardPath, ["rev-parse", "--verify", "--quiet", "HEAD"]);
+  const localTip = tip.status === 0 ? tip.stdout.trim() : null;
   const r = runGit(boardPath, [...idFlags, "rebase", ...REBASE_BY_PATH, boardRef], { rebase: true, timeoutMs: NETWORK_TIMEOUT_MS });
   if (r.status === 0) return { status: "clean" };
   if (!detectStaleRebase(boardPath)) throw classifyGitError(failureOf(["rebase", boardRef], r));
@@ -2250,6 +2311,7 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
   // so it must be robust even against names the tab/newline-split parsers can't express — NUL
   // output is raw and unquoted BY DEFINITION, independent of any quotepath setting.
   const byPath = new Map<string, ResolvedConflict>();
+  const lastStopBytes = new Map<string, Buffer | null>();
   try {
     let stops = 0;
     while (detectStaleRebase(boardPath)) {
@@ -2268,16 +2330,24 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
         continue;
       }
       for (const relPath of conflicted) {
-        // 1. EXPORT yours FIRST: `:3:` = theirs-in-rebase = the LOCAL version (the inversion).
+        // 1. EXPORT yours FIRST. The pre-rebase local tip's version, when it has the path, is
+        // your final version: a later local commit may have replayed cleanly over the kept
+        // upstream version, and neither the stop's `:3:` (theirs-in-rebase = the LOCAL version,
+        // the inversion) nor HEAD carries both. Saving the same bytes again at a later stop adds
+        // no file. Without it, the last stop's `:3:` version is saved once the loop ends.
         // Bytes, not a utf8 string: the export must round-trip the blob
         // byte-identically — a binary/invalid-UTF-8 blob routed through a string is corrupted
         // (invalid sequences become U+FFFD).
-        const local = runGitBytes(boardPath, ["show", `:3:${relPath}`]);
+        const isDoc = isConceptDocPath(relPath);
         let exportPath: string | null = null;
         let bodyExportPath: string | null = null;
-        const isDoc = isConceptDocPath(relPath);
-        if (local.status === 0) {
-          ({ exportPath, bodyExportPath } = saveCopyWithBody(exportDir, relPath, local.stdout, isDoc));
+        const final = localTip === null ? null : runGitBytes(boardPath, ["show", `${localTip}:${relPath}`]);
+        if (final !== null && final.status === 0) {
+          ({ exportPath, bodyExportPath } = saveCopyWithBody(exportDir, relPath, final.stdout, isDoc));
+          lastStopBytes.delete(relPath);
+        } else {
+          const local = runGitBytes(boardPath, ["show", `:3:${relPath}`]);
+          lastStopBytes.set(relPath, local.status === 0 ? local.stdout : null);
         }
         // 2+3. Keep the UPSTREAM (teammate's) version — explicit ref, never --ours/--theirs. An
         // upstream-side DELETION keeps upstream's state by removing the path instead.
@@ -2311,6 +2381,12 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
       /* best-effort — the original error is the one that matters */
     }
     throw err;
+  }
+  for (const [relPath, bytes] of lastStopBytes) {
+    const conflict = byPath.get(relPath)!;
+    if (bytes === null) continue;
+    const { exportPath, bodyExportPath } = saveCopyWithBody(exportDir, relPath, bytes, conflict.isDoc);
+    byPath.set(relPath, { ...conflict, exportPath, bodyExportPath });
   }
   return { status: "resolved", conflicts: [...byPath.values()] };
 }
@@ -2438,10 +2514,15 @@ function remoteRefIfPresent(dir: string, branch: string): string | null {
  * ran in between (a gate, a hook) can change where the push goes. Failures classify (AUTH exit 4 vs network exit 1, best-effort).
  * Every push first runs the private-state backstop on exactly what it would send.
  */
-export function push(boardPath: string, commit?: string, branch: string = boardBranchOf(boardPath)): void {
+export function push(
+  boardPath: string,
+  commit?: string,
+  branch: string = boardBranchOf(boardPath),
+  timeoutMs: number = PUSH_TIMEOUT_MS,
+): void {
   const refspec = commit === undefined ? branch : `${commit}:refs/heads/${branch}`;
   assertNoPrivateStateOutgoing(boardPath, commit ?? `refs/heads/${branch}`, { ...PUSH_BACKSTOP, base: remoteRefIfPresent(boardPath, branch) });
-  mustGit(boardPath, ["push", BOARD_REMOTE, refspec], { timeoutMs: NETWORK_TIMEOUT_MS });
+  mustGit(boardPath, ["push", BOARD_REMOTE, refspec], { timeoutMs });
 }
 
 /**
@@ -2455,7 +2536,7 @@ export function push(boardPath: string, commit?: string, branch: string = boardB
  */
 export function pushBoardUpstream(top: string): void {
   assertNoPrivateStateOutgoing(top, `refs/heads/${BOARD_BRANCH}`, { ...PUSH_BACKSTOP, base: remoteRefIfPresent(top, BOARD_BRANCH) });
-  mustGit(top, ["push", "-u", BOARD_REMOTE, BOARD_BRANCH], { timeoutMs: NETWORK_TIMEOUT_MS });
+  mustGit(top, ["push", "-u", BOARD_REMOTE, BOARD_BRANCH], { timeoutMs: PUSH_TIMEOUT_MS });
 }
 
 /**
@@ -2466,7 +2547,7 @@ export function pushBoardUpstream(top: string): void {
 export function pushBoardCommit(top: string, commit: string): void {
   assertNoPrivateStateOutgoing(top, commit, PUSH_BACKSTOP);
   mustGit(top, ["push", BOARD_REMOTE, `${commit}:refs/heads/${BOARD_BRANCH}`], {
-    timeoutMs: NETWORK_TIMEOUT_MS,
+    timeoutMs: PUSH_TIMEOUT_MS,
   });
 }
 

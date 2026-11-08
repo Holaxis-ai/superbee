@@ -83,6 +83,39 @@ const MARKER_MAX_BYTES = 256;
 const STATE_ROOT_GITIGNORE_FILE_NAME = ".gitignore";
 const STATE_ROOT_GITIGNORE_BYTES = "*\n";
 
+/** The journal an interrupted `setup migrate-state` leaves in the canonical root. */
+export const USER_STATE_MIGRATION_JOURNAL_FILE_NAME = ".migration.json";
+
+/**
+ * The one refusal for a canonical root without this product's marker. Only a root that passes
+ * setup's own interrupted-migration proof is sent to `migrate-state`; anything else (including a
+ * journal that proof rejects) is sent to `setup`, which diagnoses it. The proof lives in the
+ * migration module, loaded here only on this refusal path; ordinary state readers stay single-root.
+ */
+export async function unrecognizedStateRootError(root: string, input: UserStateInput | undefined): Promise<CliError> {
+  let interrupted = false;
+  try {
+    const { inspectUserStateMigration } = await import("./user-state-migration.js");
+    interrupted = (await inspectUserStateMigration(input ?? homedir())).state === "migratable";
+  } catch {
+    interrupted = false;
+  }
+  return stateRootRefusal(root, interrupted);
+}
+
+function stateRootRefusal(root: string, interrupted: boolean): CliError {
+  const bin = distributionBinName();
+  return interrupted
+    ? new CliError("RUNTIME", `${root} is unfinished: a state migration was interrupted.`, {
+        details: { reason: "state_migration_interrupted", path: root },
+        help: `Run \`${bin} setup migrate-state\` to finish it. Your old state files are not changed. Then re-run this command.`,
+      })
+    : new CliError("RUNTIME", `${root} is not recognized as Superbee state.`, {
+        details: { reason: "state_root_unrecognized", path: root },
+        help: `Run \`${bin} setup\` to see what is wrong and the fix. Then re-run this command.`,
+      });
+}
+
 export type UserStateInput=string|UserStateEnvironment;
 export class UserStatePolicyUnavailable extends Error {
   readonly command=`${distributionBinName()} setup`;
@@ -371,7 +404,7 @@ async function publishCanonicalRoot(
   }
   const marker = await inspectUserStateMarker(root, input);
   if (!marker.recognized) {
-    throw new Error("canonical Superbee user-state root is not owned by this product");
+    throw await unrecognizedStateRootError(root, input);
   }
 }
 
@@ -390,7 +423,7 @@ async function initializeCanonicalRoot(
 
   const marker = await inspectUserStateMarker(root, input);
   if (!marker.recognized) {
-    throw new Error("canonical Superbee user-state root is not owned by this product");
+    throw await unrecognizedStateRootError(root, input);
   }
   // Ownership is proven, so drifted permissions are repaired rather than refused — the directory
   // first, so the marker is re-tightened inside an already-private root. A root already at 0700
@@ -534,10 +567,10 @@ export function ensureUserStateRootSync(input: UserStateInput = homedir()): stri
   try {
     marker = readFileSync(join(root, USER_STATE_MARKER_FILE_NAME), "utf8");
   } catch {
-    throw new Error("canonical Superbee user-state root is not owned by this product");
+    throw stateRootRefusal(root, false);
   }
   if (marker !== USER_STATE_MARKER_BYTES) {
-    throw new Error("canonical Superbee user-state root is not owned by this product");
+    throw stateRootRefusal(root, false);
   }
   if (currentPrivateStateHost().enforcePrivateMode) {
     chmodSync(root, DIR_MODE);
@@ -607,7 +640,7 @@ export async function inspectCanonicalUserStateRoot(input: UserStateInput = home
 
 async function assertCanonicalUserStateRootReady(input: UserStateInput): Promise<void> {
   if (await inspectCanonicalUserStateRoot(input) !== "ready") {
-    throw new Error("canonical Superbee user-state root is not owned by this product");
+    throw await unrecognizedStateRootError(canonicalUserStateDir(input), input);
   }
 }
 
@@ -680,7 +713,7 @@ export async function readUserStateFile(
   }
   const state = await inspectCanonicalUserStateRoot(input);
   if (state === "absent") throw missingStateError(file);
-  if (state === "conflict") throw new Error("canonical Superbee user-state root is not owned by this product");
+  if (state === "conflict") throw await unrecognizedStateRootError(root, input);
   await assertPrivateDirectoryChain(root, file, input);
   return readPrivateStateFile(file, maxBytes, signal, input);
 }
