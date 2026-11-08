@@ -225,7 +225,7 @@ for (const row of DEPRECATION_NOTICES) {
 
 test("a project-scope legacy hook names --scope project, and that install clears it", () => withFixture(async (fixture) => {
   const { home, project } = fixture;
-  const args = ["setup", "--host", "claude-code", "--scope", "project", "--json"];
+  const args = ["setup", "--host", "claude-code", "--scope", "project", "--project", ".", "--json"];
   await writeJson(join(project, ".claude", "settings.json"), LEGACY_HOOK);
   const before = await run(args, project, cleanEnv(home));
   assert.ok(before.stderr.includes("hook install --scope project"), before.stderr);
@@ -235,9 +235,9 @@ test("a project-scope legacy hook names --scope project, and that install clears
   assert.ok(!after.stderr.includes("DEPRECATED_LEGACY_HOOK"), after.stderr);
 }));
 
-test("a default setup also reaches a project-scope legacy hook and names its scope", () => withFixture(async ({ home, project }) => {
+test("a user-scope setup with a chosen project also reaches its project-scope legacy hook", () => withFixture(async ({ home, project }) => {
   await writeJson(join(project, ".claude", "settings.json"), LEGACY_HOOK);
-  const result = await run(["setup", "--host", "claude-code", "--json"], project, cleanEnv(home));
+  const result = await run(["setup", "--host", "claude-code", "--project", ".", "--json"], project, cleanEnv(home));
   assert.ok(result.stderr.includes("hook install --scope project"), result.stderr);
   assert.ok(!result.stderr.includes("hook install --scope user"), result.stderr);
 }));

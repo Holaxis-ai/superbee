@@ -9,6 +9,7 @@ function deps(write: (text: string) => void): SetupDeps {
     cwd: () => "/Users/private/project",
     home: () => "/Users/private",
     invocation: () => "superbee",
+    isDirectory: () => true,
     inspectDistribution: () => ({
       allowed: true, state: "durable_global", reason: "durable",
       evidence: {
@@ -84,11 +85,128 @@ test("setup inspects a missing project's shared board before proposing bundle cr
     assert.equal(dir, "/Users/private/project");
     return { kind: "channel", channel: { mode: "branch", branch: "board", remote: "origin" } };
   };
-  await setup(["--host", "claude-code", "--scope", "project", "--json"], injected);
+  await setup(["--host", "claude-code", "--scope", "project", "--project", ".", "--json"], injected);
   const plan = JSON.parse(output).setup;
   assert.deepEqual(plan.next.command, ["superbee", "sync", "--pull-only"]);
   assert.equal(plan.next.mutates, true);
   assert.doesNotMatch(output, /init --create-only/);
+});
+
+test("--no-project avoids ambient project and catalog discovery and retains intent in host rows", async () => {
+  let output = "";
+  const injected = deps((text) => { output += text; });
+  const cwd = "/tmp/empty notes '$x;";
+  injected.cwd = () => cwd;
+  const calls: string[] = [];
+  injected.resolveBundle = async () => { calls.push("bundle"); throw new Error("must not resolve ambient project"); };
+  injected.inspectBoard = async () => { calls.push("board"); throw new Error("must not inspect ambient board"); };
+  injected.listCatalog = async () => { calls.push("catalog"); throw new Error("must not inspect catalog"); };
+  const inspectHook = injected.inspectHook;
+  injected.inspectHook = (scope) => { if (scope === "project") calls.push("project-hook"); return inspectHook(scope); };
+  await setup(["--no-project", "--json"], injected);
+  const hostless = JSON.parse(output).setup;
+  const rows = hostless.hosts;
+  assert.deepEqual(hostless.verify.command, ["superbee", "setup", "--scope", "user", "--no-project", "--json"]);
+  assert.equal(hostless.verify.cwd, cwd);
+  for (const row of rows) {
+    assert.equal(row.action.cwd, cwd);
+    assert.ok(row.action.command.includes("--no-project"));
+  }
+  output = "";
+  await setup(["--host", "codex", "--no-project", "--json"], injected);
+  const plan = JSON.parse(output).setup;
+  assert.equal(plan.complete, true);
+  assert.equal(plan.workspace.current_project_bundle, "not_checked");
+  assert.equal(plan.workspace.catalog_access, "not_checked");
+  assert.equal(plan.verify.cwd, cwd);
+  assert.ok(plan.verify.command.includes("--no-project"));
+  assert.deepEqual(calls, []);
+});
+
+test("hostless recovery keeps confirmed project choice in verification rather than recovery leaf argv", async () => {
+  let output = "";
+  const injected = deps((text) => { output += text; });
+  injected.invocation = () => "npx --no-install superbee";
+  injected.inspectState = async () => ({ state: "migratable", reason: "migration", records: 1 });
+  await setup(["--project", ".", "--scope", "project", "--json"], injected);
+  const plan = JSON.parse(output).setup;
+  assert.deepEqual(plan.next.command, ["npx", "--no-install", "superbee", "setup", "migrate-state"]);
+  assert.deepEqual(plan.verify.command, ["npx", "--no-install", "superbee", "setup", "--scope", "project", "--project", "/Users/private/project", "--json"]);
+  for (const row of plan.hosts) {
+    assert.equal(row.action.cwd, "/Users/private/project");
+    assert.deepEqual(row.action.command, ["npx", "--no-install", "superbee", "setup", "--host", row.id, "--scope", "project", "--project", "/Users/private/project", "--json"]);
+  }
+});
+
+test("unconfirmed project scope asks for selection before project inspectors or mutations", async () => {
+  let output = "";
+  const injected = deps((text) => { output += text; });
+  const calls: string[] = [];
+  injected.resolveBundle = async () => { throw new CliError("NOT_FOUND", "empty folder"); };
+  injected.inspectBoard = async () => { calls.push("board"); return { kind: "channel", channel: { mode: "local-only" } }; };
+  injected.inspectSkill = () => { calls.push("skill"); throw new Error("no project skill inspection"); };
+  injected.inspectHook = () => { calls.push("hook"); throw new Error("no project hook inspection"); };
+  await setup(["--host", "codex", "--scope", "project", "--json"], injected);
+  const plan = JSON.parse(output).setup;
+  assert.deepEqual(calls, []);
+  assert.equal(plan.next.action, "choose_value");
+  assert.equal(plan.next.mutates, false);
+  assert.equal(plan.next.command, undefined);
+  assert.equal(plan.next.command_template, undefined);
+  assert.deepEqual(plan.next.choices.map((choice: { command: string[] }) => choice.command),
+    [["superbee", "setup", "--host", "codex", "--scope", "project", "--project", "/Users/private/project"]],
+    "project scope offers only the runnable --project choice");
+});
+
+test("unselected user scope offers two runnable choices and no placeholder", async () => {
+  let output = "";
+  const injected = deps((text) => { output += text; });
+  injected.resolveBundle = async () => { throw new CliError("NOT_FOUND", "empty folder"); };
+  await setup(["--host", "claude-code", "--json"], injected);
+  const plan = JSON.parse(output).setup;
+  assert.equal(plan.next.action, "choose_value");
+  assert.doesNotMatch(output, /<project-choice>/);
+  assert.deepEqual(plan.next.choices.map((choice: { command: string[]; mutates: boolean }) => [choice.command, choice.mutates]), [
+    [["superbee", "setup", "--host", "claude-code", "--scope", "user", "--project", "/Users/private/project"], false],
+    [["superbee", "setup", "--host", "claude-code", "--scope", "user", "--no-project"], false],
+  ]);
+  assert.equal(plan.capabilities.find((row: { id: string }) => row.id === "bundle").reason,
+    "Pick a folder for this project's notes: --project <dir>, or --no-project to set this up later.");
+  assert.equal(plan.verify.description, "Check setup again. This reads files on disk only. Restart Claude Code to load Superbee.");
+});
+
+test("--project resolves to an absolute folder and refuses home, its ancestors and roots", async () => {
+  let output = "";
+  const injected = deps((text) => { output += text; });
+  injected.resolveBundle = async () => { throw new CliError("NOT_FOUND", "empty folder"); };
+  injected.inspectBoard = async () => ({ kind: "channel", channel: { mode: "local-only" } });
+  injected.listCatalog = async () => [];
+  await setup(["--host", "codex", "--project", "notes", "--json"], injected);
+  const plan = JSON.parse(output).setup;
+  assert.equal(plan.workspace.project_directory, "/Users/private/project/notes");
+  assert.deepEqual(plan.verify.command, ["superbee", "setup", "--host", "codex", "--scope", "user", "--project", "/Users/private/project/notes", "--json"]);
+  assert.equal(plan.next.cwd, "/Users/private/project/notes");
+  assert.equal(plan.capabilities.find((row: { id: string }) => row.id === "bundle").reason, "No notes folder yet. This creates .superbee in /Users/private/project/notes.");
+  for (const dir of ["/Users/private", "/Users/private/", "/Users", "/", ".."]) {
+    await assert.rejects(setup(["--project", dir, "--json"], deps(() => {})),
+      (error: unknown) => error instanceof CliError && error.code === "USAGE" && /home folder/.test(error.message), dir);
+  }
+  const missing = deps(() => {});
+  missing.isDirectory = () => false;
+  await assert.rejects(setup(["--project", "nope", "--json"], missing),
+    (error: unknown) => error instanceof CliError && error.code === "USAGE" && /does not exist/.test(error.message));
+});
+
+test("setup rejects conflicting or misplaced project choices before invoking mutations", async () => {
+  for (const args of [
+    ["--project", ".", "--no-project"], ["--no-project", "--scope", "project"],
+    ...["migrate-state", "harden-state", "quarantine-state"].flatMap((leaf) => [[leaf, "--project", "."], [leaf, "--no-project"]]),
+  ]) {
+    const injected = deps(() => {});
+    injected.inspectState = async () => { throw new Error("invalid flags must be rejected before inspection"); };
+    injected.migrateState = async () => { throw new Error("invalid flags must not mutate"); };
+    await assert.rejects(setup(args, injected), (error: unknown) => error instanceof CliError && error.code === "USAGE");
+  }
 });
 
 test("hostless setup supplies an agent protocol and host-specific argv actions", async () => {
@@ -106,6 +224,7 @@ test("hostless setup supplies an agent protocol and host-specific argv actions",
   assert.equal(parsed.setup.mode, "select_host");
   assert.deepEqual(parsed.setup.hosts.map((row) => row.id), ["codex", "claude-code", "claude-desktop", "opencode"]);
   assert.deepEqual(parsed.setup.hosts[0]?.action, {
+    cwd: "/Users/private/project",
     action: "run", command: ["superbee", "setup", "--host", "codex", "--scope", "user", "--json"],
     description: "Inspect setup readiness for Codex / ChatGPT.", mutates: false,
     approval: { required: false, reason: null },
@@ -113,7 +232,7 @@ test("hostless setup supplies an agent protocol and host-specific argv actions",
   assert.equal(parsed.setup.next.action, "select_host");
   assert.equal(parsed.setup.next.mutates, false);
   assert.equal(parsed.setup.next.approval.required, false);
-  assert.doesNotMatch(output, /\/Users\/private/);
+  assert.doesNotMatch(output, /\/Users\/private\/(?:npm|\.codex|\.claude)/);
 });
 
 test("hostless state recovery takes precedence and declares user-level approval", async () => {
@@ -123,6 +242,7 @@ test("hostless state recovery takes precedence and declares user-level approval"
   await setup(["--json"], injected);
   const next = (JSON.parse(output) as { setup: { next: unknown } }).setup.next;
   assert.deepEqual(next, {
+    cwd: "/Users/private/project",
     action: "run", command: ["superbee", "setup", "migrate-state"],
     description: "Migrate validated legacy private state into Superbee's canonical user-state directory.", mutates: true,
     approval: { required: true, reason: "This writes to the user-level Superbee private-state directory." },

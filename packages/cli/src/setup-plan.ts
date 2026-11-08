@@ -3,7 +3,7 @@ import type { ChannelDetection } from "@superbee/board-git";
 // Pure AXI setup planning. Host/file inspection lives at the command boundary; this module owns
 // only the bounded capability matrix, deterministic ordering, and one-next-command projection.
 
-import type { McpInstallTargetId, McpRegistrationState } from "./mcp-install-targets.js";
+import { MCP_INSTALL_TARGETS, type McpInstallTargetId, type McpRegistrationState } from "./mcp-install-targets.js";
 import type {
   PersistentInstallAuthorityFailure,
   PersistentInstallAuthorityState,
@@ -17,6 +17,7 @@ import type { UserStateMigrationInspection } from "./user-state-migration.js";
 export type SetupRequirement = "required" | "recommended" | "not_applicable";
 export type SetupCapabilityState = "ready" | "needs_action" | "blocked" | "not_applicable";
 export type SetupActionKind = "run" | "inspect" | "choose_value" | "select_host";
+export type SetupProjectSelection = "confirmed" | "unselected" | "deferred";
 
 export interface SetupApproval {
   readonly required: boolean;
@@ -30,15 +31,21 @@ export interface SetupApproval {
  */
 export interface SetupAction {
   readonly action: SetupActionKind;
+  /** Execute argv from this literal working directory; never interpolate it into shell text. */
+  readonly cwd?: string;
   readonly command?: readonly string[];
   readonly command_template?: string;
+  /** Runnable alternatives for a choose_value action; the agent picks one with the user. */
+  readonly choices?: readonly SetupAction[];
   readonly description: string;
   readonly mutates: boolean;
   readonly approval: SetupApproval;
 }
 
 export const AGENT_SETUP_INSTRUCTION =
-  "The calling agent executes the returned action, reports what it is doing, requests approval when approval.required is true, then reruns setup until status is ready. The calling agent must not relay the command to the user unless execution is unavailable.";
+  "The calling agent executes the returned action as argv from action.cwd, reports what it is doing, requests approval when approval.required is true, then reruns setup until configuration status is ready. When the action offers choices, pick one with the user: --project <dir> names the folder for this project's notes, and --no-project sets that up later. Configuration readiness does not prove the host has restarted or activated MCP. The calling agent must not relay the command to the user unless execution is unavailable.";
+
+export const SETUP_VERIFICATION = { configured_only: true, live_host_activation: "not_observed" } as const;
 
 export interface SetupCapability {
   readonly id: "distribution" | "state" | "skill" | "mcp" | "hook" | "bundle" | "catalog";
@@ -46,6 +53,10 @@ export interface SetupCapability {
   readonly state: SetupCapabilityState;
   readonly reason: string;
   readonly command?: string;
+  /** Exact argv for `command` when a literal path argument must not be split on whitespace. */
+  readonly argv?: readonly string[];
+  /** Runnable alternatives (argv starting with "superbee") when the user must choose. */
+  readonly choices?: readonly { readonly argv: readonly string[]; readonly description: string }[];
 }
 
 export interface SetupSkillHostState {
@@ -68,16 +79,22 @@ export interface SetupHookHostState {
 
 export interface SetupWorkspaceState {
   readonly board?: ChannelDetection;
-  readonly bundle: "selected" | "absent" | "unreadable";
+  readonly bundle: "selected" | "absent" | "unreadable" | "not_checked";
   /** The resolver's recovery when bundle selection is blocked (reported as "unreadable"). */
   readonly recovery?: string;
-  readonly catalog: "ready" | "empty" | "unreadable";
+  readonly catalog: "ready" | "empty" | "unreadable" | "not_checked";
   readonly selected_registered: boolean;
 }
 
 export interface SetupPlanInput {
   readonly host: McpInstallTargetId;
   readonly scope: InstallScope;
+  /** Omitted pure-planner inputs conservatively require a choice unless a bundle is resolved. */
+  readonly projectSelection?: SetupProjectSelection;
+  /** The working directory: the absolute --project folder when confirmed, else the launch directory. */
+  readonly cwd?: string;
+  /** False when cwd cannot be offered as a project folder (home, an ancestor of home, a root). */
+  readonly cwdOfferable?: boolean;
   readonly distribution: {
     readonly allowed: boolean;
     readonly state: PersistentInstallAuthorityState;
@@ -217,11 +234,42 @@ function actionDescription(capability: SetupCapability): string {
 export function setupNextForCapability(
   capability: SetupCapability,
   invocation: readonly string[] = [distributionBinName()],
+  cwd?: string,
 ): SetupAction | undefined {
+  const withInvocation = (argv: readonly string[]): readonly string[] =>
+    argv[0] === "superbee" ? [...invocation, ...argv.slice(1)] : argv;
+  if (capability.choices) {
+    return {
+      ...(cwd !== undefined ? { cwd } : {}),
+      action: "choose_value",
+      choices: capability.choices.map((choice) => ({
+        action: "run" as const,
+        ...(cwd !== undefined ? { cwd } : {}),
+        command: withInvocation(choice.argv),
+        description: choice.description,
+        mutates: false,
+        approval: { required: false, reason: null },
+      })),
+      description: capability.reason,
+      mutates: false,
+      approval: { required: false, reason: null },
+    };
+  }
   if (!capability.command) return undefined;
   const mutates = mutatesCapability(capability);
   const approval = approvalFor(capability, mutates);
+  if (capability.argv) {
+    return {
+      ...(cwd !== undefined ? { cwd } : {}),
+      action: capability.state === "blocked" ? "inspect" : "run",
+      command: withInvocation(capability.argv),
+      description: actionDescription(capability),
+      mutates,
+      approval,
+    };
+  }
   return {
+    ...(cwd !== undefined ? { cwd } : {}),
     // A blocked row represents uncertainty or foreign state. Keep every such remedy in the
     // inspect phase: approval metadata describes a later mutation, but never makes an unknown
     // state directly runnable before the operator has inspected the conflict.
@@ -252,11 +300,42 @@ export interface SetupPlan {
     readonly current_project_bundle: SetupWorkspaceState["bundle"];
     readonly catalog_access: SetupWorkspaceState["catalog"];
     readonly catalog_selects_current_project: false;
+    readonly project_selection: SetupProjectSelection | "existing_bundle";
+    readonly project_directory: string | null;
   };
   readonly capabilities: readonly SetupCapability[];
   readonly next?: SetupAction;
   readonly verify: SetupAction;
   readonly restart: { readonly after: readonly ("skill" | "mcp" | "hook")[] };
+  readonly verification: { readonly configured_only: true; readonly live_host_activation: "not_observed" };
+}
+
+function selectedProject(input: SetupPlanInput): SetupProjectSelection | "existing_bundle" {
+  if (input.projectSelection === "deferred") return "deferred";
+  if (input.projectSelection === "confirmed") return "confirmed";
+  return input.workspace.bundle === "selected" ? "existing_bundle" : "unselected";
+}
+
+export function setupProjectArgs(selection: SetupProjectSelection | undefined, dir: string | undefined): readonly string[] {
+  if (selection === "confirmed" && dir !== undefined) return ["--project", dir];
+  return selection === "deferred" ? ["--no-project"] : [];
+}
+
+function inspectAgainArgv(input: SetupPlanInput, project: readonly string[] = setupProjectArgs(input.projectSelection, input.cwd)): readonly string[] {
+  return ["superbee", "setup", "--host", input.host, "--scope", input.scope, ...project];
+}
+
+function inspectAgain(input: SetupPlanInput): Pick<SetupCapability, "command" | "argv"> {
+  const argv = inspectAgainArgv(input);
+  return { command: argv.join(" "), argv };
+}
+
+function hostLabel(host: McpInstallTargetId): string {
+  return MCP_INSTALL_TARGETS.find((target) => target.id === host)?.label ?? host;
+}
+
+export function setupVerifyDescription(host: McpInstallTargetId | undefined): string {
+  return `Check setup again. This reads files on disk only. Restart ${host ? hostLabel(host) : "your agent host"} to load Superbee.`;
 }
 
 function distributionCapability(input: SetupPlanInput): SetupCapability {
@@ -513,6 +592,9 @@ function hookCapability(input: SetupPlanInput): SetupCapability {
 }
 
 function bundleCapability(input: SetupPlanInput): SetupCapability {
+  if (selectedProject(input) === "deferred") {
+    return { id: "bundle", requirement: "not_applicable", state: "not_applicable", reason: "No project folder chosen yet (--no-project). Run setup with --project <dir> when you want notes." };
+  }
   if (input.workspace.bundle === "selected") {
     return { id: "bundle", requirement: "recommended", state: "ready", reason: "a local bundle is selected" };
   }
@@ -527,11 +609,27 @@ function bundleCapability(input: SetupPlanInput): SetupCapability {
       command: "superbee bundle locate",
     };
   }
+  if (selectedProject(input) === "unselected") {
+    const choices: { argv: readonly string[]; description: string }[] = [];
+    if (input.cwd !== undefined && input.cwdOfferable !== false) {
+      choices.push({ argv: inspectAgainArgv(input, ["--project", input.cwd]), description: `Use ${input.cwd} as the project folder.` });
+    }
+    if (input.scope === "user") {
+      choices.push({ argv: inspectAgainArgv(input, ["--no-project"]), description: "Finish setup now and pick a project folder later." });
+    }
+    return {
+      id: "bundle", requirement: "recommended", state: "needs_action",
+      reason: input.scope === "user"
+        ? "Pick a folder for this project's notes: --project <dir>, or --no-project to set this up later."
+        : "Pick a folder for this project's notes: --project <dir>. Project scope needs a project folder.",
+      choices,
+    };
+  }
   if (input.workspace.board?.kind === "indeterminate") {
     return {
       id: "bundle", requirement: "recommended", state: "blocked",
       reason: `${input.workspace.board.reason}; restore repository access or connectivity, then rerun setup before creating a bundle`,
-      command: `superbee setup --host ${input.host} --scope ${input.scope}`,
+      ...inspectAgain(input),
     };
   }
   if (input.workspace.board?.kind === "channel" && input.workspace.board.channel.mode === "branch") {
@@ -545,27 +643,22 @@ function bundleCapability(input: SetupPlanInput): SetupCapability {
     return {
       id: "bundle", requirement: "recommended", state: "blocked",
       reason: "this project already tracks its bundle on the current branch; restore the missing tracked checkout before rerunning setup",
-      command: `superbee setup --host ${input.host} --scope ${input.scope}`,
-    };
-  }
-  if (input.workspace.catalog === "ready") {
-    return {
-      id: "bundle",
-      requirement: "recommended",
-      state: "not_applicable",
-      reason: "no current-project bundle is selected; catalog entries remain available only by explicit selection and are not project context",
+      ...inspectAgain(input),
     };
   }
   return {
     id: "bundle",
     requirement: "recommended",
     state: "needs_action",
-    reason: "no local bundle is selected",
+    reason: `No notes folder yet. This creates .superbee in ${input.cwd ?? "the project folder"}.`,
     command: "superbee init --create-only --recipe work-tracking --dir .superbee",
   };
 }
 
 function catalogCapability(input: SetupPlanInput): SetupCapability {
+  if (selectedProject(input) === "deferred" || selectedProject(input) === "unselected") {
+    return { id: "catalog", requirement: "not_applicable", state: "not_applicable", reason: "register a notes folder only after a project has been selected" };
+  }
   if (input.workspace.catalog === "ready" && (input.workspace.bundle !== "selected" || input.workspace.selected_registered)) {
     return {
       id: "catalog",
@@ -599,21 +692,24 @@ function catalogCapability(input: SetupPlanInput): SetupCapability {
 }
 
 export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
+  const bundle = bundleCapability(input);
+  const needsProjectBeforeInstall = input.scope === "project" && selectedProject(input) === "unselected";
   const capabilities = [
     distributionCapability(input),
     setupStateCapability(input.state),
+    ...(needsProjectBeforeInstall ? [bundle] : []),
     skillCapability(input),
     mcpCapability(input),
-    bundleCapability(input),
-    catalogCapability(input),
     hookCapability(input),
+    ...(!needsProjectBeforeInstall ? [bundle] : []),
+    catalogCapability(input),
   ] as const;
   const required = capabilities.filter((capability) => capability.requirement === "required");
   const actionable = capabilities.find((capability) =>
     capability.state === "needs_action" || capability.state === "blocked",
   );
   const invocation = input.invocation ?? [distributionBinName()];
-  const next = actionable ? setupNextForCapability(actionable, invocation) : undefined;
+  const next = actionable ? setupNextForCapability(actionable, invocation, input.cwd) : undefined;
   const ready = required.every((capability) => capability.state === "ready");
   const complete = capabilities.every((capability) => capability.state === "ready" || capability.state === "not_applicable");
   const restartAfter = capabilities
@@ -635,16 +731,20 @@ export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
       current_project_bundle: input.workspace.bundle,
       catalog_access: input.workspace.catalog,
       catalog_selects_current_project: false,
+      project_selection: selectedProject(input),
+      project_directory: selectedProject(input) === "deferred" || selectedProject(input) === "unselected" ? null : input.cwd ?? null,
     },
     capabilities,
     ...(next ? { next } : {}),
     verify: {
       action: "run",
-      command: [...invocation, "setup", "--host", input.host, "--scope", input.scope, "--json"],
-      description: "Reinspect setup readiness after the preceding action.",
+      command: [...invocation, "setup", "--host", input.host, "--scope", input.scope, ...setupProjectArgs(input.projectSelection, input.cwd), "--json"],
+      ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+      description: setupVerifyDescription(input.host),
       mutates: false,
       approval: { required: false, reason: null },
     },
     restart: { after: restartAfter },
+    verification: SETUP_VERIFICATION,
   };
 }
