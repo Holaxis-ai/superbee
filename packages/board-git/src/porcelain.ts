@@ -2705,7 +2705,8 @@ function swallowReason(err: BoardGitError): string {
     case "AUTH_REQUIRED":
       return "auth";
     case "TRANSIENT":
-      return "network";
+      // A stopped step is not evidence the host is unreachable.
+      return err.details?.reason === "timeout" ? "timeout" : "network";
     case "CONFLICT":
       return "conflict";
     default:

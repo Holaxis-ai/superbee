@@ -36,6 +36,12 @@
       "bytes": "error:\n  code: TRANSIENT\n  message: sync could not reach the remote — offline or the host is unreachable; retry\n  details:\n    retryable: true\n"
     },
     {
+      "key": "ff.timeout",
+      "variant": "default",
+      "kind": "envelope",
+      "bytes": "error:\n  code: TRANSIENT\n  message: the fetch from the remote did not finish in time and was stopped; retry\n  details:\n    retryable: true\n    reason: timeout\n"
+    },
+    {
       "key": "ff.busy",
       "variant": "default",
       "kind": "envelope",
@@ -370,6 +376,12 @@
       "variant": "default",
       "kind": "line",
       "bytes": "board sync offline — showing last known state"
+    },
+    {
+      "key": "line.home.timeout-note",
+      "variant": "default",
+      "kind": "line",
+      "bytes": "board sync timed out; showing last known state"
     },
     {
       "key": "line.home.in-tree",

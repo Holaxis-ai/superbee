@@ -602,11 +602,38 @@ test("time-box fall-through: a REAL hanging remote is killed inside the budget a
 
     const renderBoundMs = 5_000;
     assert.ok(elapsed < renderBoundMs, `render must appear within the bounded host allowance (took ${elapsed}ms)`);
-    assert.match(out, /board sync offline — showing last known state/);
+    assert.match(out, /board sync timed out; showing last known state/);
     assert.match(out, /\.superbee/); // the full home render fell through
   } finally {
     process.env.PATH = prevPath;
     await rm(helperDir, { recursive: true, force: true });
+    await topo.cleanup();
+    await rm(homeB, { recursive: true, force: true });
+  }
+});
+
+test("stalled fetch: a pull that runs out of its budget says it timed out, never offline; render still appears", async () => {
+  const topo = await makeTwoCloneTopology();
+  const homeB = await tempHome();
+  try {
+    await runSessionStart(homeB, ["--dir", topo.b.root]);
+    // The remote's upload-pack outlasts the budget by far, so only the fetch runs out of time.
+    const slow = path.join(topo.dir, "slow-upload-pack");
+    await writeFile(slow, `#!/bin/sh\nsleep 20\nexec git-upload-pack "$@"\n`);
+    chmodSync(slow, 0o755);
+    git(topo.b.root, ["config", "remote.origin.uploadpack", slow]);
+
+    const t0 = Date.now();
+    const outcome = await withHome(homeB, () => sessionStartPull(topo.b.root, 1_500));
+    assert.ok(Date.now() - t0 < 10_000, "the stalled fetch is stopped by the budget");
+    assert.equal(outcome?.offline, true, "currency is unconfirmed");
+    assert.equal(outcome?.timedOut, true);
+
+    const out = await runSessionStart(homeB, ["--dir", topo.b.root], { budgetMs: 1_500 });
+    assert.match(out, /board sync timed out; showing last known state/);
+    assert.doesNotMatch(out, /board sync offline/);
+    assert.match(out, /\.superbee/);
+  } finally {
     await topo.cleanup();
     await rm(homeB, { recursive: true, force: true });
   }
@@ -660,7 +687,7 @@ test("zero-at-the-fetch-boundary: a budget that decays to 0 AFTER the guard neve
   }
 });
 
-test("zero budget at entry: the guard takes the offline path before ANY network op; render still appears", async () => {
+test("zero budget at entry: the guard takes the timed-out path before ANY network op; render still appears", async () => {
   const topo = await makeTwoCloneTopology();
   const homeB = await tempHome();
   const helperDir = await mkdtemp(path.join(tmpdir(), "aslite-zero-entry-"));
@@ -675,7 +702,7 @@ test("zero budget at entry: the guard takes the offline path before ANY network 
     const t0 = Date.now();
     const out = await runSessionStart(homeB, ["--dir", topo.b.root], { budgetMs: 0 });
     assert.ok(Date.now() - t0 < 5_000, "zero budget must never wait on the network");
-    assert.match(out, /board sync offline — showing last known state/);
+    assert.match(out, /board sync timed out; showing last known state/);
     assert.match(out, /\.superbee/);
   } finally {
     process.env.PATH = prevPath;
