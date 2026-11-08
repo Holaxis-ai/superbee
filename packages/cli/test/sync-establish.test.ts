@@ -1168,13 +1168,13 @@ test("establish refusal: a 'board/…' namespace branch blocks (uncreatable-ref 
   }
 });
 
-test("establish refusal: a project binding (.agentstate.json) pointing elsewhere refuses — out of the git-sync tier by design", async () => {
+test("establish refusal: a project binding (.superbee.json) pointing elsewhere refuses — out of the git-sync tier by design", async () => {
   const topo = await makeGreenfieldTopology();
   const { home, cleanup } = await tempHome();
   const elsewhere = await mkdtemp(path.join(tmpdir(), "aslite-establish-elsewhere-"));
   try {
     await initPlainBundleDir(topo.a);
-    await writeFile(path.join(topo.a.root, ".agentstate.json"), JSON.stringify({ bundle: elsewhere }));
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: elsewhere }));
     const { err } = await runSync(home, ["--establish", "--dir", topo.a.root]);
     assert.equal(err?.code, "RUNTIME");
     assert.match(err?.message ?? "", /project binding/);

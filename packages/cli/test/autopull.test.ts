@@ -38,7 +38,6 @@ import { withIsolatedUserEnv } from "./support/user-env.js";
 import { initBundle, writeDoc } from "@superbee/core";
 import {
   AUTO_PULL_STALE_MS,
-  NO_AUTOPULL_ENV,
   SUPERBEE_NO_AUTOPULL_ENV,
   maybeAutoPull,
 } from "../src/autopull.js";
@@ -267,8 +266,9 @@ test("opt-out knob: Superbee and legacy no-autopull env vars disable the trigger
     pushBoard(topo.a);
     const before = boardHead(topo.b);
     for (const [key, value] of [
-      [NO_AUTOPULL_ENV, "1"],
       [SUPERBEE_NO_AUTOPULL_ENV, "1"],
+      // Only the hook path reaches a read with a retired name unresolved, and it fails closed.
+      ["AGENTSTATE_LITE_NO_AUTOPULL", "1"],
       [SUPERBEE_NO_AUTOPULL_ENV, "0"],
     ] as const) {
       const outcome = await withHome(homeB, () =>
@@ -572,9 +572,9 @@ test("detection cost: 0 spawns on non-board paths; exactly ONE (remote get-url) 
 test("session-start fence: a pull step with NO outcome (no repo/no board/provision threw) still hands home a defined boardPull — zero fetches outside the budget race", async () => {
   const topo = await makeTwoCloneTopology(); // a REAL provisioned, never-pulled (stale) board
   const homeDir = await tempHome();
-  const prevKnob = process.env[NO_AUTOPULL_ENV];
+  const prevKnob = process.env[SUPERBEE_NO_AUTOPULL_ENV];
   // The FENCE, not the suite-wide knob, must be what prevents the pull — remove the knob.
-  delete process.env[NO_AUTOPULL_ENV];
+  delete process.env[SUPERBEE_NO_AUTOPULL_ENV];
   const shim = await installGitSpawnShim();
   try {
     const cap = captureStdout();
@@ -591,8 +591,8 @@ test("session-start fence: a pull step with NO outcome (no repo/no board/provisi
     );
   } finally {
     await shim.restore();
-    if (prevKnob === undefined) delete process.env[NO_AUTOPULL_ENV];
-    else process.env[NO_AUTOPULL_ENV] = prevKnob;
+    if (prevKnob === undefined) delete process.env[SUPERBEE_NO_AUTOPULL_ENV];
+    else process.env[SUPERBEE_NO_AUTOPULL_ENV] = prevKnob;
     await topo.cleanup();
     await rm(homeDir, { recursive: true, force: true });
   }

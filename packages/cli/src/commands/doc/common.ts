@@ -131,9 +131,9 @@ Options:
                        for an agent or tool (e.g. openai/codex). Anything else is refused with the
                        corrected spelling.
                        Note doc write is a FULL replace:
-                       omitting both --actor and the supported actor environment variables on an
+                       omitting both --actor and SUPERBEE_ACTOR on an
                        overwrite drops any existing attribution field (reported in dropped_fields). Precedence:
-                       --actor > SUPERBEE_ACTOR > legacy AGENTSTATE_LITE_ACTOR > absent. A
+                       --actor > SUPERBEE_ACTOR > absent. A
                        present-but-blank flag or environment value is a USAGE error (exit 2).
 ${COMMON_OPTIONS}
 
@@ -204,7 +204,7 @@ Options:
                          and thread it to version history (see 'doc history'). On an OKF v0.2 bundle
                          the value must be an OKF actor (human:<id>, process:<id>, or
                          <producer>/<version> such as openai/codex). Precedence: --actor >
-                         SUPERBEE_ACTOR > legacy AGENTSTATE_LITE_ACTOR > absent. Without a source,
+                         SUPERBEE_ACTOR > absent. Without a source,
                          Superbee applies the bundle's compatibility policy. An identical no-op
                          preserves exact bytes. Attribution is
                          not a patch by itself and cannot turn an identical patch into a write. A
@@ -356,8 +356,7 @@ Usage:
 Lists version + actor + timestamp (and agent, when recorded) per revision, with a count. A
 history-keeping backend (a remote deployment) returns the full chain and its real per-write
 attribution; on an AUTH'D remote, actor is your authenticated principal (server-set, unforgeable)
-and agent is the resolved advisory actor label from --actor, SUPERBEE_ACTOR, or legacy
-AGENTSTATE_LITE_ACTOR. A local --dir bundle keeps no history, so it returns just the single current
+and agent is the resolved advisory actor label from --actor or SUPERBEE_ACTOR. A local --dir bundle keeps no history, so it returns just the single current
 revision, even when its files are tracked in Git. Its actor is resolved from the doc's compatible
 advisory attribution, or "unattributed" when none is present. generated.by names the content
 producer and is not used as the version's mutator. The newest version is the token to

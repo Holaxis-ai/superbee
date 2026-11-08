@@ -543,9 +543,8 @@ test("delete hook: both commands retain unbound conventional board attribution w
   const intree = await makeCommittedFolderTopology();
   const branch = await makeTwoCloneTopology();
   const { home: h, cleanup } = await tempHome();
-  const previousActors = [process.env.SUPERBEE_ACTOR, process.env.AGENTSTATE_LITE_ACTOR];
+  const previousActor = process.env.SUPERBEE_ACTOR;
   delete process.env.SUPERBEE_ACTOR;
-  delete process.env.AGENTSTATE_LITE_ACTOR;
   try {
     await withHome(h, async () => {
       for (const board of [intree.a.board, branch.a.board]) {
@@ -569,10 +568,8 @@ test("delete hook: both commands retain unbound conventional board attribution w
       }
     });
   } finally {
-    if (previousActors[0] === undefined) delete process.env.SUPERBEE_ACTOR;
-    else process.env.SUPERBEE_ACTOR = previousActors[0];
-    if (previousActors[1] === undefined) delete process.env.AGENTSTATE_LITE_ACTOR;
-    else process.env.AGENTSTATE_LITE_ACTOR = previousActors[1];
+    if (previousActor === undefined) delete process.env.SUPERBEE_ACTOR;
+    else process.env.SUPERBEE_ACTOR = previousActor;
     await cleanup();
     await intree.cleanup();
     await branch.cleanup();

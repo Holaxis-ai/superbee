@@ -119,9 +119,8 @@ Options:
                          by per-doc sync receipts and version history for a persisting backend.
                          On an OKF v0.2 bundle the value must be an OKF actor (human:<id>,
                          process:<id>, or <producer>/<version> such as openai/codex).
-                         Precedence: --actor > SUPERBEE_ACTOR >
-                         legacy AGENTSTATE_LITE_ACTOR > absent. A present-but-blank flag or
-                         environment value is a USAGE error (exit 2).
+                         Precedence: --actor > SUPERBEE_ACTOR > absent. A present-but-blank
+                         flag or environment value is a USAGE error (exit 2).
   --body <markdown>     Use inline Markdown as the complete initial body. Mutually exclusive with
                        --body-file. The supplied body is validated strictly against the kind's
                        declared sections before anything is written.
@@ -367,7 +366,7 @@ function renderKindHelp(
     `To ADD a field: ${inv} kind field ${commandToken(kind.governs)} add <name> [--required] [--values <a,b,c>].\n\n` +
     `Options:\n` +
     `  --stale-after <iso>  Expiration instant (OKF v0.2 only); valid date, time, and zone required\n` +
-    `  --actor <name>   Attribute the write (overrides SUPERBEE_ACTOR; legacy AGENTSTATE_LITE_ACTOR remains supported).\n` +
+    `  --actor <name>   Attribute the write (overrides SUPERBEE_ACTOR).\n` +
     `                   OKF v0.2 bundles accept only human:<id>, process:<id>, or <producer>/<version> (e.g. openai/codex)\n` +
     `  --body <markdown>\n` +
     `                   Use inline Markdown as the complete initial body; mutually exclusive with\n` +

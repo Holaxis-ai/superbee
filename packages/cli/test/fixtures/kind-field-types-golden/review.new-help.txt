@@ -36,7 +36,7 @@ To ADD a field: npx --no-install superbee kind field 'Review Request' add <name>
 
 Options:
   --stale-after <iso>  Expiration instant (OKF v0.2 only); valid date, time, and zone required
-  --actor <name>   Attribute the write (overrides SUPERBEE_ACTOR; legacy AGENTSTATE_LITE_ACTOR remains supported).
+  --actor <name>   Attribute the write (overrides SUPERBEE_ACTOR).
                    OKF v0.2 bundles accept only human:<id>, process:<id>, or <producer>/<version> (e.g. openai/codex)
   --body <markdown>
                    Use inline Markdown as the complete initial body; mutually exclusive with

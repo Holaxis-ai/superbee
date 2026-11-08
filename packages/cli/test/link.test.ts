@@ -40,15 +40,15 @@ import { renderedQuoted, renderedQuotedPattern } from "./support/rendered-comman
 const OLD_TS = "2020-01-01T00:00:00.000Z";
 
 async function withActorEnv<T>(value: string | undefined, run: () => Promise<T>): Promise<T> {
-  const had = Object.prototype.hasOwnProperty.call(process.env, "AGENTSTATE_LITE_ACTOR");
-  const previous = process.env.AGENTSTATE_LITE_ACTOR;
-  if (value === undefined) delete process.env.AGENTSTATE_LITE_ACTOR;
-  else process.env.AGENTSTATE_LITE_ACTOR = value;
+  const had = Object.prototype.hasOwnProperty.call(process.env, "SUPERBEE_ACTOR");
+  const previous = process.env.SUPERBEE_ACTOR;
+  if (value === undefined) delete process.env.SUPERBEE_ACTOR;
+  else process.env.SUPERBEE_ACTOR = value;
   try {
     return await run();
   } finally {
-    if (had) process.env.AGENTSTATE_LITE_ACTOR = previous;
-    else delete process.env.AGENTSTATE_LITE_ACTOR;
+    if (had) process.env.SUPERBEE_ACTOR = previous;
+    else delete process.env.SUPERBEE_ACTOR;
   }
 }
 
@@ -1545,7 +1545,7 @@ test("every previously-documented fact from the old single combined block is rea
     /Dangling edges \(a link to a doc that doesn't exist yet\) are\s+included/,
     /Filter outbound links AND backlinks to those whose text is EXACTLY <t>/,
     /Cap each of the outbound\/backlink lists \(default: 50; 0 = unlimited\)/,
-    /Falls back to SUPERBEE_ACTOR \(or legacy AGENTSTATE_LITE_ACTOR\); an existing\s+link remains a true no-op/,
+    /Falls back to SUPERBEE_ACTOR; an existing\s+link remains a true no-op/,
     /Cap the returned edge rows \(default: 100; 0 = unlimited\)/,
   ];
   for (const re of mustAppearSomewhere) {

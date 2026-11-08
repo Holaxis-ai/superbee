@@ -46,7 +46,7 @@ import { resolveProvisionedBoardPath } from "../board-runtime.js";
 // private cached update state and launch one DETACHED worker; the render awaits neither its npm
 // request nor child close. JSON and suppressor paths bypass that owner entirely.
 //
-// PROJECT-BINDING PEEK: home consults `.agentstate.json` only when no explicit flag is present. A
+// PROJECT-BINDING PEEK: home consults `.superbee.json` only when no explicit flag is present. A
 // local path scopes the dashboard; a URL binding is rejected by `resolveProjectBinding` and shown as
 // a non-fatal `project_binding_error`, preserving SessionStart's render-always contract.
 //
@@ -103,7 +103,7 @@ import {
 } from "@superbee/board-git";
 import { maybeAutoPull } from "../autopull.js";
 import { CliError } from "../errors.js";
-import { emitDeprecationNotice } from "../deprecation-notices.js";
+import { emitDeprecationNotice, retiredEnvHomeLine } from "../deprecation-notices.js";
 import { parseLeafOrUsage } from "../args.js";
 import { HOME_LEAF } from "../command-spec.js";
 import { unsettledConflicts, unsettledMessage, unsettledRow, type UnsettledConflict } from "../saved-conflicts.js";
@@ -146,8 +146,8 @@ Options:
   --no-update-check  Disable both cached notice display and detached refresh for this run
   -h, --help         Show this help
 
-Environment opt-outs (presence, including an empty value): SUPERBEE_NO_UPDATE_CHECK, legacy
-ASLITE_NO_UPDATE_CHECK, NO_UPDATE_NOTIFIER, or CI.
+Environment opt-outs (presence, including an empty value): SUPERBEE_NO_UPDATE_CHECK,
+NO_UPDATE_NOTIFIER, or CI.
 `;
 
 const HOME_OPTIONS = {
@@ -237,7 +237,7 @@ export interface ConflictedBundle {
 }
 
 /**
- * A committed `.agentstate.json` binding home resolved for ITSELF (see the module header's
+ * A committed `.superbee.json` binding home resolved for ITSELF (see the module header's
  * PROJECT-BINDING PEEK) — surfaced as a `via` annotation on the local bundle block it drove, so the
  * view stays honest about where a non-cwd-walk resolution came
  * from without changing byte-identical output for the common no-binding case.
@@ -867,7 +867,7 @@ function bundleOffers(
  * omitted and a `getting_started` hint (pointing at `init`) is inserted just before `commands`.
  *
  * `binding` (when the caller's own project-binding peek resolved one — see the module header)
- * annotates whichever block it drove with a `via` field naming the `.agentstate.json` file, WITHOUT
+ * annotates whichever block it drove with a `via` field naming the `.superbee.json` file, WITHOUT
  * changing that block's shape otherwise. `bindingError` (a malformed binding file — never a thrown
  * exception, since home must never crash) renders as a standalone `project_binding_error` note.
  */
@@ -875,12 +875,12 @@ function bundleOffers(
 function resolvedActorLine(env: NodeJS.ProcessEnv): { actor: string; actor_help?: string } {
   try {
     const actor = resolveActor(undefined, { env });
-    return describeResolvedActor(actor === undefined ? { kind: "unset" } : { kind: "value", actor }, { env });
+    return describeResolvedActor(actor === undefined ? { kind: "unset" } : { kind: "value", actor });
   } catch (err) {
-    // The resolver refused the environment (a blank variable, or two that disagree): the write
+    // The resolver refused the environment (a blank variable): the write
     // path will refuse it too, so surface the resolver's own diagnostic rather than "unset".
     const diagnostic = err instanceof CliError ? err.message : String(err);
-    return describeResolvedActor({ kind: "unusable", diagnostic }, { env });
+    return describeResolvedActor({ kind: "unusable", diagnostic });
   }
 }
 
@@ -918,6 +918,9 @@ export function buildHomeView(
     },
   };
   if (updateNotice) view.update_notice = updateNotice;
+  // Hook-only users get no refusal, so the retired-setting fix rides the payload itself.
+  const retiredEnv = retiredEnvHomeLine(deps.env ?? process.env);
+  if (retiredEnv) view.retired_env = retiredEnv;
 
   if (remote) {
     // Scoped to a remote bundle: an OFFLINE orientation pointer (home never fetches — it is the
@@ -1066,7 +1069,7 @@ export function buildHomeView(
   }
   if (skillUpdate) view.skill_update = skillUpdate;
   if (bindingError) {
-    // A malformed .agentstate.json — never a thrown exception (home must never crash the
+    // A malformed or retired binding — never a thrown exception (home must never crash the
     // SessionStart hook), surfaced instead as a visible, non-fatal note.
     view.project_binding_error =
       `${bindingError}; fix or remove the binding before initializing or browsing recipes`;

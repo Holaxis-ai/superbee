@@ -244,7 +244,7 @@ minutes, the read first runs the same fast-forward-only pull \`--pull-only\` use
 the board checkout's HEAD can advance after a plain \`list\`. Reads never auto-push; sharing YOUR
 changes is always this verb. Set SUPERBEE_NO_AUTOPULL to any non-empty value to disable the
 auto-pull (note: "0" disables it too — the variable's PRESENCE is the switch) for CI or scripted
-runs that must never touch the network. Legacy AGENTSTATE_LITE_NO_AUTOPULL remains supported.
+runs that must never touch the network.
 
 \`--establish\` also handles the project whose \`.superbee/\` or legacy \`.agentstate-lite/\` folder is ALREADY COMMITTED
 on the current branch: it creates the \`board\` branch carrying the folder's CURRENT files (files

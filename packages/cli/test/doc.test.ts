@@ -89,15 +89,15 @@ const OLD_TS = "2020-01-01T00:00:00.000Z";
 const T = "2026-07-01T00:00:00.000Z";
 
 async function withActorEnv<T>(value: string | undefined, run: () => Promise<T>): Promise<T> {
-  const had = Object.prototype.hasOwnProperty.call(process.env, "AGENTSTATE_LITE_ACTOR");
-  const previous = process.env.AGENTSTATE_LITE_ACTOR;
-  if (value === undefined) delete process.env.AGENTSTATE_LITE_ACTOR;
-  else process.env.AGENTSTATE_LITE_ACTOR = value;
+  const had = Object.prototype.hasOwnProperty.call(process.env, "SUPERBEE_ACTOR");
+  const previous = process.env.SUPERBEE_ACTOR;
+  if (value === undefined) delete process.env.SUPERBEE_ACTOR;
+  else process.env.SUPERBEE_ACTOR = value;
   try {
     return await run();
   } finally {
-    if (had) process.env.AGENTSTATE_LITE_ACTOR = previous;
-    else delete process.env.AGENTSTATE_LITE_ACTOR;
+    if (had) process.env.SUPERBEE_ACTOR = previous;
+    else delete process.env.SUPERBEE_ACTOR;
   }
 }
 
@@ -1140,7 +1140,7 @@ test("doc write --actor: recorded in version history on a PERSISTING backend (Me
   assert.equal(history[0]!.actor, "alice");
 });
 
-test("doc write: AGENTSTATE_LITE_ACTOR fallback reaches frontmatter and remote version history; flag wins", async () => {
+test("doc write: SUPERBEE_ACTOR fallback reaches frontmatter and remote version history; flag wins", async () => {
   const bundle: Bundle = { root: "mem://doc-write-actor-env", backend: new MemoryBackend() };
   const server = await bootServerOverBundle(bundle);
   try {
@@ -1168,13 +1168,13 @@ test("doc write: AGENTSTATE_LITE_ACTOR fallback reaches frontmatter and remote v
   }
 });
 
-test("doc write: a present-but-blank AGENTSTATE_LITE_ACTOR is USAGE and writes nothing", async () => {
+test("doc write: a present-but-blank SUPERBEE_ACTOR is USAGE and writes nothing", async () => {
   const { dir, cleanup } = await makeBundle();
   try {
     await withActorEnv("   ", async () => {
       await assert.rejects(
         () => runDoc(["write", "concepts/a", "--type", "Concept", "--body", "b", "--dir", dir]),
-        (err: unknown) => err instanceof CliError && err.code === "USAGE" && /AGENTSTATE_LITE_ACTOR/.test(err.message),
+        (err: unknown) => err instanceof CliError && err.code === "USAGE" && /SUPERBEE_ACTOR/.test(err.message),
       );
     });
     await assert.rejects(() => readDoc({ root: dir }, "concepts/a"));
@@ -4386,7 +4386,7 @@ test("each doc verb's --help is focused on THAT verb, not the whole family manua
   assert.doesNotMatch(deleteHelp, /--blank-body|--title/, "delete help stays minimal");
 
   const historyHelp = await capture(["history", "--help"]);
-  assert.match(historyHelp, /resolved advisory actor label from --actor, SUPERBEE_ACTOR, or legacy\s+AGENTSTATE_LITE_ACTOR/);
+  assert.match(historyHelp, /resolved advisory actor label from --actor or SUPERBEE_ACTOR/);
   assert.match(historyHelp, /authenticated principal \(server-set, unforgeable\)/);
   assert.match(historyHelp, /compatible\s+advisory attribution/);
   assert.match(historyHelp, /"unattributed" when none is present/);

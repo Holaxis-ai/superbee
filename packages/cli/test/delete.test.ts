@@ -27,7 +27,7 @@ import { testInvocation } from "./support/command-prefix.js";
 const OLD_TS = "2020-01-01T00:00:00.000Z";
 
 async function withDeleteActorEnv<T>(env: NodeJS.ProcessEnv, run: () => Promise<T>): Promise<T> {
-  const keys = ["SUPERBEE_ACTOR", "AGENTSTATE_LITE_ACTOR"] as const;
+  const keys = ["SUPERBEE_ACTOR"] as const;
   const before = keys.map(key => process.env[key]);
   for (const key of keys) {
     if (env[key] === undefined) delete process.env[key];
@@ -50,12 +50,10 @@ for (const surface of DOCUMENT_DELETE_SURFACES) {
   for (const row of [
     { name: "v0.1 free-form configured actor", edition: "0.1", env: { SUPERBEE_ACTOR: "legacy name" }, flags: [], refused: false },
     { name: "v0.2 canonical environment actor", edition: "0.2", env: { SUPERBEE_ACTOR: "human:canonical" }, flags: [], refused: false },
-    { name: "v0.2 legacy environment actor", edition: "0.2", env: { AGENTSTATE_LITE_ACTOR: "human:legacy" }, flags: [], refused: false },
-    { name: "explicit actor overrides environment", edition: "0.2", env: { SUPERBEE_ACTOR: "invalid", AGENTSTATE_LITE_ACTOR: "also invalid" }, flags: ["--actor", "human:explicit"], refused: false },
+    { name: "explicit actor overrides environment", edition: "0.2", env: { SUPERBEE_ACTOR: "invalid" }, flags: ["--actor", "human:explicit"], refused: false },
     { name: "missing actor is allowed", edition: "0.2", env: {}, flags: [], refused: false },
     { name: "invalid configured actor", edition: "0.2", env: { SUPERBEE_ACTOR: "invalid" }, flags: [], refused: true },
     { name: "blank configured actor", edition: "0.2", env: { SUPERBEE_ACTOR: " " }, flags: [], refused: true },
-    { name: "conflicting configured actors", edition: "0.2", env: { SUPERBEE_ACTOR: "human:one", AGENTSTATE_LITE_ACTOR: "human:two" }, flags: [], refused: true },
     { name: "blank explicit actor", edition: "0.2", env: {}, flags: ["--actor", " "], refused: true },
     { name: "invalid configured actor still refuses absence", edition: "0.2", env: { SUPERBEE_ACTOR: "invalid" }, flags: [], refused: true, absent: true },
   ] as const) {
@@ -96,10 +94,10 @@ for (const surface of DOCUMENT_DELETE_SURFACES) {
   });
 }
 
-test("delete blob route ignores invalid, blank and conflicting document attribution", async () => {
+test("delete blob route ignores invalid and blank document attribution", async () => {
   const { dir, cleanup } = await makeBundle();
   try {
-    for (const env of [{ SUPERBEE_ACTOR: "invalid" }, { SUPERBEE_ACTOR: " " }, { SUPERBEE_ACTOR: "human:one", AGENTSTATE_LITE_ACTOR: "human:two" }]) {
+    for (const env of [{ SUPERBEE_ACTOR: "invalid" }, { SUPERBEE_ACTOR: " " }] as NodeJS.ProcessEnv[]) {
       await writeBlob({ root: dir }, "keep.bin", new Uint8Array([1, 2, 3]));
       const receipt = await withDeleteActorEnv(env, () => runDelete(["--doc-key", "keep.bin", "--dir", dir, "--actor", " "]));
       assert.equal(receipt.route, "blob");

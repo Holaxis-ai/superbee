@@ -41,7 +41,7 @@ const ROWS: ReadonlyArray<readonly [string, string, string, PrivateStateEvidence
   ["empty workspace catalog", "w.json", '{"schema_version":1,"entries":[]}', "workspace_catalog"],
   ["CONTROL: a bundle dir named like the product", ".superbee/index.md", "# x", null],
   ["CONTROL: the legacy BUNDLE dir", ".agentstate-lite/index.md", "# x", null],
-  ["CONTROL: a project binding file", ".agentstate.json", '{"bundle":"x"}', null],
+  ["CONTROL: a project binding file", ".superbee.json", '{"bundle":"x"}', null],
   ["CONTROL: another product's marker", "m.json", '{"product":"other","schema_version":1}', null],
   ["CONTROL: remotes without keys", "r.json", '{"remotes":{"a":{"url":"u"}}}', null],
   ["CONTROL: a list with other keys", "l.json", '{"schema_version":1,"entries":[],"extra":true}', null],

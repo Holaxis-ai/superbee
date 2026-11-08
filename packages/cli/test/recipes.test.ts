@@ -431,7 +431,7 @@ test("recipes: valid project bindings remain committed targets whose open failur
       cwd: "/project",
       resolveRemoteFlag: async () => undefined,
       resolveProjectBinding: async () => ({
-        file: "/project/.agentstate.json",
+        file: "/project/.superbee.json",
         target: "/missing-bundle",
       }),
       findBundleRoot: async () => {
@@ -3400,7 +3400,7 @@ test("recipe evolve: description evolution shows old/new guidance and applies on
   }
 });
 
-test("recipe add actor: built CLI resolves flag over canonical and legacy environment and keeps repeat adds unchanged", async () => {
+test("recipe add actor: built CLI resolves flag over environment, ignores a retired name beside SUPERBEE_ACTOR, and keeps repeat adds unchanged", async () => {
   const loaded = await resolveRecipe(EXAMPLE_RECIPE_FIXTURE);
   assert.ok(loaded.ok);
   const cli = path.resolve(import.meta.dirname, "../../superbee/dist/superbee.mjs");
@@ -3409,8 +3409,7 @@ test("recipe add actor: built CLI resolves flag over canonical and legacy enviro
   delete baseEnv.AGENTSTATE_LITE_ACTOR;
   for (const [env, flags, expected] of [
     [{ SUPERBEE_ACTOR: "process:environment", AGENTSTATE_LITE_ACTOR: "process:legacy" }, ["--actor", "process:flag"], "process:flag"],
-    [{ SUPERBEE_ACTOR: "process:environment", AGENTSTATE_LITE_ACTOR: "process:environment" }, [], "process:environment"],
-    [{ AGENTSTATE_LITE_ACTOR: "process:legacy" }, [], "process:legacy"],
+    [{ SUPERBEE_ACTOR: "process:environment", AGENTSTATE_LITE_ACTOR: "process:legacy" }, [], "process:environment"],
   ] as const) {
     const dir = await tempDir();
     try {
@@ -3440,8 +3439,8 @@ test("recipe add actor: blank flag or environment and invalid v0.2 identity refu
   for (const [env, flags] of [
     [{}, ["--actor", " "]],
     [{ SUPERBEE_ACTOR: " " }, []],
-    [{ AGENTSTATE_LITE_ACTOR: " " }, []],
-    [{ SUPERBEE_ACTOR: "process:canonical", AGENTSTATE_LITE_ACTOR: "process:conflicting-legacy" }, []],
+    // A retired name alone is refused at entry, before any write.
+    [{ AGENTSTATE_LITE_ACTOR: "process:legacy" }, []],
     [{}, ["--actor", "unqualified actor"]],
   ] as const) {
     const dir = await tempDir();

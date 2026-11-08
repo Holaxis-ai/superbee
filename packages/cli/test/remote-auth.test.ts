@@ -39,7 +39,7 @@ import { list } from "../src/commands/list.js";
 import { doc } from "../src/commands/doc.js";
 import { link } from "../src/commands/link.js";
 import { toExit } from "../src/errors.js";
-import { API_KEY_ENV_VAR, SUPERBEE_API_KEY_ENV_VAR, resolveApiKeyEnv } from "../src/bundle.js";
+import { SUPERBEE_API_KEY_ENV_VAR, resolveApiKeyEnv } from "../src/bundle.js";
 import { saveApiKeyForOrigin } from "../src/credentials.js";
 
 const REMOTE_URL = "http://gate-test.local";
@@ -94,36 +94,14 @@ async function withGatedFetch<T>(handler: (req: Request) => Promise<Response>, r
 }
 
 async function withApiKeyEnv<T>(value: string | undefined, run: () => Promise<T>): Promise<T> {
-  const original = process.env[API_KEY_ENV_VAR];
-  if (value === undefined) delete process.env[API_KEY_ENV_VAR];
-  else process.env[API_KEY_ENV_VAR] = value;
+  const original = process.env[SUPERBEE_API_KEY_ENV_VAR];
+  if (value === undefined) delete process.env[SUPERBEE_API_KEY_ENV_VAR];
+  else process.env[SUPERBEE_API_KEY_ENV_VAR] = value;
   try {
     return await run();
   } finally {
-    if (original === undefined) delete process.env[API_KEY_ENV_VAR];
-    else process.env[API_KEY_ENV_VAR] = original;
-  }
-}
-
-async function withApiKeyEnvs<T>(
-  values: Record<typeof API_KEY_ENV_VAR | typeof SUPERBEE_API_KEY_ENV_VAR, string | undefined>,
-  run: () => Promise<T>,
-): Promise<T> {
-  const originals = new Map<string, string | undefined>();
-  for (const key of [API_KEY_ENV_VAR, SUPERBEE_API_KEY_ENV_VAR] as const) {
-    originals.set(key, process.env[key]);
-    const value = values[key];
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  try {
-    return await run();
-  } finally {
-    for (const key of [API_KEY_ENV_VAR, SUPERBEE_API_KEY_ENV_VAR] as const) {
-      const original = originals.get(key);
-      if (original === undefined) delete process.env[key];
-      else process.env[key] = original;
-    }
+    if (original === undefined) delete process.env[SUPERBEE_API_KEY_ENV_VAR];
+    else process.env[SUPERBEE_API_KEY_ENV_VAR] = original;
   }
 }
 
@@ -204,7 +182,7 @@ test("--remote against a gated handler: server-side fail-closed 500 (unconfigure
   );
 });
 
-test("--remote against a gated handler: the CORRECT API key (via AGENTSTATE_LITE_API_KEY) passes through and the command succeeds", async () => {
+test("--remote against a gated handler: the CORRECT API key (via SUPERBEE_API_KEY) passes through and the command succeeds", async () => {
   const router = await freshRouter();
   await withApiKeyEnv(CORRECT_KEY, () =>
     withGatedFetch(gate(router, CORRECT_KEY), async () => {
@@ -248,7 +226,7 @@ test("--remote against a gated handler, via `link list` (graph-query-v0's queryE
   );
 });
 
-test("--remote: AGENTSTATE_LITE_API_KEY (env) beats a stored credentials-file key for the SAME origin when BOTH are set", async () => {
+test("--remote: SUPERBEE_API_KEY (env) beats a stored credentials-file key for the SAME origin when BOTH are set", async () => {
   const router = await freshRouter();
   const home = await mkdtemp(path.join(tmpdir(), "agentstate-lite-envkey-test-"));
   try {
@@ -277,46 +255,10 @@ test("--remote: AGENTSTATE_LITE_API_KEY (env) beats a stored credentials-file ke
   }
 });
 
-test("--remote: Superbee and legacy API-key env vars are compatible aliases with conflict checks", () => {
+test("--remote: only SUPERBEE_API_KEY is read; the retired AGENTSTATE_LITE_API_KEY is not", () => {
   assert.equal(resolveApiKeyEnv({ [SUPERBEE_API_KEY_ENV_VAR]: `  ${CORRECT_KEY}  ` }), CORRECT_KEY);
-  assert.equal(resolveApiKeyEnv({ [API_KEY_ENV_VAR]: `  ${CORRECT_KEY}  ` }), CORRECT_KEY);
-  assert.equal(
-    resolveApiKeyEnv({ [SUPERBEE_API_KEY_ENV_VAR]: `  ${CORRECT_KEY}  `, [API_KEY_ENV_VAR]: CORRECT_KEY }),
-    CORRECT_KEY,
-  );
-  assert.equal(resolveApiKeyEnv({ [SUPERBEE_API_KEY_ENV_VAR]: "", [API_KEY_ENV_VAR]: "   " }), undefined);
-  assert.throws(
-    () => resolveApiKeyEnv({ [SUPERBEE_API_KEY_ENV_VAR]: "superbee-secret", [API_KEY_ENV_VAR]: "legacy-secret" }),
-    (err: unknown) => {
-      assert.ok(err instanceof Error);
-      assert.match(err.message, new RegExp(SUPERBEE_API_KEY_ENV_VAR));
-      assert.match(err.message, new RegExp(API_KEY_ENV_VAR));
-      assert.doesNotMatch(err.message, /superbee-secret|legacy-secret/);
-      return true;
-    },
-  );
-});
-
-test("--remote: SUPERBEE_API_KEY env alias beats a stored credentials-file key for the SAME origin", async () => {
-  const router = await freshRouter();
-  const home = await mkdtemp(path.join(tmpdir(), "agentstate-lite-superbee-envkey-test-"));
-  try {
-    const origin = new URL(REMOTE_URL).origin;
-    await saveApiKeyForOrigin(origin, "credentials-file-key-should-NOT-be-sent", home);
-
-    await withHomeEnv(home, () =>
-      withApiKeyEnvs({ [API_KEY_ENV_VAR]: undefined, [SUPERBEE_API_KEY_ENV_VAR]: CORRECT_KEY }, () =>
-        withGatedFetch(gate(router, CORRECT_KEY), async () => {
-          let out = "";
-          await list(["--remote", REMOTE_URL, "--json"], { stdout: (s: string) => (out += s) });
-          const parsed = JSON.parse(out) as { count: number };
-          assert.equal(parsed.count, 1);
-        }),
-      ),
-    );
-  } finally {
-    await rm(home, { recursive: true, force: true });
-  }
+  assert.equal(resolveApiKeyEnv({ [SUPERBEE_API_KEY_ENV_VAR]: "   " }), undefined);
+  assert.equal(resolveApiKeyEnv({ AGENTSTATE_LITE_API_KEY: CORRECT_KEY }), undefined);
 });
 
 test("--remote: a response stripped of BOTH version headers (the production finding) surfaces as RUNTIME/exit 1 through the CLI, never a silent success or a misclassified USAGE/exit 2", async () => {

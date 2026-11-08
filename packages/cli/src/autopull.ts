@@ -35,13 +35,13 @@ import {
   recordPullAttempt,
 } from "./hosted/freshness.js";
 import type { HostedPullResult, HostedSyncDeps } from "./hosted/sync.js";
-import { NO_AUTOPULL_ENV as LEGACY_NO_AUTOPULL, SUPERBEE_NO_AUTOPULL_ENV as NO_AUTOPULL } from "@superbee/board-git";
+import { SUPERBEE_NO_AUTOPULL_ENV as NO_AUTOPULL } from "@superbee/board-git";
+import { retiredEnvNames } from "./deprecation-notices.js";
 
 export {
   AUTO_PULL_BUDGET_MS,
   AUTO_PULL_CONNECT_TIMEOUT_SECONDS,
   AUTO_PULL_STALE_MS,
-  NO_AUTOPULL_ENV,
   SUPERBEE_NO_AUTOPULL_ENV,
   findBoardCandidate,
   type AutoPullOptions,
@@ -91,9 +91,12 @@ export interface HostedAutoPullOptions {
   sync?: Partial<HostedSyncDeps>;
 }
 
-/** True when the person turned the automatic pulls off. A preference, not an access check. */
+/**
+ * True when the person turned the automatic pulls off, or a retired setting is still unresolved
+ * (only the hook path gets that far). A preference, not an access check.
+ */
 export function hostedAutoPullOptedOut(env: Record<string, string | undefined>): boolean {
-  return Boolean(env[NO_AUTOPULL] || env[LEGACY_NO_AUTOPULL]);
+  return Boolean(env[NO_AUTOPULL]) || retiredEnvNames(env).length > 0;
 }
 
 /**
@@ -147,6 +150,8 @@ export async function maybeAutoPull(
   dir?: string,
   opts: AutoPullOptions & { route?: ResolvedLocalRoute; hosted?: HostedAutoPullOptions } = {},
 ) {
+  // A retired setting still unresolved (only the hook path gets this far) fails closed: no network.
+  if (retiredEnvNames(opts.env ?? process.env).length) return "disabled";
   // A hosted checkout is never a Git board: its reads pull from the host instead.
   if (opts.route === undefined || opts.route.kind === "unbound") {
     try {

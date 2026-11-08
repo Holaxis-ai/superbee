@@ -1,7 +1,7 @@
 // Executable rule for the emitted-command quoting class (see src/command-text.ts).
 //
 // The class: a value the CLI does not own — a kind convention's `governs`/`path`/field names/enum
-// values/link types, a concept id arriving from a shared board, the repo-authored `.agentstate.json`
+// values/link types, a concept id arriving from a shared board, the repo-authored `.superbee.json`
 // binding — interpolated into a string the CLI tells a human or agent to RUN. Bare, and `;`/`$(…)`
 // execute. Inside double quotes, `$(…)`, a backtick and `\` still execute and a literal `"` ends the
 // quote. A per-site reminder does not survive contact with a new contributor, so the property is

@@ -2606,15 +2606,10 @@ test("catalog remove refuses a journaled unsent change in the checkout's folder,
 });
 
 test("hosted blob promote keeps ambient actor outside frozen identity and refuses explicit actor before admission", async () => {
-  const h = await harness(), saved = { canonical: process.env.SUPERBEE_ACTOR, legacy: process.env.AGENTSTATE_LITE_ACTOR };
+  const h = await harness(), saved = process.env.SUPERBEE_ACTOR;
   try {
-    for (const [index, env] of [
-      { canonical: "process:ambient", legacy: undefined },
-      { canonical: "", legacy: undefined },
-      { canonical: "process:canonical", legacy: "process:conflicting-legacy" },
-    ].entries()) {
-      process.env.SUPERBEE_ACTOR = env.canonical;
-      if (env.legacy === undefined) delete process.env.AGENTSTATE_LITE_ACTOR; else process.env.AGENTSTATE_LITE_ACTOR = env.legacy;
+    for (const [index, actor] of ["process:ambient", ""].entries()) {
+      process.env.SUPERBEE_ACTOR = actor;
       const key = `actor-${index}.bin`, file = path.join(h.folder, key);
       await writeFile(file, "frozen actor boundary");
       const wire = blobAuthority(h), output: string[] = [], deps = commandDeps(h, wire, output);
@@ -2631,8 +2626,7 @@ test("hosted blob promote keeps ambient actor outside frozen identity and refuse
       assert.deepEqual(wire.objects.get(key)?.bytes, Buffer.from("frozen actor boundary"));
     }
   } finally {
-    if (saved.canonical === undefined) delete process.env.SUPERBEE_ACTOR; else process.env.SUPERBEE_ACTOR = saved.canonical;
-    if (saved.legacy === undefined) delete process.env.AGENTSTATE_LITE_ACTOR; else process.env.AGENTSTATE_LITE_ACTOR = saved.legacy;
+    if (saved === undefined) delete process.env.SUPERBEE_ACTOR; else process.env.SUPERBEE_ACTOR = saved;
     await rm(h.home, { recursive: true, force: true }); await rm(h.cwd, { recursive: true, force: true });
   }
 });

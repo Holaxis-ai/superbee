@@ -50,9 +50,8 @@ async function runJson(fn: (argv: string[], deps: { stdout: (s: string) => void 
 
 /** Run with NO ambient actor so the verb's own refusal is what is under test. */
 async function withoutAmbientActor<T>(fn: () => Promise<T>): Promise<T> {
-  const saved = { SUPERBEE_ACTOR: process.env.SUPERBEE_ACTOR, AGENTSTATE_LITE_ACTOR: process.env.AGENTSTATE_LITE_ACTOR };
+  const saved = { SUPERBEE_ACTOR: process.env.SUPERBEE_ACTOR };
   delete process.env.SUPERBEE_ACTOR;
-  delete process.env.AGENTSTATE_LITE_ACTOR;
   try {
     return await fn();
   } finally {
