@@ -33,7 +33,7 @@ const MARKER_NOTE =
 /** What the marker says. Every field is data from the folder, never trusted to route. */
 export interface CheckoutMarker {
   readonly home: "hosted";
-  /** The host as `checkout --host` takes it: an origin, or an agent connection URL. */
+  /** The host as `checkout --host` takes it: an origin, or a resource URL. */
   readonly host: string;
   readonly bundle_id: string;
   readonly workspace: string | null;
@@ -47,7 +47,7 @@ export function checkoutMarkerPath(folder: string): string {
 
 /**
  * The host as `--host` takes it: the origin when the audience is the origin's own `/mcp`, else the
- * agent connection URL. The one derivation; `hostArgument` in the sign-in module delegates here.
+ * audience URL. The one derivation; `hostArgument` in the sign-in module delegates here.
  */
 export function bindingHostArgument(binding: { readonly origin: string; readonly audience: string }): string {
   return binding.audience === `${binding.origin}/mcp` ? binding.origin : binding.audience;

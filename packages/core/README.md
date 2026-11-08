@@ -642,8 +642,7 @@ const client = createHostedClient({
 const identity = await client.whoami();
 ```
 
-The target is the origin and the sync prefix: `/sync/v1`, or `/agents/<id>/sync/v1` for an agent
-connection. `syncRoutePrefix({ origin, audience })` derives the prefix from a protected-resource
+The target is the origin and the sync prefix, `/sync/v1`. `syncRoutePrefix({ origin, audience })` derives the prefix from a protected-resource
 audience and returns null when the audience has none. `credentials` is the transport carrier's
 own credential provider: an async function returning the headers for one request. It is called
 before every request, so it may renew a short-lived token. `bearerCredentials` builds one from a
