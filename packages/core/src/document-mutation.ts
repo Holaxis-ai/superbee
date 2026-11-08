@@ -18,6 +18,7 @@ import { isRequestIdentity } from "./uncertain-write.js";
 import { InvalidInputError } from "./errors.js";
 import { kindDeprecationTransition } from "./kind-deprecation.js";
 import { KindConformanceError } from "./kind-conformance-error.js";
+import { undeclaredFieldWarnings } from "./kind-undeclared-fields.js";
 import { assertAuthoredOkfStandardFields } from "./okf-standard-fields.js";
 import { applyV02MutationMetadata } from "./document-write-policy.js";
 import { assertFieldPreconditions } from "./document-precondition.js";
@@ -281,7 +282,7 @@ function validateCandidate(
   okfVersion: "0.1" | "0.2",
   now: () => string,
   existing?: OkfDocument,
-): RegistryValidationResult {
+): RegistryValidationResult & { undeclared: ValidationWarning[] } {
   assertDeprecation(id, candidate, registry, existing);
   const result = defaultTimestampAndValidateAgainstRegistry(
     { id, ...candidate },
@@ -292,7 +293,15 @@ function validateCandidate(
   if (strict && result.kind && result.warnings.length > 0) {
     throw new KindConformanceError(id, result.kind.governs, result.warnings, okfVersion);
   }
-  return result;
+  // Undeclared keys are not conformance debt: they never feed the overwrite ratchet, and a
+  // strict write refuses them only when the Kind opts in with `undeclared_fields: error`.
+  const undeclared = result.kind
+    ? undeclaredFieldWarnings(okfVersion, result.kind, candidate.frontmatter, existing?.frontmatter)
+    : [];
+  if (strict && result.kind?.undeclaredFields === "error" && undeclared.length > 0) {
+    throw new KindConformanceError(id, result.kind.governs, undeclared, okfVersion);
+  }
+  return { ...result, undeclared };
 }
 
 /** Validate unchanged stored content without manufacturing clocks or attribution. */
@@ -396,14 +405,14 @@ export function prepareDocumentMutationCandidate(
   const candidate = mode === "overwrite"
     ? comparison
     : attributeCandidate(comparison, opts.actor, persistActor, opts.okfVersion, opts.registry);
-  const { warnings, kind } = validateCandidate(opts.id, candidate, opts.registry, opts.strict, opts.okfVersion, decisionNow, existing);
+  const { warnings, kind, undeclared } = validateCandidate(opts.id, candidate, opts.registry, opts.strict, opts.okfVersion, decisionNow, existing);
   // Once a stored document conforms to its own Kind, a lenient overwrite cannot regress it.
   // Raw existing values decide eligibility; existing debt remains editable and an ungoverned
   // replacement carries no warnings, preserving the explicit retyping escape.
   if (mode === "overwrite" && !opts.strict && existing && warnings.length > 0 && conforms(existing, opts.registry)) {
     throw new KindConformanceError(opts.id, kind!.governs, warnings, opts.okfVersion);
   }
-  return { candidate, changed: true, warnings, guidance: writeGuidance(opts.registry, opts.okfVersion, existing, candidate) };
+  return { candidate, changed: true, warnings: [...warnings, ...undeclared], guidance: writeGuidance(opts.registry, opts.okfVersion, existing, candidate) };
 }
 
 /**

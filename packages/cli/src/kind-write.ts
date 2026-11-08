@@ -5,6 +5,7 @@ import {
   TypedListPatchError,
   defaultTimestampAndValidateAgainstRegistry,
   KindConformanceError,
+  KIND_FIELD_UNDECLARED,
   isKindFieldValidationWarning,
   projectKindForAuthoring,
   projectKindValidationWarnings,
@@ -83,8 +84,13 @@ export function kindConformanceCliError(
     : undefined;
   const message = `'${error.id}' does not satisfy the '${error.governs}' kind: ` +
     authoringViolations.map((warning) => warning.message).join("; ");
+  // An undeclared key has no completing value to supply; the next step is declaring it.
+  const undeclared = authoringViolations.find((warning) => warning.code === KIND_FIELD_UNDECLARED && warning.field);
+  const declareHelp = undeclared
+    ? `${cliInvocation()} kind field ${commandToken(error.governs)} add ${commandToken(undeclared.field!)}`
+    : undefined;
   return new CliError("USAGE", message, {
-    help: completing ?? fallbackHelp,
+    help: completing ?? declareHelp ?? fallbackHelp,
     details: { violations: authoringViolations },
   });
 }

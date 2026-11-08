@@ -101,6 +101,15 @@ Kind schema vocabulary (the product-facing projection; raw document reads remain
                                  ties by convention id; kinds without one follow by id. When no
                                  kind declares an order, this listing sorts by governs as before.
                                  A convention field only: it never appears on instances
+  undeclared_fields    string   warn (default) or error. A write that adds or changes a frontmatter
+                                 key this kind does not declare gets a KIND_FIELD_UNDECLARED
+                                 warning naming the key; with error, a --strict write is refused
+                                 instead (exit 2, nothing written). Keys that never count: type,
+                                 title, description, resource, tags, status, sources, generated,
+                                 verified, timestamp, actor, the other OKF standard keys and
+                                 superbee_* keys. Keys a write leaves unchanged are not checked;
+                                 'kinds --coverage' reports existing ones. Declare a key with
+                                 'kind field <Kind> add <name>'
 A misshaped or misplaced key here is a non-fatal registry warning (visible in 'kinds'/'status'
 output), never a silent no-op. See 'superbee doc read conventions/context-note' on any
 --init'd bundle for a full worked example with a values: enum and sections:.
@@ -139,6 +148,7 @@ function toRow(kind: KindConvention, okfVersion: string | undefined): Record<str
     optional: kind.fields.optional,
   };
   if (kind.order !== undefined) row.order = kind.order;
+  if (kind.undeclaredFields !== undefined) row.undeclared_fields = kind.undeclaredFields;
   if (kind.deprecated) {
     row.deprecated = { fields: kind.deprecated.fields, values: kind.deprecated.values, links: kind.deprecated.links };
     const problems = kindDeprecationProblems(kind);

@@ -434,6 +434,35 @@ test("promote .md: a governing kind attaches warnings by default (exit 0, still 
   }
 });
 
+test("promote .md: an undeclared key warns under --strict by default; undeclared_fields: error refuses it with the declare command", async () => {
+  const { dir, cleanup } = await makeSeededBundle();
+  const work = await tempDir();
+  try {
+    const file = path.join(work, "note.md");
+    await writeFile(file, "---\ntype: Context Note\ntitle: T\nsumary: typo\n---\n\n# Summary\n\nHi.\n");
+    const p = await runPromote([file, "--doc-key", "context-notes/u.md", "--strict", "--dir", dir]);
+    assert.deepEqual((p.warnings as { code: string; field: string }[]).map((w) => [w.code, w.field]), [["KIND_FIELD_UNDECLARED", "sumary"]]);
+
+    const convention = path.join(dir, "conventions", "context-note.md");
+    const text = await readFile(convention, "utf8");
+    await writeFile(convention, text.replace("\ngoverns: Context Note\n", "\ngoverns: Context Note\nundeclared_fields: error\n"));
+    await assert.rejects(
+      () => promote([file, "--doc-key", "context-notes/v.md", "--strict", "--dir", dir, "--json"], {}),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.exitCode, 2);
+        assert.match(err.message, /'sumary' is not declared by kind 'Context Note'/);
+        assert.match(err.help ?? "", / kind field 'Context Note' add sumary$/);
+        return true;
+      },
+    );
+    await assert.rejects(() => readDoc({ root: dir }, "context-notes/v"));
+  } finally {
+    await cleanup();
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
 test("promote .md: a stale --expected-version is a CONFLICT (exit 5) with the current version in the envelope (A8b .md variant)", async () => {
   const { dir, cleanup } = await makeBundle();
   const work = await tempDir();

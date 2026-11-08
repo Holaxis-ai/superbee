@@ -428,6 +428,7 @@ export {
   kindFieldTypeProblem,
   kindFieldInputValue,
   isKindListField,
+  UNDECLARED_FIELDS_POLICIES,
 } from "./kinds.js";
 export { loadKinds } from "./kinds-load.js";
 export { compareCodePoints } from "./code-point-order.js";
@@ -443,6 +444,7 @@ export type {
   KindRegistry,
   KindValueGuidance,
   RegistryValidationResult,
+  UndeclaredFieldsPolicy,
 } from "./kinds.js";
 
 // Ported MIME utilities (holaxis-agentstate `packages/schemas/src/content-type.ts`).
@@ -479,6 +481,7 @@ export type {
 export { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 
 export { kindCoverage } from "./kind-coverage.js";
+export { KIND_FIELD_UNDECLARED, isKindEnvelopeField, kindDeclaredFieldNames, kindDeclaredStorageFields, undeclaredFrontmatterKeys, undeclaredFieldWarnings } from "./kind-undeclared-fields.js";
 
 export {
   BODY_PREVIEW_LIMIT, BODY_PREVIEW_TRUNCATION_MARKER, BODY_PREVIEW_TRUNCATION_SIGNATURE,

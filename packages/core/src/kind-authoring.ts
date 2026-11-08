@@ -95,6 +95,7 @@ const DECLARES: Record<DeclarationKey, (kind: KindConvention) => boolean> = {
   // A reading-order placement is authored on purpose; a draft must never overwrite it.
   order: (kind) => kind.order !== undefined,
   claim: (kind) => kind.claim !== undefined,
+  undeclaredFields: (kind) => kind.undeclaredFields !== undefined,
 };
 
 /**
