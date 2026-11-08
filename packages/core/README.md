@@ -1119,8 +1119,9 @@ or infers from instances. Its token binds candidate
 bytes (including supplied `inferredBody`/`inferredDescription`), edition, presence statistics and
 warning forecast. Pass the same prose options to `applyKindDraft`, which recomputes the plan and
 checks edition and declaration-free redraft eligibility against every fresh CAS head. New
-conventions are expect-absent creates; accepted redrafts replace dismissal prose in place and
-report dropped links. `dismissKind` accepts presentation-owned description/body, records no schema
+conventions are expect-absent creates. A redraft keeps the existing record's id and authored
+title; `plan.replacesProse` names each existing description or body it overwrites (current and
+proposed text), the token binds that current text, and apply reports dropped links. `dismissKind` accepts presentation-owned description/body, records no schema
 obligations, refuses a real schema, and is idempotent. Definition writes retain recipe
 installation's generation-clock opt-out. `KindAuthoringError.reason` identifies domain refusals;
 normal mutation/storage errors retain their types.

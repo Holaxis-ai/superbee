@@ -419,6 +419,10 @@ test("kind draft: redrafts over a dismissal and REPLACES the decline prose — n
 
     const plan = await runKind(["draft", "Plan", "--dir", dir]);
     assert.equal(plan.redrafts, "conventions/plan");
+    const replaces = plan.replaces_prose as Array<{ field: string; current: string; proposed: string }>;
+    assert.deepEqual(replaces.map((row) => row.field), ["description", "body"]);
+    assert.match(replaces[1]!.current, /plans stay freeform/);
+    assert.match(String(plan.note), /^apply rewrites 'conventions\/plan' as drafted, keeping its title; it overwrites the current text under replaces_prose/);
     const applied = await runKind(["draft", "Plan", "--apply", plan.plan_token as string, "--dir", dir]);
     assert.equal(applied.changed, true);
 
