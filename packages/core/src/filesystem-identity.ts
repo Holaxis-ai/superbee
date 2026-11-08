@@ -56,12 +56,13 @@ import { promises as fs } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import type { Stats } from "node:fs";
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 
 import { ConcurrentReplacementError, FilesystemIdentityAliasError, InvalidInputError } from "./errors.js";
 import { acquireFilesystemIdentityLock, filesystemMutationLockRoot } from "./filesystem-lock.js";
 import { captureFilesystemHostPolicy, type FilesystemHostPolicy } from "./filesystem-host.js";
 import { foldSegment } from "./identity-fold.js";
+import { identityTempName } from "./filesystem-temp-name.js";
 
 export { foldSegment };
 
@@ -142,6 +143,8 @@ export interface FilesystemIdentityPort {
    */
   link(from: string, to: string): Promise<"linked" | "exists" | "unsupported">;
   rename(from: string, to: string): Promise<void>;
+  /** Give `to` the read, write and execute bits of `from` (never setuid, setgid or sticky), so a replacement keeps them. */
+  copyMode?(from: string, to: string): Promise<void>;
   unlink(target: string): Promise<void>;
   claim(key: string, identity: IdentityDescriptor): Promise<() => Promise<void>>;
 }
@@ -1002,13 +1005,13 @@ export async function mutateExact<T>(
         async replace(bytes) {
           await ensureExactDirectories(port, rootResolved, segments, existingDepth, rel);
           const dir = path.dirname(target);
-          // Unique per call, not per process: one process can issue two writes to the same
-          // target within a millisecond, and the second's temp file must not clobber the first's.
-          const tmpName = `.${leaf}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
+          const tmpName = identityTempName(leaf);
           const tmp = path.join(dir, tmpName);
           await port.writeTemp(dir, tmpName, bytes);
           try {
             if (realized.state === "exact") {
+              // Best effort: a replacement that cannot carry the old permission bits still lands.
+              await port.copyMode?.(target, tmp).catch(() => {});
               // Replace: the target exists under our exact spelling, so any writer of an
               // equated spelling is refused at its own M-REALIZE; an atomic rename is safe.
               await replaceExistingLeaf(port, tmp, target, rel);
@@ -1171,6 +1174,9 @@ export function createNodeFilesystemIdentityPort(hostPolicy?: FilesystemHostPoli
     },
     async rename(from: string, to: string): Promise<void> {
       await fs.rename(from, to);
+    },
+    async copyMode(from: string, to: string): Promise<void> {
+      await fs.chmod(to, (await fs.lstat(from)).mode & 0o777);
     },
     async unlink(target: string): Promise<void> {
       await fs.unlink(target);
