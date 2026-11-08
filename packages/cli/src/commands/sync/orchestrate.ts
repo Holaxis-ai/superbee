@@ -1201,6 +1201,8 @@ async function syncLocked(run: SyncRun, dispatch: Extract<SyncDispatch, { kind: 
       await heldRun(run, board, baseline, held);
       return;
     }
+    // F8: refuse before saved copies are settled, so a refused run keeps its lost-claim notice.
+    refuseOutgoingWorktreePrivateState(board.boardPath, "sync", `${run.inv} sync`);
   }
   // Before anything moves: a pull could change the document these copies were judged against.
   if (!run.pullOnly) run.settledClaims = await removeCarriedCopies(board.boardPath, board.key);
