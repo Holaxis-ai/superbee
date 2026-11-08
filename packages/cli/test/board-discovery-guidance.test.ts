@@ -126,7 +126,7 @@ test("standalone home preserves unverified origin without network and greenfield
         assert.equal(view.getting_started, undefined);
       } else {
         assert.equal(view.board, undefined);
-        assert.match(view.getting_started, /init --create-only/);
+        assert.match(view.getting_started, /setup --project/);
       }
     }
     // A successful check of a reachable empty origin permits greenfield guidance even though

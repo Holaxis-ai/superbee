@@ -84,6 +84,8 @@ export interface SetupWorkspaceState {
   readonly recovery?: string;
   readonly catalog: "ready" | "empty" | "unreadable" | "not_checked";
   readonly selected_registered: boolean;
+  /** A free catalog label derived from the project folder's name, when one is valid. */
+  readonly catalog_label?: string;
 }
 
 export interface SetupPlanInput {
@@ -685,9 +687,10 @@ function catalogCapability(input: SetupPlanInput): SetupCapability {
     reason: input.workspace.bundle === "selected"
       ? "the selected bundle is not registered for bundle-unbound MCP access; if it moved, inspect catalog list --local and explicitly use catalog relocate <label-or-id> --dir <replacement-bundle>; sameness is not inferred"
       : "the private workspace catalog has no available bundles",
-    command: input.workspace.bundle === "selected"
-      ? "superbee catalog add <label>"
-      : "superbee catalog add <label> --dir <path>",
+    // Run from the project folder: by then setup's bundle row has created or selected its bundle.
+    ...(input.workspace.catalog_label
+      ? { command: `superbee catalog add ${input.workspace.catalog_label}`, argv: ["superbee", "catalog", "add", input.workspace.catalog_label] }
+      : { command: "superbee catalog add <label>" }),
   };
 }
 

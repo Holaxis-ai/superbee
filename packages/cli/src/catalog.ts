@@ -116,6 +116,19 @@ export function assertCatalogLabel(label: string): void {
   }
 }
 
+/** Labels to try for a name: the name made label-safe, then `-2` to `-9` for when another entry holds it. */
+export function catalogLabelCandidates(name: string): string[] {
+  const base = name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[._-]+/, "").slice(0, 60).replace(/[._-]+$/, "");
+  return [base, ...Array.from({ length: 8 }, (_, index) => `${base}-${index + 2}`)].filter((label) => {
+    try {
+      assertCatalogLabel(label);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
 function validateEntry(value: unknown, file: string, index: number): CatalogEntry {
   if (!isObject(value) || !hasExactKeys(value, ["id", "label", "locator"])) {
     throw invalidCatalog(file, `entries[${index}] must contain exactly id, label, and locator`);

@@ -220,6 +220,16 @@ test("bundle creation and catalog templates remain distinguishable to the agent"
   assert.equal(uncataloged.command_template, "superbee catalog add <label>");
   assert.equal(uncataloged.mutates, true);
   assert.equal(uncataloged.approval.required, true);
+
+  // With a label derived from the project folder, the catalog row is runnable argv.
+  const labeled = next(buildSetupPlan(input({
+    workspace: { bundle: "selected", catalog: "empty", selected_registered: false, catalog_label: "my-project" },
+  })));
+  assert.equal(labeled.action, "run");
+  assert.deepEqual(labeled.command, ["superbee", "catalog", "add", "my-project"]);
+  assert.equal(labeled.command_template, undefined);
+  assert.equal(labeled.mutates, true);
+  assert.equal(labeled.approval.required, true);
 });
 
 test("the global install action pins the running version and stays approval-gated", () => {

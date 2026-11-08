@@ -75,7 +75,7 @@ const HOME_BASELINE_TOON = [
   "  version: 0.1.0-pre.3",
   "  channel: local-dev",
   '  description: "read and write a local OKF knowledge bundle (context notes, docs, cross-links, live bundle Views)"',
-  `getting_started: "no OKF bundle found in this directory — run \`superbee init --create-only --recipe none --dir '.superbee'\` to create a blank bundle, or \`superbee recipes\` to compare available workspace setups; create your chosen setup here with \`superbee init --create-only --recipe <name> --dir '.superbee'\`"`,
+  `getting_started: "no notes folder (.superbee) found here or in a parent folder. Pick a folder for this project's notes: \`superbee setup --project .\` for this folder, \`superbee setup --project <dir>\` for another, or \`superbee setup --no-project\` to set this up later"`,
   "commands:",
   '  Bundle: "bundle locate, bundle id set, deps, catalog, init, index generate, status"',
   '  "Documents & links": "doc write, doc update, doc field, doc verify, doc read, doc open, doc history, doc delete, doc import, list, search, link"',
@@ -99,7 +99,7 @@ const HOME_BASELINE_JSON = `${JSON.stringify({
       "read and write a local OKF knowledge bundle (context notes, docs, cross-links, live bundle Views)",
   },
   getting_started:
-    "no OKF bundle found in this directory — run `superbee init --create-only --recipe none --dir '.superbee'` to create a blank bundle, or `superbee recipes` to compare available workspace setups; create your chosen setup here with `superbee init --create-only --recipe <name> --dir '.superbee'`",
+    "no notes folder (.superbee) found here or in a parent folder. Pick a folder for this project's notes: `superbee setup --project .` for this folder, `superbee setup --project <dir>` for another, or `superbee setup --no-project` to set this up later",
   commands: {
     Bundle: "bundle locate, bundle id set, deps, catalog, init, index generate, status",
     "Documents & links": "doc write, doc update, doc field, doc verify, doc read, doc open, doc history, doc delete, doc import, list, search, link",
