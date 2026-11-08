@@ -72,6 +72,7 @@ import { doc, type DocCliDeps } from "../src/commands/doc.js";
 import { link } from "../src/commands/link.js";
 import {
   BODY_PREVIEW_LIMIT,
+  DOC_READ_PREVIEW_BYTES,
   BODY_PREVIEW_TRUNCATION_MARKER,
   BODY_PREVIEW_TRUNCATION_SIGNATURE,
   guardDroppedLinks,
@@ -2503,7 +2504,7 @@ test("doc read: stable key ordering — standard fields first, kind-declared fie
 test("doc read: body truncation + --out byte-channel pointer is preserved when kind fields are also present", async () => {
   const { dir, cleanup } = await makeTaskBundle();
   try {
-    const bigBody = "x".repeat(1500); // > doc.ts's BODY_PREVIEW_LIMIT (1000)
+    const bigBody = "x".repeat(DOC_READ_PREVIEW_BYTES + 500);
     await writeDoc(
       { root: dir },
       { id: "tasks/x", frontmatter: { type: "Task", title: "Ship it", status: "blocked", timestamp: T }, body: bigBody },
@@ -2513,9 +2514,8 @@ test("doc read: body truncation + --out byte-channel pointer is preserved when k
     assert.equal(result.body_truncated, true);
     assert.equal(result.body_chars, bigBody.length + 1); // stringifyDoc appends a trailing newline
     assert.deepEqual(result.help, [
-      `${cliInvocation()} doc read tasks/x --offset 0 --json`,
-      `${cliInvocation()} doc read tasks/x --out <file>`,
       `${cliInvocation()} doc read tasks/x --body-out <path-outside-bundle>`,
+      `${cliInvocation()} doc read tasks/x --offset ${DOC_READ_PREVIEW_BYTES} --expected-version ${String(result.head_version)} --json`,
     ]);
     assert.equal(result.status, "blocked");
   } finally {
@@ -2569,8 +2569,8 @@ test("doc read: a domain `version` frontmatter field is NOT shadowed by the CAS 
 // preview out of the receipt, write it back — rather than hand-constructing the string, so the
 // guard is proven against what `doc read` ACTUALLY emits.
 
-/** A body comfortably past BODY_PREVIEW_LIMIT (1000), shaped like a real doc page. */
-const LONG_PAGE_BODY = `# Guardrails\n\n${"Every paragraph of this page matters. ".repeat(120)}\n\n## Tail section\n\nThis final sentence lives past the preview cut.\n`;
+/** A body comfortably past DOC_READ_PREVIEW_BYTES, shaped like a real doc page. */
+const LONG_PAGE_BODY = `# Guardrails\n\n${"Every paragraph of this page matters. ".repeat(700)}\n\n## Tail section\n\nThis final sentence lives past the preview cut.\n`;
 
 /** The stored body after a write — `stringifyDoc` normalizes a body to a single trailing newline. */
 async function storedBody(dir: string, id: string): Promise<string> {
@@ -2600,13 +2600,45 @@ test("doc read: a truncated body is named body_preview, carries the truncation m
     assert.ok(preview.includes(BODY_PREVIEW_TRUNCATION_MARKER), "the preview value marks itself truncated");
     assert.ok(preview.startsWith(stored.slice(0, 200)), "the preview is still the head of the real body");
     assert.ok(!preview.includes("This final sentence lives past the preview cut."), "the tail is genuinely absent");
-    // Agent-facing recovery: both runnable complete-body channels, `--body-out` being the one that
-    // feeds the read -> edit -> `doc update --body-file --expected-version` cycle.
+    // The record leads with the truncation, so a reader who stops at the first line learns it.
+    assert.deepEqual(Object.keys(result).slice(0, 3), ["warning", "body_truncated", "body_chars"]);
+    assert.match(String(result.warning), /^body truncated: body_preview shows the first \d+ of \d+ characters/);
+    // Agent-facing recovery: the complete body in a file first (the edit cycle), then the next page,
+    // which continues exactly where the preview stops.
+    const nextOffset = Number(result.next_offset);
+    assert.ok(preview.startsWith(stored.slice(0, nextOffset)), "the preview is exactly the body up to next_offset");
     assert.deepEqual(result.help, [
-      `${cliInvocation()} doc read docs/page --offset 0 --json`,
-      `${cliInvocation()} doc read docs/page --out <file>`,
       `${cliInvocation()} doc read docs/page --body-out <path-outside-bundle>`,
+      `${cliInvocation()} doc read docs/page --offset ${nextOffset} --expected-version ${String(result.head_version)} --json`,
     ]);
+    const next = await runDoc(["read", "docs/page", "--offset", String(nextOffset), "--expected-version", String(result.head_version), "--dir", dir]);
+    assert.equal(stored.slice(0, nextOffset) + String(next.body), stored, "preview plus the next page is the whole body");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("doc read: a body up to DOC_READ_PREVIEW_BYTES arrives whole as `body` (task-sized bodies are never previews)", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    // The reported case: a 1,157-character task body came back as a 1,000-character preview.
+    const taskBody = `${"Line of task body text. ".repeat(48).slice(0, 1156)}\n`;
+    await writeDoc({ root: dir }, { id: "tasks/t", frontmatter: { type: "Task", title: "T", timestamp: T }, body: taskBody });
+    const task = await runDoc(["read", "tasks/t", "--dir", dir]);
+    assert.equal(task.body, await storedBody(dir, "tasks/t"));
+    assert.equal(task.body_truncated, undefined);
+    assert.equal(task.warning, undefined);
+
+    // "Fits" is the body's whole byte length, so a body exactly at the bound (multi-byte included)
+    // is whole, and one byte more is a preview.
+    const exact = `${"é".repeat((DOC_READ_PREVIEW_BYTES - 2) / 2)}\n`;
+    assert.equal(Buffer.byteLength(exact, "utf8"), DOC_READ_PREVIEW_BYTES - 1);
+    await writeDoc({ root: dir }, { id: "docs/exact", frontmatter: { type: "Note", title: "E", timestamp: T }, body: exact });
+    const stored = await storedBody(dir, "docs/exact");
+    assert.equal(Buffer.byteLength(stored, "utf8"), DOC_READ_PREVIEW_BYTES - 1);
+    assert.equal((await runDoc(["read", "docs/exact", "--dir", dir])).body, stored);
+    await writeDoc({ root: dir }, { id: "docs/over", frontmatter: { type: "Note", title: "O", timestamp: T }, body: `${"é".repeat(DOC_READ_PREVIEW_BYTES / 2)}\n` });
+    assert.equal((await runDoc(["read", "docs/over", "--dir", dir])).body_truncated, true);
   } finally {
     await cleanup();
   }
@@ -2701,7 +2733,7 @@ test("doc update: refuses a preview arriving on the STDIN body path, and refuses
         assert.equal(err.code, "USAGE");
         assert.equal(err.details?.reason, "stored_body_preview");
         assert.equal(err.details?.stored_body_chars, stored.length);
-        assert.equal(err.details?.preview_limit, 1000);
+        assert.equal(err.details?.preview_limit, preview.indexOf(BODY_PREVIEW_TRUNCATION_MARKER) - 2);
         assert.match(err.message, /--accept-truncated-body/);
         return true;
       },
@@ -3067,8 +3099,8 @@ test("truncated-preview guard: a document written deliberately with a preview st
 test("truncated-preview guard: a stored notice excuses NOTHING but an append — a foreign preview whose count matches a sentence quoted in the stored prose is still refused as a replace (independent review probe)", async () => {
   const { dir, cleanup } = await makeBundle();
   try {
-    // docs/b is 1500 chars, so its preview notice reads "... 501 more character(s) are NOT shown".
-    await writeDoc({ root: dir }, { id: "docs/b", frontmatter: { type: "Note", title: "B", timestamp: T }, body: "B".repeat(1500) });
+    // docs/b is past the preview bound, so its preview notice reads "... 501 more character(s) are NOT shown".
+    await writeDoc({ root: dir }, { id: "docs/b", frontmatter: { type: "Note", title: "B", timestamp: T }, body: "B".repeat(DOC_READ_PREVIEW_BYTES + 500) });
     const previewB = String((await runDoc(["read", "docs/b", "--dir", dir])).body_preview);
     const noticeB = BODY_PREVIEW_TRUNCATION_SIGNATURE.exec(previewB)![0];
 

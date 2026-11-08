@@ -507,7 +507,7 @@ async function seedLongPromotedDoc(
   dir: string,
   work: string,
 ): Promise<{ preview: string; version: string; stored: string }> {
-  const body = `# Promoted\n\n${"Every paragraph of this promoted page matters. ".repeat(80)}\n\n## Tail\n\nTAIL_MUST_SURVIVE.\n`;
+  const body = `# Promoted\n\n${"Every paragraph of this promoted page matters. ".repeat(500)}\n\n## Tail\n\nTAIL_MUST_SURVIVE.\n`;
   const seed = path.join(work, "seed.md");
   await writeFile(seed, `---\ntype: Note\ntitle: Promoted\n---\n${body}`);
   await runPromote([seed, "--doc-key", "docs/prom.md", "--dir", dir]);

@@ -480,8 +480,10 @@ export { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 
 export { kindCoverage } from "./kind-coverage.js";
 
+export { bodyPage, PAGE_DEFAULT_BYTES, PAGE_MAX_BYTES, PAGE_MIN_BYTES, type BodyPage } from "./body-pages.js";
+
 export {
-  BODY_PREVIEW_LIMIT, BODY_PREVIEW_TRUNCATION_MARKER, BODY_PREVIEW_TRUNCATION_SIGNATURE,
+  BODY_PREVIEW_LIMIT, DOC_READ_PREVIEW_BYTES, BODY_PREVIEW_TRUNCATION_MARKER, BODY_PREVIEW_TRUNCATION_SIGNATURE,
   BODY_PREVIEW_KEY, BODY_PREVIEW_RESERVED_KEYS, attachBodyPreview, bodyPreviewFinding,
   BodyReplaceError, computeDroppedLinks, droppedLinks, guardTruncatedBodyPreview,
   guardDroppedLinks, guardBodyReplace, TypedListPatchError, assertTypedListPatch,

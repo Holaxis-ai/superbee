@@ -223,12 +223,14 @@ export const DOC_READ_USAGE = `superbee doc read — read a concept document (or
 Usage:
   superbee doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --rendered-out (<path> | -)] [options]
 
-The default (no byte-channel flag) render shows EVERY frontmatter field — the standard keys plus any
-kind-declared fields like progress_status/priority — and truncates a large body (pointing at --out).
-A truncated body is published as 'body_preview' (never 'body'), with body_truncated:true, the true
-body_chars, and a marker inside the value itself. That value is a PREVIEW, not a body: writing it
-back through 'doc write'/'doc update' is refused (exit 2) unless --accept-truncated-body is passed.
-Use --body-out to get the complete body for an edit cycle, or --offset to read it a page at a time.
+The default (no byte-channel flag) render shows EVERY frontmatter field (the standard keys plus any
+kind-declared fields like progress_status/priority) and the whole body as 'body' when the body is
+20,480 UTF-8 bytes or smaller, which fits an agent shell tool's output. A larger body arrives as
+'body_preview': the first page of the body plus a marker inside the value. The record then leads
+with a 'warning' line and body_truncated:true, carries body_chars and next_offset, and its help
+names --body-out (the complete body in a file) and the next page (--offset <next_offset>). A
+preview is not a body: writing it back through 'doc write'/'doc update' is refused (exit 2) unless
+--accept-truncated-body is passed.
 
 Options:
   --offset <n>         Page the record's body: 'body' is the page starting at character n (a
