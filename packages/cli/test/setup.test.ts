@@ -145,10 +145,10 @@ test("unconfirmed project scope asks for selection before project inspectors or 
   injected.resolveBundle = async () => { throw new CliError("NOT_FOUND", "empty folder"); };
   injected.inspectBoard = async () => { calls.push("board"); return { kind: "channel", channel: { mode: "local-only" } }; };
   injected.inspectSkill = () => { calls.push("skill"); throw new Error("no project skill inspection"); };
-  injected.inspectHook = () => { calls.push("hook"); throw new Error("no project hook inspection"); };
+  injected.inspectHook = (scope) => { calls.push(`hook:${scope}`); throw new Error("unreadable hook config"); };
   await setup(["--host", "codex", "--scope", "project", "--json"], injected);
   const plan = JSON.parse(output).setup;
-  assert.deepEqual(calls, []);
+  assert.deepEqual(calls, ["hook:project"], "only the legacy-hook warning reads the launch directory's hook file");
   assert.equal(plan.next.action, "choose_value");
   assert.equal(plan.next.mutates, false);
   assert.equal(plan.next.command, undefined);

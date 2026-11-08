@@ -154,6 +154,8 @@ export interface SetupInspection {
   hook?: HookStatusInspection;
   projectHook?: HookStatusInspection;
   projectHookUnavailable?: boolean;
+  /** The launch directory's project hook, read only to warn about a legacy hook; never planned on. */
+  launchProjectHook?: HookStatusInspection;
   mcp: readonly McpHostStatus[];
   workspace: SetupWorkspaceState;
   state: UserStateMigrationInspection;
@@ -326,6 +328,14 @@ async function inspectAll(
       }
     }
   }
+  let launchProjectHook: HookStatusInspection | undefined;
+  if (projectSelection === "unselected" && !projectHook && targets.some((target) => target.id !== "claude-desktop")) {
+    try {
+      launchProjectHook = deps.inspectHook("project");
+    } catch {
+      launchProjectHook = undefined;
+    }
+  }
   const [mcp, state] = await Promise.all([
     Promise.resolve(deps.inspectMcp(targets)),
     deps.inspectState(deps.home()),
@@ -336,6 +346,7 @@ async function inspectAll(
     hook,
     projectHook,
     projectHookUnavailable,
+    launchProjectHook,
     mcp,
     workspace,
     state,
@@ -366,7 +377,7 @@ function legacyHookLocations(inspection: HookStatusInspection | undefined): stri
 /** What only setup can see: old host configuration that no ordinary command ever reads. */
 function emitSetupDeprecationNotices(inspection: SetupInspection, scope: InstallScope): void {
   const selectedHooks = legacyHookLocations(inspection.hook);
-  const projectHooks = legacyHookLocations(inspection.projectHook);
+  const projectHooks = legacyHookLocations(inspection.projectHook ?? inspection.launchProjectHook);
   if (selectedHooks.length || projectHooks.length) {
     const scopes = [...(selectedHooks.length ? [scope] : []), ...(projectHooks.length ? ["project" as const] : [])];
     emitDeprecationNotice("DEPRECATED_LEGACY_HOOK", [...selectedHooks, ...projectHooks], [...new Set(scopes)]);
