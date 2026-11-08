@@ -29,14 +29,19 @@ export const BODY_PREVIEW_TRUNCATION_SIGNATURE =
 export const BODY_PREVIEW_KEY = "body_preview";
 
 export const BODY_PREVIEW_RESERVED_KEYS: readonly string[] = [
-  "warning",
   "body",
   BODY_PREVIEW_KEY,
   "body_truncated",
   "body_chars",
-  "next_offset",
   "help",
 ];
+
+/** Record fields a truncated preview adds that a document's own frontmatter may also use. They are
+ * claimed only on a truncated record; a document value already there moves to `frontmatter_<key>`,
+ * so the document's field stays visible. */
+function truncatedRecordKeys(paged: boolean): readonly string[] {
+  return paged ? ["warning", "next_offset"] : ["warning"];
+}
 
 /** Where a preview stops, for its help to continue from. */
 export interface BodyPreviewCut {
@@ -71,8 +76,12 @@ export function attachBodyPreview(
   }
   const cut: BodyPreviewCut = { shownChars: shown.length, nextOffset: shown.length };
   const omitted = body.length - shown.length;
-  const rest = { ...rec };
-  for (const key of Object.keys(rec)) delete rec[key];
+  const claimed = truncatedRecordKeys(options.pageBytes !== undefined);
+  const rest: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(rec)) {
+    rest[claimed.includes(key) ? `frontmatter_${key}` : key] = value;
+    delete rec[key];
+  }
   rec.warning =
     `body truncated: body_preview shows the first ${shown.length} of ${body.length} characters and is ` +
     `not the document body. Read the complete body with the first help command before judging or ` +
@@ -87,10 +96,16 @@ export function attachBodyPreview(
   rec.help = [...(typeof fullBodyHelp === "function" ? fullBodyHelp(cut) : fullBodyHelp)];
 }
 
+/** Spellings that change no text a reader sees: a byte-order mark, CRLF or CR line endings, and
+ * surrounding whitespace. */
+function previewComparable(text: string): string {
+  return text.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").trim();
+}
+
 function matchesPreviewSlice(candidate: string, preview: string): boolean {
   if (candidate === preview) return true;
-  const trimmed = preview.trimEnd();
-  return trimmed !== "" && candidate.trimEnd() === trimmed;
+  const comparable = previewComparable(preview);
+  return comparable !== "" && previewComparable(candidate) === comparable;
 }
 
 

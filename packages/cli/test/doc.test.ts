@@ -2644,6 +2644,33 @@ test("doc read: a body up to DOC_READ_PREVIEW_BYTES arrives whole as `body` (tas
   }
 });
 
+test("doc read: a document's own `warning` and `next_offset` frontmatter stays visible on a short and a truncated record", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    const fm = { type: "Note", title: "W", warning: "do not deploy on Fridays", next_offset: 7, timestamp: T };
+    await writeDoc({ root: dir }, { id: "docs/short", frontmatter: fm, body: "Short.\n" });
+    const short = await runDoc(["read", "docs/short", "--dir", dir]);
+    assert.equal(short.warning, "do not deploy on Fridays");
+    assert.equal(short.next_offset, 7);
+    assert.equal(short.body, "Short.\n");
+
+    await writeDoc({ root: dir }, { id: "docs/long", frontmatter: fm, body: LONG_PAGE_BODY });
+    for (const json of [false, true]) {
+      let out = "";
+      await doc(["read", "docs/long", "--dir", dir, ...(json ? ["--json"] : [])], { stdout: (s) => (out += s), readStdin: async () => undefined });
+      if (!json) assert.match(out.split("\n")[0]!, /^warning: "body truncated:/);
+      const long = json ? JSON.parse(out) as Record<string, unknown> : await runDoc(["read", "docs/long", "--dir", dir]);
+      assert.match(String(long.warning), /^body truncated:/);
+      assert.equal(long.frontmatter_warning, "do not deploy on Fridays");
+      assert.equal(long.frontmatter_next_offset, 7);
+      assert.notEqual(long.next_offset, 7);
+      assert.equal(long.body_truncated, true);
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
 test("doc read --offset: pages chain to the exact body, a moved version is a conflict, and a page start must be one", async () => {
   const { dir, cleanup } = await makeBundle();
   try {
