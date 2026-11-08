@@ -489,7 +489,9 @@ test("query tolerates a doc deleted between list and read (multi-writer scan rac
     result.map((d) => d.id),
     ["a", "c"],
   );
-  assert.equal(readManyCalls, 1); // one-round-trip path tried first, then the per-doc skip fallback
+  // The batch is tried first, then read again in halves until the failing id stands alone; this stub
+  // fails every batch, so each id ends in a batch of one and then a single read.
+  assert.equal(readManyCalls, 5);
 });
 
 test("query still propagates a NON-ENOENT backend error (the skip-fallback is scoped to vanished docs, not real failures)", async () => {
