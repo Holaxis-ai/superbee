@@ -533,7 +533,7 @@ test("first-contact: fresh clone + origin/board exists → 'run sync' hint, NEVE
   }
 });
 
-test("first-contact: no board anywhere → today's behavior (init hint), no board block", async () => {
+test("first-contact: no board anywhere → setup's project choice, no board block", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "aslite-noboard-"));
   const homeDir = await tempHome();
   try {
@@ -543,7 +543,7 @@ test("first-contact: no board anywhere → today's behavior (init hint), no boar
     git(dir, ["commit", "-m", "initial"]);
     const out = await runHome(homeDir, ["--dir", path.join(dir, "missing")]);
     assert.ok(out.includes("getting_started"));
-    assert.ok(out.includes("no OKF bundle found"));
+    assert.ok(out.includes("setup --project"));
     assert.ok(!out.includes("board:"), "no board block for a boardless repo");
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -1930,7 +1930,7 @@ test("session-start outside any git repo: no board block, plain home render, res
     assert.equal(outcome, undefined);
     const out = await runSessionStart(homeDir, ["--dir", dir]);
     assert.ok(out.includes("getting_started"));
-    assert.ok(out.includes("no OKF bundle found"));
+    assert.ok(out.includes("setup --project"));
     assert.ok(!out.includes("board sync offline"));
   } finally {
     await rm(dir, { recursive: true, force: true });

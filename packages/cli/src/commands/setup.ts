@@ -1,16 +1,17 @@
 import { renderUsage } from "../output.js";
 // `superbee setup` — one read-only AXI conductor plus one explicit, bounded state-migration leaf.
 
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, parse, resolve } from "node:path";
+import { unsafeProjectDir } from "../no-bundle-guidance.js";
+import { basename, dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { parseSelectorOrUsage } from "../args.js";
-import { ownConventionalBoardRoot, resolveLocalBundleTarget, resolveProjectBinding, samePhysicalPath, type LocalBundleTarget } from "../bundle.js";
+import { CONVENTIONAL_BUNDLE_DIR_NAME, LEGACY_CONVENTIONAL_BUNDLE_DIR_NAME, ownConventionalBoardRoot, resolveLocalBundleTarget, resolveProjectBinding, samePhysicalPath, type LocalBundleTarget } from "../bundle.js";
 import { cliVersion } from "../build-identity.js";
 import { detectBoardChannel } from "../board-runtime.js";
 import type { ChannelDetection } from "@superbee/board-git";
-import { listCatalogEntries, type CatalogEntryView } from "../catalog.js";
+import { catalogLabelCandidates, listCatalogEntries, type CatalogEntryView } from "../catalog.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { commandToken } from "../command-text.js";
 import { CliError } from "../errors.js";
@@ -106,25 +107,6 @@ Options:
   --json                Emit compact JSON instead of TOON
   -h, --help            Show this help
 `;
-
-/** Physical path when it exists, so a symlink to home is still recognized as home. */
-function physical(dir: string): string {
-  try {
-    return realpathSync(dir);
-  } catch {
-    return dir;
-  }
-}
-
-/** True when `dir` is home, a folder above home, or a filesystem root. */
-export function unsafeProjectDir(dir: string, home: string): boolean {
-  const target = physical(dir);
-  if (parse(target).root === target) return true;
-  for (let cursor = physical(home); ; cursor = dirname(cursor)) {
-    if (cursor === target) return true;
-    if (dirname(cursor) === cursor) return false;
-  }
-}
 
 function isDirectory(dir: string): boolean {
   try {
@@ -281,10 +263,18 @@ async function inspectWorkspace(deps: SetupDeps, projectSelection: SetupProjectS
   try {
     const entries = await deps.listCatalog(deps.home());
     const available = entries.filter((entry) => entry.available);
+    // A label named after the project folder (the bundle's own folder when one is selected), so
+    // the catalog row is runnable; the first free of the name and its numbered variants.
+    const root = selected?.canonicalRoot;
+    const projectFolder = root === undefined ? deps.cwd()
+      : [CONVENTIONAL_BUNDLE_DIR_NAME, LEGACY_CONVENTIONAL_BUNDLE_DIR_NAME].includes(basename(root)) ? dirname(root) : root;
+    const taken = new Set(entries.map((entry) => entry.label));
+    const catalogLabel = catalogLabelCandidates(basename(projectFolder)).find((label) => !taken.has(label));
     return {
       bundle,
       ...(recovery ? { recovery } : {}),
       ...(board ? { board } : {}),
+      ...(catalogLabel ? { catalog_label: catalogLabel } : {}),
       catalog: available.length > 0 ? "ready" : "empty",
       selected_registered: selected !== undefined
         && available.some((entry) => samePhysicalPath(entry.locator.path, selected!.canonicalRoot)),
