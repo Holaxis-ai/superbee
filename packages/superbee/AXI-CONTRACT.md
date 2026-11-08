@@ -84,6 +84,16 @@ that still has the old server. A URL-valued project binding is
 refused with `RETIRED_URL_BINDING` and the file in `details.binding`; no refusal echoes the URL.
 `session-start` and `turn-end` never refuse. See `packages/cli/test/local-only-cli-integration.test.ts`.
 
+A third kind covers files the retired aslite and agentstate-lite packages left in host configuration.
+`hook install` and `skill install` remove an old hook, OpenCode plugin or `skills/aslite` folder only
+when it matches exactly what those packages wrote, and say so in the record's `notes`. Anything else
+stays, and the command prints one warning line on stderr tagged `[RETIRED_HOOK]` or
+`[RETIRED_SKILL_FOLDER]` naming the file or folder to delete. `hook status`, `skill status` and
+`setup` print the same lines. Each line appears at most once per process, never echoes a hook command
+or a secret, and never changes stdout records or the exit status. `session-start` prints none. So a
+bracketed `RETIRED_*` tag on a stderr line is a warning on a command that succeeded, while a
+`RETIRED_*` value in an error envelope's `details.code` is a refusal.
+
 ## Standing mutation invariant
 
 All public mutations are idempotent at their advertised semantic boundary. Repeating a request that

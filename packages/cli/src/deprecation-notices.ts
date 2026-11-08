@@ -9,7 +9,6 @@
 import { SUPERBEE_NO_AUTOPULL_ENV } from "@superbee/board-git";
 import { SUPERBEE_ACTOR_ENV, SUPERBEE_NO_UPDATE_CHECK_ENV } from "./env-policy.js";
 import { CliError, toEnvelope } from "./errors.js";
-import type { InstallScope } from "./install-scope.js";
 import { cliInvocation } from "./invocation.js";
 import { renderErrorEnvelope } from "./output.js";
 
@@ -22,8 +21,8 @@ export interface DeprecationNotice {
   readonly code: DeprecationNoticeCode;
   readonly old: string;
   readonly replacement: string;
-  /** The exact fix, given this executable's own command prefix and any install scopes it found. */
-  readonly fix: (cli: string, scopes: readonly InstallScope[]) => string;
+  /** The exact fix, given this executable's own command prefix. */
+  readonly fix: (cli: string) => string;
 }
 
 /** Retired environment names and the Superbee name that replaced each one. */
@@ -257,10 +256,9 @@ export function renderDeprecationNotice(
   row: DeprecationNotice,
   cli: string,
   locations: readonly string[] = [],
-  scopes: readonly InstallScope[] = ["project", "user"],
 ): string {
   const where = locations.length ? ` (${locations.join(", ")})` : "";
-  const line = `superbee: warning: ${row.old}${where} is deprecated and will be removed; use ${row.replacement} instead. Fix: ${row.fix(cli, scopes)}. [${row.code}]`;
+  const line = `superbee: warning: ${row.old}${where} is deprecated and will be removed; use ${row.replacement} instead. Fix: ${row.fix(cli)}. [${row.code}]`;
   return `${line.replace(/[\u0000-\u001f\u007f]/g, " ")}\n`;
 }
 
@@ -268,7 +266,6 @@ export function renderDeprecationNotice(
 export function emitDeprecationNotice(
   code: DeprecationNoticeCode,
   locations: readonly string[] = [],
-  scopes?: readonly InstallScope[],
 ): void {
   if (!open || shown.has(code)) return;
   shown.add(code);
@@ -280,13 +277,13 @@ export function emitDeprecationNotice(
     process.stderr.on("error", () => {});
   }
   try {
-    process.stderr.write(renderDeprecationNotice(ROWS.get(code)!, cliInvocation(), locations, scopes));
+    process.stderr.write(renderDeprecationNotice(ROWS.get(code)!, cliInvocation(), locations));
   } catch {
     // A synchronous write failure is the same case.
   }
 }
 
-/** Something a retired package left that Superbee leaves in place because the user edited it. */
+/** Something a retired package left that Superbee leaves in place because it does not match what Superbee wrote. */
 export type RetiredWarningCode = "RETIRED_HOOK" | "RETIRED_SKILL_FOLDER";
 
 export function retiredHookWarning(path: string): string {
@@ -294,11 +291,15 @@ export function retiredHookWarning(path: string): string {
 }
 
 export function retiredPluginWarning(path: string): string {
-  return `${path} is the old agentstate-lite plugin, edited by hand. Delete it to stop it loading.`;
+  return `${path} has the old agentstate-lite plugin name but does not match a file Superbee wrote, so Superbee left it. Delete it to stop it loading.`;
 }
 
 export function retiredSkillFolderWarning(dir: string, canonicalDir: string): string {
   return `${dir} is the old aslite skill and has local edits, so Superbee left it. It teaches commands that no longer exist. Delete the folder. The current skill is at ${canonicalDir}.`;
+}
+
+export function retiredSkillFolderRemovalWarning(dir: string, canonicalDir: string): string {
+  return `The current skill is installed at ${canonicalDir}, but ${dir}, the old aslite skill, could not be fully removed. It teaches commands that no longer exist. Delete the folder.`;
 }
 
 export function retiredSkillFolderInstallWarning(dir: string, install: string): string {

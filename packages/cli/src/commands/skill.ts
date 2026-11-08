@@ -79,7 +79,12 @@ import {
 import { normalizeInstallScope, type InstallScope } from "../install-scope.js";
 import { readRegularFileNoFollowSync, readRegularFileTextNoFollowSync } from "../nofollow-read.js";
 import { integrationChangeReceipt, type IntegrationHost } from "../integration-receipt.js";
-import { emitRetiredWarning, retiredSkillFolderInstallWarning, retiredSkillFolderWarning } from "../deprecation-notices.js";
+import {
+  emitRetiredWarning,
+  retiredSkillFolderInstallWarning,
+  retiredSkillFolderRemovalWarning,
+  retiredSkillFolderWarning,
+} from "../deprecation-notices.js";
 
 export { isSafeManifestEntry };
 
@@ -811,7 +816,10 @@ export function inspectSkillStatus(
  * RETIRED_SKILL_FOLDER warnings for old aslite folders: an edited one Superbee leaves, and an
  * unedited one `skill install` would delete. Read-only; it never throws.
  */
-export function emitRetiredSkillWarnings(inspection: Pick<SkillStatusInspection, "scope" | "targets" | "legacyTargets">): void {
+export function emitRetiredSkillWarnings(
+  inspection: Pick<SkillStatusInspection, "scope" | "targets" | "legacyTargets">,
+  alreadyWarned: ReadonlySet<string> = new Set(),
+): void {
   const { scope, targets, legacyTargets } = inspection;
   const seen = new Set<string>();
   for (const [canonicalDir, legacyDir] of [
@@ -821,7 +829,7 @@ export function emitRetiredSkillWarnings(inspection: Pick<SkillStatusInspection,
   ] as const) {
     try {
       const identity = skillTargetIdentity(legacyDir);
-      if (seen.has(identity)) continue;
+      if (seen.has(identity) || alreadyWarned.has(legacyDir)) continue;
       seen.add(identity);
       const state = retiredSkillFolderState(legacyDir);
       if (state === "edited") {
@@ -1007,6 +1015,7 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
     }
     const refusals: string[] = [];
     const notes: string[] = [];
+    const incompleteRemovals: { legacyDir: string; canonicalDir: string }[] = [];
     const hosts: Record<string, unknown> = {};
     const changedByHost: Partial<Record<IntegrationHost, boolean>> = {};
     for (const { canonicalDir, legacyDir, identity } of distinctHostDirs) {
@@ -1016,17 +1025,23 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
       try {
         const inspected = inspectHostInstall(canonicalDir, assets, `${cliInvocation()} skill install --scope ${scope}`);
         result = inspected.ok ? installIntoDir(canonicalDir, assets, inspected.preflight) : inspected;
-        // The old folder goes only once the current skill is in place, and only when unedited.
-        if (result.ok && retiredSkillFolderState(legacyDir) === "unedited") {
-          const removed = uninstallFromDir(legacyDir);
-          if (removed.ok) notes.push(`Removed old aslite skill from ${collapseHomeDirectory(legacyDir)}.`);
-        }
       } catch (err) {
         result = { ok: false, reason: `unexpected error: ${err instanceof Error ? err.message : String(err)}` };
       }
       if (!result.ok) {
         refusals.push(`${collapseHomeDirectory(canonicalDir)}: ${result.reason}`);
         continue;
+      }
+      // The old folder goes only once the current skill is in place, and only when unedited. A
+      // failed removal never undoes or misreports the install that already succeeded.
+      try {
+        if (retiredSkillFolderState(legacyDir) === "unedited") {
+          const removed = uninstallFromDir(legacyDir);
+          if (!removed.ok) throw new Error(removed.reason);
+          notes.push(`Removed old aslite skill from ${collapseHomeDirectory(legacyDir)}.`);
+        }
+      } catch {
+        incompleteRemovals.push({ legacyDir, canonicalDir });
       }
       for (const { key } of aliasesFor(identity)) {
         changedByHost[key] = result.changed;
@@ -1060,7 +1075,10 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
         mode,
       ),
     );
-    emitRetiredSkillWarnings({ scope, targets, legacyTargets });
+    for (const { legacyDir, canonicalDir } of incompleteRemovals) {
+      emitRetiredWarning("RETIRED_SKILL_FOLDER", retiredSkillFolderRemovalWarning(collapseHomeDirectory(legacyDir), collapseHomeDirectory(canonicalDir)));
+    }
+    emitRetiredSkillWarnings({ scope, targets, legacyTargets }, new Set(incompleteRemovals.map((row) => row.legacyDir)));
     return;
   }
 

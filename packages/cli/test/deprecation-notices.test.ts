@@ -7,7 +7,6 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { RETIRED_PROJECT_BINDING_FILE_NAME, SUPERBEE_PROJECT_BINDING_FILE_NAME } from "../src/bundle.js";
-import type { InstallScope } from "../src/install-scope.js";
 import {
   DEPRECATION_NOTICES,
   RETIRED_ENV,
@@ -100,8 +99,6 @@ interface Trigger {
   until?: RegExp;
   /** Where the notice must say it found the old thing. */
   names?: string;
-  /** The install scopes the fix must name. */
-  scopes?: readonly InstallScope[];
   arrange?: (fixture: Fixture) => Promise<void>;
   /** Do what the fix says. Returns the arguments that replace the old form, when the fix changes them. */
   applyFix: (fixture: Fixture) => Promise<string[] | void>;
@@ -162,10 +159,10 @@ test("every row names the old thing, its replacement, a runnable fix and a uniqu
     assert.match(row.code, /^DEPRECATED_[A-Z_]+$/);
     assert.ok(row.old.trim(), row.code);
     assert.ok(row.replacement.trim(), row.code);
-    assert.ok(row.fix("superbee", ["user"]).trim().length > 10, row.code);
-    const rendered = renderDeprecationNotice(row, "superbee", ["/a\nforged"], ["user"]);
+    assert.ok(row.fix("superbee").trim().length > 10, row.code);
+    const rendered = renderDeprecationNotice(row, "superbee", ["/a\nforged"]);
     assert.equal(rendered.split("\n").length, 2, "one line, newline terminated");
-    assert.ok(rendered.includes(row.fix("superbee", ["user"])), row.code);
+    assert.ok(rendered.includes(row.fix("superbee")), row.code);
     assert.ok(rendered.includes(`[${row.code}]`), row.code);
   }
 });
@@ -176,7 +173,7 @@ for (const row of DEPRECATION_NOTICES) {
     await trigger.arrange?.(fixture);
     const result = await run(trigger.args, fixture.project, cleanEnv(fixture.home, trigger.env), trigger.until);
     assert.equal(result.stderr.split(`[${row.code}]`).length - 1, 1, result.stderr);
-    for (const words of row.fix("\0", trigger.scopes ?? []).split("\0")) assert.ok(result.stderr.includes(words), result.stderr);
+    for (const words of row.fix("\0").split("\0")) assert.ok(result.stderr.includes(words), result.stderr);
     if (trigger.names) assert.ok(result.stderr.includes(trigger.names), result.stderr);
     assert.ok(!result.stdout.includes(row.code), result.stdout);
   }));
@@ -247,7 +244,7 @@ test("an edited old OpenCode plugin stays and warns", () => withFixture(async (f
   const original = await readFile(new URL("./fixtures/opencode-aslite-pre3.js", import.meta.url), "utf8");
   await writeFile(plugin, `${original}// mine\n`);
   const result = await runFix(fixture, ["hook", "install", "--scope", "user"]);
-  assert.ok(result.stderr.includes("~/.config/opencode/plugins/axi-agentstate-lite.js is the old agentstate-lite plugin, edited by hand. Delete it to stop it loading. [RETIRED_HOOK]"), result.stderr);
+  assert.ok(result.stderr.includes("~/.config/opencode/plugins/axi-agentstate-lite.js has the old agentstate-lite plugin name but does not match a file Superbee wrote, so Superbee left it. Delete it to stop it loading. [RETIRED_HOOK]"), result.stderr);
   assert.equal(await exists(plugin), true);
 }));
 
@@ -271,6 +268,25 @@ test("skill install deletes an unedited old aslite skill folder and keeps an edi
   assert.equal(await readFile(join(old, "SKILL.md"), "utf8"), "my notes\n");
   const setup = await run(["setup", "--host", "claude-code", "--json"], fixture.project, cleanEnv(fixture.home));
   assert.ok(setup.stderr.includes(warning), setup.stderr);
+}));
+
+test("an old skill folder that cannot be fully removed leaves the install in place and warns", { skip: process.getuid?.() === 0 }, () => withFixture(async (fixture) => {
+  const skills = join(fixture.home, ".claude", "skills");
+  const old = join(skills, "aslite");
+  await runFix(fixture, ["skill", "install", "--scope", "user"]);
+  await rename(join(skills, "superbee"), old);
+  const locked = join(old, "references");
+  await chmod(locked, 0o555);
+  try {
+    const result = await runFix(fixture, ["skill", "install", "--scope", "user"]);
+    assert.ok(!result.stdout.includes("Removed old aslite skill"), result.stdout);
+    assert.ok(result.stderr.includes("The current skill is installed at ~/.claude/skills/superbee, but ~/.claude/skills/aslite, the old aslite skill, could not be fully removed. It teaches commands that no longer exist. Delete the folder. [RETIRED_SKILL_FOLDER]"), result.stderr);
+    assert.ok(!result.stderr.includes("has local edits"), result.stderr);
+    assert.equal(result.stderr.split("[RETIRED_SKILL_FOLDER]").length - 1, 1, result.stderr);
+    assert.equal(await exists(join(skills, "superbee", "SKILL.md")), true);
+  } finally {
+    await chmod(locked, 0o755);
+  }
 }));
 
 test("old aslite MCP registration names are ignored like any other name", () => withFixture(async (fixture) => {

@@ -865,7 +865,7 @@ export function buildOpenCodePluginSource(
 
 /**
  * SHA-256 of each OpenCode plugin source the retired aslite and agentstate-lite packages wrote, with
- * the per-install `command` and `commandArgs` lines blanked by {@link retiredPluginDigest}. A match
+ * the per-install `command` and `commandArgs` values blanked by {@link retiredPluginDigest}. A match
  * whose command is a retired hook command is an unedited old plugin, which `hook install` removes.
  */
 const RETIRED_OPENCODE_PLUGIN_SHA256: readonly string[] = [
@@ -874,8 +874,16 @@ const RETIRED_OPENCODE_PLUGIN_SHA256: readonly string[] = [
   "5fa68b3da72d36d648f05c99b01303695f1f671aa4203d5316b5c7c374586a18", // pre-argv axi-sdk-js generator
 ];
 
+/** Blanks a per-install line only when its whole value is JSON, so code appended to it changes the digest. */
 function retiredPluginDigest(source: string): string {
-  const blanked = source.replace(/^const (command|commandArgs) = .*;$/gm, "const $1 = <>;");
+  const blanked = source.replace(/^const (command|commandArgs) = (.*);$/gm, (line, name: string, value: string) => {
+    try {
+      JSON.parse(value);
+      return `const ${name} = <>;`;
+    } catch {
+      return line;
+    }
+  });
   return createHash("sha256").update(blanked).digest("hex");
 }
 
