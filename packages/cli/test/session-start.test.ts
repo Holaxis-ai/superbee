@@ -688,12 +688,19 @@ test("zero budget at entry: the guard takes the offline path before ANY network 
 test("fall-through belt: an injected pull that NEVER resolves still renders home at the budget", async () => {
   const homeDir = await tempHome();
   try {
+    // The budget bounds the wait for the pull, not the render after it, so the clock stops when
+    // the render starts.
+    let renderStartedMs: number | undefined;
     const t0 = Date.now();
     const out = await runSessionStart(homeDir, [], {
       budgetMs: 200,
       pull: () => new Promise(() => {}),
+      renderHome: (argv, deps) => {
+        renderStartedMs = Date.now() - t0;
+        return home(argv, deps);
+      },
     });
-    assert.ok(Date.now() - t0 < 3_000);
+    assert.ok(renderStartedMs !== undefined && renderStartedMs < 3_000, `render started after ${renderStartedMs} ms`);
     assert.match(out, /\.superbee/);
     assert.match(out, /commands:/);
   } finally {
