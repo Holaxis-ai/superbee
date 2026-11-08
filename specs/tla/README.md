@@ -124,7 +124,25 @@ Assumptions the fixed config relies on:
 - Owner-record reads are definitive; the code polls transient read errors out and fails closed.
 - A live claimer is suspended past the abandoned-claim age at most once per behavior. Each such
   removal lets every other claimer claim again without spending its wait budget, and this bound
-  keeps the stall config checkable.
+  keeps the stall config checkable. The bound does not hide an `M1` or `M2` violation: abandoned
+  removal and rollback remove only a directory with no owner record, a holder always has its
+  record, and an opened owner record pins its directory, so no number of empty-directory removals
+  can unseat a holder. One stall already reaches a claimer observing another claimer's directory.
+- The real removal age comes from the directory's mtime; the model abstracts it as "the creator is
+  dead or stalled". This over-approximates removals; the paths it drops end only in busy or
+  malformed diagnoses, which are always accurate.
+- `WriteFault` models only the owner-file create failing. A failure after a successful open leaves
+  an empty record, which rmdir refuses, so it is equivalent to a crash at the write and affects
+  liveness only.
+
+Coverage limits of the two fixed configs:
+
+- `FsLock.fixed-stall.cfg` uses plain callers only; a stall with `ifAvailable` callers did not
+  finish within 9 million states.
+- Neither fixed config includes `wait` callers.
+- `FsLock.fixed.cfg` keeps main's constants and invariants and adds `WriteFault`. An aged
+  directory with no owner record now goes through a removal attempt instead of straight to the
+  wait check, which matches the code; only always-accurate diagnoses depended on the old branch.
 
 ## intent-journal
 
