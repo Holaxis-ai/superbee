@@ -27,6 +27,7 @@ import {
   directoryWitnessTrusted,
   observeExact,
   openObservationPass,
+  probeExact,
   type DirectoryWitness,
   type FilesystemIdentityPort,
   type Observation,
@@ -85,6 +86,25 @@ function witnessed(port: ScriptedPort): { port: FilesystemIdentityPort; bump(): 
   };
   return { port: wrapped, bump: () => void (generation += 1n) };
 }
+
+test("absent probes under one directory list its parent once, and a refusal never rests on a kept listing", async () => {
+  const scripted = new ScriptedPort({ aliasing: true });
+  scriptedTree(scripted, 3);
+  const { port, bump } = witnessed(scripted);
+  for (let index = 0; index < 200; index++) {
+    assert.deepEqual(await probeExact(port, SCRIPTED_ROOT, `items/missing-${index}.md`), { state: "absent" });
+  }
+  assert.equal(scripted.calls("entries"), 1, "the root is listed once for 200 absent probes");
+
+  // A kept listing that no longer holds (a lying witness) cannot produce a refusal: the
+  // directory was renamed to the requested spelling, and the fresh re-decision says absent.
+  const items = path.join(SCRIPTED_ROOT, "items");
+  scripted.respell(items, "Items");
+  bump();
+  await assert.rejects(() => probeExact(port, SCRIPTED_ROOT, "items/missing.md"), FilesystemIdentityAliasError);
+  scripted.respell(path.join(SCRIPTED_ROOT, "Items"), "items");
+  assert.deepEqual(await probeExact(port, SCRIPTED_ROOT, "items/missing.md"), { state: "absent" });
+});
 
 test("pass over a port without a directory witness makes exactly the single-read calls", async () => {
   const single = new ScriptedPort({ aliasing: true });

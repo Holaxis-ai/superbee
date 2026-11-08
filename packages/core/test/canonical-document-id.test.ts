@@ -10,7 +10,7 @@ import { nonCanonicalDocumentId } from "../src/paths.js";
 import { nonCanonicalDocumentId as fromStorage } from "../src/storage.js";
 import { nonCanonicalDocumentId as fromRoot } from "../src/index.js";
 import { assertCanonicalNewDocumentId } from "../src/paths.js";
-import { NonCanonicalDocumentIdError } from "../src/errors.js";
+import { FilesystemIdentityAliasError, NonCanonicalDocumentIdError } from "../src/errors.js";
 import { deleteDoc, readDoc, writeDocVersionedGuarded } from "../src/engine.js";
 import { mutateDocument, type MutateDocumentOptions } from "../src/document-mutation.js";
 import { MemoryBackend } from "../src/memory-backend.js";
@@ -153,4 +153,24 @@ test("canonical id: a suggestion that names an existing document is not offered 
       && error.existingId === "notes/zerowidth" && /'notes\/zerowidth' already exists/.test(error.message) && !/ Use '/.test(error.message),
   );
   assert.equal((await readDoc(backend, "notes/zerowidth")).body.trim(), "taken");
+});
+
+test("canonical id: a suggestion that is itself an alias of an existing entry is not offered", async () => {
+  // A legacy NFD folder `café/` on a host that equates NFD and NFC: the NFC suggestion
+  // `café/new` reaches that folder under another spelling, so it can never be created either.
+  class AliasingSuggestion extends MemoryBackend {
+    override async exists(id: string): Promise<boolean> {
+      if (id === "caf\u{e9}/new") throw new FilesystemIdentityAliasError("caf\u{e9}/new.md", "caf\u{e9}", "cafe\u{301}", "folder", 0);
+      return super.exists(id);
+    }
+  }
+  const backend = new AliasingSuggestion();
+  const bundle: Bundle = { root: "/unused", backend };
+  await assert.rejects(
+    () => mutateDocument({ bundle, id: "cafe\u{301}/new", mode: "overwrite", registry: CREATE_EMPTY, strict: false, buildCandidate: () => note("x") }),
+    (error: unknown) => error instanceof NonCanonicalDocumentIdError && error.why === "not_nfc"
+      && error.suggestedId === undefined && error.existingId === undefined
+      && / Choose a different id\.$/.test(error.message) && !/ Use '/.test(error.message),
+  );
+  assert.deepEqual(await backend.list(), []);
 });

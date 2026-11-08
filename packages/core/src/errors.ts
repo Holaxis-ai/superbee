@@ -87,27 +87,42 @@ export class OkfActorError extends InvalidInputError {
  * The requested bundle-relative path resolves, on a case- or normalization-insensitive
  * filesystem, to a directory entry spelled differently at `segment`. Every operation refuses it
  * so two distinct canonical ids can never read, compare-and-swap, or delete one physical file.
- * `existing` is the on-disk spelling when exactly one listed entry folds to `segment`.
+ * `existing` is the on-disk spelling when exactly one listed entry folds to `segment`, and
+ * `suggestedPath` is `rel` with that one segment respelled, when that respelling could be used.
  */
 export class FilesystemIdentityAliasError extends InvalidInputError {
+  readonly reason = "filesystem_alias" as const;
   readonly rel: string;
   readonly segment: string;
   readonly existing: string | undefined;
+  readonly suggestedPath: string | undefined;
 
-  constructor(rel: string, segment: string, existing?: string, leaf?: boolean) {
+  /**
+   * `noun` names the existing entry ("folder" or "file"); `index` is the position of `segment`
+   * in `rel`. Both default from the position of the first segment spelled `segment`.
+   */
+  constructor(rel: string, segment: string, existing?: string, noun?: "file" | "folder", index?: number) {
     const segments = rel.split("/").filter((part) => part !== "" && part !== ".");
-    const noun = (leaf ?? segments[segments.length - 1] === segment) ? "file" : "folder";
+    const at = index ?? segments.indexOf(segment);
+    const kind = noun ?? (at === segments.length - 1 ? "file" : "folder");
     const clash = existing === undefined
-      ? `but a ${noun} with that name in a different case or Unicode form already exists`
-      : `but ${noun} '${existing}' already exists`;
+      ? `but a ${kind} with that name in a different case or Unicode form already exists`
+      : existing.normalize("NFC") === segment.normalize("NFC")
+        ? `but ${kind} '${existing}' already exists, written in a different Unicode form`
+        : `but ${kind} '${existing}' already exists`;
     super(
-      `Path '${rel}' uses ${noun} '${segment}', ${clash}, and this disk treats names that differ only ` +
+      `Path '${rel}' uses ${kind} '${segment}', ${clash}, and this disk treats names that differ only ` +
         `by case or Unicode form as the same name. Use the existing spelling.`,
     );
     this.name = "FilesystemIdentityAliasError";
     this.rel = rel;
     this.segment = segment;
     this.existing = existing;
+    // No suggestion when respelling cannot help: the existing entry is a file where a folder is
+    // needed, or it differs only by Unicode form (it prints alike and is not a canonical id).
+    const unusable = existing === undefined || at < 0 || segments[at] !== segment
+      || (kind === "file" && at < segments.length - 1) || existing.normalize("NFC") === segment.normalize("NFC");
+    this.suggestedPath = unusable ? undefined : segments.map((part, position) => (position === at ? existing : part)).join("/");
   }
 }
 

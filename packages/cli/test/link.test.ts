@@ -681,6 +681,9 @@ test("link add: an alias spelling of an existing directory prefix is refused lik
       assert.equal(err.segment, "Concepts");
       assert.equal(err.existing, "concepts");
       assert.equal(toExit(err).exitCode, 2);
+      const cli = classifyBundleError(err);
+      assert.equal(cli.help, `use the existing spelling: concepts/${err.rel.split("/").pop()}`);
+      assert.deepEqual(cli.details, { reason: "filesystem_alias", path: err.rel, segment: "Concepts", existing: "concepts" });
       return true;
     };
     const write = () => writeDoc({ root: dir }, {

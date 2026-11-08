@@ -243,11 +243,39 @@ test("AC-3(q): a prefix directory replaced between O-PROBE and its confirmation 
 });
 
 test("alias refusal names a file leaf as a file and omits an unknown existing spelling", () => {
-  const leaf = new FilesystemIdentityAliasError("concepts/A.md", "A.md", "a.md", true);
+  const leaf = new FilesystemIdentityAliasError("concepts/A.md", "A.md", "a.md", "file");
   assert.match(leaf.message, /^Path 'concepts\/A\.md' uses file 'A\.md', but file 'a\.md' already exists, and this disk treats names that differ only by case or Unicode form as the same name\. Use the existing spelling\.$/);
+  assert.equal(leaf.suggestedPath, "concepts/a.md");
+  assert.equal(leaf.reason, "filesystem_alias");
   const unknown = new FilesystemIdentityAliasError("Concepts/x.md", "Concepts");
   assert.match(unknown.message, /uses folder 'Concepts', but a folder with that name in a different case or Unicode form already exists/);
   assert.equal(unknown.existing, undefined);
+  assert.equal(unknown.suggestedPath, undefined);
+  // Names that differ only by Unicode form print alike, so the message says how they differ.
+  const nfd = new FilesystemIdentityAliasError("caf\u00e9/x.md", "caf\u00e9", "cafe\u0301", "folder", 0);
+  assert.match(nfd.message, /already exists, written in a different Unicode form, and this disk/);
+  assert.equal(nfd.suggestedPath, undefined, "a respelling that prints alike and is not canonical is no help");
+  assert.equal(new FilesystemIdentityAliasError("a/license/x.md", "license", "LICENSE", "file", 1).suggestedPath, undefined);
+  // The index, not the first equal spelling, places the suggestion.
+  const deep = new FilesystemIdentityAliasError("Docs/Docs/x.md", "Docs", "docs", "folder", 1);
+  assert.equal(deep.suggestedPath, "Docs/docs/x.md");
+});
+
+test("AC-3(r): a non-directory segment that stops the walk is confirmed too; read, probe and write agree and call it a file", async () => {
+  const rel = "assets/license/x.md";
+  const aliased = new ScriptedPort({ aliasing: true });
+  aliased.file(path.join(ROOT, "assets", "LICENSE"), "text");
+  const refusal = (err: unknown) =>
+    err instanceof FilesystemIdentityAliasError && err.segment === "license" && err.existing === "LICENSE"
+    && /uses file 'license', but file 'LICENSE' already exists/.test(err.message);
+  await assert.rejects(() => observe(aliased, rel), refusal);
+  await assert.rejects(() => probeExact(aliased, ROOT, rel), refusal);
+  await assert.rejects(() => mutateExact(aliased, ROOT, rel, async (context) => context.replace(Buffer.from("x"))), refusal);
+
+  const exact = new ScriptedPort();
+  exact.file(path.join(ROOT, "assets", "LICENSE"), "text");
+  assert.deepEqual(await observe(exact, rel), { state: "absent" });
+  assert.deepEqual(await observe(aliased, "assets/LICENSE/x.md"), { state: "absent" });
 });
 
 test("AC-3(m): O-PROBE ok recording 7; listing lacks the exact leaf; confirming probe absent: ABSENT, no open (the non-aliasing delete race)", async () => {
