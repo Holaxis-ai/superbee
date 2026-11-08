@@ -30,7 +30,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { IDBFactory } from "fake-indexeddb";
 
-import { RemoteBackend, type ConceptId, type OkfDocument, type StorageBackend } from "@superbee/core";
+import { type ConceptId, type OkfDocument, type StorageBackend } from "@superbee/core";
 import { IntentStateConflict } from "@superbee/core/journaled-backend";
 import { RemoteError, SNAPSHOT_TRUNCATED, headsDigest, sortHeads, type DocumentHead, type RemoteSnapshot } from "@superbee/core/remote";
 import { InvalidInputError } from "@superbee/core/storage";
@@ -57,6 +57,7 @@ import {
 } from "../src/local-bundle.ts";
 import { hostLocks, pushRoleName, withPushRole } from "../src/push-role.ts";
 import { BASE_URL, BUNDLE, createRemoteFixture, type RemoteFixture } from "./fixtures/remote-fixture.ts";
+import { RemoteBackend } from "../../core/dist/remote-backend.js";
 
 const NOW = "2026-09-10T12:00:00.000Z";
 const immediate = { sleep: async () => {}, lookupDelayMs: 0 };

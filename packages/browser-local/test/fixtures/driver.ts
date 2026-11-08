@@ -12,8 +12,6 @@ import { IndexedDbSchemaError } from "@superbee/core/indexeddb-backend";
 import type { IntentRecord } from "@superbee/core/journaled-backend";
 import type { KindRegistry } from "@superbee/core/kinds";
 import type { ExecutionMode, PlatformEdit, PlatformRuntime } from "@superbee/core/platform";
-import { RemoteBackend } from "@superbee/core/remote";
-import { createRemoteOperationTransport } from "@superbee/core/remote-operations";
 import type { OperationState, OperationTransport } from "@superbee/core/uncertain-write";
 import type { BodyDeliveryTransport } from "@superbee/core/governed-body-write";
 import { contentVersion, VersionConflict, versionOfBytes } from "@superbee/core/versioning";
@@ -44,6 +42,8 @@ import type { LockManagerLike } from "../../src/push-role.ts";
 import { createBrowserLocalRuntime, createRequestDrivenRuntime } from "../../src/platform/index.ts";
 import { faultyIndexedDb, type Faults } from "./faulty-factory.ts";
 import { mountPresentation, type Presentation } from "./presentation.ts";
+import { RemoteBackend } from "../../../core/dist/remote-backend.js";
+import { createRemoteOperationTransport } from "../../../core/dist/remote-operations.js";
 
 const ROOT_INDEX = "---\nokf_version: '0.2'\n---\n# Browser-local proof\n";
 const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };

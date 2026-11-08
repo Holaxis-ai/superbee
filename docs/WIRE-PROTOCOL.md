@@ -2,9 +2,13 @@
 
 This file is the repository authority for the currently implemented Superbee storage seam over
 HTTP. It documents the protocol implemented by `@superbee/server` and consumed by the local UI
-(`superbee ui`) and `RemoteBackend`; code and tests are behavior evidence, not separate protocol
-specifications. The CLI's `--remote` client and `superbee serve` command were removed; the library
-`RemoteBackend` and `serve()` remain until their own removal.
+(`superbee ui`); code and tests are behavior evidence, not separate protocol specifications.
+`RemoteBackend` and `createRemoteOperationTransport` below are core's internal reference client,
+exported from no package entry point: the repository's router and sync tests drive the protocol
+with them. A host reads the answers with `@superbee/core/remote` (parsers, `RemoteError`, and the
+`HeadsOptions`, `HeadsResult`, `RemoteSnapshot` and `WireCapabilities` shapes). The CLI's `--remote`
+client and `superbee serve` command were removed; the library `serve()` remains until its own
+removal.
 
 The current route prefix is `/v0`. Blob routes are an additive v0.1 capability under that prefix.
 The protocol is pre-1.0 and may change, but a change is not implemented until this contract and its
@@ -420,7 +424,7 @@ failed or interrupted claim to apply again. The reference memory store has no re
 - `WriteOptions.requestId` and `DeleteOptions.requestId` travel as `Idempotency-Key`; a malformed
   one is an `InvalidInputError` before any request is sent. Transient retries of an identified
   write are true replays. `RemoteBackend.lookupOperation(requestId)` reads the outcome route and
-  maps `404` to `null`. `createRemoteOperationTransport` in `@superbee/core/remote-operations`
+  maps `404` to `null`. The internal `createRemoteOperationTransport`
   is the uncertain-write transport over those two calls: a `document.write` intent becomes an
   identified guarded `PUT`, and a lost answer is resolved by lookup before any resubmission. An
   intent it cannot send (any other kind, or content that does not parse) is refused `USAGE`

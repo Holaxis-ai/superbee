@@ -13,7 +13,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { IDBFactory } from "fake-indexeddb";
 
-import { RemoteBackend, type OkfDocument, type StorageBackend } from "@superbee/core";
+import { type OkfDocument, type StorageBackend } from "@superbee/core";
 import { IndexedDbBackend } from "@superbee/core/indexeddb-backend";
 import type { JournaledBackend, MetaWriteOptions } from "@superbee/core/journaled-backend";
 
@@ -21,6 +21,7 @@ import { baseKey, bootstrap, commitLocal, openLocalBundle, pull, pushWithRole, s
 import { createBrowserLocalRuntime, PullSupersededError } from "../src/platform/browser-local.ts";
 import { MemoryJournaledBackend } from "./fixtures/memory-journaled-backend.ts";
 import { BASE_URL, BUNDLE, createRemoteFixture, type RemoteFixture } from "./fixtures/remote-fixture.ts";
+import { RemoteBackend } from "../../core/dist/remote-backend.js";
 
 const NOW = "2026-09-10T12:00:00.000Z";
 const immediate = { sleep: async () => {}, lookupDelayMs: 0 };

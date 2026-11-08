@@ -19,10 +19,9 @@ import { fileURLToPath } from "node:url";
 import { IDBFactory } from "fake-indexeddb";
 import ts from "typescript";
 
-import { FilesystemBackend, RemoteBackend } from "@superbee/core";
+import { FilesystemBackend } from "@superbee/core";
 import { readDocVersioned } from "@superbee/core/bundle-ops";
 import type { ExecutionMode, PlatformRuntime } from "@superbee/core/platform";
-import { createRemoteOperationTransport } from "@superbee/core/remote-operations";
 import type { OperationTransport } from "@superbee/core/uncertain-write";
 import { createRouter, MemoryOperationOutcomeStore } from "@superbee/server";
 
@@ -30,6 +29,8 @@ import { bootstrap, openLocalBundle, UNSETTLED_STATES, type LocalBundle } from "
 import { createBrowserLocalRuntime, createRequestDrivenRuntime } from "../src/platform/index.ts";
 import { BASE_URL, BUNDLE, createRemoteFixture, type FixtureKnobs } from "./fixtures/remote-fixture.ts";
 import { hostReadAdapter } from "./fixtures/host-read-adapter.ts";
+import { RemoteBackend } from "../../core/dist/remote-backend.js";
+import { createRemoteOperationTransport } from "../../core/dist/remote-operations.js";
 import {
   authorityHandle,
   CONTRACT_ACTOR,

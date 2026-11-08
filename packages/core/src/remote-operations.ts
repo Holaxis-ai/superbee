@@ -1,5 +1,7 @@
 import { captureBodyReplacePosture, type BodyReplacePosture } from "./body-replace-guards.js";
 /**
+ * Internal: not exported from any package entry point; a test client beside `remote-backend.ts`.
+ *
  * The uncertain-write transport over a wire authority: one {@link OperationTransport} that
  * delivers a `document.write` intent as an identified `PUT` through {@link RemoteBackend} and
  * reads the authority's recorded outcome back through the lookup route.

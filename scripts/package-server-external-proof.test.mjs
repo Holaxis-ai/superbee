@@ -101,11 +101,13 @@ test("packed server installs, typechecks, and round-trips through packaged core 
       path.join(scratch, "consumer.ts"),
       `import {
   MemoryBackend,
-  RemoteBackend,
   type OkfDocument,
   type StorageBackend,
   type Version,
 } from "@superbee/core";
+// Core's wire client is internal (no entry point exports it); this proof drives the router with it
+// from the installed files.
+import { RemoteBackend } from "./node_modules/@superbee/core/dist/remote-backend.js";
 import {
   createRouterForBackend,
   type ServerHandle,
@@ -176,10 +178,10 @@ void [version, response, handle, resolved, workerRouter];
       `import assert from "node:assert/strict";
 import {
   MemoryBackend,
-  RemoteBackend,
   VersionConflict,
   blobVersion,
 } from "@superbee/core";
+import { RemoteBackend } from "./node_modules/@superbee/core/dist/remote-backend.js";
 import { createRouterForBackend } from "@superbee/server";
 
 const backend = new MemoryBackend();

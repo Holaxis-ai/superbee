@@ -6,9 +6,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { FRONTMATTER_LIMITS, FrontmatterRefusedError, MemoryBackend, RemoteBackend, type ConceptId } from "@superbee/core";
+import { FRONTMATTER_LIMITS, FrontmatterRefusedError, MemoryBackend, type ConceptId } from "@superbee/core";
 
 import { createRouterForBackend } from "../src/legacy-router.js";
+import { RemoteBackend } from "../../core/dist/remote-backend.js";
 
 type ErrorEnvelope = { error: { code: string; message: string } };
 

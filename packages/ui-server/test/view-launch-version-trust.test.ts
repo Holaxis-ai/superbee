@@ -1,19 +1,18 @@
 /**
  * Active-View launch identity must come from bytes the host hashed itself, never from a version the
- * backend asserts. Over a wire-backed bundle the asserted value arrives as the blob response's
- * `x-version` header — entirely under the upstream's control — so a host that trusted it would let
- * a backend pin one version token across a byte swap and keep a stale approval admitting substituted HTML.
+ * backend asserts. A backend's blob version is entirely under its control, so a host that trusted it
+ * would let a backend pin one version token across a byte swap and keep a stale approval admitting
+ * substituted HTML.
  *
  * These pins drive the real `/__page/mint`, `/__ui/views/authorize`, and nonce-serve paths against
- * an upstream that lies about `x-version`. They fail if launch identity, serve-time currentness, or
+ * a backend that lies about its blob version. They fail if launch identity, serve-time currentness, or
  * approval subjects are ever rewired back onto the asserted version.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createServer, request } from "node:http";
-import type { AddressInfo } from "node:net";
+import { request } from "node:http";
 
-import { blobVersion, RemoteBackend, type Bundle } from "@superbee/core";
+import { blobVersion, MemoryBackend, type Bundle, type ReadBlobResult } from "@superbee/core";
 import { SessionViewAuthorizationStore, bootUiServer, type UiServerHandle } from "../src/index.js";
 
 const SECRET = "version-trust-secret";
@@ -72,63 +71,34 @@ async function post(server: UiServerHandle, pathname: string, body: unknown): Pr
   });
 }
 
+/** A backend that reports one pinned blob version whatever bytes it holds. */
+class LyingBlobBackend extends MemoryBackend {
+  override async readBlob(key: string): Promise<ReadBlobResult | null> {
+    const found = await super.readBlob(key);
+    return found === null ? null : { ...found, version: LIE };
+  }
+}
+
 /**
- * An upstream whose served bytes can change under the test while `x-version` stays pinned to one
- * value — the shape a host trusting the header cannot distinguish from an unchanged View.
+ * A bundle whose served bytes can change under the test while the asserted blob version stays
+ * pinned to one value — the shape a host trusting it cannot distinguish from an unchanged View.
  */
-async function lyingUpstream(): Promise<{ origin: string; serve(html: string): void; close(): Promise<void> }> {
-  let html = ORIGINAL;
-  const server = createServer((req, res) => {
-    const url = new URL(req.url ?? "/", "http://127.0.0.1");
-    if (url.pathname.endsWith("/docs")) {
-      const docs =
-        url.searchParams.get("type") === "View"
-          ? [{
-              id: "views-registry/board",
-              version: "registry-v1",
-              frontmatter: { type: "View", title: "Board", entry: "views/board.html", access: "bundle-read" },
-            }]
-          : [];
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ docs, next_cursor: null }));
-      return;
-    }
-    if (url.pathname.endsWith("/docs/views-registry/board")) {
-      res.writeHead(200, { "content-type": "application/json", "x-version": "registry-v1" });
-      res.end(JSON.stringify({
-        id: "views-registry/board",
-        frontmatter: { type: "View", title: "Board", entry: "views/board.html", access: "bundle-read" },
-        body: "",
-      }));
-      return;
-    }
-    if (url.pathname.includes("/blobs/")) {
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "x-version": LIE });
-      res.end(Buffer.from(html, "utf8"));
-      return;
-    }
-    res.writeHead(404, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: { code: "NOT_FOUND", message: "not found" } }));
+async function lyingUpstream(): Promise<{ bundle: Bundle; serve(html: string): Promise<void>; close(): Promise<void> }> {
+  const backend = new LyingBlobBackend();
+  await backend.write("views-registry/board", {
+    id: "views-registry/board",
+    frontmatter: { type: "View", title: "Board", entry: "views/board.html", access: "bundle-read" },
+    body: "",
   });
-  const origin = await new Promise<string>((resolve) => {
-    server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${(server.address() as AddressInfo).port}`));
-  });
-  return {
-    origin,
-    serve(next: string) { html = next; },
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  const serve = async (html: string): Promise<void> => {
+    await backend.writeBlob("views/board.html", Buffer.from(html, "utf8"), "text/html; charset=utf-8");
   };
+  await serve(ORIGINAL);
+  return { bundle: { root: "mem://lying-view-host", backend }, serve, close: async () => {} };
 }
 
 /** These pins exercise only the launch paths; the SPA data route is never called. */
 const NO_ROUTER = async (): Promise<Response> => new Response(null, { status: 404 });
-
-function remoteBundle(origin: string): Bundle {
-  return {
-    root: origin,
-    backend: new RemoteBackend({ baseUrl: origin, bundle: "default", maxRetries: 0 }),
-  };
-}
 
 test("launch identity is the host's own hash, not the version the upstream asserts", async () => {
   const upstream = await lyingUpstream();
@@ -136,7 +106,7 @@ test("launch identity is the host's own hash, not the version the upstream asser
     const server = await bootUiServer({
       mode: "dir",
       router: NO_ROUTER,
-      bundle: remoteBundle(upstream.origin),
+      bundle: upstream.bundle,
       sessionSecret: SECRET,
       renderDocument,
       viewAuthorization: new SessionViewAuthorizationStore(),
@@ -172,7 +142,7 @@ test("a pinned upstream version cannot hold a launch current across a byte swap"
     const server = await bootUiServer({
       mode: "dir",
       router: NO_ROUTER,
-      bundle: remoteBundle(upstream.origin),
+      bundle: upstream.bundle,
       sessionSecret: SECRET,
       renderDocument,
       viewAuthorization: new SessionViewAuthorizationStore(),
@@ -193,7 +163,7 @@ test("a pinned upstream version cannot hold a launch current across a byte swap"
 
       // The registry doc and x-version are byte-for-byte unchanged; only the HTML moved. A host
       // trusting the asserted version sees nothing happen here and keeps the launch alive.
-      upstream.serve(SUBSTITUTED);
+      await upstream.serve(SUBSTITUTED);
 
       // The serve path replays the bytes captured at mint, so the failure is not that the
       // substitution is served — it is that the launch survives a source change it should not
@@ -220,7 +190,7 @@ test("an approval for the honest bytes does not admit substituted bytes under th
     const server = await bootUiServer({
       mode: "dir",
       router: NO_ROUTER,
-      bundle: remoteBundle(upstream.origin),
+      bundle: upstream.bundle,
       sessionSecret: SECRET,
       renderDocument,
       viewAuthorization: authorizations,
@@ -235,7 +205,7 @@ test("an approval for the honest bytes does not admit substituted bytes under th
       assert.equal(approved.status, 200, String(approved.body.error?.message ?? ""));
       assert.equal(approved.body.authorized, true, "the human approved these exact bytes");
 
-      upstream.serve(SUBSTITUTED);
+      await upstream.serve(SUBSTITUTED);
 
       const second = await post(server, "/__page/mint", { registryId: "views-registry/board" });
       assert.equal(second.status, 200, String(second.body.error?.message ?? ""));

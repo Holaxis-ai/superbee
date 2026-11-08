@@ -133,10 +133,16 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
       `import {
   FilesystemBackend,
   MemoryBackend,
-  RemoteBackend,
   type OkfDocument,
   type StorageBackend,
 } from "@superbee/core";
+import type { HeadsOptions, HeadsResult, RemoteSnapshot, WireCapabilities } from "@superbee/core/remote";
+// The wire client is internal: neither entry point exports it.
+// @ts-expect-error RemoteBackend is not exported
+import { RemoteBackend as RemovedClient } from "@superbee/core";
+void RemovedClient;
+const wireShapes: [HeadsOptions, HeadsResult | null, RemoteSnapshot | null, WireCapabilities | null] = [{}, null, null, null];
+void wireShapes;
 import { createFilesystemRuntime, type FilesystemHostPolicy, type FilesystemRuntime } from "@superbee/core/filesystem";
 import { isTerminal, buildKindRegistry, type KindConvention } from "@superbee/core/kinds";
 import { projectDomainModelV0, type DomainModelV0 } from "@superbee/core/domain-model";
@@ -172,7 +178,6 @@ const document: OkfDocument = { id: "proof", frontmatter: { type: "Proof" }, bod
 const backends: StorageBackend[] = [
   new FilesystemBackend("."),
   new MemoryBackend(),
-  new RemoteBackend({ baseUrl: "http://127.0.0.1:1", bundle: "default", maxRetries: 0 }),
 ];
 const kind: KindConvention = {
   id: "conventions/task",
@@ -226,7 +231,6 @@ import path from "node:path";
 import {
   FilesystemBackend,
   MemoryBackend,
-  RemoteBackend,
   initBundle,
   readDoc,
   writeDoc,
@@ -251,13 +255,14 @@ try {
   await memory.write("memory/proof", { id: "memory/proof", frontmatter: { type: "Proof" }, body: "works" });
   if ((await memory.read("memory/proof")).doc.body !== "works\\n") throw new Error("memory backend failed");
 
-  const remote = new RemoteBackend({
-    baseUrl: "http://external-proof.invalid",
-    bundle: "default",
-    maxRetries: 0,
-    fetchImpl: async () => new Response(null, { status: 404 }),
-  });
-  if (await remote.exists("missing")) throw new Error("remote backend failed");
+  const core = await import("@superbee/core");
+  const remote = await import("@superbee/core/remote");
+  if ("RemoteBackend" in core || "RemoteBackend" in remote) throw new Error("the internal wire client leaked into an entry point");
+  if (typeof remote.parseHeadsAnswer !== "function") throw new Error("remote parsers missing");
+  await import("@superbee/core/remote-operations").then(
+    () => { throw new Error("remote-operations must not be exported"); },
+    (error) => { if (error?.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") throw error; },
+  );
   const kind = {
     id: "conventions/proof",
     title: "Proof",
@@ -665,7 +670,7 @@ import {
   type OkfDocument,
   type StorageBackend,
 } from "@superbee/core/storage";
-import { RemoteBackend, RemoteError } from "@superbee/core/remote";
+import { parseHeadsAnswer, RemoteError } from "@superbee/core/remote";
 import { memorySearchSource, searchDocuments, searchRowText, SearchInputError, textVersion, type SearchDocumentV1, type SearchResultV1, type SearchRowTextV1, type SearchSource } from "@superbee/core/search";
 import { parseRecipeFiles, recipeConnectors, type RecipeConnector, type RecipeFile, type LoadResult } from "@superbee/core/recipes";
 import { builtinNames, loadBuiltinRecipe } from "@superbee/core/builtin-recipes";
@@ -710,7 +715,7 @@ export async function exercisePortableCore(): Promise<void> {
   await writeDocVersioned(backend, document);
   await queryHeads(backend, { type: String(document.frontmatter.type) });
 }
-export const portableRuntime = { InvalidInputError, VersionConflict, RemoteBackend, RemoteError };
+export const portableRuntime = { InvalidInputError, VersionConflict, parseHeadsAnswer, RemoteError };
 export async function exerciseKindAuthoringTypes(bundle: Parameters<typeof prepareKindDraft>[0]): Promise<KindDraftPlan> {
   const loaded = loadBuiltinRecipe(builtinNames()[0]!);
   if (loaded?.ok) await installRecipe(bundle, loaded.recipe);
@@ -835,7 +840,7 @@ export async function exerciseSourceEngine(): Promise<[SourceRunReceipt, Conform
       logLevel: "silent",
     });
     assert.equal(workerBundle.errors.length, 0);
-    assert.ok(workerBundle.outputFiles[0].text.includes("RemoteBackend"));
+    assert.ok(workerBundle.outputFiles[0].text.includes("parseHeadsAnswer"));
     assert.ok(workerBundle.outputFiles[0].text.includes("connectorPinDigest"), "the connectors subpath bundles for a Worker");
     assert.ok(workerBundle.outputFiles[0].text.includes("observeSource"), "the source engine subpath bundles for a Worker");
     assert.ok(workerBundle.outputFiles[0].text.includes("runTransportConformance"), "the source harness subpath bundles for a Worker");

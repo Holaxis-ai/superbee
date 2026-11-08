@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MemoryBackend, RemoteBackend } from "@superbee/core";
+import { MemoryBackend } from "@superbee/core";
 import { createRouter } from "@superbee/server";
 import { bootstrap, isComplete, openLocalBundle } from "../src/local-bundle.ts";
 import { MemoryJournaledBackend } from "./fixtures/memory-journaled-backend.ts";
+import { RemoteBackend } from "../../core/dist/remote-backend.js";
 
 test("late incompatible snapshot metadata leaves bootstrap incomplete and does not reconcile deletions", async () => {
   const authority = new MemoryBackend();
