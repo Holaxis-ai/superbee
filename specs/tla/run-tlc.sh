@@ -51,7 +51,7 @@ for cfg in "$@"; do
   fi
   echo "FAIL $name: expected '$expect', TLC exited $status after ${elapsed}s"
   grep -E '^Error: ' "$log" || true
-  grep -vE "^ *\|\|" "$log" | tail -n 150
+  grep -E "Progress|^<[A-Za-z0-9]+ line" "$log" | cut -c1-120
   failures=$((failures + 1))
 done
 
