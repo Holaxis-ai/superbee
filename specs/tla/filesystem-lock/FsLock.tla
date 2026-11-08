@@ -61,7 +61,7 @@
 (*     time is exact: "started after the claim" iff the pid now belongs to *)
 (*     a later process. The age check in removeAbandonedClaim passes for a *)
 (*     directory whose creator is dead, or that aged past the window while *)
-(*     its live creator was suspended (chosen at Mkdir, once per claimer). *)
+(*     its live creator was suspended (chosen at Mkdir, at most once).     *)
 (*  A8 The acquireSettled retry re-uses the same token. Sound: a claim     *)
 (*     that timed out never wrote a record.                                *)
 (*  A9 Assumed, not modeled: nothing external deletes a held <key>.lock    *)
@@ -104,7 +104,7 @@ VARIABLES
   ownerHost, host, hostChanged,
   diag, diagOk, relErr,
   reused,     \* the pid of t was taken by a (single) foreign process
-  stalled     \* t has already been suspended past the abandoned-claim age once
+  stalled     \* a claimer has already been suspended past the abandoned-claim age
 
 vars == <<lock, stale, rel, nextId, pc, snap, claimed, wdir, mode, retries, settled,
           alive, pidLive, ownerHost, host, hostChanged, diag, diagOk, relErr, reused, stalled>>
@@ -188,7 +188,7 @@ Init ==
   /\ diagOk = [t \in Tokens |-> TRUE]
   /\ relErr = [t \in Tokens |-> FALSE]
   /\ reused = [t \in Tokens |-> FALSE]
-  /\ stalled = [t \in Tokens |-> FALSE]
+  /\ stalled = FALSE
 
 \* A command starts. A slot's next run starts after the previous one ends.
 StartRun(t) ==
@@ -205,14 +205,15 @@ StartRun(t) ==
 \* mkdir(L). EEXIST is contention, so the next step reads the owner.
 \* Under ClaimStall, a claimer may be suspended between this mkdir and its owner write long
 \* enough for the owner-less directory to pass the abandoned-claim age: the directory is created
-\* old. At most once per claimer, which bounds the removals of live claims. Deciding it at mkdir
-\* loses no behavior: aging commutes with the claimer's own steps and only enables removals.
+\* old. At most once per behavior: each removal of a live claim lets every other claimer restart
+\* without spending its wait budget, so this bound is what keeps the model checkable. Deciding it
+\* at mkdir loses no behavior: aging commutes with the claimer's own steps and only enables removals.
 Mkdir(t) ==
   /\ pc[t] = "mkdir"
   /\ IF ~lock.ex
-       THEN /\ \E o \in (IF ClaimStall /\ ~stalled[t] THEN BOOLEAN ELSE {FALSE}) :
+       THEN /\ \E o \in (IF ClaimStall /\ ~stalled THEN BOOLEAN ELSE {FALSE}) :
                  /\ lock' = [Dir(nextId, t, NONE) EXCEPT !.old = o]
-                 /\ stalled' = [stalled EXCEPT ![t] = @ \/ o]
+                 /\ stalled' = (stalled \/ o)
             /\ nextId' = nextId + 1
             /\ pc' = [pc EXCEPT ![t] = "lstat"]
        ELSE /\ pc' = [pc EXCEPT ![t] = "read1"]
