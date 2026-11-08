@@ -28,15 +28,12 @@ import type { HostedTarget } from "../hosted-auth/discovery.js";
 // The qualifying carrier is core's; this name stays importable here for the CLI's own tests.
 export { qualifyingCarrier } from "@superbee/core/hosted-client";
 
-/**
- * The sync family under a target's audience: `/sync/v1` for the Superbee API (`<origin>/mcp`),
- * `/agents/<uuid>/sync/v1` for an agent connection. Any other audience is a usage error.
- */
+/** The sync family under a target's audience: `/sync/v1` for `<origin>/mcp`; any other audience is a usage error. */
 export function syncRoutePrefix(target: HostedTarget): string {
   const prefix = coreSyncRoutePrefix(target);
   if (prefix !== null) return prefix;
   throw new CliError("USAGE", `${target.audience} has no hosted sync routes`, {
-    help: "pass --host with a Superbee origin or an agent connection URL",
+    help: "pass --host with a Superbee origin, such as https://mcp.getsuperbee.com",
   });
 }
 

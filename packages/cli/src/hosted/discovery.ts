@@ -95,7 +95,7 @@ export function assertSecureUrl(value: string, what: string): URL {
 
 /**
  * Resolve a `--host` value. A bare origin targets the default Superbee API audience (`/mcp`);
- * a URL with a path (an agent connection such as `/agents/<uuid>/mcp`) targets that resource.
+ * a URL with a path targets that resource.
  */
 export function resolveHostedTarget(host: string): HostedTarget {
   const url = assertSecureUrl(host.trim(), "--host");
