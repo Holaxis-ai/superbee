@@ -23,7 +23,8 @@ import { FilesystemBackend } from "@superbee/core";
 import { readDocVersioned } from "@superbee/core/bundle-ops";
 import type { ExecutionMode, PlatformRuntime } from "@superbee/core/platform";
 import type { OperationTransport } from "@superbee/core/uncertain-write";
-import { createRouter, MemoryOperationOutcomeStore } from "@superbee/server";
+import { MemoryOperationOutcomeStore } from "@superbee/server";
+import { createBundleRouter } from "../../ui-server/dist/bundle-router.js";
 
 import { bootstrap, openLocalBundle, UNSETTLED_STATES, type LocalBundle } from "../src/local-bundle.ts";
 import { createBrowserLocalRuntime, createRequestDrivenRuntime } from "../src/platform/index.ts";
@@ -195,7 +196,7 @@ for (const structural of [false, true]) test(`${structural ? "host read adapter"
     await writeFile(path.join(root, "notes", "other.md"), ALSO_HAND_AUTHORED);
     const authority = new FilesystemBackend(root);
     // The reference router over the filesystem, served the same way the fixture serves memory.
-    const hosted = createRouter({ root, backend: authority }, { outcomes: new MemoryOperationOutcomeStore() });
+    const hosted = createBundleRouter({ root, backend: authority }, { outcomes: new MemoryOperationOutcomeStore() });
     const remote = new RemoteBackend({ baseUrl: BASE_URL, bundle: BUNDLE, fetchImpl: hosted, maxRetries: 0 });
     const adapter = hostReadAdapter(remote, remote);
     const readSide = structural ? adapter.backend : remote;

@@ -7,8 +7,7 @@ HTTP. It documents the protocol implemented by `@superbee/server` and consumed b
 exported from no package entry point: the repository's router and sync tests drive the protocol
 with them. A host reads the answers with `@superbee/core/remote` (parsers, `RemoteError`, and the
 `HeadsOptions`, `HeadsResult`, `RemoteSnapshot` and `WireCapabilities` shapes). The CLI's `--remote`
-client and `superbee serve` command were removed; the library `serve()` remains until its own
-removal.
+client, the `superbee serve` command and the library's `serve()` bootstrap were removed.
 
 The current route prefix is `/v0`. Blob routes are an additive v0.1 capability under that prefix.
 The protocol is pre-1.0 and may change, but a change is not implemented until this contract and its
@@ -16,24 +15,26 @@ behavioral proofs change together.
 
 ## Security boundary
 
-The reference `serve()` implementation has **no authentication or authorization**. It ignores the
-`Authorization` header and binds to `127.0.0.1` by default. Loopback prevents access from another
-machine; it does not protect against another process or user on the same machine. Passing a
-non-loopback `host` exposes the same unauthenticated server and is not a production deployment.
+`@superbee/server` ships no listener. A host uses `@superbee/server/router`, whose context
+resolver authenticates and authorizes the one canonical resolved bundle route, then returns a
+bundle-bound backend and trusted attribution. That router ignores client-supplied `X-Actor` and
+`X-Agent`.
 
-A production host uses `@superbee/server/router`, whose context resolver authenticates and
-authorizes the one canonical resolved bundle route, then returns a bundle-bound backend and trusted
-attribution. That router ignores client-supplied `X-Actor` and `X-Agent`; the Node package-root
-reference adapter retains both as advisory, client-controlled strings for compatibility.
+The repository's one listener for these routes is the local UI host (`@superbee/ui-server`, behind
+`superbee ui --dir`). It binds `127.0.0.1` only, refuses any other `Host` header, and serves `/v0/*`
+only to its per-run session. Its private one-bundle router maps the SPA's `default` bundle segment
+to one internal id and keeps `X-Actor` and `X-Agent` as advisory, client-controlled strings, because
+the loopback host has no identity of its own. Loopback does not protect against another process or
+user on the same machine.
 
-`RemoteBackend` can send `Authorization: Bearer <token>` on every request, but that capability does
-not make the reference server enforce it. A gated deployment owns the meaning of that token.
+`RemoteBackend` can send `Authorization: Bearer <token>` on every request; a gated host owns the
+meaning of that token.
 
 ## Conventions
 
-- Paths are `/v0/bundles/{bundle}/...`. The reference router closes over one backend: it accepts
-  any syntactically valid `{bundle}` segment but does not use it to select among bundles.
-- The Worker-safe `@superbee/server/router` subpath instead requires exactly `bnd_` plus 32
+- Paths are `/v0/bundles/{bundle}/...`. The local UI host's private router closes over one backend
+  and maps the SPA's `default` segment to it; it does not select among bundles.
+- The Worker-safe `@superbee/server/router` subpath requires exactly `bnd_` plus 32
   lowercase hexadecimal characters. Its public resolver rejects labels, aliases, uppercase ids,
   percent escapes, encoded slash or backslash, and empty or repeated bundle segments before the
   trusted context resolver can run. `GET /v0/capabilities` is deployment-scoped and bypasses that
@@ -449,20 +450,20 @@ suites exercise the semantics through the router, `RemoteBackend`, and a real so
 | WIRE-PROOF-04 | History and attribution payload. | `packages/server/src/router.ts::case "doc-versions"` | `packages/core/test/wire-protocol.test.ts::GET /docs/{id}/versions returns` |
 | WIRE-PROOF-05 | Reserved file get/put only. | `packages/server/src/router.ts::reserved file name must be index.md or log.md` | `packages/core/test/wire-protocol.test.ts::reserved files have no delete route` |
 | WIRE-PROOF-06 | Blob collection and raw byte member routes. | `packages/server/src/router.ts::case "blob-read"` | `packages/core/test/wire-protocol.test.ts::REAL socket GET returns EXACT bytes` |
-| WIRE-PROOF-07 | Reference server is loopback by default and unauthenticated. | `packages/server/src/serve.ts::NO AUTH in v0` | `packages/core/test/wire-protocol.test.ts::serve() boots a real node:http listener` |
+| WIRE-PROOF-07 | The repository's only listener for the wire routes is loopback-only and refuses other hosts. | `packages/ui-server/src/server.ts::const HOST = "127.0.0.1"` | `packages/ui-server/test/loopback-binding.test.ts::the UI host's socket binds 127.0.0.1`; `packages/ui-server/test/action-endpoint-auth.test.ts::Host header is not in the loopback allowlist` |
 | WIRE-PROOF-08 | Canonical export differs from an original-byte guarantee. | `packages/cli/src/commands/pull.ts::CANONICAL OKF re-serialization` | `packages/cli/test/promote-pull.test.ts::delivers the CANONICAL re-serialization` |
 | WIRE-PROOF-09 | Missing version transport fails closed. | `packages/core/src/remote-backend.ts::VERSION_MISSING` | `packages/core/test/remote-version-transport.test.ts::a response with NEITHER X-Version NOR ETag throws a loud RemoteError(VERSION_MISSING)` |
 | WIRE-PROOF-10 | Identified writes apply once while their record is kept, replay it, and are looked up by key; past retention a premise that matches again is applied again. | `packages/server/src/router.ts::id: "operation-lookup"`; `packages/server/src/operation-outcomes.ts::class MemoryOperationOutcomeStore` | `packages/core/test/wire-protocol.test.ts::identified PUT is applied once`; `packages/browser-local/test/sync.test.ts::lost acknowledgement: the fixture applies then drops the response`; `packages/core/test/wire-protocol.test.ts::a byte-identical revert to the premise's content lets a resubmission apply a second time`; `packages/core/test/wire-protocol.test.ts::a guarded write whose answer is lost is retried under the same minted Idempotency-Key` |
 | WIRE-PROOF-11 | Heads digest, `304` on `If-None-Match`, and deletions visible as missing ids. | `packages/server/src/router.ts::id: "docs-heads"`; `packages/core/src/heads-digest.ts::export function headsDigest` | `packages/core/test/wire-protocol.test.ts::GET /heads lists every id and version under the documented digest`; `packages/core/test/wire-protocol.test.ts::RemoteBackend.heads maps 304 to null` |
-| WIRE-PROOF-12 | Snapshot streams terminated NDJSON; a cut body or count mismatch is truncation. | `packages/server/src/router.ts::id: "docs-snapshot"`; `packages/server/src/serve.ts::pipeline(Readable.fromWeb` | `packages/core/test/wire-protocol.test.ts::GET /snapshot streams header, docs in id order, and end`; `packages/core/test/wire-protocol.test.ts::a snapshot cut after 40 lines`; `packages/core/test/wire-protocol.test.ts::serve() streams a 500-document snapshot` |
+| WIRE-PROOF-12 | Snapshot streams terminated NDJSON; a cut body or count mismatch is truncation. | `packages/server/src/router.ts::id: "docs-snapshot"`; `packages/ui-server/src/node-http.ts::pipeline(Readable.fromWeb` | `packages/core/test/wire-protocol.test.ts::GET /snapshot streams header, docs in id order, and end`; `packages/core/test/wire-protocol.test.ts::a snapshot cut after 40 lines`; `packages/core/test/wire-protocol.test.ts::a 500-document snapshot streams over a real socket` |
 | WIRE-PROOF-13 | Shared body replacement safety, independent explicit overrides, and observed-head CAS. | `packages/server/src/router.ts::writeDocVersionedGuarded`; `packages/core/src/engine.ts::export async function writeDocVersionedGuarded` | `packages/server/test/body-replacement.test.ts::PUT body replacement agreement rows`; `packages/server/test/body-replacement.test.ts::observed-head CAS prevents` |
 
 ## Known deviations and open questions
 
 These are current limitations, not promises that a client may paper over:
 
-1. The Node package-root reference adapter remains single-backend and does not select among
-   bundles. Explicit bundle selection belongs to the Worker-safe subpath's host context resolver.
+1. The local UI host's router is single-backend and does not select among bundles. Explicit
+   bundle selection belongs to the Worker-safe subpath's host context resolver.
 2. A document whose final path segment is literally `versions` is ambiguous with the history
    subresource.
 3. There is no original-document-byte endpoint. Canonical JSON reconstruction is the only remote
@@ -471,10 +472,10 @@ These are current limitations, not promises that a client may paper over:
    heads as a deletion, so those routes cannot skip it. The document list skips and names it
    when asked (`malformed=skip`).
 5. Wire `fields` selects a projection and cannot express core's arbitrary field-equality filter.
-6. `requestFromIncomingMessage` supports a maximum body size, but reference `serve()` currently
-   supplies no cap.
+6. The UI host's `/v0/*` path passes no body cap to `requestFromIncomingMessage`; its own UI
+   routes do.
 7. Authentication, authorization, and trusted principal/agent attribution belong to a gated host;
-   the reference server implements none of them.
+   the repository's loopback UI host implements none of them.
 8. `backlinks` is reported false and has no wire endpoint; clients derive graph results from reads.
 9. Transient retry applies at the transport boundary, including writes without a client premise. The storage
    seam permits those writes, so a caller that needs lost-update protection must provide a CAS premise.
@@ -483,5 +484,5 @@ These are current limitations, not promises that a client may paper over:
    guarded reserved-file or blob write, retried after a lost response may still surface a
    conservative conflict or apply again over a byte-identical revert.
 10. Request identity covers document `PUT` and `DELETE` only. Reserved-file and blob writes carry
-    no identity yet, and the reference outcome store is in-memory: a restarted reference server
+    no identity yet, and the reference outcome store is in-memory: a restarted local UI host
     holds no records, which a client observes as `404` on lookup.

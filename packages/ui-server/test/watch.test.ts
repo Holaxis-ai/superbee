@@ -15,7 +15,7 @@ import {
   writeDoc,
   type Bundle,
 } from "@superbee/core";
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../src/bundle-router.js";
 import { bootUiServer } from "../src/server.js";
 import { HELD_HINT_MAX_WAIT_MS, startWatcher, watchDirectory, type ChangeEvent } from "../src/watch.js";
 
@@ -470,7 +470,7 @@ test("live revocation: a bridge read is refused at once while the watcher has no
   await writeDoc(bundle, { id: REGISTRY, frontmatter: { type: "View", title: "Board", entry: "views/board.html", access: "bundle-read" }, body: "" });
   await writeBlob(bundle, "views/board.html", new TextEncoder().encode("<!doctype html>"), "text/html; charset=utf-8");
   const server = await bootUiServer({
-    mode: "dir", bundle, router: createRouter(bundle), sessionSecret: "watch-secret",
+    mode: "dir", bundle, router: createBundleRouter(bundle), sessionSecret: "watch-secret",
     renderDocument: ({ id, body }) => ({ html: `<article data-id="${id}">${body}</article>`, bounded: false }),
     serveAsset: () => ({ status: 404, headers: { "content-type": "text/plain; charset=utf-8" }, body: new Uint8Array() }),
   });

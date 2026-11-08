@@ -6,7 +6,7 @@ import {
   writeDoc,
   type Bundle,
 } from "@superbee/core";
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../src/bundle-router.js";
 import { bootUiServer } from "../src/server.js";
 
 const SECRET = "view-bridge-security-secret";
@@ -60,7 +60,7 @@ test("active View data is denied before exact-byte approval and revoked when tho
   const server = await bootUiServer({
     mode: "dir",
     bundle,
-    router: createRouter(bundle),
+    router: createBundleRouter(bundle),
     sessionSecret: SECRET,
     renderDocument,
     serveAsset: () => ({
@@ -173,7 +173,7 @@ test("active View admission accepts only bounded UTF-8 HTML", async () => {
   const server = await bootUiServer({
     mode: "dir",
     bundle,
-    router: createRouter(bundle),
+    router: createBundleRouter(bundle),
     sessionSecret: SECRET,
     renderDocument,
     serveAsset: () => ({
@@ -225,7 +225,7 @@ test("the web host declares itself in hello, forwards the v1 read, and refuses w
   const server = await bootUiServer({
     mode: "dir",
     bundle,
-    router: createRouter(bundle),
+    router: createBundleRouter(bundle),
     sessionSecret: SECRET,
     renderDocument,
     serveAsset: () => ({

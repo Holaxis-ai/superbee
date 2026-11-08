@@ -15,7 +15,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../../ui-server/dist/bundle-router.js";
 import { MemoryBackend as ServerMemoryBackend } from "@superbee/core";
 
 import { initBundle, query, readDoc, writeDoc } from "../src/bundle.js";
@@ -1353,7 +1353,7 @@ test("wire: loadKinds over a RemoteBackend bundle equals a local bundle (router-
   const serverBackend = new ServerMemoryBackend();
   const serverBundle: Bundle = { root: "mem://kinds-wire-server", backend: serverBackend };
   await writeDoc(serverBundle, ROADMAP_KIND_DOC);
-  const router = createRouter(serverBundle);
+  const router = createBundleRouter(serverBundle);
   const remoteBundle: Bundle = {
     root: "wire://kinds-client",
     backend: new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: router }),

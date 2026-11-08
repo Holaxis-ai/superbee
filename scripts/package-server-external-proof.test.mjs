@@ -65,12 +65,11 @@ test("packed server installs, typechecks, and round-trips through packaged core 
     assert.ok(serverPaths.includes("package.json"));
     assert.ok(serverPaths.includes("dist/index.js"));
     assert.ok(serverPaths.includes("dist/index.d.ts"));
-    assert.ok(serverPaths.includes("dist/legacy-router.js"));
-    assert.ok(serverPaths.includes("dist/legacy-router.d.ts"));
     assert.ok(serverPaths.includes("dist/router.js"));
     assert.ok(serverPaths.includes("dist/router.d.ts"));
-    assert.ok(serverPaths.includes("dist/serve.js"));
-    assert.ok(serverPaths.includes("dist/serve.d.ts"));
+    for (const removed of ["legacy-router", "serve"]) {
+      assert.ok(!serverPaths.some((file) => file.startsWith(`dist/${removed}.`)), `the server tarball must not carry dist/${removed}`);
+    }
     assert.ok(serverPaths.every((file) => file === "package.json" || file.startsWith("dist/")));
 
     await writeFile(
@@ -109,9 +108,13 @@ test("packed server installs, typechecks, and round-trips through packaged core 
 // from the installed files.
 import { RemoteBackend } from "./node_modules/@superbee/core/dist/remote-backend.js";
 import {
-  createRouterForBackend,
-  type ServerHandle,
+  MemoryOperationOutcomeStore,
+  WIRE_ENDPOINTS,
+  type OperationOutcomeStore,
 } from "@superbee/server";
+// The root no longer carries a listener or the one-bundle alias router.
+// @ts-expect-error removed export
+import { serve as removedServe, createRouter as removedRouter, createRouterForBackend as removedBackendRouter } from "@superbee/server";
 import {
   createRouter as createWorkerRouter,
   resolveWireRequest,
@@ -119,10 +122,15 @@ import {
 } from "@superbee/server/router";
 
 const backend: StorageBackend = new MemoryBackend();
-const router = createRouterForBackend(backend);
+const outcomes: OperationOutcomeStore = new MemoryOperationOutcomeStore();
+const router = createWorkerRouter({
+  capabilities: { enforced_cas: true, blobs: true },
+  outcomes,
+  resolveContext: () => ({ backend, attribution: { actor: "external" } }),
+});
 const remote = new RemoteBackend({
   baseUrl: "http://wire.external",
-  bundle: "proof",
+  bundle: "bnd_00112233445566778899aabbccddeeff",
   fetchImpl: router,
   maxRetries: 0,
 });
@@ -133,7 +141,7 @@ const document: OkfDocument = {
 };
 const version: Promise<Version> = remote.write(document.id, document);
 const response: Promise<Response> = router(new Request("http://wire.external/v0/capabilities"));
-const handle: ServerHandle | undefined = undefined;
+const routeCount: number = WIRE_ENDPOINTS.length;
 const resolved = resolveWireRequest(
   new Request("http://wire.external/v0/bundles/bnd_00112233445566778899aabbccddeeff/docs"),
 );
@@ -144,7 +152,7 @@ const workerRouter = createWorkerRouter({
     attribution: { actor: route.bundleId },
   }),
 });
-void [version, response, handle, resolved, workerRouter];
+void [version, response, routeCount, resolved, workerRouter, removedServe, removedRouter, removedBackendRouter];
 `,
     );
     await writeFile(
@@ -182,13 +190,21 @@ import {
   blobVersion,
 } from "@superbee/core";
 import { RemoteBackend } from "./node_modules/@superbee/core/dist/remote-backend.js";
-import { createRouterForBackend } from "@superbee/server";
+import * as serverRoot from "@superbee/server";
+import { createRouter } from "@superbee/server/router";
 
+for (const removed of ["serve", "createRouter", "createRouterForBackend", "requestFromIncomingMessage"]) {
+  assert.equal(removed in serverRoot, false, "@superbee/server must not export " + removed);
+}
 const backend = new MemoryBackend();
-const router = createRouterForBackend(backend);
+const router = createRouter({
+  capabilities: { enforced_cas: true, blobs: true, projections: true, backlinks: false },
+  outcomes: new serverRoot.MemoryOperationOutcomeStore(),
+  resolveContext: (request) => ({ backend, attribution: { actor: request.headers.get("x-actor") ?? "unknown" } }),
+});
 const remote = new RemoteBackend({
   baseUrl: "http://wire.external",
-  bundle: "proof",
+  bundle: "bnd_00112233445566778899aabbccddeeff",
   fetchImpl: router,
   maxRetries: 0,
 });

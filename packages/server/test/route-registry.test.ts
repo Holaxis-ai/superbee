@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { MemoryBackend } from "@superbee/core";
-import { createRouterForBackend } from "../src/legacy-router.js";
+import { oneBackendRouter } from "./support/one-backend-router.js";
 import { WIRE_ENDPOINTS } from "../src/router.js";
 
 function concretePath(path: string): string {
@@ -32,7 +32,7 @@ function requestBody(id: string): { body?: string; headers?: Record<string, stri
 }
 
 test("every declared wire endpoint reaches runtime dispatch and undeclared method pairs are refused", async () => {
-  const router = createRouterForBackend(new MemoryBackend());
+  const router = oneBackendRouter(new MemoryBackend());
 
   for (const endpoint of WIRE_ENDPOINTS) {
     const response = await router(
@@ -49,7 +49,7 @@ test("every declared wire endpoint reaches runtime dispatch and undeclared metho
   assert.equal(undeclaredMethod.status, 400);
   assert.match(await undeclaredMethod.text(), /unsupported method POST for \/v0\/capabilities/);
 
-  for (const path of ["/v0/bundles/default/docs:purge", "/v0/bundles/default/purge"]) {
+  for (const path of ["/v0/bundles/bnd_00112233445566778899aabbccddeeff/docs:purge", "/v0/bundles/bnd_00112233445566778899aabbccddeeff/purge"]) {
     const undeclaredPath = await router(new Request(`http://wire.local${path}`, { method: "POST" }));
     assert.equal(undeclaredPath.status, 404, `${path} must not bypass WIRE_ENDPOINTS`);
     assert.match(await undeclaredPath.text(), /no route for/);

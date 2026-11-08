@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { request } from "node:http";
 
 import { MemoryBackend, readDocVersioned, writeBlob, writeDoc, type Bundle } from "@superbee/core";
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../src/bundle-router.js";
 import { bootUiServer, type UiServerHandle } from "../src/server.js";
 
 const SECRET = "access-field-secret";
@@ -112,7 +112,7 @@ test("access-only registry docs (dir mode): mint derives the capability from `ac
   const server = await bootUiServer({
     mode: "dir",
     bundle,
-    router: createRouter(bundle),
+    router: createBundleRouter(bundle),
     sessionSecret: SECRET,
     renderDocument,
     actor: "mike/test",
@@ -169,7 +169,7 @@ test("REJECTION PIN (dir mode): a legacy bridge-only registry doc resolves acces
   const server = await bootUiServer({
     mode: "dir",
     bundle,
-    router: createRouter(bundle),
+    router: createBundleRouter(bundle),
     sessionSecret: SECRET,
     renderDocument,
     actor: "mike/test",

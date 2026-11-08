@@ -1,5 +1,5 @@
 import { MemoryBackend as ServerMemoryBackend } from "@superbee/core";
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../../ui-server/dist/bundle-router.js";
 
 import { RemoteBackend } from "../src/remote-backend.js";
 import type { StorageBackend } from "../src/types.js";
@@ -10,7 +10,7 @@ import type { BackendFixture } from "./storage-backend-contract.js";
 export const REMOTE_CONTRACT_SUBJECT = "RemoteBackend + reference router + ServerMemoryBackend";
 
 export function remotePeerFixture(serverBackend: StorageBackend = new ServerMemoryBackend()): BackendFixture & { peers: StorageBackend[] } {
-  const router = createRouter({ root: "mem://storage-contract", backend: serverBackend });
+  const router = createBundleRouter({ root: "mem://storage-contract", backend: serverBackend });
   const peers = Array.from({ length: 2 }, () => new RemoteBackend({
     baseUrl: "http://wire.local",
     bundle: "contract",

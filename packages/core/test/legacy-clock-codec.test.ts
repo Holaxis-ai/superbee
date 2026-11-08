@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../../ui-server/dist/bundle-router.js";
 import { FilesystemBackend } from "../src/backend.js";
 import { query, queryHeads } from "../src/engine.js";
 import { MemoryBackend } from "../src/memory-backend.js";
@@ -25,7 +25,7 @@ for (const edition of [undefined, "0.1", "0.2"]) {
     try {
       if (edition) await writeFile(path.join(root, "index.md"), `---\nokf_version: '${edition}'\n---\n`);
       const backend = new FilesystemBackend(root);
-      const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: createRouter({ root, backend }) });
+      const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: createBundleRouter({ root, backend }) });
       for (const [index, clock] of clocks.entries()) {
         const id = `clock-${index}`;
         const raw = `---\ntype: Note\ntimestamp: ${clock.scalar}\n---\nOriginal\n`;

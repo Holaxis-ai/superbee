@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../../ui-server/dist/bundle-router.js";
 
 import {
   backendFor,
@@ -31,7 +31,7 @@ const localBundle: Bundle = { root: fixtureRoot };
 const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
 
 function remoteBundle(): Bundle {
-  const router = createRouter(localBundle);
+  const router = createBundleRouter(localBundle);
   return {
     root: "wire://okf-v0.2-fixture",
     backend: new RemoteBackend({

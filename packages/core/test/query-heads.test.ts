@@ -23,7 +23,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../../ui-server/dist/bundle-router.js";
 import { MemoryBackend as ServerMemoryBackend } from "@superbee/core";
 
 import { MemoryBackend } from "../src/memory-backend.js";
@@ -119,7 +119,7 @@ function recordingWireBundle(serverBackend: StorageBackend = new ServerMemoryBac
   serverBackend: StorageBackend;
   router: (req: Request) => Promise<Response>;
 } {
-  const router = createRouter({ root: "mem://wire-heads", backend: serverBackend });
+  const router = createBundleRouter({ root: "mem://wire-heads", backend: serverBackend });
   const requests: string[] = [];
   const responses: string[] = [];
   const transport = async (req: Request): Promise<Response> => {

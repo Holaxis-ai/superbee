@@ -106,15 +106,17 @@ test("OSS build and lockfile carry no hosted deployment dependency", async () =>
   );
 });
 
-// This source-only gate owns generic wire package placement and the public/legacy split. Runtime
+// This source-only gate owns generic wire package placement and where the one-bundle alias router
+// lives (private to the UI host, never a server export). Runtime
 // registration is proved by the server and CLI relational tests rather than by pinning handlers.
 test("generic wire source authorities remain public after hosted extraction", async () => {
-  const [remoteBackend, router, legacyRouter, serverIndex, serverPackage] = await Promise.all([
+  const [remoteBackend, router, bundleRouter, serverIndex, serverPackage, uiServerIndex] = await Promise.all([
     readFile(path.join(root, "packages/core/src/remote-backend.ts"), "utf8"),
     readFile(path.join(root, "packages/server/src/router.ts"), "utf8"),
-    readFile(path.join(root, "packages/server/src/legacy-router.ts"), "utf8"),
+    readFile(path.join(root, "packages/ui-server/src/bundle-router.ts"), "utf8"),
     readFile(path.join(root, "packages/server/src/index.ts"), "utf8"),
     readFile(path.join(root, "packages/server/package.json"), "utf8").then(JSON.parse),
+    readFile(path.join(root, "packages/ui-server/src/index.ts"), "utf8"),
   ]);
 
   assert.match(remoteBackend, /export class RemoteBackend/);
@@ -123,10 +125,11 @@ test("generic wire source authorities remain public after hosted extraction", as
   assert.match(router, /export function resolveWireRequest/);
   assert.match(router, /export function createRouter/);
   assert.doesNotMatch(router, /from ["']@superbee\/core["']/);
-  assert.match(legacyRouter, /export function createRouterForBackend/);
-  assert.match(legacyRouter, /from ["']@superbee\/core\/bundle-ops["']/);
-  assert.match(legacyRouter, /buildLegacyRouter\(backendFor\(bundle\), options\)/);
-  assert.match(serverIndex, /from ["']\.\/legacy-router\.js["']/);
+  assert.match(bundleRouter, /export function createBundleRouter/);
+  assert.match(bundleRouter, /from ["']@superbee\/server\/router["']/);
+  assert.match(bundleRouter, /buildRouter\(backendFor\(bundle\), options\)/);
+  assert.doesNotMatch(uiServerIndex, /bundle-router/);
+  assert.doesNotMatch(serverIndex, /legacy-router|serve\.js/);
   assert.deepEqual(serverPackage.exports["./router"], {
     types: "./dist/router.d.ts",
     default: "./dist/router.js",

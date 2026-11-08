@@ -9,7 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../../ui-server/dist/bundle-router.js";
 import { MemoryBackend as ServerMemoryBackend } from "@superbee/core";
 
 import { writeDocVersioned } from "../src/bundle.js";
@@ -240,7 +240,7 @@ test("parseHeadsAnswer: a well-formed answer yields its rows and digest; a bad r
 test("remote parsers: RemoteBackend.heads and RemoteBackend.snapshot agree with the parsers over the reference router's own answers", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://remote-parsers", backend: serverBackend };
-  const router = createRouter(bundle);
+  const router = createBundleRouter(bundle);
   for (const id of ["b", "a/x", "c"]) {
     await writeDocVersioned(bundle, { id, frontmatter: { type: "T", title: id, timestamp: T_DOC }, body: `body of ${id}` });
   }

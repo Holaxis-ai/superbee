@@ -4,8 +4,8 @@
  * contract tests — the router is injected directly as `RemoteBackend`'s fetch
  * transport, so these are deterministic and fast while still exercising the real
  * HTTP-shaped request/response envelopes (headers, status codes, JSON bodies) end
- * to end. One dedicated test at the bottom boots a REAL `node:http` listener via
- * `serve()` for a socket-level smoke check.
+ * to end. A few tests mount the same router on a REAL loopback `node:http` listener through the UI
+ * host's adapter (`listen` below) for socket-level checks.
  *
  * `storage-backend-contract.test.ts` owns direct-seam parity across FilesystemBackend,
  * MemoryBackend, and RemoteBackend. This file owns engine agreement over RemoteBackend
@@ -24,7 +24,10 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { createRouter, createRouterForBackend, MemoryOperationOutcomeStore, serve } from "@superbee/server";
+import { MemoryOperationOutcomeStore } from "@superbee/server";
+import { createBundleRouter, createBackendRouter } from "../../ui-server/dist/bundle-router.js";
+import { requestFromIncomingMessage, writeResponseToServerResponse } from "../../ui-server/dist/node-http.js";
+import { createServer } from "node:http";
 import { FilesystemBackend as ServerFilesystemBackend, MemoryBackend as ServerMemoryBackend } from "@superbee/core";
 
 import { InvalidInputError } from "../src/errors.js";
@@ -57,9 +60,25 @@ import type {
 
 /** A fresh `RemoteBackend` wired to an in-process router over a fresh server-side
  * `MemoryBackend`, with the router injected AS the fetch transport (no sockets). */
+
+/** Mount the one-bundle router on a loopback socket, as the UI host does, for socket-level checks. */
+async function listen(options: { bundle: Bundle; port: 0 }): Promise<{ host: string; port: number; close(): Promise<void> }> {
+  const router = createBundleRouter(options.bundle);
+  const host = "127.0.0.1";
+  const server = createServer((req, res) => {
+    requestFromIncomingMessage(req, `http://${req.headers.host ?? host}`)
+      .then((request) => router(request))
+      .then((response) => writeResponseToServerResponse(res, response))
+      .catch(() => res.destroy());
+  });
+  await new Promise<void>((resolve) => server.listen(options.port, host, resolve));
+  const address = server.address() as { port: number };
+  return { host, port: address.port, close: () => new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))) };
+}
+
 function freshWireBundle(): Bundle {
   const serverBackend = new ServerMemoryBackend();
-  const router = createRouter({ root: "mem://wire-server", backend: serverBackend });
+  const router = createBundleRouter({ root: "mem://wire-server", backend: serverBackend });
   const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: router });
   return { root: "wire://client", backend: remote };
 }
@@ -143,7 +162,7 @@ class SpyBackend implements StorageBackend {
 /** A fresh router over a `SpyBackend`-wrapped `MemoryBackend`, for the traversal tests. */
 function freshSpiedRouter(): { router: (req: Request) => Promise<Response>; spy: SpyBackend } {
   const spy = new SpyBackend(new ServerMemoryBackend());
-  const router = createRouter({ root: "mem://wire-spy", backend: spy });
+  const router = createBundleRouter({ root: "mem://wire-spy", backend: spy });
   return { router, spy };
 }
 
@@ -327,7 +346,7 @@ test("wire: engine compare-and-swap (writeDocVersioned + expectedVersion) reject
 test("wire: raw DELETE /docs/{id} response shape is exactly { deleted } with a 200 status, no version headers", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-delete-shape", backend: serverBackend };
-  const router = createRouter(bundle);
+  const router = createBundleRouter(bundle);
   await writeDocVersioned(bundle, { id: "shape", frontmatter: { type: "T", timestamp: T_DOC }, body: "x" });
 
   const res = await router(new Request("http://wire.local/v0/bundles/test/docs/shape", { method: "DELETE" }));
@@ -343,7 +362,7 @@ test("wire: raw DELETE /docs/{id} response shape is exactly { deleted } with a 2
 test("wire: GET /docs list endpoint carries count + type/tag filters + fields=frontmatter projection", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-list", backend: serverBackend };
-  const router = createRouter(bundle);
+  const router = createBundleRouter(bundle);
   const listUrl = "http://wire.local/v0/bundles/test/docs";
 
   await writeDocVersioned(bundle, { id: "a", frontmatter: { type: "Concept", title: "A", tags: ["x"], timestamp: T_DOC }, body: "" });
@@ -373,7 +392,7 @@ test("wire: GET /docs list endpoint carries count + type/tag filters + fields=fr
 test("wire: POST /docs:read-many reports 404 + { missing } when any id is absent", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-read-many", backend: serverBackend };
-  const router = createRouter(bundle);
+  const router = createBundleRouter(bundle);
   await writeDocVersioned(bundle, { id: "present", frontmatter: { type: "T", timestamp: T_DOC }, body: "" });
 
   const res = await router(
@@ -392,7 +411,7 @@ test("wire: POST /docs:read-many reports 404 + { missing } when any id is absent
 test("wire: GET /docs/{id}/versions returns [] for never-written, and the real chain for MemoryBackend", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-versions", backend: serverBackend };
-  const router = createRouter(bundle);
+  const router = createBundleRouter(bundle);
 
   const neverWritten = await router(new Request("http://wire.local/v0/bundles/test/docs/nope/versions"));
   assert.equal(neverWritten.status, 200);
@@ -409,7 +428,7 @@ test("wire: GET /docs/{id}/versions returns [] for never-written, and the real c
 
 test("wire: X-Agent round-trips alongside X-Actor — router reads it into options.agent, wire JSON carries it, RemoteBackend.versions() parses VersionInfo.agent; a write with no X-Agent leaves agent absent end to end", async () => {
   const serverBackend = new ServerMemoryBackend();
-  const router = createRouter({ root: "mem://wire-agent", backend: serverBackend });
+  const router = createBundleRouter({ root: "mem://wire-agent", backend: serverBackend });
 
   // Direct PUT with BOTH X-Actor and X-Agent, bypassing RemoteBackend's write() (which
   // deliberately does not send X-Agent — only the auth'd worker manufactures it).
@@ -460,7 +479,7 @@ test("wire: X-Agent round-trips alongside X-Actor — router reads it into optio
 
 test("wire: GET /v0/capabilities reports the backend's real capabilities (MemoryBackend = the hard case)", async () => {
   const serverBackend = new ServerMemoryBackend();
-  const router = createRouter({ root: "mem://wire-caps", backend: serverBackend });
+  const router = createBundleRouter({ root: "mem://wire-caps", backend: serverBackend });
   const res = await router(new Request("http://wire.local/v0/capabilities"));
   assert.equal(res.status, 200);
   const body = (await res.json()) as Record<string, unknown>;
@@ -470,7 +489,7 @@ test("wire: GET /v0/capabilities reports the backend's real capabilities (Memory
 test("wire: error envelopes on 404 and 412 follow the { error: { code, message, details? } } shape", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-errors", backend: serverBackend };
-  const router = createRouter(bundle);
+  const router = createBundleRouter(bundle);
 
   const notFoundRes = await router(new Request("http://wire.local/v0/bundles/test/docs/nope"));
   assert.equal(notFoundRes.status, 404);
@@ -493,12 +512,12 @@ test("wire: error envelopes on 404 and 412 follow the { error: { code, message, 
   assert.ok(conflictBody.error.details?.actual);
 });
 
-test("wire: serve() boots a real node:http listener; one GET round-trips, then close()", async () => {
+test("wire: a loopback node:http listener round-trips one GET, then close()", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-smoke", backend: serverBackend };
   await writeDocVersioned(bundle, { id: "smoke", frontmatter: { type: "T", title: "Smoke", timestamp: T_DOC }, body: "hello" });
 
-  const handle = await serve({ bundle, port: 0 });
+  const handle = await listen({ bundle, port: 0 });
   try {
     assert.equal(handle.host, "127.0.0.1");
     assert.ok(handle.port > 0);
@@ -525,7 +544,7 @@ const enc = (s: string) => new TextEncoder().encode(s);
 test("wire: PUT /blobs/{key} returns 201 + {version} + ETag on expect-absent create, 200 on an ordinary write (I4)", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-blob-put", backend: serverBackend };
-  const router = createRouter(bundle);
+  const router = createBundleRouter(bundle);
 
   const createRes = await router(
     new Request("http://wire.local/v0/bundles/test/blobs/artifacts/report.html", {
@@ -566,7 +585,7 @@ test("wire: PUT /blobs/{key} returns 201 + {version} + ETag on expect-absent cre
 test("wire: GET /blobs list endpoint carries count + prefix filter + cursor pagination (B2, mirrors handleList)", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-blob-list", backend: serverBackend };
-  const router = createRouter(bundle);
+  const router = createBundleRouter(bundle);
 
   await writeBlob(bundle, "artifacts/a.bin", enc("a"));
   await writeBlob(bundle, "artifacts/b.bin", enc("b"));
@@ -672,13 +691,13 @@ test("wire: DELETE /reserved/log.md is 400 USAGE — reserved files have no dele
   assert.deepEqual(spy.calls, []);
 });
 
-test("wire: serve() blob route — a REAL socket GET returns EXACT bytes with the correct Content-Type header (served-by-content-type acceptance, plan DoD #2)", async () => {
+test("wire: socket blob route — a REAL socket GET returns EXACT bytes with the correct Content-Type header (served-by-content-type acceptance, plan DoD #2)", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-blob-smoke", backend: serverBackend };
   const htmlBytes = enc("<html><body>served by content-type</body></html>");
   await writeBlob(bundle, "artifacts/report.html", htmlBytes);
 
-  const handle = await serve({ bundle, port: 0 });
+  const handle = await listen({ bundle, port: 0 });
   try {
     const res = await fetch(`http://${handle.host}:${handle.port}/v0/bundles/test/blobs/artifacts/report.html`);
     assert.equal(res.status, 200);
@@ -738,7 +757,7 @@ async function outcomeAt(router: (req: Request) => Promise<Response>, key: strin
 
 test("wire: identified PUT is applied once; the same Idempotency-Key replays the same status, X-Version and body, and the backend holds one revision", async () => {
   const serverBackend = new ServerMemoryBackend();
-  const router = createRouter({ root: "mem://wire-identified", backend: serverBackend });
+  const router = createBundleRouter({ root: "mem://wire-identified", backend: serverBackend });
 
   const first = await answer(await router(identifiedPut("concepts/once", "v1", { "Idempotency-Key": "req-1", "If-None-Match": "*" })));
   assert.equal(first.status, 201);
@@ -764,7 +783,7 @@ class SlowWriteBackend extends ServerMemoryBackend {
 
 test("wire: two concurrent submissions under one Idempotency-Key apply exactly once and both receive the same version", async () => {
   const backend = new SlowWriteBackend();
-  const router = createRouter({ root: "mem://wire-identified-race", backend });
+  const router = createBundleRouter({ root: "mem://wire-identified-race", backend });
   const [a, b] = await Promise.all([
     router(identifiedPut("concepts/race", "v1", { "Idempotency-Key": "race-1", "If-None-Match": "*" })),
     router(identifiedPut("concepts/race", "v1", { "Idempotency-Key": "race-1", "If-None-Match": "*" })),
@@ -779,7 +798,7 @@ test("wire: two concurrent submissions under one Idempotency-Key apply exactly o
 
 test("wire: GET /operations/{key} returns committed after a PUT, 404 for an unknown key, and conflict after a stale If-Match PUT whose duplicate replays the 412", async () => {
   const serverBackend = new ServerMemoryBackend();
-  const router = createRouter({ root: "mem://wire-lookup", backend: serverBackend });
+  const router = createBundleRouter({ root: "mem://wire-lookup", backend: serverBackend });
 
   const created = await answer(await router(identifiedPut("concepts/look", "v1", { "Idempotency-Key": "look-1", "If-None-Match": "*" })));
   assert.equal(created.status, 201);
@@ -800,7 +819,7 @@ test("wire: GET /operations/{key} returns committed after a PUT, 404 for an unkn
 test("wire: identified DELETE requires If-Match, applies once, replays deleted:true, and is looked up as committed at the deleted revision", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-identified-delete", backend: serverBackend };
-  const router = createRouter(bundle);
+  const router = createBundleRouter(bundle);
   const { version } = await writeDocVersioned(bundle, { id: "concepts/gone", frontmatter: { type: "T", timestamp: T_DOC }, body: "x" });
 
   const noPremise = await router(identifiedDelete("concepts/gone", { "Idempotency-Key": "del-1" }));
@@ -848,7 +867,7 @@ test("wire: identified DELETE requires If-Match, applies once, replays deleted:t
 
 test("wire: the same Idempotency-Key resubmitted for a different id or method is 400 USAGE with details.recorded, and nothing else is applied", async () => {
   const serverBackend = new ServerMemoryBackend();
-  const router = createRouter({ root: "mem://wire-identified-binding", backend: serverBackend });
+  const router = createBundleRouter({ root: "mem://wire-identified-binding", backend: serverBackend });
   const created = await answer(await router(identifiedPut("concepts/a", "a", { "Idempotency-Key": "bind-1", "If-None-Match": "*" })));
   assert.equal(created.status, 201);
 
@@ -885,7 +904,7 @@ test("wire: an invalid Idempotency-Key (empty, 129 characters, containing a spac
 
 test("wire: a router without an outcome store refuses Idempotency-Key and the lookup route with 400 USAGE and reports operations:false; with a store, Idempotency-Key on any other endpoint is 400 USAGE", async () => {
   const bare = new SpyBackend(new ServerMemoryBackend());
-  const withoutStore = createRouterForBackend(bare, { outcomes: null });
+  const withoutStore = createBackendRouter(bare, { outcomes: null });
   const caps = (await (await withoutStore(new Request("http://wire.local/v0/capabilities"))).json()) as { operations: boolean };
   assert.equal(caps.operations, false);
   const refused = await withoutStore(identifiedPut("concepts/x", "x", { "Idempotency-Key": "no-store", "If-None-Match": "*" }));
@@ -920,7 +939,7 @@ test("wire: a recorded outcome expires after the retention window; a resubmissio
   const store = new MemoryOperationOutcomeStore({ retentionMs: 60_000, now: () => now });
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-retention", backend: serverBackend };
-  const router = createRouter(bundle, { outcomes: store });
+  const router = createBundleRouter(bundle, { outcomes: store });
   const { version: base } = await writeDocVersioned(bundle, { id: "concepts/ttl", frontmatter: { type: "T", timestamp: T_DOC }, body: "v1" });
 
   const committed = await answer(await router(identifiedPut("concepts/ttl", "v2", { "Idempotency-Key": "ttl-1", "If-Match": base })));
@@ -947,7 +966,7 @@ test("wire: after expiry, a byte-identical revert to the premise's content lets 
   const store = new MemoryOperationOutcomeStore({ retentionMs: 60_000, now: () => now });
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-retention-aba", backend: serverBackend };
-  const router = createRouter(bundle, { outcomes: store });
+  const router = createBundleRouter(bundle, { outcomes: store });
   const { version: base } = await writeDocVersioned(bundle, { id: "concepts/aba", frontmatter: { type: "T", timestamp: T_DOC }, body: "v1" });
 
   const committed = await answer(await router(identifiedPut("concepts/aba", "v2", { "Idempotency-Key": "aba-1", "If-Match": base })));
@@ -1043,7 +1062,7 @@ test("RemoteBackend: a guarded write whose answer is lost is retried under the s
   for (const c of cases) await t.test(c.name, async () => {
     const serverBackend = new ServerMemoryBackend();
     const bundle: Bundle = { root: `mem://wire-lost-answer`, backend: serverBackend };
-    const router = createRouter(bundle);
+    const router = createBundleRouter(bundle);
     const base = c.seed ? (await writeDocVersioned(bundle, doc("v1"))).version : null;
     let thirdPartyStatus = 0;
     const { fetchImpl, sent } = losingFirstWriteAnswer(router, async (lost) => {
@@ -1067,7 +1086,7 @@ test("RemoteBackend: a guarded write whose answer is lost is retried under the s
 
 test("RemoteBackend: a host without operations is asked once and sent no Idempotency-Key on guarded writes", async () => {
   const serverBackend = new ServerMemoryBackend();
-  const router = createRouterForBackend(serverBackend, { outcomes: null });
+  const router = createBackendRouter(serverBackend, { outcomes: null });
   const sent: SentRequest[] = [];
   const remote = new RemoteBackend({
     baseUrl: "http://wire.local",
@@ -1096,7 +1115,7 @@ test("RemoteBackend: a host without operations is asked once and sent no Idempot
 
 test("RemoteBackend: separate guarded writes are minted different keys; unconditional writes and a caller's requestId mint none", async () => {
   const serverBackend = new ServerMemoryBackend();
-  const router = createRouter({ root: "mem://wire-minted", backend: serverBackend });
+  const router = createBundleRouter({ root: "mem://wire-minted", backend: serverBackend });
   const sent: SentRequest[] = [];
   const remote = new RemoteBackend({
     baseUrl: "http://wire.local",
@@ -1129,7 +1148,7 @@ test("RemoteBackend: separate guarded writes are minted different keys; uncondit
 
 test("RemoteBackend: a capability question that fails in transport or with a transient status is asked again, and only a transport failure holds the write back", async () => {
   const serverBackend = new ServerMemoryBackend();
-  const router = createRouter({ root: "mem://wire-probe-retry", backend: serverBackend });
+  const router = createBundleRouter({ root: "mem://wire-probe-retry", backend: serverBackend });
   let probe: "throw" | "503" | "router" = "throw";
   const sent: SentRequest[] = [];
   const remote = new RemoteBackend({
@@ -1168,7 +1187,7 @@ test("RemoteBackend: a capability question that fails in transport or with a tra
 test("RemoteBackend: a delete whose premise is not a content version is sent unidentified, as the wire accepts identity on no other", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-delete-premise", backend: serverBackend };
-  const router = createRouter(bundle);
+  const router = createBundleRouter(bundle);
   const sent: SentRequest[] = [];
   const remote = new RemoteBackend({
     baseUrl: "http://wire.local",
@@ -1194,7 +1213,7 @@ test("RemoteBackend: a delete whose premise is not a content version is sent uni
 
 test("RemoteBackend: a guarded write sends the document as it stood when write() was called, and refuses an unencodable one before asking capabilities", async () => {
   const serverBackend = new ServerMemoryBackend();
-  const router = createRouter({ root: "mem://wire-capture", backend: serverBackend });
+  const router = createBundleRouter({ root: "mem://wire-capture", backend: serverBackend });
   let answerProbe!: () => void;
   const probeAnswered = new Promise<void>((resolve) => (answerProbe = resolve));
   const sent: string[] = [];
@@ -1235,7 +1254,7 @@ test("RemoteBackend: a guarded write sends the document as it stood when write()
 
 test("RemoteBackend: a kept operations answer that went stale is dropped on the host's identity refusal and the guarded write is sent once more without a key; a caller's requestId is not", async () => {
   const serverBackend = new ServerMemoryBackend();
-  let router = createRouterForBackend(serverBackend);
+  let router = createBackendRouter(serverBackend);
   const sent: SentRequest[] = [];
   const fetchImpl: WireRouter = async (req) => {
     sent.push({ method: req.method, path: new URL(req.url).pathname, key: req.headers.get("Idempotency-Key") });
@@ -1247,7 +1266,7 @@ test("RemoteBackend: a kept operations answer that went stale is dropped on the 
   const b = await remote.write("concepts/b", doc("concepts/b", "b1"), { expectedVersion: null });
 
   // The host restarts over the same documents without an outcome store.
-  router = createRouterForBackend(serverBackend, { outcomes: null });
+  router = createBackendRouter(serverBackend, { outcomes: null });
   sent.length = 0;
   const a2 = await remote.write("concepts/a", doc("concepts/a", "a2"), { expectedVersion: a });
   assert.equal((await serverBackend.read("concepts/a")).version, a2);
@@ -1270,9 +1289,9 @@ test("RemoteBackend: a kept operations answer that went stale is dropped on the 
 
   // A stale answer met by a delete is handled the same way.
   const staleDelete = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", maxRetries: 0, fetchImpl });
-  router = createRouterForBackend(serverBackend);
+  router = createBackendRouter(serverBackend);
   const d = await staleDelete.write("concepts/d", doc("concepts/d", "d1"), { expectedVersion: null });
-  router = createRouterForBackend(serverBackend, { outcomes: null });
+  router = createBackendRouter(serverBackend, { outcomes: null });
   sent.length = 0;
   assert.equal(await staleDelete.delete("concepts/d", { expectedVersion: d }), true);
   assert.deepEqual(
@@ -1315,7 +1334,7 @@ test("wire: MemoryOperationOutcomeStore releases the claim and settles waiters w
 
 test("wire: the operation transport reads capabilities once before its first submission or lookup and refuses a host that reports operations:false, so nothing identified reaches it", async () => {
   const bare = new SpyBackend(new ServerMemoryBackend());
-  const withoutStore = createRouterForBackend(bare, { outcomes: null });
+  const withoutStore = createBackendRouter(bare, { outcomes: null });
   const unsupported = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: withoutStore, maxRetries: 0 });
   // The memory backend reports no history and no enforced CAS; the point here is `operations`.
   assert.deepEqual(await unsupported.wireCapabilities(), { history: false, enforced_cas: false, projections: true, backlinks: false, blobs: true, operations: false, heads: true, snapshot: true });
@@ -1416,7 +1435,7 @@ class FlakyWriteBackend extends ServerMemoryBackend {
 
 test("wire: an identified PUT whose application throws records nothing and releases the key, so a later submission applies, including one that was waiting on the failed claim", async () => {
   const backend = new FlakyWriteBackend();
-  const router = createRouter({ root: "mem://wire-identified-release", backend });
+  const router = createBundleRouter({ root: "mem://wire-identified-release", backend });
 
   backend.failures = 1;
   const failed = await router(identifiedPut("concepts/flaky", "v1", { "Idempotency-Key": "flaky-1", "If-None-Match": "*" }));
@@ -1441,7 +1460,7 @@ test("wire: an identified PUT whose application throws records nothing and relea
 test("wire: RemoteBackend sends Idempotency-Key from requestId, rejects a malformed one before any request leaves, and lookupOperation maps 404 to null", async () => {
   const serverBackend = new ServerMemoryBackend();
   let sent = 0;
-  const router = createRouter({ root: "mem://wire-remote-identity", backend: serverBackend });
+  const router = createBundleRouter({ root: "mem://wire-remote-identity", backend: serverBackend });
   const counting = (request: Request) => {
     sent += 1;
     return router(request);
@@ -1472,7 +1491,7 @@ test("wire: RemoteBackend sends Idempotency-Key from requestId, rejects a malfor
 
 test("wire: createRemoteOperationTransport delivers a document.write intent as an identified guarded PUT and maps committed, conflict and refused; lookup reads the record", async () => {
   const serverBackend = new ServerMemoryBackend();
-  const router = createRouter({ root: "mem://wire-remote-operations", backend: serverBackend });
+  const router = createBundleRouter({ root: "mem://wire-remote-operations", backend: serverBackend });
   const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: router, maxRetries: 0 });
   const transport = createRemoteOperationTransport(remote, { actor: "human:tester" });
   const frontmatter = { type: "T", timestamp: T_DOC };
@@ -1560,7 +1579,7 @@ test("wire: createRemoteOperationTransport rethrows a 5xx RemoteError so the pri
 test("wire: createRemoteOperationTransport refuses an intent it cannot send, so the primitive settles it as refused instead of unknown", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-remote-unsendable", backend: serverBackend };
-  const router = createRouter(bundle);
+  const router = createBundleRouter(bundle);
   const methods: string[] = [];
   const fetchImpl = async (request: Request) => {
     methods.push(`${request.method} ${new URL(request.url).pathname}`);
@@ -1627,7 +1646,7 @@ async function readChunked(res: Response, onFirstChunk?: () => void): Promise<{ 
 test("wire: GET /heads lists every id and version under the documented digest; If-None-Match answers a bodyless 304 in bare, quoted and weak form; a write and a delete each change the digest", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-heads", backend: serverBackend };
-  const router = createRouter(bundle);
+  const router = createBundleRouter(bundle);
 
   const empty = await router(new Request(HEADS_URL));
   assert.equal(empty.status, 200);
@@ -1679,7 +1698,7 @@ test("wire: GET /docs with malformed=skip leaves a malformed document out and na
     await mkdir(path.join(root, "notes"), { recursive: true });
     await writeFile(path.join(root, "notes", "good.md"), "---\ntype: Concept\ntitle: Good\n---\nfine\n");
     await writeFile(path.join(root, "notes", "bad.md"), "---\ntype: [unclosed\ntitle: bad\n---\nbody\n");
-    const router = createRouter({ root, backend: new ServerFilesystemBackend(root) });
+    const router = createBundleRouter({ root, backend: new ServerFilesystemBackend(root) });
 
     // A client that cannot read `skipped` (no malformed=skip) still gets a failure, never a
     // listing that silently lost a document; the failure names it.
@@ -1716,7 +1735,7 @@ test("wire: RemoteBackend reports a server-skipped document through onSkip, keep
     await mkdir(path.join(root, "notes"), { recursive: true });
     await writeFile(path.join(root, "notes", "good.md"), "---\ntype: Concept\ntitle: Good\n---\nfine\n");
     await writeFile(path.join(root, "notes", "bad.md"), "---\ntype: Concept\ntitle: Bad: unquoted\n---\nbody\n");
-    const router = createRouter({ root, backend: new ServerFilesystemBackend(root) });
+    const router = createBundleRouter({ root, backend: new ServerFilesystemBackend(root) });
     const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: router });
 
     const skipped: string[] = [];
@@ -1737,7 +1756,7 @@ test("wire: RemoteBackend reports a server-skipped document through onSkip, keep
 test("wire: GET /snapshot streams header, docs in id order, and end over 120 documents; the body arrives in more than one chunk and the client iterable completes", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-snapshot", backend: serverBackend };
-  const router = createRouter(bundle);
+  const router = createBundleRouter(bundle);
   const ids = Array.from({ length: 120 }, (_, i) => `concepts/doc-${String(119 - i).padStart(3, "0")}`);
   await seedDocs(bundle, ids);
   const expectedIds = [...ids].sort(codeUnitOrder);
@@ -1776,7 +1795,7 @@ test("wire: GET /snapshot streams header, docs in id order, and end over 120 doc
 test("wire: a snapshot cut after 40 lines makes RemoteBackend.snapshot reject with SNAPSHOT_TRUNCATED after yielding the first documents; a mid-line cut, a wrong end count and a failing body reject the same way; a whole body under a digest its rows do not produce rejects with SNAPSHOT_DIGEST_MISMATCH", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-snapshot-cut", backend: serverBackend };
-  const router = createRouter(bundle);
+  const router = createBundleRouter(bundle);
   await seedDocs(bundle, Array.from({ length: 60 }, (_, i) => `concepts/doc-${String(i).padStart(2, "0")}`));
 
   const rewriting = (rewrite: (text: string) => string) => async (request: Request) => {
@@ -1866,7 +1885,7 @@ test("wire: a snapshot cut after 40 lines makes RemoteBackend.snapshot reject wi
 test("wire: RemoteBackend.heads maps 304 to null and 200 to { digest, heads }; a missing or malformed digest, a bad row, a count mismatch, or rows that do not digest to the served digest rejects", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-heads-client", backend: serverBackend };
-  const router = createRouter(bundle);
+  const router = createBundleRouter(bundle);
   await seedDocs(bundle, ["y", "x"]);
   const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: router, maxRetries: 0 });
 
@@ -1944,7 +1963,7 @@ test("wire: document list, heads and snapshot agree on code-unit order; the head
   // The router lists in the same order even though its backend's `list` collates with localeCompare.
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-heads-order", backend: serverBackend };
-  const router = createRouter(bundle);
+  const router = createBundleRouter(bundle);
   await seedDocs(bundle, ids);
   assert.notDeepEqual(await serverBackend.list(), codeUnitSorted, "the fixture separates the list collation from code unit order");
   const body = (await (await router(new Request(HEADS_URL))).json()) as { digest: string; heads: Array<{ id: string; version: string }> };
@@ -1962,7 +1981,7 @@ test("wire: a document changed between the heads listing and its snapshot batch 
   const bundle: Bundle = { root: "mem://wire-snapshot-changed", backend: inner };
   const ids = Array.from({ length: 60 }, (_, i) => `concepts/doc-${String(i).padStart(2, "0")}`);
   await seedDocs(bundle, ids);
-  const listed = (await (await createRouter(bundle)(new Request(HEADS_URL))).json()) as { digest: string; heads: Array<{ id: string; version: string }> };
+  const listed = (await (await createBundleRouter(bundle)(new Request(HEADS_URL))).json()) as { digest: string; heads: Array<{ id: string; version: string }> };
 
   // The listing reads every batch first, then the body reads every batch again: the second read
   // of the first batch is the first body batch. The write lands after it, in the window between
@@ -1981,7 +2000,7 @@ test("wire: a document changed between the heads listing and its snapshot batch 
       return results;
     },
   });
-  const router = createRouter({ root: bundle.root, backend: changing });
+  const router = createBundleRouter({ root: bundle.root, backend: changing });
   const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: router, maxRetries: 0 });
   const snapshot = await remote.snapshot();
   assert.equal(snapshot.header.digest, listed.digest, "the header describes the state as listed");
@@ -2005,7 +2024,7 @@ test("wire: a document changed between the heads listing and its snapshot batch 
   const after = await remote.heads({ ifNoneMatch: listed.digest });
   assert.ok(after !== null && after.digest !== listed.digest);
   assert.equal(after.heads.find((h) => h.id === ids[59])!.version, rewrittenVersion);
-  const again = await new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: createRouter(bundle), maxRetries: 0 }).snapshot();
+  const again = await new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: createBundleRouter(bundle), maxRetries: 0 }).snapshot();
   let count = 0;
   for await (const _doc of again.docs) count += 1;
   assert.equal(count, 60);
@@ -2022,7 +2041,7 @@ test("wire: a backend whose readMany answers a different number of results than 
       return dropResults ? results.slice(1) : results;
     },
   });
-  const router = createRouter({ root: bundle.root, backend: short });
+  const router = createBundleRouter({ root: bundle.root, backend: short });
 
   dropResults = true;
   const heads = await router(new Request(HEADS_URL));
@@ -2044,7 +2063,7 @@ test("wire: a backend whose readMany answers a different number of results than 
   assert.ok(failure instanceof RemoteError && failure.code === "SNAPSHOT_TRUNCATED", `expected SNAPSHOT_TRUNCATED, got ${String(failure)}`);
 });
 
-test("wire: serve() streams a 500-document snapshot over a real socket; the first line arrives before the last batch has been read from the backend", async () => {
+test("wire: a 500-document snapshot streams over a real socket; the first line arrives before the last batch has been read from the backend", async () => {
   const inner = new ServerMemoryBackend();
   let batchesServed = 0;
   // Each batch read waits a little so the whole body cannot exist before the first byte leaves;
@@ -2063,7 +2082,7 @@ test("wire: serve() streams a 500-document snapshot over a real socket; the firs
   // then the body streams in ten more batches of 50.
   const totalBatches = 20;
 
-  const handle = await serve({ bundle: { root: bundle.root, backend: delaying }, port: 0 });
+  const handle = await listen({ bundle: { root: bundle.root, backend: delaying }, port: 0 });
   try {
     const started = Date.now();
     let batchesAtFirstChunk = -1;
@@ -2158,7 +2177,7 @@ test("wire security: GET, HEAD, DELETE, versions and read-many with a control ch
 test("wire: a bundle seeded outside the wire with a line feed in an id fails heads with 500 RUNTIME and fails the snapshot before its header, never SNAPSHOT_TRUNCATED", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-unservable", backend: serverBackend };
-  const router = createRouter(bundle);
+  const router = createBundleRouter(bundle);
   await seedDocs(bundle, ["fine"]);
   // Model a legacy/nonconforming adapter listing without bypassing today's write guard.
   const unservable = "line\nbreak";
@@ -2191,7 +2210,7 @@ test("wire: the QA collision (two bundles, one digest) cannot be produced throug
   // Bundle A holds x and y. Row bytes: "x\n<Vx>\ny\n<Vy>\n".
   const backendA = new ServerMemoryBackend();
   const bundleA: Bundle = { root: "mem://wire-collide-a", backend: backendA };
-  const routerA = createRouter(bundleA);
+  const routerA = createBundleRouter(bundleA);
   await seedDocs(bundleA, ["x", "y"]);
   const headsA = (await (await routerA(new Request(HEADS_URL))).json()) as { digest: string; heads: Array<{ id: string; version: string }> };
   const versionX = headsA.heads.find((head) => head.id === "x")!.version;
@@ -2205,7 +2224,7 @@ test("wire: the QA collision (two bundles, one digest) cannot be produced throug
 
   // Through the wire the crafted id is refused, and B stays empty with the empty digest.
   const backendB = new ServerMemoryBackend();
-  const routerB = createRouter({ root: "mem://wire-collide-b", backend: backendB });
+  const routerB = createBundleRouter({ root: "mem://wire-collide-b", backend: backendB });
   const put = await routerB(
     new Request(`http://wire.local/v0/bundles/test/docs/${encodeURIComponent(craftedId)}`, {
       method: "PUT",
