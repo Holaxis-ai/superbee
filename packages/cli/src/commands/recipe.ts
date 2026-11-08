@@ -552,6 +552,8 @@ async function installReceipt(
         : "");
   }
   if (sourceDiffers > 0 || result.restamp_ids.length > 0) {
+    if (evolve) receipt.commands = { plan_evolution: evolve };
+    else receipt.evolution_help = INDEX_EVOLUTION_HELP;
   }
   receipt.help = [`${cliInvocation()} recipes`, `${cliInvocation()} kinds`];
   return receipt;
