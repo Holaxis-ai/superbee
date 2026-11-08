@@ -74,3 +74,23 @@ test("absent typed list refuses scalar patches; explicit whole-list replacement 
   const result = await mutateDocument({ ...base, expectedVersion: version, input: { kind: "field-action", action: { action: "replace-all", field: "labels", value: ["valid"] } } });
   assert.deepEqual(result.doc.frontmatter.labels, ["valid"]);
 });
+test("a preview slice re-spelled with CRLF, CR, a BOM or surrounding newlines is still the preview", () => {
+  for (const pageBytes of [undefined, 20_480]) {
+    const stored = `${"Line of the stored body.\n".repeat(1_500)}Tail.\n`;
+    const rec: Record<string, unknown> = {};
+    attachBodyPreview(rec, stored, [], pageBytes === undefined ? {} : { pageBytes });
+    const preview = String(rec.body_preview);
+    const slice = preview.slice(0, preview.indexOf("[superbee:body-preview-truncated]")).replace(/\n\n$/, "");
+    const existing = doc(stored);
+    for (const variant of [
+      slice.replace(/\n/g, "\r\n"),
+      slice.replace(/\n/g, "\r"),
+      `\uFEFF${slice}`,
+      `\n${slice}`,
+      `\n\n${slice.replace(/\n/g, "\r\n")}\r\n`,
+    ]) {
+      assert.equal(bodyPreviewFinding(existing, variant)?.reason, "stored_body_preview", JSON.stringify(variant.slice(0, 12)));
+    }
+    assert.equal(bodyPreviewFinding(existing, `${slice}\nAn appended line.`), undefined, "an edited preview stays a known limit");
+  }
+});

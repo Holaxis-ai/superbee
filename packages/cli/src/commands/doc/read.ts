@@ -29,7 +29,7 @@ import {
   type DocCliDeps,
   readErrorToCliError,
 } from "./common.js";
-import { attachBodyPreview, BODY_PREVIEW_RESERVED_KEYS } from "../../body-replace-guards.js";
+import { attachBodyPreview, BODY_PREVIEW_RESERVED_KEYS, DOC_READ_PREVIEW_BYTES } from "../../body-replace-guards.js";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 import { assertSafeNonDocumentOutTarget, inBundlePollutionWarning } from "../egress.js";
 import { bodyPage, PAGE_DEFAULT_BYTES, PAGE_MAX_BYTES, PAGE_MIN_BYTES } from "../../body-pages.js";
@@ -369,17 +369,14 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
       stdout(render(rec, resolveMode(values)));
       return;
     }
-    // AXI §3: never dump a large body to stdout — truncate the preview and point at the byte channel
-    // (`doc read <id> --out <file>`), which streams the full raw markdown without touching context.
-    // `attachBodyPreview` (body-replace-guards.ts) owns the truncation identity itself — the `body_preview` key
-    // and the in-value marker that make the result unusable as a full body by accident. Both help
-    // lines are complete-body channels: `--out` for the whole document, `--body-out` for the
-    // body-only edit cycle that ends in `doc update --body-file --expected-version`.
-    attachBodyPreview(rec, parsed.body, [
-      `${cliInvocation()} doc read ${commandToken(parsed.id)} --offset 0 --json`,
-      `${cliInvocation()} doc read ${commandToken(parsed.id)} --out <file>`,
+    // AXI §3: the record carries a body whole up to DOC_READ_PREVIEW_BYTES (sized to fit an agent
+    // shell tool's output cap), else the first page of it as a marked `body_preview`
+    // (`attachBodyPreview` owns that identity and the leading warning). Help leads with the
+    // complete-body channel an edit needs, then the next page.
+    attachBodyPreview(rec, parsed.body, (cut) => [
       `${cliInvocation()} doc read ${commandToken(parsed.id)} --body-out <path-outside-bundle>`,
-    ]);
+      `${cliInvocation()} doc read ${commandToken(parsed.id)} --offset ${cut.nextOffset} --expected-version ${commandToken(version)} --json`,
+    ], { pageBytes: DOC_READ_PREVIEW_BYTES });
     stdout(render(rec, resolveMode(values)));
     return;
   }
