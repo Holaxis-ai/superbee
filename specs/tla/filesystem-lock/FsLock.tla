@@ -11,6 +11,8 @@
 (*   StartRun        newOwner: a new process with a fresh token            *)
 (*   Mkdir           claimLockPath: mkdir(<key>.lock)                      *)
 (*   Read1, Read2    claimLockPath: readOwner before and after quarantine  *)
+(*   RmAge           removeAbandonedClaim: lstat(L) and the age check      *)
+(*   RmAbandoned     removeAbandonedClaim: rmdir(L)                        *)
 (*   Probe           quarantineStaleLock: hostname and processExists       *)
 (*   RecheckOwner    quarantineStaleLock: re-read the owner token          *)
 (*   Quar            quarantineStaleLock: rename to <key>.lock.stale-<h>   *)
@@ -20,10 +22,13 @@
 (*   Settle          filesystem-push-role.ts acquireSettled (lock age)     *)
 (*   Ps              filesystem-push-role.ts request: start-time check     *)
 (*   Lstat .. Write  claimLockPath: lstat, then writeFile(owner.json, wx)  *)
+(*   OwLost          claimDirectoryLost after a failed owner write         *)
 (*   CS              the caller's mutation while the lock is held          *)
 (*   RelVerify       release: resolveOwnerRecord, changedOwnerRefusal      *)
 (*   RelRename/RelRm removeReleasedLock: rename to .released-<h>, rm       *)
-(*   RbRead .. RbRm  rollBackOwnClaim and isClaimedDirectory               *)
+(*   RbRead ..       rollBackOwnClaim and isClaimedDirectory, then the     *)
+(*     RbRmdir       claim throws; RbRename and RbRm are the rename-based  *)
+(*                   rollback before #670's review fix                     *)
 (*                                                                         *)
 (* One lock path L plus the token-derived siblings L.stale-<h(t)>          *)
 (* (staleLockQuarantinePath) and L.released-<h(t)>                         *)
@@ -54,7 +59,9 @@
 (*     MaxRetries polls. The claim-grace age check in acquireSettled is    *)
 (*     "young iff the directory's creator is still alive". The ps start    *)
 (*     time is exact: "started after the claim" iff the pid now belongs to *)
-(*     a later process.                                                    *)
+(*     a later process. The age check in removeAbandonedClaim may pass for *)
+(*     a directory whose creator is dead, or that has aged past the window *)
+(*     while its live creator was suspended (Stall, once per token).       *)
 (*  A8 The acquireSettled retry re-uses the same token. Sound: a claim     *)
 (*     that timed out never wrote a record.                                *)
 (*  A9 Assumed, not modeled: nothing external deletes a held <key>.lock    *)
@@ -73,7 +80,12 @@ CONSTANTS
   NsFault,           \* the death probe may answer "dead" for a live owner (PID namespaces)
   PidReuse,          \* a dead owner's pid may be taken by an unrelated process
   HostChange,        \* the hostname may change once (for example a macOS network change)
-  AllowCrash         \* processes may crash at any step
+  AllowCrash,        \* processes may crash at any step
+  ClaimStall,        \* a live claimer may be suspended until its owner-less directory ages
+  WriteFault,        \* the owner write may fail with a host error (EIO, or EINVAL/EPERM
+                     \*   when racing the removal of its directory)
+  RollbackRmdir      \* rollBackOwnClaim removes its directory with rmdir, as on main (#670);
+                     \*   FALSE: rename it to L.released-<h(t)>, then rm
 
 NONE  == 0      \* no owner.json in the directory
 EMPTY == 99     \* owner.json opened with wx but not written yet (JSON parse fails)
@@ -91,13 +103,15 @@ VARIABLES
   pidLive,    \* kill(pid(t), 0) succeeds (own process, or a reuser of the pid)
   ownerHost, host, hostChanged,
   diag, diagOk, relErr,
-  reused      \* the pid of t was taken by a (single) foreign process
+  reused,     \* the pid of t was taken by a (single) foreign process
+  stalled     \* t has already been suspended past the abandoned-claim age once
 
 vars == <<lock, stale, rel, nextId, pc, snap, claimed, wdir, mode, retries, settled,
-          alive, pidLive, ownerHost, host, hostChanged, diag, diagOk, relErr, reused>>
+          alive, pidLive, ownerHost, host, hostChanged, diag, diagOk, relErr, reused, stalled>>
 
-Dir(i, b, r) == [ex |-> TRUE, id |-> i, by |-> b, rec |-> r]
-NoDir == [ex |-> FALSE, id |-> 0, by |-> 0, rec |-> NONE]
+\* old: the directory aged past the abandoned-claim window while its creator was alive.
+Dir(i, b, r) == [ex |-> TRUE, id |-> i, by |-> b, rec |-> r, old |-> FALSE]
+NoDir == [ex |-> FALSE, id |-> 0, by |-> 0, rec |-> NONE, old |-> FALSE]
 
 \* readOwner: only a parsed record counts.
 ReadRec(d) == IF d.ex /\ d.rec \in Tokens THEN d.rec ELSE NONE
@@ -127,8 +141,9 @@ Accurate(d, o) ==
     [] d = "stale"            -> (~lock.ex \/ (lock.rec = o /\ ~alive[o])) \* L is gone, or is o's dead lock
     [] d = "staleOwner"       -> ~alive[o]
     [] d = "malformed"        -> TRUE                             \* hedged in the message
+    [] d = "ioError"          -> TRUE                             \* the owner write's own error
 
-Unchanged_env == UNCHANGED <<alive, pidLive, ownerHost, host, hostChanged, reused>>
+Unchanged_env == UNCHANGED <<alive, pidLive, ownerHost, host, hostChanged, reused, stalled>>
 
 Finish(t, d, o) ==
   /\ pc' = [pc EXCEPT ![t] = "finished"]
@@ -173,6 +188,7 @@ Init ==
   /\ diagOk = [t \in Tokens |-> TRUE]
   /\ relErr = [t \in Tokens |-> FALSE]
   /\ reused = [t \in Tokens |-> FALSE]
+  /\ stalled = [t \in Tokens |-> FALSE]
 
 \* A command starts. A slot's next run starts after the previous one ends.
 StartRun(t) ==
@@ -184,7 +200,7 @@ StartRun(t) ==
   /\ pidLive' = [pidLive EXCEPT ![t] = TRUE]
   /\ ownerHost' = [ownerHost EXCEPT ![t] = host]
   /\ UNCHANGED <<lock, stale, rel, nextId, snap, claimed, wdir, retries, settled,
-                 host, hostChanged, diag, diagOk, relErr, reused>>
+                 host, hostChanged, diag, diagOk, relErr, reused, stalled>>
 
 \* mkdir(L). EEXIST is contention, so the next step reads the owner.
 Mkdir(t) ==
@@ -198,12 +214,31 @@ Mkdir(t) ==
   /\ UNCHANGED <<stale, rel, snap, claimed, wdir, mode, retries, settled, diag, diagOk, relErr>>
   /\ Unchanged_env
 
-\* existingOwner = readOwner(L). A parsed record leads to the quarantine attempt.
+\* existingOwner = readOwnerRecord(L). A parsed record leads to the quarantine attempt; no
+\* usable record (none, unwritten, or no directory) to the abandoned-claim removal.
 Read1(t) ==
   /\ pc[t] = "read1"
   /\ snap' = [snap EXCEPT ![t] = ReadRec(lock)]
-  /\ pc' = [pc EXCEPT ![t] = IF ReadRec(lock) # NONE THEN "probe" ELSE "tcheck"]
+  /\ pc' = [pc EXCEPT ![t] = IF ReadRec(lock) # NONE THEN "probe" ELSE "rmAge"]
   /\ UNCHANGED <<lock, stale, rel, nextId, claimed, wdir, mode, retries, settled, diag, diagOk, relErr>>
+  /\ Unchanged_env
+
+\* removeAbandonedClaim: lstat(L) and its age. No directory, or too young: the normal wait (A7).
+RmAge(t) ==
+  /\ pc[t] = "rmAge"
+  /\ \E aged \in (IF lock.ex /\ (lock.old \/ ~alive[lock.by]) THEN {TRUE, FALSE} ELSE {FALSE}) :
+       GoTo(t, IF aged THEN "rmAbandoned" ELSE "tcheck")
+  /\ UNCHANGED <<lock, stale, rel, nextId, snap, claimed, wdir, mode, retries, settled, relErr>>
+  /\ Unchanged_env
+
+\* removeAbandonedClaim: rmdir(L), whatever directory is there now. It succeeds only on an empty
+\* directory; an opened-but-unwritten owner.json refuses (A5). Success claims again at once.
+RmAbandoned(t) ==
+  /\ pc[t] = "rmAbandoned"
+  /\ IF lock.ex /\ lock.rec = NONE
+       THEN lock' = NoDir /\ pc' = [pc EXCEPT ![t] = "mkdir"]
+       ELSE pc' = [pc EXCEPT ![t] = "tcheck"] /\ UNCHANGED lock
+  /\ UNCHANGED <<stale, rel, nextId, snap, claimed, wdir, mode, retries, settled, diag, diagOk, relErr>>
   /\ Unchanged_env
 
 \* quarantineStaleLock: hostname check and processExists(owner.pid), against the snapshot.
@@ -277,7 +312,8 @@ RecheckDiag(t) ==
   /\ Unchanged_env
 
 \* acquireSettled: lockAgeMs(L). Gone on the first attempt: retry once. Gone or young: a claim
-\* or release in progress. Old: the malformed orphan error.
+\* or release in progress. Old: the malformed orphan error, now reached only for a directory the
+\* claim loop did not remove as abandoned (an unwritten owner.json, or a lost removal race).
 Settle(t) ==
   /\ pc[t] = "settle"
   /\ IF ~lock.ex /\ ~settled[t]
@@ -308,18 +344,28 @@ Lstat(t) ==
   /\ UNCHANGED <<lock, stale, rel, nextId, snap, wdir, mode, retries, settled, diag, diagOk, relErr>>
   /\ Unchanged_env
 
-\* open(L/owner.json, wx). ENOENT -> rollback, then retry; EEXIST -> retry;
-\* success -> the file exists, empty (A6).
+\* open(L/owner.json, wx). ENOENT and EEXIST are a lost claim: claim again with no rollback.
+\* success -> the file exists, empty (A6). Under WriteFault the create may fail with a host error.
 OpenWx(t) ==
   /\ pc[t] = "openwx"
-  /\ IF ~lock.ex
-       THEN pc' = [pc EXCEPT ![t] = "rbRead"] /\ UNCHANGED <<lock, wdir>>
-     ELSE IF lock.rec # NONE
+  /\ IF ~lock.ex \/ lock.rec # NONE
        THEN pc' = [pc EXCEPT ![t] = "mkdir"] /\ UNCHANGED <<lock, wdir>>
-     ELSE /\ lock' = [lock EXCEPT !.rec = EMPTY]
-          /\ wdir' = [wdir EXCEPT ![t] = lock.id]
-          /\ pc' = [pc EXCEPT ![t] = "write"]
+     ELSE \/ /\ lock' = [lock EXCEPT !.rec = EMPTY]
+             /\ wdir' = [wdir EXCEPT ![t] = lock.id]
+             /\ pc' = [pc EXCEPT ![t] = "write"]
+          \/ /\ WriteFault
+             /\ pc' = [pc EXCEPT ![t] = "owLost"]
+             /\ UNCHANGED <<lock, wdir>>
   /\ UNCHANGED <<stale, rel, nextId, snap, claimed, mode, retries, settled, diag, diagOk, relErr>>
+  /\ Unchanged_env
+
+\* claimDirectoryLost: L is gone or is not the directory the lstat after mkdir saw. Unknown (not
+\* lost) when that lstat saw nothing. Lost: claim again. Not lost: roll back, then throw.
+OwLost(t) ==
+  /\ pc[t] = "owLost"
+  /\ pc' = [pc EXCEPT ![t] =
+              IF ~lock.ex \/ (claimed[t] # 0 /\ lock.id # claimed[t]) THEN "mkdir" ELSE "rbRead"]
+  /\ UNCHANGED <<lock, stale, rel, nextId, snap, claimed, wdir, mode, retries, settled, diag, diagOk, relErr>>
   /\ Unchanged_env
 
 SetRecById(d, i, t) == IF d.ex /\ d.id = i THEN [d EXCEPT !.rec = t] ELSE d
@@ -373,40 +419,51 @@ RelRm(t) ==
   /\ Unchanged_env
 
 \* rollBackOwnClaim reads the record. Our own token cannot be there (it was never written).
+\* Another record is another process's lock: leave it. The claim then throws the write's error.
 RbRead(t) ==
   /\ pc[t] = "rbRead"
-  /\ pc' = [pc EXCEPT ![t] =
-              IF ReadRec(lock) = t THEN "impossible"
-              ELSE IF ReadRec(lock) # NONE THEN "mkdir" ELSE "rbIsClaimed"]
-  /\ UNCHANGED <<lock, stale, rel, nextId, snap, claimed, wdir, mode, retries, settled, diag, diagOk, relErr>>
+  /\ IF ReadRec(lock) = t THEN GoTo(t, "impossible")
+     ELSE IF ReadRec(lock) # NONE THEN Finish(t, "ioError", NONE)
+     ELSE GoTo(t, "rbIsClaimed")
+  /\ UNCHANGED <<lock, stale, rel, nextId, snap, claimed, wdir, mode, retries, settled, relErr>>
   /\ Unchanged_env
 
 \* isClaimedDirectory: same dev, ino and birth time as the lstat after mkdir.
 RbIsClaimed(t) ==
   /\ pc[t] = "rbIsClaimed"
-  /\ pc' = [pc EXCEPT ![t] =
-              IF lock.ex /\ claimed[t] # 0 /\ lock.id = claimed[t] THEN "rbRename" ELSE "mkdir"]
-  /\ UNCHANGED <<lock, stale, rel, nextId, snap, claimed, wdir, mode, retries, settled, diag, diagOk, relErr>>
+  /\ IF lock.ex /\ claimed[t] # 0 /\ lock.id = claimed[t]
+       THEN GoTo(t, IF RollbackRmdir THEN "rbRmdir" ELSE "rbRename")
+       ELSE Finish(t, "ioError", NONE)
+  /\ UNCHANGED <<lock, stale, rel, nextId, snap, claimed, wdir, mode, retries, settled, relErr>>
   /\ Unchanged_env
 
-\* rollBackOwnClaim: rename(L, released). A throw is swallowed by the caller, which retries.
+\* rollBackOwnClaim: rmdir(L). It removes only an empty directory; a failure is swallowed.
+RbRmdir(t) ==
+  /\ pc[t] = "rbRmdir"
+  /\ lock' = IF lock.ex /\ lock.rec = NONE THEN NoDir ELSE lock
+  /\ Finish(t, "ioError", NONE)
+  /\ UNCHANGED <<stale, rel, nextId, snap, claimed, wdir, mode, retries, settled, relErr>>
+  /\ Unchanged_env
+
+\* Before #670's review fix: rename(L, released), whatever directory is at L now. A throw is
+\* swallowed and the claim throws the write's error.
 RbRename(t) ==
   /\ pc[t] = "rbRename"
   /\ IF RenameRes(lock, rel[t]) = "OK"
        THEN /\ rel' = [rel EXCEPT ![t] = lock]
             /\ lock' = NoDir
-            /\ pc' = [pc EXCEPT ![t] = "rbRm"]
-       ELSE /\ pc' = [pc EXCEPT ![t] = "mkdir"]
+            /\ GoTo(t, "rbRm")
+       ELSE /\ Finish(t, "ioError", NONE)
             /\ UNCHANGED <<lock, rel>>
-  /\ UNCHANGED <<stale, nextId, snap, claimed, wdir, mode, retries, settled, diag, diagOk, relErr>>
+  /\ UNCHANGED <<stale, nextId, snap, claimed, wdir, mode, retries, settled, relErr>>
   /\ Unchanged_env
 
-\* rollBackOwnClaim: rm(remnant, force).
+\* Before #670's review fix: rm(remnant, force).
 RbRm(t) ==
   /\ pc[t] = "rbRm"
   /\ rel' = [rel EXCEPT ![t] = NoDir]
-  /\ pc' = [pc EXCEPT ![t] = "mkdir"]
-  /\ UNCHANGED <<lock, stale, nextId, snap, claimed, wdir, mode, retries, settled, diag, diagOk, relErr>>
+  /\ Finish(t, "ioError", NONE)
+  /\ UNCHANGED <<lock, stale, nextId, snap, claimed, wdir, mode, retries, settled, relErr>>
   /\ Unchanged_env
 
 \* The one-shot CLI command ends; the process exits and is reaped.
@@ -416,7 +473,7 @@ Exit(t) ==
   /\ alive' = [alive EXCEPT ![t] = FALSE]
   /\ pidLive' = [pidLive EXCEPT ![t] = FALSE]
   /\ UNCHANGED <<lock, stale, rel, nextId, snap, claimed, wdir, mode, retries, settled,
-                 ownerHost, host, hostChanged, diag, diagOk, relErr, reused>>
+                 ownerHost, host, hostChanged, diag, diagOk, relErr, reused, stalled>>
 
 -----------------------------------------------------------------------------
 \* Environment
@@ -428,7 +485,7 @@ Crash(t) ==
   /\ alive' = [alive EXCEPT ![t] = FALSE]
   /\ pidLive' = [pidLive EXCEPT ![t] = FALSE]
   /\ UNCHANGED <<lock, stale, rel, nextId, snap, claimed, wdir, mode, retries, settled,
-                 ownerHost, host, hostChanged, diag, diagOk, relErr, reused>>
+                 ownerHost, host, hostChanged, diag, diagOk, relErr, reused, stalled>>
 
 \* One foreign process takes the dead pid (it may later exit, ReuserExit). At most once per pid.
 Reuse(t) ==
@@ -436,33 +493,44 @@ Reuse(t) ==
   /\ pidLive' = [pidLive EXCEPT ![t] = TRUE]
   /\ reused' = [reused EXCEPT ![t] = TRUE]
   /\ UNCHANGED <<lock, stale, rel, nextId, pc, snap, claimed, wdir, mode, retries, settled,
-                 alive, ownerHost, host, hostChanged, diag, diagOk, relErr>>
+                 alive, ownerHost, host, hostChanged, diag, diagOk, relErr, stalled>>
 
 ReuserExit(t) ==
   /\ PidReuse /\ pidLive[t] /\ ~alive[t]
   /\ pidLive' = [pidLive EXCEPT ![t] = FALSE]
   /\ UNCHANGED <<lock, stale, rel, nextId, pc, snap, claimed, wdir, mode, retries, settled,
-                 alive, ownerHost, host, hostChanged, diag, diagOk, relErr, reused>>
+                 alive, ownerHost, host, hostChanged, diag, diagOk, relErr, reused, stalled>>
 
 HostnameChange ==
   /\ HostChange /\ ~hostChanged
   /\ host' = 1 - host
   /\ hostChanged' = TRUE
   /\ UNCHANGED <<lock, stale, rel, nextId, pc, snap, claimed, wdir, mode, retries, settled,
-                 alive, pidLive, ownerHost, diag, diagOk, relErr, reused>>
+                 alive, pidLive, ownerHost, diag, diagOk, relErr, reused, stalled>>
+
+\* A live claimer is suspended long enough for its owner-less directory at L to pass the
+\* abandoned-claim age. At most once per claimer, which bounds the removals of live claims.
+Stall ==
+  /\ ClaimStall /\ lock.ex /\ lock.rec = NONE /\ ~lock.old
+  /\ alive[lock.by] /\ ~stalled[lock.by]
+  /\ lock' = [lock EXCEPT !.old = TRUE]
+  /\ stalled' = [stalled EXCEPT ![lock.by] = TRUE]
+  /\ UNCHANGED <<stale, rel, nextId, pc, snap, claimed, wdir, mode, retries, settled,
+                 alive, pidLive, ownerHost, host, hostChanged, diag, diagOk, relErr, reused>>
 
 -----------------------------------------------------------------------------
 Step(t) ==
-  \/ Mkdir(t) \/ Read1(t) \/ Probe(t) \/ RecheckOwner(t) \/ Quar(t) \/ Read2(t) \/ TCheck(t)
+  \/ Mkdir(t) \/ Read1(t) \/ RmAge(t) \/ RmAbandoned(t) \/ Probe(t) \/ RecheckOwner(t) \/ Quar(t) \/ Read2(t) \/ TCheck(t)
   \/ Timeout(t) \/ RecheckDiag(t) \/ Settle(t) \/ Ps(t)
-  \/ Lstat(t) \/ OpenWx(t) \/ Write(t) \/ CS(t)
+  \/ Lstat(t) \/ OpenWx(t) \/ OwLost(t) \/ Write(t) \/ CS(t)
   \/ RelVerify(t) \/ RelRename(t) \/ RelRm(t)
-  \/ RbRead(t) \/ RbIsClaimed(t) \/ RbRename(t) \/ RbRm(t)
+  \/ RbRead(t) \/ RbIsClaimed(t) \/ RbRmdir(t) \/ RbRename(t) \/ RbRm(t)
   \/ Exit(t)
 
 Next ==
   \/ \E t \in Tokens : StartRun(t) \/ Step(t) \/ Crash(t) \/ Reuse(t) \/ ReuserExit(t)
   \/ HostnameChange
+  \/ Stall
 
 Spec == Init /\ [][Next]_vars
 

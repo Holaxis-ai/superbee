@@ -21,8 +21,8 @@ variant configs that must each produce one named counterexample. The fixed confi
 that model fixes. Some of those fixes are on `main`; the others are design targets that `main`
 does not implement:
 
-- `FsLock.fixed.cfg` models the owner re-checks before quarantine and before a "stale" diagnosis,
-  which are on `main` (#310).
+- `FsLock.fixed.cfg` models the owner re-checks before quarantine and before a "stale" diagnosis
+  (#310), and the abandoned-claim removal and `rmdir` rollback (#670), which are on `main`.
 - `WorkingCopy.fixed.cfg` models pull consistency (#314) and one `sync()` at a time per runtime
   (#311), which are on `main`. It also turns on `AckInvalidates` (an acknowledgement drops the
   recorded heads digest), implemented by acknowledgement markers on `main` (#317).
@@ -99,7 +99,8 @@ contending one-shot processes that each claim, mutate and release. Callers are s
 
 | Config | Checks | Expected |
 | --- | --- | --- |
-| `FsLock.fixed.cfg` | Mutual exclusion (`M1`), a holder's record stays at the lock path (`M2`), quarantine destinations hold only their dead owner's directory (`Fence`), rollback never meets a foreign record (`NoImpossible`), and honest "retry" and "stale" diagnoses; three contenders, plain and `ifAvailable` callers, crashes | pass |
+| `FsLock.fixed.cfg` | Mutual exclusion (`M1`), a holder's record stays at the lock path (`M2`), quarantine destinations hold only their dead owner's directory (`Fence`), rollback never meets a foreign record (`NoImpossible`), and honest "retry" and "stale" diagnoses; three contenders, plain and `ifAvailable` callers, crashes, removal of an aged owner-less lock with `rmdir`, claimers suspended past that age, and failed owner writes rolled back with `rmdir` (#670) | pass |
+| `FsLock.bug-rename-rollback.cfg` | Before #670's review fix, rollback renamed its verified directory aside: another claimer removes it as abandoned, a third claims the path, and the rename moves that live lock away | `M1` violated |
 | `FsLock.bug-quarantine-aba.cfg` | Before the quarantine re-check was added (#310), a lock released and reclaimed after the owner snapshot is moved aside while held | `M1` violated |
 | `FsLock.bug-stale-diagnosis.cfg` | Before the diagnosis re-check was added (#310), a live replacement lock is reported as stale | `StaleDiagAccurate` violated |
 | `FsLock.bug-pid-reuse-diagnosis.cfg` | Open: a crashed holder's reused pid keeps plain and waiting callers on a "retry" diagnosis | `RetryDiagAccurate` violated |
