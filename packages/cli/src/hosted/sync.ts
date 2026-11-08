@@ -1247,7 +1247,7 @@ export async function queueHostedArtifact(binding: CheckoutBinding, input: { fil
         : `${publication.entry} no longer holds your page. Publish your page under ${next.entry}, the next free name for this title: save it there, then run artifact create on it`;
       throw new CliError("CONFLICT", `${publication.entry} was already taken on the host, so this Artifact cannot be published there; nothing was submitted, and rerunning fails the same way. ${where}`, {
         details: { reason: "artifact_create_conflict_resolved", id: publication.id, entry: publication.entry, blob_request_id: publication.blobRequestId, page_in_folder: pageInFolder, next_entry: next.entry },
-        help: pageInFolder ? `cp ${commandToken(current)} ${commandToken(target)} → ${createCommand(target)}` : createCommand(target),
+        help: pageInFolder ? `cp ${commandToken(current)} ${commandToken(target)} && ${createCommand(target)}` : createCommand(target),
       });
     }
     if (publication) {
