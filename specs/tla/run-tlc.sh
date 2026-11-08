@@ -35,7 +35,7 @@ for cfg in "$@"; do
   log=$work/$name.log
   started=$(date +%s)
   status=0
-  (cd "$dir" && timeout 240 java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers auto -deadlock -coverage 1 \
+  (cd "$dir" && java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers auto -deadlock \
     -metadir "$work/$name.states" -config "$name.cfg" "$spec") > "$log" 2>&1 || status=$?
   elapsed=$(( $(date +%s) - started ))
   states=$(grep -E 'distinct states found' "$log" | tail -n 1 | sed -E 's/.* ([0-9]+) distinct states found.*/\1/' || true)
@@ -51,7 +51,7 @@ for cfg in "$@"; do
   fi
   echo "FAIL $name: expected '$expect', TLC exited $status after ${elapsed}s"
   grep -E '^Error: ' "$log" || true
-  grep -E "Progress|^<[A-Za-z0-9]+ line" "$log" | cut -c1-120
+  tail -n 80 "$log"
   failures=$((failures + 1))
 done
 

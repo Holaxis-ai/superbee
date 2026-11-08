@@ -541,10 +541,6 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
-DiagDirs6 == nextId <= 7
-DiagDirs8 == nextId <= 9
-DiagDirs10 == nextId <= 11
-
 -----------------------------------------------------------------------------
 \* Properties
 
