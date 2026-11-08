@@ -22,7 +22,7 @@
 import { constants as fsConstants, existsSync, promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { assertSafeConceptId, blobVersion, conceptIdFromPath, FilesystemBackend, InvalidInputError, VersionConflict, isReservedFile, MalformedDocumentError, parseMarkdown, pathFromConceptId, versionOfBytes } from "@superbee/core";
+import { assertSafeConceptId, blobVersion, conceptIdFromPath, FilesystemBackend, replaceFilesystemFile, VersionConflict, isReservedFile, MalformedDocumentError, parseMarkdown, pathFromConceptId, versionOfBytes } from "@superbee/core";
 import { boardRefOf, bundleDirNameForProject, isConceptDocPath, listSavedCopies, readDocBytesAtRef, repoTopLevel, resolveBundleKey, retargetBoardInterior, runGit, saveCopyWithBody } from "@superbee/board-git";
 import { resolveLocalBundleRoute } from "../../bundle.js";
 import { commandFragment, commandToken, type CommandText } from "../../command-text.js";
@@ -172,6 +172,24 @@ async function readIfPresent(file: string): Promise<Buffer | null> {
     return await fs.readFile(file);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/** The refusal for a conflict path that is a folder, a link, or sits under a file or link. */
+function notRegularFile(args: ConflictArgs, board: Board): CliError {
+  return new CliError("CONFLICT", `'${args.id}' is not a regular file in the bundle (a folder, a link, or under a file or link), so nothing changed; your saved copy stays at ${board.exportPath}`, {
+    details: { id: args.id, saved_at: board.exportPath, reason: "not_a_regular_file" },
+  });
+}
+
+/** The conflicted file's bytes, or null when it is absent; a path that cannot hold a file is refused. */
+async function readBoardFile(args: ConflictArgs, board: Board): Promise<Buffer | null> {
+  try {
+    return await readIfPresent(board.file);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EISDIR" || code === "ENOTDIR") throw notRegularFile(args, board);
     throw error;
   }
 }
@@ -412,8 +430,8 @@ async function runInspect(args: ConflictArgs, board: Board, cwd: string): Promis
   // A lost claim with nothing else to carry offers no keep: keeping would only retake ownership.
   const claimOnly = divergence.claim?.only === true;
   const keptRefused = keptRefusalCode(remote, board.relPath);
-  const keepLoses = keepWouldLose(board, local, remote, await readIfPresent(board.file), divergence);
-  const present = await readIfPresent(board.file);
+  const keepLoses = keepWouldLose(board, local, remote, await readBoardFile(args, board), divergence);
+  const present = await readBoardFile(args, board);
   const keepOverwrites = keepWouldOverwrite(board, local, remote, present);
   const unsent = takeWouldErase(board, local, remote, present);
   const takeNote = board.laterCopies.length > 0
@@ -488,7 +506,7 @@ async function runInspectFile(args: ConflictArgs, board: Board, cwd: string): Pr
   const local = await fs.readFile(board.exportPath);
   const remote = readUpstream(board, args.id);
   await writeRemoteOut(args, board, remote, cwd);
-  const present = await readIfPresent(board.file);
+  const present = await readBoardFile(args, board);
   const deleted = remote === null;
   const later = board.laterCopies.length > 0;
   const unsent = fileHoldsUnsent(local, remote, present);
@@ -532,15 +550,11 @@ async function keepFile(args: ConflictArgs, board: Board, local: Buffer, remote:
       help: commandFor(args, "take"),
     });
   }
-  const notRegular = (): CliError =>
-    new CliError("CONFLICT", `'${args.id}' is not a regular file in the bundle (a link, a folder, or under a link), so keep will not write through it; your saved copy stays at ${board.exportPath}`, {
-      details: { id: args.id, saved_at: board.exportPath, reason: "not_a_regular_file" },
-    });
   try {
-    if (!(await fs.lstat(board.file)).isFile()) throw notRegular();
+    if (!(await fs.lstat(board.file)).isFile()) throw notRegularFile(args, board);
   } catch (error) {
     if (error instanceof CliError) throw error;
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT" && (error as NodeJS.ErrnoException).code !== "ENOTDIR") throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   const unsentRefusal = (): CliError =>
     new CliError("CONFLICT", `'${args.id}' holds unsent changes that are neither its upstream version nor your saved copy, and keep would overwrite them, so nothing changed and your saved copy stays at ${board.exportPath}`, {
@@ -549,19 +563,25 @@ async function keepFile(args: ConflictArgs, board: Board, local: Buffer, remote:
     });
   if (fileHoldsUnsent(local, remote, present)) throw unsentRefusal();
   if (present !== null && present.equals(local)) return "unchanged";
-  // The filesystem backend owns the replace: its identity lock, exact spelling and compare-and-swap
-  // against the bytes judged above, so a change since that read is refused, never overwritten.
+  // Core owns the replace: its identity lock, exact spelling and compare-and-swap against the bytes
+  // judged above, so a change since that read is refused, never overwritten. Which files keep may
+  // write is this verb's rule (a saved copy's own path inside the bundle), not the blob namespace's.
   try {
-    await new FilesystemBackend(board.root).writeBlob(board.relPath, local, undefined, { expectedVersion: present === null ? null : blobVersion(present) });
+    await replaceFilesystemFile(new FilesystemBackend(board.root), board.relPath, local, present === null ? null : blobVersion(present));
   } catch (error) {
-    if (error instanceof VersionConflict) throw unsentRefusal();
-    if (error instanceof Error && (error.name === "FilesystemShapeMismatchError" || error.name === "FilesystemSymlinkEntryError")) throw notRegular();
-    if (error instanceof InvalidInputError) {
-      throw new CliError("CONFLICT", `keep cannot write '${args.id}' (${error.message}), so nothing changed; copy your saved copy over it by hand, then use revise`, {
-        details: { id: args.id, saved_at: board.exportPath, reason: "unwritable_path" },
-        help: `cp ${commandToken(board.exportPath)} ${commandToken(board.file)} → ${commandFor(args, "revise")}`,
-      });
+    if (error instanceof VersionConflict) {
+      // Say what the file holds now: another keep may have written the same bytes, or it was deleted.
+      const now = await readBoardFile(args, board);
+      if (now !== null && now.equals(local)) return "unchanged";
+      if (now === null) {
+        throw new CliError("CONFLICT", `'${args.id}' was deleted while keep was writing it, so nothing changed and your saved copy stays at ${board.exportPath}`, {
+          details: { id: args.id, saved_at: board.exportPath, reason: "deleted_since_read" },
+          help: commandFor(args, "keep"),
+        });
+      }
+      throw unsentRefusal();
     }
+    if (error instanceof Error && (error.name === "FilesystemShapeMismatchError" || error.name === "FilesystemSymlinkEntryError")) throw notRegularFile(args, board);
     throw error;
   }
   return present === null ? "re-created" : "written";
@@ -590,7 +610,7 @@ async function runResolve(args: ConflictArgs, choice: Choice, board: Board, cwd:
   const dirArgs = bundleDir !== undefined ? ["--dir", bundleDir] : [];
   const local = await fs.readFile(board.exportPath);
   const divergence: Divergence = board.kind === "file" ? { differs: [] } : await divergenceOf(board, local, remote);
-  const present = await readIfPresent(board.file);
+  const present = await readBoardFile(args, board);
   let fileState: string;
   let unsentSavedAt: string | undefined;
   if (choice === "keep" && board.kind === "file") {
@@ -690,7 +710,7 @@ async function runResolve(args: ConflictArgs, choice: Choice, board: Board, cwd:
   }
   // The resolution is recorded by removing the saved copy, after any write it needed.
   await discardSavedCopy(board);
-  const now = await readIfPresent(board.file);
+  const now = await readBoardFile(args, board);
   const sends = now === null ? remote !== null : remote === null || !now.equals(remote);
   const sync = `${inv} sync${dirSuffix(args)}`;
   return {

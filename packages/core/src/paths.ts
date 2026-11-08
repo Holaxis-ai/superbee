@@ -37,6 +37,16 @@ function assertPortablePath(value: string, label: string): void {
   }
 }
 
+/**
+ * Guard a bundle-relative file path that is neither a concept document nor a blob key (a board's
+ * conflicted non-document file): canonical and portable, with no traversal or absolute escape.
+ * Which files may be written is the caller's rule; this only keeps the path inside the bundle.
+ */
+export function assertSafeFilePath(rel: string): void {
+  if (typeof rel !== "string" || rel.trim() === "") throw new InvalidInputError("File path must be a non-empty string.");
+  assertPortablePath(rel, "File path");
+}
+
 /** Runtime callers must obey the same finite reserved-name type as TypeScript callers. */
 export function assertSafeReservedFilename(name: unknown): asserts name is typeof RESERVED_FILENAMES[number] {
   if (!(RESERVED_FILENAMES as readonly unknown[]).includes(name)) {

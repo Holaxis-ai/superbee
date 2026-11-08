@@ -51,11 +51,11 @@ interface Fixture {
   cleanup(): Promise<void>;
 }
 
-async function fixture(): Promise<Fixture> {
+async function fixture(rel = REL): Promise<Fixture> {
   const topo = await makeTwoCloneTopology();
   const homeA = await mkdtemp(path.join(tmpdir(), "sb-conflict-files-a-"));
   const homeB = await mkdtemp(path.join(tmpdir(), "sb-conflict-files-b-"));
-  const file = (repo: BoardRepo): string => path.join(repo.board, REL);
+  const file = (repo: BoardRepo): string => path.join(repo.board, rel);
   const exportsDir = (): string => syncExportsDir(bundleKey({ remoteUrl: topo.origin, subpath: "", checkoutRoot: topo.b.board }), homeB);
   await mkdir(path.dirname(file(topo.a)), { recursive: true });
   await writeFile(file(topo.a), BASE);
@@ -66,7 +66,7 @@ async function fixture(): Promise<Fixture> {
     homeA,
     homeB,
     file,
-    saved: (slot = 1) => (slot === 1 ? path.join(exportsDir(), REL) : path.join(`${exportsDir()}.repeat`, String(slot), REL)),
+    saved: (slot = 1) => (slot === 1 ? path.join(exportsDir(), rel) : path.join(`${exportsDir()}.repeat`, String(slot), rel)),
     async collide(theirs, yours) {
       if (theirs === null) await rm(file(topo.a));
       else await writeFile(file(topo.a), theirs);
@@ -259,27 +259,66 @@ test("keep re-creates a file the teammate deleted, and refuses to write through 
   }
 });
 
+/** Run keep with `landing` applied to the file after keep has read it and before core's compare-and-swap. */
+async function keepWithLanding(f: Fixture, landing: (file: string) => Promise<void>): Promise<RunResult> {
+  const fsModule = await import("node:fs");
+  const target = f.file(f.topo.b), original = fsModule.promises.lstat;
+  let fired = false;
+  fsModule.promises.lstat = (async (...args: Parameters<typeof original>) => {
+    if (!fired && String(args[0]) === target) {
+      fired = true;
+      const answer = await original(...args);
+      await landing(target);
+      return answer;
+    }
+    return original(...args);
+  }) as typeof original;
+  try {
+    return await runSync(f.homeB, ["--resolve", "keep", "--doc", REL, "--dir", f.topo.b.root, "--json"]);
+  } finally {
+    fsModule.promises.lstat = original;
+  }
+}
+
 test("keep is a compare-and-swap: a change landing between its read and its write is refused, never overwritten", async () => {
   const f = await fixture();
   try {
     await f.collide(THEIRS, YOURS);
     const landed = Buffer.from('{"alerts":["landed"]}\n');
-    const { FilesystemBackend } = await import("@superbee/core");
-    const original = FilesystemBackend.prototype.writeBlob;
-    FilesystemBackend.prototype.writeBlob = async function (this: InstanceType<typeof FilesystemBackend>, ...args: Parameters<typeof original>) {
-      await writeFile(f.file(f.topo.b), landed);
-      return original.apply(this, args);
-    };
-    let kept: RunResult;
-    try {
-      kept = await runSync(f.homeB, ["--resolve", "keep", "--doc", REL, "--dir", f.topo.b.root, "--json"]);
-    } finally {
-      FilesystemBackend.prototype.writeBlob = original;
-    }
+    const kept = await keepWithLanding(f, (file) => writeFile(file, landed));
     assert.equal(kept.err?.exitCode, 5);
     assert.equal(kept.err?.details?.reason, "unsent_edit");
     assert.deepEqual(await readFile(f.file(f.topo.b)), landed, "the change that landed is kept");
     assert.deepEqual(await readFile(f.saved()), YOURS, "and so is the saved copy");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a keep that loses a race to the same bytes reports the file settled", async () => {
+  const f = await fixture();
+  try {
+    await f.collide(THEIRS, YOURS);
+    const kept = await keepWithLanding(f, (file) => writeFile(file, YOURS));
+    assert.equal(kept.err, undefined, kept.err?.message);
+    assert.equal(JSON.parse(kept.out).file_state, "unchanged");
+    assert.deepEqual(await readFile(f.file(f.topo.b)), YOURS);
+    assert.equal(existsSync(f.saved()), false);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a keep whose file is deleted mid-write says it was deleted, and keeps the saved copy", async () => {
+  const f = await fixture();
+  try {
+    await f.collide(THEIRS, YOURS);
+    const kept = await keepWithLanding(f, (file) => rm(file));
+    assert.equal(kept.err?.exitCode, 5);
+    assert.equal(kept.err?.details?.reason, "deleted_since_read");
+    assert.match(kept.err?.message ?? "", /was deleted/);
+    assert.equal(existsSync(f.file(f.topo.b)), false);
+    assert.deepEqual(await readFile(f.saved()), YOURS);
   } finally {
     await f.cleanup();
   }
@@ -311,6 +350,60 @@ test("--doc refuses an absolute path plainly instead of reading it as a bundle p
     assert.equal(shown.err?.code, "USAGE");
     assert.match(shown.err?.message ?? "", /absolute path/);
     assert.doesNotMatch(shown.err?.message ?? "", /'etc\/hosts'/);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+for (const rel of [".github/snap.json", "feeds/.snap.json", "feeds/SNAP.MD"]) {
+  test(`keep writes a file whose path the blob namespace would refuse: ${rel}`, async () => {
+    const f = await fixture(rel);
+    try {
+      await f.collide(THEIRS, YOURS);
+      const kept = await runSync(f.homeB, ["--resolve", "keep", "--doc", rel, "--dir", f.topo.b.root, "--json"]);
+      assert.equal(kept.err, undefined, kept.err?.message);
+      assert.equal(JSON.parse(kept.out).file_state, "written");
+      assert.deepEqual(await readFile(f.file(f.topo.b)), YOURS);
+      assert.equal(existsSync(f.saved()), false);
+    } finally {
+      await f.cleanup();
+    }
+  });
+}
+
+test("a crash temp alone in a new untracked folder does not read as a local change", async () => {
+  const f = await fixture();
+  try {
+    const folder = path.join(f.topo.b.board, "feeds", "new");
+    await mkdir(folder, { recursive: true });
+    await writeFile(path.join(folder, ".a.json.4242.1730000000000.0d6c1f4e-7a7e-4c39-9a51-2c5e3b8a9f10.tmp"), "partial");
+    const shown = await capture(f.homeB, (stdout) => status(["--dir", f.topo.b.board, "--json"], { stdout, home: f.homeB, autoPull: async () => undefined }));
+    assert.equal(shown.err, undefined, shown.err?.message);
+    assert.equal(JSON.parse(shown.out).sync.state, "clean", "status stays clean");
+    await writeFile(path.join(folder, "a.json"), "{}\n");
+    const dirty = await capture(f.homeB, (stdout) => status(["--dir", f.topo.b.board, "--json"], { stdout, home: f.homeB, autoPull: async () => undefined }));
+    assert.notEqual(JSON.parse(dirty.out).sync.state, "clean", "a real file beside it still counts");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a conflicted path that became a folder, or sits under a file, is refused as not a regular file", async () => {
+  const f = await fixture();
+  try {
+    await f.collide(THEIRS, YOURS);
+    await rm(f.file(f.topo.b));
+    await mkdir(f.file(f.topo.b));
+    for (const argv of [["--inspect"], ["--resolve", "keep"], ["--resolve", "take"]]) {
+      const run = await runSync(f.homeB, [...argv, "--doc", REL, "--dir", f.topo.b.root, "--json"]);
+      assert.equal(run.err?.details?.reason, "not_a_regular_file", `${argv.join(" ")}: ${run.err?.message}`);
+    }
+    await rm(f.file(f.topo.b), { recursive: true });
+    await rm(path.dirname(f.file(f.topo.b)), { recursive: true });
+    await writeFile(path.dirname(f.file(f.topo.b)), "a file where the folder was");
+    const under = await runSync(f.homeB, ["--resolve", "keep", "--doc", REL, "--dir", f.topo.b.root, "--json"]);
+    assert.equal(under.err?.details?.reason, "not_a_regular_file", under.err?.message);
+    assert.deepEqual(await readFile(f.saved()), YOURS);
   } finally {
     await f.cleanup();
   }

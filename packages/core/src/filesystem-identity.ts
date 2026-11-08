@@ -143,7 +143,7 @@ export interface FilesystemIdentityPort {
    */
   link(from: string, to: string): Promise<"linked" | "exists" | "unsupported">;
   rename(from: string, to: string): Promise<void>;
-  /** Give `to` the permission bits of `from`, so a replacement keeps them (an executable stays one). */
+  /** Give `to` the read, write and execute bits of `from` (never setuid, setgid or sticky), so a replacement keeps them. */
   copyMode?(from: string, to: string): Promise<void>;
   unlink(target: string): Promise<void>;
   claim(key: string, identity: IdentityDescriptor): Promise<() => Promise<void>>;
@@ -1010,7 +1010,8 @@ export async function mutateExact<T>(
           await port.writeTemp(dir, tmpName, bytes);
           try {
             if (realized.state === "exact") {
-              await port.copyMode?.(target, tmp);
+              // Best effort: a replacement that cannot carry the old permission bits still lands.
+              await port.copyMode?.(target, tmp).catch(() => {});
               // Replace: the target exists under our exact spelling, so any writer of an
               // equated spelling is refused at its own M-REALIZE; an atomic rename is safe.
               await replaceExistingLeaf(port, tmp, target, rel);
@@ -1175,7 +1176,7 @@ export function createNodeFilesystemIdentityPort(hostPolicy?: FilesystemHostPoli
       await fs.rename(from, to);
     },
     async copyMode(from: string, to: string): Promise<void> {
-      await fs.chmod(to, (await fs.lstat(from)).mode & 0o7777);
+      await fs.chmod(to, (await fs.lstat(from)).mode & 0o777);
     },
     async unlink(target: string): Promise<void> {
       await fs.unlink(target);

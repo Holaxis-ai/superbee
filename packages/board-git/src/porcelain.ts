@@ -2813,6 +2813,17 @@ function isWriteTemp(relPath: string): boolean {
   return isIdentityTempName(relPath.split("/").pop() ?? "");
 }
 
+/**
+ * True when an untracked folder status lists as one row holds nothing but write temps, so a crash
+ * temp in a new folder does not read as a local change. Its files are listed one by one.
+ */
+function holdsOnlyWriteTemps(dir: string, folder: string): boolean {
+  const r = runGit(dir, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", `:(top,literal)${folder}`]);
+  if (r.status !== 0) return false;
+  const files = nulFields(r.stdout).map((record) => record.slice(3));
+  return files.length > 0 && files.every(isWriteTemp);
+}
+
 /** NUL-framed fields preserve path whitespace and avoid Git's human-output C quoting. */
 function nulFields(out: string): string[] {
   const fields = out.split("\0");
@@ -2846,7 +2857,7 @@ function readStatusRows(
     const status = record.slice(0, 2).trim();
     const row: StatusRow = { status, path: record.slice(3) };
     if (status.includes("R") || status.includes("C")) row.originalPath = fields[++i]!;
-    if (status === "??" && isWriteTemp(row.path)) continue;
+    if (status === "??" && (isWriteTemp(row.path) || (row.path.endsWith("/") && holdsOnlyWriteTemps(dir, row.path)))) continue;
     rows.push(row);
   }
   return rows;

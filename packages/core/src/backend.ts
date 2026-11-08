@@ -33,6 +33,7 @@ import { resolveContentType } from "./content-type.js";
 import {
   assertSafeBlobKey,
   assertSafeConceptId,
+  assertSafeFilePath,
   assertSafeReservedDir,
   assertSafeReservedFilename,
   classifyWalkPath,
@@ -80,6 +81,8 @@ import type {
 import type { FilesystemBackendOptions, FilesystemHostPolicy } from "./filesystem-host.js";
 
 const publicationContexts = new WeakMap<FilesystemBackend, { root: string; port: FilesystemIdentityPort }>();
+/** Each backend's own locked exact mutation, for {@link replaceFilesystemFile}; never handed out. */
+const fileMutations = new WeakMap<FilesystemBackend, <T>(rel: string, body: (context: MutationContext) => Promise<T>) => Promise<T>>();
 
 /** First trimmed non-empty string among `vals`, else `undefined`. */
 function firstString(...vals: unknown[]): string | undefined {
@@ -239,6 +242,7 @@ export class FilesystemBackend implements StorageBackend {
     this.#root = path.resolve(root);
     this.#coordinator = createFilesystemMutationCoordinator(this.#port, this.#root, options.hostPolicy);
     publicationContexts.set(this, { root: this.#root, port: this.#port });
+    fileMutations.set(this, (rel, body) => this.#mutateExact(rel, body));
   }
 
   async read(id: ConceptId): Promise<ReadResult> {
@@ -521,6 +525,25 @@ function publicationContext(backend: FilesystemBackend): { root: string; port: F
   const context = publicationContexts.get(backend);
   if (!context) throw new InvalidInputError("Unknown filesystem backend publication source.");
   return context;
+}
+
+/**
+ * Replace one bundle-relative file whole, under the same identity lock, exact spelling and
+ * raw-bytes compare-and-swap as `writeBlob`, for a caller that owns which files it may write (a
+ * board conflict keep of a file that is not a document). `expectedVersion` is the version of the
+ * bytes the caller judged, or null when it judged the file absent.
+ */
+export async function replaceFilesystemFile(backend: FilesystemBackend, rel: string, bytes: Uint8Array, expectedVersion: Version | null): Promise<Version> {
+  assertSafeFilePath(rel);
+  const mutate = fileMutations.get(backend);
+  if (!mutate) throw new InvalidInputError("Unknown filesystem backend.");
+  return mutate(rel, async (target) => {
+    const existing = await target.current();
+    const current = existing === null ? null : blobVersion(existing);
+    if (current !== expectedVersion) throw new VersionConflict(rel, expectedVersion, current);
+    await target.replace(bytes);
+    return blobVersion(bytes);
+  });
 }
 
 /** Read-only exact-spelling metadata observation for a safe blob pathname. Reads no body and

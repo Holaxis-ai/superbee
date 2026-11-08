@@ -145,7 +145,7 @@ test("N1: index.ts exports exactly the allowlisted names from the storage module
     values: [...(bucket?.values ?? [])].sort(),
     types: [...(bucket?.types ?? [])].sort(),
   });
-  assert.deepEqual(sorted(exported.get("./backend.js")), { values: ["FilesystemBackend", "probeFilesystemPath"], types: [] });
+  assert.deepEqual(sorted(exported.get("./backend.js")), { values: ["FilesystemBackend", "probeFilesystemPath", "replaceFilesystemFile"], types: [] });
   assert.deepEqual(sorted(exported.get("./filesystem-lock.js")), {
     values: ["FilesystemMutationLockError", "filesystemMutationLockPath", "withFilesystemMutationLock"],
     types: ["FilesystemMutationLockOptions", "FilesystemMutationLockOwner"],
