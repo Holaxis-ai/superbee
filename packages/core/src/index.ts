@@ -387,7 +387,7 @@ export type { FrontmatterLimitCode, MalformedDocumentCode } from "./frontmatter-
 // never on message prose. `FilesystemIdentityAliasError` is the alias verdict of the filesystem
 // adapter (a subclass, so it maps through the same branch); `ConcurrentReplacementError` is its
 // bounded-retry runtime condition.
-export { InvalidInputError, FrontmatterRefusedError, OkfActorError, FilesystemIdentityAliasError, ConcurrentReplacementError } from "./errors.js";
+export { InvalidInputError, FrontmatterRefusedError, NonCanonicalDocumentIdError, OkfActorError, FilesystemIdentityAliasError, ConcurrentReplacementError } from "./errors.js";
 export { applyV02MutationMetadata } from "./document-write-policy.js";
 
 // Kind conventions: a bundle-declared, opt-in document-kind

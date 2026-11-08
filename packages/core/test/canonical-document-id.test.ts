@@ -9,6 +9,13 @@ import assert from "node:assert/strict";
 import { nonCanonicalDocumentId } from "../src/paths.js";
 import { nonCanonicalDocumentId as fromStorage } from "../src/storage.js";
 import { nonCanonicalDocumentId as fromRoot } from "../src/index.js";
+import { assertCanonicalNewDocumentId } from "../src/paths.js";
+import { NonCanonicalDocumentIdError } from "../src/errors.js";
+import { deleteDoc, readDoc, writeDocVersionedGuarded } from "../src/engine.js";
+import { mutateDocument, type MutateDocumentOptions } from "../src/document-mutation.js";
+import { MemoryBackend } from "../src/memory-backend.js";
+import type { KindRegistry } from "../src/kinds.js";
+import type { Bundle } from "../src/types.js";
 
 test("canonical id: one definition behind the storage and root exports", () => {
   assert.equal(fromStorage, nonCanonicalDocumentId);
@@ -76,4 +83,62 @@ test("canonical id: the publish preview's refused spellings and its accepted joi
     ["format_character", "format_character", "format_character", "format_character", "not_nfc"],
   );
   assert.equal(nonCanonicalDocumentId("notes/\u{1f469}\u{200d}\u{1f4bb}"), null);
+});
+
+// mutateDocument decides every policy create, so its one check refuses a non-canonical NEW id in
+// every mutation mode and edition, while existing ids stay writable.
+const CREATE_EMPTY = { kinds: new Map(), warnings: [] } as KindRegistry;
+const note = (body: string) => ({ frontmatter: { type: "Note" }, body });
+
+for (const edition of ["0.1", "0.2"] as const) {
+  test(`canonical id: every create mode refuses a non-canonical new id (OKF ${edition})`, async () => {
+    const backend = new MemoryBackend();
+    await backend.writeReserved("", "index.md", `---\nokf_version: '${edition}'\n---\n# Bundle\n`);
+    const bundle: Bundle = { root: "/unused", backend };
+    const bad = "notes/zero\u{200b}width";
+    const modes: Array<Partial<MutateDocumentOptions>> = [
+      { mode: "create-only" },
+      { mode: "overwrite" },
+      { mode: "patch", onAbsent: "create" },
+      { mode: "replace-document", onAbsent: "create" },
+    ];
+    for (const mode of modes) {
+      await assert.rejects(
+        () => mutateDocument({ bundle, id: bad, registry: CREATE_EMPTY, strict: false, buildCandidate: () => note("x"), ...mode } as MutateDocumentOptions),
+        (error: unknown) => error instanceof NonCanonicalDocumentIdError && error.why === "format_character"
+          && error.suggestedId === "notes/zerowidth" && error.reason === "document_id_not_canonical"
+          && error.message.includes("'notes/zero\\u200bwidth'"),
+        JSON.stringify(mode),
+      );
+    }
+    assert.deepEqual(await backend.list(), []);
+    // The guarded whole-document write is the wire router's storage seam: it carries documents that
+    // already exist elsewhere (a legacy id pushed to a fresh remote), so it applies no create rule.
+    await writeDocVersionedGuarded(backend, { id: "notes/nai\u{308}ve", ...note("x") });
+    assert.deepEqual(await backend.list(), ["notes/nai\u{308}ve"]);
+  });
+}
+
+test("canonical id: an existing non-canonical id stays readable, writable and deletable", async () => {
+  const backend = new MemoryBackend();
+  const bundle: Bundle = { root: "/unused", backend };
+  const bad = "notes/edge ";
+  await backend.write(bad, { id: bad, ...note("old") }); // predates the rule
+  for (const mode of ["overwrite", "patch", "replace-document"] as const) {
+    const result = await mutateDocument({ bundle, id: bad, mode, registry: CREATE_EMPTY, strict: false, buildCandidate: () => note(`by ${mode}`) });
+    assert.equal(result.changed, true, mode);
+  }
+  await writeDocVersionedGuarded(backend, { id: bad, ...note("guarded") });
+  assert.equal((await readDoc(backend, bad)).body.trim(), "guarded");
+  assert.equal(await deleteDoc(backend, bad), true);
+});
+
+test("canonical id: the suggestion is canonical and safe, or absent", () => {
+  const suggest = (id: string) => { try { assertCanonicalNewDocumentId(id); return "accepted"; } catch (error) { return (error as NonCanonicalDocumentIdError).suggestedId; } };
+  assert.equal(suggest("notes/plain"), "accepted");
+  assert.equal(suggest(" notes/ a \u{200b}"), "notes/a");
+  assert.equal(suggest("notes/\u{200d}x"), "notes/x");
+  assert.equal(suggest("notes/\u{200b}"), undefined);
+  assert.equal(suggest("notes/\u{200b}index"), undefined);
+  assert.equal(suggest("notes/nai\u{308}ve"), "notes/na\u{ef}ve");
 });

@@ -12,6 +12,7 @@ import {
   FieldActionError,
   InvalidInputError,
   FrontmatterRefusedError,
+  NonCanonicalDocumentIdError,
   MalformedDocumentError,
   OkfActorError,
   RemoteError,
@@ -273,6 +274,10 @@ export function classifyBundleError(err: unknown): CliError {
     return new CliError("USAGE", refusal.message, { help: refusal.help, details: { actor: err.actor } });
   }
   if (err instanceof FieldActionError) return new CliError("USAGE", err.message, { details: { ...err.details } });
+  if (err instanceof NonCanonicalDocumentIdError) {
+    return new CliError("USAGE", err.message, { details: { reason: err.reason, why: err.why, id: err.id,
+      ...(err.suggestedId === undefined ? {} : { suggested_id: err.suggestedId }) } });
+  }
   if (err instanceof FrontmatterRefusedError) return new CliError("USAGE", err.message, { details: { frontmatter: { code: err.code } } });
   if (err instanceof InvalidInputError) return new CliError("USAGE", err.message);
   if (err instanceof MalformedDocumentError) return new CliError("RUNTIME", err.message, { details: frontmatterDetails(err) });

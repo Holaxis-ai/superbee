@@ -10,7 +10,7 @@
  */
 
 import type { ConceptId } from "./types.js";
-import { InvalidInputError } from "./errors.js";
+import { InvalidInputError, NonCanonicalDocumentIdError } from "./errors.js";
 
 /** The two OKF reserved filenames, valid at any directory level (§3.1). */
 export const RESERVED_FILENAMES = ["index.md", "log.md"] as const;
@@ -149,6 +149,33 @@ export function nonCanonicalDocumentId(id: string): NonCanonicalDocumentId | nul
   if (segments.some((segment) => FORMAT_AT_EDGE.test(segment) || FORMAT_INSIDE.test(segment))) return "format_character";
   if (id !== id.normalize("NFC")) return "not_nfc";
   return null;
+}
+
+/**
+ * Refuse a NEW document id outside its canonical spelling (see {@link nonCanonicalDocumentId}).
+ * Callers apply this only where a document is about to be created; existing ids stay readable,
+ * writable and deletable.
+ */
+export function assertCanonicalNewDocumentId(id: ConceptId): void {
+  const why = nonCanonicalDocumentId(id);
+  if (why !== null) throw new NonCanonicalDocumentIdError(id, why, suggestCanonicalDocumentId(id));
+}
+
+/** A canonical, safe spelling of `id`, or undefined when cleaning it leaves no usable id. */
+function suggestCanonicalDocumentId(id: string): string | undefined {
+  const edge = /^[\s\p{Cf}]+|[\s\p{Cf}]+$/gu;
+  const candidate = id
+    .normalize("NFC")
+    .split("/")
+    .map((segment) => segment.replace(edge, "").replace(/(?![\u200c\u200d])\p{Cf}/gu, "").replace(edge, ""))
+    .join("/");
+  if (candidate === id || nonCanonicalDocumentId(candidate) !== null) return undefined;
+  try {
+    assertSafeConceptId(candidate);
+  } catch {
+    return undefined;
+  }
+  return isReservedFile(pathFromConceptId(candidate)) ? undefined : candidate;
 }
 
 /**

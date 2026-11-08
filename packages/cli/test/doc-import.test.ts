@@ -318,3 +318,15 @@ test("--refresh usage refusals", async () => {
     assert.doesNotMatch(foreign.help ?? "", /--resume/, "a record a refresh refuses is not offered a resume");
   } finally { await fx.cleanup(); }
 });
+
+test("plan: a source id outside the canonical spelling is an unsafe_target_id conflict, not a mid-apply failure", async () => {
+  const fx = await makeFixture();
+  try {
+    await writeDoc(fx.source, { id: "themes/zero\u{200b}width", frontmatter: { type: "Theme", title: "Z" }, body: "z\n" });
+    const plan = await run(fx, baseArgs(fx));
+    assert.equal(plan.ready, false);
+    const rows = (plan.conflicts as { rows: Array<{ code: string; target: string; detail: string }> }).rows;
+    assert.deepEqual(rows.map((row) => [row.code, row.target]), [["unsafe_target_id", "imp/themes/zero\u{200b}width"]]);
+    assert.match(rows[0]!.detail, /invisible format character/);
+  } finally { await fx.cleanup(); }
+});

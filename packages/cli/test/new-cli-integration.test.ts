@@ -276,3 +276,34 @@ test("built CLI creates a work-tracking Task fresh without exposing its storage 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("built CLI new and doc write refuse a non-canonical new id with the hosted reason, and leave existing ones editable", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "aslite-new-canonical-"));
+  try {
+    const bundle: Bundle = { root: dir };
+    await initBundle(dir, { okfVersion: "0.1" });
+    await writeDoc(bundle, {
+      id: "conventions/note",
+      frontmatter: { type: CONVENTION_TYPE, governs: "Note", fields: { required: ["title"] }, timestamp: T },
+      body: "",
+    });
+    const bad = "notes/zero\u{200b}width";
+    for (const argv of [["new", "Note", bad, "--title", "Z"], ["doc", "write", bad, "--type", "Note", "--body", "x"]]) {
+      const result = spawnSync("node", [cliBin, ...argv, "--dir", dir, "--json"], { encoding: "utf8" });
+      assert.equal(result.status, 2, `${argv[0]}: stdout=${result.stdout} stderr=${result.stderr}`);
+      const text = `${result.stdout}${result.stderr}`;
+      assert.match(text, /document_id_not_canonical/, argv[0]);
+      assert.match(text, /format_character/, argv[0]);
+      assert.match(text, /notes\/zerowidth/, argv[0]);
+      assert.match(text, /notes\/zero\\\\u200bwidth/, `${argv[0]}: the message names the invisible character`);
+    }
+    assert.equal(existsSync(path.join(dir, `${bad}.md`)), false);
+
+    await writeDoc(bundle, { id: bad, frontmatter: { type: "Note", title: "Old" }, body: "old" });
+    const update = spawnSync("node", [cliBin, "doc", "write", bad, "--type", "Note", "--title", "New", "--body", "new", "--dir", dir, "--json"], { encoding: "utf8" });
+    assert.equal(update.status, 0, `stdout=${update.stdout} stderr=${update.stderr}`);
+    assert.equal((await readDoc(bundle, bad)).body.trim(), "new");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

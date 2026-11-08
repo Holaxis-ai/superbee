@@ -51,7 +51,7 @@ import { emitLinkHref } from "./link-emit.js";
 import { extractMarkdownLinkSpans, maskMarkdownCode, normalizeSegments, resolveConceptId, rewriteMarkdownLinks, type MarkdownLinkSpan } from "./links.js";
 import { isOkfActor } from "./okf-actor.js";
 import { SUPERBEE_UPDATED_BY_FIELD } from "./mutation-attribution.js";
-import { assertSafeConceptId, compareStorageKeys, isReservedFile, pathFromConceptId, trimTrailingSlashes } from "./paths.js";
+import { assertCanonicalNewDocumentId, assertSafeConceptId, compareStorageKeys, isReservedFile, pathFromConceptId, trimTrailingSlashes } from "./paths.js";
 import { isQualifiedHref, parseQualifiedHref, qualifiedHref } from "./qualified-links.js";
 import { sha256HexOfUtf8 } from "./sha256.js";
 import type { ValidationWarning } from "./validation.js";
@@ -563,6 +563,7 @@ const CONVENTIONS_FOLD = `${foldIdentityPath(CONVENTIONS_PREFIX.replace(/\/$/, "
  */
 function assertImportableTargetId(id: ConceptId): void {
   assertSafeConceptId(id);
+  assertCanonicalNewDocumentId(id);
   if (isReservedFile(pathFromConceptId(id))) throw new InvalidInputError("index.md and log.md are reserved files, not documents");
   const fold = foldIdentityPath(id);
   if (PROTECTED_TARGET_FOLDS.has(fold)) throw new InvalidInputError("it is the bundle's own identity or dependency declaration");

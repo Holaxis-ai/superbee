@@ -16,6 +16,7 @@ import { appendVerificationEvent, type AppendVerificationOptions } from "./verif
 import { okfValuesEqual } from "./okf-authored-values.js";
 import { isRequestIdentity } from "./uncertain-write.js";
 import { InvalidInputError } from "./errors.js";
+import { assertCanonicalNewDocumentId } from "./paths.js";
 import { kindDeprecationTransition } from "./kind-deprecation.js";
 import { KindConformanceError } from "./kind-conformance-error.js";
 import { assertAuthoredOkfStandardFields } from "./okf-standard-fields.js";
@@ -508,11 +509,15 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
     await opts.assertCandidate?.(existing === undefined ? undefined : structuredClone(existing), structuredClone(candidate), context);
     return candidate;
   };
-  const prepare = async (existing: OkfDocument | undefined, decisionNow: () => string) =>
-    prepareDocumentMutationCandidate(existing, await build(existing, decisionNow), {
+  const prepare = async (existing: OkfDocument | undefined, decisionNow: () => string) => {
+    // Every mode decides a create here with no existing document, so this is the one place a new
+    // id meets the canonical-spelling rule; ids that already exist stay editable.
+    if (existing === undefined) assertCanonicalNewDocumentId(opts.id);
+    return prepareDocumentMutationCandidate(existing, await build(existing, decisionNow), {
       mode: opts.mode, id: opts.id, registry: opts.registry, strict: opts.strict, okfVersion, now: decisionNow,
       actor: opts.actor, producer: opts.producer, persistActor, compareTimestamp, seedGenerationClock: seedClock,
     });
+  };
 
   if (opts.mode === "create-only") {
     // Fail closed: create-only issues NO read — its CAS basis is expect-absent — so there is no

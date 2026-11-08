@@ -1,4 +1,5 @@
 import type { MalformedDocumentCode } from "./frontmatter-contract.js";
+import type { NonCanonicalDocumentId } from "./paths.js";
 
 /**
  * Typed rejection for caller-supplied input the engine refuses: unsafe/reserved concept ids,
@@ -15,6 +16,39 @@ export class InvalidInputError extends Error {
     super(message);
     this.name = "InvalidInputError";
   }
+}
+
+/**
+ * A create of a document id outside its one canonical spelling. The reason is the same one a
+ * hosted create and `publish` report (`document_id_not_canonical`), so the refusal surfaces where
+ * the id is chosen. `suggestedId` is a safe canonical spelling when one exists.
+ */
+export class NonCanonicalDocumentIdError extends InvalidInputError {
+  readonly reason = "document_id_not_canonical" as const;
+  readonly id: string;
+  readonly why: NonCanonicalDocumentId;
+  readonly suggestedId: string | undefined;
+  constructor(id: string, why: NonCanonicalDocumentId, suggestedId: string | undefined) {
+    const explanation = {
+      segment_whitespace: "a path segment starts or ends with whitespace",
+      format_character: "a path segment holds an invisible format character",
+      not_nfc: "it writes a letter as two characters (a base letter and a separate combining mark) instead of one, and some filesystems treat the two spellings as the same name",
+    }[why];
+    super(
+      `'${visibleId(id)}' cannot be created: ${explanation}. Ids must have one spelling everywhere, so this one would also fail at publish and sync.`
+        + (suggestedId === undefined ? " Choose a different id." : ` Use '${suggestedId}'.`),
+    );
+    this.name = "NonCanonicalDocumentIdError";
+    this.id = id;
+    this.why = why;
+    this.suggestedId = suggestedId;
+  }
+}
+
+/** Escape characters a terminal would show invisibly or merge into a neighbour. */
+function visibleId(id: string): string {
+  return id.replace(/[\p{Cf}\p{Cc}\p{M}\p{Zl}\p{Zp}]|(?! )\p{Zs}/gu,
+    (char) => `\\u${char.codePointAt(0)!.toString(16).padStart(4, "0")}`);
 }
 
 /**
