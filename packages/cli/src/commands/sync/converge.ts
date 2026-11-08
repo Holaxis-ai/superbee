@@ -59,13 +59,21 @@ export const PUSH_FAIL_NETWORK_MESSAGE =
   "Committed to the board locally. Your work is saved. The update to origin/board could not " +
   "reach the remote; re-run sync after connectivity changes.";
 
-/** The push-timeout warning: the upload was stopped, so whether the remote has it is unknown. */
-export function pushTimeoutMessage(timeoutMs: number | undefined): string {
+/**
+ * The network-timeout warning for the step that ran out of time (`details.op`): the step was
+ * stopped, so it names the step and its budget and never a cause such as offline or auth.
+ */
+export function pushTimeoutMessage(timeoutMs: number | undefined, op: string = "push"): string {
   const within = timeoutMs === undefined ? "in time" : `within ${Math.ceil(timeoutMs / 1000)} seconds`;
-  return (
-    `Committed to the board locally. Your work is saved. The upload to origin/board did not finish ` +
-    `${within} and was stopped. The remote may already have it. Run sync again to check and continue.`
-  );
+  const saved = "Committed to the board locally. Your work is saved.";
+  if (op === "push") {
+    return (
+      `${saved} The upload to origin/board did not finish ${within} and was stopped. ` +
+      `The remote may already have it. Run sync again to check and continue.`
+    );
+  }
+  const step = op === "fetch" ? "The download from origin/board" : `The git ${op} step`;
+  return `${saved} ${step} did not finish ${within} and was stopped. Run sync again to continue.`;
 }
 
 /**
@@ -76,11 +84,12 @@ export function pushTimeoutMessage(timeoutMs: number | undefined): string {
 export function pushFailureMessage(err: CliError): string {
   const sharing = err.details?.sharing as { operation?: unknown } | undefined;
   const isUpdatePush = sharing?.operation === "update-board";
-  if (isUpdatePush && err.code === "AUTH_REQUIRED") return PUSH_FAIL_ACCESS_MESSAGE;
-  if (isUpdatePush && err.details?.reason === "timeout") {
-    const timeoutMs = err.details.timeout_ms;
-    return pushTimeoutMessage(typeof timeoutMs === "number" ? timeoutMs : undefined);
+  // Any operation, any step: a timeout is reported as a timeout.
+  if (err.details?.reason === "timeout") {
+    const { timeout_ms: timeoutMs, op } = err.details;
+    return pushTimeoutMessage(typeof timeoutMs === "number" ? timeoutMs : undefined, typeof op === "string" ? op : undefined);
   }
+  if (isUpdatePush && err.code === "AUTH_REQUIRED") return PUSH_FAIL_ACCESS_MESSAGE;
   if (isUpdatePush && err.code === "TRANSIENT" && err.details?.reason !== "non-fast-forward") {
     return PUSH_FAIL_NETWORK_MESSAGE;
   }

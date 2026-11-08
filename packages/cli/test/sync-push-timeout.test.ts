@@ -174,3 +174,53 @@ test("turn-end --git-boards: a stalled upload is stopped by the turn-end deadlin
     await rm(home, { recursive: true, force: true });
   }
 });
+
+async function stallFetch(topo: TwoCloneTopology, seconds: number): Promise<void> {
+  const helper = path.join(topo.a.root, "slow-upload-pack");
+  await writeFile(helper, `#!/bin/sh\nsleep ${seconds}\nexec git-upload-pack "$@"\n`);
+  await chmod(helper, 0o755);
+  git(topo.a.board, ["config", "remote.origin.uploadpack", helper]);
+}
+
+test("timeout messages name the step for every operation and never claim offline or auth", () => {
+  for (const op of ["fetch", "push"]) {
+    for (const sharing of [undefined, { operation: "update-board" as const }]) {
+      const raw = new CliError("TRANSIENT", `git ${op} did not finish within 2 seconds and was stopped; retry`, {
+        details: { op, retryable: true, reason: "timeout", timeout_ms: 2_000 },
+      });
+      const message = pushFailureMessage(sharing ? withSharingDetails(raw, sharing) : raw);
+      assert.equal(message, pushTimeoutMessage(2_000, op));
+      assert.match(message, op === "fetch" ? /The download from origin\/board did not finish within 2 seconds/ : /The upload to origin\/board did not finish within 2 seconds/);
+      assert.doesNotMatch(message, /offline|auth|could not reach/);
+    }
+  }
+});
+
+test("sync: a stalled fetch stops by the caller's deadline and reports a timeout of the fetch, keeping the commit", async () => {
+  const topo = await makeTwoCloneTopology();
+  const home = await realpath(await mkdtemp(path.join(tmpdir(), "sb-fetch-timeout-home-")));
+  try {
+    await writeBoardDoc(topo.a, "notes/fetching", { frontmatter: { type: "Note", title: "fetching" }, body: "# fetching\n" });
+    const before = boardHead(topo.a);
+    // The remote's upload-pack outlasts the deadline by far, so the fetch is what runs out of time.
+    await stallFetch(topo, 20);
+
+    const out: string[] = [];
+    const started = Date.now();
+    const err = await withIsolatedUserEnv(home, () =>
+      rejects(sync(["--dir", topo.a.board, "--json"], { stdout: (s) => void out.push(s), stderr: () => {}, hookInstalled: () => true, networkDeadline: Date.now() + 3_000 })),
+    );
+    assert.ok(Date.now() - started < 15_000, "stopped by the deadline, not when the remote answered");
+    assert.equal(err.code, "TRANSIENT");
+    assert.equal(err.details?.op, "fetch", "the deadline ran out during the fetch");
+    assert.equal(err.details?.reason, "timeout");
+    assert.equal(typeof err.details?.timeout_ms, "number");
+    assert.ok((err.details?.timeout_ms as number) <= 3_000);
+    assert.match(err.message, /^Committed to the board locally\. Your work is saved\. The download from origin\/board did not finish within \d+ seconds and was stopped\./);
+    assert.doesNotMatch(err.message, /offline|auth|could not reach/);
+    assert.notEqual(boardHead(topo.a), before, "the local commit is kept");
+  } finally {
+    await topo.cleanup();
+    await rm(home, { recursive: true, force: true });
+  }
+});
