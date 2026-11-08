@@ -65,18 +65,21 @@ test("sync: a stalled push stops by the caller's deadline and reports a timeout,
   try {
     await writeBoardDoc(topo.a, "notes/slow", { frontmatter: { type: "Note", title: "slow" }, body: "# slow\n" });
     const before = originBoardHead(topo);
-    const hook = await stallPush(topo, 5);
+    // The deadline covers the whole sync, so it must outlast the commit and fetch before the push
+    // even on a loaded machine; the hook outlasts the deadline by far.
+    const hook = await stallPush(topo, 20);
 
     const out: string[] = [];
     const started = Date.now();
     const err = await withIsolatedUserEnv(home, () =>
-      rejects(sync(["--dir", topo.a.board, "--json"], { stdout: (s) => void out.push(s), stderr: () => {}, hookInstalled: () => true, networkDeadline: Date.now() + 2_000 })),
+      rejects(sync(["--dir", topo.a.board, "--json"], { stdout: (s) => void out.push(s), stderr: () => {}, hookInstalled: () => true, networkDeadline: Date.now() + 5_000 })),
     );
-    assert.ok(Date.now() - started < 4_500, "stopped by the deadline, not when the hook finished");
+    assert.ok(Date.now() - started < 15_000, "stopped by the deadline, not when the hook finished");
     assert.equal(err.code, "TRANSIENT");
+    assert.equal(err.details?.op, "push", "the deadline ran out during the push, not before it");
     assert.equal(err.details?.reason, "timeout");
     assert.equal(typeof err.details?.timeout_ms, "number");
-    assert.ok((err.details?.timeout_ms as number) <= 2_000);
+    assert.ok((err.details?.timeout_ms as number) <= 5_000);
     assert.match(err.message, /The upload to origin\/board did not finish within \d+ seconds and was stopped\. The remote may already have it\./);
     assert.doesNotMatch(err.message, /could not reach/);
     const receipt = JSON.parse(out.join("")) as { warning: string; committed: number; details: { sharing: Record<string, unknown> } };
