@@ -20,9 +20,9 @@
 //
 // Nothing here fetches, commits or pushes: the next plain `sync` shares keep and revise.
 import { constants as fsConstants, existsSync, promises as fs } from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import path from "node:path";
-import { assertSafeConceptId, conceptIdFromPath, isReservedFile, MalformedDocumentError, parseMarkdown, pathFromConceptId, versionOfBytes } from "@superbee/core";
+import { assertSafeConceptId, blobVersion, conceptIdFromPath, FilesystemBackend, InvalidInputError, VersionConflict, isReservedFile, MalformedDocumentError, parseMarkdown, pathFromConceptId, versionOfBytes } from "@superbee/core";
 import { boardRefOf, bundleDirNameForProject, isConceptDocPath, listSavedCopies, readDocBytesAtRef, repoTopLevel, resolveBundleKey, retargetBoardInterior, runGit, saveCopyWithBody } from "@superbee/board-git";
 import { resolveLocalBundleRoute } from "../../bundle.js";
 import { commandFragment, commandToken, type CommandText } from "../../command-text.js";
@@ -123,6 +123,9 @@ function parseConflictArgs(argv: string[]): ConflictArgs {
     throw new CliError("USAGE", "--out writes the teammate's version for --inspect", { help: `${inv} sync --inspect --doc <id> --out <file>` });
   }
   const raw = (target ?? "").trim();
+  if (path.isAbsolute(raw) || /^[A-Za-z]:[\\/]/.test(raw)) {
+    throw new CliError("USAGE", `'${raw}' is an absolute path; --doc takes a document id or a file's path inside the bundle, such as feeds/a.json`, { help: `${inv} sync --inspect --doc <id|path>` });
+  }
   const id = conceptIdFromPath(raw);
   try {
     assertSafeConceptId(id);
@@ -529,18 +532,15 @@ async function keepFile(args: ConflictArgs, board: Board, local: Buffer, remote:
       help: commandFor(args, "take"),
     });
   }
-  let mode: number | undefined;
+  const notRegular = (): CliError =>
+    new CliError("CONFLICT", `'${args.id}' is not a regular file in the bundle (a link, a folder, or under a link), so keep will not write through it; your saved copy stays at ${board.exportPath}`, {
+      details: { id: args.id, saved_at: board.exportPath, reason: "not_a_regular_file" },
+    });
   try {
-    const stat = await fs.lstat(board.file);
-    if (!stat.isFile()) {
-      throw new CliError("CONFLICT", `'${args.id}' is not a regular file in the bundle (a link or a folder), so keep will not write through it; your saved copy stays at ${board.exportPath}`, {
-        details: { id: args.id, saved_at: board.exportPath, reason: "not_a_regular_file" },
-      });
-    }
-    mode = stat.mode & 0o7777;
+    if (!(await fs.lstat(board.file)).isFile()) throw notRegular();
   } catch (error) {
     if (error instanceof CliError) throw error;
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT" && (error as NodeJS.ErrnoException).code !== "ENOTDIR") throw error;
   }
   const unsentRefusal = (): CliError =>
     new CliError("CONFLICT", `'${args.id}' holds unsent changes that are neither its upstream version nor your saved copy, and keep would overwrite them, so nothing changed and your saved copy stays at ${board.exportPath}`, {
@@ -549,25 +549,19 @@ async function keepFile(args: ConflictArgs, board: Board, local: Buffer, remote:
     });
   if (fileHoldsUnsent(local, remote, present)) throw unsentRefusal();
   if (present !== null && present.equals(local)) return "unchanged";
-  const parent = path.dirname(board.file);
-  await fs.mkdir(parent, { recursive: true });
-  const root = await fs.realpath(board.root);
-  const realParent = await fs.realpath(parent);
-  if (realParent !== root && !realParent.startsWith(`${root}${path.sep}`)) {
-    throw new CliError("CONFLICT", `'${args.id}' sits under a link that leads out of the bundle, so keep will not write it; your saved copy stays at ${board.exportPath}`, {
-      details: { id: args.id, saved_at: board.exportPath, reason: "outside_bundle" },
-    });
-  }
-  const temp = path.join(realParent, `.superbee-keep-${process.pid}-${randomUUID()}`);
-  await fs.writeFile(temp, local, { flag: "wx", ...(mode !== undefined ? { mode } : {}) });
+  // The filesystem backend owns the replace: its identity lock, exact spelling and compare-and-swap
+  // against the bytes judged above, so a change since that read is refused, never overwritten.
   try {
-    if (mode !== undefined) await fs.chmod(temp, mode);
-    // The file is read again just before it is replaced, so a change made since the first read is not lost.
-    const now = await readIfPresent(board.file);
-    if (!(now === null ? present === null : present !== null && now.equals(present))) throw unsentRefusal();
-    await fs.rename(temp, path.join(realParent, path.basename(board.file)));
+    await new FilesystemBackend(board.root).writeBlob(board.relPath, local, undefined, { expectedVersion: present === null ? null : blobVersion(present) });
   } catch (error) {
-    await fs.rm(temp, { force: true });
+    if (error instanceof VersionConflict) throw unsentRefusal();
+    if (error instanceof Error && (error.name === "FilesystemShapeMismatchError" || error.name === "FilesystemSymlinkEntryError")) throw notRegular();
+    if (error instanceof InvalidInputError) {
+      throw new CliError("CONFLICT", `keep cannot write '${args.id}' (${error.message}), so nothing changed; copy your saved copy over it by hand, then use revise`, {
+        details: { id: args.id, saved_at: board.exportPath, reason: "unwritable_path" },
+        help: `cp ${commandToken(board.exportPath)} ${commandToken(board.file)} → ${commandFor(args, "revise")}`,
+      });
+    }
     throw error;
   }
   return present === null ? "re-created" : "written";

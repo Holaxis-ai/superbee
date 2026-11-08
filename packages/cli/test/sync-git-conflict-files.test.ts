@@ -258,3 +258,60 @@ test("keep re-creates a file the teammate deleted, and refuses to write through 
     await f.cleanup();
   }
 });
+
+test("keep is a compare-and-swap: a change landing between its read and its write is refused, never overwritten", async () => {
+  const f = await fixture();
+  try {
+    await f.collide(THEIRS, YOURS);
+    const landed = Buffer.from('{"alerts":["landed"]}\n');
+    const { FilesystemBackend } = await import("@superbee/core");
+    const original = FilesystemBackend.prototype.writeBlob;
+    FilesystemBackend.prototype.writeBlob = async function (this: InstanceType<typeof FilesystemBackend>, ...args: Parameters<typeof original>) {
+      await writeFile(f.file(f.topo.b), landed);
+      return original.apply(this, args);
+    };
+    let kept: RunResult;
+    try {
+      kept = await runSync(f.homeB, ["--resolve", "keep", "--doc", REL, "--dir", f.topo.b.root, "--json"]);
+    } finally {
+      FilesystemBackend.prototype.writeBlob = original;
+    }
+    assert.equal(kept.err?.exitCode, 5);
+    assert.equal(kept.err?.details?.reason, "unsent_edit");
+    assert.deepEqual(await readFile(f.file(f.topo.b)), landed, "the change that landed is kept");
+    assert.deepEqual(await readFile(f.saved()), YOURS, "and so is the saved copy");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a temp file a crashed write left in the board is never committed or pushed", async () => {
+  const f = await fixture();
+  try {
+    const temp = path.join(path.dirname(f.file(f.topo.b)), ".snap.json.4242.1730000000000.0d6c1f4e-7a7e-4c39-9a51-2c5e3b8a9f10.tmp");
+    await writeFile(temp, YOURS);
+    await writeFile(f.file(f.topo.b), Buffer.from('{"alerts":["B"]}\n'));
+    const synced = await runSync(f.homeB, ["--dir", f.topo.b.root]);
+    assert.equal(synced.err, undefined, synced.err?.message);
+    const tree = git(f.topo.origin, ["ls-tree", "-r", "--name-only", "board"]);
+    assert.match(tree, /feeds\/snap\.json/);
+    assert.doesNotMatch(tree, /\.tmp/, "the temp stays out of the board");
+    assert.ok(existsSync(temp), "and is left where it was, untouched");
+    const again = await runSync(f.homeB, ["--dir", f.topo.b.root, "--json"]);
+    assert.equal(again.err, undefined, again.err?.message);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("--doc refuses an absolute path plainly instead of reading it as a bundle path", async () => {
+  const f = await fixture();
+  try {
+    const shown = await runSync(f.homeB, ["--inspect", "--doc", "/etc/hosts", "--dir", f.topo.b.root]);
+    assert.equal(shown.err?.code, "USAGE");
+    assert.match(shown.err?.message ?? "", /absolute path/);
+    assert.doesNotMatch(shown.err?.message ?? "", /'etc\/hosts'/);
+  } finally {
+    await f.cleanup();
+  }
+});

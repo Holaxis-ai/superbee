@@ -198,9 +198,10 @@ document (a JSON snapshot, say) takes the same verbs by its full path, \`--doc f
 for byte: \`--inspect\` shows each side's size and sha256 and its text when it is UTF-8, keep writes
 your saved bytes over the file (re-creating it if the teammate deleted it), and keep is refused
 with nothing changed when the file holds changes that are neither side, or while a later copy of it
-waits, since the newest copy has the last word. When a document id and a file share a name, the id
-means the document. A reserved file's copy has no verbs: merge what you need by hand and delete
-the saved file.
+waits, since the newest copy has the last word. Keep restores your saved copy over whatever the
+file holds now, including a newer teammate version a later sync brought in, so run \`--inspect\`
+first. When a document id and a file share a name, the id means the document. A reserved file's
+copy has no verbs: merge what you need by hand and delete the saved file.
 
 \`sync --show-incoming <id>\` prints the board's incoming (upstream) version of one doc — the
 state of \`origin/board\` as of the last fetch (it never fetches). Full doc-read semantics: large

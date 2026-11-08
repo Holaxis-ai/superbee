@@ -112,6 +112,7 @@ export type { AppendVerificationOptions, TrustTier, TrustTierCounts, Verificatio
 // `MemoryBackend` implements the SAME contract for the hard case (real version chain,
 // enforced compare-and-swap, per-write actor) and proves the engine is backend-neutral.
 export { FilesystemBackend, probeFilesystemPath } from "./backend.js";
+export { isIdentityTempName } from "./filesystem-temp-name.js";
 export { createFilesystemRuntime } from "./filesystem.js";
 export type { FilesystemRuntime } from "./filesystem.js";
 export type { FilesystemBackendOptions, FilesystemHostPolicy } from "./filesystem-host.js";

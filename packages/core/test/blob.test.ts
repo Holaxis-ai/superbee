@@ -324,3 +324,21 @@ test("pin: MemoryBackend re-writing IDENTICAL bytes with a DIFFERENT explicit co
   const read = await backend.readBlob("data/x.bin");
   assert.equal(read?.contentType, "text/plain; charset=utf-8");
 });
+
+test("a filesystem replace keeps the replaced file's permission bits, and its temp name is recognizable", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sb-blob-mode-"));
+  try {
+    const backend = new FilesystemBackend(root);
+    await backend.writeBlob("tools/run.sh", new TextEncoder().encode("echo one\n"));
+    await chmod(path.join(root, "tools/run.sh"), 0o755);
+    await backend.writeBlob("tools/run.sh", new TextEncoder().encode("echo two\n"));
+    assert.equal((await stat(path.join(root, "tools/run.sh"))).mode & 0o777, 0o755, "an executable stays one");
+    const { identityTempName, isIdentityTempName } = await import("../src/filesystem-temp-name.js");
+    assert.equal(isIdentityTempName(identityTempName("run.sh")), true, "the predicate matches the names writes use");
+    assert.equal(isIdentityTempName(".run.sh.4242.1730000000000.0d6c1f4e-7a7e-4c39-9a51-2c5e3b8a9f10.tmp"), true);
+    assert.equal(isIdentityTempName(".cache.tmp"), false);
+    assert.equal(isIdentityTempName("run.sh"), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

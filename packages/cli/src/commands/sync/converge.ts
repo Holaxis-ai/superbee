@@ -195,7 +195,7 @@ export function convergeDocLine(
   const fixingVerb = c.isDoc && c.bodyExportPath !== null && claim?.only !== true;
   const line = ((): string => {
     if (c.exportPath === null) {
-      return `${label} — teammate's version kept (your side deleted it; nothing to save); the document is back with their change, so carry it over if you moved it, then delete it again`;
+      return `${label} — teammate's version kept (your side deleted it; nothing to save); the ${c.isDoc ? "document" : "file"} is back with their change, so carry it over if you moved it, then delete it again`;
     }
     if (!c.landed) {
       const recreate = fixingVerb ? " — re-create with sync --resolve keep" : "";
