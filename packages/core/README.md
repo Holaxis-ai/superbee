@@ -550,6 +550,14 @@ which Kind problems a strict host write would refuse, preparing each document as
 so a timestamp or actor the write supplies is no finding. The CLI's publish preview runs it; the
 report's `kindLint` stays advisory. Both use core's one validator, `validateAgainstKind`.
 
+A write that adds or changes a frontmatter key its Kind does not declare gets one
+`KIND_FIELD_UNDECLARED` warning per key from `undeclaredFieldWarnings`. OKF standard keys,
+Superbee-managed metadata and `superbee_*` keys never count, and keys the write leaves as stored
+are never checked. A convention may set `undeclared_fields: error` so a strict write refuses those
+keys with `KindConformanceError`; the default, `warn`, only warns. These findings are not
+conformance debt and never feed the overwrite ratchet. `kindCoverage` reports the same keys after
+the fact, through the same `kindDeclaredStorageFields` and `isKindEnvelopeField`.
+
 ## Search
 
 `@superbee/core/search` is the one `documents.search.v1` engine: the request and result contract,

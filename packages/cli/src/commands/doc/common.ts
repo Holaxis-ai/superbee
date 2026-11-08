@@ -120,6 +120,8 @@ Options:
   --strict             If a kind convention governs --type, reject (exit 2) instead of writing with
                        warnings when the doc does not satisfy it (default: warn-and-write, exit 0 —
                        see 'superbee kinds')
+                       A new or changed key the kind does not declare is only a warning unless
+                       the kind sets undeclared_fields: error
   --actor <name>       Attribute this write using the bundle's compatible advisory field, used by
                        per-doc sync receipts and version history for a persisting backend.
                        OKF v0.2 bundles accept only an OKF actor: human:<id> for a person,
@@ -183,6 +185,8 @@ Options:
                          their standard generated.at clock automatically.
   --strict               If a kind convention governs the resulting type, reject (exit 2) instead of
                          writing with warnings (default: warn-and-write, exit 0)
+                         A new or changed key the kind does not declare is only a warning unless
+                         the kind sets undeclared_fields: error
   --<field> <value>      Set a kind-declared field of the doc's type (e.g. --progress_status done).
                          The field
                          MUST be declared by the kind governing the doc's type — run 'superbee

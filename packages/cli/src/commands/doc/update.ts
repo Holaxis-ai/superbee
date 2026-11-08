@@ -411,7 +411,8 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
             `unknown field(s) for kind '${kind.governs}': ${unknown.join(", ")} ` +
               `(declared: ${declared.length > 0 ? declared.join(", ") : "none"}; standard patch flags: ` +
               `title, description, type, body, body-file)` +
-              ` — to ADD a field to the '${kind.governs}' kind: \`${cliInvocation()} kind field ${commandToken(kind.governs)} add <name>\`.`,
+              ` — to ADD a field to the '${kind.governs}' kind: \`${cliInvocation()} kind field ${commandToken(kind.governs)} add <name>\`.` +
+              ` Flags address declared fields only; an undeclared key written in frontmatter follows the kind's undeclared_fields setting (warn by default).`,
             { help: `${cliInvocation()} kinds` },
           );
         }
