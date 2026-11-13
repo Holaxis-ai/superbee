@@ -1,23 +1,19 @@
 /**
- * The pure identity fold the filesystem adapter locks and compares path segments by. Kept apart
- * from `filesystem-identity.ts` (which needs Node) so storage-neutral planners can predict which
- * ids a case- or normalization-insensitive filesystem would treat as one.
+ * The per-segment form of {@link foldPath} that the filesystem adapter locks and compares path
+ * segments by. Kept apart from `filesystem-identity.ts` (which needs Node) so storage-neutral
+ * planners can predict which ids a case- or normalization-insensitive filesystem would treat as one.
  */
+import { foldPath } from "./path-fold.js";
 
 /**
- * NFKD, then Unicode FULL case folding applied as lower-upper-lower (locale-independent). A plain
- * lower-case fold misses the pairs a case-insensitive host equates through full case mapping
- * (ß/ss, ẞ/SS, final sigma ς/σ, iota-subscript ᾈ/ἀι and its family): two such spellings would get
- * different keys, both first-creation writers would realize ABSENT, and the second rename would
- * silently replace the first document. The round trip through upper case expands every such
- * pair to a common form, so the fold is a superset of every supported host's equivalence;
- * over-folding (dotless ı with i) only adds serialization, never removes exclusion.
+ * {@link foldPath}, in its decomposed (NFD) spelling. NFD maps each canonical spelling to exactly
+ * one decomposed spelling, so two segments get one key exactly when `foldPath` joins them; the
+ * fold stays at least as wide as every supported filesystem, which a lock key needs: two
+ * spellings a filesystem joins but the key separates would let both first-creation writers
+ * realize ABSENT, and the second rename would silently replace the first document. Earlier
+ * builds digest the same decomposed spelling, so a process still running one agrees on the key
+ * for every name without compatibility characters.
  */
 export function foldSegment(segment: string): string {
-  return segment.normalize("NFKD").toLowerCase().toUpperCase().toLowerCase();
-}
-
-/** {@link foldSegment} applied to every `/`-separated segment of a bundle-relative path. */
-export function foldIdentityPath(rel: string): string {
-  return rel.split("/").map(foldSegment).join("/");
+  return foldPath(segment).normalize("NFD");
 }
