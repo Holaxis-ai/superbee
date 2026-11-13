@@ -508,3 +508,204 @@ test("v2 preflight composes independent same-ID recipes and refuses duplicate st
   assert.equal(bad.valid, false);
   assert.match(bad.diagnostics.join(";"), /already installed/);
 });
+
+test("qualified write validates the captured document, reference and options before awaiting", async () => {
+  const { loadQualifiedRegistry } = await import("../src/qualified-storage.js");
+  const dir = await mkdtemp(path.join(os.tmpdir(), "qualified-write-capture-"));
+  try {
+    const backend = new FilesystemBackend(dir);
+    await initializeQualifiedBundle(backend, { actor });
+    await installQualifiedRecipes(backend, [
+      recipe("100", "votes"),
+      recipe("200", "cost"),
+    ]);
+    const [a, b] = await qualifiedKinds(backend);
+    const generation = (await loadQualifiedRegistry(backend)).qualified!
+      .rootVersion;
+    const invalid = {
+      id: "invalid",
+      frontmatter: {
+        type: "Decision",
+        superbee_kind_ref: a!.reference,
+        votes: "invalid" as unknown,
+      },
+      body: "",
+    };
+    const invalidWrite = backend.write(invalid.id, invalid, {
+      qualifiedGeneration: generation,
+      expectedVersion: null,
+    });
+    invalid.frontmatter.votes = 1;
+    await assert.rejects(invalidWrite, /safe integer/);
+    await assert.rejects(backend.read("invalid"), /ENOENT/);
+
+    const valid = {
+      id: "valid",
+      frontmatter: {
+        type: "Decision",
+        superbee_kind_ref: a!.reference,
+        votes: 1 as unknown,
+      },
+      body: "",
+    };
+    const validWrite = backend.write(valid.id, valid, {
+      qualifiedGeneration: generation,
+      expectedVersion: null,
+    });
+    valid.frontmatter.votes = "invalid";
+    await validWrite;
+    const before = await backend.read("valid");
+    assert.equal(before.doc.frontmatter.votes, 1);
+
+    const rebound = {
+      id: "valid",
+      frontmatter: {
+        type: "Decision",
+        superbee_kind_ref: structuredClone(b!.reference),
+        votes: 1,
+        cost: 1,
+      },
+      body: "",
+    };
+    const reboundWrite = backend.write("valid", rebound, {
+      qualifiedGeneration: generation,
+      expectedVersion: before.version,
+    });
+    rebound.frontmatter.superbee_kind_ref = structuredClone(a!.reference);
+    await assert.rejects(reboundWrite, /cannot rebind/);
+    assert.equal((await backend.read("valid")).version, before.version);
+
+    const staleOptions = {
+      qualifiedGeneration: generation,
+      expectedVersion: "sha256:" + "0".repeat(64),
+    };
+    const staleWrite = backend.write("valid", before.doc, staleOptions);
+    staleOptions.expectedVersion = before.version;
+    await assert.rejects(staleWrite, /version conflict/i);
+
+    const removedAdmission: {
+      qualifiedGeneration?: string;
+      expectedVersion: null;
+    } = { qualifiedGeneration: generation, expectedVersion: null };
+    const unchecked = {
+      ...invalid,
+      id: "unchecked",
+      frontmatter: { ...invalid.frontmatter, votes: "invalid" },
+    };
+    const removedWrite = backend.write(
+      "unchecked",
+      unchecked,
+      removedAdmission,
+    );
+    delete removedAdmission.qualifiedGeneration;
+    await assert.rejects(removedWrite, /safe integer/);
+    await assert.rejects(backend.read("unchecked"), /ENOENT/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("qualified write binds the actual target and excludes every reserved record location", async () => {
+  const { loadQualifiedRegistry } = await import("../src/qualified-storage.js");
+  const dir = await mkdtemp(path.join(os.tmpdir(), "qualified-write-target-"));
+  try {
+    const backend = new FilesystemBackend(dir);
+    await initializeQualifiedBundle(backend, { actor });
+    await installQualifiedRecipes(backend, [recipe("100", "votes")]);
+    const [kind] = await qualifiedKinds(backend);
+    const generation = (await loadQualifiedRegistry(backend)).qualified!
+      .rootVersion;
+    const doc = {
+      id: "records/a",
+      frontmatter: {
+        type: "Decision",
+        superbee_kind_ref: kind!.reference,
+        votes: 1,
+      },
+      body: "",
+    };
+    for (const [target, candidate] of [
+      ["conventions/qualified/orphan", doc],
+      ["records/b", doc],
+      [
+        "conventions/qualified/orphan",
+        { ...doc, id: "conventions/qualified/orphan" },
+      ],
+      ["records/index", { ...doc, id: "records/index" }],
+      ["records/log", { ...doc, id: "records/log" }],
+    ] as const) {
+      await assert.rejects(
+        backend.write(target, candidate, {
+          qualifiedGeneration: generation,
+          expectedVersion: null,
+        }),
+        /target|reserved|immutable/i,
+      );
+    }
+    assert.deepEqual((await exportQualifiedBundle(backend)).records, []);
+    assert.equal(await backend.readReserved("records", "index.md"), null);
+    assert.equal(await backend.readReserved("records", "log.md"), null);
+    await assert.rejects(
+      backend.read("conventions/qualified/orphan"),
+      /ENOENT/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("qualified write capture refuses accessors without invocation and leaves legacy serialization intact", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "qualified-write-data-"));
+  try {
+    const backend = new FilesystemBackend(dir);
+    const legacy = {
+      id: "legacy-source-id",
+      frontmatter: {
+        type: "Concept",
+        extension_date: new Date("2026-11-13T12:00:00Z"),
+      },
+      body: "original",
+    };
+    const pending = backend.write("legacy-target-id", legacy, {
+      qualifiedGeneration: undefined,
+    });
+    legacy.body = "later";
+    await pending;
+    assert.equal(
+      (await backend.read("legacy-target-id")).doc.body.trim(),
+      "original",
+    );
+    let invoked = false;
+    const options = {
+      get qualifiedGeneration(): string {
+        invoked = true;
+        return "untrusted";
+      },
+    };
+    await assert.rejects(
+      backend.write(
+        "a",
+        { id: "a", frontmatter: { type: "Concept" }, body: "" },
+        options,
+      ),
+      /accessors/,
+    );
+    assert.equal(invoked, false);
+    const accessorDoc = {
+      id: "a",
+      get frontmatter() {
+        invoked = true;
+        return { type: "Concept" };
+      },
+      body: "",
+    };
+    await assert.rejects(
+      backend.write("a", accessorDoc, { qualifiedGeneration: "untrusted" }),
+      /accessors/,
+    );
+    assert.equal(invoked, false);
+    await assert.rejects(backend.read("a"), /ENOENT/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

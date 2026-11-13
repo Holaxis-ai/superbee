@@ -315,6 +315,21 @@ export class FilesystemBackend implements StorageBackend {
 
   async write(id: ConceptId, doc: OkfDocument, options: WriteOptions = {}): Promise<Version> {
     assertSafeConceptId(id);
+    // A qualified write owns one data snapshot before serialization or lock acquisition. The
+    // validator, reference comparison, CAS premise and persisted bytes must all see that snapshot.
+    // An absent/undefined premise keeps the legacy serializer's broader input contract unchanged.
+    const generation = Object.getOwnPropertyDescriptor(options, "qualifiedGeneration");
+    const qualified = generation
+      ? !Object.hasOwn(generation, "value") || generation.value !== undefined
+      : "qualifiedGeneration" in options;
+    if (qualified) {
+      const request = captureQualifiedData({ id, doc, options });
+      doc = request.doc;
+      options = request.options;
+      if (doc.id !== id) qualifiedFailure("document identity does not match the actual write target");
+      if (id.startsWith(QUALIFIED_PREFIX)) qualifiedFailure("installed definition targets are immutable");
+      if (isReservedFile(pathFromConceptId(id))) qualifiedFailure("record target is a reserved OKF file");
+    }
     if (Object.hasOwn(doc.frontmatter, "superbee_kind_ref") && options.qualifiedGeneration === undefined) qualifiedFailure("binding requires qualified mutation admission");
     const raw = stringifyDoc(doc.frontmatter, doc.body ?? "");
     const rel = pathFromConceptId(id);
