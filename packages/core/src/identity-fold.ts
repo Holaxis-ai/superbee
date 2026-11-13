@@ -15,10 +15,8 @@ import { foldPath } from "./path-fold.js";
  * U+206A and their kind).
  *
  * A build that folded with NFKD produces the same segment key for every segment without
- * compatibility characters. The identity key also folds the bundle's absolute path, so a bundle
- * whose path holds a compatibility character (no-break space, `…`, `™`, `²`, halfwidth
- * katakana) gets different keys from such a build and this one; do not run both against it at
- * the same time.
+ * compatibility characters. For a segment with them the keys differ across such builds, and the
+ * root mutation key, which every build derives alike, is what excludes their writers.
  */
 export function foldSegment(segment: string): string {
   return foldPath(segment).normalize("NFD");

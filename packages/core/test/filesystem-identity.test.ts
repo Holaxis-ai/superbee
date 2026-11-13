@@ -24,6 +24,7 @@ import {
   FilesystemShapeMismatchError,
   FilesystemSymlinkEntryError,
   foldSegment,
+  filesystemRootMutationKey,
   identityKey,
   mutateExact,
   observeExact,
@@ -1208,6 +1209,15 @@ test("AC-5 row 3: every C and F entry of the checked-in Unicode CaseFolding tabl
   }
   assert.deepEqual(entries, { C: 1481, F: 104 }, "entry counts pin the table's content");
   assert.deepEqual(failures, []);
+});
+
+test("the root mutation key folds a root path the way released builds fold it", async () => {
+  // Trademark sign and no-break space decompose only under compatibility normalization.
+  const releasedFold = (segment: string): string => segment.normalize("NFKD").toLowerCase().toUpperCase().toLowerCase();
+  const folded = ["", "x", releasedFold("Bundle\u2122\u00A0")].join("/");
+  const expected = createHash("sha256").update(`superbee-root-mutation/v1\0${folded}`).digest("hex");
+  assert.equal(await filesystemRootMutationKey("/x/Bundle\u2122\u00A0"), expected);
+  assert.equal(await filesystemRootMutationKey("/x/bundletm "), expected, "a wider root fold only shares the lock");
 });
 
 test("AC-5: fold digest over the checked-in spelling list is pinned", async () => {
