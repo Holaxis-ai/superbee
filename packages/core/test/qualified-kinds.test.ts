@@ -709,3 +709,37 @@ test("qualified write capture refuses accessors without invocation and leaves le
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+
+test("portable import refuses reserved record targets before staging any assets", async (t) => {
+  const sourceDir = await mkdtemp(path.join(os.tmpdir(), "qualified-import-source-"));
+  try {
+    const source = new FilesystemBackend(sourceDir);
+    await initializeQualifiedBundle(source, { actor });
+    await installQualifiedRecipes(source, [recipe("100", "votes")]);
+    const portable = await exportQualifiedBundle(source);
+    const [kind] = await qualifiedKinds(source);
+    for (const id of ["index", "log", "records/index", "records/log", "records/nested/index", "records/nested/log", "conventions/qualified/orphan"]) {
+      await t.test(id, async () => {
+        const dir = await mkdtemp(path.join(os.tmpdir(), "qualified-import-target-"));
+        try {
+          const target = new FilesystemBackend(dir);
+          const record = { id, frontmatter: { type: "Decision", superbee_kind_ref: kind!.reference, votes: 1 }, body: "Preserve this record" };
+          await assert.rejects(importQualifiedBundle(target, {
+            ...portable,
+            records: [{ ...record, id: "records/valid" }, record],
+          }), /reserved|immutable/i);
+          for (const prefix of ["", "records", "records/nested", "conventions/qualified"]) {
+            assert.equal(await target.readReserved(prefix, "index.md"), null);
+            assert.equal(await target.readReserved(prefix, "log.md"), null);
+          }
+          assert.deepEqual(await target.list(), []);
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+      });
+    }
+  } finally {
+    await rm(sourceDir, { recursive: true, force: true });
+  }
+});

@@ -11,6 +11,7 @@ import {
 import { assertAuthoredOkfStandardFields } from "./okf-standard-fields.js";
 import { InvalidInputError } from "./errors.js";
 import type { OkfDocument } from "./types.js";
+import { isReservedFile, pathFromConceptId } from "./paths.js";
 
 export const QUALIFIED_PROFILE = "qualified-kinds/v1";
 export const QUALIFIED_PREFIX = "conventions/qualified/";
@@ -454,12 +455,20 @@ export function selectQualifiedKind(
   if (!result) qualifiedFailure("unknown exact Kind selector");
   return result;
 }
+/** Ordinary records must remain visible to the inventory used by reads and export. */
+export function assertQualifiedRecordLocation(id: string): void {
+  const rel = pathFromConceptId(id);
+  if (id.startsWith(QUALIFIED_PREFIX))
+    qualifiedFailure("installed definition targets are immutable");
+  if (isReservedFile(rel))
+    qualifiedFailure("record target is a reserved OKF file");
+}
+
 export function assertQualifiedRecord(
   registry: KindRegistry,
   doc: OkfDocument,
 ): void {
-  if (doc.id.startsWith(QUALIFIED_PREFIX))
-    qualifiedFailure("installed definitions are immutable");
+  assertQualifiedRecordLocation(doc.id);
   const kind = resolveQualifiedDocument(registry, doc)!;
   assertAuthoredOkfStandardFields(doc.frontmatter);
   const warnings = validateAgainstKind(doc, kind);

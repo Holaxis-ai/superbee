@@ -1,5 +1,5 @@
 import { inspectQualifiedRoot, loadQualifiedRegistry, registerQualifiedBackend } from "./qualified-storage.js";
-import { captureQualifiedData, assertQualifiedRecord, qualifiedRegistry, qualifiedDigest, qualifiedFailure, QUALIFIED_PREFIX, QUALIFIED_PROFILE, type QualifiedLock } from "./qualified-kinds.js";
+import { captureQualifiedData, assertQualifiedRecord, assertQualifiedRecordLocation, qualifiedRegistry, qualifiedDigest, qualifiedFailure, QUALIFIED_PREFIX, QUALIFIED_PROFILE, type QualifiedLock } from "./qualified-kinds.js";
 /**
  * Storage adapters for the OKF engine.
  *
@@ -327,8 +327,7 @@ export class FilesystemBackend implements StorageBackend {
       doc = request.doc;
       options = request.options;
       if (doc.id !== id) qualifiedFailure("document identity does not match the actual write target");
-      if (id.startsWith(QUALIFIED_PREFIX)) qualifiedFailure("installed definition targets are immutable");
-      if (isReservedFile(pathFromConceptId(id))) qualifiedFailure("record target is a reserved OKF file");
+      assertQualifiedRecordLocation(id);
     }
     if (Object.hasOwn(doc.frontmatter, "superbee_kind_ref") && options.qualifiedGeneration === undefined) qualifiedFailure("binding requires qualified mutation admission");
     const raw = stringifyDoc(doc.frontmatter, doc.body ?? "");
