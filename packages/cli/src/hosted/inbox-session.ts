@@ -239,7 +239,7 @@ export async function inboxFailure(error: unknown, session: Pick<InboxSession, "
       case "invalid_input":
         return new CliError("USAGE", message, { details, help: `${cliInvocation()} notify --help` });
       case "attention_disabled":
-        return new CliError("FORBIDDEN", message, { details, help: "a workspace admin turns the inbox on for the workspace" });
+        return new CliError("FORBIDDEN", message, { details, help: "the inbox is turned off for this workspace: ask Superbee support to turn it on" });
       case "insufficient_scope":
       case "workspace_not_available":
       case "workspace_unsupported":
