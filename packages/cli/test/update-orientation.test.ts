@@ -77,6 +77,7 @@ const HOME_BASELINE_TOON = [
   '  description: "read and write a local OKF knowledge bundle (context notes, docs, cross-links, live bundle Views)"',
   `getting_started: "no notes folder (.superbee) found here or in a parent folder. Pick a folder for this project's notes: \`superbee setup --project .\` for this folder, \`superbee setup --project <dir>\` for another, or \`superbee setup --no-project\` to set this up later"`,
   "commands:",
+  '  "Qualified local bundles (experimental)": qualified',
   '  Bundle: "bundle locate, bundle id set, deps, catalog, init, index generate, status"',
   '  "Documents & links": "doc write, doc update, doc field, doc verify, doc read, doc open, doc history, doc delete, doc import, list, search, link"',
   '  Artifacts: "artifact create, promote, pull, blobs, delete"',
@@ -101,6 +102,7 @@ const HOME_BASELINE_JSON = `${JSON.stringify({
   getting_started:
     "no notes folder (.superbee) found here or in a parent folder. Pick a folder for this project's notes: `superbee setup --project .` for this folder, `superbee setup --project <dir>` for another, or `superbee setup --no-project` to set this up later",
   commands: {
+    "Qualified local bundles (experimental)": "qualified",
     Bundle: "bundle locate, bundle id set, deps, catalog, init, index generate, status",
     "Documents & links": "doc write, doc update, doc field, doc verify, doc read, doc open, doc history, doc delete, doc import, list, search, link",
     Artifacts: "artifact create, promote, pull, blobs, delete",

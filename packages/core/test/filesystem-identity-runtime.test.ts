@@ -7,9 +7,11 @@ import { FilesystemBackend, probeFilesystemPath } from "../src/backend.js";
 
 test("N2: FilesystemBackend retains one required constructor argument, the contract prototype, and no statics", () => {
   assert.equal(FilesystemBackend.length, 1);
+  // Qualified methods accept captured data (or no input), never a caller transaction callback.
   assert.deepEqual(Object.getOwnPropertyNames(FilesystemBackend.prototype).sort(), [
     "capabilities",
     "classifyChangedPath",
+    "commitQualifiedGeneration",
     "constructor",
     "delete",
     "deleteBlob",
@@ -21,7 +23,9 @@ test("N2: FilesystemBackend retains one required constructor argument, the contr
     "read",
     "readBlob",
     "readMany",
+    "readQualifiedRecords",
     "readReserved",
+    "snapshotQualified",
     "versions",
     "write",
     "writeBlob",

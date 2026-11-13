@@ -47,11 +47,29 @@ interface EgressRow {
   /** A COMPLETE VALID invocation (F6): a row that exits 2 on argument parsing proves nothing. */
   readonly argv?: (target: string) => string[];
   readonly expect?: Readonly<Record<TargetShape, Expected>>;
-  readonly fixture?: "local" | "board";
+  readonly fixture?: "local" | "board" | "qualified";
+  readonly operation?: "export" | "inspect";
   readonly skip?: string;
 }
 
 const EGRESS_ROWS: readonly EgressRow[] = [
+  ...(["export", "inspect"] as const).map((operation): EgressRow => ({
+    leaf: "qualified",
+    flag: "--out",
+    operation,
+    fixture: "qualified",
+    argv: (target) => ["qualified", operation, "--dir", "bundle", "--out", target,
+      ...(operation === "inspect" ? ["--input", "artifact.json", "--actor", "openai/codex"] : [])],
+    expect: {
+      "in-bundle-doc-md": "refuse",
+      "in-bundle-reserved-md": "refuse",
+      "in-bundle-inert": "silent-ok",
+      "outside-alias-into-bundle-doc": "refuse",
+      "outside-dangling-alias-into-bundle-doc": "refuse",
+      "in-bundle-alias-outside-doc": "silent-ok",
+      "outside-bundle": "silent-ok",
+    },
+  })),
   {leaf:"viewRead",flag:"--out",skip:"Requires a hosted checkout and its host; hosted-view-content.test.ts proves an in-bundle .md target is refused (the shared assertSafeNonDocumentOutTarget, as --rendered-out) and an existing target is never overwritten"},
   {leaf:"opRun",flag:"--export-html",skip:"Requires a reviewed registered capability plus accepted machine binding; local-operation.test.ts exercises all seven in-bundle/alias shapes and the ordinary-output control with that complete fixture"},
   {leaf:"opRun",flag:"--export-output",skip:"Requires a reviewed registered capability plus accepted machine binding; local-operation.test.ts exercises all seven in-bundle/alias shapes and the ordinary-output control with that complete fixture"},
@@ -204,6 +222,21 @@ function fixture(): Fixture {
   };
 }
 
+function qualifiedFixture(): Fixture {
+  const fx = fixture();
+  rmSync(fx.bundle, { recursive: true, force: true });
+  const initialized = runCli(["qualified", "init", "--dir", "bundle", "--actor", "openai/codex"], { cwd: fx.project, home: fx.home });
+  assert.equal(initialized.status, 0, initialized.stdout + initialized.stderr);
+  writeFileSync(path.join(fx.project, "artifact.json"), JSON.stringify({
+    format: "superbee-recipe/v2",
+    identity: { authority: "github.com", repository_id: "100", recipe_id: "decisions" },
+    release: "1.0.0", commit: "a".repeat(40), owner_id: "100",
+    kinds: [{ kind_id: "decision", doc: { id: "conventions/decision", frontmatter: { type: "Convention", governs: "Decision" }, body: "" } }],
+  }));
+  // A fresh .md target proves semantic refusal, not merely exclusive-create EEXIST.
+  return { ...fx, docPath: "new-record.md" };
+}
+
 async function boardFixture(): Promise<Fixture> {
   const topology = await makeTwoCloneTopology();
   const home = scratch("superbee-in-bundle-egress-board-home-");
@@ -262,10 +295,10 @@ const SHAPES: readonly TargetShape[] = [
 ];
 
 for (const row of EGRESS_ROWS) {
-  const key = `${row.leaf} ${row.flag}`;
+  const key = `${row.leaf}${row.operation ? ` ${row.operation}` : ""} ${row.flag}`;
   test(`${key}: classifies every in-bundle target shape`, row.skip===undefined?{}:{skip:row.skip}, async () => {
     for (const shape of SHAPES) {
-      const fx = row.fixture === "board" ? await boardFixture() : fixture();
+      const fx = row.fixture === "board" ? await boardFixture() : row.fixture === "qualified" ? qualifiedFixture() : fixture();
       try {
         const { target, guarded } = targetFor(fx, shape);
         const before = guarded && existsSync(guarded) ? readFileSync(guarded, "utf8") : undefined;
@@ -302,3 +335,16 @@ for (const row of EGRESS_ROWS) {
     }
   });
 }
+
+
+test("qualified inspect discovers the enclosing bundle for output admission without --dir", () => {
+  const fx = qualifiedFixture();
+  try {
+    const result = runCli(["qualified", "inspect", "--input", "../artifact.json", "--actor", "openai/codex", "--out", "new-record.md"], { cwd: fx.bundle, home: fx.home });
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.match(result.stdout, /code: USAGE/);
+    assert.equal(existsSync(path.join(fx.bundle, "new-record.md")), false);
+  } finally {
+    fx.cleanup();
+  }
+});

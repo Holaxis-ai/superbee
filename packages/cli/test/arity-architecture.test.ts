@@ -55,6 +55,8 @@ test("production parser and SDK authorities satisfy the closed import-aware arch
     "cli.ts:hoistLeadingGlobalFlags",
     "cli.ts:isGlobalOnlyHomeInvocation",
     "commands/home.ts:parseHomeArgs",
+    // Read-only target probe; the ordinary command parser still owns argument validation.
+    "commands/qualified.ts:guardQualifiedCommand",
   ]);
   assert.deepEqual(labels(facts.ownedCalls.filter((row) => row.api === "parseSelectorOrUsage")), [
     "commands/bundle.ts:bundleCommand",
@@ -202,12 +204,15 @@ test("coverage validator rejects unmapped and multiply mapped leaves", () => {
   const missing = BEHAVIOR_ASSIGNMENTS.filter((row) => row.leafId !== "setup");
   assert.equal(validateBehaviorCoverage(leafIds, missing, BUILT_KEY_REPRESENTATIVE_IDS).includes("leaf has no behavioral-equivalence key: setup"), true);
 
-  const duplicated = [...BEHAVIOR_ASSIGNMENTS, BEHAVIOR_ASSIGNMENTS[0]!];
-  assert.equal(
-    validateBehaviorCoverage(leafIds, duplicated, BUILT_KEY_REPRESENTATIVE_IDS)
-      .includes("leaf has 2 behavioral-equivalence keys: bundleLocate"),
-    true,
-  );
+  for (const assignment of BEHAVIOR_ASSIGNMENTS) {
+    const duplicated = [...BEHAVIOR_ASSIGNMENTS, assignment];
+    assert.equal(
+      validateBehaviorCoverage(leafIds, duplicated, BUILT_KEY_REPRESENTATIVE_IDS)
+        .includes(`leaf has 2 behavioral-equivalence keys: ${assignment.leafId}`),
+      true,
+      assignment.leafId,
+    );
+  }
 });
 
 test("scanner rejects local aliases, namespace destructuring, storage, and computed access", () => {

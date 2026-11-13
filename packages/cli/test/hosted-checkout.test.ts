@@ -572,7 +572,14 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
     assert.equal(error.details?.bundle_id, BUNDLE);
     assert.match(error.message, /supports local and Git bundles only/);
   }
-  assert.equal(HOSTED_CHECKOUT_REFUSALS.length, 12);
+  for (const operation of ["init", "install", "local", "new", "read", "list", "update", "kinds", "export", "import", "inspect", "preflight"]) {
+    const error = await rejects(assertAllowedInHostedCheckout("qualified", [operation, "--dir", folder], context));
+    assert.equal(error.code, "FORBIDDEN", `qualified ${operation}`);
+    assert.equal(error.details?.reason, "not_syncable");
+    assert.equal(error.details?.bundle_id, BUNDLE);
+    assert.match(error.message, /standalone local bundles only/);
+  }
+  assert.equal(HOSTED_CHECKOUT_REFUSALS.length, 13);
 });
 
 test("projection placement never overwrites: new files are exclusive, replacements are pre-image guarded", async () => {

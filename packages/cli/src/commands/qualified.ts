@@ -14,6 +14,7 @@ import {
   assertPathOutsidePrivateState,
 } from "../private-state-bundle-boundary.js";
 import { CliError } from "../errors.js";
+import { assertSafeNonDocumentOutTarget } from "./egress.js";
 
 const HELP = `Experimental qualified local bundles (source build only, OKF 0.2 + qualified-kinds/v1).
 qualified inspect --input <artifact-v2.json> --actor <actor> [--out <new-approval-draft.json>]
@@ -87,6 +88,21 @@ export async function guardQualifiedCommand(
       },
     );
 }
+async function assertQualifiedOutTarget(out: string, dir: string | undefined): Promise<void> {
+  assertPathOutsidePrivateState(path.resolve(out));
+  let bundle;
+  try {
+    bundle = (await resolveLocalBundleRoute(dir)).bundle;
+  } catch (error) {
+    // Artifact inspection also works before a bundle exists. Selection errors still refuse.
+    if (dir === undefined && error instanceof CliError && error.code === "NOT_FOUND") return;
+    throw error;
+  }
+  await assertSafeNonDocumentOutTarget(
+    bundle, "--out", out, "Qualified JSON",
+    "Choose --out <new-json-file-outside-bundle>.",
+  );
+}
 async function json(file: string | undefined): Promise<any> {
   if (!file) throw new CliError("USAGE", "--input/--approval file is required");
   const value = await readExternalTextFileWithin(file, 8 * 1024 * 1024);
@@ -131,7 +147,7 @@ export async function qualified(args: string[]): Promise<void> {
       values.actor,
     );
     if (values.out) {
-      assertPathOutsidePrivateState(path.resolve(values.out));
+      await assertQualifiedOutTarget(values.out, values.dir);
       await fs.writeFile(
         values.out,
         JSON.stringify(result.approval_draft, null, 2) + "\n",
@@ -203,7 +219,7 @@ export async function qualified(args: string[]): Promise<void> {
       break;
     case "export": {
       if (!values.out) throw new CliError("USAGE", "--out is required");
-      assertPathOutsidePrivateState(path.resolve(values.out));
+      await assertQualifiedOutTarget(values.out, values.dir);
       const portable = await core.exportQualifiedBundle(backend);
       await fs.writeFile(values.out, JSON.stringify(portable, null, 2) + "\n", {
         flag: "wx",
