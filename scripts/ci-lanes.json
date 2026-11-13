@@ -19,10 +19,10 @@
     "forward_review": {
       "review_after": "2026-10-28",
       "disposition": "retain_probe",
-      "decided_at": "2026-10-28",
+      "decided_at": "2026-11-13",
       "decided_by": "human:mike",
-      "evidence": "reviews/node-26-forward-review-2026-10-28@sha256:37fdad0fbd7bb5d076547b212eb6c34425f10f06499f6bfcb43d18ebf7593f02",
-      "revisit_by": "2026-11-11"
+      "evidence": "reviews/node-26-forward-review-2026-11-13@sha256:4d73d61bc03fb7eec5c790827efa004ce3ba8bb07bbb5d547251e2ce54e64864",
+      "revisit_by": "2027-04-26"
     },
     "floor_retirement": {
       "retire_by": "2027-04-30"
