@@ -19,6 +19,7 @@ export const workspaceAliases = {
       "@superbee/core/kind-authoring": r("../core/src/kind-authoring.ts"),
       "@superbee/core/recipes": r("../core/src/recipes.ts"),
       "@superbee/core/recipe-lifecycle": r("../core/src/recipe-lifecycle/index.ts"),
+      "@superbee/core/recipe-sources": r("../core/src/recipe-sources.ts"),
       "@superbee/core/storage": r("../core/src/storage.ts"),
       "@superbee/core/view-admission": r("../core/src/view-admission.ts"),
       "@superbee/core/page": r("../core/src/page.ts"),

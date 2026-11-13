@@ -310,6 +310,39 @@ Connector rows in `packages/cli/test/hosted-definition-writes.test.ts` and
 `packages/cli/test/error-boundary.test.ts`, and the unchanged
 `packages/cli/test/recipe-evolve-golden.test.ts`.
 
+## Recipe index installs
+
+`recipe add <id> --index <path-or-https-url>` installs a recipe listed in a published
+`recipe-index/v1` index, and `--cookbook` installs every recipe a cookbook names. Without
+`--index`, `recipe add` is unchanged. The CLI reads raw bytes from a local path through the guarded
+ingress read, refusing a listed file whose real path leaves the index directory, or from an https:
+URL with redirects refused. Each read has its own size and time cap, and one command has one 60 s
+deadline and one 16 MiB byte budget across the index and every file. Any other scheme, and an https:
+URL carrying a username, password, query string or fragment, is `USAGE` with `details.reason` `RECIPE_INDEX_SCHEME_REFUSED`
+before any request; credentials are never echoed. Core verifies each recipe against its pinned
+`files_digest` and `source_digest` and decodes it as strict UTF-8 before the bundle is opened, and a
+cookbook is verified whole before its first write. A member can still fail on what the target bundle
+already holds after earlier members are written; the error names `failed_recipe` and
+`installed_before_failure` in `details`, and a rerun converges once the reported cause is fixed. Refusals keep the taxonomy, with the Core code in
+`details.reason`: a digest mismatch is `INTEGRITY_MISMATCH` (exit 1) and names the failed pin in
+`details.digest` (`files_digest` or `source_digest`); a timeout, a network failure, an HTTP 5xx or the
+deadline is `TRANSIENT` (exit 1); a missing file, an HTTP 4xx, an escape, a budget overrun, invalid
+UTF-8 (`RECIPE_INDEX_ENCODING_INVALID`), a cookbook whose members install the same target
+(`RECIPE_INDEX_COOKBOOK_CONFLICT`, with `details.conflict` naming both members and the shared ids),
+a recipe that cannot be stored (`RECIPE_MALFORMED`), frontmatter the limits refuse on read or on
+write (`RECIPE_INDEX_FRONTMATTER_REFUSED`, with `details.frontmatter`) and index format, path and lookup refusals are `USAGE` (exit 2). An unknown id's `help` is one runnable `recipe add` for the first listed id, and
+`details.available` lists up to ten ids with `shown` and `total`. A single-recipe receipt adds
+`source_digest`, `designation`, `maintainer`, `designation_note` and `index` (`source`, `location`)
+to the existing receipt. A cookbook receipt is `cookbook`, `title`, `designation`, `maintainer`,
+`designation_note`, `changed`, `index`,
+one `recipes` row per member (`id`, `version`, `source_digest`, `designation`, `maintainer`,
+`recipe`, `changed`, `counts`, and `warnings`, `foreign_ids` or `evolution_help` when present),
+`install_note` and `help`. `designation` (`supported` or `community`) and `maintainer` are the index
+publisher's statements, shown for discovery and never verified. Nothing about the index is
+persisted. Evidence:
+`packages/core/test/recipe-sources.test.ts`, `packages/cli/test/recipe-index.test.ts` and the
+`--index` row in `packages/cli/test/private-state-bundle-boundary.test.ts`.
+
 ## Frontmatter limits
 
 Core parses all frontmatter and YAML field input through one bounded loader, and every
@@ -319,7 +352,8 @@ frontmatter it cannot accept fails with `RUNTIME` and `details.frontmatter.code`
 `FRONTMATTER_ALIAS_LIMIT` or `FRONTMATTER_CYCLE` when a limit refuses it, plus
 `details.frontmatter.document` when the document is known. A write whose frontmatter the reader
 would refuse, YAML given to `doc field --from-file` that a limit refuses, and a recipe folder whose
-frontmatter is refused are `USAGE` with the same code; `recipe validate` reports it as the
+frontmatter is refused or a recipe from `recipe add --index` whose frontmatter is refused are `USAGE`
+with the same code; `recipe validate` reports it as the
 diagnostic's `frontmatter_code`. Evidence: `packages/core/test/frontmatter-limits.test.ts`,
 `packages/cli/test/doc-field.test.ts` and the frontmatter rows in
 `packages/cli/test/error-boundary.test.ts`.

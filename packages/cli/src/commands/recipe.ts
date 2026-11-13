@@ -25,7 +25,9 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation, exactCliInvocation } from "../invocation.js";
 import { applyRecipeEvolution, installRecipe, planRecipeEvolution, planRecipeDeclarationRetirement, planRecipeDeclarationRetirementApply, applyRecipeDeclarationRetirement, RecipeRetirementApplyError } from "@superbee/core/recipe-lifecycle";
-import { resolveRecipe } from "../recipe-source.js";
+import { resolveRecipe, type LoadedRecipe, type RecipeError } from "../recipe-source.js";
+import { resolveIndexRecipe, resolveCookbook, type VerifiedIndexRecipe } from "@superbee/core/recipe-sources";
+import { acquireRecipeIndex, type FetchLike, type RecipeIndexLimits } from "../recipe-source-index.js";
 import { assertRecipeAllowedInHostedCheckout } from "../hosted/refusals.js";
 import { commandFragment, commandLiteral, commandQuoted, commandToken, type CommandText } from "../command-text.js";
 
@@ -34,6 +36,7 @@ export const RECIPE_USAGE = `superbee recipe — apply a recipe to this bundle
 Usage:
   superbee recipe validate <path> [--readme] [--json]
   superbee recipe add <name-or-path> [--actor <name>] [--dir <path>]
+  superbee recipe add <recipe-or-cookbook-id> --index <path-or-https-url> [--cookbook] [options]
   superbee recipe evolve <name-or-path> [--apply <plan-token>] [--actor <name>] [options]
   superbee recipe evolve <name-or-path> --retirement-scan [--retirement-evidence <json>] [options]
   superbee recipe evolve <name-or-path> --remove-deprecated --retirement-scope cooperating-local-writers-v1 [--retirement-definition <id>] [--apply <token>] [options]
@@ -58,6 +61,22 @@ receipt names that drift and the explicit 'recipe evolve' plan; the command neve
 recipe is fully applied or clobbers a bundle author's own hand-edit. See 'superbee recipes' to
 list built-ins and which are already applied, and 'superbee kinds' for the resulting live
 per-bundle registry.
+
+With --index, <recipe-or-cookbook-id> names an entry in a published 'recipe-index/v1' JSON index,
+read from a local path or an https: URL. Other schemes, URLs with credentials, a query or a fragment, redirects, files
+outside the index directory, oversize files and slow answers are refused; one command reads at
+most 16 MiB within 60 s. The index pins each recipe twice: files_digest over the exact listed
+bytes and source_digest, the value recipe stamps record. The CLI reads exactly the files the index
+lists for that recipe and refuses any difference from either pin before anything reaches the
+bundle. --cookbook installs every recipe a cookbook names, in order, after verifying all of
+them and checking that each can be stored; a member that fails either means nothing is written.
+Installs stay create-only and idempotent per document. A write can still fail partway, for example
+on what the bundle already holds; earlier members stay installed, and rerunning the same command
+converges once the reported cause is fixed. The receipt names the index source, and each recipe's
+id, version, verified source_digest, designation and maintainer. A designation ('supported' by
+Holaxis or 'community') and a maintainer are what the index publisher states; they are not
+verified and carry no trust. Nothing about the index is
+saved; pass --index each time.
 
 Valid deprecated fields/values/links metadata can be added only with an unchanged same-recipe
 ownership baseline. Existing records stay readable; admitted-registry writes preserve/remove
@@ -88,6 +107,9 @@ apply command: it records stamps only, which is how a bundle from before stamps 
 
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
+  --index <path-or-https-url>
+                        Install from a published recipe index instead of built-ins or folders (add only)
+  --cookbook            Treat the positional as a cookbook id in --index (add only)
   --retirement-scan   Read-only local declaration retirement evidence. Reports observed concepts,
                       exact versions, known supplied structural consumers and unknown external use.
                       No removal token or apply authority in this inspection mode.
@@ -113,6 +135,10 @@ Options:
 
 export interface RecipeCliDeps {
   stdout: (s: string) => void;
+  /** HTTPS transport for `recipe add --index <url>`; tests inject one so nothing reaches the network. */
+  fetch: FetchLike;
+  /** Overrides of the acquisition bounds, for tests of the deadline and the byte budget. */
+  indexLimits: Partial<RecipeIndexLimits>;
 }
 
 export async function recipe(argv: string[], deps: Partial<RecipeCliDeps> = {}): Promise<void> {
@@ -121,7 +147,7 @@ export async function recipe(argv: string[], deps: Partial<RecipeCliDeps> = {}):
   const rest = argv.slice(1);
 
   if (sub === "validate") return recipeValidate(rest, { stdout });
-  if (sub === "add") return recipeAdd(rest, stdout);
+  if (sub === "add") return recipeAdd(rest, stdout, { ...(deps.fetch ? { fetch: deps.fetch } : {}), ...(deps.indexLimits ? { limits: deps.indexLimits } : {}) });
   if (sub === "evolve") return recipeEvolve(rest, stdout);
   if (sub === "-h" || sub === "--help" || sub === undefined) {
     stdout(renderUsage(RECIPE_USAGE));
@@ -274,7 +300,7 @@ const RETIREMENT_WRITER_SCOPE = "Exact-root cooperating local writers only; raw 
 
 const ORPHANED_HELP = "orphaned_definitions are retained documents stamped by this recipe that the selected source no longer declares; evolve never changes or removes them, and a zero-write plan does not resolve them; inspect them before deciding whether to keep or remove them";
 
-async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<void> {
+async function recipeAdd(argv: string[], stdout: (s: string) => void, indexDeps: IndexDeps = {}): Promise<void> {
   const { values, positionals } = parseLeafOrUsage(
     () =>
       parseArgs({
@@ -282,6 +308,8 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
         options: {
           dir: { type: "string" },
           actor: { type: "string" },
+          index: { type: "string" },
+          cookbook: { type: "boolean" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -300,25 +328,184 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
       help: `${cliInvocation()} recipes`,
     });
   }
+  if (values.cookbook && values.index === undefined) {
+    throw new CliError("USAGE", "--cookbook requires --index <path-or-https-url>", { help: `${cliInvocation()} recipe add --help` });
+  }
+  if (values.index !== undefined && values.index.trim() === "") {
+    throw new CliError("USAGE", "--index requires a local path or an https: URL", { help: `${cliInvocation()} recipe add --help` });
+  }
 
   const actor = resolveActor(values.actor);
-  const loaded = await resolveRecipe(ref);
-  if (!loaded.ok) {
-    throw new CliError("USAGE", loaded.error.message, {
-      help: `${cliInvocation()} recipes`,
-      ...(loaded.error.connector ? { details: { connector: loaded.error.connector } } : {}),
-    });
+  const requestedTarget: CommandText = values.dir !== undefined
+    ? commandFragment` --dir ${commandQuoted(values.dir)}`
+    : commandLiteral("");
+  const indexed = values.index !== undefined
+    ? await verifiedFromIndex(values.index, ref, values.cookbook === true, requestedTarget, indexDeps)
+    : undefined;
+  let recipes: LoadedRecipe[];
+  if (indexed) {
+    recipes = indexed.recipes.map((entry) => entry.recipe);
+  } else {
+    const loaded = await resolveRecipe(ref);
+    if (!loaded.ok) {
+      throw new CliError("USAGE", loaded.error.message, {
+        help: `${cliInvocation()} recipes`,
+        ...(loaded.error.connector ? { details: { connector: loaded.error.connector } } : {}),
+      });
+    }
+    recipes = [loaded.recipe];
   }
 
   // Before anything reads the bundle: in a hosted checkout, the recipe decides which refusal applies.
-  await assertRecipeAllowedInHostedCheckout("recipe add", values.dir, loaded.recipe);
+  // Every cookbook member is checked before the first write.
+  for (const recipe of recipes) await assertRecipeAllowedInHostedCheckout("recipe add", values.dir, recipe);
   const bundle = await openBundle(values.dir);
   await assertActorAcceptedByBundle(bundle, actor);
+  const target: CommandText = values.dir !== undefined
+    ? commandFragment` --dir ${commandQuoted(values.dir)}`
+    : commandLiteral("");
+
+  if (indexed?.cookbook) {
+    const rows: Record<string, unknown>[] = [];
+    let changed = false;
+    for (const [position, entry] of indexed.recipes.entries()) {
+      let receipt: Record<string, unknown>;
+      try {
+        receipt = await installReceipt(bundle, entry.recipe, actor, undefined);
+      } catch (error) {
+        if (!(error instanceof CliError)) throw error;
+        throw new CliError(error.code, error.message, {
+          details: {
+            ...(error.details ?? {}),
+            cookbook: indexed.cookbook.id,
+            failed_recipe: entry.recipe.id,
+            installed_before_failure: indexed.recipes.slice(0, position).map((done) => done.recipe.id),
+          },
+          help: `${cliInvocation()} recipe add ${commandQuoted(ref)} --index ${commandQuoted(values.index!)} --cookbook${target}`,
+        });
+      }
+      changed ||= receipt.changed === true;
+      rows.push({
+        id: entry.recipe.id,
+        version: entry.recipe.version,
+        source_digest: entry.source_digest,
+        designation: entry.designation,
+        maintainer: entry.maintainer,
+        recipe: receipt.recipe,
+        changed: receipt.changed,
+        counts: receipt.counts,
+        ...(receipt.warnings ? { warnings: receipt.warnings } : {}),
+        ...(receipt.foreign_ids ? { foreign_ids: receipt.foreign_ids } : {}),
+        ...(receipt.evolution_help ? { evolution_help: receipt.evolution_help } : {}),
+      });
+    }
+    stdout(render({
+      cookbook: indexed.cookbook.id,
+      title: indexed.cookbook.title,
+      designation: indexed.cookbook.designation,
+      maintainer: indexed.cookbook.maintainer,
+      designation_note: INDEX_DESIGNATION_NOTE,
+      changed,
+      index: { source: indexed.source, location: indexed.location },
+      recipes: rows,
+      install_note: COOKBOOK_INSTALL_NOTE,
+      help: [`${cliInvocation()} recipes`, `${cliInvocation()} kinds`],
+    }, resolveMode(values)));
+    return;
+  }
+
+  const evolve = indexed ? undefined : `${cliInvocation()} recipe evolve ${commandQuoted(ref)}${target}`;
+  const receipt = await installReceipt(bundle, recipes[0]!, actor, evolve);
+  if (indexed) {
+    const entry = indexed.recipes[0]!;
+    stdout(render({ ...receipt, source_digest: entry.source_digest, designation: entry.designation, maintainer: entry.maintainer, designation_note: INDEX_DESIGNATION_NOTE, index: { source: indexed.source, location: indexed.location } }, resolveMode(values)));
+    return;
+  }
+  stdout(render(receipt, resolveMode(values)));
+}
+
+const COOKBOOK_INSTALL_NOTE = "every member was verified against its pinned files_digest and source_digest and checked as storable before the first write; installs are create-only and idempotent per document, so rerunning this command after a partial failure converges once the reported cause is fixed";
+
+const INDEX_DESIGNATION_NOTE = "designation and maintainer are stated by the index publisher and are not verified; only files_digest and source_digest are checked";
+
+const INDEX_EVOLUTION_HELP = "installed definitions differ from this index's recipe; recipe evolve does not read --index, so run it against a local copy of the recipe folder to plan the upgrade";
+
+interface IndexDeps {
+  fetch?: FetchLike;
+  limits?: Partial<RecipeIndexLimits>;
+}
+
+/** How many ids a not-found refusal lists before it counts the rest. */
+const INDEX_IDS_SHOWN = 10;
+
+interface IndexedRecipes {
+  source: string;
+  location: string;
+  cookbook?: { id: string; title: string; designation: string; maintainer: string };
+  recipes: VerifiedIndexRecipe[];
+}
+
+/** Acquires the index and verifies the named recipe, or every member of the named cookbook, before any bundle access. */
+async function verifiedFromIndex(raw: string, ref: string, cookbook: boolean, target: CommandText, deps: IndexDeps): Promise<IndexedRecipes> {
+  const acquired = await acquireRecipeIndex(raw, deps);
+  const { index } = acquired;
+  const fail = (error: RecipeError, member?: string): never => {
+    const boundary = acquired.boundaryRefusal();
+    if (boundary) throw boundary;
+    // A missing file or an HTTP 4xx is the publisher's error and does not change on retry.
+    const cliCode = error.code === "RECIPE_INDEX_DIGEST_MISMATCH"
+      ? "INTEGRITY_MISMATCH"
+      : error.code === "RECIPE_INDEX_READ_FAILED" && acquired.lastFailure()?.kind !== "publisher" ? "TRANSIENT" : "USAGE";
+    const ids = (cookbook ? index.cookbooks : index.recipes).map((entry) => entry.id);
+    const first = ids[0];
+    throw new CliError(cliCode, error.message, {
+      details: {
+        reason: error.code,
+        index_source: index.source,
+        ...(member ? { recipe: member } : {}),
+        ...(error.digest ? { digest: error.digest } : {}),
+        ...(error.conflict ? { conflict: error.conflict } : {}),
+        ...(error.frontmatter ? { frontmatter: error.frontmatter } : {}),
+        ...(error.connector ? { connector: error.connector } : {}),
+        ...(error.code === "RECIPE_NOT_FOUND"
+          ? { available: { [cookbook ? "cookbooks" : "recipes"]: ids.slice(0, INDEX_IDS_SHOWN), shown: Math.min(ids.length, INDEX_IDS_SHOWN), total: ids.length } }
+          : {}),
+      },
+      help: error.code === "RECIPE_NOT_FOUND" && first !== undefined
+        ? `${cliInvocation()} recipe add ${commandQuoted(first)} --index ${commandQuoted(raw)}${cookbook ? commandLiteral(" --cookbook") : commandLiteral("")}${target}`
+        : `${cliInvocation()} recipe add --help`,
+    });
+  };
+  if (cookbook) {
+    const result = await resolveCookbook(index, ref, acquired.read);
+    if (!result.ok) return fail(result.error, result.recipe);
+    return {
+      source: index.source,
+      location: acquired.location,
+      cookbook: { id: result.cookbook.id, title: result.cookbook.title, designation: result.cookbook.designation, maintainer: result.cookbook.maintainer },
+      recipes: result.recipes,
+    };
+  }
+  const result = await resolveIndexRecipe(index, ref, acquired.read);
+  if (!result.ok) return fail(result.error, ref);
+  return { source: index.source, location: acquired.location, recipes: [result.verified] };
+}
+
+/**
+ * Installs one parsed recipe and builds its receipt. `evolve` is the runnable plan command when the
+ * recipe is addressable by `recipe evolve`; without one the receipt explains the upgrade route.
+ */
+async function installReceipt(
+  bundle: Awaited<ReturnType<typeof openBundle>>,
+  recipe: LoadedRecipe,
+  actor: string | undefined,
+  evolve: string | undefined,
+): Promise<Record<string, unknown>> {
   // Core's recipe lifecycle throws typed errors; classify them here, through the one CLI mapping,
   // so this command throws a CliError like every other command.
   let result: Awaited<ReturnType<typeof installRecipe>>;
   try {
-    result = await installRecipe(bundle, loaded.recipe, { actor });
+    result = await installRecipe(bundle, recipe, { actor });
   } catch (error) {
     throw classifyBundleError(error);
   }
@@ -365,12 +552,9 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
         : "");
   }
   if (sourceDiffers > 0 || result.restamp_ids.length > 0) {
-    const target: CommandText = values.dir !== undefined
-      ? commandFragment` --dir ${commandQuoted(values.dir)}`
-      : commandLiteral("");
-    receipt.commands = { plan_evolution: `${cliInvocation()} recipe evolve ${commandQuoted(ref)}${target}` };
+    if (evolve) receipt.commands = { plan_evolution: evolve };
+    else receipt.evolution_help = INDEX_EVOLUTION_HELP;
   }
   receipt.help = [`${cliInvocation()} recipes`, `${cliInvocation()} kinds`];
-
-  stdout(render(receipt, resolveMode(values)));
+  return receipt;
 }

@@ -3,6 +3,7 @@
 import { kindConventionDoc } from "./kinds.js";
 import { stringifyDoc } from "./frontmatter.js";
 import { parseRecipeFiles, type LoadedRecipe, type RecipeFile } from "./recipes.js";
+import type { RecipeSource } from "./recipe-sources.js";
 import { SITE_KIND, SITE_CONVENTION_BODY, SITE_AUTHORING_BODY } from "./builtin-recipes/site.js";
 import {
   CONTEXT_NOTE_KIND,
@@ -136,6 +137,11 @@ export function loadBuiltinRecipe(name: string): ReturnType<typeof parseRecipeFi
   return files && Object.hasOwn(BUILTIN_FILES, name)
     ? parseRecipeFiles(files, `builtin:${name}`, { okfVersion: "0.2" })
     : null;
+}
+
+/** The built-in catalog as a `RecipeSource`: it addresses built-in names and nothing else. */
+export function builtinRecipeSource(): RecipeSource {
+  return { kind: "builtin", async resolve(ref) { return loadBuiltinRecipe(ref); } };
 }
 
 /** Detached source bytes, for consumers that need a recipe package rather than its parsed form. */
