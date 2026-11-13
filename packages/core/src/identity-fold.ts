@@ -7,12 +7,18 @@ import { foldPath } from "./path-fold.js";
 
 /**
  * {@link foldPath}, in its decomposed (NFD) spelling. NFD maps each canonical spelling to exactly
- * one decomposed spelling, so two segments get one key exactly when `foldPath` joins them; the
- * fold stays at least as wide as every supported filesystem, which a lock key needs: two
- * spellings a filesystem joins but the key separates would let both first-creation writers
- * realize ABSENT, and the second rename would silently replace the first document. Earlier
- * builds digest the same decomposed spelling, so a process still running one agrees on the key
- * for every name without compatibility characters.
+ * one decomposed spelling, so two segments get one key exactly when `foldPath` joins them. A lock
+ * key should join every pair the filesystem joins: two spellings a filesystem joins but the key
+ * separates take different locks, so the backend's exact-spelling checks are then the only thing
+ * that refuses the second writer. The key covers case and canonical equivalence. It does not
+ * cover the code points case-insensitive HFS+ ignores in a name (U+200C, U+200D, U+FEFF,
+ * U+206A and their kind).
+ *
+ * A build that folded with NFKD produces the same segment key for every segment without
+ * compatibility characters. The identity key also folds the bundle's absolute path, so a bundle
+ * whose path holds a compatibility character (no-break space, `…`, `™`, `²`, halfwidth
+ * katakana) gets different keys from such a build and this one; do not run both against it at
+ * the same time.
  */
 export function foldSegment(segment: string): string {
   return foldPath(segment).normalize("NFD");

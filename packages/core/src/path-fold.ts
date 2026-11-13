@@ -39,6 +39,10 @@
  * applies no normalization. Fullwidth `ｒ` and circled `①` stay names distinct from `r` and `1`
  * everywhere, and a compatibility fold would make the export refuse archives that extract cleanly.
  *
+ * Not covered: case-insensitive HFS+ also ignores some code points inside a name (U+200C, U+200D,
+ * U+FEFF, U+206A and their kind), so it joins `a` + U+200D + `b` with `ab`. This fold keeps
+ * those apart.
+ *
  * `/` has no case mapping and no decomposition, so folding a whole path equals folding each segment.
  * The agreement rows in `string-identity-agreement.ts` pin this definition for every host.
  *
