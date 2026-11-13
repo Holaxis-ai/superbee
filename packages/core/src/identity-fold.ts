@@ -16,7 +16,8 @@ import { foldPath } from "./path-fold.js";
  *
  * A build that folded with NFKD produces the same segment key for every segment without
  * compatibility characters. For a segment with them the keys differ across such builds, and the
- * root mutation key, which every build derives alike, is what excludes their writers.
+ * root mutation key, which every build that takes the root lock derives alike, is what excludes
+ * their writers.
  */
 export function foldSegment(segment: string): string {
   return foldPath(segment).normalize("NFD");
