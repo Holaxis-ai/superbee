@@ -1,3 +1,4 @@
+import { parseQualifiedLinkDeclarations, type QualifiedLinkDeclarations, type QualifiedLinkMode } from "./link-types.js";
 import { resolveQualifiedDocument } from "./qualified-kinds.js";
 /**
  * Kind conventions — the bundle-declared, opt-in document-kind mechanism. The mechanism lives in
@@ -124,6 +125,7 @@ export interface KindClaimPolicy {
 
 /** A parsed kind convention: the governed `type` plus its declared shape. */
 export interface KindConvention {
+  qualifiedLinks?: QualifiedLinkDeclarations;
   /** Explicit lifecycle policy, independent of stored-document conformance. */
   deprecated?: KindDeprecation;
   /** Concept id of the convention doc itself (e.g. `conventions/roadmap-item`). */
@@ -688,7 +690,7 @@ export function splitSections(body: string): Record<string, string> {
 /** Parse one convention doc into a {@link KindConvention}, or a reason it was skipped. */
 export function parseConventionDoc(
   doc: OkfDocument,
-  options: { okfVersion?: string } = {},
+  options: { okfVersion?: string; qualifiedLinks?: QualifiedLinkMode } = {},
 ): (
   | { ok: true; kind: KindConvention; reservedFieldsIgnored: string[]; reservedFieldPaths: string[] }
   | { ok: false; reason: string }
@@ -999,7 +1001,15 @@ export function parseConventionDoc(
   // ignored, a malformed entry warns and is skipped — never thrown.
   const linksSource = fm.links;
   let links: Record<string, string> | undefined;
-  if (linksSource !== undefined) {
+  let qualifiedLinks: QualifiedLinkDeclarations | undefined;
+  if (linksSource !== undefined && options.qualifiedLinks) {
+    try {
+      qualifiedLinks = parseQualifiedLinkDeclarations(linksSource, options.qualifiedLinks);
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : String(error), warnings };
+    }
+  }
+  if (linksSource !== undefined && !options.qualifiedLinks) {
     if (!isPlainObject(linksSource)) {
       warnings.push({
         code: "KIND_CONVENTION_BAD_SHAPE",
@@ -1053,7 +1063,7 @@ export function parseConventionDoc(
           });
           continue;
         }
-        if (!links || !hasOwn(links, name)) {
+        if (!(links && hasOwn(links, name)) && !(qualifiedLinks && hasOwn(qualifiedLinks, name))) {
           warnings.push({
             code: "KIND_CONVENTION_UNDECLARED_LINK_DESCRIPTION",
             message: `kind convention '${doc.id}' declares '${semanticPath}' but '${name}' is not declared in links.`,
@@ -1201,6 +1211,7 @@ export function parseConventionDoc(
   if (description !== undefined) kind.description = description;
   if (path !== undefined) kind.path = path;
   if (links !== undefined) kind.links = links;
+  if (qualifiedLinks !== undefined) kind.qualifiedLinks = qualifiedLinks;
   if (linkDescriptions !== undefined) kind.linkDescriptions = linkDescriptions;
   if (expectsInbound !== undefined) kind.expectsInbound = expectsInbound;
   if (sections && sections.length > 0) kind.sections = sections;
@@ -1590,6 +1601,7 @@ export function kindConventionDoc(kind: KindConvention, prose: string, timestamp
   }
   if (kind.path !== undefined) frontmatter.path = kind.path;
   if (kind.links && Object.keys(kind.links).length > 0) frontmatter.links = kind.links;
+  if (kind.qualifiedLinks) frontmatter.links = kind.qualifiedLinks;
   const linkDescriptions = Object.fromEntries(
     Object.entries(kind.linkDescriptions ?? {})
       .filter(

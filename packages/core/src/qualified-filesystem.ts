@@ -1,3 +1,4 @@
+import { parseQualifiedLinkDeclarations } from "./link-types.js";
 import { preflightRecipeSetV2 } from "./recipe-set-preflight-v2.js";
 export { preflightRecipeSetV2 } from "./recipe-set-preflight-v2.js";
 /** Local qualified operations compose the existing registry, mutation engine and filesystem seam. */
@@ -12,6 +13,10 @@ import {
   qualifiedDigest,
   qualifiedFailure,
   qualifiedSelector,
+  qualifiedRegistry,
+  referenceKey,
+  qualifiedRelationshipRows,
+  kindAddressKey,
   assertQualifiedRecord,
   selectQualifiedKind,
   type QualifiedArtifact,
@@ -73,6 +78,7 @@ export async function qualifiedKinds(backend: FilesystemBackend) {
       reference: entry.ref,
       required: kind.fields.required,
       optional: kind.fields.optional,
+      relationships: qualifiedRelationshipRows(registry, kind),
     }),
   );
 }
@@ -89,6 +95,53 @@ export async function addLocalQualifiedKind(
   if (!original)
     qualifiedFailure("supply a local definition or a derivation selector");
   const source = structuredClone(original);
+  if (base && !input.doc) {
+    const inherited = registry.qualified!.byReference.get(
+      referenceKey(base.ref),
+    )!.kind.qualifiedLinks;
+    if (inherited)
+      source.frontmatter.links = Object.fromEntries(
+        Object.entries(inherited).map(([name, declaration]) => [
+          name,
+          {
+            targets: declaration.targets.map((target) => {
+              if (!("address" in target))
+                return qualifiedFailure(
+                  "unmaterialized derivation relationship",
+                );
+              const resolved = registry.qualified!.byAddress.get(
+                kindAddressKey(target.address),
+              );
+              if (!resolved)
+                return qualifiedFailure(
+                  "missing derivation relationship target",
+                );
+              return { ref: resolved.entry.ref };
+            }),
+          },
+        ]),
+      );
+  }
+  if (Object.hasOwn(source.frontmatter, "links")) {
+    const declarations = parseQualifiedLinkDeclarations(
+      source.frontmatter.links,
+      "local-authoring",
+    );
+    source.frontmatter.links = Object.fromEntries(
+      Object.entries(declarations).map(([name, declaration]) => [
+        name,
+        {
+          targets: declaration.targets.map((target) =>
+            "selector" in target
+              ? {
+                  ref: selectQualifiedKind(registry, target.selector).entry.ref,
+                }
+              : target,
+          ),
+        },
+      ]),
+    );
+  }
   source.frontmatter.generated = {
     by: input.actor,
     at: new Date().toISOString(),
@@ -185,40 +238,14 @@ export async function readQualifiedDocument(
   id: string,
 ) {
   supported(backend);
-  const registry = await loadQualifiedRegistry(backend);
-  const result = await backend.read(id);
-  assertQualifiedRecord(registry, result.doc);
-  return result;
+  return (await backend.readQualifiedRecords({ ids: [id] }))[0]!;
 }
 export async function listQualifiedDocuments(
   backend: FilesystemBackend,
   selector?: string,
 ) {
   supported(backend);
-  const registry = await loadQualifiedRegistry(backend);
-  const selected = selector
-    ? selectQualifiedKind(registry, selector)
-    : undefined;
-  const result = [];
-  const ids = await backend.list();
-  if (ids.length > 10000) qualifiedFailure("inventory exceeds 10000 documents");
-  for (const id of ids) {
-    if (id.startsWith(QUALIFIED_PREFIX)) continue;
-    const row = await backend.read(id);
-    assertQualifiedRecord(registry, row.doc);
-    if (
-      !selected ||
-      qualifiedDigest(row.doc.frontmatter.superbee_kind_ref) ===
-        qualifiedDigest(selected.entry.ref)
-    )
-      result.push(row);
-  }
-  if (
-    (await backend.readReserved("", "index.md"))?.version !==
-    registry.qualified!.rootVersion
-  )
-    qualifiedFailure("generation changed during list");
-  return result;
+  return backend.readQualifiedRecords({ selector });
 }
 export interface QualifiedPortable {
   format: "superbee-qualified-export/v1";
@@ -264,6 +291,14 @@ export function inspectQualifiedArtifact(
     approved_at: new Date().toISOString(),
   };
   const entries = approvedRecipeEntries(artifact, approval);
+  const registry = qualifiedRegistry(
+    {
+      format: "qualified-registry/v1",
+      origin: "00000000-0000-0000-0000-000000000000",
+      entries,
+    },
+    "inspection-preview",
+  );
   return {
     source_verification:
       "unverified; independently verify source coordinates before explicit approval",
@@ -272,6 +307,11 @@ export function inspectQualifiedArtifact(
       identity: entry.ref.identity,
       label: entry.doc.frontmatter.governs,
       selector: qualifiedSelector(entry.ref),
+      admitted: false,
+      relationships: qualifiedRelationshipRows(
+        registry,
+        registry.qualified!.byReference.get(referenceKey(entry.ref))!.kind,
+      ),
     })),
   };
 }

@@ -328,7 +328,7 @@ The supported commands are `qualified inspect`, `preflight`, `init`, `install`, 
 use that selector in a `new` input JSON file. Two recipes can each declare `Decision` at
 `conventions/decision` without renaming either. `local` adds a separate local Kind or derives
 one using `from`, preserving the publisher's immutable definition. Ordinary commands refuse
-qualified bundles and point to this command family. Typed links, lifecycle operations, Views,
+qualified bundles and point to this command family. Lifecycle operations, Views,
 Git-board sync, hosted operation and legacy conversion remain unsupported.
 
 `qualified inspect --input artifact.json --actor openai/codex --out approval.json` computes
@@ -344,3 +344,33 @@ artifact metadata does not authenticate its publisher. `qualified export` writes
 JSON snapshot retaining exact definitions, approvals, local origin and record bindings;
 `qualified import` accepts it only into an empty directory. Ordinary filesystem copies retain
 these same facts when all files are copied. No acquisition code or recipe code runs on install.
+
+
+A complete synthetic artifact is in [examples/qualified-decision-recipe.json](examples/qualified-decision-recipe.json).
+Its coordinates are fictional; use it only in a disposable local bundle. Each recipe Kind
+has a local `kind_id`, a Convention `doc`, and optional structured outbound declarations:
+
+```json
+{"links":{"question":{"targets":[{"kind_id":"question"}]},"options":{"targets":[{"kind_id":"option"}]}}}
+```
+
+Put these declarations in `doc.frontmatter`. Targets resolve within that exact recipe revision,
+so two publishers can use the same labels safely. Mutual definitions do not require hashes.
+To try the fixture, run `qualified inspect` to generate an approval draft, explicitly accept it
+with `qualified install --approval`, then run `qualified kinds --dir <bundle>`. Discovery returns
+each Kind's selector and each relationship's exact target selectors. Copy those selectors into
+`qualified new --input <file>` JSON inputs, creating the targets before the receipt:
+
+```json
+{"selector":"<Question selector>","id":"questions/example","fields":{"title":"Which option?"}}
+{"selector":"<Option selector>","id":"options/example","fields":{"title":"Try it"},"body":"[question](../questions/example.md)"}
+{"selector":"<Decision selector>","id":"decisions/receipt","fields":{"title":"Choose it"},"body":"[question](../questions/example.md)\n[options](../options/example.md)"}
+```
+
+Each line above is a separate input file. `qualified list --selector <Decision selector>`
+finds receipts for exactly that definition. A local declaration can use
+`{"targets":[{"selector":"<selector from kinds>"}]}`; storage pins the full reference.
+`local` with `from` and no replacement definition preserves inherited exact targets.
+Only matching link labels on present outbound Markdown links are constrained. Required links,
+cardinality, inbound constraints, cross-bundle targets, and revision upgrades remain unsupported.
+Writes, semantic reads, list, export, and portable import share the same relationship admission.

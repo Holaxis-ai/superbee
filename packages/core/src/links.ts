@@ -379,7 +379,8 @@ function maskCodeSpans(body: string, from: number, to: number, blank: (from: num
  * when the href is not an internal `.md` concept link. Absolute hrefs resolve
  * from the bundle root; relative hrefs resolve against the directory of `fromId`.
  */
-export function resolveConceptId(fromId: ConceptId, href: string): ConceptId | null {
+export function resolveConceptId(fromId: ConceptId, href: string, options: { strict?: boolean } = {}): ConceptId | null {
+  if (options.strict && href.includes("?")) return null;
   // Drop anchor and query before reasoning about the path.
   const target = (href.split("#")[0] ?? "").split("?")[0]?.trim() ?? "";
   if (target === "" || isExternalHref(target)) return null;
@@ -395,6 +396,7 @@ export function resolveConceptId(fromId: ConceptId, href: string): ConceptId | n
     resolved = joinPosix(fromDir, target);
   }
   // Strip any residual leading `../` that escaped the bundle root (best-effort).
+  if (options.strict && resolved.startsWith("../")) return null;
   resolved = resolved.replace(/^(\.\.\/)+/, "");
   // Reserved files (index.md/log.md, any directory level) are never concept
   // documents — a link to one is not a concept edge. Check BEFORE dropping the

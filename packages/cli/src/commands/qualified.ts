@@ -33,9 +33,12 @@ Record input: {"selector":"<from kinds>","id":"decisions/example","fields":{"tit
 Patch input: {"id":"decisions/example","expectedVersion":"<read version>","fields":{"title":"Changed"}}.
 Local input: {"kind_id":"my-decision","doc":{"id":"conventions/decision","frontmatter":{"type":"Convention","governs":"Decision","fields":{"required":["reason"]}},"body":""}}.
 Derive locally: {"kind_id":"my-variant","from":"<selector>","doc":<optional replacement definition>}.
+Recipe links example: {"question":{"targets":[{"kind_id":"question"}]}} in doc.frontmatter.links.
+Run kinds to discover relationship target selectors; create a Question first, then a Decision with body "[question](../questions/example.md)".
+Local declarations use targets:[{"selector":"<exact selector from kinds>"}]. Only present outbound edges are constrained; no requiredness or cardinality.
 Approval must independently name repository_id, owner_id, full commit, release, source_revision, actor and approved_at.
 Supplying --approval explicitly accepts those pinned coordinates; an artifact's self-claims are not source verification. Acquisition/verification occurs outside this command.
-Only these operations are supported. No old-binary interoperability, hosted, board sync, lifecycle, typed links, Views, or legacy conversion. Ordinary commands refuse; inspect/export with this family.
+Only these operations are supported. No old-binary interoperability, hosted, board sync, lifecycle, Views, or legacy conversion. Ordinary commands refuse; inspect/export with this family.
 `;
 const SUPPORTED = new Set([
   "inspect",

@@ -1,0 +1,95 @@
+{
+  "format": "superbee-recipe/v2",
+  "identity": {
+    "authority": "github.com",
+    "repository_id": "100",
+    "recipe_id": "decisions"
+  },
+  "owner_id": "100",
+  "release": "1.0.0",
+  "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "kinds": [
+    {
+      "kind_id": "question",
+      "doc": {
+        "id": "conventions/question",
+        "frontmatter": {
+          "type": "Convention",
+          "governs": "Question",
+          "fields": {
+            "required": [
+              "title"
+            ]
+          },
+          "links": {
+            "options": {
+              "targets": [
+                {
+                  "kind_id": "option"
+                }
+              ]
+            }
+          }
+        },
+        "body": ""
+      }
+    },
+    {
+      "kind_id": "option",
+      "doc": {
+        "id": "conventions/option",
+        "frontmatter": {
+          "type": "Convention",
+          "governs": "Option",
+          "fields": {
+            "required": [
+              "title"
+            ]
+          },
+          "links": {
+            "question": {
+              "targets": [
+                {
+                  "kind_id": "question"
+                }
+              ]
+            }
+          }
+        },
+        "body": ""
+      }
+    },
+    {
+      "kind_id": "decision",
+      "doc": {
+        "id": "conventions/decision",
+        "frontmatter": {
+          "type": "Convention",
+          "governs": "Decision",
+          "fields": {
+            "required": [
+              "title"
+            ]
+          },
+          "links": {
+            "question": {
+              "targets": [
+                {
+                  "kind_id": "question"
+                }
+              ]
+            },
+            "options": {
+              "targets": [
+                {
+                  "kind_id": "option"
+                }
+              ]
+            }
+          }
+        },
+        "body": ""
+      }
+    }
+  ]
+}

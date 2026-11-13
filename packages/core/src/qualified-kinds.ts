@@ -1,3 +1,7 @@
+import type {
+  QualifiedLinkMode,
+  QualifiedLinkDeclarations,
+} from "./link-types.js";
 import { normalizeDocumentBodyForStorage } from "./frontmatter.js";
 /** Versioned, data-only qualified profile. Labels are presentation; exact references govern. */
 import { definitionCanonicalJson } from "./recipe-lifecycle/stamp.js";
@@ -26,10 +30,11 @@ export type KindIdentity =
 export interface KindReference {
   identity: KindIdentity;
   source_revision: string;
-  materializer: "qualified-v1";
+  materializer: "qualified-v1" | "qualified-v2";
   edition: "0.2";
   definition_digest: string;
 }
+export type KindAddress = Omit<KindReference, "definition_digest">;
 export interface QualifiedArtifact {
   format: "superbee-recipe/v2";
   identity: {
@@ -69,6 +74,7 @@ export interface QualifiedState {
   generation: string;
   rootVersion: string;
   byReference: Map<string, { entry: QualifiedEntry; kind: KindConvention }>;
+  byAddress: QualifiedState["byReference"];
   byLabel: Map<string, string[]>;
   byIdentity: Map<string, string>;
 }
@@ -148,19 +154,46 @@ export function assertKindReference(
   } else qualifiedFailure("unsupported Kind authority");
   if (
     !text(identity.kind_id) ||
-    value.materializer !== "qualified-v1" ||
+    !["qualified-v1", "qualified-v2"].includes(String(value.materializer)) ||
     value.edition !== "0.2" ||
     !/^sha256:[a-f0-9]{64}$/.test(String(value.source_revision)) ||
     !/^sha256:[a-f0-9]{64}$/.test(String(value.definition_digest))
   )
     qualifiedFailure("invalid exact Kind binding");
 }
+export function kindAddress(ref: KindAddress): KindAddress {
+  return {
+    identity: ref.identity,
+    source_revision: ref.source_revision,
+    materializer: ref.materializer,
+    edition: ref.edition,
+  };
+}
+export function kindAddressKey(ref: KindAddress): string {
+  return qualifiedDigest(["qualified-address/v1", kindAddress(ref)]);
+}
+export function assertKindAddress(
+  value: unknown,
+): asserts value is KindAddress {
+  exactKeys(
+    value,
+    ["identity", "source_revision", "materializer", "edition"],
+    "Kind address",
+  );
+  assertKindReference({
+    ...value,
+    definition_digest: `sha256:${"0".repeat(64)}`,
+  });
+}
 export function qualifiedDefinitionPath(
   ref: Omit<KindReference, "definition_digest">,
 ): string {
   return `${QUALIFIED_PREFIX}${qualifiedDigest(["qualified-placement/v1", { identity: ref.identity, source_revision: ref.source_revision, materializer: ref.materializer, edition: ref.edition }]).slice(7)}`;
 }
-export function parseQualifiedDefinition(doc: OkfDocument): KindConvention {
+export function parseQualifiedDefinition(
+  doc: OkfDocument,
+  mode: QualifiedLinkMode = "materialized",
+): KindConvention {
   assertAuthoredOkfStandardFields(doc.frontmatter);
   if (
     doc.frontmatter.type !== "Convention" ||
@@ -172,6 +205,8 @@ export function parseQualifiedDefinition(doc: OkfDocument): KindConvention {
     "title",
     "description",
     "governs",
+    "links",
+    "link_descriptions",
     "path",
     "fields",
     "sections",
@@ -192,7 +227,10 @@ export function parseQualifiedDefinition(doc: OkfDocument): KindConvention {
     if (!allowed.has(key))
       qualifiedFailure(`unsupported definition operator '${key}'`);
   }
-  const parsed = parseConventionDoc(doc, { okfVersion: "0.2" });
+  const parsed = parseConventionDoc(doc, {
+    okfVersion: "0.2",
+    qualifiedLinks: mode,
+  });
   if (!parsed.ok) qualifiedFailure(`invalid definition: ${parsed.reason}`);
   if (parsed.warnings.length || parsed.reservedFieldsIgnored.length)
     qualifiedFailure(
@@ -201,7 +239,6 @@ export function parseQualifiedDefinition(doc: OkfDocument): KindConvention {
   const kind = parsed.kind;
   // Typed links and lifecycle operators require their own exact-binding qualification.
   for (const key of [
-    "links",
     "inbound_links",
     "expects_inbound",
     "claim",
@@ -229,11 +266,19 @@ export function materializeQualifiedEntry(
   source_revision: string,
   source: OkfDocument,
   extra: Pick<QualifiedEntry, "approval" | "artifact" | "derived_from"> = {},
+  context?: {
+    materializer: KindReference["materializer"];
+    addresses: Map<string, KindAddress>;
+  },
 ): QualifiedEntry {
   const address = {
     identity,
     source_revision,
-    materializer: "qualified-v1" as const,
+    materializer:
+      context?.materializer ??
+      (Object.hasOwn(source.frontmatter, "links")
+        ? ("qualified-v2" as const)
+        : ("qualified-v1" as const)),
     edition: "0.2" as const,
   };
   const doc: OkfDocument = {
@@ -247,6 +292,29 @@ export function materializeQualifiedEntry(
     )
   )
     qualifiedFailure("source contains managed qualified metadata");
+  const sourceKind = parseQualifiedDefinition(
+    doc,
+    identity.authority === "github.com" ? "recipe-source" : "local-source",
+  );
+  if (sourceKind.qualifiedLinks) {
+    const links: QualifiedLinkDeclarations = Object.create(null);
+    for (const [name, declaration] of Object.entries(
+      sourceKind.qualifiedLinks,
+    )) {
+      links[name] = {
+        targets: declaration.targets.map((target) => {
+          if ("ref" in target && identity.authority === "bundle")
+            return { address: kindAddress(target.ref) };
+          if ("kind_id" in target && context?.addresses.has(target.kind_id))
+            return { address: context.addresses.get(target.kind_id)! };
+          return qualifiedFailure(
+            `relationship '${name}' has an unresolved source target`,
+          );
+        }),
+      };
+    }
+    doc.frontmatter.links = links;
+  }
   parseQualifiedDefinition(doc);
   const ref: KindReference = {
     ...address,
@@ -308,6 +376,22 @@ export function approvedRecipeEntries(
     type: "Reference",
     generated: { by: approval.actor, at: approval.approved_at },
   });
+  const materializer = artifact.kinds.some((row) =>
+    Object.hasOwn(row.doc.frontmatter, "links"),
+  )
+    ? ("qualified-v2" as const)
+    : ("qualified-v1" as const);
+  const addresses = new Map<string, KindAddress>();
+  for (const row of artifact.kinds) {
+    if (addresses.has(row.kind_id))
+      qualifiedFailure("duplicate recipe Kind identity");
+    addresses.set(row.kind_id, {
+      identity: { ...artifact.identity, kind_id: row.kind_id },
+      source_revision: approval.source_revision,
+      materializer,
+      edition: "0.2",
+    });
+  }
   return artifact.kinds.map((row) => {
     exactKeys(row, ["kind_id", "doc"], "Kind declaration");
     return materializeQualifiedEntry(
@@ -315,6 +399,7 @@ export function approvedRecipeEntries(
       approval.source_revision,
       row.doc,
       { artifact, approval },
+      { materializer, addresses },
     );
   });
 }
@@ -332,6 +417,7 @@ export function qualifiedRegistry(
   exactKeys(lock, ["format", "origin", "entries"], "registry lock");
   const byReference: QualifiedState["byReference"] = new Map();
   const byLabel: QualifiedState["byLabel"] = new Map();
+  const byAddress: QualifiedState["byReference"] = new Map();
   const identities = new Map<string, string>();
   for (const entry of lock.entries) {
     assertKindReference(entry.ref);
@@ -372,7 +458,32 @@ export function qualifiedRegistry(
     const kind = parseQualifiedDefinition(entry.doc);
     const key = referenceKey(entry.ref);
     byReference.set(key, { entry, kind });
+    if (byAddress.has(kindAddressKey(entry.ref)))
+      qualifiedFailure("duplicate exact Kind address");
+    byAddress.set(kindAddressKey(entry.ref), { entry, kind });
     byLabel.set(kind.governs, [...(byLabel.get(kind.governs) ?? []), key]);
+  }
+  for (const { entry, kind } of byReference.values()) {
+    for (const declaration of Object.values(kind.qualifiedLinks ?? {})) {
+      for (const target of declaration.targets) {
+        if (
+          !("address" in target) ||
+          !byAddress.has(kindAddressKey(target.address))
+        )
+          qualifiedFailure("unresolved relationship target address");
+      }
+    }
+    if (entry.ref.identity.authority === "bundle") {
+      const source = parseQualifiedDefinition(
+        { ...entry.source, id: entry.doc.id },
+        "local-source",
+      );
+      for (const declaration of Object.values(source.qualifiedLinks ?? {}))
+        for (const target of declaration.targets) {
+          if (!("ref" in target) || !byReference.has(referenceKey(target.ref)))
+            qualifiedFailure("unresolved exact local relationship target");
+        }
+    }
   }
   const recipes = new Map<string, string>();
   for (const entry of lock.entries) {
@@ -416,6 +527,7 @@ export function qualifiedRegistry(
       generation: qualifiedDigest(lock),
       rootVersion,
       byReference,
+      byAddress,
       byLabel,
       byIdentity: identities,
     },
@@ -518,4 +630,41 @@ export function captureQualifiedData<T>(input: T): T {
     return result;
   };
   return visit(input, 0) as T;
+}
+
+/** Discovery projects the same resolved finite sets used by relationship admission. */
+export function qualifiedRelationshipRows(
+  registry: KindRegistry,
+  kind: KindConvention,
+) {
+  const rows: Record<
+    string,
+    {
+      optional: true;
+      targets: Array<{
+        selector: string;
+        label: string;
+        reference: KindReference;
+      }>;
+    }
+  > = Object.create(null);
+  for (const [name, declaration] of Object.entries(kind.qualifiedLinks ?? {})) {
+    rows[name] = {
+      optional: true,
+      targets: declaration.targets.map((target) => {
+        if (!("address" in target))
+          return qualifiedFailure("unmaterialized discovery relationship");
+        const resolved = registry.qualified?.byAddress.get(
+          kindAddressKey(target.address),
+        );
+        if (!resolved) return qualifiedFailure("unresolved discovery target");
+        return {
+          selector: qualifiedSelector(resolved.entry.ref),
+          label: resolved.kind.governs,
+          reference: resolved.entry.ref,
+        };
+      }),
+    };
+  }
+  return rows;
 }

@@ -752,3 +752,11 @@ There is no hard wall-clock guarantee for filesystem I/O or lock acquisition.
 The new targeted contract is `packages/core/test/qualified-kinds.test.ts`; CLI operation and
 refusal coverage is in `packages/cli/test/qualified.test.ts`. Fixtures are synthetic; their
 approval records demonstrate explicit pin admission, not independently verified public releases.
+
+
+Qualified structured outbound declarations use the shared Convention parser, Markdown link
+extractor/path resolver and `link-types` validator. Materializer `qualified-v2` allocates
+same-recipe addresses before definition digests; `qualified-v1` remains byte-compatible for
+field-only recipes. Exact target checks run under the filesystem root lock for writes and
+semantic reads; portable import checks the complete candidate overlay before staging.
+The relationship contract tests are in `packages/core/test/qualified-relationships.test.ts`.

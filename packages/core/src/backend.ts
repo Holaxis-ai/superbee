@@ -1,5 +1,6 @@
+import { assertQualifiedRecordRelations } from "./link-types.js";
 import { inspectQualifiedRoot, loadQualifiedRegistry, registerQualifiedBackend } from "./qualified-storage.js";
-import { captureQualifiedData, assertQualifiedRecord, assertQualifiedRecordLocation, qualifiedRegistry, qualifiedDigest, qualifiedFailure, QUALIFIED_PREFIX, QUALIFIED_PROFILE, type QualifiedLock } from "./qualified-kinds.js";
+import { captureQualifiedData, assertQualifiedRecord, assertQualifiedRecordLocation, qualifiedRegistry, qualifiedDigest, qualifiedFailure, selectQualifiedKind, referenceKey, QUALIFIED_PREFIX, QUALIFIED_PROFILE, type QualifiedLock } from "./qualified-kinds.js";
 /**
  * Storage adapters for the OKF engine.
  *
@@ -338,7 +339,11 @@ export class FilesystemBackend implements StorageBackend {
     return this.#mutateExact(rel, async (target) => {
       if (options.qualifiedGeneration !== undefined) {
         this.#assertInventoryGuard();
-        assertQualifiedRecord(await loadQualifiedRegistry(this), doc);
+        await assertQualifiedRecordRelations(
+          await loadQualifiedRegistry(this),
+          doc,
+          async (id) => id === doc.id ? doc : (await this.read(id)).doc,
+        );
         const existing = await target.current();
         if (existing && qualifiedDigest(parseMarkdown(existing.toString("utf8"), rel, { okfVersion: "0.2" }).frontmatter.superbee_kind_ref) !== qualifiedDigest(doc.frontmatter.superbee_kind_ref)) qualifiedFailure("ordinary edits cannot rebind a record");
       }
@@ -360,6 +365,38 @@ export class FilesystemBackend implements StorageBackend {
     }, options.qualifiedGeneration);
   }
 
+  /** Schema-aware reads observe source, targets and generation in the physical-root writer domain. */
+  async readQualifiedRecords(input: { ids?: string[]; selector?: string } = {}): Promise<ReadResult[]> {
+    const request = captureQualifiedData(input);
+    this.#assertInventoryGuard();
+    return this.#withRootMutation(async () => {
+      this.#assertInventoryGuard();
+      const registry = await loadQualifiedRegistry(this);
+      const selected = request.selector === undefined ? undefined : selectQualifiedKind(registry, request.selector);
+      const ids = request.ids ?? (await this.list()).filter(id => !id.startsWith(QUALIFIED_PREFIX));
+      if (ids.length > 10000) qualifiedFailure("inventory exceeds 10000 documents");
+      const rows: ReadResult[] = [];
+      const observed = new Map<string, OkfDocument>();
+      for (const id of ids) {
+        const row = await this.read(id);
+        rows.push(row);
+        observed.set(id, row.doc);
+      }
+      const lookup = async (id: string) => {
+        if (!observed.has(id)) observed.set(id, (await this.read(id)).doc);
+        return observed.get(id);
+      };
+      for (const row of rows) {
+        await assertQualifiedRecordRelations(registry, row.doc, lookup);
+      }
+      return rows.filter((row) => {
+        if (!selected) return true;
+        const reference = row.doc.frontmatter.superbee_kind_ref as import("./qualified-kinds.js").KindReference;
+        return referenceKey(reference) === referenceKey(selected.entry.ref);
+      });
+    });
+  }
+
   /** Freeze one complete portable inventory under the same root domain as every writer. */
   async snapshotQualified(): Promise<import("./qualified-filesystem.js").QualifiedPortable> {
     this.#assertInventoryGuard();
@@ -375,6 +412,10 @@ export class FilesystemBackend implements StorageBackend {
         const { doc } = await this.read(id);
         assertQualifiedRecord(registry, doc);
         records.push(doc);
+      }
+      const overlay = new Map(records.map(doc => [doc.id, doc]));
+      for (const doc of records) {
+        await assertQualifiedRecordRelations(registry, doc, async (id) => overlay.get(id));
       }
       const result = { format: "superbee-qualified-export/v1" as const, lock: registry.qualified!.lock, records };
       if (Buffer.byteLength(JSON.stringify(result)) > 8 * 1024 * 1024) qualifiedFailure("portable snapshot exceeds 8 MiB");
@@ -393,6 +434,10 @@ export class FilesystemBackend implements StorageBackend {
       if (recordIds.has(record.id)) qualifiedFailure("duplicate portable record identity");
       recordIds.add(record.id);
       assertQualifiedRecord(candidate, record);
+    }
+    const overlay = new Map((request.records ?? []).map(doc => [doc.id, doc]));
+    for (const record of overlay.values()) {
+      await assertQualifiedRecordRelations(candidate, record, async (id) => overlay.get(id));
     }
     return this.#withRootMutation(async () => {
       this.#assertInventoryGuard();

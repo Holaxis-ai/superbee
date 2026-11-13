@@ -354,7 +354,7 @@ test("admission rejects unapproved bytes, incompatible standard fields and unsup
           body: "",
         },
       }),
-      /unsupported definition operator/,
+      /relationship|unsupported/,
     );
     assert.deepEqual(await qualifiedKinds(backend), []);
   } finally {
