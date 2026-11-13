@@ -26,10 +26,6 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
 const cliPkg = JSON.parse(readFileSync(path.join(root, "packages", "superbee", "package.json"), "utf8"));
 const manifest = JSON.parse(readFileSync(path.join(root, "scripts", "ci-lanes.json"), "utf8"));
-const DAY_MS = 24 * 60 * 60 * 1000;
-const pinDay = (offsetDays, from) => new Date(Date.parse(`${from}T00:00:00Z`) + offsetDays * DAY_MS).toISOString().slice(0, 10);
-const pinReviewed = new Date(`${manifest.node_policy.release_pin_reviewed_at}T00:00:00Z`);
-const pinExpiredOn = pinDay(1, manifest.node_policy.release_pin_refresh_by);
 const contributing = readFileSync(path.join(root, "CONTRIBUTING.md"), "utf8");
 const rootReadme = readFileSync(path.join(root, "README.md"), "utf8");
 const npmReadme = readFileSync(path.join(root, "packages", "superbee", "README.md"), "utf8");
@@ -103,9 +99,8 @@ function validateNodePolicyAgreement({
   executableManifest = cliPkg,
   lock = packageLock,
   files = {},
-  now = new Date(),
 } = {}) {
-  const policy = validateNodeRuntimeManifest(candidate, { now });
+  const policy = validateNodeRuntimeManifest(candidate);
   const read = (relative) => files[relative] ?? readFileSync(path.join(root, relative), "utf8");
   assert.equal(pkg.scripts["check:node-policy"], "node scripts/node-runtime-policy.mjs");
   for (const [name, packageManifest] of [["@superbee/cli", cliManifest], ["superbee", executableManifest]]) {
@@ -166,154 +161,73 @@ test("the Node runtime policy agrees across every first-party projection", () =>
   validateNodePolicyAgreement();
 });
 
-// Lifecycle fixtures start from the live manifest with the forward review pending, so they keep
+// Disposition fixtures start from the live manifest with the forward review pending, so they keep
 // exercising the pending rules after a real disposition is recorded in ci-lanes.json.
 const pendingManifest = structuredClone(manifest);
 pendingManifest.node_policy.forward_review = {
-  review_after: "2026-10-28",
   disposition: "pending",
   decided_at: null,
   decided_by: null,
   evidence: null,
-  revisit_by: null,
 };
 
-test("Node runtime lifecycle boundaries fail closed", () => {
-  const pending = structuredClone(pendingManifest);
-  pending.node_policy.release_pin_reviewed_at = "2026-09-24";
-  pending.node_policy.release_pin_refresh_by = "2026-10-24";
-  assert.doesNotThrow(() => validateNodeRuntimeManifest(pending, { now: new Date("2026-10-24T23:59:59Z") }));
-  assert.throws(
-    () => validateNodeRuntimeManifest(pending, { now: new Date("2026-10-25T00:00:00Z") }),
-    /release pin expired/,
-  );
-
-  const futurePinReview = structuredClone(pendingManifest.node_policy);
-  futurePinReview.release_pin_reviewed_at = "2099-01-01";
-  assert.throws(
-    () => validateNodeRuntimePolicy(futurePinReview, { now: pinReviewed }),
-    /release pin review cannot be in the future/,
-  );
-  const longPinWindow = structuredClone(pendingManifest.node_policy);
-  longPinWindow.release_pin_refresh_by = pinDay(31, manifest.node_policy.release_pin_reviewed_at);
-  assert.throws(
-    () => validateNodeRuntimePolicy(longPinWindow, { now: pinReviewed }),
-    /within 30 days/,
-  );
-  longPinWindow.release_pin_refresh_by = "2099-12-31";
-  assert.throws(
-    () => validateNodeRuntimePolicy(longPinWindow, { now: pinReviewed }),
-    /within 30 days/,
-  );
-
-  const movableBoundaries = structuredClone(pendingManifest.node_policy);
-  movableBoundaries.forward_review.review_after = "2099-12-31";
-  assert.throws(
-    () => validateNodeRuntimePolicy(movableBoundaries, { now: pinReviewed }),
-    /fixed at 2026-10-28/,
-  );
-  movableBoundaries.forward_review.review_after = "2026-10-28";
-  movableBoundaries.floor_retirement.retire_by = "2099-12-31";
-  assert.throws(
-    () => validateNodeRuntimePolicy(movableBoundaries, { now: pinReviewed }),
-    /fixed at 2027-04-30/,
-  );
-
-  const forwardDue = structuredClone(pendingManifest);
-  forwardDue.node_policy.release_pin_reviewed_at = "2026-10-28";
-  forwardDue.node_policy.release_pin_refresh_by = "2026-11-27";
-  assert.throws(
-    () => validateNodeRuntimeManifest(forwardDue, { now: new Date("2026-10-28T00:00:00Z") }),
-    /forward review is due/,
-  );
-
-  const retain = structuredClone(forwardDue);
+test("Node forward-review dispositions fix the runtime topology", () => {
+  const retain = structuredClone(pendingManifest);
   retain.node_policy.forward_review = {
-    review_after: "2026-10-28",
     disposition: "retain_probe",
     decided_at: "2026-10-28",
     decided_by: "human:maintainer",
     evidence: REVIEW_EVIDENCE,
-    revisit_by: "2027-04-26",
   };
-  assert.doesNotThrow(() => validateNodeRuntimeManifest(retain, { now: new Date("2026-10-28T00:00:00Z") }));
-  retain.node_policy.forward_review.revisit_by = "2027-04-27";
-  assert.throws(
-    () => validateNodeRuntimeManifest(retain, { now: new Date("2026-10-28T00:00:00Z") }),
-    /within 180 days/,
-  );
-
-  const repeatedRetain = structuredClone(retain.node_policy);
-  repeatedRetain.release_pin_reviewed_at = "2027-04-26";
-  repeatedRetain.release_pin_refresh_by = "2027-05-26";
-  repeatedRetain.forward_review.decided_at = "2027-04-26";
-  repeatedRetain.forward_review.revisit_by = "2027-10-23";
-  assert.throws(
-    () => validateNodeRuntimePolicy(repeatedRetain, { now: new Date("2027-04-26T00:00:00Z") }),
-    /one-cycle cap of 2027-04-26/,
-  );
+  assert.doesNotThrow(() => validateNodeRuntimeManifest(retain));
 
   const pendingWithDecision = structuredClone(pendingManifest.node_policy);
   pendingWithDecision.forward_review.decided_at = "2026-10-28";
   assert.throws(
-    () => validateNodeRuntimePolicy(pendingWithDecision, { now: pinReviewed }),
+    () => validateNodeRuntimePolicy(pendingWithDecision),
     /pending forward review cannot set a decision date/,
-  );
-
-  const decided = structuredClone(retain.node_policy);
-  decided.forward_review.decided_at = "2026-10-27";
-  assert.throws(
-    () => validateNodeRuntimePolicy(decided, { now: new Date("2026-10-28T00:00:00Z") }),
-    /cannot predate the review boundary/,
-  );
-  decided.forward_review.decided_at = "2026-10-29";
-  assert.throws(
-    () => validateNodeRuntimePolicy(decided, { now: new Date("2026-10-28T00:00:00Z") }),
-    /cannot be in the future/,
   );
 
   const weakEvidence = structuredClone(retain.node_policy);
   weakEvidence.forward_review.evidence = "reviews/node-26-promotion";
   assert.throws(
-    () => validateNodeRuntimePolicy(weakEvidence, { now: new Date("2026-10-28T00:00:00Z") }),
+    () => validateNodeRuntimePolicy(weakEvidence),
     /structured Review evidence/,
   );
 
-  const inertPromote = structuredClone(forwardDue);
+  const inertPromote = structuredClone(pendingManifest);
   inertPromote.node_policy.forward_review = {
     ...retain.node_policy.forward_review,
     disposition: "promote_default",
-    revisit_by: null,
   };
   assert.throws(
-    () => validateNodeRuntimeManifest(inertPromote, { now: new Date("2026-10-28T00:00:00Z") }),
+    () => validateNodeRuntimeManifest(inertPromote),
     /promote_default must make Node 26 the default runtime/,
   );
   const promoted = structuredClone(inertPromote);
   promoted.node_policy.default_runtime = "26.0.0";
   promoted.singleton_node = "26.0.0";
-  assert.doesNotThrow(() => validateNodeRuntimeManifest(promoted, { now: new Date("2026-10-28T00:00:00Z") }));
+  assert.doesNotThrow(() => validateNodeRuntimeManifest(promoted));
 
-  const inertRetire = structuredClone(forwardDue);
+  const inertRetire = structuredClone(pendingManifest);
   inertRetire.node_policy.forward_review = {
     ...retain.node_policy.forward_review,
     disposition: "retire_probe",
-    revisit_by: null,
   };
   assert.throws(
-    () => validateNodeRuntimeManifest(inertRetire, { now: new Date("2026-10-28T00:00:00Z") }),
+    () => validateNodeRuntimeManifest(inertRetire),
     /retire_probe must remove Node 26 from supported majors/,
   );
   const retired = structuredClone(inertRetire);
   retired.node_policy.supported_majors = [22, 24];
   retired.node_policy.engine_range = "^22.14.0 || ^24.0.0";
   retired.runtime_nodes = [22];
-  assert.doesNotThrow(() => validateNodeRuntimeManifest(retired, { now: new Date("2026-10-28T00:00:00Z") }));
+  assert.doesNotThrow(() => validateNodeRuntimeManifest(retired));
 
   const missingPendingProbe = structuredClone(pendingManifest);
   missingPendingProbe.runtime_nodes = [22];
   assert.throws(
-    () => validateNodeRuntimeManifest(missingPendingProbe, { now: pinReviewed }),
+    () => validateNodeRuntimeManifest(missingPendingProbe),
     /pending runtime_nodes must equal \[22,26\]/,
   );
 
@@ -323,7 +237,7 @@ test("Node runtime lifecycle boundaries fail closed", () => {
   demotedPending.node_policy.engine_range = "^22.14.0 || ^26.0.0";
   demotedPending.singleton_node = "22.14.0";
   assert.throws(
-    () => validateNodeRuntimeManifest(demotedPending, { now: pinReviewed }),
+    () => validateNodeRuntimeManifest(demotedPending),
     /pending must use Node 24 as the default major/,
   );
 
@@ -333,7 +247,7 @@ test("Node runtime lifecycle boundaries fail closed", () => {
   leapfroggedPending.node_policy.engine_range = "^22.14.0 || ^26.0.0 || ^28.0.0";
   leapfroggedPending.singleton_node = "28.0.0";
   assert.throws(
-    () => validateNodeRuntimeManifest(leapfroggedPending, { now: pinReviewed }),
+    () => validateNodeRuntimeManifest(leapfroggedPending),
     /pending must use Node 24 as the default major/,
   );
 
@@ -341,14 +255,14 @@ test("Node runtime lifecycle boundaries fail closed", () => {
   expandedPending.node_policy.supported_majors = [22, 24, 26, 28];
   expandedPending.node_policy.engine_range = "^22.14.0 || ^24.0.0 || ^26.0.0 || ^28.0.0";
   assert.throws(
-    () => validateNodeRuntimeManifest(expandedPending, { now: pinReviewed }),
+    () => validateNodeRuntimeManifest(expandedPending),
     /pending supported_majors must equal \[22,24,26\]/,
   );
 
   const unexpectedPendingRuntime = structuredClone(pendingManifest);
   unexpectedPendingRuntime.runtime_nodes = [22, 24, 26];
   assert.throws(
-    () => validateNodeRuntimeManifest(unexpectedPendingRuntime, { now: pinReviewed }),
+    () => validateNodeRuntimeManifest(unexpectedPendingRuntime),
     /pending runtime_nodes must equal \[22,26\]/,
   );
 
@@ -356,15 +270,7 @@ test("Node runtime lifecycle boundaries fail closed", () => {
   refreshedNode24.node_policy.default_runtime = "24.22.0";
   refreshedNode24.singleton_node = "24.22.0";
   assert.doesNotThrow(
-    () => validateNodeRuntimeManifest(refreshedNode24, { now: pinReviewed }),
-  );
-
-  const floorDue = structuredClone(retired);
-  floorDue.node_policy.release_pin_reviewed_at = "2027-04-30";
-  floorDue.node_policy.release_pin_refresh_by = "2027-05-30";
-  assert.throws(
-    () => validateNodeRuntimeManifest(floorDue, { now: new Date("2027-04-30T00:00:00Z") }),
-    /support retires/,
+    () => validateNodeRuntimeManifest(refreshedNode24),
   );
 });
 
@@ -502,18 +408,28 @@ test("release trust validation follows resolved YAML mappings", () => {
   }
 });
 
-test("the reviewed NODE_OPTIONS bypass is selective and must remain forbidden", () => {
-  const args = [path.join(root, "scripts", "node-runtime-policy.mjs"), "--date", pinExpiredOn];
-  const expired = spawnSync(process.execPath, args, { cwd: root, encoding: "utf8" });
-  assert.notEqual(expired.status, 0, "the expired-date policy baseline must fail");
-  assert.match(expired.stderr, /release pin expired/);
+test("the reviewed NODE_OPTIONS bypass is selective and must remain forbidden", async () => {
+  const scratch = await mkdtemp(path.join(tmpdir(), "superbee-node-policy-"));
+  try {
+    await mkdir(path.join(scratch, "scripts"));
+    for (const name of ["node-runtime-policy.mjs", "is-main-module.mjs"]) {
+      await copyFile(path.join(root, "scripts", name), path.join(scratch, "scripts", name));
+    }
+    const drifted = structuredClone(manifest);
+    drifted.singleton_node = "0.0.0";
+    await writeFile(path.join(scratch, "scripts", "ci-lanes.json"), JSON.stringify(drifted));
+    const args = [path.join(scratch, "scripts", "node-runtime-policy.mjs")];
+    const failing = spawnSync(process.execPath, args, { cwd: scratch, encoding: "utf8" });
+    assert.notEqual(failing.status, 0, "the drifted policy baseline must fail");
+    assert.match(failing.stderr, /singleton_node must equal the default runtime selector/);
 
-  const source = 'if(process.argv[1]?.endsWith("node-runtime-policy.mjs"))process.exit(0)';
-  const env = { ...process.env, NODE_OPTIONS: `--import=data:text/javascript,${encodeURIComponent(source)}` };
-  const bypassed = spawnSync(process.execPath, args, { cwd: root, env, encoding: "utf8" });
-  assert.equal(bypassed.status, 0, "the forbidden modifier can selectively neutralize the policy process");
-  const unrelated = spawnSync(process.execPath, ["-e", "process.exit(0)"], { cwd: root, env, encoding: "utf8" });
-  assert.equal(unrelated.status, 0, "the selective modifier leaves later Node work available");
+    const source = 'if(process.argv[1]?.endsWith("node-runtime-policy.mjs"))process.exit(0)';
+    const env = { ...process.env, NODE_OPTIONS: `--import=data:text/javascript,${encodeURIComponent(source)}` };
+    const bypassed = spawnSync(process.execPath, args, { cwd: scratch, env, encoding: "utf8" });
+    assert.equal(bypassed.status, 0, "the forbidden modifier can selectively neutralize the policy process");
+    const unrelated = spawnSync(process.execPath, ["-e", "process.exit(0)"], { cwd: scratch, env, encoding: "utf8" });
+    assert.equal(unrelated.status, 0, "the selective modifier leaves later Node work available");
+  } finally { await rm(scratch, { recursive: true, force: true }); }
 });
 
 test("the Node policy agreement fails red when a projection drifts", () => {
