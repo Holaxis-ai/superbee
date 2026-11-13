@@ -1,3 +1,6 @@
+import { inspectQualifiedRoot } from "./qualified-storage.js";
+import { backendFor } from "./bundle-ops.js";
+import { qualifiedFailure } from "./qualified-kinds.js";
 /**
  * The backend-touching half of the kind-convention registry: {@link loadKinds}
  * queries a bundle's `conventions/` prefix and builds the registry out of `kinds.ts`'s pure
@@ -27,6 +30,7 @@ import type { Bundle } from "./types.js";
  * and pass it down — no engine path calls this on its own.
  */
 export async function loadKinds(bundle: Bundle): Promise<KindRegistry> {
+  if (await inspectQualifiedRoot(backendFor(bundle))) qualifiedFailure("this consumer is unsupported; use superbee qualified kinds/new/read/update/list");
   const warnings: ValidationWarning[] = [];
 
   // A convention doc whose YAML frontmatter is itself corrupt must not crash the WHOLE registry

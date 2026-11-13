@@ -1,3 +1,4 @@
+import { qualifiedArtifactDigest } from "@superbee/core/qualified-filesystem";
 // The bundle / private-state boundary. Every fixture derives its paths from
 // `canonicalUserStateDir` / `legacyUserStateDir` — the state root's NAME is a single constant in
 // `user-state.ts`, and a test that only passes for one spelling of it would mean the name had
@@ -661,6 +662,10 @@ function benignTarget(role: CliPathRole, fixture: BoundaryFixture, key: string):
 const VIEW_CONTENT_CONTROL = "a local bundle answers view read/update USAGE (not a hosted checkout) after the path guards; hosted-view-content.test.ts runs both in a checkout with an ordinary --file and --out";
 
 const CROSSING_ROWS: readonly CrossingRow[] = [
+  { leaf: "qualified", surface: "--dir", argv: t => ["qualified", "init", "--dir", t, "--actor", "openai/codex"], control: f => path.join(f.outside, "qualified-root-control") },
+  { leaf: "qualified", surface: "--input", argv: t => ["qualified", "import", "--dir", "qualified-import", "--input", t], control: f => path.join(f.project, "qualified-portable.json") },
+  { leaf: "qualified", surface: "--approval", argv: t => ["qualified", "install", "--dir", "qualified-source", "--input", "qualified-artifact.json", "--approval", t], control: f => path.join(f.project, "qualified-approval.json") },
+  { leaf: "qualified", surface: "--out", argv: t => ["qualified", "export", "--dir", "qualified-source", "--out", t] },
   // ── Bundle roots (`--dir`): the target BECOMES the bundle. ──────────────────
   { leaf: "bundleLocate", surface: "--dir", argv: (t) => ["bundle", "locate", "--dir", t, "--json"] },
   { leaf: "catalogRelocate", surface: "--dir", argv: (t) => ["catalog", "relocate", "probe-label", "--dir", t, "--json"], controlExit: 6 },
@@ -1029,6 +1034,12 @@ async function runCrossingRow(fixture: BoundaryFixture, row: CrossingRow): Promi
 test("every byte-channel crossing point refuses a private-state path", async (t) => {
   const fixture = await boundaryFixture();
   await pluginFixture(fixture.outside);
+  const qualifiedArtifact = { format: "superbee-recipe/v2" as const, identity: { authority: "github.com" as const, repository_id: "123", recipe_id: "decision" }, release: "1.0.0", commit: "a".repeat(40), owner_id: "123", kinds: [{ kind_id: "decision", doc: { id: "conventions/decision", frontmatter: { type: "Convention", governs: "Decision", fields: { required: ["title"] } }, body: "" } }] };
+  writeFileSync(path.join(fixture.project, "qualified-artifact.json"), JSON.stringify(qualifiedArtifact));
+  writeFileSync(path.join(fixture.project, "qualified-approval.json"), JSON.stringify({ repository_id: "123", owner_id: "123", commit: qualifiedArtifact.commit, release: "1.0.0", source_revision: qualifiedArtifactDigest(qualifiedArtifact), actor: "openai/codex", approved_at: "2026-11-13T12:00:00Z" }));
+  writeFileSync(path.join(fixture.project, "qualified-portable.json"), JSON.stringify({ format: "superbee-qualified-export/v1", lock: { format: "qualified-registry/v1", origin: "12345678-1234-1234-1234-123456789012", entries: [] }, records: [] }));
+  const qualifiedInit = runCli(["qualified", "init", "--dir", "qualified-source", "--actor", "openai/codex"], { cwd: fixture.project, home: fixture.home });
+  assert.equal(qualifiedInit.status, 0, qualifiedInit.stdout);
   try {
     for (const row of CROSSING_ROWS) {
       const key = `${row.leaf} ${row.surface}`;

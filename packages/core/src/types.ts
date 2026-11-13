@@ -171,6 +171,8 @@ export interface VersionInfo {
 
 /** Options controlling a conditional / attributed {@link StorageBackend.write}. */
 export interface WriteOptions {
+  /** Exact admitted qualified root version; only qualified filesystem writes support this. */
+  qualifiedGeneration?: string;
   /** Explicit per-document replacement intent carried by RemoteBackend to the wire authority.
    * Raw storage adapters ignore it; it grants no metadata/Kind policy bypass.
    */

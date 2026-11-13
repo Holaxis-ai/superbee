@@ -1,3 +1,4 @@
+import { assertQualifiedBackend } from "./qualified-storage.js";
 import { compareCodeUnits } from "./code-unit-order.js";
 import { captureBodyReplacePosture, guardBodyReplace } from "./body-replace-guards.js";
 import { inventoryGuardFor, InventoryGuardConflict, type InventoryGuardRequest } from "./inventory-guard.js";
@@ -84,6 +85,7 @@ async function persistDocForEdition(
   options?: WriteOptions,
   inventoryPremise?: DocumentInventoryPremise,
 ): Promise<WriteResult> {
+  if (options?.qualifiedGeneration !== undefined || Object.hasOwn(doc.frontmatter, "superbee_kind_ref")) assertQualifiedBackend(backend);
   let saved: OkfDocument;
   if (okfVersion === "0.1") {
     const existingTimestamp = doc.frontmatter.timestamp;

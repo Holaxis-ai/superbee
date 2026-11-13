@@ -1,3 +1,4 @@
+import { qualified, guardQualifiedCommand } from "./commands/qualified.js";
 // Argument router for the `axi` CLI.
 //
 // Ported from holaxis-agentstate `packages/cli/src/cli.ts`: axi-sdk-js's `runAxiCli` command registry
@@ -153,6 +154,7 @@ export const PUBLIC_HANDLERS = Object.freeze({
   search,
   source,
   workload,
+  qualified,
 } satisfies PublicHandlerMap);
 
 type RuntimeHandler = (args: string[]) => Promise<string>;
@@ -164,6 +166,7 @@ type RuntimeHandler = (args: string[]) => Promise<string>;
 const guarded =
   (name: PublicCommandName, fn: PublicHandler): PublicHandler =>
   async (args: string[]) => {
+    await guardQualifiedCommand(name, args);
     await assertAllowedInHostedCheckout(name, args);
     await fn(args);
   };
@@ -176,7 +179,7 @@ const publicRuntimeCommands = Object.fromEntries(
 export const RUNTIME_COMMANDS = Object.freeze({
   ...publicRuntimeCommands,
   // Defensive alias for the bare zero-arg home surface; intentionally not public/catalogued.
-  home: wrap(homeCommand),
+  home: wrap(async (args) => { await guardQualifiedCommand("home", args); await homeCommand(args); }),
   // Shadow the SDK's reserved built-in npm updater with this CLI's ordinary unknown-command error.
   update: async () => {
     throw unknownCommandError("update");
@@ -267,6 +270,7 @@ export async function main(argv: string[]): Promise<void> {
   // command reference. Always exits 0.
   if (command === undefined) {
     openDeprecationNotices(argv);
+    await guardQualifiedCommand("home", argv);
     await home(argv);
     return;
   }
@@ -297,6 +301,7 @@ export async function main(argv: string[]): Promise<void> {
     // command (`--dir x list`) or an unknown flag (`--bogus`) still gets the actionable USAGE hint.
     if (isGlobalOnlyHomeInvocation(argv)) {
       openDeprecationNotices(argv);
+      await guardQualifiedCommand("home", argv);
       await home(argv);
       return;
     }

@@ -258,6 +258,18 @@
     "./site-manifest": {
       "types": "./dist/site-manifest.d.ts",
       "default": "./dist/site-manifest.js"
+    },
+    "./qualified-filesystem": {
+      "types": "./dist/qualified-filesystem.d.ts",
+      "default": "./dist/qualified-filesystem.js"
+    },
+    "./qualified-storage": {
+      "types": "./dist/qualified-storage.d.ts",
+      "default": "./dist/qualified-storage.js"
+    },
+    "./recipe-set-preflight-v2": {
+      "types": "./dist/recipe-set-preflight-v2.d.ts",
+      "default": "./dist/recipe-set-preflight-v2.js"
     }
   },
   "files": [

@@ -87,6 +87,7 @@ function heldKey(key: string): boolean {
 
 /** Every command a hosted checkout refuses up front. The order is the lookup order. */
 export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
+  { words: ["qualified", "*"], reason: "not_syncable", why: "qualified Kind profiles support standalone local bundles only", instead: "use a new standalone local directory" },
   { words: ["source", "bind"], reason: "not_syncable", why: "local source binding supports local and Git bundles only" },
   { words: ["source", "run"], reason: "not_syncable", why: "local source execution supports local and Git bundles only" },
   { words: ["doc", "verify"], reason: "not_syncable", why: "verification is a managed field the host records" },

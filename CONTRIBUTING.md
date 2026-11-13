@@ -725,3 +725,30 @@ Bundle writes and code commits are separate delivery channels. Builders write ph
 context notes but do not sync. The orchestrator reviews and syncs bundle changes; code goes through
 branch, a human-owned PR gate, CI, review, and merge. A human maintainer may explicitly delegate
 opening or merging the named PR without delegating release or deployment authority.
+
+### Experimental qualified profile boundary
+
+`qualified-kinds/v1` keeps OKF 0.2 field semantics and enables only the local filesystem
+`qualified` CLI family documented in README. Core's existing Convention parser, standard-field
+validator and mutation preparation remain the semantic owners. The legacy label Map deliberately
+refuses access for a qualified registry. Unsupported consumers must not flatten it into labels.
+
+The root index contains the exact registry and its digest. Definition paths derive from full
+identity/address hashes; immutable definition staging and the final atomic root replacement share
+the existing physical-root writer lock. Record commits recheck the exact admitted root version
+under that lock. `conventions/qualified/index.md` is a fixed evidence witness so stripping root
+metadata does not silently admit legacy writes, without scanning legacy inventories. Raw
+filesystem damage is outside mediated guarantees; exact admitted bytes are checked on semantic
+reads. Old binaries are not supported or prevented from raw access.
+
+Generation requests and portable snapshots are bounded at 8 MiB, 1000 definitions and 10000
+record inventory entries. Requests are bounded plain data; no transaction callback escapes the
+root lock. Export freezes a complete admitted snapshot under that lock. Staging failures leave
+inert immutable files and the previous active root; matching staged definitions are reused on
+retry. A missing active asset refuses semantic readiness. An interrupted first initialization
+with no active root requires inspection and explicit cleanup rather than automatic deletion.
+There is no hard wall-clock guarantee for filesystem I/O or lock acquisition.
+
+The new targeted contract is `packages/core/test/qualified-kinds.test.ts`; CLI operation and
+refusal coverage is in `packages/cli/test/qualified.test.ts`. Fixtures are synthetic; their
+approval records demonstrate explicit pin admission, not independently verified public releases.

@@ -45,7 +45,7 @@ test("public command order preserves the user-facing unknown-command diagnostic"
     "init", "bundle", "catalog", "index", "doc", "promote", "pull", "blobs", "delete",
     "link", "list", "query", "new", "artifact", "kinds", "kind", "recipes", "recipe",
     "status", "ui", "mcp", "sync", "hook", "skill", "session-start", "version", "view", "setup",
-    "login", "whoami", "logout", "checkout", "turn-end", "export", "publish", "op", "access", "deps", "notify", "inbox", "search", "source", "workload",
+    "login", "whoami", "logout", "checkout", "turn-end", "export", "publish", "op", "access", "deps", "notify", "inbox", "search", "source", "workload", "qualified",
   ]);
 });
 

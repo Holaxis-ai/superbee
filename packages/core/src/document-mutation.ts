@@ -1,3 +1,4 @@
+import { resolveQualifiedDocument } from "./qualified-kinds.js";
 import { captureInventoryGuardRequest, type InventoryGuardRequest } from "./inventory-guard.js";
 import { assertTypedListPatch, guardBodyReplace, type BodyReplacePosture } from "./body-replace-guards.js";
 /**
@@ -172,7 +173,7 @@ function writeGuidance(
   before: OkfDocument | undefined,
   after: { frontmatter: Frontmatter },
 ): KindValueGuidance[] {
-  const kind = registry.kinds.get(String(after.frontmatter.type));
+  const kind = resolveQualifiedDocument(registry, after);
   return kindValueGuidance(okfVersion, kind, before?.frontmatter, after.frontmatter);
 }
 
@@ -255,7 +256,7 @@ function attributeCandidate(
   registry: KindRegistry,
 ): DocumentMutationCandidate {
   if (!persistActor) return candidate;
-  const kind = registry.kinds.get(String(candidate.frontmatter.type));
+  const kind = resolveQualifiedDocument(registry, candidate);
   return {
     ...candidate,
     frontmatter: persistMutationActor(candidate.frontmatter, {
@@ -272,6 +273,7 @@ function attributeCandidate(
  * reuse this ONE validation pass instead of re-deriving the candidate's kind separately.
  */
 function assertDeprecation(id: ConceptId, candidate: DocumentMutationCandidate, registry: KindRegistry, existing?: OkfDocument): void {
+  if (registry.qualified) return; // Qualified admission refuses lifecycle declarations.
   const violations = kindDeprecationTransition(existing, { id, ...candidate }, registry);
   if (violations.length) throw new KindConformanceError(id, String(candidate.frontmatter.type), violations);
 }
@@ -314,7 +316,7 @@ function validateUnchangedDocument(
   okfVersion: "0.1" | "0.2",
 ): ValidationWarning[] {
   assertDeprecation(existing.id, existing, registry, existing);
-  const kind = registry.kinds.get(String(existing.frontmatter.type));
+  const kind = resolveQualifiedDocument(registry, existing);
   const warnings = kind ? validateAgainstKind(existing, kind) : [];
   if (strict && kind && warnings.length > 0) {
     throw new KindConformanceError(existing.id, kind.governs, warnings, okfVersion);
@@ -334,7 +336,7 @@ function withV02Metadata(
   producer: string | undefined,
 ): DocumentMutationCandidate {
   if (okfVersion !== "0.2") return candidate;
-  const kind = registry.kinds.get(String(candidate.frontmatter.type));
+  const kind = resolveQualifiedDocument(registry, candidate);
   return applyV02MutationMetadata({
     existing,
     candidate,
@@ -401,7 +403,7 @@ export function prepareDocumentMutationCandidate(
   if (mode !== "create-only") assertDeprecation(opts.id, comparison, opts.registry, existing);
   if (mode !== "create-only" && existing && isNoopMutation(existing, comparison, opts.compareTimestamp ?? false, opts.okfVersion,
     (mode === "overwrite" || opts.okfVersion === "0.2") && persistActor && opts.actor !== undefined,
-    opts.registry.kinds.get(String(comparison.frontmatter.type))?.fields.required.includes("actor") ?? false)) {
+    resolveQualifiedDocument(opts.registry, comparison)?.fields.required.includes("actor") ?? false)) {
     return { candidate: { frontmatter: structuredClone(existing.frontmatter), body: existing.body }, changed: false, warnings: validateUnchangedDocument(existing, opts.registry, opts.strict, opts.okfVersion), guidance: [] };
   }
   const candidate = mode === "overwrite"
@@ -427,7 +429,7 @@ export function prepareDocumentMutationCandidate(
  * passing `existing` directly is safe — no defensive clone needed.
  */
 function conforms(existing: OkfDocument, registry: KindRegistry): boolean {
-  const kind = registry.kinds.get(String(existing.frontmatter.type));
+  const kind = resolveQualifiedDocument(registry, existing);
   if (!kind) return false;
   return validateAgainstKind(existing, kind).length === 0;
 }
@@ -475,7 +477,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
     scopes = undefined;
     let candidate: DocumentMutationCandidate;
     const assertTypedAssignments = (fields: readonly string[]) => {
-      const kind = existing && opts.registry.kinds.get(String(existing.frontmatter.type));
+      const kind = existing && resolveQualifiedDocument(opts.registry, existing);
       if (kind) for (const field of fields) assertTypedListPatch(kind, field);
     };
     if (opts.input !== undefined) {
@@ -559,6 +561,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       ...(opts.requestId !== undefined ? { requestId: opts.requestId } : {}),
       actor: opts.actor,
       bodyReplace: opts.bodyReplace,
+      qualifiedGeneration: opts.registry.qualified?.rootVersion,
     });
     return { doc, changed: true, version, warnings, guidance: writeGuidance(opts.registry, okfVersion, undefined, doc) };
   }
@@ -606,6 +609,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
           expectedVersion,
           actor: opts.actor,
           bodyReplace: opts.bodyReplace,
+          qualifiedGeneration: opts.registry.qualified?.rootVersion,
         });
         savedDoc = written.doc;
         return written.version;
@@ -646,6 +650,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         expectedVersion: hardCas ? opts.expectedVersion! : expectedVersion,
         actor: opts.actor,
         bodyReplace: opts.bodyReplace,
+        qualifiedGeneration: opts.registry.qualified?.rootVersion,
       }, opts.inventoryGuard);
       savedDoc = written.doc;
       return written.version;

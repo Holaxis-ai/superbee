@@ -272,6 +272,12 @@ function hiddenLeaf<const Id extends string, const Path extends string>(
 const listLeaf = publicLeaf("list", "list", zero, 10, DIR_SURFACE);
 
 export const CLI_COMMAND_GROUPS = [
+  { group: "Qualified local bundles (experimental)", commands: [{
+    id: "qualified",
+    leaves: [publicLeaf("qualified", "qualified", one, 43, { flags: pathFlags({flag:"dir",role:"bundle-root"},{flag:"input",role:"ingress"},{flag:"approval",role:"ingress"},{flag:"out",role:"egress"}) })],
+    usage: "qualified <inspect|preflight|init|install|kinds|local|new|read|update|list|export|import> --dir <path> [--input <json>] [--approval <json>] [--out <new-json-file>]",
+    summary: "Experimental local qualified Kind coexistence; run qualified --help for exact supported operations and explicit artifact approval. No sync, hosted, lifecycle or legacy conversion.",
+  }] },
   {
     group: "Bundle",
     commands: [

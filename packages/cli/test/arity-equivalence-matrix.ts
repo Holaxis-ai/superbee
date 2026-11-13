@@ -71,6 +71,7 @@ const selector = (
  * properties that must change here when their production boundary changes.
  */
 export const BEHAVIOR_ASSIGNMENTS = [
+  ordinary("qualified", 1),
   selector("bundleLocate", "leading-navigation", 0),
   selector("catalogAdd", "leading-navigation", 1),
   selector("catalogList", "leading-navigation", 0),

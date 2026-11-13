@@ -1,3 +1,5 @@
+import { inspectQualifiedRoot, loadQualifiedRegistry, registerQualifiedBackend } from "./qualified-storage.js";
+import { captureQualifiedData, assertQualifiedRecord, qualifiedRegistry, qualifiedDigest, qualifiedFailure, QUALIFIED_PREFIX, QUALIFIED_PROFILE, type QualifiedLock } from "./qualified-kinds.js";
 /**
  * Storage adapters for the OKF engine.
  *
@@ -173,8 +175,19 @@ export class FilesystemBackend implements StorageBackend {
     return this.#coordinator.run(body);
   }
 
-  #mutateExact<T>(rel: string, body: (context: MutationContext) => Promise<T>): Promise<T> {
-    return this.#withRootMutation(() => mutateExact(this.#port, this.#root, rel, body));
+  #mutateExact<T>(rel: string, body: (context: MutationContext) => Promise<T>, generation?: string): Promise<T> {
+    return this.#withRootMutation(async () => {
+      const qualified = await inspectQualifiedRoot(this);
+      if (qualified && (generation === undefined || qualified.version !== generation)) qualifiedFailure("unsupported mutation or stale admitted generation; use qualified commands");
+      if (!qualified && generation !== undefined) qualifiedFailure("qualified profile was removed");
+      return mutateExact(this.#port, this.#root, rel, async target => {
+        if (!qualified && rel.endsWith(".md")) {
+          const bytes = await target.current();
+          if (bytes?.includes("superbee_kind_ref") && Object.hasOwn(parseMarkdown(bytes.toString("utf8"), rel).frontmatter, "superbee_kind_ref")) qualifiedFailure("record binding without admitted profile");
+        }
+        return body(target);
+      });
+    });
   }
 
   #assertInventoryGuard(): void {
@@ -192,6 +205,7 @@ export class FilesystemBackend implements StorageBackend {
         const raw = stringifyDoc(request.doc.frontmatter, request.doc.body);
         return this.#withRootMutation(async () => {
           this.#assertInventoryGuard();
+          if (await inspectQualifiedRoot(this)) qualifiedFailure("inventory-guard is not a qualified capability");
           const target = await this.#guardTarget();
           const inventory: import("./inventory-guard.js").InventoryEntry[] = [];
           const ids = await this.list();
@@ -241,6 +255,7 @@ export class FilesystemBackend implements StorageBackend {
     this.#port = createNodeFilesystemIdentityPort(options.hostPolicy);
     this.#root = path.resolve(root);
     this.#coordinator = createFilesystemMutationCoordinator(this.#port, this.#root, options.hostPolicy);
+    if (Object.getPrototypeOf(this) === FilesystemBackend.prototype) registerQualifiedBackend(this, () => this.#assertInventoryGuard());
     publicationContexts.set(this, { root: this.#root, port: this.#port });
     fileMutations.set(this, (rel, body) => this.#mutateExact(rel, body));
   }
@@ -300,12 +315,19 @@ export class FilesystemBackend implements StorageBackend {
 
   async write(id: ConceptId, doc: OkfDocument, options: WriteOptions = {}): Promise<Version> {
     assertSafeConceptId(id);
+    if (Object.hasOwn(doc.frontmatter, "superbee_kind_ref") && options.qualifiedGeneration === undefined) qualifiedFailure("binding requires qualified mutation admission");
     const raw = stringifyDoc(doc.frontmatter, doc.body ?? "");
     const rel = pathFromConceptId(id);
     // The whole check-then-write section runs inside one identity-keyed critical section, local
     // and same-user cross-process; an unconditional writer holds it too so it cannot move the
     // target between another process's version check and write.
     return this.#mutateExact(rel, async (target) => {
+      if (options.qualifiedGeneration !== undefined) {
+        this.#assertInventoryGuard();
+        assertQualifiedRecord(await loadQualifiedRegistry(this), doc);
+        const existing = await target.current();
+        if (existing && qualifiedDigest(parseMarkdown(existing.toString("utf8"), rel, { okfVersion: "0.2" }).frontmatter.superbee_kind_ref) !== qualifiedDigest(doc.frontmatter.superbee_kind_ref)) qualifiedFailure("ordinary edits cannot rebind a record");
+      }
       if (options.expectedVersion !== undefined) {
         const bytes = await target.current();
         const current = bytes === null ? null : versionOfBytes(bytes.toString("utf8"));
@@ -321,6 +343,75 @@ export class FilesystemBackend implements StorageBackend {
       // accepted-but-not-persisted (this degenerate adapter records no agent at all).
       await target.replace(Buffer.from(raw, "utf8"));
       return versionOfBytes(raw);
+    }, options.qualifiedGeneration);
+  }
+
+  /** Freeze one complete portable inventory under the same root domain as every writer. */
+  async snapshotQualified(): Promise<import("./qualified-filesystem.js").QualifiedPortable> {
+    this.#assertInventoryGuard();
+    return this.#withRootMutation(async () => {
+      this.#assertInventoryGuard();
+      const registry = await loadQualifiedRegistry(this);
+      const ids = await this.list();
+      if (ids.length > 10000) qualifiedFailure("inventory exceeds 10000 documents");
+      if ((await this.listBlobs()).length) qualifiedFailure("qualified portable blobs are unsupported");
+      const records: OkfDocument[] = [];
+      for (const id of ids) {
+        if (id.startsWith(QUALIFIED_PREFIX)) continue;
+        const { doc } = await this.read(id);
+        assertQualifiedRecord(registry, doc);
+        records.push(doc);
+      }
+      const result = { format: "superbee-qualified-export/v1" as const, lock: registry.qualified!.lock, records };
+      if (Buffer.byteLength(JSON.stringify(result)) > 8 * 1024 * 1024) qualifiedFailure("portable snapshot exceeds 8 MiB");
+      return result;
+    });
+  }
+
+  /** Data-only atomic activation. Immutable files stage first; index rename is the commit point. */
+  async commitQualifiedGeneration(input: { expectedRoot: string | null; lock: QualifiedLock; records?: OkfDocument[] }): Promise<string> {
+    const request = captureQualifiedData(input);
+    if (Buffer.byteLength(JSON.stringify(request)) > 8 * 1024 * 1024) qualifiedFailure("generation exceeds 8 MiB bound");
+    this.#assertInventoryGuard();
+    const candidate = qualifiedRegistry(request.lock, "candidate");
+    const recordIds = new Set<string>();
+    for (const record of request.records ?? []) {
+      if (recordIds.has(record.id)) qualifiedFailure("duplicate portable record identity");
+      recordIds.add(record.id);
+      assertQualifiedRecord(candidate, record);
+    }
+    return this.#withRootMutation(async () => {
+      this.#assertInventoryGuard();
+      const root = await this.readReserved("", "index.md");
+      if ((root?.version ?? null) !== request.expectedRoot) qualifiedFailure("generation conflict; reload before install");
+      if (root) {
+        const active = await loadQualifiedRegistry(this);
+        for (const old of active.qualified!.lock.entries) if (!request.lock.entries.some(e => qualifiedDigest(e) === qualifiedDigest(old))) qualifiedFailure("admitted definitions cannot be removed or replaced");
+        if (active.qualified!.lock.origin !== request.lock.origin || request.records?.length) qualifiedFailure("origin replacement or import into existing bundle is unsupported");
+      } else if ((await this.list()).length || (await this.listBlobs()).length || (await this.readReserved("", "log.md"))) qualifiedFailure("initialization requires an empty bundle");
+      await mutateExact(this.#port, this.#root, "conventions/qualified/index.md", async target => {
+        const witness = Buffer.from("qualified-kinds/v1\n", "utf8");
+        const before = await target.current();
+        if (before !== null && !before.equals(witness)) qualifiedFailure("qualified witness collision");
+        if (before === null) await target.replace(witness);
+      });
+      const writes = [...request.lock.entries.map(e => e.doc), ...(request.records ?? [])];
+      for (const doc of writes) {
+        assertSafeConceptId(doc.id);
+        const raw = stringifyDoc(doc.frontmatter, doc.body);
+        await mutateExact(this.#port, this.#root, pathFromConceptId(doc.id), async target => {
+          const before = await target.current();
+          if (before !== null && before.toString("utf8") !== raw) qualifiedFailure("immutable staged path collision");
+          if (before === null) await target.replace(Buffer.from(raw, "utf8"));
+        });
+      }
+      const content = stringifyDoc({ type: "Bundle", okf_version: "0.2", superbee_profile: QUALIFIED_PROFILE, superbee_bundle_origin: request.lock.origin, superbee_registry_generation: qualifiedDigest(request.lock), superbee_registry: request.lock }, "");
+      await mutateExact(this.#port, this.#root, "index.md", async target => {
+        const before = await target.current();
+        if ((before === null ? null : versionOfBytes(before.toString("utf8"))) !== request.expectedRoot) qualifiedFailure("root changed during activation");
+        await target.replace(Buffer.from(content, "utf8"));
+      });
+      return versionOfBytes(content);
     });
   }
 

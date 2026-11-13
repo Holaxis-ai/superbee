@@ -405,7 +405,8 @@ test("N4: every protocol call uses the backend port or its private publication c
   // Five ordinary mutation sites now share one private root-before-leaf wrapper; guarded apply
   // adds its own already-held leaf path. Two root witness observations bring 11 leaf/read
   // sites to 13 production-port protocol calls.
-  assert.equal(passed.length, 13, `expected the backend's protocol call sites, found ${passed.length}`);
+  // Qualified activation adds immutable witness/definition staging and root activation calls.
+  assert.equal(passed.length, 16, `expected the backend's protocol call sites, found ${passed.length}`);
   assert.deepEqual([...new Set(passed)].sort(), ["port", "this.#port"], "a protocol call bypasses the instance/publication context");
   assert.equal(passed.filter((name) => name === "port").length, 3, "only the raw publication readers and metadata-only projection probe use their captured context port");
 });

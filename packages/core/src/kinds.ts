@@ -1,3 +1,4 @@
+import { resolveQualifiedDocument } from "./qualified-kinds.js";
 /**
  * Kind conventions — the bundle-declared, opt-in document-kind mechanism. The mechanism lives in
  * core while each bundle chooses whether to declare and use conventions.
@@ -193,6 +194,7 @@ export type UndeclaredFieldsPolicy = (typeof UNDECLARED_FIELDS_POLICIES)[number]
 
 /** The result of {@link loadKinds}: the built registry plus any non-fatal warnings collected along the way. */
 export interface KindRegistry {
+  qualified?: import("./qualified-kinds.js").QualifiedState;
   /**
    * `governs -> KindConvention`. On a duplicate `governs`, the first-by-id declaration wins.
    * Insertion order is the bundle's reading order (see {@link compareReadingOrder}): declared
@@ -1505,7 +1507,7 @@ export function defaultTimestampAndValidateAgainstRegistry(
   registry: KindRegistry,
   options: { okfVersion?: string; now?: () => string } = {},
 ): RegistryValidationResult {
-  const kind = registry.kinds.get(String(doc.frontmatter.type));
+  const kind = resolveQualifiedDocument(registry, doc);
   const shouldDefaultTimestamp = options.okfVersion !== "0.2"
     || kind?.fields.required.includes("timestamp") === true;
   if (shouldDefaultTimestamp && (options.okfVersion === "0.2"

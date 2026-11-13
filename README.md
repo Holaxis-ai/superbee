@@ -316,3 +316,31 @@ One task guide lives in the repository too:
 Apache-2.0 © 2026 Holaxis
 
 See [Site declaration validation](packages/publication/SITE-MANIFEST.md) for the read-only publication contract used by site builders.
+
+### Experimental qualified local Kinds
+
+Source builds expose `superbee qualified --help` for new standalone filesystem bundles using
+OKF 0.2 with the Superbee-owned `qualified-kinds/v1` profile. This is not a new ratified OKF
+edition, a hosted capability, or a promise that old binaries understand the profile.
+
+The supported commands are `qualified inspect`, `preflight`, `init`, `install`, `kinds`, `local`, `new`, `read`,
+`update`, `list`, `export`, and `import`. `kinds` returns exact selectors and required fields;
+use that selector in a `new` input JSON file. Two recipes can each declare `Decision` at
+`conventions/decision` without renaming either. `local` adds a separate local Kind or derives
+one using `from`, preserving the publisher's immutable definition. Ordinary commands refuse
+qualified bundles and point to this command family. Typed links, lifecycle operations, Views,
+Git-board sync, hosted operation and legacy conversion remain unsupported.
+
+`qualified inspect --input artifact.json --actor openai/codex --out approval.json` computes
+the source digest and writes an explicitly unverified approval draft. Independently verify its
+source coordinates before passing that file to `install --approval`; no manual hashing is needed.
+`qualified preflight --input set.json` checks multiple selections with the public
+`recipe-set-preflight/v2` contract. Neither inspection nor preflight grants trust.
+
+Installation accepts a declarative v2 artifact and a separate `--approval` JSON file containing
+an explicitly accepted repository ID, owner ID, full commit, release, source digest, actor and
+approval time. Acquire and verify those coordinates independently before approving them;
+artifact metadata does not authenticate its publisher. `qualified export` writes a new portable
+JSON snapshot retaining exact definitions, approvals, local origin and record bindings;
+`qualified import` accepts it only into an empty directory. Ordinary filesystem copies retain
+these same facts when all files are copied. No acquisition code or recipe code runs on install.
