@@ -149,6 +149,8 @@ test("a stray [ before a link: edges agree with parseLinksFromDoc and a near mis
     "![ stray then [Task](/tasks/x.md)",
     "[ stray then ![pic](/tasks/x.md)",
     "[a [b] c](/tasks/x.md)",
+    "[see `x[` y](/tasks/x.md)",
+    "`a[` then [see `x[` y](/tasks/x.md)",
   ];
   for (const body of bodies) {
     const source = doc("notes/a", body);
@@ -160,6 +162,10 @@ test("a stray [ before a link: edges agree with parseLinksFromDoc and a near mis
   assert.equal((finding?.details as { reason?: string } | undefined)?.reason, "missing-md-extension");
   const { start, end } = finding!.details as { start: number; end: number };
   assert.equal(body.slice(start, end), "[Task](tasks/x)");
+  const inText = "[see `x[` y](tasks/x)";
+  const [codeInText] = inspectDocumentLinks(doc("notes/a", inText)).findings;
+  assert.equal((codeInText?.details as { reason?: string } | undefined)?.reason, "missing-md-extension");
+  assert.equal((codeInText!.details as { text: string }).text, "see `x[` y");
 });
 
 test("offsets are UTF-16 code units", () => {

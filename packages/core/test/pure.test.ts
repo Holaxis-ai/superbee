@@ -139,6 +139,9 @@ test("links: a stray [ before a real link does not become part of that link", ()
   // A stray [ no longer decides whether what follows is an image.
   assert.deepEqual(edges("![ stray then [Task](/tasks/x.md)"), task);
   assert.deepEqual(edges("[ stray then ![pic](/tasks/x.md)"), []);
+  // An open bracket inside code within link text does not restart the link.
+  assert.deepEqual(edges("[see `x[` y](/tasks/x.md)"), [{ to: "tasks/x", text: "see `x[` y" }]);
+  assert.deepEqual(edges("`a[` then [see `x[` y](/tasks/x.md)"), [{ to: "tasks/x", text: "see `x[` y" }]);
   // Unchanged: nested brackets in link text are still not a link (the scanner does not balance brackets).
   assert.deepEqual(edges("[a [b] c](/tasks/x.md)"), []);
   // Unchanged: the scanner does not read backslash escapes, so this still registers.
