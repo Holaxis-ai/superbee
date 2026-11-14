@@ -35,7 +35,7 @@ import {
 } from "../kinds.js";
 import { inspectKindDeprecatedUsage, type DeprecatedUsage } from "../kind-deprecation.js";
 import { loadKinds } from "../kinds-load.js";
-import { collectLinkDeclarations, localEdgeQualifiedDeclaration, qualifiedEdgeViolation } from "../link-types.js";
+import { collectLinkDeclarations, localEdgeQualifiedDeclaration, localEdgeViolation, qualifiedEdgeViolation } from "../link-types.js";
 import { parseLinksFromDoc } from "../links.js";
 import { isOkfLifecycleStatus } from "../okf-lifecycle.js";
 import { invalidOkfTimestamps } from "../okf-timestamps.js";
@@ -407,21 +407,16 @@ export async function bundleHealth(bundle: Bundle, options: BundleHealthOptions 
       }
 
       // A resolved edge whose text is a declared link type its source or target does not conform to.
-      const declared = linkTypeDeclarations.get(l.text);
-      if (declared && declared.length > 0 && !qualifiedDeclaration) {
-        const sourceType = docType(doc);
-        const targetType = docType(docsById.get(l.to)!);
-        const matched = declared.find((d) => d.governs === sourceType) ?? declared[0]!;
-        const sourceOk = declared.some((d) => d.governs === sourceType);
-        const targetOk = targetType === matched.target;
-        if (!sourceOk || !targetOk) {
-          linkTypeViolations.push({
-            from: doc.id,
-            to: l.to,
-            text: l.text,
-            expected: `${matched.governs} -> ${matched.target}`,
-          });
-        }
+      const matched = qualifiedDeclaration
+        ? null
+        : localEdgeViolation(linkTypeDeclarations.get(l.text), docType(doc), docType(docsById.get(l.to)!));
+      if (matched) {
+        linkTypeViolations.push({
+          from: doc.id,
+          to: l.to,
+          text: l.text,
+          expected: `${matched.governs} -> ${matched.target}`,
+        });
       }
     }
   }

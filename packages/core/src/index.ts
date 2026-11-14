@@ -316,8 +316,35 @@ export {
 export type { QualifiedRef, QualifiedLink, ParsedQualifiedHref } from "./qualified-links.js";
 // The typed-edge vocabulary: `link-type text -> declaring kind(s)` over a loaded registry, and the
 // qualified-target checks `link`, `status` and recipe evolution share.
-export { collectLinkDeclarations, localEdgeQualifiedDeclaration, qualifiedEdgeViolation } from "./link-types.js";
+export { collectLinkDeclarations, localEdgeQualifiedDeclaration, localEdgeViolation, qualifiedEdgeViolation } from "./link-types.js";
 export type { LinkTypeDeclaration } from "./link-types.js";
+// Link findings: the edges a body registers and the link-shaped text that will not register.
+export {
+  LINK_NOT_RECOGNIZED,
+  LINK_TARGET_ABSENT,
+  LINK_TYPE_VIOLATION,
+  LINK_TYPE_CASE_VARIANT,
+  inspectDocumentLinks,
+  documentLinkReport,
+  linkTargetAbsentFinding,
+  linkTypeFinding,
+} from "./link-findings.js";
+export type {
+  LinkNotRecognizedReason,
+  LinkFindingLocation,
+  LinkNotRecognizedDetails,
+  LinkTargetAbsentDetails,
+  LinkTypeViolationDetails,
+  LinkTypeCaseVariantDetails,
+  LinkNotRecognizedFinding,
+  LinkTargetAbsentFinding,
+  LinkTypeViolationFinding,
+  LinkTypeCaseVariantFinding,
+  LinkTypeFinding,
+  LinkFinding,
+  LinkTargetReader,
+  DocumentLinkReport,
+} from "./link-findings.js";
 export {
   isHostedBundleId,
   BUNDLE_NAME_DOC_ID,
@@ -482,7 +509,8 @@ export type {
 export { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 
 export { kindCoverage } from "./kind-coverage.js";
-export { KIND_FIELD_UNDECLARED, isKindEnvelopeField, kindDeclaredFieldNames, kindDeclaredStorageFields, undeclaredFrontmatterKeys, undeclaredFieldWarnings } from "./kind-undeclared-fields.js";
+export { KIND_FIELD_UNDECLARED, KIND_TYPE_UNDECLARED, SYSTEM_DOCUMENT_TYPES, isKindEnvelopeField, kindDeclaredFieldNames, kindDeclaredStorageFields, kindFieldsUndeclaredFinding, undeclaredFrontmatterKeys, undeclaredFieldWarnings, undeclaredTypeFinding, unknownKindFieldNames } from "./kind-undeclared-fields.js";
+export type { KindFieldUndeclaredDetails, KindFieldUndeclaredFinding, KindTypeUndeclaredDetails, KindTypeUndeclaredFinding } from "./kind-undeclared-fields.js";
 
 export { bodyPage, PAGE_DEFAULT_BYTES, PAGE_MAX_BYTES, PAGE_MIN_BYTES, type BodyPage } from "./body-pages.js";
 

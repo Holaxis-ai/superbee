@@ -1,17 +1,21 @@
 /**
  * The one answer to "does this Kind declare this frontmatter key?" for stored documents, and the
  * write-time undeclared-field check built on it. `kindCoverage` reports the same keys after the
- * fact; the CLI's flag parser resolves flags through the same {@link resolveKindFieldCoordinate}.
+ * fact; surfaces resolve caller-named fields through {@link unknownKindFieldNames} and report them
+ * with {@link kindFieldsUndeclaredFinding}. The same "is it declared?" question for a document's
+ * `type` is {@link undeclaredTypeFinding}.
  */
 import { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 import { okfValuesEqual } from "./okf-authored-values.js";
 import { isOkfStandardField } from "./okf-standard-fields.js";
 import {
+  CONVENTION_TYPE,
   progressStatusCoordinate,
   projectKindForAuthoring,
   resolveKindFieldCoordinate,
   SUPERBEE_PROGRESS_STATUS_FIELD,
   type KindConvention,
+  type KindRegistry,
 } from "./kinds.js";
 import type { ValidationWarning } from "./validation.js";
 import type { Frontmatter } from "./types.js";
@@ -66,4 +70,109 @@ export function undeclaredFieldWarnings(
     .filter((key) => !existing || !Object.hasOwn(existing, key) || !okfValuesEqual(existing[key], candidate[key]))
     .sort()
     .map((key) => ({ code: KIND_FIELD_UNDECLARED, message: message(key), field: key, severity: "warning" as const }));
+}
+
+export type KindFieldUndeclaredDetails = {
+  /** The Kind's `governs` name. */
+  kind: string;
+  /** The named fields the Kind does not declare, in the caller's order. */
+  fields: string[];
+  /** The authoring names the Kind declares ({@link kindDeclaredFieldNames}). */
+  declared: string[];
+};
+
+export interface KindFieldUndeclaredFinding extends ValidationWarning {
+  code: typeof KIND_FIELD_UNDECLARED;
+  details: KindFieldUndeclaredDetails;
+}
+
+/**
+ * The field names a caller addressed (flags, form inputs, tool arguments) that this Kind does not
+ * declare, resolved through the one field resolver ({@link resolveKindFieldCoordinate}), in input
+ * order. A logical name the edition stores under another key (`progress_status`) resolves.
+ */
+export function unknownKindFieldNames(okfVersion: string | undefined, kind: KindConvention, fields: Iterable<string>): string[] {
+  return [...fields].filter((field) => resolveKindFieldCoordinate(okfVersion, kind, field) === undefined);
+}
+
+/**
+ * The structured finding for fields a caller addressed that `kind` does not declare, or undefined
+ * when `fields` is empty. Surfaces word the remedy (a CLI command, a tool name) from `details`.
+ */
+export function kindFieldsUndeclaredFinding(
+  okfVersion: string | undefined,
+  kind: KindConvention,
+  fields: readonly string[],
+): KindFieldUndeclaredFinding | undefined {
+  if (fields.length === 0) return undefined;
+  return {
+    code: KIND_FIELD_UNDECLARED,
+    message: "The document's Kind does not declare one or more of the named fields.",
+    ...(fields.length === 1 ? { field: fields[0]! } : {}),
+    severity: "warning",
+    details: { kind: kind.governs, fields: [...fields], declared: kindDeclaredFieldNames(okfVersion, kind) },
+  };
+}
+
+export const KIND_TYPE_UNDECLARED = "KIND_TYPE_UNDECLARED";
+
+/**
+ * Document types Superbee itself owns. They are never governed by a bundle Kind, so writing one is
+ * never a sign of a missing or misspelled Kind. Pinned to their owning constants by tests.
+ */
+export const SYSTEM_DOCUMENT_TYPES: ReadonlySet<string> = new Set([
+  CONVENTION_TYPE,
+  "View",
+  "Connector",
+  "Site",
+  "Bundle Name",
+  "Bundle Dependencies",
+  "Promotion",
+]);
+
+export type KindTypeUndeclaredDetails = {
+  /** The document's `type`. */
+  type: string;
+  /** Every type the bundle's Kinds govern, sorted. */
+  declaredTypes: string[];
+  /** A declared type equal to `type` ignoring case and spacing: probably the intended one. */
+  suggestedType?: string;
+};
+
+export interface KindTypeUndeclaredFinding extends ValidationWarning {
+  code: typeof KIND_TYPE_UNDECLARED;
+  details: KindTypeUndeclaredDetails;
+}
+
+function typeKey(type: string): string {
+  return type.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/**
+ * A finding when a document's `type` is not governed by any Kind in a bundle that declares Kinds.
+ * Ungoverned types stay legal (they are how new Kinds are discovered), so this is `info`, raised to
+ * `warning` when a declared type differs only in case or spacing. A bundle with no Kinds, a
+ * missing or non-string type, and Superbee's own system types never produce one.
+ */
+export function undeclaredTypeFinding(registry: KindRegistry, frontmatter: Frontmatter): KindTypeUndeclaredFinding | undefined {
+  const type = frontmatter.type;
+  if (typeof type !== "string" || type.trim() === "" || registry.kinds.size === 0) return undefined;
+  if (registry.kinds.has(type) || SYSTEM_DOCUMENT_TYPES.has(type)) return undefined;
+  const declaredTypes = [...registry.kinds.keys()].sort();
+  const suggestedType = declaredTypes.find((declared) => typeKey(declared) === typeKey(type));
+  return suggestedType === undefined
+    ? {
+      code: KIND_TYPE_UNDECLARED,
+      message: "No Kind in this bundle governs this document's type, so the document is not checked against a Kind.",
+      field: "type",
+      severity: "info",
+      details: { type, declaredTypes },
+    }
+    : {
+      code: KIND_TYPE_UNDECLARED,
+      message: "No Kind governs this document's type, but a declared type differs from it only in case or spacing.",
+      field: "type",
+      severity: "warning",
+      details: { type, declaredTypes, suggestedType },
+    };
 }
