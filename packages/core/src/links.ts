@@ -148,10 +148,11 @@ export function extractMarkdownLinkSpans(source: string, options: { skipCode?: b
   for (let cursor = 0; cursor < body.length; cursor++) {
     const char = body[cursor]!;
 
-    // This is a constant-state simulation of the former
-    // /\[([^\]]*)\]\(([^)\s]+)\)/g expression. Keeping only the earliest
-    // candidate in each state preserves the regex's leftmost-first behavior
-    // without backtracking over hostile input.
+    // This is a constant-state simulation of /\[([^[\]]*)\]\(([^)\s]+)\)/g.
+    // Keeping only the earliest candidate in each state preserves the regex's
+    // leftmost-first behavior without backtracking over hostile input. Link text
+    // opens at the LAST `[` before its `]`, so a stray `[` earlier (in code or
+    // prose) is literal text, not the start of the next link.
     if (hrefRest) {
       if (char === ")") {
         const image = hrefRest.open > 0 && body[hrefRest.open - 1] === "!";
@@ -191,7 +192,7 @@ export function extractMarkdownLinkSpans(source: string, options: { skipCode?: b
       afterClose = { open: textOpen, close: cursor };
       textOpen = -1;
     }
-    if (char === "[" && textOpen < 0) textOpen = cursor;
+    if (char === "[") textOpen = cursor;
   }
   return out;
 }

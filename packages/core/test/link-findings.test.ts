@@ -137,6 +137,31 @@ test("link-shaped text inside code is not reported, while edges inside code stay
   assert.deepEqual(report.findings.map((f) => (f.details as { href: string }).href), ["notes/e"]);
 });
 
+test("a stray [ before a link: edges agree with parseLinksFromDoc and a near miss after code is still reported", () => {
+  const bodies = [
+    "see `a[0]` and [Task](/tasks/x.md)",
+    "see `a[` and [Task](/tasks/x.md)",
+    "see `a[` and\n\n[Task](/tasks/x.md)",
+    "```\nx = [\n```\n\n[Task](/tasks/x.md)",
+    "an open [ bracket then [Task](/tasks/x.md)",
+    "an open [ bracket\n\nlater [Task](/tasks/x.md)",
+    "\\[ escaped then [Task](/tasks/x.md)",
+    "![ stray then [Task](/tasks/x.md)",
+    "[ stray then ![pic](/tasks/x.md)",
+    "[a [b] c](/tasks/x.md)",
+  ];
+  for (const body of bodies) {
+    const source = doc("notes/a", body);
+    const report = inspectDocumentLinks(source);
+    assert.deepEqual(report.links, parseLinksFromDoc(source), body);
+  }
+  const body = "see `a[` and [Task](tasks/x)";
+  const [finding] = inspectDocumentLinks(doc("notes/a", body)).findings;
+  assert.equal((finding?.details as { reason?: string } | undefined)?.reason, "missing-md-extension");
+  const { start, end } = finding!.details as { start: number; end: number };
+  assert.equal(body.slice(start, end), "[Task](tasks/x)");
+});
+
 test("offsets are UTF-16 code units", () => {
   const body = "é😀 [x](notes/b)";
   const [finding] = inspectDocumentLinks(doc("notes/a", body)).findings;
