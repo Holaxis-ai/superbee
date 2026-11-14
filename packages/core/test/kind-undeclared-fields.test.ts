@@ -142,6 +142,12 @@ test("undeclaredTypeFinding: only in a bundle with Kinds, never for Superbee's o
   const nearMiss = undeclaredTypeFinding(r, at("signals/s", { type: " signal" }))!;
   assert.equal(nearMiss.severity, "warning");
   assert.equal(nearMiss.details.suggestedType, "Signal");
+  // Case, spacing, hyphen and underscore variants of a multi-word type are near misses too.
+  const two = registry({ ...kind(), id: "conventions/context-note", title: "Context Note", governs: "Context Note" });
+  for (const variant of ["ContextNote", "context-note", "Context_Note", "context  note", "CONTEXT NOTE"]) {
+    assert.equal(undeclaredTypeFinding(two, at("notes/n", { type: variant }))?.details.suggestedType, "Context Note", variant);
+  }
+  assert.equal(undeclaredTypeFinding(two, at("notes/n", { type: "Context Notes" }))?.details.suggestedType, undefined, "a different word is not a near miss");
 });
 
 test("isSystemDocument: graph definitions plus owned types, whose literals agree with their owning constants", async () => {

@@ -1,13 +1,15 @@
 // Post-write findings for an authoring receipt (`doc write`, `doc update`, `doc field`, `new`):
 // links in the stored body that will not register, links whose target has no document, and a
-// type no Kind declares. Core owns every rule (`documentLinkReport`, `undeclaredTypeFinding`);
+// type that misspells a declared Kind's type. Core owns every rule (`documentLinkReport`, `undeclaredTypeFinding`);
 // this module only words each finding's next step for the CLI, as `link add` words its own.
 // Advisory and post-write: the document is already stored, so nothing here can fail the write.
 import {
   documentLinkReport,
+  inspectDocumentLinks,
   readDoc,
   undeclaredTypeFinding,
   type Bundle,
+  type ConceptId,
   type KindRegistry,
   type LinkFinding,
   type LinkTargetReader,
@@ -49,10 +51,11 @@ const REASONS: Record<string, string> = {
   "invalid-target": "its target is not a valid document id",
 };
 
-function linkWarning(finding: LinkFinding): ValidationWarning | undefined {
+function linkWarning(finding: LinkFinding, body: string): ValidationWarning | undefined {
   if (finding.code === "LINK_NOT_RECOGNIZED") {
     const d = finding.details;
-    const written = d.reason === "wikilink" ? `[[${d.href}]]` : `[${d.text}](${d.href})`;
+    // Quoted exactly as the body has it (an aliased wikilink keeps its alias).
+    const written = body.slice(d.start, d.end);
     const fix = d.suggestedHref !== undefined ? `; write [${d.text || d.suggestedTo}](${d.suggestedHref})` : "";
     return {
       code: finding.code,
@@ -85,13 +88,87 @@ function findingKey(finding: LinkFinding): string {
   return JSON.stringify([finding.code, d.reason ?? null, d.href ?? null, d.text ?? null, d.to ?? null]);
 }
 
+const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/**
+ * One read per target across every check of this write, and a target that cannot be read
+ * (malformed frontmatter, a spelling that folds onto another document) is recorded and treated as
+ * present, so it never hides the findings about the other links.
+ */
+function cachedReader(bundle: Bundle, failures: Map<ConceptId, string>): LinkTargetReader {
+  const read = bundleTargetReader(bundle);
+  const cache = new Map<ConceptId, Promise<OkfDocument | undefined>>();
+  return (id) => {
+    const held = cache.get(id);
+    if (held) return held;
+    // An empty type: present, and no Kind's, which is all a check without a registry asks.
+    const pending = read(id).catch((err: unknown): OkfDocument => {
+      failures.set(id, errorText(err));
+      return { id, frontmatter: { type: "" }, body: "" };
+    });
+    cache.set(id, pending);
+    return pending;
+  };
+}
+
+/** The link findings `doc`'s stored body has that `prior`'s did not, and the targets that could not be read. */
+async function linkFindings(bundle: Bundle, doc: OkfDocument, prior: OkfDocument | undefined): Promise<ValidationWarning[]> {
+  const failures = new Map<ConceptId, string>();
+  const readTarget = cachedReader(bundle, failures);
+  let findings: LinkFinding[];
+  let unavailable: string | undefined;
+  try {
+    ({ findings } = await documentLinkReport(doc, { readTarget }));
+  } catch (err) {
+    // Anything but a target read: the findings that need no read still stand.
+    ({ findings } = inspectDocumentLinks(doc));
+    unavailable = errorText(err);
+  }
+  const unreadable = [...failures];
+  // Counted, so a second copy of an old finding is new.
+  const before = new Map<string, number>();
+  if (prior !== undefined && findings.length > 0) {
+    let old: LinkFinding[];
+    try {
+      ({ findings: old } = await documentLinkReport({ ...prior, id: doc.id }, { readTarget }));
+    } catch {
+      ({ findings: old } = inspectDocumentLinks({ ...prior, id: doc.id }));
+    }
+    for (const finding of old) before.set(findingKey(finding), (before.get(findingKey(finding)) ?? 0) + 1);
+  }
+  const links = findings.flatMap((finding) => {
+    const key = findingKey(finding);
+    const seen = before.get(key) ?? 0;
+    if (seen > 0) {
+      before.set(key, seen - 1);
+      return [];
+    }
+    const warning = linkWarning(finding, doc.body);
+    return warning ? [warning] : [];
+  });
+  const out = links.slice(0, LINK_FINDINGS_SHOWN);
+  if (links.length > LINK_FINDINGS_SHOWN) {
+    const last = out[out.length - 1]!;
+    out[out.length - 1] = { ...last, message: `${last.message} (${links.length - LINK_FINDINGS_SHOWN} more link findings not shown)` };
+  }
+  for (const [to, reason] of unreadable.slice(0, LINK_FINDINGS_SHOWN)) {
+    out.push({ code: "LINK_LINT_UNAVAILABLE", message: `the link to '${to}' could not be checked: ${reason}`, field: "body", severity: "warning", details: { to } });
+  }
+  if (unavailable !== undefined) {
+    out.push({ code: "LINK_LINT_UNAVAILABLE", message: `the document was written, but its links to other documents could not be checked: ${unavailable}`, field: "body", severity: "warning" });
+  }
+  return out;
+}
+
 /**
  * The findings this write introduced into `doc` as stored, against `prior` (the version it
  * replaced; undefined for a create): link findings the prior body did not already have (at most
- * {@link LINK_FINDINGS_SHOWN}, in body order), and an undeclared type when the type is new to the
- * document. A write that leaves the body and type as they were introduces nothing, so a repeated
- * edit never repeats an old finding. Empty when there is nothing to say. A read that fails while
- * checking is reported as `LINK_LINT_UNAVAILABLE`, never thrown: the write already landed.
+ * {@link LINK_FINDINGS_SHOWN}, in body order), and a near-miss type (one a declared Kind's type
+ * matches but for case, spacing, hyphens or underscores) when the type is new to the document. A
+ * deliberate ad-hoc type is legal and says nothing. A write that leaves the body and type as they
+ * were introduces nothing, so a repeated edit never repeats an old finding. Empty when there is
+ * nothing to say. A target that cannot be read is `LINK_LINT_UNAVAILABLE` for that target, never
+ * thrown: the write already landed.
  */
 export async function writeFindings(
   bundle: Bundle,
@@ -99,54 +176,16 @@ export async function writeFindings(
   registry: KindRegistry,
   prior: OkfDocument | undefined,
 ): Promise<ValidationWarning[]> {
-  const out: ValidationWarning[] = [];
-  if (prior === undefined || prior.body !== doc.body) {
-    try {
-      const readTarget = bundleTargetReader(bundle);
-      const { findings } = await documentLinkReport(doc, { readTarget });
-      // Counted, so a second copy of an old finding is new.
-      const before = new Map<string, number>();
-      if (prior !== undefined && findings.length > 0) {
-        for (const finding of (await documentLinkReport({ ...prior, id: doc.id }, { readTarget })).findings) {
-          before.set(findingKey(finding), (before.get(findingKey(finding)) ?? 0) + 1);
-        }
-      }
-      const links = findings.flatMap((finding) => {
-        const key = findingKey(finding);
-        const seen = before.get(key) ?? 0;
-        if (seen > 0) {
-          before.set(key, seen - 1);
-          return [];
-        }
-        const warning = linkWarning(finding);
-        return warning ? [warning] : [];
-      });
-      out.push(...links.slice(0, LINK_FINDINGS_SHOWN));
-      if (links.length > LINK_FINDINGS_SHOWN) {
-        const last = out[out.length - 1]!;
-        out[out.length - 1] = { ...last, message: `${last.message} (${links.length - LINK_FINDINGS_SHOWN} more link findings not shown)` };
-      }
-    } catch (err) {
-      out.push({
-        code: "LINK_LINT_UNAVAILABLE",
-        message: `the document was written, but its links could not be checked: ${err instanceof Error ? err.message : String(err)}`,
-        field: "body",
-        severity: "warning",
-      });
-    }
-  }
+  const out = prior === undefined || prior.body !== doc.body ? await linkFindings(bundle, doc, prior) : [];
   const type = prior === undefined || prior.frontmatter.type !== doc.frontmatter.type ? undeclaredTypeFinding(registry, doc) : undefined;
-  if (type) {
-    const { type: written, declaredTypes, suggestedType } = type.details;
+  if (type?.details.suggestedType !== undefined) {
+    const { type: written, suggestedType } = type.details;
     out.push({
       code: type.code,
-      message: suggestedType !== undefined
-        ? `no Kind declares type '${written}'; did you mean '${suggestedType}'?`
-        : `no Kind declares type '${written}', so it is not checked against a Kind (declared: ${declaredTypes.slice(0, 8).join(", ")}${declaredTypes.length > 8 ? ", ..." : ""}).`,
+      message: `no Kind declares type '${written}'; did you mean '${suggestedType}'?`,
       field: "type",
       severity: type.severity,
-      // The full declared list is `kinds`'s to print; the receipt names the type and any suggestion.
-      details: { type: written, ...(suggestedType !== undefined ? { suggestedType } : {}) },
+      details: { type: written, suggestedType },
     });
   }
   return out;

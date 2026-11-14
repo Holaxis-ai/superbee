@@ -87,8 +87,9 @@ document cannot be nonconforming, even in advisory mode.
 
 After a changed write, warnings also name what it introduced that will not work as meant: a link
 that will not register (LINK_NOT_RECOGNIZED, with the href that would), a link to a document that
-does not exist yet (LINK_TARGET_ABSENT; still allowed) and a type no Kind declares
-(KIND_TYPE_UNDECLARED). They never refuse the write.
+does not exist yet (LINK_TARGET_ABSENT; still allowed) and a type that misses a declared Kind's
+type only by case, spacing, hyphens or underscores (KIND_TYPE_UNDECLARED, naming the declared
+one). They never refuse the write.
 
 Options:
   --type <t>           OKF concept type (non-empty)                          [required]
