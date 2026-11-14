@@ -8,8 +8,8 @@
 import { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 import { okfValuesEqual } from "./okf-authored-values.js";
 import { isOkfStandardField } from "./okf-standard-fields.js";
+import { isSystemDocument } from "./system-documents.js";
 import {
-  CONVENTION_TYPE,
   progressStatusCoordinate,
   projectKindForAuthoring,
   resolveKindFieldCoordinate,
@@ -18,7 +18,7 @@ import {
   type KindRegistry,
 } from "./kinds.js";
 import type { ValidationWarning } from "./validation.js";
-import type { Frontmatter } from "./types.js";
+import type { ConceptId, Frontmatter } from "./types.js";
 
 export const KIND_FIELD_UNDECLARED = "KIND_FIELD_UNDECLARED";
 
@@ -49,29 +49,6 @@ export function undeclaredFrontmatterKeys(okfVersion: string | undefined, kind: 
   return Object.keys(frontmatter).filter((key) => !isKindEnvelopeField(key) && !declared.has(key));
 }
 
-/**
- * One finding per undeclared key the write adds or changes. Keys the write leaves exactly as
- * stored never count, so existing drift stays editable and `kinds --coverage` remains its report.
- */
-export function undeclaredFieldWarnings(
-  okfVersion: string | undefined,
-  kind: KindConvention,
-  candidate: Frontmatter,
-  existing?: Frontmatter,
-): ValidationWarning[] {
-  const declared = kindDeclaredFieldNames(okfVersion, kind);
-  const list = declared.length > 0 ? declared.join(", ") : "none";
-  // Authors see logical names; a raw key spelled with one stores nothing the Kind reads.
-  const progress = progressStatusCoordinate(okfVersion, kind);
-  const message = (key: string) => progress && key === progress.logicalField && key !== progress.storageField
-    ? `'${key}' is the field name, not its stored key in this bundle; write it in frontmatter as '${progress.storageField}'.`
-    : `'${key}' is not declared by kind '${kind.governs}' (declared: ${list}).`;
-  return undeclaredFrontmatterKeys(okfVersion, kind, candidate)
-    .filter((key) => !existing || !Object.hasOwn(existing, key) || !okfValuesEqual(existing[key], candidate[key]))
-    .sort()
-    .map((key) => ({ code: KIND_FIELD_UNDECLARED, message: message(key), field: key, severity: "warning" as const }));
-}
-
 export type KindFieldUndeclaredDetails = {
   /** The Kind's `governs` name. */
   kind: string;
@@ -84,6 +61,37 @@ export type KindFieldUndeclaredDetails = {
 export interface KindFieldUndeclaredFinding extends ValidationWarning {
   code: typeof KIND_FIELD_UNDECLARED;
   details: KindFieldUndeclaredDetails;
+}
+
+/**
+ * One finding per undeclared key the write adds or changes. Keys the write leaves exactly as
+ * stored never count, so existing drift stays editable and `kinds --coverage` remains its report.
+ * Each carries the same `details` as {@link kindFieldsUndeclaredFinding}, so `KIND_FIELD_UNDECLARED`
+ * has one shape; its message keeps naming the key, as stored findings always have.
+ */
+export function undeclaredFieldWarnings(
+  okfVersion: string | undefined,
+  kind: KindConvention,
+  candidate: Frontmatter,
+  existing?: Frontmatter,
+): KindFieldUndeclaredFinding[] {
+  const declared = kindDeclaredFieldNames(okfVersion, kind);
+  const list = declared.length > 0 ? declared.join(", ") : "none";
+  // Authors see logical names; a raw key spelled with one stores nothing the Kind reads.
+  const progress = progressStatusCoordinate(okfVersion, kind);
+  const message = (key: string) => progress && key === progress.logicalField && key !== progress.storageField
+    ? `'${key}' is the field name, not its stored key in this bundle; write it in frontmatter as '${progress.storageField}'.`
+    : `'${key}' is not declared by kind '${kind.governs}' (declared: ${list}).`;
+  return undeclaredFrontmatterKeys(okfVersion, kind, candidate)
+    .filter((key) => !existing || !Object.hasOwn(existing, key) || !okfValuesEqual(existing[key], candidate[key]))
+    .sort()
+    .map((key) => ({
+      code: KIND_FIELD_UNDECLARED,
+      message: message(key),
+      field: key,
+      severity: "warning" as const,
+      details: { kind: kind.governs, fields: [key], declared: [...declared] },
+    }));
 }
 
 /**
@@ -116,20 +124,6 @@ export function kindFieldsUndeclaredFinding(
 
 export const KIND_TYPE_UNDECLARED = "KIND_TYPE_UNDECLARED";
 
-/**
- * Document types Superbee itself owns. They are never governed by a bundle Kind, so writing one is
- * never a sign of a missing or misspelled Kind. Pinned to their owning constants by tests.
- */
-export const SYSTEM_DOCUMENT_TYPES: ReadonlySet<string> = new Set([
-  CONVENTION_TYPE,
-  "View",
-  "Connector",
-  "Site",
-  "Bundle Name",
-  "Bundle Dependencies",
-  "Promotion",
-]);
-
 export type KindTypeUndeclaredDetails = {
   /** The document's `type`. */
   type: string;
@@ -152,12 +146,16 @@ function typeKey(type: string): string {
  * A finding when a document's `type` is not governed by any Kind in a bundle that declares Kinds.
  * Ungoverned types stay legal (they are how new Kinds are discovered), so this is `info`, raised to
  * `warning` when a declared type differs only in case or spacing. A bundle with no Kinds, a
- * missing or non-string type, and Superbee's own system types never produce one.
+ * missing or non-string type, and Superbee's own documents ({@link isSystemDocument}) never
+ * produce one.
  */
-export function undeclaredTypeFinding(registry: KindRegistry, frontmatter: Frontmatter): KindTypeUndeclaredFinding | undefined {
-  const type = frontmatter.type;
+export function undeclaredTypeFinding(
+  registry: KindRegistry,
+  doc: { id: ConceptId; frontmatter: Frontmatter },
+): KindTypeUndeclaredFinding | undefined {
+  const type = doc.frontmatter.type;
   if (typeof type !== "string" || type.trim() === "" || registry.kinds.size === 0) return undefined;
-  if (registry.kinds.has(type) || SYSTEM_DOCUMENT_TYPES.has(type)) return undefined;
+  if (registry.kinds.has(type) || isSystemDocument(doc)) return undefined;
   const declaredTypes = [...registry.kinds.keys()].sort();
   const suggestedType = declaredTypes.find((declared) => typeKey(declared) === typeKey(type));
   return suggestedType === undefined

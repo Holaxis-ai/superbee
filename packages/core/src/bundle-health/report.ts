@@ -16,9 +16,7 @@ import { listBlobs, query, readBundleOkfVersion } from "../bundle-ops.js";
 import { createLocalResolver, resolveQualifiedLinks, type BundleBinding, type UnresolvedReason } from "../cross-bundle.js";
 import {
   BUNDLE_NAME_DOC_ID,
-  BUNDLE_NAME_DOC_TYPE,
   DEPENDENCIES_DOC_ID,
-  DEPENDENCIES_DOC_TYPE,
   declaredBundleId,
   parseDependencies,
   type ParsedDependencies,
@@ -52,7 +50,7 @@ import { isQualifiedHref, parseQualifiedLinks, type QualifiedLink, type Qualifie
 import type { Bundle, OkfDocument } from "../types.js";
 import type { ValidationWarning } from "../validation.js";
 import { trustTierCounts, type TrustTierCounts } from "../verification.js";
-import { isLegacyPageDoc } from "./legacy-page.js";
+import { isGraphDefinitionDocument } from "../system-documents.js";
 
 /**
  * Binds declared dependencies: called once, after every read has completed and `docs/dependencies`
@@ -265,20 +263,6 @@ function diagnosticValue(value: unknown): unknown {
     // YAML aliases can form cycles; the report must still name the offending document.
     return `<non-JSON ${Array.isArray(value) ? "array" : typeof value}: circular or too deeply nested>`;
   }
-}
-
-/**
- * Documents that define the bundle's operating model or identity rather than participating as
- * concept instances. Their lack of inbound concept links is intentional, so they are never orphans.
- */
-function isGraphDefinition(doc: OkfDocument): boolean {
-  const type = docType(doc);
-  return type === "Convention" ||
-    isPageTypeName(type) ||
-    isLegacyPageDoc(doc.frontmatter) ||
-    (type === "Reference" && doc.id.startsWith("references/")) ||
-    (type === BUNDLE_NAME_DOC_TYPE && doc.id === BUNDLE_NAME_DOC_ID) ||
-    (type === DEPENDENCIES_DOC_TYPE && doc.id === DEPENDENCIES_DOC_ID);
 }
 
 function okfV02WorkflowStatusCollisions(registry: KindRegistry, docs: OkfDocument[]): StatusFieldRow[] {
@@ -517,7 +501,7 @@ export async function bundleHealth(bundle: Bundle, options: BundleHealthOptions 
   const orphans: DocTypeRow[] = [];
   if (inbound.size > 0) {
     for (const doc of docs) {
-      if (!inbound.has(doc.id) && !outbound.has(doc.id) && !isGraphDefinition(doc)) {
+      if (!inbound.has(doc.id) && !outbound.has(doc.id) && !isGraphDefinitionDocument(doc)) {
         orphans.push({ id: doc.id, type: docType(doc) });
       }
     }

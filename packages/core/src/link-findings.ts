@@ -15,7 +15,7 @@
  * Pure apart from the caller-supplied target reader, so it stays backend- and browser-neutral.
  */
 import { collectLinkDeclarations, localEdgeQualifiedDeclaration, localEdgeViolation, type LinkTypeDeclaration } from "./link-types.js";
-import { extractMarkdownLinkSpans, isExternalHref, maskMarkdownCode, resolveConceptId } from "./links.js";
+import { extractMarkdownLinkSpans, isExternalHref, maskMarkdownCode, normalizeSegments, resolveConceptId } from "./links.js";
 import { isReservedFile } from "./paths.js";
 import { isQualifiedHref, parseQualifiedKindTarget } from "./qualified-links.js";
 import type { KindRegistry } from "./kinds.js";
@@ -38,7 +38,10 @@ export type LinkNotRecognizedReason =
   /** A `.md` target that does not resolve to a valid document id. */
   | "invalid-target";
 
-/** Offsets of the link in the document body: `[start, end)`. */
+/**
+ * Offsets of the link in the document body, `[start, end)`, in UTF-16 code units (JavaScript
+ * string indices), so `body.slice(start, end)` is the link as written. Not bytes or code points.
+ */
 export type LinkFindingLocation = {
   start: number;
   end: number;
@@ -140,6 +143,28 @@ function hrefPath(href: string): string {
   return (href.split("#")[0] ?? "").split("?")[0]?.trim() ?? "";
 }
 
+/** Characters a markdown link target cannot carry unescaped, so a suggestion with one would not register either. */
+const UNREGISTRABLE = /[\s()<>[\]]/;
+
+/**
+ * The suggestion for `href` from `fromId`: the href and the document it names, or nothing when it
+ * would not register. A relative href that climbs above the bundle root is suggested in its
+ * root-absolute form, since the resolver only reaches that document by clamping at the root.
+ */
+function suggestion(fromId: ConceptId, href: string): { suggestedHref: string; suggestedTo: ConceptId } | Record<string, never> {
+  if (UNREGISTRABLE.test(href)) return {};
+  const suggestedTo = resolveConceptId(fromId, href);
+  if (suggestedTo === null) return {};
+  if (!href.startsWith("/")) {
+    const slash = fromId.lastIndexOf("/");
+    const fromDir = slash >= 0 ? fromId.slice(0, slash) : "";
+    if (normalizeSegments([...fromDir.split("/"), ...hrefPath(href).split("/")])[0] === "..") {
+      return { suggestedHref: `/${suggestedTo}.md`, suggestedTo };
+    }
+  }
+  return { suggestedHref: href, suggestedTo };
+}
+
 /** True for a relative target written without `/`, `./` or `../`. */
 function isBareRelative(path: string): boolean {
   return !path.startsWith("/") && !path.startsWith("./") && !path.startsWith("../");
@@ -170,9 +195,7 @@ function classifyUnresolved(fromId: ConceptId, text: string, href: string, at: L
   const last = path.slice(path.lastIndexOf("/") + 1);
   // A last segment with its own extension is an asset link (a PDF, an image), not a near miss.
   if (last === "" || last.includes(".")) return undefined;
-  const suggestedHref = `${path}.md`;
-  const suggestedTo = resolveConceptId(fromId, suggestedHref);
-  return notRecognized("missing-md-extension", { text, href, ...at, ...(suggestedTo === null ? {} : { suggestedHref, suggestedTo }) });
+  return notRecognized("missing-md-extension", { text, href, ...at, ...suggestion(fromId, `${path}.md`) });
 }
 
 function wikilinkFindings(doc: OkfDocument): LinkNotRecognizedFinding[] {
@@ -186,14 +209,12 @@ function wikilinkFindings(doc: OkfDocument): LinkNotRecognizedFinding[] {
     const target = (bar >= 0 ? inner.slice(0, bar) : inner).trim();
     const text = (bar >= 0 ? inner.slice(bar + 1) : inner).trim();
     const path = hrefPath(target).replace(/^\/+/, "");
-    const suggestedHref = path === "" ? undefined : `/${path.endsWith(".md") ? path : `${path}.md`}`;
-    const suggestedTo = suggestedHref === undefined ? null : resolveConceptId(doc.id, suggestedHref);
     out.push(notRecognized("wikilink", {
       text,
       href: target,
       start,
       end,
-      ...(suggestedTo === null ? {} : { suggestedHref: suggestedHref!, suggestedTo }),
+      ...(path === "" ? {} : suggestion(doc.id, `/${path.endsWith(".md") ? path : `${path}.md`}`)),
     }));
   }
   return out;
@@ -201,11 +222,14 @@ function wikilinkFindings(doc: OkfDocument): LinkNotRecognizedFinding[] {
 
 /**
  * A document's registered edges plus the link-shaped text that will not register
- * (`LINK_NOT_RECOGNIZED`), in body order. Pure; reads nothing.
+ * (`LINK_NOT_RECOGNIZED`), in body order. Pure; reads nothing. Edges are exactly the graph's,
+ * including any written inside code; link-shaped text inside code is never reported, since
+ * there it is an example rather than an attempt to link.
  */
 export function inspectDocumentLinks(doc: OkfDocument): DocumentLinkReport {
   const links: Link[] = [];
   const findings: LinkFinding[] = [];
+  const outsideCode = new Set(extractMarkdownLinkSpans(doc.body, { skipCode: true }).map((span) => span.start));
   for (const span of extractMarkdownLinkSpans(doc.body)) {
     if (span.image) continue;
     const to = resolveConceptId(doc.id, span.href);
@@ -213,6 +237,7 @@ export function inspectDocumentLinks(doc: OkfDocument): DocumentLinkReport {
       links.push({ from: doc.id, to, text: span.text, href: span.href });
       continue;
     }
+    if (!outsideCode.has(span.start)) continue;
     const finding = classifyUnresolved(doc.id, span.text, span.href, { start: span.start, end: span.end });
     if (finding) findings.push(finding);
   }
@@ -331,7 +356,7 @@ export async function documentLinkReport(
     if (relative !== undefined && (await exists(relative))) continue;
     const path = `${hrefPath(finding.details.href)}.md`;
     const root = rootReading(path);
-    if (root !== null && root !== relative && (await exists(root))) {
+    if (root !== null && root !== relative && !UNREGISTRABLE.test(path) && (await exists(root))) {
       finding.details.suggestedHref = `/${path}`;
       finding.details.suggestedTo = root;
     }

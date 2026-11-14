@@ -116,3 +116,30 @@ test("linkTargetAbsentFinding propagates read failures other than absence", asyn
     throw new Error("backend down");
   }), /backend down/);
 });
+
+test("suggestions are dropped when they still would not register, and lifted to the root when they climb above it", () => {
+  const report = inspectDocumentLinks(doc("notes/a", "[[Some Page]] and [[ok-page]] and [up](../../../tasks/t)"));
+  const details = report.findings.map((f) => f.details as Record<string, unknown>);
+  assert.equal(details[0]!.reason, "wikilink");
+  assert.equal(details[0]!.suggestedHref, undefined, "a target with a space cannot be a link target");
+  assert.equal(details[1]!.suggestedHref, "/ok-page.md");
+  assert.equal(details[2]!.reason, "missing-md-extension");
+  assert.equal(details[2]!.suggestedHref, "/tasks/t.md");
+  assert.equal(details[2]!.suggestedTo, "tasks/t");
+});
+
+test("link-shaped text inside code is not reported, while edges inside code stay edges", () => {
+  const body = "```\n[x](notes/b)\n[y](/notes/c.md)\n```\n`[z](notes/d)` and [w](notes/e)\n";
+  const source = doc("notes/a", body);
+  const report = inspectDocumentLinks(source);
+  assert.deepEqual(report.links, parseLinksFromDoc(source));
+  assert.deepEqual(report.links.map((l) => l.to), ["notes/c"]);
+  assert.deepEqual(report.findings.map((f) => (f.details as { href: string }).href), ["notes/e"]);
+});
+
+test("offsets are UTF-16 code units", () => {
+  const body = "é😀 [x](notes/b)";
+  const [finding] = inspectDocumentLinks(doc("notes/a", body)).findings;
+  assert.equal(body.slice(finding!.details.start!, finding!.details.end!), "[x](notes/b)");
+  assert.equal(finding!.details.start, 4);
+});
