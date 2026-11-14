@@ -1,10 +1,11 @@
 import { renderUsage } from "../../output.js";
 import { parseArgs } from "node:util";
-import { FrontmatterLimitError, isStandardDocumentSetField, kindFieldInputValue, loadBoundedYaml, loadKinds, readBundleOkfVersion, resolveKindFieldCoordinate, type FieldActionErrorDetails, type FieldAction, type SourceSelector } from "@superbee/core";
+import { FrontmatterLimitError, isStandardDocumentSetField, kindFieldInputValue, loadBoundedYaml, loadKinds, readBundleOkfVersion, resolveKindFieldCoordinate, type FieldActionErrorDetails, type FieldAction, type OkfDocument, type SourceSelector } from "@superbee/core";
 import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
 import { commandFragment, commandToken, commandWords } from "../../command-text.js";
 import { cliInvocation } from "../../invocation.js";
+import { writeFindings, writeFindingsHelp } from "../../write-findings.js";
 import { CliError } from "../../errors.js";
 import { readExternalTextFile } from "../../external-file.js";
 import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, resolveLocalBundleRoute } from "../../bundle.js";
@@ -117,6 +118,9 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
   const edition = (await readBundleOkfVersion(bundle)) === "0.2" ? "0.2" : "0.1";
   // Standard edits retain warn-by-default; dynamic Kind fields retain strict authoring.
 
+  // The version this field action replaced: findings are those it introduced (none, unless a
+  // later field action can change the body or type).
+  let prior: OkfDocument | undefined;
   if (route) await assertResolvedLocalRouteIdentity(route);
   try {
     const result = await mutateDoc({
@@ -125,6 +129,7 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
       helpOnKindReject: `${cliInvocation()} kinds`, actor, persistActor: true,
       expectedVersion: expectedVersion?.trim(),
       input: (existing, context) => {
+        prior = existing;
         if (context.okfVersion !== edition) fail("The bundle edition changed; retry against its current declaration.");
         if (action === "set") {
           const kind = registry.kinds.get(String(existing.frontmatter.type));
@@ -143,11 +148,14 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
     });
     const scope = result.scope!;
     const { affectedSourceIds, ...boundedScope } = scope;
+    // Post-write findings on a changed write only (see `write-findings.ts`); never fail the write.
+    const findings = result.changed ? await writeFindings(bundle, result.doc, registry, prior) : [];
+    const warnings = [...result.warnings, ...findings];
     stdout(render({ doc: "field", id: result.doc.id, field, operation: action, changed: result.changed, version: result.version,
       scope: { ...boundedScope, ...(affectedSourceIds === undefined ? {} : { affectedSourceIds: affectedSourceIds.slice(0, 20), affectedSourceIdCount: affectedSourceIds.length }) },
-      ...(result.warnings.length ? { warnings: result.warnings } : {}),
+      ...(warnings.length ? { warnings } : {}),
       ...(result.guidance.length ? { guidance: result.guidance } : {}),
-      help: [`${cliInvocation()} doc read ${commandToken(result.doc.id)}${routeFlag}`],
+      help: [`${cliInvocation()} doc read ${commandToken(result.doc.id)}${routeFlag}`, ...writeFindingsHelp(findings)],
     }, resolveMode(values)));
   } catch (error) {
     if (error instanceof CliError && error.code === "USAGE" && !error.help) {

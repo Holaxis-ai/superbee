@@ -72,6 +72,7 @@ import { parseLeafOrUsage, parseNewSchemaPhaseOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
+import { writeFindings, writeFindingsHelp } from "../write-findings.js";
 import { mutateDoc } from "../mutate.js";
 import { kindDeclaresAnything, kindInstanceCandidate } from "@superbee/core/kind-authoring";
 import { isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../legacy-page.js";
@@ -97,6 +98,8 @@ The kind's declared body 'sections' (if any) are scaffolded as empty '# Heading'
 'path' prefix (if any) is prepended onto <id> unless <id> already carries it. Validation is
 STRICT: a missing required field, a disallowed enum value, or a value that does not match the
 field's declared type (fields.types) rejects the write (exit 2) rather than writing-with-a-warning.
+Links in the body that will not register, or whose target does not exist yet, are named in the
+receipt's warnings (LINK_NOT_RECOGNIZED, LINK_TARGET_ABSENT) without refusing the create.
 A typed number, integer, latitude, longitude, or boolean field is stored as that YAML type
 (--latitude 43.1 stores the number 43.1; pass a negative number as --longitude=-77.4); a
 string-list or https-url-list field is always stored as a list, even from one flag. An integer
@@ -665,7 +668,11 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   const conventionWarnings = registry.warnings.filter((warning) =>
     warning.message.startsWith(conventionWarningPrefix),
   );
-  if (conventionWarnings.length > 0) receipt.warnings = conventionWarnings;
+  // Post-write findings on the body `new` wrote (see `write-findings.ts`), before any --link: each
+  // --link entry reports its own target on its own row. Advisory; never fails the create.
+  const findings = await writeFindings(bundle, saved, registry, undefined);
+  const warnings = [...conventionWarnings, ...findings];
+  if (warnings.length > 0) receipt.warnings = warnings;
   if (result.guidance.length > 0) receipt.guidance = result.guidance;
   // Surface the path-prefixing so it isn't silent: an agent that passed a bare id (or a
   // differently-prefixed one) sees the final id it actually got (cold-start study: C4 nearly
@@ -742,7 +749,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   // outbound = this kind's own). Capped per direction; a bundle declaring no links adds nothing.
   // An outbound type already satisfied via --link above is dropped from its own hint — suggesting
   // a follow-up `link add` for a relationship this very command just established would be noise.
-  const help = [`${cliInvocation()} doc read ${commandToken(saved.id)}`];
+  const help = [`${cliInvocation()} doc read ${commandToken(saved.id)}`, ...writeFindingsHelp(findings)];
   const HINTS_PER_DIRECTION = 3;
   for (const { source, linkType } of inboundLinkDecls(registry, kind).slice(0, HINTS_PER_DIRECTION)) {
     help.push(

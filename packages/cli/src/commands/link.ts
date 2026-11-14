@@ -50,7 +50,6 @@ import {
   resolveQualifiedLinks,
   linkTargetAbsentFinding,
   linkTypeFinding,
-  type LinkTargetReader,
   type LinkTypeFinding,
   type SkippedDoc,
   type QualifiedLink,
@@ -69,6 +68,7 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
+import { bundleTargetReader } from "../write-findings.js";
 import { collectLinkDeclarations, qualifiedEdgeViolation } from "@superbee/core";
 import { resolveBundleBindings } from "../bundle-bindings.js";
 import { resolveActor } from "../actor.js";
@@ -216,17 +216,6 @@ function docType(doc: OkfDocument): string {
   return typeof doc.frontmatter.type === "string" ? doc.frontmatter.type : "";
 }
 
-/** Core's link target reader over this bundle: an absent target is undefined; other failures throw. */
-function bundleTargetReader(bundle: Bundle): LinkTargetReader {
-  return async (id) => {
-    try {
-      return await readDoc(bundle, id);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
-      throw err;
-    }
-  };
-}
 
 /**
  * Write-time type-conformance lint for a just-written link (graph lints unit), worded for the CLI.
