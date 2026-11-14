@@ -208,6 +208,30 @@ export type WriteErrorCode = (typeof WRITE_ERROR_CODES)[number];
 /** The whole-document delete: its success names the tombstone as `version`, and the version that left. */
 export const DELETE_OPERATION_ID = "documents.delete.v1";
 
+/**
+ * What a saved write registered as links, from the host's own parse of the stored document:
+ * `count` links in all, pointing at `targets` (distinct document ids, a bounded list), and
+ * `truncated` when the host left targets out.
+ */
+export type WriteLinks = { readonly count: number; readonly targets: readonly string[]; readonly truncated?: boolean };
+/** A finding the host reports on a saved write that did not block it: its code, never its text. */
+export type WriteWarning = { readonly code: string; readonly severity: "error" | "warning"; readonly field?: string };
+/** The Kind's description of an enum value the write set. */
+export type WriteGuidance = { readonly field: string; readonly value: string; readonly description: string };
+/** What a refused input got wrong: the input path (keys and positions) and a fixed message. */
+export type WriteInputIssue = { readonly path: string; readonly message: string };
+/** One finding of a refusal's `diagnostics`: a stable code; the rest as the host sent it. */
+export type WriteDiagnosticItem = {
+  readonly code: string;
+  readonly severity?: string;
+  readonly message?: string;
+  readonly location?: unknown;
+  readonly kindId?: string;
+  readonly [detail: string]: unknown;
+};
+/** A refusal's findings (`validation_failed`), carried as the host sent them. */
+export type WriteDiagnostics = { readonly version: number; readonly items: readonly WriteDiagnosticItem[]; readonly truncated?: boolean; readonly [detail: string]: unknown };
+
 export type WriteSuccess = {
   ok: true;
   operationId: string;
@@ -216,8 +240,23 @@ export type WriteSuccess = {
    * version. A delete's data alone also carries `deletedVersion` (the version that left, which
    * is the request's `expectedVersion`) and `deleted: true`; `changed: false` there says the
    * document had already left at exactly that base, and `version` names that deletion.
+   *
+   * `links`, `warnings` and `guidance` are the host's report on a saved write, when it sends one
+   * (hosted's write report). They are informational: present only when well formed, and never
+   * part of whether the write is admitted.
    */
-  data: { bundleId: string; documentId: string; version: Version; changed: boolean; scope?: unknown; deletedVersion?: Version; deleted?: true };
+  data: {
+    bundleId: string;
+    documentId: string;
+    version: Version;
+    changed: boolean;
+    scope?: unknown;
+    deletedVersion?: Version;
+    deleted?: true;
+    links?: WriteLinks;
+    warnings?: readonly WriteWarning[];
+    guidance?: readonly WriteGuidance[];
+  };
 };
 export type WriteFailure = {
   ok: false;
@@ -241,6 +280,14 @@ export type WriteFailure = {
      * field the host adds later never makes the recorded refusal unreadable.
      */
     definitionDetails?: unknown;
+    /** On `validation_failed`: the findings, carried as sent when they read as a finding set. */
+    diagnostics?: WriteDiagnostics;
+    /** On `invalid_input`: what the input got wrong, when the host names it. */
+    inputIssues?: readonly WriteInputIssue[];
+    /** Other detail blocks the host may send (`fieldActionDetails`, `candidate`, ...), carried but not read here. */
+    fieldActionDetails?: unknown;
+    candidate?: unknown;
+    retentionUnavailable?: unknown;
   };
 };
 export type WriteResult = WriteSuccess | WriteFailure;
@@ -304,34 +351,85 @@ export class HostedAnswerError extends Error {
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const onlyKeys = (value: Record<string, unknown>, allowed: readonly string[]) => Object.keys(value).every((key) => allowed.includes(key));
+/** The receipt fields this client reads, and carries; any other key a host adds is ignored. */
 const DATA_KEYS = ["bundleId", "documentId", "version", "changed", "scope"] as const;
 const DELETE_DATA_KEYS = [...DATA_KEYS, "deletedVersion", "deleted"] as const;
-const ERROR_KEYS = ["code", "message", "retryable", "writeState", "currentVersion", "diagnostics", "fieldActionDetails", "definitionDetails", "candidate", "retentionUnavailable", "scope", "resetAt", "deletions", "baseline"] as const;
+/** The refusal fields this client reads or carries; any other key a host adds is ignored. */
+const ERROR_KEYS = ["code", "message", "retryable", "writeState", "currentVersion", "fieldActionDetails", "definitionDetails", "candidate", "retentionUnavailable", "scope", "resetAt", "deletions", "baseline"] as const;
 const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 1;
+/** `value`'s own `keys`, those present, copied: what the client carries, never a key it does not know. */
+const pick = (value: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> => {
+  const picked: Record<string, unknown> = {};
+  for (const key of keys) if (Object.hasOwn(value, key) && value[key] !== undefined) picked[key] = value[key];
+  return picked;
+};
+const isText = (value: unknown): value is string => typeof value === "string";
+/** The well-formed items of a report list, each as its typed copy; an item that is not one is left out. */
+function listOf<T>(value: unknown, item: (entry: Record<string, unknown>) => T | undefined): T[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items = value.flatMap((entry) => {
+    const read = isRecord(entry) ? item(entry) : undefined;
+    return read === undefined ? [] : [read];
+  });
+  return items;
+}
+function writeLinks(value: unknown): WriteLinks | undefined {
+  if (!isRecord(value) || !Number.isSafeInteger(value.count) || (value.count as number) < 0 || !Array.isArray(value.targets) || !value.targets.every(isText)) return undefined;
+  if (value.truncated !== undefined && typeof value.truncated !== "boolean") return undefined;
+  return { count: value.count as number, targets: [...(value.targets as string[])], ...(value.truncated !== undefined ? { truncated: value.truncated as boolean } : {}) };
+}
+const writeWarning = (entry: Record<string, unknown>): WriteWarning | undefined =>
+  isText(entry.code) && (entry.severity === "error" || entry.severity === "warning") && (entry.field === undefined || isText(entry.field))
+    ? { code: entry.code, severity: entry.severity, ...(entry.field !== undefined ? { field: entry.field as string } : {}) }
+    : undefined;
+const writeGuidance = (entry: Record<string, unknown>): WriteGuidance | undefined =>
+  isText(entry.field) && isText(entry.value) && isText(entry.description) ? { field: entry.field, value: entry.value, description: entry.description } : undefined;
+const inputIssue = (entry: Record<string, unknown>): WriteInputIssue | undefined =>
+  isText(entry.path) && isText(entry.message) ? { path: entry.path, message: entry.message } : undefined;
+/** A refusal's findings as sent, when they read as a finding set (a version and items that each name a code). */
+const writeDiagnostics = (value: unknown): WriteDiagnostics | undefined =>
+  isRecord(value) && Number.isSafeInteger(value.version) && Array.isArray(value.items) && value.items.every((item) => isRecord(item) && isText(item.code))
+    ? (value as WriteDiagnostics)
+    : undefined;
+/** The report a saved write may carry beside its receipt, each part only when well formed. */
+function writeReport(data: Record<string, unknown>): Pick<WriteSuccess["data"], "links" | "warnings" | "guidance"> {
+  const links = writeLinks(data.links);
+  const warnings = listOf(data.warnings, writeWarning);
+  const guidance = listOf(data.guidance, writeGuidance);
+  return { ...(links ? { links } : {}), ...(warnings?.length ? { warnings } : {}), ...(guidance?.length ? { guidance } : {}) };
+}
 /**
  * A write operation's result envelope, admitted or refused as one: the operation it answers,
  * the document it names, and a success with a content version or a refusal with a known code
  * and write state. A refusal's detail blocks (diagnostics, corrective details) are carried but
  * not interpreted here. `write_outcome_unknown` must say its write state is unknown.
+ *
+ * A tolerant reader: a key this client does not know, at the top level, in the receipt or in
+ * the refusal, is ignored and not carried, so a host can add fields without breaking a client
+ * that predates them. Every field the client reads is still checked, and a known field in the
+ * wrong place (a delete's `deletedVersion` on another write, `data` beside `error`, a capacity
+ * `scope` on another refusal) still refuses the envelope. The saved-write report (`links`,
+ * `warnings`, `guidance`) and a refusal's `diagnostics` and `inputIssues` are informational:
+ * kept when well formed, left out when not, and never part of whether a write is admitted.
  */
 export function parseWriteResult(raw: unknown, expected: { operationIds: readonly string[]; documentId: string; bundleId?: string }): WriteResult {
   const refuse = () => new HostedAnswerError("the write result envelope is not one the client admits");
-  if (!isRecord(raw) || !onlyKeys(raw, ["ok", "operationId", "data", "error"]) || typeof raw.operationId !== "string" || !expected.operationIds.includes(raw.operationId)) throw refuse();
+  if (!isRecord(raw) || typeof raw.operationId !== "string" || !expected.operationIds.includes(raw.operationId)) throw refuse();
   const { operationId } = raw as { operationId: string };
   if (raw.ok === true) {
     const data = raw.data;
     // A delete's success, and only a delete's, names the version that left and says it left.
     const deletion = operationId === DELETE_OPERATION_ID;
-    if (raw.error !== undefined || !isRecord(data) || !onlyKeys(data, deletion ? DELETE_DATA_KEYS : DATA_KEYS) || typeof data.bundleId !== "string" || data.bundleId.length === 0 ||
+    if (raw.error !== undefined || !isRecord(data) || typeof data.bundleId !== "string" || data.bundleId.length === 0 ||
         data.documentId !== expected.documentId || (expected.bundleId !== undefined && data.bundleId !== expected.bundleId) ||
         !isContentVersion(data.version) || typeof data.changed !== "boolean" ||
-        (deletion && (!isContentVersion(data.deletedVersion) || data.deleted !== true))) throw refuse();
-    const accepted = data as WriteSuccess["data"];
-    return { ok: true, operationId, data: { ...accepted } };
+        (deletion ? !isContentVersion(data.deletedVersion) || data.deleted !== true : data.deletedVersion !== undefined || data.deleted !== undefined)) throw refuse();
+    const accepted = pick(data, deletion ? DELETE_DATA_KEYS : DATA_KEYS) as WriteSuccess["data"];
+    return { ok: true, operationId, data: { ...accepted, ...writeReport(data) } };
   }
   if (raw.ok !== false) throw refuse();
   const error = raw.error;
-  if (raw.data !== undefined || !isRecord(error) || !onlyKeys(error, ERROR_KEYS) || !(WRITE_ERROR_CODES as readonly unknown[]).includes(error.code) ||
+  if (raw.data !== undefined || !isRecord(error) || !(WRITE_ERROR_CODES as readonly unknown[]).includes(error.code) ||
       typeof error.message !== "string" || error.retryable !== false || (error.writeState !== "not_applied" && error.writeState !== "unknown") ||
       (error.currentVersion !== undefined && !isContentVersion(error.currentVersion)) ||
       (error.code === "write_outcome_unknown" && error.writeState !== "unknown") ||
@@ -344,7 +442,17 @@ export function parseWriteResult(raw: unknown, expected: { operationIds: readonl
       // A model-change refusal says nothing was applied; its findings ride on it alone.
       (error.code === "definition_incompatible" && error.writeState !== "not_applied") ||
       (error.definitionDetails !== undefined && error.code !== "definition_incompatible")) throw refuse();
-  return { ok: false, operationId, error: { ...(error as WriteFailure["error"]) } };
+  const diagnostics = writeDiagnostics(error.diagnostics);
+  const inputIssues = listOf(error.inputIssues, inputIssue);
+  return {
+    ok: false,
+    operationId,
+    error: {
+      ...(pick(error, ERROR_KEYS) as WriteFailure["error"]),
+      ...(diagnostics ? { diagnostics } : {}),
+      ...(inputIssues?.length ? { inputIssues } : {}),
+    },
+  };
 }
 
 // ── classifying an identified-write answer ─────────────────────────────────────────────────
