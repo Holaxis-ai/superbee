@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { bodyReplaceCases } from "./body-replace-cases.js";
-import { BodyReplaceError, TypedListPatchError, bodyPreviewFinding, computeDroppedLinks, attachBodyPreview, guardBodyReplace } from "../src/body-replace-guards.js";
+import { BodyReplaceError, TypedListPatchError, bodyPreviewFinding, computeDroppedLinks, attachBodyPreview, guardBodyReplace, outboundLinks } from "../src/body-replace-guards.js";
 import { mutateDocument } from "../src/document-mutation.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import type { KindConvention, KindRegistry } from "../src/kinds.js";
@@ -54,6 +54,14 @@ test("creates and field-only patches preserve preview-bearing content", async ()
   await mutateDocument({ bundle, id: "a", mode: "patch", registry, strict: false, input: { kind: "assign", assignments: { title: "updated" } } });
   assert.equal((await backend.read("a")).doc.body, before);
 });
+test("link text holding inline code with an open bracket keeps its whole text, local and okf:", () => {
+  const links = outboundLinks({ id: "notes/a", frontmatter: { type: "Note" }, body: "[see `x[` y](/tasks/x.md) and [see `x[` y](okf://beers/b.md)" });
+  assert.deepEqual(links.map((l) => [l.to, l.text, l.bundle]), [
+    ["tasks/x", "see `x[` y", undefined],
+    ["b", "see `x[` y", "beers"],
+  ]);
+});
+
 test("exact-edge comparison protects source/text and occurrence counts", () => {
   const link = { from: "a", to: "b", text: "one", href: "b.md" };
   assert.deepEqual(computeDroppedLinks([link], [{ ...link, text: "two" }]), []);
