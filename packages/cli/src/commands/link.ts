@@ -45,10 +45,13 @@ import {
   isQualifiedHref,
   parseDependencies,
   parseQualifiedHref,
-  parseQualifiedKindTarget,
   parseQualifiedLinks,
   emitLinkHref,
   resolveQualifiedLinks,
+  linkTargetAbsentFinding,
+  linkTypeFinding,
+  type LinkTargetReader,
+  type LinkTypeFinding,
   type SkippedDoc,
   type QualifiedLink,
   type Bundle,
@@ -213,85 +216,54 @@ function docType(doc: OkfDocument): string {
   return typeof doc.frontmatter.type === "string" ? doc.frontmatter.type : "";
 }
 
+/** Core's link target reader over this bundle: an absent target is undefined; other failures throw. */
+function bundleTargetReader(bundle: Bundle): LinkTargetReader {
+  return async (id) => {
+    try {
+      return await readDoc(bundle, id);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
+      throw err;
+    }
+  };
+}
+
 /**
- * Write-time type-conformance lint for a just-written link (graph lints unit): if `text` exactly
- * matches a declared typed-edge vocabulary entry, verify the ACTUAL source/target kinds against the
- * declaration (a mismatch is a `LINK_TYPE_VIOLATION`); if `text` matches a declared type only
- * case-insensitively, warn naming the declared spelling (`LINK_TYPE_CASE_VARIANT`) — no edit-distance
- * matching. Untyped links (no match, in any casing) return no warnings. Never throws for a missing
- * target doc (a dangling target just skips the target-kind half of the check — unresolved links are
- * `status`'s existing concern); a conventions-free bundle (no kind declares any `links`) returns
- * immediately with zero extra I/O beyond the registry load every write command already pays for.
+ * Write-time type-conformance lint for a just-written link (graph lints unit), worded for the CLI.
+ * Core's `linkTypeFinding` owns the rule (exact match checks the actual source/target kinds; a
+ * case-only match names the declared spelling; untyped text and conventions-free bundles never
+ * warn); this function only renders its details as `link add` flags. A target read failure other
+ * than absence is classified as a bundle error, as before.
  */
 async function lintLinkType(
   bundle: Bundle,
   args: { sourceType: string; text: string; to: string },
   registry: KindRegistry,
 ): Promise<ValidationWarning[]> {
-  const declarations = collectLinkDeclarations(registry);
-  if (declarations.size === 0) return [];
-
-  const exact = declarations.get(args.text);
-  if (exact && exact.length > 0) {
-    // An exact-match text is the only case that needs the target doc's actual type — a near-miss
-    // (or no match at all) never pays for this extra read.
-    let targetType: string | undefined;
-    let targetResolved = true;
-    try {
-      targetType = docType(await readDoc(bundle, args.to));
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
-        targetResolved = false;
-      } else {
-        throw classifyBundleError(err);
-      }
-    }
-    const matched = exact.find((d) => d.governs === args.sourceType) ?? exact[0]!;
-    const qualified = parseQualifiedKindTarget(matched.target);
-    if (qualified) {
-      return [
-        {
-          code: "LINK_TYPE_VIOLATION",
-          message:
-            `'${args.text}' is declared by '${matched.governs}' -> ${matched.target}, a link into the bundle ` +
-            `aliased '${qualified.alias}'; write it with --bundle ${commandToken(qualified.alias)}.`,
-          field: "text",
-          severity: "warning",
-        },
-      ];
-    }
-    const sourceOk = exact.some((d) => d.governs === args.sourceType);
-    const targetOk = !targetResolved || targetType === matched.target;
-    if (!sourceOk || !targetOk) {
-      return [
-        {
-          code: "LINK_TYPE_VIOLATION",
-          message:
-            `'${args.text}' is declared by '${matched.governs}' -> ${matched.target}; this link is ` +
-            `${args.sourceType || "(untyped)"} -> ${targetResolved ? targetType || "(untyped)" : "(unresolved)"}.`,
-          field: "text",
-          severity: "warning",
-        },
-      ];
-    }
-    return [];
+  let finding: LinkTypeFinding | undefined;
+  try {
+    finding = await linkTypeFinding(registry, args, bundleTargetReader(bundle));
+  } catch (err) {
+    throw classifyBundleError(err);
   }
-
-  // No exact match: a same-spelling-different-case near miss ('Contains' vs 'contains') warns
-  // naming the declared spelling.
-  for (const declaredText of declarations.keys()) {
-    if (declaredText.toLowerCase() === args.text.toLowerCase()) {
-      return [
-        {
-          code: "LINK_TYPE_CASE_VARIANT",
-          message: `'${args.text}' is a case-variant of the declared link type '${declaredText}' — did you mean --text ${commandQuoted(declaredText)}?`,
-          field: "text",
-          severity: "warning",
-        },
-      ];
-    }
+  if (!finding) return [];
+  if (finding.code === "LINK_TYPE_CASE_VARIANT") {
+    return [
+      {
+        code: finding.code,
+        message: `'${args.text}' is a case-variant of the declared link type '${finding.details.declaredText}' — did you mean --text ${commandQuoted(finding.details.declaredText)}?`,
+        field: "text",
+        severity: "warning",
+      },
+    ];
   }
-  return [];
+  const d = finding.details;
+  const message = d.targetAlias !== undefined
+    ? `'${args.text}' is declared by '${d.declaredBy}' -> ${d.declaredTarget}, a link into the bundle ` +
+      `aliased '${d.targetAlias}'; write it with --bundle ${commandToken(d.targetAlias)}.`
+    : `'${args.text}' is declared by '${d.declaredBy}' -> ${d.declaredTarget}; this link is ` +
+      `${d.sourceType || "(untyped)"} -> ${d.targetType === null ? "(unresolved)" : d.targetType || "(untyped)"}.`;
+  return [{ code: finding.code, message, field: "text", severity: "warning" }];
 }
 
 /**
@@ -319,27 +291,23 @@ async function assertTargetNotAlias(bundle: Bundle, to: string): Promise<void> {
 }
 
 /**
- * Warn when a newly linked target is absent. Non-absence read failures propagate to the
- * post-write fallback.
+ * Warn when a newly linked target is absent (core `linkTargetAbsentFinding`), worded with the CLI
+ * command that creates it. Non-absence read failures propagate to the post-write fallback.
  */
 async function targetAbsentWarning(
   bundle: Bundle,
   to: string,
 ): Promise<ValidationWarning | undefined> {
-  try {
-    await readDoc(bundle, to);
-    return undefined;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
-    return {
-      code: "LINK_TARGET_ABSENT",
-      message:
-        `target '${to}' has no document yet — this link is a forward-declaration (dangling links ` +
-        `stay allowed); create it with \`${cliInvocation()} doc write ${commandToken(to)} --type <t>\`.`,
-      field: "to",
-      severity: "warning",
-    };
-  }
+  const finding = await linkTargetAbsentFinding({ to }, bundleTargetReader(bundle));
+  if (!finding) return undefined;
+  return {
+    code: finding.code,
+    message:
+      `target '${to}' has no document yet — this link is a forward-declaration (dangling links ` +
+      `stay allowed); create it with \`${cliInvocation()} doc write ${commandToken(to)} --type <t>\`.`,
+    field: "to",
+    severity: "warning",
+  };
 }
 
 export async function link(argv: string[], deps: Partial<LinkCliDeps> = {}): Promise<void> {

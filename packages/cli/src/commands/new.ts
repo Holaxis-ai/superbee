@@ -54,6 +54,7 @@ import { assertAuthoredLegacyTimestamp } from "../legacy-timestamp.js";
 import {
   loadKinds,
   kindFieldInputValue,
+  kindFieldsUndeclaredFinding,
   kindInputFieldNames,
   progressStatusCoordinate,
   projectKindForAuthoring,
@@ -462,8 +463,6 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   // Phase 2 — strict, kind-aware, AUTHORITATIVE parse. Core strips every centrally-reserved kind
   // field before this point (including `body` and `body-file`); only `actor` and `link` remain
   // command controls with intentional kind-aware behavior, so they are excluded here explicitly.
-  const authoringKind = projectKindForAuthoring(okfVersion, kind);
-  const declaredFields = [...authoringKind.fields.required, ...authoringKind.fields.optional];
   const fieldNames = kindInputFieldNames(okfVersion, kind).filter((f) => f !== "actor" && f !== "link");
   const fieldOptions = Object.fromEntries(
     fieldNames.map((f) => [f, { type: "string", multiple: true } as const]),
@@ -487,13 +486,16 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
       if ((err as { code?: unknown } | null)?.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
         const raw = /'([^']+)'/.exec((err as Error).message)?.[1] ?? "";
         const field = raw.replace(/^--?/, ""); // node quotes the raw '--name'; strip the dashes
+        // The parser already decided the flag is not a field; core supplies the structured
+        // finding (the Kind and its declared fields) and this command words the remedy.
+        const { kind: governs, declared } = kindFieldsUndeclaredFinding(okfVersion, kind, [field])!.details;
         throw new CliError(
           "USAGE",
-          `unknown field(s) for kind '${kind.governs}': ${field}` +
-            (declaredFields.length > 0
-              ? ` (declared: ${declaredFields.join(", ")})`
+          `unknown field(s) for kind '${governs}': ${field}` +
+            (declared.length > 0
+              ? ` (declared: ${declared.join(", ")})`
               : " (this kind declares no fields)") +
-            ` — to ADD it to the '${kind.governs}' kind: \`${cliInvocation()} kind field ${commandToken(kind.governs)} add ${commandToken(field)}\` (then re-run).`,
+            ` — to ADD it to the '${governs}' kind: \`${cliInvocation()} kind field ${commandToken(governs)} add ${commandToken(field)}\` (then re-run).`,
           { help: `${cliInvocation()} kinds` },
         );
       }

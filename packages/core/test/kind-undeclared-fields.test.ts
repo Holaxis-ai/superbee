@@ -90,3 +90,70 @@ test("coverage reports the same undeclared keys the write check names", () => {
   const report = kindCoverage(registry(kind()), docs, { now: new Date(now()), okfVersion: "0.2" });
   assert.deepEqual(report.kinds[0]!.drift.undeclared.map((row) => row.key), ["ownr"]);
 });
+
+test("unknownKindFieldNames resolves through the one field resolver; the finding carries kind and declared fields", async () => {
+  const { kindFieldsUndeclaredFinding, unknownKindFieldNames } = await import("../src/kind-undeclared-fields.js");
+  const k = kind();
+  // progress_status is the logical name of the declared superbee_progress_status in v0.2.
+  assert.deepEqual(unknownKindFieldNames("0.2", k, ["owner", "ownr", "progress_status", "zzz"]), ["ownr", "zzz"]);
+  assert.equal(kindFieldsUndeclaredFinding("0.2", k, []), undefined);
+  const finding = kindFieldsUndeclaredFinding("0.2", k, ["ownr", "zzz"])!;
+  assert.equal(finding.code, "KIND_FIELD_UNDECLARED");
+  assert.equal(finding.severity, "warning");
+  assert.equal(finding.field, undefined, "several fields have no single field path");
+  assert.deepEqual(finding.details, { kind: "Signal", fields: ["ownr", "zzz"], declared: ["title", "owner", "progress_status"] });
+  assert.doesNotMatch(finding.message, /ownr|Signal/, "the message is fixed; values live in details");
+  assert.equal(kindFieldsUndeclaredFinding("0.2", k, ["ownr"])!.field, "ownr");
+});
+
+test("undeclaredFieldWarnings carries the same details shape as kindFieldsUndeclaredFinding", async () => {
+  const { kindFieldsUndeclaredFinding } = await import("../src/kind-undeclared-fields.js");
+  const result = prepare(kind(), { title: "A", ownr: "me" }, false);
+  const warning = result.warnings.find((w) => w.code === "KIND_FIELD_UNDECLARED")!;
+  assert.deepEqual(warning.details, { kind: "Signal", fields: ["ownr"], declared: ["title", "owner", "progress_status"] });
+  assert.deepEqual(warning.details, kindFieldsUndeclaredFinding("0.2", kind(), ["ownr"])!.details);
+});
+
+test("undeclaredTypeFinding: only in a bundle with Kinds, never for Superbee's own documents, warning on a near miss", async () => {
+  const { undeclaredTypeFinding } = await import("../src/kind-undeclared-fields.js");
+  const empty: KindRegistry = { kinds: new Map(), warnings: [] };
+  const r = registry(kind());
+  const at = (id: string, frontmatter: Record<string, unknown>) => ({ id, frontmatter });
+  assert.equal(undeclaredTypeFinding(empty, at("tasks/t", { type: "Task" })), undefined, "a conventions-free bundle stays silent");
+  assert.equal(undeclaredTypeFinding(r, at("signals/s", { type: "Signal" })), undefined);
+  assert.equal(undeclaredTypeFinding(r, at("x", {})), undefined);
+  assert.equal(undeclaredTypeFinding(r, at("x", { type: 3 })), undefined);
+  for (const [id, type] of [
+    ["conventions/x", "Convention"], ["views/v", "View"], ["references/site-authoring", "Reference"],
+    ["computations/c", "Attested Computation"], ["connectors/c", "Connector"], ["sites/s", "Site"],
+    ["docs/bundle", "Bundle Name"], ["docs/dependencies", "Bundle Dependencies"], ["promotions/p", "Promotion"],
+  ] as const) {
+    assert.equal(undeclaredTypeFinding(r, at(id, { type })), undefined, type);
+  }
+
+  const plain = undeclaredTypeFinding(r, at("tasks/t", { type: "Task" }))!;
+  assert.deepEqual(plain, {
+    code: "KIND_TYPE_UNDECLARED",
+    message: plain.message,
+    field: "type",
+    severity: "info",
+    details: { type: "Task", declaredTypes: ["Signal"] },
+  });
+  const nearMiss = undeclaredTypeFinding(r, at("signals/s", { type: " signal" }))!;
+  assert.equal(nearMiss.severity, "warning");
+  assert.equal(nearMiss.details.suggestedType, "Signal");
+});
+
+test("isSystemDocument: graph definitions plus owned types, whose literals agree with their owning constants", async () => {
+  const { isGraphDefinitionDocument, isSystemDocument, OWNED_INSTANCE_TYPE_NAMES } = await import("../src/system-documents.js");
+  const { CONNECTOR_TYPE } = await import("../src/connectors.js");
+  const { SITE_TYPE } = await import("../src/site-manifest.js");
+  const { PROMOTION_TYPE } = await import("../src/document-transfer.js");
+  assert.deepEqual([...OWNED_INSTANCE_TYPE_NAMES].sort(), [CONNECTOR_TYPE, SITE_TYPE, PROMOTION_TYPE, "Attested Computation"].sort());
+  const reference = { id: "references/site-authoring", frontmatter: { type: "Reference" } };
+  assert.ok(isGraphDefinitionDocument(reference) && isSystemDocument(reference));
+  const stray = { id: "notes/r", frontmatter: { type: "Reference" } };
+  assert.ok(!isSystemDocument(stray), "a Reference outside references/ is an ordinary document, as for orphans");
+  const computation = { id: "c/x", frontmatter: { type: "Attested Computation" } };
+  assert.ok(isSystemDocument(computation) && !isGraphDefinitionDocument(computation));
+});

@@ -1572,3 +1572,43 @@ test("kinds coverage is fixed-time local/read-only and retains registry warnings
     assert.match(toon, /records: 1/);
   } finally { await cleanup(); }
 });
+
+test("unknown-field errors name each declared field once, even when the convention lists it twice (core's declared list)", async () => {
+  const dir = await tempDir();
+  try {
+    const bundle: Bundle = { root: dir };
+    await initBundle(dir);
+    await writeDoc(bundle, {
+      id: "conventions/twice",
+      frontmatter: {
+        type: CONVENTION_TYPE,
+        title: "Twice",
+        governs: "Twice",
+        fields: { required: ["title", "owner"], optional: ["owner", "notes", "notes"] },
+        timestamp: T,
+      },
+      body: "Lists owner in both lists and notes twice.",
+    });
+    await assert.rejects(
+      () => newCommand(["Twice", "twice/x", "--title", "T", "--bogus", "v", "--dir", dir, "--json"]),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.code, "USAGE");
+        assert.match(err.message, /unknown field\(s\) for kind 'Twice': bogus \(declared: title, owner, notes\) — /);
+        return true;
+      },
+    );
+    await writeDoc(bundle, { id: "twice/y", frontmatter: { type: "Twice", title: "Y", owner: "me", timestamp: T }, body: "" });
+    await assert.rejects(
+      () => doc(["update", "twice/y", "--bogus", "v", "--dir", dir, "--json"], { readStdin: async () => undefined }),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.code, "USAGE");
+        assert.match(err.message, /unknown field\(s\) for kind 'Twice': bogus \(declared: title, owner, notes; standard patch flags: /);
+        return true;
+      },
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

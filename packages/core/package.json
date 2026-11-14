@@ -91,9 +91,17 @@
       "types": "./dist/kinds.d.ts",
       "default": "./dist/kinds.js"
     },
+    "./kind-undeclared-fields": {
+      "types": "./dist/kind-undeclared-fields.d.ts",
+      "default": "./dist/kind-undeclared-fields.js"
+    },
     "./links": {
       "types": "./dist/links.d.ts",
       "default": "./dist/links.js"
+    },
+    "./link-findings": {
+      "types": "./dist/link-findings.d.ts",
+      "default": "./dist/link-findings.js"
     },
     "./qualified-links": {
       "types": "./dist/qualified-links.d.ts",
