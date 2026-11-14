@@ -111,7 +111,7 @@ function cachedReader(bundle: Bundle, failures: Map<ConceptId, string>): LinkTar
   };
 }
 
-/** The link findings `doc`'s stored body has that `prior`'s did not, and the targets that could not be read. */
+/** The link findings `doc`'s stored body has that `prior`'s did not, and the newly linked targets that could not be read. */
 async function linkFindings(bundle: Bundle, doc: OkfDocument, prior: OkfDocument | undefined): Promise<ValidationWarning[]> {
   const failures = new Map<ConceptId, string>();
   const readTarget = cachedReader(bundle, failures);
@@ -124,7 +124,9 @@ async function linkFindings(bundle: Bundle, doc: OkfDocument, prior: OkfDocument
     ({ findings } = inspectDocumentLinks(doc));
     unavailable = errorText(err);
   }
-  const unreadable = [...failures];
+  // A target the replaced body already linked was named when that link was written.
+  const linkedBefore = new Set(prior === undefined ? [] : inspectDocumentLinks({ ...prior, id: doc.id }).links.map((link) => link.to));
+  const unreadable = [...failures].filter(([to]) => !linkedBefore.has(to));
   // Counted, so a second copy of an old finding is new.
   const before = new Map<string, number>();
   if (prior !== undefined && findings.length > 0) {

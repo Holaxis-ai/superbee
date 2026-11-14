@@ -218,17 +218,34 @@ test("a link spelled with another case than an existing folder does not hide the
   await withBundle(async (dir) => {
     const receipt = await runJson(doc, ["write", "tasks/one", "--type", "Task", "--title", "One", "--body", "See [Plan](/Notes/Plan.md) and [[tasks/t9]].", "--dir", dir]);
     assert.equal(receipt.doc, "written");
-    assert.equal(warningsOf(receipt)[0]!.details!.reason, "wikilink");
+    const byCode = (code: string) => warningsOf(receipt).filter((w) => w.code === code);
+    // The wikilink finding needs no read, so it stands on every host.
+    assert.deepEqual(byCode("LINK_NOT_RECOGNIZED").map((w) => w.details!.reason), ["wikilink"]);
     // Where the host equates this pair core refuses the folded spelling on read, naming the
-    // existing one; elsewhere the spelling is a distinct id that names no document. The verdict is
-    // the pair's, never the aggregate host class (this file runs in the aliasing-host lane).
+    // existing one; elsewhere it is a distinct id that names no document. The verdict is the
+    // pair's, never the aggregate host class (this file runs in the aliasing-host lane).
     if (hostAliasesPair(await detectHostAliasing(), "notes/plan", "Notes/Plan")) {
-      assert.deepEqual(codes(receipt), ["LINK_NOT_RECOGNIZED", "LINK_LINT_UNAVAILABLE"]);
-      assert.deepEqual(warningsOf(receipt)[1]!.details, { to: "Notes/Plan" });
-      assert.match(warningsOf(receipt)[1]!.message, /^the link to 'Notes\/Plan' could not be checked: /);
+      assert.deepEqual(codes(receipt).sort(), ["LINK_LINT_UNAVAILABLE", "LINK_NOT_RECOGNIZED"]);
+      const [unavailable] = byCode("LINK_LINT_UNAVAILABLE");
+      assert.deepEqual(unavailable!.details, { to: "Notes/Plan" });
+      assert.match(unavailable!.message, /^the link to 'Notes\/Plan' could not be checked: /);
     } else {
-      assert.deepEqual(codes(receipt), ["LINK_NOT_RECOGNIZED", "LINK_TARGET_ABSENT"]);
+      assert.deepEqual(codes(receipt).sort(), ["LINK_NOT_RECOGNIZED", "LINK_TARGET_ABSENT"]);
+      assert.deepEqual(byCode("LINK_TARGET_ABSENT")[0]!.details, { to: "Notes/Plan", href: "/Notes/Plan.md", text: "Plan" });
     }
+  });
+});
+
+test("an unreadable target the replaced body already linked is not named again", async () => {
+  await withBundle(async (dir) => {
+    await mkdir(path.join(dir, "notes"), { recursive: true });
+    await writeFile(path.join(dir, "notes", "broken.md"), "---\ntype: [unclosed\n---\nBody.\n");
+    const first = await runJson(doc, ["write", "tasks/one", "--type", "Task", "--title", "One", "--body", "See [Broken](/notes/broken.md).", "--dir", dir]);
+    assert.deepEqual(codes(first), ["LINK_LINT_UNAVAILABLE"]);
+    const again = await runJson(doc, ["update", "tasks/one", "--body", "See [Broken](/notes/broken.md), now with [[tasks/t9]].", "--dir", dir]);
+    assert.deepEqual(codes(again), ["LINK_NOT_RECOGNIZED"]);
+    const relinked = await runJson(doc, ["update", "tasks/one", "--body", "See [Broken again](/notes/broken.md), now with [[tasks/t9]].", "--dir", dir]);
+    assert.equal(relinked.warnings, undefined, "a new link text to an already linked unreadable target names nothing new");
   });
 });
 
