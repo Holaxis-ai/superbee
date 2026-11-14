@@ -129,7 +129,7 @@ export type KindTypeUndeclaredDetails = {
   type: string;
   /** Every type the bundle's Kinds govern, sorted. */
   declaredTypes: string[];
-  /** A declared type equal to `type` ignoring case and spacing: probably the intended one. */
+  /** A declared type equal to `type` ignoring case, spacing, hyphens and underscores: probably the intended one. */
   suggestedType?: string;
 };
 
@@ -138,14 +138,15 @@ export interface KindTypeUndeclaredFinding extends ValidationWarning {
   details: KindTypeUndeclaredDetails;
 }
 
+/** A type's spelling with case, spacing, hyphens and underscores ignored: `ContextNote`, `context-note` and `Context Note` agree. */
 function typeKey(type: string): string {
-  return type.trim().replace(/\s+/g, " ").toLowerCase();
+  return type.replace(/[\s_-]+/g, "").toLowerCase();
 }
 
 /**
  * A finding when a document's `type` is not governed by any Kind in a bundle that declares Kinds.
  * Ungoverned types stay legal (they are how new Kinds are discovered), so this is `info`, raised to
- * `warning` when a declared type differs only in case or spacing. A bundle with no Kinds, a
+ * `warning` when a declared type differs only in case, spacing, hyphens or underscores. A bundle with no Kinds, a
  * missing or non-string type, and Superbee's own documents ({@link isSystemDocument}) never
  * produce one.
  */

@@ -1,10 +1,11 @@
 import { renderUsage } from "../../output.js";
 import { parseArgs } from "node:util";
-import { FrontmatterLimitError, isStandardDocumentSetField, kindFieldInputValue, loadBoundedYaml, loadKinds, readBundleOkfVersion, resolveKindFieldCoordinate, type FieldActionErrorDetails, type FieldAction, type SourceSelector } from "@superbee/core";
+import { FrontmatterLimitError, isStandardDocumentSetField, kindFieldInputValue, loadBoundedYaml, loadKinds, readBundleOkfVersion, resolveKindFieldCoordinate, type FieldActionErrorDetails, type FieldAction, type OkfDocument, type SourceSelector } from "@superbee/core";
 import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
 import { commandFragment, commandToken, commandWords } from "../../command-text.js";
 import { cliInvocation } from "../../invocation.js";
+import { writeFindings, writeFindingsHelp } from "../../write-findings.js";
 import { CliError } from "../../errors.js";
 import { readExternalTextFile } from "../../external-file.js";
 import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, resolveLocalBundleRoute } from "../../bundle.js";
@@ -48,7 +49,7 @@ replacement: pull --doc-key <id>.md --out <file>, edit, then promote.
 Use 'superbee doc field <action> --help' for focused input and version rules.
 `;
 function help(action: Action): string {
-  return `superbee doc field ${action} - ${descriptions[action]}\n\nUsage:\n  superbee doc field ${action} <id> <field> ${action === "edit" || action === "replace-all" ? "" : "[value] "}[options]\n\nOptions:\n  --from-file <path>   One complete JSON/YAML value; never combined with a literal\n  --id <source-id>     Exact source ID (including an empty existing ID)\n  --resource <value>   Exact resource fallback for one ID-less source\n  --expected-version <v>  Observed document version; required for edit/replace-all\n  --actor <actor>      Revision attribution\n  --strict             Reject Kind warnings (declared Kind fields are always strict)\n  --dir <path>         Bundle directory\n  --json               Emit compact JSON instead of TOON\n  -h, --help           Show this help without reading a bundle\n\nLiteral strings are never split on commas or parsed as key/value pairs. Put flags\nbefore -- when passing a dash-leading literal. Field actions never read stdin.\nResource selection refuses an ID-bearing entry and directs you to its ID.\nAmbiguous sources require a unique ID or deliberate versioned whole-list repair.\nA mapping assignment replaces that complete mapping; it cannot hide a nested list.\nUse sources replace-all for source properties containing lists, or complete-document\nreplacement for other nested collections: pull --doc-key <id>.md --out <file>,\nedit that file, then promote <file> --doc-key <id>.md\n--expected-version <version-from-pull>. Field actions preserve the document body.\n`;
+  return `superbee doc field ${action} - ${descriptions[action]}\n\nUsage:\n  superbee doc field ${action} <id> <field> ${action === "edit" || action === "replace-all" ? "" : "[value] "}[options]\n\nOptions:\n  --from-file <path>   One complete JSON/YAML value; never combined with a literal\n  --id <source-id>     Exact source ID (including an empty existing ID)\n  --resource <value>   Exact resource fallback for one ID-less source\n  --expected-version <v>  Observed document version; required for edit/replace-all\n  --actor <actor>      Revision attribution\n  --strict             Reject Kind warnings (declared Kind fields are always strict)\n  --dir <path>         Bundle directory\n  --json               Emit compact JSON instead of TOON\n  -h, --help           Show this help without reading a bundle\n\nA changed type is checked as 'doc write' checks it: a near miss of a declared Kind's type\nis named in the receipt's warnings (KIND_TYPE_UNDECLARED). It never refuses the write.\n\nLiteral strings are never split on commas or parsed as key/value pairs. Put flags\nbefore -- when passing a dash-leading literal. Field actions never read stdin.\nResource selection refuses an ID-bearing entry and directs you to its ID.\nAmbiguous sources require a unique ID or deliberate versioned whole-list repair.\nA mapping assignment replaces that complete mapping; it cannot hide a nested list.\nUse sources replace-all for source properties containing lists, or complete-document\nreplacement for other nested collections: pull --doc-key <id>.md --out <file>,\nedit that file, then promote <file> --doc-key <id>.md\n--expected-version <version-from-pull>. Field actions preserve the document body.\n`;
 }
 
 export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
@@ -117,6 +118,9 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
   const edition = (await readBundleOkfVersion(bundle)) === "0.2" ? "0.2" : "0.1";
   // Standard edits retain warn-by-default; dynamic Kind fields retain strict authoring.
 
+  // The version this field action replaced: findings are those it introduced (none, unless a
+  // later field action can change the body or type).
+  let prior: OkfDocument | undefined;
   if (route) await assertResolvedLocalRouteIdentity(route);
   try {
     const result = await mutateDoc({
@@ -125,6 +129,7 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
       helpOnKindReject: `${cliInvocation()} kinds`, actor, persistActor: true,
       expectedVersion: expectedVersion?.trim(),
       input: (existing, context) => {
+        prior = existing;
         if (context.okfVersion !== edition) fail("The bundle edition changed; retry against its current declaration.");
         if (action === "set") {
           const kind = registry.kinds.get(String(existing.frontmatter.type));
@@ -143,11 +148,14 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
     });
     const scope = result.scope!;
     const { affectedSourceIds, ...boundedScope } = scope;
+    // Post-write findings on a changed write only (see `write-findings.ts`); never fail the write.
+    const findings = result.changed ? await writeFindings(bundle, result.doc, registry, prior) : [];
+    const warnings = [...result.warnings, ...findings];
     stdout(render({ doc: "field", id: result.doc.id, field, operation: action, changed: result.changed, version: result.version,
       scope: { ...boundedScope, ...(affectedSourceIds === undefined ? {} : { affectedSourceIds: affectedSourceIds.slice(0, 20), affectedSourceIdCount: affectedSourceIds.length }) },
-      ...(result.warnings.length ? { warnings: result.warnings } : {}),
+      ...(warnings.length ? { warnings } : {}),
       ...(result.guidance.length ? { guidance: result.guidance } : {}),
-      help: [`${cliInvocation()} doc read ${commandToken(result.doc.id)}${routeFlag}`],
+      help: [`${cliInvocation()} doc read ${commandToken(result.doc.id)}${routeFlag}`, ...writeFindingsHelp(findings)],
     }, resolveMode(values)));
   } catch (error) {
     if (error instanceof CliError && error.code === "USAGE" && !error.help) {

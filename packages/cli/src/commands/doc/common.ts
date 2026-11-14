@@ -85,6 +85,12 @@ replacement. Kind validation is advisory by default: violations appear as warnin
 no-ops. --strict rejects violations without writing. A changed replacement of a previously conforming
 document cannot be nonconforming, even in advisory mode.
 
+After a changed write, warnings also name what it introduced that will not work as meant: a link
+that will not register (LINK_NOT_RECOGNIZED, with the href that would), a link to a document that
+does not exist yet (LINK_TARGET_ABSENT; still allowed) and a type that misses a declared Kind's
+type only by case, spacing, hyphens or underscores (KIND_TYPE_UNDECLARED, naming the declared
+one). They never refuse the write.
+
 Options:
   --type <t>           OKF concept type (non-empty)                          [required]
   --title <t>          Display title
@@ -152,6 +158,7 @@ timestamp) converges to changed:false (no write, no timestamp refresh).
 Standard-field patches use advisory Kind validation by default, returning warnings even on no-ops;
 --strict rejects violations without writing. Dynamic declared fields are always strict: passing a
 --<field> flag requires the whole resulting document to satisfy its Kind, even for a same-value patch.
+A changed body or type also gets the post-write link and type warnings 'doc write' describes.
 
 Options:
   --title <t>            Replace the title

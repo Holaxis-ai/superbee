@@ -9,6 +9,7 @@ import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
 import { render, resolveMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
+import { writeFindings, writeFindingsHelp } from "../../write-findings.js";
 import { mutateDoc } from "../../mutate.js";
 import { isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../../legacy-page.js";
 import { boardPostPersistHook } from "../../board-attribution.js";
@@ -139,6 +140,8 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   // mode calls it once per CAS attempt; the last call before a successful write is the one whose
   // `existing` snapshot actually got replaced) — surfaced on the receipt below.
   let droppedFields: string[] = [];
+  // The version this write replaced, from the same winning attempt: findings are those it introduced.
+  let prior: OkfDocument | undefined;
 
   // "overwrite" mode: `mutateDoc` re-reads the CURRENT doc (present or absent) immediately before
   // EACH write attempt and hands it to `buildCandidate` as `fresh` — so every read-dependent decision
@@ -165,6 +168,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     // refused/failed one — and only for the conventional board bundle (see board-attribution.ts).
     onPersisted: boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor),
     buildCandidate: (fresh: OkfDocument | undefined, context) => {
+      prior = fresh;
       assertStaleAfterEdition(staleAfter, context.okfVersion);
       assertAuthoredLegacyTimestamp(values.timestamp?.trim(), context.okfVersion);
       // v0.1 retains its permissive input contract; v0.2 validity belongs solely to core's parser.
@@ -267,11 +271,15 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   if (stdinSilentTimeout) {
     receipt.note = receipt.note ? `${receipt.note}\n${STDIN_SILENT_NOTE}` : STDIN_SILENT_NOTE;
   }
-  if (result.warnings.length > 0) receipt.warnings = result.warnings;
+  // Post-write findings (links that will not register, absent targets, an undeclared type) on
+  // a changed write only; advisory, so they never fail the write and print nothing when empty.
+  const findings = result.changed ? await writeFindings(bundle, saved, registry, prior) : [];
+  const warnings = [...result.warnings, ...findings];
+  if (warnings.length > 0) receipt.warnings = warnings;
   if (result.guidance.length > 0) receipt.guidance = result.guidance;
   // Retired-kind hint: authoring-moment only, never blocks, never on reads.
   if (isLegacyPageDoc(saved.frontmatter)) receipt.hint = LEGACY_PAGE_TYPE_HINT;
-  receipt.help = [`${cliInvocation()} doc read ${commandToken(saved.id)}`];
+  receipt.help = [`${cliInvocation()} doc read ${commandToken(saved.id)}`, ...writeFindingsHelp(findings)];
 
   stdout(render(receipt, resolveMode(values)));
 }

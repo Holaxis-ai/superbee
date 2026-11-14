@@ -38,6 +38,11 @@ const FULL_SECTIONS_BODY =
   "# Summary\n\nHi.\n\n# Decisions\n\n- Did X\n\n# Open Questions\n\n- Why not Y?\n\n" +
   "# Pointers\n\n- [A](../concepts/a.md)\n";
 
+/** The document FULL_SECTIONS_BODY's Pointers link names, for tests that pin an exact warning set. */
+async function writeConceptA(dir: string): Promise<void> {
+  await writeDoc({ root: dir }, { id: "concepts/a", frontmatter: { type: "Context Note", title: "A", timestamp: "2026-07-01T00:00:00.000Z" }, body: "A." });
+}
+
 async function tempDir(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "agentstate-lite-kinds-test-"));
 }
@@ -1152,7 +1157,9 @@ test("doc write: warn-by-default when a kind governs --type (exit 0, warnings[] 
   try {
     let out = "";
     // FULL_SECTIONS_BODY carries all four seeded sections, isolating the missing-title violation
-    // from the (unrelated) section lint the seed's `sections:` declaration now also runs.
+    // from the (unrelated) section lint the seed's `sections:` declaration now also runs. Its
+    // Pointers link names concepts/a, which exists, so no post-write link warning joins in.
+    await writeConceptA(dir);
     await doc(
       ["write", "context-notes/bad", "--type", "Context Note", "--body", FULL_SECTIONS_BODY, "--dir", dir, "--json"],
       { stdout: (s) => (out += s) },
@@ -1180,7 +1187,9 @@ test("doc write: a timestamp-less write of a governed type produces NO warnings 
     // engine always stamps a timestamp regardless, so a doc lacking ONLY --timestamp is fully
     // conforming once written and must carry no warnings at all — not even a title-shaped one.
     // FULL_SECTIONS_BODY satisfies the seed's `sections:` declaration so it too contributes no
-    // warnings, keeping this test isolated to the F1 timestamp regression it targets.
+    // warnings, keeping this test isolated to the F1 timestamp regression it targets; concepts/a
+    // exists, so its Pointers link adds no post-write link warning either.
+    await writeConceptA(dir);
     let out = "";
     await doc(
       [
