@@ -142,6 +142,9 @@ test("links: a stray [ before a real link does not become part of that link", ()
   // An open bracket inside code within link text does not restart the link.
   assert.deepEqual(edges("[see `x[` y](/tasks/x.md)"), [{ to: "tasks/x", text: "see `x[` y" }]);
   assert.deepEqual(edges("`a[` then [see `x[` y](/tasks/x.md)"), [{ to: "tasks/x", text: "see `x[` y" }]);
+  // A link written entirely inside code after a stray prose bracket opens at its own bracket.
+  assert.deepEqual(edges("an open [ bracket then `[a](/tasks/x.md)`"), [{ to: "tasks/x", text: "a" }]);
+  assert.deepEqual(edges("item [3 of the list\n\n```\n[reviews](/tasks/x.md)\n```"), [{ to: "tasks/x", text: "reviews" }]);
   // Unchanged: nested brackets in link text are still not a link (the scanner does not balance brackets).
   assert.deepEqual(edges("[a [b] c](/tasks/x.md)"), []);
   // Unchanged: the scanner does not read backslash escapes, so this still registers.

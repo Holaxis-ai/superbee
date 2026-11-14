@@ -151,6 +151,8 @@ test("a stray [ before a link: edges agree with parseLinksFromDoc and a near mis
     "[a [b] c](/tasks/x.md)",
     "[see `x[` y](/tasks/x.md)",
     "`a[` then [see `x[` y](/tasks/x.md)",
+    "an open [ bracket then `[a](/tasks/x.md)`",
+    "item [3 of the list\n\n```\n[reviews](/tasks/x.md)\n```",
   ];
   for (const body of bodies) {
     const source = doc("notes/a", body);
