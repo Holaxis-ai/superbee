@@ -24,6 +24,7 @@ import {
   FilesystemShapeMismatchError,
   FilesystemSymlinkEntryError,
   foldSegment,
+  filesystemRootMutationKey,
   identityKey,
   mutateExact,
   observeExact,
@@ -32,6 +33,7 @@ import {
   type MutationContext,
   type PortHandle,
 } from "../src/filesystem-identity.js";
+import { foldPath } from "../src/path-fold.js";
 import { opOf, ScriptedPort } from "./scripted-identity-port.js";
 
 const replacementConflict = (error: unknown): boolean => (error as { code?: string })?.code === "TEST_REPLACEMENT_CONFLICT";
@@ -1209,6 +1211,15 @@ test("AC-5 row 3: every C and F entry of the checked-in Unicode CaseFolding tabl
   assert.deepEqual(failures, []);
 });
 
+test("the root mutation key folds a root path the way released builds fold it", async () => {
+  // Trademark sign and no-break space decompose only under compatibility normalization.
+  const releasedFold = (segment: string): string => segment.normalize("NFKD").toLowerCase().toUpperCase().toLowerCase();
+  const folded = ["", "x", releasedFold("Bundle\u2122\u00A0")].join("/");
+  const expected = createHash("sha256").update(`superbee-root-mutation/v1\0${folded}`).digest("hex");
+  assert.equal(await filesystemRootMutationKey("/x/Bundle\u2122\u00A0"), expected);
+  assert.equal(await filesystemRootMutationKey("/x/bundletm "), expected, "a wider root fold only shares the lock");
+});
+
 test("AC-5: fold digest over the checked-in spelling list is pinned", async () => {
   assert.equal(DIGEST_SPELLINGS.length, 50);
   const digest = createHash("sha256");
@@ -1217,7 +1228,88 @@ test("AC-5: fold digest over the checked-in spelling list is pinned", async () =
     digest.update(`${await identityKey("/", `concepts/${a}.md`)}\n`);
     digest.update(`${await identityKey("/", `concepts/${b}.md`)}\n`);
   }
-  assert.equal(digest.digest("hex"), "7307f1939479537efaac08c000c1e3552d855434e29bb93ba1ee493c086d5f4e");
+  assert.equal(digest.digest("hex"), "467f23756c89290b79166a04ddb544dc037ec00b733f89945d9186d9a298a52b");
+  // The list's compatibility spellings are names of their own on every supported filesystem.
+  for (const [a, b] of [["²", "2"], ["①", "1"], ["ｱ", "ア"]]) {
+    assert.notEqual(await identityKey("/", `concepts/${a}.md`), await identityKey("/", `concepts/${b}.md`), `${a} / ${b}`);
+  }
+});
+
+// ── one fold: the lock key is foldPath's ─────────────────────────────────────
+
+/** The identity fold's previous definition, kept here only to prove the change narrowed nothing but NFKD. */
+const legacyFold = (segment: string): string => segment.normalize("NFKD").toLowerCase().toUpperCase().toLowerCase();
+/** The legacy fold without compatibility decomposition: the pairs it joins are not compatibility-only. */
+const legacyCanonicalFold = (segment: string): string => segment.normalize("NFD").toLowerCase().toUpperCase().toLowerCase();
+
+const hexOf = (text: string): string => [...text].map((ch) => ch.codePointAt(0)!.toString(16).toUpperCase()).join(" ");
+
+/**
+ * Every code point with its case and normalization images, plus every Greek letter carrying an
+ * iota subscript followed by each combining diacritical mark (the sequences where case mapping
+ * and canonical order interact).
+ */
+function foldCandidates(): Set<string> {
+  const candidates = new Set<string>();
+  for (let cp = 0; cp <= 0x10ffff; cp++) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue;
+    const ch = String.fromCodePoint(cp);
+    for (const form of [ch, ch.toLowerCase(), ch.toUpperCase(), ch.normalize("NFD"), ch.normalize("NFKD")]) candidates.add(form);
+  }
+  const iotaSubscripted = [0x0345];
+  for (let cp = 0x1f80; cp <= 0x1ffc; cp++) if (String.fromCodePoint(cp).normalize("NFD").includes("ͅ")) iotaSubscripted.push(cp);
+  for (const base of iotaSubscripted) {
+    for (let mark = 0x0300; mark <= 0x036f; mark++) {
+      const text = String.fromCodePoint(base, mark);
+      for (const form of [text, text.normalize("NFD"), text.toUpperCase(), text.toLowerCase(), legacyCanonicalFold(text)]) candidates.add(form);
+    }
+  }
+  return candidates;
+}
+
+test("one fold: the identity fold joins exactly what foldPath joins", () => {
+  for (const [a, b] of [["Docs", "docs"], ["é", "é"], ["ｒ", "r"], ["ᾩ͍", "ὡ͍ι"]] as const) {
+    assert.equal(foldSegment(a) === foldSegment(b), foldPath(a) === foldPath(b), `${hexOf(a)} / ${hexOf(b)}`);
+  }
+  for (const text of foldCandidates()) assert.equal(foldSegment(text), foldPath(text).normalize("NFD"), hexOf(text));
+});
+
+test("one fold: every pair the legacy identity fold joined stays joined unless it differs only by compatibility", () => {
+  const byLegacy = new Map<string, string[]>();
+  for (const text of foldCandidates()) {
+    const key = legacyFold(text);
+    const group = byLegacy.get(key);
+    if (group === undefined) byLegacy.set(key, [text]);
+    else group.push(text);
+  }
+  const narrowed: string[] = [];
+  let compatibilityOnly = 0;
+  for (const group of byLegacy.values()) {
+    // Within one legacy class, members the legacy fold joins WITHOUT compatibility decomposition
+    // must share one new key; members that split apart may differ only through NFKD.
+    const keyByCanonical = new Map<string, [string, string]>();
+    const keys = new Set<string>();
+    for (const text of group) {
+      const key = foldSegment(text);
+      keys.add(key);
+      const canonical = legacyCanonicalFold(text);
+      const prior = keyByCanonical.get(canonical);
+      if (prior === undefined) keyByCanonical.set(canonical, [key, text]);
+      else if (prior[0] !== key) narrowed.push(`${hexOf(prior[1])} / ${hexOf(text)}`);
+    }
+    if (keys.size > 1) compatibilityOnly++;
+  }
+  assert.deepEqual(narrowed.slice(0, 20), [], `${narrowed.length} non-compatibility pairs narrowed`);
+  assert.ok(compatibilityOnly > 0, "the generator reaches compatibility pairs, so the excused class is exercised");
+});
+
+test("one fold: names without compatibility characters keep the legacy identity key bytes", () => {
+  const drift: string[] = [];
+  for (const text of foldCandidates()) {
+    if (text.normalize("NFKD") !== text.normalize("NFD")) continue;
+    if (foldSegment(text) !== legacyFold(text)) drift.push(hexOf(text));
+  }
+  assert.deepEqual(drift.slice(0, 20), [], `${drift.length} keys changed`);
 });
 
 test("host-classified open contention reruns the witnessed walk and retains the observation restart bound", async () => {

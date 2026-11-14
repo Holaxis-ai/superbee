@@ -257,7 +257,17 @@ async function existingAnchor(resolved: string): Promise<{ anchor: string; tail:
 async function foldedPhysicalRoot(root: string): Promise<string> {
   const { anchor, tail } = await existingAnchor(path.resolve(root));
   const anchorSegments = anchor.split(path.sep).filter((segment, index) => index === 0 || segment !== "");
-  return [...anchorSegments, ...tail].map(foldSegment).join("/");
+  return [...anchorSegments, ...tail].map(foldRootSegment).join("/");
+}
+
+/**
+ * The bundle root's own segments fold with compatibility decomposition, which is wider than
+ * {@link foldSegment}. Every released build derives the root key this way, and processes on
+ * different builds exclude each other only while they derive the same root key. A wider root
+ * fold can only make two differently spelled roots share one lock.
+ */
+function foldRootSegment(segment: string): string {
+  return segment.normalize("NFKD").toLowerCase().toUpperCase().toLowerCase();
 }
 
 export async function identityKey(root: string, rel: string): Promise<string> {
