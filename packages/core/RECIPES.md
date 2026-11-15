@@ -97,8 +97,8 @@ A published index is one JSON document, `recipe-index/v1`:
 
 A cookbook is a named, ordered group of recipes the index lists. `root` is relative to the index
 location and optional. `files` are relative to `root`, and a
-reader fetches exactly those files. `parseRecipeIndex` refuses unknown keys (except `discovery` and
-`identity`, below) and formats, absolute
+reader fetches exactly those files. `parseRecipeIndex` refuses unknown keys (except `discovery`, below)
+and formats, absolute
 paths, `..`, backslashes, dot entries, duplicates (file paths compare case-insensitively), and
 cookbooks that name a recipe the index does not list or, for a `supported` cookbook, a `community`
 recipe. Its codes are `RECIPE_INDEX_MALFORMED`,
@@ -173,7 +173,8 @@ sits in one optional `discovery` object at index, recipe and cookbook level, and
   never refuses. A `discovery` that is not an object is dropped whole. Dropped data is not kept in
   the parse result, so nothing Core does not understand reaches an agent or a page. Parsed entries
   carry `discovery` only when something survives, and `resolveIndexRecipe` and `resolveCookbook`
-  pass it through.
+  pass it through. When an older reader drops an
+  unknown first category, the next one becomes the primary.
 - Readers never refuse an index because of `discovery`, so a later, wider rule (a new category, a
   third audience) leaves older readers working; they simply do not show the new value until they run
   a Core that knows it. `readRecipeDiscovery` also returns `problems`, one sentence per drop, so a
@@ -183,9 +184,10 @@ sits in one optional `discovery` object at index, recipe and cookbook level, and
   (Software and engineering). Ids are permanent and never reused; display names may change. A host
   shows only categories that hold at least one entry. There is no health category.
 
-The display text rule is `recipeDisplayText(value, max)`: a nonempty string with no C0 or C1 control
-(newline and tab included) and no bidirectional formatting character (U+200E, U+200F, U+061C,
-U+202A to U+202E, U+2066 to U+2069), cut to `max` UTF-16 code units without splitting a surrogate
+The display text rule is `recipeDisplayText(value, max)`: a nonempty string with no control
+character (Unicode category Cc, C0 and C1, newline and tab included), no format character (category
+Cf: bidirectional marks and overrides, zero-width characters such as U+200B and U+200D, U+FEFF and
+the U+E0000 tag block) and no line or paragraph separator (U+2028, U+2029), cut to `max` UTF-16 code units without splitting a surrogate
 pair, or null. `parseRecipeIndex` refuses the index (`RECIPE_INDEX_MALFORMED`) when its `title`, a
 cookbook's `title` or `summary`, a `maintainer` or a `version` breaks it, and `discovery.offer`
 follows the drop rule. Whatever builds listing rows from verified recipes uses
@@ -197,7 +199,8 @@ instruction-shaped sentence, so this text stays data.
 What Core verifies, and what is only the publisher's statement:
 
 - Verified: a recipe's id, version, `files_digest`, `source_digest` and storability, after every
-  listed file is fetched. So a verified recipe's `title`, `summary`, `offer` and Kinds are pinned.
+  listed file is fetched. So a verified recipe's `title`, `summary`, `offer` and Kinds are pinned: fixed to digests the same
+  publisher wrote, so still the publisher's words, only unchangeable once pinned.
 - Not verified: everything in `discovery`, every cookbook field (`title`, `summary`, `offer`,
   `recipes`), `designation`, `maintainer` and the index `source` and `title`. The index document has
   no pin of its own and its digests come from the same publisher, so they prove consistency, not who
@@ -208,13 +211,10 @@ A recipe manifest's `offer`, `title` and `summary` are covered by `files_digest`
 `source_digest`, so rewording them keeps install stamps current. After an index lists a recipe
 version, its bytes are immutable, so a rewording needs a new recipe version.
 
-**Qualified recipe identity, later.** Every level also accepts an optional `identity` key, which this
-version neither reads nor returns. It is reserved so that a later qualified recipe identity
-(authority, repository and recipe-local id) can be published in a `recipe-index/v1` document
-without making it unreadable to readers built on this version; those readers keep resolving by the
-bare `id` as they do today. Its shape, and whether a reader must verify it, are decided with the
-identity work, and a reader that relies on it will need a Core that knows it. Any other new key
-outside `discovery` is a new format version.
+**Qualified recipe identity, later.** A qualified recipe identity (authority, repository and
+recipe-local id) will come with a new format version. A key that older readers ignore is not enough:
+they would still resolve by the bare `id`, and two entries with the same `id` are refused as
+duplicates. Any new key outside `discovery` is a new format version.
 
 ## Deprecating declarations
 

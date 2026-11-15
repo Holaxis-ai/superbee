@@ -241,31 +241,41 @@ test("the category table holds the seven permanent ids with display names", () =
   assert.ok(Object.isFrozen(RECIPE_CATEGORIES) && Object.isFrozen(RECIPE_CATEGORIES[0]));
 });
 
-test("a reserved identity key is accepted and ignored at every level", () => {
-  const index = parsedOk({
-    ...VALID,
-    identity: { authority: "github" },
-    recipes: [{ ...ENTRY, identity: "anything" }],
-    cookbooks: [{ ...COOKBOOK, identity: 1 }],
-  });
-  assert.equal(Object.hasOwn(index, "identity"), false);
-  assert.equal(Object.hasOwn(index.recipes[0]!, "identity"), false);
-  assert.equal(Object.hasOwn(index.cookbooks[0]!, "identity"), false);
-  assert.equal(refusalCode({ ...VALID, recipes: [{ ...ENTRY, identities: 1 }] }), "RECIPE_INDEX_MALFORMED");
+test("no identity key is reserved: a qualified identity needs a new format version", () => {
+  assert.equal(refusalCode({ ...VALID, identity: { authority: "github" } }), "RECIPE_INDEX_MALFORMED");
+  assert.equal(refusalCode({ ...VALID, recipes: [{ ...ENTRY, identity: "x" }] }), "RECIPE_INDEX_MALFORMED");
+  assert.equal(refusalCode({ ...VALID, cookbooks: [{ ...COOKBOOK, identity: 1 }] }), "RECIPE_INDEX_MALFORMED");
 });
 
 test("display text rule: index text with a control or bidirectional formatting character refuses the index", () => {
-  for (const bad of ["a\u0007b", "line\nbreak", "tab\there", "c1\u0085", "del\u007F", "‮evil", "⁦x⁩", "‏x", "؜x"]) {
+  for (const bad of ["a\u0007b", "line\nbreak", "tab\there", "c1\u0085", "del\u007F", "\u202Eevil", "\u2066x\u2069", "\u200Fx", "\u061Cx"]) {
     assert.equal(refusalCode({ ...VALID, title: bad }), "RECIPE_INDEX_MALFORMED", JSON.stringify(bad));
     assert.equal(refusalCode({ ...VALID, cookbooks: [{ ...COOKBOOK, summary: bad }] }), "RECIPE_INDEX_MALFORMED", JSON.stringify(bad));
     assert.equal(refusalCode({ ...VALID, cookbooks: [{ ...COOKBOOK, title: bad }] }), "RECIPE_INDEX_MALFORMED", JSON.stringify(bad));
     assert.equal(refusalCode({ ...VALID, recipes: [{ ...ENTRY, maintainer: bad }] }), "RECIPE_INDEX_MALFORMED", JSON.stringify(bad));
     assert.equal(recipeDisplayText(bad, 100), null);
   }
-  // Ordinary punctuation, accents, emoji with a joiner and right-to-left letters pass.
-  for (const good of ["Café: rooms, repairs — and costs", "👩‍🔧 fixes", "שלום"]) {
+  // Ordinary punctuation, accents, emoji and right-to-left letters pass.
+  for (const good of ["Caf\u00E9: rooms, repairs \u2014 and costs", "\u{1F527} fixes", "\u05E9\u05DC\u05D5\u05DD"]) {
     assert.equal(recipeDisplayText(good, 100), good);
     assert.ok(parseRecipeIndex({ ...VALID, title: good }).ok);
+  }
+});
+
+test("display text rule: invisible characters are refused, class by class", () => {
+  const classes: Record<string, string[]> = {
+    "zero-width": ["a\u200Bb", "a\u200Cb", "a\u200Db", "a\u2060b", "soft\u00ADhyphen"],
+    "byte order mark": ["\uFEFFtitle", "ti\uFEFFtle"],
+    "tag characters": ["home\u{E0001}", "x\u{E0041}\u{E0042}\u{E007F}"],
+    "line and paragraph separators": ["one\u2028two", "one\u2029two"],
+  };
+  for (const [name, values] of Object.entries(classes)) {
+    for (const bad of values) {
+      assert.equal(recipeDisplayText(bad, 100), null, `${name}: ${JSON.stringify(bad)}`);
+      assert.equal(refusalCode({ ...VALID, cookbooks: [{ ...COOKBOOK, summary: bad }] }), "RECIPE_INDEX_MALFORMED", name);
+      const index = parsedOk({ ...VALID, cookbooks: [{ ...COOKBOOK, discovery: { offer: bad, audience: "both" } }] });
+      assert.deepEqual(index.cookbooks[0]!.discovery, { audience: "both" }, name);
+    }
   }
 });
 

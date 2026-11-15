@@ -100,10 +100,12 @@ export const RECIPE_DESIGNATIONS: readonly RecipeDesignation[] = Object.freeze([
 // ── Display text and discovery ────────────────────────────────────────────────────────────────
 
 /**
- * C0 and C1 controls (newline and tab included) and bidirectional formatting characters. Index text
- * reaches agents and pages before any install, so none of these may hide or reorder what it says.
+ * Control characters (Cc: C0 and C1, newline and tab included), format characters (Cf: bidirectional
+ * marks and overrides, zero-width characters, U+FEFF and the U+E0000 tag block among them) and the
+ * line and paragraph separators. Index text reaches agents and pages before any install, so nothing
+ * in it may be invisible, reorder what it says or break a line.
  */
-const REFUSED_DISPLAY_CHARACTER = /[\u0000-\u001F\u007F-\u009F؜‎‏‪-‮⁦-⁩]/u;
+const REFUSED_DISPLAY_CHARACTER = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
 
 /**
  * The display text rule for recipe and cookbook text. Returns `value` when it is a nonempty string
@@ -325,12 +327,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/**
- * Keys every level accepts and no reader refuses. `discovery` is read through `readRecipeDiscovery`.
- * `identity` is reserved, unread and never returned: a later qualified recipe identity can arrive there
- * without making an index that carries it unreadable to this version. Every other key stays strict.
- */
-const TOLERATED_KEYS: readonly string[] = Object.freeze(["discovery", "identity"]);
+/** The one key every level accepts and no reader refuses; it is read through `readRecipeDiscovery`. */
+const TOLERATED_KEYS: readonly string[] = Object.freeze(["discovery"]);
 
 function exactKeys(value: Record<string, unknown>, required: readonly string[], optional: readonly string[], where: string): void {
   for (const key of required) if (!Object.hasOwn(value, key)) refuse("RECIPE_INDEX_MALFORMED", `${where} is missing '${key}'`);
