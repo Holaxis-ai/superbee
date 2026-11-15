@@ -38,7 +38,7 @@ import {
   type PullReport,
   type SharedBase,
 } from "@superbee/browser-local";
-import { queryHeads, listBlobs, assertSafeConceptId, conceptIdFromPath, FilesystemMutationLockError, FrontmatterRefusedError, isConventionId, InvalidInputError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
+import { queryHeads, listBlobs, assertSafeConceptId, conceptIdFromPath, foldPath, FilesystemMutationLockError, FrontmatterRefusedError, isConventionId, InvalidInputError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
 import { decodePreparedBlobIntent, isOrdinaryBlobKey, type BlobIntentRecord, type BlobTargetScope } from "@superbee/core/storage";
 import { performHostedBlobDelivery } from "@superbee/core/hosted-client";
 import { createHostedBlobReadAdapter, createHostedBlobWriteAdapter } from "@superbee/core/hosted-transport";
@@ -99,7 +99,7 @@ import {
   type HeldFile,
   type ProjectionRecord,
 } from "./sync-scan.js";
-import { digestOf, fold, replaceGuarded, ROOT_INDEX } from "./projection.js";
+import { digestOf, replaceGuarded, ROOT_INDEX } from "./projection.js";
 import { refuseTreePrivateState } from "../private-state-publication.js";
 import { unstorableRoot, adoptHostRoot, moveRootBase, readRootFile, rootConflict, settleRootSent, syncRoot, type HostRoot, type RootStepReport } from "./root-sync.js";
 import { declaredHostedSyncGate, runHostedSyncGate, SYNC_GATE_CONFIG, type HostedGateDeclaration } from "../commands/sync/gate.js";
@@ -773,12 +773,12 @@ async function caseCollidingCreates(store: JournaledBackend): Promise<HeldFile[]
   if (creates.length === 0) return [];
   const byFold = new Map<string, string[]>();
   for (const id of await store.readHeads({ project: (head) => head.id })) {
-    const key = id.split("/").map(fold).join("/");
+    const key = foldPath(id);
     byFold.set(key, [...(byFold.get(key) ?? []), id]);
   }
   const out: HeldFile[] = [];
   for (const row of creates) {
-    const twin = byFold.get(row.target.split("/").map(fold).join("/"))?.find((id) => id !== row.target);
+    const twin = byFold.get(foldPath(row.target))?.find((id) => id !== row.target);
     if (twin !== undefined) {
       out.push({ id: row.target, path: `${row.target}.md`, reason: "case_collision", message: `'${row.target}' differs only in letter case from the host's '${twin}', which a case-insensitive disk treats as the same file; rename your file` });
     }

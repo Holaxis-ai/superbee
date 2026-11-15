@@ -7,6 +7,7 @@ import { sha256HexOfBytes } from "./sha256.js";
 import { captureJournalValue, equalJournalValue, assertMetaExpectation, IntentStateConflict, JournalGuardConflict, JournalSnapshotConflict, type MetaExpectation, type MetaRecord } from "./journaled-backend.js";
 import type { OperationState } from "./uncertain-write.js";
 import { isReservedFile } from "./paths.js";
+import { foldPath } from "./path-fold.js";
 import { PAGE_ENTRY_PREFIX, PAGE_REGISTRY_PREFIX, VIEW_ENTRY_PREFIX, VIEW_REGISTRY_PREFIX } from "./page.js";
 
 export { isWriteRequestId } from "./write-identity.js";
@@ -294,15 +295,15 @@ export function assertBlobGuardMatches(view: BlobJournalView, guard: BlobJournal
 const NON_ORDINARY_ROOTS = Object.freeze([PAGE_ENTRY_PREFIX, PAGE_REGISTRY_PREFIX, VIEW_ENTRY_PREFIX, VIEW_REGISTRY_PREFIX, "conventions/", "recipes/", "references/"].map(prefix => prefix.slice(0, -1)));
 /**
  * Whether `key` names an ordinary file a blob write may change: a safe blob key that is not a
- * reserved file and does not sit under one of Superbee's own record folders (compared
- * case-insensitively, under compatibility folding, as a case-insensitive file system would).
+ * reserved file and does not sit under one of Superbee's own record folders (compared under
+ * `foldPath`, as a case-insensitive or normalizing file system would).
  * The one key policy for every blob writer: the hosted client and the CLI's checkout sync.
  */
 export function isOrdinaryBlobKey(key: unknown): key is string {
   if (typeof key !== "string") return false;
   try { assertBlobKey(key); } catch { return false; }
   if (isReservedFile(key)) return false;
-  const root = key.split("/")[0]!.normalize("NFKD").toLowerCase().toUpperCase().toLowerCase();
+  const root = foldPath(key.split("/")[0]!);
   return !NON_ORDINARY_ROOTS.includes(root);
 }
 

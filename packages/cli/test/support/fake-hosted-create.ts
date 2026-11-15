@@ -34,6 +34,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { blobVersion, headsDigest, parseMarkdown, stringifyDoc } from "@superbee/core";
+import { foldPath } from "@superbee/core/path-fold";
 import { versionOfBytes } from "@superbee/core/versioning";
 
 import { fixture, HOST, PRINCIPAL, TOKEN } from "./fake-hosted-sync.js";
@@ -151,10 +152,6 @@ export interface FakeCreateHostOptions {
   email?: string;
   /** A host from before creations carried attribution and verification: it refuses them by name. */
   refusesProvenance?: boolean;
-}
-
-function fold(segment: string): string {
-  return segment.normalize("NFKD").toLowerCase().toUpperCase().toLowerCase();
 }
 
 function refusal(code: string, message: string): Response {
@@ -322,7 +319,7 @@ export class FakeCreateHost {
     const paths = [...documents.map((doc) => `${doc.id}.md`), ...reserved.map((r) => (r.dir === "" ? r.name : `${r.dir}/${r.name}`)), ...blobs.map((b) => b.key)];
     const folded = new Set<string>();
     for (const file of paths) {
-      const key = file.split("/").map(fold).join("/");
+      const key = foldPath(file);
       if (folded.has(key)) return refusal("document_id_collision", "Two paths in the bundle would be one file on a case-insensitive disk. Nothing was created.");
       folded.add(key);
     }
@@ -472,7 +469,7 @@ export class FakeCreateHost {
     const paths = [...m.documents.map((d) => `${d.id}.md`), ...m.reserved.map((r) => (r.dir === "" ? r.name : `${r.dir}/${r.name}`)), ...m.blobs.map((b) => b.key)];
     const folded = new Set<string>();
     for (const file of paths) {
-      const key = file.split("/").map(fold).join("/");
+      const key = foldPath(file);
       if (folded.has(key)) return refusal("document_id_collision", "Two paths in the bundle differ only by case or Unicode form. Nothing was created.");
       folded.add(key);
     }
