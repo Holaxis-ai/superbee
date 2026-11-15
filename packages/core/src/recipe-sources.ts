@@ -103,9 +103,10 @@ export const RECIPE_DESIGNATIONS: readonly RecipeDesignation[] = Object.freeze([
  * Control characters (Cc: C0 and C1, newline and tab included), format characters (Cf: bidirectional
  * marks and overrides, zero-width characters, U+FEFF and the U+E0000 tag block among them) and the
  * line and paragraph separators. Index text reaches agents and pages before any install, so nothing
- * in it may be invisible, reorder what it says or break a line.
+ * in it may be invisible, reorder what it says or break a line. The zero-width non-joiner and joiner
+ * (U+200C, U+200D) are allowed: Persian, Indic scripts and emoji sequences need them to spell words.
  */
-const REFUSED_DISPLAY_CHARACTER = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
+const REFUSED_DISPLAY_CHARACTER = /(?![\u200C\u200D])[\p{Cc}\p{Cf}\u2028\u2029]/u;
 
 /**
  * The display text rule for recipe and cookbook text. Returns `value` when it is a nonempty string

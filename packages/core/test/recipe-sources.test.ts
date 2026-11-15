@@ -264,7 +264,8 @@ test("display text rule: index text with a control or bidirectional formatting c
 
 test("display text rule: invisible characters are refused, class by class", () => {
   const classes: Record<string, string[]> = {
-    "zero-width": ["a\u200Bb", "a\u200Cb", "a\u200Db", "a\u2060b", "soft\u00ADhyphen"],
+    "zero-width": ["a\u200Bb", "a\u2060b", "soft\u00ADhyphen"],
+    "bidirectional overrides": ["\u202Eevil", "a\u2066b\u2069"],
     "byte order mark": ["\uFEFFtitle", "ti\uFEFFtle"],
     "tag characters": ["home\u{E0001}", "x\u{E0041}\u{E0042}\u{E007F}"],
     "line and paragraph separators": ["one\u2028two", "one\u2029two"],
@@ -277,6 +278,16 @@ test("display text rule: invisible characters are refused, class by class", () =
       assert.deepEqual(index.cookbooks[0]!.discovery, { audience: "both" }, name);
     }
   }
+});
+
+test("display text rule: the zero-width non-joiner and joiner that scripts need are allowed", () => {
+  // Persian "mi-khaham" with ZWNJ, Devanagari "kṣa" written with ZWJ, and an emoji ZWJ sequence.
+  for (const good of ["\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645", "\u0915\u094D\u200D\u0937", "\u{1F469}\u200D\u{1F527}"]) {
+    assert.equal(recipeDisplayText(good, 100), good, JSON.stringify(good));
+    const index = parsedOk({ ...VALID, title: good, cookbooks: [{ ...COOKBOOK, summary: good, discovery: { offer: good } }] });
+    assert.equal(index.cookbooks[0]!.discovery!.offer, good);
+  }
+  for (const bad of ["a\u200Bb", "\uFEFFa", "a\u{E0041}", "\u202Ea"]) assert.equal(recipeDisplayText(bad, 100), null, JSON.stringify(bad));
 });
 
 test("display text rule: clamps never split a surrogate pair, and refuse empty or non-string values", () => {

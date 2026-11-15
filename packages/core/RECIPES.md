@@ -186,8 +186,9 @@ sits in one optional `discovery` object at index, recipe and cookbook level, and
 
 The display text rule is `recipeDisplayText(value, max)`: a nonempty string with no control
 character (Unicode category Cc, C0 and C1, newline and tab included), no format character (category
-Cf: bidirectional marks and overrides, zero-width characters such as U+200B and U+200D, U+FEFF and
-the U+E0000 tag block) and no line or paragraph separator (U+2028, U+2029), cut to `max` UTF-16 code units without splitting a surrogate
+Cf: bidirectional marks and overrides, the zero-width space U+200B, U+FEFF and the U+E0000 tag
+block) except the zero-width non-joiner and joiner (U+200C, U+200D), which Persian, Indic scripts
+and emoji need, and no line or paragraph separator (U+2028, U+2029), cut to `max` UTF-16 code units without splitting a surrogate
 pair, or null. `parseRecipeIndex` refuses the index (`RECIPE_INDEX_MALFORMED`) when its `title`, a
 cookbook's `title` or `summary`, a `maintainer` or a `version` breaks it, and `discovery.offer`
 follows the drop rule. Whatever builds listing rows from verified recipes uses
