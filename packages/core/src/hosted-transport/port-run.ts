@@ -5,9 +5,11 @@
 // The one older-host fallback lives here. A host from before it ran an operation by id answers the
 // run route's `400 unknown_operation` (or, with no `run` at all, the family's unknown-route 404).
 // For an operation that host served on a route of its own ({@link ROUTE_BEFORE_RUN}), the runner
-// sends the operation's input there instead, and keeps doing so for that operation for the rest
-// of its life. Both routes answer the same `OperationResult` bytes, so a caller decodes one shape.
-import type { HostedAnswer, HostedCarrier } from "./carrier.js";
+// sends the operation's input there instead. Which one a host takes is decided once per operation
+// and held in {@link HostedRunDecisions}, shared by every runner of one client (its workspaces and
+// its write path): the first request asks `run`, and requests that arrive meanwhile wait for its
+// answer. Both routes answer the same `OperationResult` bytes, so a caller decodes one shape.
+import { HostedAnswerTooLarge, HostedCarrierError, isAnswerTooLarge, type HostedAnswer, type HostedCarrier } from "./carrier.js";
 import { familyRefusal } from "./read-adapter.js";
 
 /**
@@ -53,21 +55,61 @@ function notRunById(answer: HostedAnswer): boolean {
   return isUnknownRouteAnswer(answer) || (answer.status === 400 && familyRefusal(answer)?.code === "unknown_operation");
 }
 
-export function createPortRunner(options: { readonly carrier: HostedCarrier; readonly prefix: string }): HostedPortRunner {
+/** How one host takes each operation with an older route: by id, on its route, or being checked. */
+export type HostedRunDecisions = Map<string, "run" | "route" | Promise<void>>;
+
+/** The decisions of one client: create once and pass to each of its runners. */
+export function createRunDecisions(): HostedRunDecisions {
+  return new Map();
+}
+
+export function createPortRunner(options: { readonly carrier: HostedCarrier; readonly prefix: string; readonly decisions?: HostedRunDecisions }): HostedPortRunner {
   const { carrier, prefix } = options;
-  /** The operations this host refused by id that it serves on a route of their own. */
-  const byRoute = new Set<string>();
+  const decisions = options.decisions ?? createRunDecisions();
   return {
     async run(bundleId, operationId, input, signal, runOptions) {
       const body = { ...input, bundleId };
       const send = (route: string, payload: unknown) =>
-        carrier.json(route, payload, signal, { maximum: runOptions.maximum, ...(runOptions.binding ? { binding: runOptions.binding } : {}) }).then((answer) => ({ route, answer }));
+        carrier
+          .json(route, payload, signal, { maximum: runOptions.maximum, ...(runOptions.binding ? { binding: runOptions.binding } : {}) })
+          .then((answer) => ({ route, answer }))
+          .catch((error: unknown) => {
+            // An answer over its bound names the route that gave it.
+            if (isAnswerTooLarge(error)) throw new HostedCarrierError("unavailable", { cause: new HostedAnswerTooLarge(runOptions.maximum, route) });
+            throw error;
+          });
+      const byId = () => send(`${prefix}/run`, { bundleId, operationId, input: body });
       const fallback = runOptions.fallback !== false && Object.hasOwn(ROUTE_BEFORE_RUN, operationId) ? `${prefix}/${ROUTE_BEFORE_RUN[operationId]}` : undefined;
-      if (fallback && byRoute.has(operationId)) return send(fallback, body);
-      const ran = await send(`${prefix}/run`, { bundleId, operationId, input: body });
-      if (!fallback || !notRunById(ran.answer)) return ran;
-      byRoute.add(operationId);
-      return send(fallback, body);
+      if (!fallback) return byId();
+      for (;;) {
+        const decided = decisions.get(operationId);
+        if (decided === "route") return send(fallback, body);
+        if (decided === "run") return byId();
+        if (decided !== undefined) {
+          // Another request is checking this host: wait for its answer, then decide again.
+          await decided;
+          continue;
+        }
+        let settle!: () => void;
+        decisions.set(operationId, new Promise<void>((resolve) => (settle = resolve)));
+        let ran: HostedPortRunAnswer;
+        try {
+          ran = await byId();
+        } catch (error) {
+          // No answer says nothing about the host: the next request checks again.
+          decisions.delete(operationId);
+          settle();
+          throw error;
+        }
+        // Only the operation's own answer (200) or the refusal by id decides; any other answer
+        // (an outage, a lost credential) leaves the next request to check again.
+        const refused = notRunById(ran.answer);
+        if (refused) decisions.set(operationId, "route");
+        else if (ran.answer.status === 200) decisions.set(operationId, "run");
+        else decisions.delete(operationId);
+        settle();
+        return refused ? send(fallback, body) : ran;
+      }
     },
   };
 }

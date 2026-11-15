@@ -281,6 +281,33 @@ test("reader: a host that does not run the read by id is read at its route, from
   assert.deepEqual(absent.sent.map((request) => request.path), ["/sync/v1/run"]);
 });
 
+test("port runner: an older host is checked once per client, while parallel reads wait for the answer", async () => {
+  for (const [run, runs] of [["run-400-unknown-operation", 1], ["read-200-ok", 8]] as const) {
+    const { fetch, sent } = host((pathname) => replay(pathname.endsWith("/run") ? run : "read-200-ok"));
+    const reader = clientOf(fetch).reader(BUNDLE);
+    await Promise.all(Array.from({ length: 8 }, () => reader.read("notes/one")));
+    assert.equal(sent.filter((request) => request.path === "/sync/v1/run").length, runs, run);
+    assert.equal(sent.length, runs === 1 ? 9 : 8, run);
+  }
+  // One decision for the client, its `within` clients and its write path.
+  const older = serving({ run: "run-400-unknown-operation", read: "read-200-ok" });
+  const client = clientOf(older.fetch);
+  await client.reader(BUNDLE).read("notes/one");
+  await client.reader(BUNDLE).read("notes/one");
+  await client.within("south").reader(BUNDLE).read("notes/one");
+  assert.deepEqual(older.sent.map((request) => request.path), ["/sync/v1/run", "/sync/v1/read", "/sync/v1/read", "/sync/v1/read"]);
+});
+
+test("port runner: an answer over its bound names the route that gave it", async () => {
+  const big = JSON.stringify({ ok: true, operationId: "documents.history.v1", data: "x".repeat(2 * 1024 * 1024) });
+  const { fetch } = host((pathname) => (pathname.endsWith("/run") ? replay("run-400-unknown-operation") : new Response(big, { status: 200, headers: { "content-type": "application/json" } })));
+  await assert.rejects(clientOf(fetch).history(BUNDLE, { documentId: "notes/via", limit: 20 }), (error: unknown) => {
+    assert.ok(isAnswerTooLarge(error));
+    assert.equal(((error as HostedCarrierError).cause as { route?: string }).route, "/sync/v1/history");
+    return true;
+  });
+});
+
 test("history: the golden page, newest first, run by id", async () => {
   const { fetch, sent } = serving({ run: "run-200-ok" });
   const answer = await clientOf(fetch).history(BUNDLE, { documentId: "notes/via", limit: 20 });

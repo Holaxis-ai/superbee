@@ -25,7 +25,7 @@ import {
 } from "../src/hosted-client/index.js";
 import { LOOKUP_PENDING, performUncertainWrite, type OperationIntent, type OperationTransport } from "../src/uncertain-write.js";
 import { createCapabilitiesCache, hostedWrite, type HostedWriteContext } from "../src/hosted-client/write.js";
-import { createFetchCarrier } from "../src/hosted-transport/index.js";
+import { createFetchCarrier, createRunDecisions } from "../src/hosted-transport/index.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, "fixtures", "hosted-sync-v1");
@@ -1067,6 +1067,7 @@ test("capabilities cache: an expired entry is removed when another bundle's answ
     capabilities: cache,
     carrierFor: () => carrier,
     readRoutes: { capabilities: "/sync/v1/capabilities", heads: "/sync/v1/heads", snapshot: "/sync/v1/snapshot", read: "/sync/v1/read" },
+    runDecisions: createRunDecisions(),
   };
   const write = async (bundleId: string, id: string) => assert.equal((await hostedWrite(context, bundleId, { id, document: doc(id), expectAbsent: true })).status, "committed");
   const keys = () => [...cache.entries.keys()];

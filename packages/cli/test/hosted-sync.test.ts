@@ -289,6 +289,26 @@ test("an existing checkout pulls a document created, one replaced and one delete
   assert.equal(writeRoutes(h).at(-1)!.body.expectedVersion, created);
 });
 
+test("a pull of 8 changed documents: 11 requests on a current host; an older host is checked once, 12", async () => {
+  for (const [options, expected] of [
+    [{}, { whoami: 1, capabilities: 1, heads: 1, run: 8 }],
+    [{ readByRun: false }, { whoami: 1, capabilities: 1, heads: 1, run: 1, read: 8 }],
+  ] as const) {
+    const h = await harness(new FakeHost(options));
+    const ids = [...h.host.docs.keys()];
+    for (const id of ids) h.host.put(id, { type: "Note" }, `changed ${id}\n`);
+    for (let n = ids.length; n < 8; n += 1) h.host.put(`notes/new-${n}`, { type: "Note" }, `new ${n}\n`);
+    const receipt = await runSync(h);
+    assert.equal(receipt.status, "up_to_date", JSON.stringify(receipt));
+    const counts: Record<string, number> = {};
+    for (const request of h.host.requests) {
+      const route = request.path.slice("/sync/v1/".length);
+      counts[route] = (counts[route] ?? 0) + 1;
+    }
+    assert.deepEqual(counts, expected, JSON.stringify(options));
+  }
+});
+
 test("an answer the CLI cannot read is a non-retryable RUNTIME naming the route, never TRANSIENT", async () => {
   const h = await harness();
   h.host.put("notes/beta", { type: "Note", title: "Beta from the host" }, "Beta host body.\n");

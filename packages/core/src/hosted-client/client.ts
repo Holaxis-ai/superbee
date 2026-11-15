@@ -11,6 +11,7 @@ import {
   createFetchCarrier,
   createHostedReadAdapter,
   createPortRunner,
+  createRunDecisions,
   decodeHistoryAnswer,
   decodeOperationListing,
   decodeOperationRun,
@@ -31,6 +32,7 @@ import {
   type HostedReadAdapter,
   type FetchCarrierOptions,
   type HostedReadRoutes,
+  type HostedRunDecisions,
   type JsonObject,
 } from "../hosted-transport/index.js";
 import { isMalformedAnswer, MalformedAnswer, RemoteError } from "../remote-error.js";
@@ -399,6 +401,7 @@ export function createHostedClient(options: HostedClientOptions): HostedClient {
     capabilities: createCapabilitiesCache(options.capabilitiesTtlMs, options.now),
     blobJournal: options.blobJournal ?? createMemoryBlobJournal(),
     blobLocks: new Map<string, Promise<unknown>>(),
+    runDecisions: createRunDecisions(),
   };
   return clientIn(options, options.signal ?? new AbortController().signal, undefined, writes);
 }
@@ -411,6 +414,8 @@ interface ClientWrites {
   readonly capabilities: HostedCapabilitiesCache;
   readonly blobJournal: BlobJournaledBackend;
   readonly blobLocks: Map<string, Promise<unknown>>;
+  /** Which route this host takes each operation on, decided once for the client and its `within` clients. */
+  readonly runDecisions: HostedRunDecisions;
 }
 
 /** The client, naming its bundles in the workspace with `slug` when there is one. */
@@ -447,13 +452,8 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
     return answer.body;
   }
 
-  /**
-   * One request of a route a gateway may not have yet. That gateway answers the family's
-   * unknown-route 404, which is {@link HostedRouteNotServed}. An answer larger than `maximum` is
-   * the carrier's `unavailable` whose cause is `HostedAnswerTooLarge` (see `isAnswerTooLarge`).
-   */
   /** The Sync door's one port runner: runs by id, reads and history, with the older-host fallback. */
-  const runner = createPortRunner({ carrier, prefix });
+  const runner = createPortRunner({ carrier, prefix, decisions: writes.runDecisions });
   /** One port run, as `send` answers a route: the family's unknown-route 404 is {@link HostedRouteNotServed}. */
   async function run(bundleId: string, operationId: string, input: Readonly<Record<string, unknown>>, maximum: number, fallback = true) {
     const ran = await runner.run(bundleId, operationId, input, signal, { maximum, fallback });
@@ -461,6 +461,11 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
     return ran;
   }
 
+  /**
+   * One request of a route a gateway may not have yet. That gateway answers the family's
+   * unknown-route 404, which is {@link HostedRouteNotServed}. An answer larger than `maximum` is
+   * the carrier's `unavailable` whose cause is `HostedAnswerTooLarge` (see `isAnswerTooLarge`).
+   */
   async function send(route: string, input: unknown, maximum: number): Promise<HostedAnswer> {
     const answer = await carrier.json(route, input, signal, { maximum });
     if (isUnknownRouteAnswer(answer)) throw new HostedRouteNotServed(route);

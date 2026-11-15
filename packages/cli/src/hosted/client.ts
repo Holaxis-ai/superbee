@@ -100,9 +100,12 @@ function wording(client: HostedClient, target: HostedTarget, resume: string | un
       return new CliError("NOT_IMPLEMENTED", missing.message, { details: { host: target.origin, route: error.route, status: 404 }, help: missing.help });
     }
     if (isAnswerTooLarge(error)) {
-      const maximum = ((error as HostedCarrierError).cause as HostedAnswerTooLarge).maximum;
-      return new CliError("RUNTIME", `${target.origin} answered ${route} with more than ${maximum} bytes`, {
-        details: { host: target.origin, route, code: "result_too_large", maximum, retryable: false },
+      const cause = (error as HostedCarrierError).cause as HostedAnswerTooLarge;
+      const { maximum } = cause;
+      // The route that answered, when the sender named it (a port run that fell back to an older route).
+      const answered = cause.route ?? route;
+      return new CliError("RUNTIME", `${target.origin} answered ${answered} with more than ${maximum} bytes`, {
+        details: { host: target.origin, route: answered, code: "result_too_large", maximum, retryable: false },
       });
     }
     return failure(error);
@@ -171,7 +174,7 @@ function wording(client: HostedClient, target: HostedTarget, resume: string | un
       try {
         return await client.history(bundleId, request);
       } catch (error) {
-        // Run by id; `history` only on a host that does not run it (a missing route names itself).
+        // Run by id; a missing or too-large answer names the route that gave it.
         throw readFailure(error, `${prefix}/run`, {
           message: `${target.origin} does not serve document history yet`,
           help: `a later release of the host serves it; until then ${cliInvocation()} doc read ${commandToken(request.documentId)} shows the current version`,

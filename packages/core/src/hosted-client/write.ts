@@ -11,6 +11,7 @@ import {
   type HostedCapabilities,
   type HostedReadAdapter,
   type HostedReadRoutes,
+  type HostedRunDecisions,
   type WriteErrorCode,
 } from "../hosted-transport/index.js";
 import type { Version } from "../types.js";
@@ -180,6 +181,8 @@ export interface HostedWriteContext {
   readonly capabilities: HostedCapabilitiesCache;
   carrierFor(workspace: string | null): HostedCarrier;
   readRoutes: HostedReadRoutes;
+  /** How this host takes each operation with an older route, decided once for the client (`createPortRunner`). */
+  readonly runDecisions: HostedRunDecisions;
 }
 
 /** The capabilities a write uses, from one answer: the flags and bounds, and the edition its root declares. */
@@ -231,7 +234,7 @@ export function writeSide(context: HostedWriteContext, workspace: string | null,
   if (held && !fresh && live(held)) return held;
   for (const [other, side] of cache.entries) if (!live(side)) cache.entries.delete(other);
   const carrier = context.carrierFor(workspace);
-  const reader = createHostedReadAdapter({ carrier, bundleId, routes: context.readRoutes, runner: createPortRunner({ carrier, prefix: context.prefix }) });
+  const reader = createHostedReadAdapter({ carrier, bundleId, routes: context.readRoutes, runner: createPortRunner({ carrier, prefix: context.prefix, decisions: context.runDecisions }) });
   const answer = reader.hostedCapabilities().then(async (capabilities): Promise<WriteSideAnswer> => {
     // The edition from this same answer's root; the editions core parses, any other reads as
     // none, as the CLI's checkout reads it.
