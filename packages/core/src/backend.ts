@@ -25,10 +25,10 @@
  */
 
 import path from "node:path";
-import { z } from "zod";
 import { assertInventoryGuardBound, bindInventoryGuard, captureInventoryGuardRequest, compareInventoryPremises, guardEdition, inventoryDigest, INVENTORY_GUARD_DOMAIN, InventoryGuardUnsupported, InventoryGuardConflict, type InventoryGuard, type InventoryGuardTarget } from "./inventory-guard.js";
 
 import { MalformedDocumentError, parseMarkdown, stringifyDoc } from "./frontmatter.js";
+import { isOkfRecord } from "./okf-authored-values.js";
 import { readBundleOkfVersion, relationshipSource } from "./engine.js";
 import { resolveContentType } from "./content-type.js";
 import {
@@ -71,6 +71,7 @@ import type {
   BlobKey,
   ConceptId,
   DeleteOptions,
+  Link,
   OkfDocument,
   ReadBlobResult,
   ReadResult,
@@ -83,30 +84,41 @@ import type {
 } from "./types.js";
 import type { FilesystemBackendOptions, FilesystemHostPolicy } from "./filesystem-host.js";
 
-const relationshipCacheSchema = z.object({
-  format: z.literal(1),
-  parser: z.literal(RELATIONSHIP_PARSER_VERSION),
-  edition: z.string().nullable(),
-  sources: z.array(z.object({
-    id: z.string(),
-    title: z.string().nullable(),
-    stamp: z.string(),
-    links: z.array(z.object({ from: z.string(), to: z.string(), text: z.string(), href: z.string() })),
-  })),
-});
 type CachedRelationshipSource = RelationshipSource & { stamp: string | null };
 
-function cachedRelationshipSources(raw: string | undefined, edition: string | undefined) {
-  if (raw === undefined) return new Map<string, CachedRelationshipSource>();
-  try {
-    const parsed = relationshipCacheSchema.safeParse(JSON.parse(raw));
-    if (parsed.success && parsed.data.edition === (edition ?? null)) {
-      return new Map(parsed.data.sources.map(source => [source.id, source]));
-    }
-  } catch {
-    // A partial cache file or an older schema can be discarded.
+function cachedRelationshipSource(value: unknown): CachedRelationshipSource | undefined {
+  if (!isOkfRecord(value)) return;
+  const { id, title, stamp, links } = value;
+  if (typeof id !== "string" || (typeof title !== "string" && title !== null) ||
+      typeof stamp !== "string" || !Array.isArray(links)) return;
+  const occurrences: Link[] = [];
+  for (const occurrence of links) {
+    if (!isOkfRecord(occurrence)) return;
+    const { from, to, text, href } = occurrence;
+    if (typeof from !== "string" || typeof to !== "string" ||
+        typeof text !== "string" || typeof href !== "string") return;
+    occurrences.push({ from, to, text, href });
   }
-  return new Map<string, CachedRelationshipSource>();
+  return { id, title, stamp, links: occurrences };
+}
+
+function cachedRelationshipSources(raw: string | undefined, edition: string | undefined): Map<string, CachedRelationshipSource> | undefined {
+  if (raw === undefined) return;
+  let cache: unknown;
+  try {
+    cache = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  if (!isOkfRecord(cache) || cache.format !== 1 || cache.parser !== RELATIONSHIP_PARSER_VERSION ||
+      cache.edition !== (edition ?? null) || !Array.isArray(cache.sources)) return;
+  const records = new Map<string, CachedRelationshipSource>();
+  for (const value of cache.sources) {
+    const record = cachedRelationshipSource(value);
+    if (record === undefined) return;
+    records.set(record.id, record);
+  }
+  return records;
 }
 
 const publicationContexts = new WeakMap<FilesystemBackend, { root: string; port: FilesystemIdentityPort }>();
@@ -347,7 +359,7 @@ export class FilesystemBackend implements StorageBackend {
     const key = await filesystemRootMutationKey(this.#root);
     const cache = this.#port.relationshipCache?.(this.#root, key);
     if (!cache) return undefined;
-    const cached = cachedRelationshipSources(await cache.read(), edition);
+    const cached = cachedRelationshipSources(await cache.read(), edition) ?? new Map();
     const read = (id: ConceptId, pass?: ObservationPass) =>
       this.#observeRelationshipSource(id, edition, cached.get(id), pass);
     const backend = { read, readMany: (batch: ConceptId[]) => this.#readBatch(batch, read) };

@@ -30,7 +30,8 @@ const INITIAL_STATE = new Uint32Array([
   0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ]);
 
-const encoder = new TextEncoder();
+// Require the encoder only when a caller hashes a string.
+let encoder: InstanceType<typeof TextEncoder> | undefined;
 
 function rotr(value: number, bits: number): number {
   return (value >>> bits) | (value << (32 - bits));
@@ -119,5 +120,5 @@ export function sha256HexOfBytes(bytes: Uint8Array): string {
 
 /** Lowercase hex SHA-256 of a string's UTF-8 bytes. */
 export function sha256HexOfUtf8(input: string): string {
-  return sha256HexOfBytes(encoder.encode(input));
+  return sha256HexOfBytes((encoder ??= new TextEncoder()).encode(input));
 }

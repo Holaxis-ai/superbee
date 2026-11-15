@@ -413,6 +413,12 @@ test("the filesystem relationship cache reopens files and refreshes from direct 
   documentBodyReads = 0;
   assert.deepEqual(await readEdges(), expected);
   assert.equal(documentBodyReads, 2, "corrupt derived state is rebuilt from Markdown");
+  const wrongShape = JSON.parse(await fs.readFile(cacheFile, "utf8"));
+  wrongShape.sources[0].links[0].href = false;
+  await fs.writeFile(cacheFile, JSON.stringify(wrongShape));
+  documentBodyReads = 0;
+  assert.deepEqual(await readEdges(), expected);
+  assert.equal(documentBodyReads, 2, "an invalid occurrence invalidates the cache");
   const wrongGeneration = JSON.parse(await fs.readFile(cacheFile, "utf8"));
   await fs.writeFile(cacheFile, JSON.stringify({ ...wrongGeneration, parser: "links/old" }));
   documentBodyReads = 0;
