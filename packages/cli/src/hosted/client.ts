@@ -171,7 +171,8 @@ function wording(client: HostedClient, target: HostedTarget, resume: string | un
       try {
         return await client.history(bundleId, request);
       } catch (error) {
-        throw readFailure(error, `${prefix}/history`, {
+        // Run by id; `history` only on a host that does not run it (a missing route names itself).
+        throw readFailure(error, `${prefix}/run`, {
           message: `${target.origin} does not serve document history yet`,
           help: `a later release of the host serves it; until then ${cliInvocation()} doc read ${commandToken(request.documentId)} shows the current version`,
         });
