@@ -330,6 +330,22 @@ test("the filesystem relationship cache reopens files and refreshes from direct 
   const now = Date.now;
   t.mock.method(Date, "now", () => now() + 4_000);
 
+  let restrictContentWitnesses = false;
+  const actualStatfs = fs.statfs;
+  t.mock.method(fs, "statfs", async (candidate: Parameters<typeof fs.statfs>[0]) => {
+    const info = await actualStatfs(candidate);
+    if (typeof candidate !== "string" || !candidate.startsWith("/proc/self/fd/")) return info;
+    // The fixture supplies the admitted ext filesystem observation independently of the test host.
+    return { ...info, type: restrictContentWitnesses ? 0x6969 : 0xef53 };
+  });
+  const actualLstat = fs.lstat;
+  t.mock.method(fs, "lstat", (...args: Parameters<typeof fs.lstat>) => {
+    if (restrictContentWitnesses && args[0] === "/System/Volumes/Data") {
+      return Promise.reject(Object.assign(new Error("unidentified system volume"), { code: "ENOENT" }));
+    }
+    return actualLstat(...args);
+  });
+
   let documentBodyReads = 0;
   let denySource = false;
   const actualOpen = fs.open;
@@ -352,6 +368,18 @@ test("the filesystem relationship cache reopens files and refreshes from direct 
   documentBodyReads = 0;
   assert.deepEqual(await readEdges(), expected);
   assert.equal(documentBodyReads, 0, "a fresh backend uses the persisted facts without reading document bodies");
+
+  restrictContentWitnesses = true;
+  documentBodyReads = 0;
+  assert.deepEqual(await readEdges(), expected);
+  assert.equal(documentBodyReads, 2, "an unidentified mount reads bodies even when cache stamps match");
+  documentBodyReads = 0;
+  await fs.writeFile(source, original.replaceAll("first", "other"));
+  assert.deepEqual((await readEdges()).map(row => row.text), ["other", "other"]);
+  assert.equal(documentBodyReads, 2, "an unidentified mount observes the directly edited bytes");
+  restrictContentWitnesses = false;
+  git(["restore", "--", "source.md"]);
+  assert.deepEqual(await readEdges(), expected);
 
   const skipped: { id: string; reason: string }[] = [];
   denySource = true;

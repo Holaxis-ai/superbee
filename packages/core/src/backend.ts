@@ -387,12 +387,12 @@ export class FilesystemBackend implements StorageBackend {
     pass?: ObservationPass,
   ): Promise<CachedRelationshipSource> {
     const rel = pathFromConceptId(id);
-    const read = async (handle: PortHandle, target: string) => {
-      const before = await this.#port.contentStamp?.(handle, target);
+    const read = async (handle: PortHandle) => {
+      const before = await this.#port.contentStamp?.(handle);
       if (before && cached?.stamp === before.value) return { cached };
       const bytes = await readBytes(this.#port, handle);
       if (bytes === null) return null;
-      const after = await this.#port.contentStamp?.(handle, target);
+      const after = await this.#port.contentStamp?.(handle);
       if (before?.value !== after?.value) throw new ConcurrentReplacementError(rel, 1);
       return { bytes, stamp: before?.settled ? before.value : null };
     };

@@ -198,7 +198,9 @@ and titles contain at most 256 UTF-16 code units.
 Send the returned `cursor` unchanged with the same `docId` to continue. The absence of a cursor
 ends the read. Each page sees current files; start again to include edits that moved before the
 cursor. A missing subject gives `NOT_FOUND`. Use the `relationships` capability in `hello` to
-discover whether the host offers this request.
+discover whether the host offers this request. Local file reads reuse cached link facts on
+recognized Linux filesystems and the verified APFS system data volume on macOS. Files on other
+volumes are read from Markdown each time.
 
 ### `graph`
 
