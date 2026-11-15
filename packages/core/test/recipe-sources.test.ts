@@ -10,8 +10,12 @@ import { FrontmatterRefusedError } from "../src/errors.js";
 import { stringifyFrontmatter } from "../src/frontmatter.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import {
+  RECIPE_CATEGORIES,
   RECIPE_INDEX_FORMAT,
   createIndexRecipeSource,
+  readRecipeDiscovery,
+  recipeDisplayFields,
+  recipeDisplayText,
   parseRecipeIndex,
   recipeFilesDigest,
   resolveIndexRecipe,
@@ -162,6 +166,126 @@ test("designation: required on recipes and cookbooks, closed vocabulary, support
 
 // ── Verifier ──────────────────────────────────────────────────────────────────────────────────
 
+// ── Discovery and display text ────────────────────────────────────────────────────────────────
+
+const COOKBOOK = { id: "home", title: "Home", summary: "Kinds for a home.", ...HOLAXIS, recipes: ["notes"] };
+
+function parsedOk(value: unknown): RecipeIndex {
+  const parsed = parseRecipeIndex(value);
+  assert.ok(parsed.ok, parsed.ok ? "" : parsed.error.message);
+  return parsed.index;
+}
+
+test("discovery: known keys at recipe and cookbook level are kept and frozen", () => {
+  const index = parsedOk({
+    ...VALID,
+    discovery: {},
+    recipes: [{ ...ENTRY, discovery: { keywords: ["house", "repair log"], categories: ["home", "money"], audience: "personal" } }],
+    cookbooks: [{ ...COOKBOOK, discovery: { offer: "Keep track of your home.", keywords: ["warranty"], categories: ["home"], audience: "both" } }],
+  });
+  assert.deepEqual(index.recipes[0]!.discovery, { keywords: ["house", "repair log"], categories: ["home", "money"], audience: "personal" });
+  assert.deepEqual(index.cookbooks[0]!.discovery, { offer: "Keep track of your home.", keywords: ["warranty"], categories: ["home"], audience: "both" });
+  assert.ok(Object.isFrozen(index.cookbooks[0]!.discovery));
+  assert.ok(Object.isFrozen(index.cookbooks[0]!.discovery!.keywords));
+  assert.equal(Object.hasOwn(index, "discovery"), false, "the index level has no known key yet, so nothing is returned");
+});
+
+test("discovery: a bad value drops only that field and the entry is still returned", () => {
+  const cases: Array<[unknown, unknown]> = [
+    [{ audience: "family", keywords: ["house"] }, { keywords: ["house"] }],
+    [{ offer: "x".repeat(141), audience: "work" }, { audience: "work" }],
+    [{ offer: 42, categories: ["home"] }, { categories: ["home"] }],
+    [{ keywords: "house", audience: "both" }, { audience: "both" }],
+    [{ keywords: ["House", "ok", "x".repeat(41), "", 7, "ok"] }, { keywords: ["ok"] }],
+    [{ keywords: Array.from({ length: 14 }, (_, i) => `k${i}`) }, { keywords: Array.from({ length: 12 }, (_, i) => `k${i}`) }],
+    [{ audience: "personal", colour: "blue", identity: "x" }, { audience: "personal" }],
+  ];
+  for (const [discovery, kept] of cases) {
+    const index = parsedOk({ ...VALID, cookbooks: [{ ...COOKBOOK, discovery }] });
+    assert.deepEqual(index.cookbooks[0]!.discovery, kept, JSON.stringify(discovery));
+    assert.equal(index.cookbooks[0]!.title, "Home");
+  }
+  for (const discovery of [null, "home", [], 3, { audience: "everyone" }, {}]) {
+    const index = parsedOk({ ...VALID, recipes: [{ ...ENTRY, discovery }] });
+    assert.equal(Object.hasOwn(index.recipes[0]!, "discovery"), false, JSON.stringify(discovery));
+    assert.equal(index.recipes[0]!.id, "notes");
+  }
+});
+
+test("discovery: an unknown category is dropped, not fatal, and at most two are kept with the first as primary", () => {
+  const index = parsedOk({
+    ...VALID,
+    recipes: [{ ...ENTRY, discovery: { categories: ["health", "research", "civic", "research", "home", "money"] } }],
+  });
+  assert.deepEqual(index.recipes[0]!.discovery, { categories: ["research", "home"] });
+  assert.ok(!RECIPE_CATEGORIES.some((category) => category.id === "health"), "no health category");
+});
+
+test("discovery: offer is a cookbook key; a recipe's offer lives in recipe.md and is dropped from the index", () => {
+  const index = parsedOk({ ...VALID, recipes: [{ ...ENTRY, discovery: { offer: "Hi.", audience: "work" } }] });
+  assert.deepEqual(index.recipes[0]!.discovery, { audience: "work" });
+});
+
+test("readRecipeDiscovery reports every drop, so a generator can refuse what readers tolerate", () => {
+  const read = readRecipeDiscovery({ offer: "A‮b", keywords: ["ok", "No"], categories: ["civic"], audience: "x", extra: 1 }, "cookbook");
+  assert.deepEqual(read.discovery, { keywords: ["ok"] });
+  assert.equal(read.problems.length, 5, read.problems.join("\n"));
+  assert.deepEqual(readRecipeDiscovery({ keywords: ["ok"] }, "recipe"), { discovery: { keywords: ["ok"] }, problems: [] });
+  assert.deepEqual(readRecipeDiscovery({ categories: ["home"] }, "index").discovery, null);
+  assert.equal(readRecipeDiscovery("x", "recipe").problems.length, 1);
+});
+
+test("the category table holds the seven permanent ids with display names", () => {
+  assert.deepEqual(RECIPE_CATEGORIES.map((category) => category.id), ["home", "money", "learning", "productivity", "research", "business", "software"]);
+  for (const category of RECIPE_CATEGORIES) assert.ok(recipeDisplayText(category.title, 40) === category.title);
+  assert.ok(Object.isFrozen(RECIPE_CATEGORIES) && Object.isFrozen(RECIPE_CATEGORIES[0]));
+});
+
+test("a reserved identity key is accepted and ignored at every level", () => {
+  const index = parsedOk({
+    ...VALID,
+    identity: { authority: "github" },
+    recipes: [{ ...ENTRY, identity: "anything" }],
+    cookbooks: [{ ...COOKBOOK, identity: 1 }],
+  });
+  assert.equal(Object.hasOwn(index, "identity"), false);
+  assert.equal(Object.hasOwn(index.recipes[0]!, "identity"), false);
+  assert.equal(Object.hasOwn(index.cookbooks[0]!, "identity"), false);
+  assert.equal(refusalCode({ ...VALID, recipes: [{ ...ENTRY, identities: 1 }] }), "RECIPE_INDEX_MALFORMED");
+});
+
+test("display text rule: index text with a control or bidirectional formatting character refuses the index", () => {
+  for (const bad of ["a\u0007b", "line\nbreak", "tab\there", "c1\u0085", "del\u007F", "‮evil", "⁦x⁩", "‏x", "؜x"]) {
+    assert.equal(refusalCode({ ...VALID, title: bad }), "RECIPE_INDEX_MALFORMED", JSON.stringify(bad));
+    assert.equal(refusalCode({ ...VALID, cookbooks: [{ ...COOKBOOK, summary: bad }] }), "RECIPE_INDEX_MALFORMED", JSON.stringify(bad));
+    assert.equal(refusalCode({ ...VALID, cookbooks: [{ ...COOKBOOK, title: bad }] }), "RECIPE_INDEX_MALFORMED", JSON.stringify(bad));
+    assert.equal(refusalCode({ ...VALID, recipes: [{ ...ENTRY, maintainer: bad }] }), "RECIPE_INDEX_MALFORMED", JSON.stringify(bad));
+    assert.equal(recipeDisplayText(bad, 100), null);
+  }
+  // Ordinary punctuation, accents, emoji with a joiner and right-to-left letters pass.
+  for (const good of ["Café: rooms, repairs — and costs", "👩‍🔧 fixes", "שלום"]) {
+    assert.equal(recipeDisplayText(good, 100), good);
+    assert.ok(parseRecipeIndex({ ...VALID, title: good }).ok);
+  }
+});
+
+test("display text rule: clamps never split a surrogate pair, and refuse empty or non-string values", () => {
+  assert.equal(recipeDisplayText("abcdef", 3), "abc");
+  assert.equal(recipeDisplayText("ab😀", 3), "ab");
+  assert.equal(recipeDisplayText("   ", 10), null);
+  assert.equal(recipeDisplayText(5, 10), null);
+});
+
+test("recipeDisplayFields clamps file text and falls back when a value breaks the rule", () => {
+  const recipe = { id: "notes", title: "T".repeat(250), summary: "S".repeat(1200), offer: "O".repeat(300) };
+  const fields = recipeDisplayFields(recipe);
+  assert.equal(fields.title.length, 200);
+  assert.equal(fields.summary!.length, 1000);
+  assert.equal(fields.offer.length, 140);
+  assert.deepEqual(recipeDisplayFields({ id: "notes", title: "Notes", summary: "bad\u0000", offer: "evil‮" }), { title: "Notes", offer: "Notes" });
+  assert.deepEqual(recipeDisplayFields({ id: "notes", title: "bad\nline", summary: "Fine.", offer: "bad\tline" }), { title: "notes", summary: "Fine.", offer: "notes" });
+});
+
 test("resolveIndexRecipe returns a recipe only when Core's source digest matches the pin", async () => {
   const tree = servedTree((name) => `recipes/${name}`, ["context-notes"]);
   const index = indexOf("alpha", tree.entries);
@@ -171,6 +295,20 @@ test("resolveIndexRecipe returns a recipe only when Core's source digest matches
   assert.equal(result.verified.recipe.source, "index:alpha");
   assert.deepEqual([result.verified.designation, result.verified.maintainer], ["supported", "Holaxis-ai"]);
   assert.deepEqual(tree.reads, tree.entries[0]!.files.map((file) => `recipes/context-notes/${file}`));
+});
+
+test("verified recipes and resolved cookbooks carry the index's discovery statement, and a bad value never blocks resolution", async () => {
+  const tree = servedTree((name) => `recipes/${name}`, ["context-notes"]);
+  const entry = { ...tree.entries[0]!, discovery: { keywords: ["notes"], categories: ["productivity", "nope"], audience: "aliens" } };
+  const cookbook = { id: "notes", title: "Notes", summary: "Notes for agents.", ...HOLAXIS, recipes: ["context-notes"], discovery: { offer: "Keep notes.", future: true } };
+  const index = indexOf("alpha", [entry], [cookbook]);
+  const result = await resolveIndexRecipe(index, "context-notes", tree.read);
+  assert.ok(result.ok);
+  assert.deepEqual(result.verified.discovery, { keywords: ["notes"], categories: ["productivity"] });
+  const resolved = await resolveCookbook(index, "notes", tree.read);
+  assert.ok(resolved.ok);
+  assert.deepEqual(resolved.cookbook.discovery, { offer: "Keep notes." });
+  assert.deepEqual(resolved.recipes[0]!.discovery, { keywords: ["notes"], categories: ["productivity"] });
 });
 
 test("swap: two index sources with different ids and layouts serve the same recipe with the same digest", async () => {

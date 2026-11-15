@@ -97,7 +97,8 @@ A published index is one JSON document, `recipe-index/v1`:
 
 A cookbook is a named, ordered group of recipes the index lists. `root` is relative to the index
 location and optional. `files` are relative to `root`, and a
-reader fetches exactly those files. `parseRecipeIndex` refuses unknown keys and formats, absolute
+reader fetches exactly those files. `parseRecipeIndex` refuses unknown keys (except `discovery` and
+`identity`, below) and formats, absolute
 paths, `..`, backslashes, dot entries, duplicates (file paths compare case-insensitively), and
 cookbooks that name a recipe the index does not list or, for a `supported` cookbook, a `community`
 recipe. Its codes are `RECIPE_INDEX_MALFORMED`,
@@ -145,6 +146,75 @@ install. `conflict` names both members and the shared ids in each member's spell
 and any listed README. `source_digest` covers what install writes. Neither authenticates a
 publisher. Bound the reader's sizes and times in the host, and keep local reads inside the index
 directory. Path segments may not start or end with `.`.
+
+### Discovery, display text and the format rule
+
+The format rule for `recipe-index/v1`: keys that change what a reader fetches, verifies or installs
+are strict, and changing them is a new format version. Everything for finding and grouping entries
+sits in one optional `discovery` object at index, recipe and cookbook level, and readers tolerate it:
+
+```json
+{ "id": "my-home", "title": "My Home", "summary": "...", "designation": "supported", "maintainer": "Holaxis-ai",
+  "recipes": ["my-home", "my-home-maintenance", "my-home-costs"],
+  "discovery": {
+    "offer": "Keep track of your home: rooms, appliances, repairs, warranties and what you spent.",
+    "keywords": ["house", "appliance", "repair", "warranty"],
+    "categories": ["home", "money"],
+    "audience": "personal" } }
+```
+
+- Known keys: `keywords` (at most 12, each matching `^[a-z0-9][a-z0-9 -]{0,39}$`, for search),
+  `categories` (one or two ids from `RECIPE_CATEGORIES`, the first is the primary) and `audience`
+  (`personal`, `work` or `both`) on recipes and cookbooks; `offer` (display text of at most 140
+  characters) on cookbooks only. A recipe's `offer` is the manifest's `offer` in `recipe.md`. The
+  index level has no known key yet.
+- `readRecipeDiscovery(value, level)` reads one object. It drops unknown keys and invalid values (one
+  item at a time inside a list), keeps the first 12 keywords and the first two categories, and
+  never refuses. A `discovery` that is not an object is dropped whole. Dropped data is not kept in
+  the parse result, so nothing Core does not understand reaches an agent or a page. Parsed entries
+  carry `discovery` only when something survives, and `resolveIndexRecipe` and `resolveCookbook`
+  pass it through.
+- Readers never refuse an index because of `discovery`, so a later, wider rule (a new category, a
+  third audience) leaves older readers working; they simply do not show the new value until they run
+  a Core that knows it. `readRecipeDiscovery` also returns `problems`, one sentence per drop, so a
+  generator refuses what readers tolerate and authors see their mistakes.
+- `RECIPE_CATEGORIES` is the one category table: `home` (Home and family), `money`, `learning`
+  (Learning and hobbies), `productivity`, `research`, `business` (Business operations) and `software`
+  (Software and engineering). Ids are permanent and never reused; display names may change. A host
+  shows only categories that hold at least one entry. There is no health category.
+
+The display text rule is `recipeDisplayText(value, max)`: a nonempty string with no C0 or C1 control
+(newline and tab included) and no bidirectional formatting character (U+200E, U+200F, U+061C,
+U+202A to U+202E, U+2066 to U+2069), cut to `max` UTF-16 code units without splitting a surrogate
+pair, or null. `parseRecipeIndex` refuses the index (`RECIPE_INDEX_MALFORMED`) when its `title`, a
+cookbook's `title` or `summary`, a `maintainer` or a `version` breaks it, and `discovery.offer`
+follows the drop rule. Whatever builds listing rows from verified recipes uses
+`recipeDisplayFields(recipe)`, which clamps the file-derived `title` to 200, `summary` to 1000 and
+`offer` to 140 characters (`RECIPE_DISPLAY_LIMITS`), leaves out a value with a refused character, and
+falls back from `offer` to the title and from the title to the id. No character rule catches an
+instruction-shaped sentence, so this text stays data.
+
+What Core verifies, and what is only the publisher's statement:
+
+- Verified: a recipe's id, version, `files_digest`, `source_digest` and storability, after every
+  listed file is fetched. So a verified recipe's `title`, `summary`, `offer` and Kinds are pinned.
+- Not verified: everything in `discovery`, every cookbook field (`title`, `summary`, `offer`,
+  `recipes`), `designation`, `maintainer` and the index `source` and `title`. The index document has
+  no pin of its own and its digests come from the same publisher, so they prove consistency, not who
+  published. A reader holding only the index has only unpinned text. Tool and page output built from
+  an index says which of its text is the publisher's statement.
+
+A recipe manifest's `offer`, `title` and `summary` are covered by `files_digest` and not by
+`source_digest`, so rewording them keeps install stamps current. After an index lists a recipe
+version, its bytes are immutable, so a rewording needs a new recipe version.
+
+**Qualified recipe identity, later.** Every level also accepts an optional `identity` key, which this
+version neither reads nor returns. It is reserved so that a later qualified recipe identity
+(authority, repository and recipe-local id) can be published in a `recipe-index/v1` document
+without making it unreadable to readers built on this version; those readers keep resolving by the
+bare `id` as they do today. Its shape, and whether a reader must verify it, are decided with the
+identity work, and a reader that relies on it will need a Core that knows it. Any other new key
+outside `discovery` is a new format version.
 
 ## Deprecating declarations
 

@@ -426,7 +426,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void, indexDeps:
 
 const COOKBOOK_INSTALL_NOTE = "every member was verified against its pinned files_digest and source_digest and checked as storable before the first write; installs are create-only and idempotent per document, so rerunning this command after a partial failure converges once the reported cause is fixed";
 
-const INDEX_DESIGNATION_NOTE = "designation and maintainer are stated by the index publisher and are not verified; only files_digest and source_digest are checked";
+const INDEX_DESIGNATION_NOTE = "designation, maintainer and a cookbook's title are stated by the index publisher and are not verified; only files_digest and source_digest are checked, which pin the recipe files";
 
 const INDEX_EVOLUTION_HELP = "installed definitions differ from this index's recipe; recipe evolve does not read --index, so run it against a local copy of the recipe folder to plan the upgrade";
 

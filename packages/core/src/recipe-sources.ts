@@ -84,6 +84,8 @@ export interface RecipeIndexRecipe {
   readonly designation: RecipeDesignation;
   /** Who maintains the recipe, for example a GitHub org or handle. */
   readonly maintainer: string;
+  /** The publisher's discovery statement; absent when the index gives none Core can read. */
+  readonly discovery?: RecipeDiscovery;
 }
 
 /**
@@ -95,6 +97,172 @@ export type RecipeDesignation = "supported" | "community";
 
 export const RECIPE_DESIGNATIONS: readonly RecipeDesignation[] = Object.freeze(["supported", "community"]);
 
+// ── Display text and discovery ────────────────────────────────────────────────────────────────
+
+/**
+ * C0 and C1 controls (newline and tab included) and bidirectional formatting characters. Index text
+ * reaches agents and pages before any install, so none of these may hide or reorder what it says.
+ */
+const REFUSED_DISPLAY_CHARACTER = /[\u0000-\u001F\u007F-\u009F؜‎‏‪-‮⁦-⁩]/u;
+
+/**
+ * The display text rule for recipe and cookbook text. Returns `value` when it is a nonempty string
+ * with no refused character, cut to at most `max` UTF-16 code units (never inside a surrogate pair);
+ * otherwise null. The index parser refuses index text that breaks the rule; whatever builds listing
+ * rows applies it to text read from recipe files.
+ */
+export function recipeDisplayText(value: unknown, max: number): string | null {
+  if (typeof value !== "string" || value.trim() === "" || REFUSED_DISPLAY_CHARACTER.test(value)) return null;
+  if (value.length <= max) return value;
+  const cut = value.slice(0, max);
+  return /[\uD800-\uDBFF]$/u.test(cut) ? cut.slice(0, -1) : cut;
+}
+
+/** Bounds on display text; the index refuses longer text, and listing rows clamp file text to them. */
+export const RECIPE_DISPLAY_LIMITS = Object.freeze({ title: 200, summary: 1000, offer: 140 });
+
+/** A recipe's file-derived text, bounded for a listing row. */
+export interface RecipeDisplayFields {
+  title: string;
+  /** Absent when the manifest's summary breaks the display text rule. */
+  summary?: string;
+  offer: string;
+}
+
+/**
+ * Bounded text for a listing row built from a parsed recipe. Title, summary and offer are clamped to
+ * `RECIPE_DISPLAY_LIMITS`. A value with a refused character is left out: the offer falls back to the
+ * title, and the title to the recipe id.
+ */
+export function recipeDisplayFields(recipe: Pick<LoadedRecipe, "id" | "title" | "summary" | "offer">): RecipeDisplayFields {
+  const title = recipeDisplayText(recipe.title, RECIPE_DISPLAY_LIMITS.title) ?? recipe.id;
+  const summary = recipeDisplayText(recipe.summary, RECIPE_DISPLAY_LIMITS.summary);
+  const offer = recipeDisplayText(recipe.offer, RECIPE_DISPLAY_LIMITS.offer) ?? title;
+  return { title, ...(summary === null ? {} : { summary }), offer };
+}
+
+/** Who a recipe or cookbook is for, beside its categories. */
+export type RecipeAudience = "personal" | "work" | "both";
+
+export const RECIPE_AUDIENCES: readonly RecipeAudience[] = Object.freeze(["personal", "work", "both"]);
+
+/**
+ * The category table, the one place category ids and display names live. Ids are permanent and never
+ * reused; display names may change. A host shows only categories that hold at least one entry.
+ */
+export const RECIPE_CATEGORIES: ReadonlyArray<{ readonly id: string; readonly title: string }> = Object.freeze(
+  [
+    { id: "home", title: "Home and family" },
+    { id: "money", title: "Money" },
+    { id: "learning", title: "Learning and hobbies" },
+    { id: "productivity", title: "Productivity" },
+    { id: "research", title: "Research" },
+    { id: "business", title: "Business operations" },
+    { id: "software", title: "Software and engineering" },
+  ].map((category) => Object.freeze(category)),
+);
+
+/** Bounds on `discovery` values. `categories` lists one or two ids; the first is the primary. */
+export const RECIPE_DISCOVERY_LIMITS = Object.freeze({ keywords: 12, categories: 2, offer: RECIPE_DISPLAY_LIMITS.offer });
+
+const KEYWORD = /^[a-z0-9][a-z0-9 -]{0,39}$/;
+
+/** A recipe entry's `discovery`: search terms and grouping, all the publisher's statement. */
+export interface RecipeDiscovery {
+  readonly keywords?: readonly string[];
+  readonly categories?: readonly string[];
+  readonly audience?: RecipeAudience;
+}
+
+/** A cookbook's `discovery`, which adds the cookbook's one-line `offer`. */
+export interface CookbookDiscovery extends RecipeDiscovery {
+  readonly offer?: string;
+}
+
+export type RecipeDiscoveryLevel = "index" | "recipe" | "cookbook";
+
+const DISCOVERY_KEYS: Readonly<Record<RecipeDiscoveryLevel, readonly string[]>> = Object.freeze({
+  index: [],
+  recipe: ["keywords", "categories", "audience"],
+  cookbook: ["offer", "keywords", "categories", "audience"],
+});
+
+export interface RecipeDiscoveryRead {
+  /** What a reader keeps; null when nothing Core knows survives. */
+  discovery: CookbookDiscovery | null;
+  /** One sentence per key or value dropped. Readers ignore these; a generator refuses on any. */
+  problems: string[];
+}
+
+/**
+ * Reads a `discovery` object at one level. Unknown keys and invalid values are dropped, one item at a
+ * time inside a list, and reported in `problems`; nothing here ever refuses. Readers keep
+ * `discovery` and go on, so a later, wider rule never makes an older reader refuse the index. An
+ * index generator calls this on what it is about to publish and refuses on any problem.
+ */
+export function readRecipeDiscovery(value: unknown, level: RecipeDiscoveryLevel, where = "discovery"): RecipeDiscoveryRead {
+  const problems: string[] = [];
+  if (!isRecord(value)) {
+    problems.push(`${where} must be an object`);
+    return { discovery: null, problems };
+  }
+  const known = DISCOVERY_KEYS[level];
+  const kept: { offer?: string; keywords?: string[]; categories?: string[]; audience?: RecipeAudience } = {};
+  for (const key of Object.keys(value)) {
+    if (!known.includes(key)) problems.push(`${where} has unknown key '${key}' at ${level} level`);
+  }
+  if (known.includes("offer") && Object.hasOwn(value, "offer")) {
+    const offer = value.offer;
+    if (typeof offer === "string" && offer.length <= RECIPE_DISCOVERY_LIMITS.offer && recipeDisplayText(offer, RECIPE_DISCOVERY_LIMITS.offer) !== null) {
+      kept.offer = offer;
+    } else {
+      problems.push(`${where}.offer must be display text of at most ${RECIPE_DISCOVERY_LIMITS.offer} characters`);
+    }
+  }
+  const listOf = (key: "keywords" | "categories", valid: (item: string) => boolean, rule: string, max: number): void => {
+    if (!known.includes(key) || !Object.hasOwn(value, key)) return;
+    const items = value[key];
+    if (!Array.isArray(items)) {
+      problems.push(`${where}.${key} must be an array`);
+      return;
+    }
+    const out: string[] = [];
+    for (let i = 0; i < items.length; i += 1) {
+      const item: unknown = items[i];
+      if (typeof item !== "string" || !valid(item)) problems.push(`${where}.${key}[${i}] ${rule}`);
+      else if (out.includes(item)) problems.push(`${where}.${key}[${i}] repeats '${item}'`);
+      else if (out.length >= max) problems.push(`${where}.${key} lists more than ${max} entries`);
+      else out.push(item);
+    }
+    if (out.length > 0) kept[key] = out;
+  };
+  listOf("keywords", (item) => KEYWORD.test(item), `must match ${KEYWORD.source}`, RECIPE_DISCOVERY_LIMITS.keywords);
+  listOf(
+    "categories",
+    (item) => RECIPE_CATEGORIES.some((category) => category.id === item),
+    `must be one of ${RECIPE_CATEGORIES.map((category) => category.id).join(", ")}`,
+    RECIPE_DISCOVERY_LIMITS.categories,
+  );
+  if (known.includes("audience") && Object.hasOwn(value, "audience")) {
+    if (typeof value.audience === "string" && (RECIPE_AUDIENCES as readonly string[]).includes(value.audience)) {
+      kept.audience = value.audience as RecipeAudience;
+    } else {
+      problems.push(`${where}.audience must be one of ${RECIPE_AUDIENCES.join(", ")}`);
+    }
+  }
+  const frozen = Object.fromEntries(
+    Object.entries(kept).map(([key, item]) => [key, Array.isArray(item) ? Object.freeze(item) : item]),
+  ) as CookbookDiscovery;
+  return { discovery: Object.keys(frozen).length === 0 ? null : Object.freeze(frozen), problems };
+}
+
+/** Reader side of `readRecipeDiscovery`: the kept object, spread into a parsed entry when present. */
+function discoveryOf(value: Record<string, unknown>, level: RecipeDiscoveryLevel): { discovery?: CookbookDiscovery } {
+  if (!Object.hasOwn(value, "discovery")) return {};
+  const { discovery } = readRecipeDiscovery(value.discovery, level);
+  return discovery === null ? {} : { discovery };
+}
+
 export interface RecipeIndexCookbook {
   readonly id: string;
   readonly designation: RecipeDesignation;
@@ -104,6 +272,8 @@ export interface RecipeIndexCookbook {
   readonly summary: string;
   /** Ordered recipe ids, each present in the index's `recipes`. */
   readonly recipes: readonly string[];
+  /** The publisher's discovery statement, including the cookbook's `offer`; never verified. */
+  readonly discovery?: CookbookDiscovery;
 }
 
 export interface RecipeIndex {
@@ -155,6 +325,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Keys every level accepts and no reader refuses. `discovery` is read through `readRecipeDiscovery`.
+ * `identity` is reserved, unread and never returned: a later qualified recipe identity can arrive there
+ * without making an index that carries it unreadable to this version. Every other key stays strict.
+ */
+const TOLERATED_KEYS: readonly string[] = Object.freeze(["discovery", "identity"]);
+
 function exactKeys(value: Record<string, unknown>, required: readonly string[], optional: readonly string[], where: string): void {
   for (const key of required) if (!Object.hasOwn(value, key)) refuse("RECIPE_INDEX_MALFORMED", `${where} is missing '${key}'`);
   for (const key of Object.keys(value)) {
@@ -165,6 +342,9 @@ function exactKeys(value: Record<string, unknown>, required: readonly string[], 
 function text(value: unknown, where: string, max: number): string {
   if (typeof value !== "string" || value.trim() === "" || value.length > max) {
     refuse("RECIPE_INDEX_MALFORMED", `${where} must be a nonempty string of at most ${max} characters`);
+  }
+  if (recipeDisplayText(value, max) === null) {
+    refuse("RECIPE_INDEX_MALFORMED", `${where} contains a control or bidirectional formatting character`);
   }
   return value;
 }
@@ -199,7 +379,7 @@ function relativePath(value: unknown, where: string): string {
 
 function parseRecipeEntry(value: unknown, where: string): RecipeIndexRecipe {
   if (!isRecord(value)) refuse("RECIPE_INDEX_MALFORMED", `${where} must be an object`);
-  exactKeys(value, ["id", "version", "designation", "maintainer", "source_digest", "files_digest", "files"], ["root"], where);
+  exactKeys(value, ["id", "version", "designation", "maintainer", "source_digest", "files_digest", "files"], ["root", ...TOLERATED_KEYS], where);
   const entryId = identifier(value.id, `${where}.id`);
   const version = text(value.version, `${where}.version`, 64);
   const designation = designationOf(value.designation, where);
@@ -231,6 +411,7 @@ function parseRecipeEntry(value: unknown, where: string): RecipeIndexRecipe {
     files: Object.freeze(files),
     designation,
     maintainer,
+    ...discoveryOf(value, "recipe"),
   });
 }
 
@@ -243,7 +424,7 @@ function designationOf(value: unknown, where: string): RecipeDesignation {
 
 function parseCookbook(value: unknown, where: string, recipes: ReadonlyMap<string, RecipeIndexRecipe>): RecipeIndexCookbook {
   if (!isRecord(value)) refuse("RECIPE_INDEX_MALFORMED", `${where} must be an object`);
-  exactKeys(value, ["id", "title", "summary", "designation", "maintainer", "recipes"], [], where);
+  exactKeys(value, ["id", "title", "summary", "designation", "maintainer", "recipes"], TOLERATED_KEYS, where);
   const cookbookId = identifier(value.id, `${where}.id`);
   const designation = designationOf(value.designation, where);
   const maintainer = text(value.maintainer, `${where}.maintainer`, 200);
@@ -263,7 +444,7 @@ function parseCookbook(value: unknown, where: string, recipes: ReadonlyMap<strin
     if (seen.has(member)) refuse("RECIPE_INDEX_COOKBOOK_INVALID", `cookbook '${cookbookId}' names recipe '${member}' more than once`);
     seen.add(member);
   }
-  return Object.freeze({ id: cookbookId, title, summary, designation, maintainer, recipes: Object.freeze(members) });
+  return Object.freeze({ id: cookbookId, title, summary, designation, maintainer, recipes: Object.freeze(members), ...discoveryOf(value, "cookbook") });
 }
 
 const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
@@ -301,7 +482,7 @@ export function parseRecipeIndex(input: unknown): RecipeIndexParseResult {
     if (value.format !== RECIPE_INDEX_FORMAT) {
       refuse("RECIPE_INDEX_FORMAT_UNSUPPORTED", `the recipe index format must be '${RECIPE_INDEX_FORMAT}'`);
     }
-    exactKeys(value, ["format", "source", "recipes", "cookbooks"], ["title"], "the recipe index");
+    exactKeys(value, ["format", "source", "recipes", "cookbooks"], ["title", ...TOLERATED_KEYS], "the recipe index");
     const source = identifier(value.source, "source");
     const title = value.title === undefined ? undefined : text(value.title, "title", 200);
     const recipes = list(value.recipes, "recipes", RECIPE_INDEX_LIMITS.recipes).map((entry, i) =>
@@ -357,6 +538,8 @@ export interface VerifiedIndexRecipe {
   /** The index's statement about the recipe, carried for display; never verified. */
   designation: RecipeDesignation;
   maintainer: string;
+  /** The index's discovery statement for the recipe, when it has one; never verified. */
+  discovery?: RecipeDiscovery;
 }
 
 export type IndexRecipeResult = { ok: true; verified: VerifiedIndexRecipe } | { ok: false; error: RecipeError };
@@ -446,7 +629,16 @@ export async function resolveIndexRecipe(index: RecipeIndex, recipeId: string, r
     }
     throw error;
   }
-  return { ok: true, verified: { recipe, source_digest: actual, designation: entry.designation, maintainer: entry.maintainer } };
+  return {
+    ok: true,
+    verified: {
+      recipe,
+      source_digest: actual,
+      designation: entry.designation,
+      maintainer: entry.maintainer,
+      ...(entry.discovery === undefined ? {} : { discovery: entry.discovery }),
+    },
+  };
 }
 
 /** The parser reports no path for frontmatter it refuses, so find the listed file that refuses alike. */

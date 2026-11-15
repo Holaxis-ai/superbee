@@ -337,8 +337,8 @@ to the existing receipt. A cookbook receipt is `cookbook`, `title`, `designation
 `designation_note`, `changed`, `index`,
 one `recipes` row per member (`id`, `version`, `source_digest`, `designation`, `maintainer`,
 `recipe`, `changed`, `counts`, and `warnings`, `foreign_ids` or `evolution_help` when present),
-`install_note` and `help`. `designation` (`supported` or `community`) and `maintainer` are the index
-publisher's statements, shown for discovery and never verified. Nothing about the index is
+`install_note` and `help`. `designation` (`supported` or `community`), `maintainer` and the
+cookbook `title` are the index publisher's statements, shown for discovery and never verified. Nothing about the index is
 persisted. Evidence:
 `packages/core/test/recipe-sources.test.ts`, `packages/cli/test/recipe-index.test.ts` and the
 `--index` row in `packages/cli/test/private-state-bundle-boundary.test.ts`.
