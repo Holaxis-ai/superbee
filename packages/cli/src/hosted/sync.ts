@@ -51,7 +51,9 @@ import {
   type HostedCapabilities,
   type HostedCarrier,
   type HostedReadAdapter,
+  type HostedWriteFindings,
 } from "@superbee/core/hosted-transport";
+import { hostedRowFindings, linkedTargets, type HostedRowFindings } from "../write-findings.js";
 import { DELETION_VERSION, DOCUMENT_DELETE_KIND, JournalGuardConflict, JournalSnapshotConflict, equalJournalValue, type IntentRecord, type NewIntentRecord } from "@superbee/core/journaled-backend";
 import { mintRequestId, type UncertainWriteOptions } from "@superbee/core/uncertain-write";
 
@@ -755,6 +757,10 @@ interface PushOutcome {
   /** The agent the writes named (`X-Superbee-Via`), or why a named one was not sent. */
   readonly via?: { readonly token?: string; readonly ignored?: string };
   readonly batch?: { readonly limit: number; readonly selected: ReadonlySet<string> };
+  /** What the host reported with this run's last write answer for each document, by id. */
+  readonly findings?: ReadonlyMap<string, HostedWriteFindings>;
+  /** The text each sent change replaced, by id: a link it already held is not reported again. */
+  readonly replaced?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -785,8 +791,11 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
   const acknowledged = new Map<string, string>();
   const deleted = new Set<string>();
   const deletedIntents: { requestId: string; id: string }[] = [];
+  const findings = new Map<string, HostedWriteFindings>();
   const pending = await store.listIntents("pending");
   const refused = await store.listIntents("refused");
+  const replaced = new Map<string, string>();
+  for (const row of [...pending, ...refused]) if (row.baseContent != null) replaced.set(row.target, row.baseContent);
   const none = { acknowledged, deleted, deletedIntents, signInRequired: false, accessWithdrawn: false, collisions: [] as HeldFile[] };
   if (pending.length === 0 && refused.length === 0) return { ...none, notSent: null };
   // A bundle whose host serves no identified writes refuses every one: say so without sending.
@@ -833,6 +842,9 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
     ...(acceptDeletes !== undefined ? { acceptDeletes } : {}),
     onDeletionsHeld: ({ deletions, baseline }) => {
       heldSink.value ??= { deletions, baseline };
+    },
+    onWriteFindings: ({ target, findings: reported }) => {
+      findings.set(target, reported);
     },
   });
   // A convention change journaled while the host allowed it waits, held, while it does not: the
@@ -881,7 +893,24 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
     for (const id of requeued) if (model.has(id)) retried.add(id);
     await (deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(50 + Math.floor(Math.random() * 200));
   }
-  return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions: [...collisions, ...withheld], via, ...(selected ? { batch: { limit: maxDocuments!, selected } } : {}) };
+  return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions: [...collisions, ...withheld], via, findings, replaced, ...(selected ? { batch: { limit: maxDocuments!, selected } } : {}) };
+}
+
+/**
+ * The host's findings on this run's writes as rows show them; a link target is absent when this
+ * checkout, after the run, holds no document of that id.
+ */
+async function rowFindings(store: JournaledBackend, findings: ReadonlyMap<string, HostedWriteFindings> | undefined, replaced: ReadonlyMap<string, string> | undefined, okfVersion: string | undefined): Promise<Map<string, HostedRowFindings>> {
+  const out = new Map<string, HostedRowFindings>();
+  if (!findings || findings.size === 0) return out;
+  const linked = [...findings.values()].some((f) => (f.links?.targets.length ?? 0) > 0);
+  const present = linked ? new Set(await store.readHeads({ project: (head) => head.id as string })) : new Set<string>();
+  for (const [id, reported] of findings) {
+    const before = replaced?.get(id);
+    const row = hostedRowFindings(reported, (to) => present.has(to), before !== undefined && reported.links?.targets.length ? linkedTargets(before, id, okfVersion) : undefined);
+    if (row) out.set(id, row);
+  }
+  return out;
 }
 
 /**
@@ -1570,6 +1599,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       notSent: outcome.notSent,
       ...(outcome.batch ? { deferred: new Set((await store.listIntents("pending")).filter(row => row.attempts === 0 && !outcome.batch!.selected.has(row.target)).map(row => row.target)) } : {}),
       ...(root.row ? { root: root.row } : {}),
+      findings: await rowFindings(store, outcome.findings, outcome.replaced, session.okfVersion),
     });
     const counts = countRows(rows);
     const deferred = rows.filter(row => row.state === "paused" && row.reason === "document_limit").length;

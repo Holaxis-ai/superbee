@@ -345,6 +345,94 @@ export function definitionFindingsText(details: unknown): string {
   return more && text !== "" ? `${text}; and more` : text;
 }
 
+/**
+ * What the host reported with one write's answer, made safe to show: the saved write's report
+ * (`links`, `warnings`, `guidance`) or a refusal's findings (`diagnostics` items, `inputIssues`).
+ * Every string is host text through {@link stripHostText}, and every list is bounded, so a
+ * client can print it or keep it as data without trusting the host's bytes.
+ */
+export type HostedWriteFindings = {
+  readonly links?: WriteLinks;
+  readonly warnings?: readonly WriteWarning[];
+  readonly guidance?: readonly WriteGuidance[];
+  readonly diagnostics?: readonly { readonly code: string; readonly severity?: string; readonly message?: string; readonly kindId?: string; readonly field?: string }[];
+  readonly inputIssues?: readonly WriteInputIssue[];
+};
+
+/** At most this many entries of each list are kept in {@link HostedWriteFindings}. */
+export const HOSTED_FINDINGS_SHOWN = 16;
+
+const shown = <T>(items: readonly T[] | undefined, read: (item: T) => T | undefined, bound = HOSTED_FINDINGS_SHOWN): T[] =>
+  (items ?? []).slice(0, bound).flatMap((item) => {
+    const kept = read(item);
+    return kept === undefined ? [] : [kept];
+  });
+const hostText = (value: unknown, max = 256): string | undefined => (typeof value === "string" ? stripHostText(value, max) || undefined : undefined);
+
+/**
+ * The findings a write's answer carried ({@link HostedWriteFindings}), from a success's `data`
+ * or a refusal's `error`; undefined when it carried none (an older host sends none).
+ */
+export function hostedWriteFindings(result: WriteResult): HostedWriteFindings | undefined {
+  const out: { -readonly [K in keyof HostedWriteFindings]: HostedWriteFindings[K] } = {};
+  if (result.ok) {
+    const { links, warnings, guidance } = result.data;
+    if (links) {
+      const targets = shown(links.targets, (target) => hostText(target), 64);
+      out.links = { count: links.count, targets, ...(links.truncated || targets.length < links.targets.length ? { truncated: true } : {}) };
+    }
+    const kept = shown(warnings, (w) => {
+      const code = hostText(w.code, 64);
+      const field = hostText(w.field);
+      return code ? { code, severity: w.severity, ...(field ? { field } : {}) } : undefined;
+    });
+    if (kept.length) out.warnings = kept;
+    const described = shown(guidance, (g) => {
+      const [field, value, description] = [hostText(g.field), hostText(g.value), hostText(g.description, 1024)];
+      return field && value && description ? { field, value, description } : undefined;
+    });
+    if (described.length) out.guidance = described;
+  } else {
+    const items = shown(result.error.diagnostics?.items, (item) => item).flatMap((item) => {
+      const code = hostText(item.code, 64);
+      if (!code) return [];
+      const location = item.location as { name?: unknown } | undefined;
+      const [severity, message, kindId, field] = [hostText(item.severity, 16), hostText(item.message, 512), hostText(item.kindId), hostText(typeof location === "object" && location !== null ? location.name : undefined)];
+      return [{ code, ...(severity ? { severity } : {}), ...(message ? { message } : {}), ...(kindId ? { kindId } : {}), ...(field ? { field } : {}) }];
+    });
+    if (items.length) out.diagnostics = items;
+    const issues = shown(result.error.inputIssues, (issue) => {
+      const [path, message] = [hostText(issue.path), hostText(issue.message, 512)];
+      return path !== undefined && message ? { path, message } : undefined;
+    });
+    if (issues.length) out.inputIssues = issues;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * A refusal's findings as one clause a person reads, appended to the refusal message: each
+ * diagnostic's code, field and message, then each input issue's path and message, within
+ * {@link DEFINITION_FINDINGS_TEXT_BYTES}. Empty when there are none.
+ */
+export function refusalFindingsText(findings: HostedWriteFindings | undefined): string {
+  const clauses = [
+    ...(findings?.diagnostics ?? []).map((d) => `${d.code}${d.field ? ` on field '${d.field}'` : ""}${d.message ? ` (${d.message})` : ""}`),
+    ...(findings?.inputIssues ?? []).map((issue) => `${issue.path || "input"}: ${issue.message}`),
+  ];
+  let text = "";
+  for (const [index, clause] of clauses.entries()) {
+    const next = text === "" ? clause : `${text}; ${clause}`;
+    if (new TextEncoder().encode(next).byteLength > DEFINITION_FINDINGS_TEXT_BYTES - 32) {
+      const kept = text === "" ? `${clause.slice(0, 512)}...` : text;
+      const rest = clauses.length - index - (text === "" ? 1 : 0);
+      return rest > 0 ? `${kept}; and ${rest} more` : kept;
+    }
+    text = next;
+  }
+  return text;
+}
+
 export class HostedAnswerError extends Error {
   override readonly name = "HostedAnswerError";
 }

@@ -3,14 +3,18 @@
 // type that misspells a declared Kind's type. Core owns every rule (`documentLinkReport`, `undeclaredTypeFinding`);
 // this module only words each finding's next step for the CLI, as `link add` words its own.
 // Advisory and post-write: the document is already stored, so nothing here can fail the write.
+import type { HostedWriteFindings } from "@superbee/core/hosted-transport";
 import {
+  KIND_FIELD_UNDECLARED,
   documentLinkReport,
   inspectDocumentLinks,
+  parseMarkdown,
   readDoc,
   undeclaredTypeFinding,
   type Bundle,
   type ConceptId,
   type KindRegistry,
+  type KindValueGuidance,
   type LinkFinding,
   type LinkTargetReader,
   type OkfDocument,
@@ -44,6 +48,14 @@ function facts(details: Readonly<Record<string, unknown>>): Record<string, unkno
   return rest;
 }
 
+/** The one wording of a link whose target has no document, for a local write and a hosted one. */
+function absentTargetMessage(to: string, suggestedHref?: string, suggestedTo?: string): string {
+  const fix = suggestedHref !== undefined
+    ? `; did you mean ${suggestedHref} ('${suggestedTo}' exists)?`
+    : ` (kept as a forward declaration); create it with \`${cliInvocation()} doc write ${commandToken(to)} --type <t>\`.`;
+  return `target '${to}' has no document yet${fix}`;
+}
+
 const REASONS: Record<string, string> = {
   wikilink: "a [[wikilink]] is plain text in OKF",
   "missing-md-extension": "its target does not end in .md",
@@ -67,16 +79,7 @@ function linkWarning(finding: LinkFinding, body: string): ValidationWarning | un
   }
   if (finding.code === "LINK_TARGET_ABSENT") {
     const d = finding.details;
-    const fix = d.suggestedHref !== undefined
-      ? `; did you mean ${d.suggestedHref} ('${d.suggestedTo}' exists)?`
-      : ` (kept as a forward declaration); create it with \`${cliInvocation()} doc write ${commandToken(d.to)} --type <t>\`.`;
-    return {
-      code: finding.code,
-      message: `target '${d.to}' has no document yet${fix}`,
-      field: "body",
-      severity: finding.severity,
-      details: facts(d),
-    };
+    return { code: finding.code, message: absentTargetMessage(d.to, d.suggestedHref, d.suggestedTo), field: "body", severity: finding.severity, details: facts(d) };
   }
   // Link type lint is `link add`'s; a body write passes no registry, so core reports none here.
   return undefined;
@@ -199,4 +202,61 @@ export function writeFindingsHelp(findings: readonly ValidationWarning[]): strin
   if (findings.some((f) => f.code === "LINK_NOT_RECOGNIZED")) help.push(LINK_FORM_HELP);
   if (findings.some((f) => f.code === "KIND_TYPE_UNDECLARED")) help.push(`${cliInvocation()} kinds`);
   return help;
+}
+
+/** What a hosted sync row shows of the host's report on its write, in a local receipt's terms. */
+export interface HostedRowFindings {
+  /** Shaped as a local receipt's `warnings`: the host's warnings, and links to absent targets. */
+  warnings?: ValidationWarning[];
+  /** Shaped as a local receipt's `guidance`. */
+  guidance?: KindValueGuidance[];
+  /** A refusal's findings, as the host sent them (made safe to show). */
+  diagnostics?: HostedWriteFindings["diagnostics"];
+  input_issues?: HostedWriteFindings["inputIssues"];
+}
+
+/** The host's codes this CLI words as its own write findings do; any other code is named as sent. */
+function hostWarningMessage(code: string, field: string | undefined): string {
+  if (code === KIND_FIELD_UNDECLARED && field !== undefined) return `'${field}' is not declared by this document's Kind.`;
+  return `the host reported ${code}${field !== undefined ? ` on '${field}'` : ""}.`;
+}
+
+/**
+ * The findings the host returned with a hosted write, in the same vocabulary as
+ * {@link writeFindings}: its warnings (host text, already stripped by core), a link whose target
+ * `present` does not hold as `LINK_TARGET_ABSENT` with the local wording (at most
+ * {@link LINK_FINDINGS_SHOWN}; none for a target in `linkedBefore`, the links of the version this
+ * write replaced, which was named when that link was first sent), its guidance, and a refusal's diagnostics and input issues.
+ * Undefined when there is nothing to show, as for an older host that sends no report.
+ */
+export function hostedRowFindings(findings: HostedWriteFindings | undefined, present: (id: string) => boolean, linkedBefore: ReadonlySet<string> = new Set()): HostedRowFindings | undefined {
+  if (findings === undefined) return undefined;
+  const warnings: ValidationWarning[] = (findings.warnings ?? []).map((w) => ({
+    code: w.code,
+    message: hostWarningMessage(w.code, w.field),
+    ...(w.field !== undefined ? { field: w.field } : {}),
+    // A saved write's finding never blocked it: an "error" here is the host's grade, kept as data.
+    severity: "warning",
+    ...(w.severity === "error" ? { details: { host_severity: "error" } } : {}),
+  }));
+  const absent = [...new Set(findings.links?.targets ?? [])].filter((to) => !present(to) && !linkedBefore.has(to));
+  for (const to of absent.slice(0, LINK_FINDINGS_SHOWN)) {
+    warnings.push({ code: "LINK_TARGET_ABSENT", message: absentTargetMessage(to), field: "body", severity: "warning", details: { to } });
+  }
+  const out: HostedRowFindings = {
+    ...(warnings.length ? { warnings } : {}),
+    ...(findings.guidance?.length ? { guidance: findings.guidance.map((g) => ({ ...g })) } : {}),
+    ...(findings.diagnostics?.length ? { diagnostics: findings.diagnostics } : {}),
+    ...(findings.inputIssues?.length ? { input_issues: findings.inputIssues } : {}),
+  };
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** The link targets of a document's stored text; empty when the text does not parse. */
+export function linkedTargets(content: string, id: string, okfVersion: string | undefined): Set<string> {
+  try {
+    return new Set(inspectDocumentLinks({ ...parseMarkdown(content, id, { okfVersion }), id: id as ConceptId }).links.map((link) => link.to));
+  } catch {
+    return new Set();
+  }
 }

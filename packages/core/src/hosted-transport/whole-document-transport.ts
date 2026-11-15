@@ -41,10 +41,14 @@ import {
   CAPACITY_REFUSAL_CODES,
   DELETIONS_HELD_REFUSAL_CODE,
   definitionFindingsText,
+  hostedWriteFindings,
+  refusalFindingsText,
   updateRow,
   UPDATE_ANSWER_ROWS,
   type AuthorizationCode,
+  type HostedWriteFindings,
   type WriteFailure,
+  type WriteResult,
 } from "./answer-rows.js";
 import { DELETE_OPERATION_ID } from "./answer-rows.js";
 import { HostedCarrierError, isAcceptedDeletionCount, isAgentLabelVia, type HostedAnswer, type HostedCarrier, type HostedRequestOptions } from "./carrier.js";
@@ -285,6 +289,13 @@ export interface WholeDocumentTransportOptions {
    * which never pauses the store: it stays until a person accepts or restores it.
    */
   onDeletionsHeld?: (held: { requestId: string; target: string; deletions: number; baseline: number }) => void;
+  /**
+   * Told of what the host reported with a write's answer ({@link HostedWriteFindings}): a saved
+   * write's links, warnings and guidance, or a refusal's diagnostics and input issues. Called
+   * only when the answer carried some (an older host sends none), and never changes the outcome.
+   * A refusal's findings also ride in its message, so the recorded refusal still names them.
+   */
+  onWriteFindings?: (report: { requestId: string; target: string; findings: HostedWriteFindings }) => void;
 }
 
 const UNKNOWN: Outcome = Object.freeze({ kind: "unknown" });
@@ -305,6 +316,23 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
   if (options.acceptDeletes !== undefined && !isAcceptedDeletionCount(options.acceptDeletes)) throw new TypeError("acceptDeletes is not a count the host admits");
   const via = options.via;
   const payloadBytes = options.documentInputBytes ?? WHOLE_DOCUMENT_BOUNDS.payloadBytes;
+
+  /** Hand the answer's findings to the caller, if it carried any; reporting never changes the outcome. */
+  function report(intent: OperationIntent, result: WriteResult): HostedWriteFindings | undefined {
+    const findings = hostedWriteFindings(result);
+    if (findings === undefined) return undefined;
+    try {
+      options.onWriteFindings?.({ requestId: intent.requestId, target: intent.target, findings });
+    } catch {
+      // Reporting never changes the outcome.
+    }
+    return findings;
+  }
+  /** A refusal's message with its findings, so the recorded refusal names what to fix. */
+  const withFindings = (message: string, findings: HostedWriteFindings | undefined) => {
+    const text = refusalFindingsText(findings);
+    return text ? `${message} Findings: ${text}.` : message;
+  };
 
   /**
    * The served head as the conflict a refusal stands for. Absent, it is a conflict against no
@@ -334,6 +362,7 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
   /** A definitive recorded refusal, from the write answer or from the stored result a lookup returns. */
   function settleRecorded(intent: OperationIntent, failure: WriteFailure): Promise<Outcome> | Outcome {
     const { error } = failure;
+    const findings = report(intent, failure);
     if (error.code === "request_capacity") return capacity(error);
     if (error.code === "document_exists" && intent.base === null) return servedHead(intent);
     if (error.code === "document_not_found") return { kind: "conflict", actual: null };
@@ -347,9 +376,10 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     if (error.code === "version_conflict") return error.currentVersion === undefined ? servedHead(intent) : { kind: "conflict", actual: error.currentVersion };
     const row = UPDATE_ANSWER_ROWS.find((candidate) => candidate.answer === `200 ${error.code}`) ?? updateRow("200 other");
     if (row.code) return denial(row.code, error.message);
-    // A model change's findings ride in the message the refusal row prints: what to fix, by rule.
-    const findings = error.code === "definition_incompatible" ? definitionFindingsText(error.definitionDetails) : "";
-    return { kind: "refused", code: error.code, message: findings ? `${error.message} Findings: ${findings}.` : error.message };
+    // A model change's findings ride in the message the refusal row prints: what to fix, by rule,
+    // as a refusal's diagnostics and input issues do.
+    const definition = error.code === "definition_incompatible" ? definitionFindingsText(error.definitionDetails) : "";
+    return { kind: "refused", code: error.code, message: withFindings(definition ? `${error.message} Findings: ${definition}.` : error.message, findings) };
   }
 
   function prepare(intent: OperationIntent): { request: WholeDocumentRequest; body: string } {
@@ -431,6 +461,7 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
         if (content === null) throw new HostedOutcomeError("contradiction");
         const changed = intent.base === null || intent.base !== content.version;
         if (result.data.version !== content.version || result.data.changed !== changed) throw new HostedOutcomeError("contradiction");
+        report(intent, result);
         return { kind: "committed", version: content.version };
       }
     }
@@ -457,7 +488,10 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     // A delete's success, `changed` or not, is the document gone at exactly this base, and its
     // version is the tombstone. One naming another base is not evidence about this request.
     if (result?.ok && request.kind === "delete" && result.data.deletedVersion !== intent.base) return UNKNOWN;
-    if (result?.ok) return { kind: "committed", version: result.data.version };
+    if (result?.ok) {
+      report(intent, result);
+      return { kind: "committed", version: result.data.version };
+    }
     if (result && !result.ok && result.error.code === "request_capacity") return capacity(result.error, false);
     if (result && !result.ok && result.error.code === "deletions_held") {
       const { deletions = 0, baseline = 0 } = result.error;
@@ -481,7 +515,7 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     }
     // Unrecorded here (the settled header is not read): the host also answers it before reserving,
     // for an identity another request or principal holds, so it may be about this attempt only.
-    if (result && !result.ok && result.error.code === "invalid_input") return { kind: "refused", code: "invalid_input", message: result.error.message, executed: "unknown" };
+    if (result && !result.ok && result.error.code === "invalid_input") return { kind: "refused", code: "invalid_input", message: withFindings(result.error.message, report(intent, result)), executed: "unknown" };
     const settled = answer.headers.get("X-Superbee-Write-Settled") === intent.requestId;
     const lookupRecorded = async (): Promise<Outcome> => {
       try {
