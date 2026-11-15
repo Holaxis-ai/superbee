@@ -51,8 +51,10 @@ becoming a second source of truth. Add only the layer justified by current evide
 - Superbee does not create the remote repository. If absence is confirmed, create it externally if authorized, or ask an authorized owner/teammate.
 - On an existing repository without `board`, establishment needs consent, repository-specific Write access,
   and branch-create policy clearance; creation authority is irrelevant. If `origin/board` exists, join with `superbee sync`; never establish another board.
-- If no bundle resolves, determine whether this repository already shares a board and clarify the
-  intended purpose, privacy, participants, and sharing boundary before creating anything.
+- Before creating a first notes folder (.superbee), use the project folder the user selected or ask
+  them to choose an existing folder, a new folder, or to defer. Empty and non-code folders are valid;
+  the launch directory alone is not a project choice. Keep new notes local unless sharing is requested.
+  Check the selected project for an existing bundle or shared board before creating anything.
   `superbee sync` joins an existing shared board; `superbee init --create-only --dir .superbee` is
   only for a confirmed greenfield local bundle.
 - Ask before creating durable structure or publishing a local bundle. `sync --establish` is an
@@ -71,7 +73,7 @@ When the user accepts a domain-modeling offer, read `$REFS/modeling-and-delivery
 existing documents, Kinds, recipes, and links before choosing a shape. Create the smallest coherent
 representation, normally with one representative example, verify it, remove temporary authoring
 files, and stop. Use `superbee <command> --help` for exact current syntax rather than relying on a
-copied command manual. Use `--body-file` for multiline Markdown. `list` / `query` filter metadata, not body text; `doc update` / `doc field` patch metadata while preserving omitted fields and body. For body edits, read the complete body with `doc read <id> --body-out <temp-file>` outside the bundle, edit that temporary file, then `doc update <id> --body-file <temp-file> --expected-version <head_version> --actor <actor>` using the version from the read. Re-read and reconcile on a version conflict. Never feed a truncated preview or a full-document `--out` export to `--body-file`: body input is Markdown only; tooling owns YAML frontmatter. With MCP, use available tools and version preconditions; check tool schemas rather than inventing search or patch verbs.
+copied command manual. Use `--body-file` for multiline Markdown. `list` / `query` filter metadata, not body text; `doc update` / `doc field` patch metadata while preserving omitted fields and body. `doc read <id>` returns the whole body up to 20 KiB; a larger body arrives as `body_preview` under a leading `warning: body truncated` line, so read the rest (its help names `--body-out` and the next `--offset` page) before judging the document. For body edits, read the complete body with `doc read <id> --body-out <temp-file>` outside the bundle, edit that temporary file, then `doc update <id> --body-file <temp-file> --expected-version <head_version> --actor <actor>` using the version from the read. Re-read and reconcile on a version conflict. Never feed a truncated preview or a full-document `--out` export to `--body-file`: body input is Markdown only; tooling owns YAML frontmatter. With MCP, use available tools and version preconditions; check tool schemas rather than inventing search or patch verbs.
 
 Focused shipped material is available under `$REFS/recipes/` for portable examples,
 `$REFS/views/` for View authoring and examples, and `$REFS/sample-bundle/` for OKF interop. Integration authoring and explicit local source bind/run use `$REFS/author-an-integration.md`; recorded `$REFS/integrations/` examples need no credentials. `RUNTIME` with `details.frontmatter.code` means a document cannot be read: see "When a document cannot be read" in `$REFS/modeling-and-delivery.md`, which also covers `superbee doc import`.
@@ -93,16 +95,22 @@ When the tone fits, a single 🐝 may mark a successful Superbee outcome.
 
 ## Sync conflicts
 
-- A Git board and a hosted checkout share one playbook. When `superbee sync` exits 5 with conflict rows, run `superbee sync --inspect --doc <id>` to see your version and theirs, then `superbee sync --resolve keep|take|revise --doc <id>`: keep writes yours over theirs, take keeps theirs, revise keeps the document as you edited it to the merged result. `--resolve` never sends: run `superbee sync` after keep or revise. A Git board has already kept the teammate's version and saved yours aside, and only the new conflict exits 5: `status` and later `sync` runs keep naming the saved copy, with the command that discards it, until it is settled; keep is refused when your copy also differs in frontmatter, so edit the document to the result and use revise. A hosted checkout keeps your file, treats any concurrent change to one document (even different frontmatter keys) as a conflict, and is explained in `$REFS/hosted-checkout.md`.
+- A Git board and a hosted checkout share one playbook. When `superbee sync` exits 5 with conflict rows, run `superbee sync --inspect --doc <id>` to see your version and theirs, then `superbee sync --resolve keep|take|revise --doc <id>`: keep writes yours over theirs, take keeps theirs, revise keeps the document as you edited it to the merged result. `--resolve` never sends: run `superbee sync` after keep or revise. A Git board has already kept the teammate's version and saved yours aside, and only the new conflict exits 5: `status` and later `sync` runs keep naming the saved copy, with the command that discards it, until it is settled; keep is refused when your copy also differs in frontmatter, so edit the document to the result and use revise. A file that is not a document, such as a JSON snapshot, takes the same verbs by its full path (`--doc feeds/a.json`) and keep writes your saved bytes whole, over whatever the file holds now, including a newer teammate version a later sync brought in, so run `--inspect` first. A hosted checkout keeps your file, treats any concurrent change to one document (even different frontmatter keys) as a conflict, and is explained in `$REFS/hosted-checkout.md`.
 
 ## Host setup
 
 Persistent integrations require `npm install -g superbee` followed by `superbee setup`. Fresh cloud containers need the CLI provisioned before agent tool use and container-valid hook paths; copied laptop hooks do not provision them. Startup pulls are best-effort; inspect sync receipts to verify publication.
 Setup is an agent-driven read-only conductor: the calling agent selects its exact host, executes
-the returned argv action, reports what it is doing, requests approval only when the action says
+the returned argv action from its literal action.cwd, reports what it is doing, requests approval only when the action says
 `approval.required: true`, restarts after Skill, Hook, or MCP changes, and reruns setup to verify.
 Do not ask the user to copy or run a setup command unless execution is unavailable. A catalog entry
 preserves a workspace for explicit selection; it never makes that workspace the current project.
+Before setup creates a first notes folder, pick one with the user: --project <dir> (absolute or .),
+or --no-project to finish user setup and pick later. Project scope needs a project folder.
+Setup ready/complete describe configured readiness, not a host restart or live MCP activation.
+Remember restart_required action receipts even after a later setup inspection is ready; report
+integration as active only after an actual restart/reload and live MCP evidence. If restart is
+pending, name the host and exact setup command to resume. Defer deeper modeling until real work needs it.
 If home or SessionStart reports `skill_update`, run its exact scope-specific command, restart the
 host, and continue; Superbee never rewrites an installed Skill automatically.
 

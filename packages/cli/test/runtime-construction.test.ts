@@ -18,7 +18,7 @@ const prelude = `
       source:{commit:null,dirty:null},artifact:{channel:"local-dev"},compatibility_contracts:{skill:1,hook:1,mcp:1}},
     executablePath:entry,assetRoot:"/tmp/fixture",
     install:{packageName:"fixture-cli",entryRelativePath:"dist/fixture.mjs",bins:["fixture"]},
-    predecessorLayouts:[],ownedSkillPackages:["fixture-cli"],updatesEnabled:false,
+    ownedSkillPackages:["fixture-cli"],updatesEnabled:false,
   };
   const options = () => ({distribution:descriptor,host:createPosixHostCommands(),privateState:createPosixPrivateStateHost(),
     filesystemHost:{runtimeLockParent:()=>"/tmp",runtimeOwnerKey:()=>"fixture",enforcePrivateMode:true,

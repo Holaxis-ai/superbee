@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { MemoryBackend, type OkfDocument, type WriteOptions } from "@superbee/core";
-import { RemoteBackend } from "@superbee/core/remote";
 import { mutateDocument } from "@superbee/core/document-mutation";
 import { createRouter } from "../src/router.js";
 import { MemoryOperationOutcomeStore } from "../src/operation-outcomes.js";
+import { RemoteBackend } from "../../core/dist/remote-backend.js";
 
 const bundleId = "bnd_00112233445566778899aabbccddeeff";
 const url = `https://example.test/v0/bundles/${bundleId}/docs/note`;
@@ -162,7 +162,7 @@ test("guarded Core write captures candidate and options before backend yields", 
 });
 
 test("wire journal transport keeps default protection and does not invent editor intent", async () => {
-  const { createRemoteOperationTransport } = await import("@superbee/core/remote-operations");
+  const { createRemoteOperationTransport } = await import("../../core/dist/remote-operations.js");
   const { backend, router } = fixture();
   const base = await backend.write("note", doc("[Source](./source.md)"));
   const remote = new RemoteBackend({ baseUrl: "https://example.test", bundle: bundleId, fetchImpl: router });
@@ -175,7 +175,7 @@ test("wire journal transport keeps default protection and does not invent editor
 
 
 test("wire journal posture is per intent, captured before discovery, and malformed declarations send nothing", async () => {
-  const { createRemoteOperationTransport } = await import("@superbee/core/remote-operations");
+  const { createRemoteOperationTransport } = await import("../../core/dist/remote-operations.js");
   const { backend, router } = fixture();
   const base = await backend.write("note", doc("[Source](./source.md)"));
   let requests = 0;

@@ -179,7 +179,17 @@ export interface KindConvention {
    * existed.
    */
   claim?: KindClaimPolicy;
+  /**
+   * How writes treat a frontmatter key this kind does not declare (`undeclared_fields:`). Absent
+   * means `warn`: the write succeeds with a KIND_FIELD_UNDECLARED warning per added or changed key.
+   * `error` additionally refuses a strict write. Standard and Superbee-managed keys never count.
+   */
+  undeclaredFields?: UndeclaredFieldsPolicy;
 }
+
+/** The two declared write policies for keys a kind does not declare. */
+export const UNDECLARED_FIELDS_POLICIES = ["warn", "error"] as const;
+export type UndeclaredFieldsPolicy = (typeof UNDECLARED_FIELDS_POLICIES)[number];
 
 /** The result of {@link loadKinds}: the built registry plus any non-fatal warnings collected along the way. */
 export interface KindRegistry {
@@ -1165,6 +1175,20 @@ export function parseConventionDoc(
     }
   }
 
+  let undeclaredFields: UndeclaredFieldsPolicy | undefined;
+  if (fm.undeclared_fields !== undefined) {
+    if ((UNDECLARED_FIELDS_POLICIES as readonly unknown[]).includes(fm.undeclared_fields)) {
+      undeclaredFields = fm.undeclared_fields as UndeclaredFieldsPolicy;
+    } else {
+      warnings.push({
+        code: "KIND_CONVENTION_BAD_SHAPE",
+        message: `kind convention '${doc.id}' has an invalid 'undeclared_fields' (${describeShape(fm.undeclared_fields)}; expected warn or error); using warn.`,
+        field: "undeclared_fields",
+        severity: "warning",
+      });
+    }
+  }
+
   const kind: KindConvention = {
     id: doc.id,
     title,
@@ -1182,6 +1206,7 @@ export function parseConventionDoc(
   if (browseCollapsed !== undefined) kind.browseCollapsed = browseCollapsed;
   if (order !== undefined) kind.order = order;
   if (claim !== undefined) kind.claim = claim;
+  if (undeclaredFields !== undefined) kind.undeclaredFields = undeclaredFields;
   if (Object.hasOwn(fm, "deprecated")) {
     kind.deprecated = parseKindDeprecation(fm.deprecated, kind, RESERVED_KIND_FIELD_NAMES, claimCoordinates(options.okfVersion, kind)?.fields ?? []);
     warnings.push(...(kind.deprecated.problems ?? []));
@@ -1593,6 +1618,7 @@ export function kindConventionDoc(kind: KindConvention, prose: string, timestamp
   if (kind.freshnessHorizon !== undefined) frontmatter.freshness_horizon = kind.freshnessHorizon;
   if (kind.browseCollapsed) frontmatter.browse_collapsed = true;
   if (typeof kind.order === "number" && Number.isFinite(kind.order)) frontmatter.order = kind.order;
+  if (kind.undeclaredFields !== undefined) frontmatter.undeclared_fields = kind.undeclaredFields;
 
   return { id: kind.id, frontmatter, body: prose };
 }

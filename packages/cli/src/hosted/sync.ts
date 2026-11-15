@@ -51,7 +51,9 @@ import {
   type HostedCapabilities,
   type HostedCarrier,
   type HostedReadAdapter,
+  type HostedWriteFindings,
 } from "@superbee/core/hosted-transport";
+import { hostedRowFindings, linkedTargets, type HostedRowFindings } from "../write-findings.js";
 import { DELETION_VERSION, DOCUMENT_DELETE_KIND, JournalGuardConflict, JournalSnapshotConflict, equalJournalValue, type IntentRecord, type NewIntentRecord } from "@superbee/core/journaled-backend";
 import { mintRequestId, type UncertainWriteOptions } from "@superbee/core/uncertain-write";
 
@@ -755,6 +757,10 @@ interface PushOutcome {
   /** The agent the writes named (`X-Superbee-Via`), or why a named one was not sent. */
   readonly via?: { readonly token?: string; readonly ignored?: string };
   readonly batch?: { readonly limit: number; readonly selected: ReadonlySet<string> };
+  /** What the host reported with this run's last write answer for each document, by id. */
+  readonly findings?: ReadonlyMap<string, HostedWriteFindings>;
+  /** The text each sent change replaced, by id: a link it already held is not reported again. */
+  readonly replaced?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -785,8 +791,11 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
   const acknowledged = new Map<string, string>();
   const deleted = new Set<string>();
   const deletedIntents: { requestId: string; id: string }[] = [];
+  const findings = new Map<string, HostedWriteFindings>();
   const pending = await store.listIntents("pending");
   const refused = await store.listIntents("refused");
+  const replaced = new Map<string, string>();
+  for (const row of [...pending, ...refused]) if (row.baseContent != null) replaced.set(row.target, row.baseContent);
   const none = { acknowledged, deleted, deletedIntents, signInRequired: false, accessWithdrawn: false, collisions: [] as HeldFile[] };
   if (pending.length === 0 && refused.length === 0) return { ...none, notSent: null };
   // A bundle whose host serves no identified writes refuses every one: say so without sending.
@@ -833,6 +842,9 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
     ...(acceptDeletes !== undefined ? { acceptDeletes } : {}),
     onDeletionsHeld: ({ deletions, baseline }) => {
       heldSink.value ??= { deletions, baseline };
+    },
+    onWriteFindings: ({ target, findings: reported }) => {
+      findings.set(target, reported);
     },
   });
   // A convention change journaled while the host allowed it waits, held, while it does not: the
@@ -881,7 +893,24 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
     for (const id of requeued) if (model.has(id)) retried.add(id);
     await (deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(50 + Math.floor(Math.random() * 200));
   }
-  return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions: [...collisions, ...withheld], via, ...(selected ? { batch: { limit: maxDocuments!, selected } } : {}) };
+  return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions: [...collisions, ...withheld], via, findings, replaced, ...(selected ? { batch: { limit: maxDocuments!, selected } } : {}) };
+}
+
+/**
+ * The host's findings on this run's writes as rows show them; a link target is absent when this
+ * checkout, after the run, holds no document of that id.
+ */
+async function rowFindings(store: JournaledBackend, findings: ReadonlyMap<string, HostedWriteFindings> | undefined, replaced: ReadonlyMap<string, string> | undefined, okfVersion: string | undefined): Promise<Map<string, HostedRowFindings>> {
+  const out = new Map<string, HostedRowFindings>();
+  if (!findings || findings.size === 0) return out;
+  const linked = [...findings.values()].some((f) => (f.links?.targets.length ?? 0) > 0);
+  const present = linked ? new Set(await store.readHeads({ project: (head) => head.id as string })) : new Set<string>();
+  for (const [id, reported] of findings) {
+    const before = replaced?.get(id);
+    const row = hostedRowFindings(reported, (to) => present.has(to), before !== undefined && reported.links?.targets.length ? linkedTargets(before, id, okfVersion) : undefined);
+    if (row) out.set(id, row);
+  }
+  return out;
 }
 
 /**
@@ -1187,6 +1216,17 @@ async function orphanedArtifactPublication(store: FileJournaledBackend, p: Publi
   const snapshot = await readBlobSyncState(store, p.entry, p.scope);
   return !snapshot.map.entries.find(entry => entry.key === p.entry)?.head && snapshot.journal.intents.every(row => row.receipt !== undefined);
 }
+/**
+ * A blob_admitted publication whose create lost to a file already on the host, and whose version
+ * conflict was then resolved with keep or take: its blob request is gone from the journal while the
+ * checkout records a host head for its entry. The create can never be sent again, and a record is
+ * admitted only over the exact acknowledged create, so the publication stays held as evidence.
+ */
+async function lostArtifactCreate(store: FileJournaledBackend, p: Publication): Promise<boolean> {
+  if (p.state !== "blob_admitted" || await store.readBlobIntent(p.blobRequestId)) return false;
+  const snapshot = await readBlobSyncState(store, p.entry, p.scope);
+  return Boolean(snapshot.map.entries.find(entry => entry.key === p.entry)?.head);
+}
 export async function queueHostedArtifact(binding: CheckoutBinding, input: { file: string; title: string; description?: string; actor: string }, partial: Partial<HostedSyncDeps>, resume: CommandText): Promise<Record<string, unknown>> {
   const deps = hostedDeps(partial), signal = deps.write?.signal;
   signal?.throwIfAborted();
@@ -1199,6 +1239,20 @@ export async function queueHostedArtifact(binding: CheckoutBinding, input: { fil
     await assertActorAcceptedByBundle(local.bundle, input.actor);
     let all = await publications(store);
     const source = path.resolve(deps.cwd, input.file), rel = path.relative(binding.path, source).split(path.sep).join("/");
+    const createCommand = (target: string): string => `${cliInvocation()} artifact create ${commandToken(target)} --title ${commandToken(input.title)} --actor ${commandToken(input.actor)} --dir ${commandToken(binding.path)}${input.description ? commandFragment` --description ${commandToken(input.description)}` : commandFragment``}`;
+    /** The first id the title derives that no record, file or publication here or on the host holds. */
+    const freshArtifactEntry = async (retained: readonly Publication[]): Promise<{ id: string; entry: string }> => {
+      const heads = await queryHeads(local.bundle, { prefix: "artifacts/" });
+      const blobs = await listBlobs(local.bundle, "artifacts/");
+      const remoteHeads = await session.reader.heads();
+      if (!remoteHeads) throw new CliError("CONFLICT", "Artifact needs a complete current record listing");
+      const remote = remoteHeads.heads.map(h => h.id);
+      const blobAdapter = createHostedBlobReadAdapter({ carrier: session.carrier, bundleId: binding.bundle_id, prefix: session.routes, signal: signal ?? new AbortController().signal, capabilities: () => Promise.resolve(session.capabilities) });
+      const remoteBlobs = (await blobAdapter.heads()).heads;
+      const taken = new Set([...heads.map(h => h.id), ...blobs.map(k => k.replace(/\.[^/.]+$/, "")), ...remote.filter(id => id.startsWith("artifacts/")), ...remoteBlobs.map(h => h.key.replace(/\.[^/.]+$/, "")), ...retained.map(p => p.id)]);
+      const id = firstFreeId(slugifyTitle(input.title), taken);
+      return { id, entry: `${id}.html` };
+    };
     let publication = all.find(p => p.entry === rel);
     if (publication) {
       assertPublicationBinding(publication, binding);
@@ -1210,19 +1264,26 @@ export async function queueHostedArtifact(binding: CheckoutBinding, input: { fil
         publication = undefined;
       }
     }
+    if (publication && await lostArtifactCreate(store, publication)) {
+      // The create met a file already on the host and that conflict was resolved; the reservation
+      // stays held as its evidence, so a page is published again under the next free path.
+      const next = await freshArtifactEntry(all);
+      const target = path.join(binding.path, ...next.entry.split("/")), current = path.join(binding.path, ...publication.entry.split("/"));
+      const found = readRegularFileNoFollowSync(current, { maximumBytes: 16 * 1024 * 1024 });
+      const pageInFolder = found.state === "present" && digestOf(found.bytes) === publication.digest;
+      const where = pageInFolder
+        ? `Your page is still at ${publication.entry}, as an ordinary file. Publish it under ${next.entry}, the next free name for this title: copy it there, then run artifact create on the copy`
+        : `${publication.entry} no longer holds your page. Publish your page under ${next.entry}, the next free name for this title: save it there, then run artifact create on it`;
+      throw new CliError("CONFLICT", `${publication.entry} was already taken on the host, so this Artifact cannot be published there; nothing was submitted, and rerunning fails the same way. ${where}`, {
+        details: { reason: "artifact_create_conflict_resolved", id: publication.id, entry: publication.entry, blob_request_id: publication.blobRequestId, page_in_folder: pageInFolder, next_entry: next.entry },
+        help: pageInFolder ? `cp ${commandToken(current)} ${commandToken(target)} && ${createCommand(target)}` : createCommand(target),
+      });
+    }
     if (publication) {
       if (publication.title !== input.title || publication.actor !== input.actor || publication.description !== input.description) throw new CliError("CONFLICT", "Artifact arguments differ from the frozen publication; no new identity was selected");
     } else {
-      const heads = await queryHeads(local.bundle, { prefix: "artifacts/" });
-      const blobs = await listBlobs(local.bundle, "artifacts/");
-      const remoteHeads = await session.reader.heads();
-      if (!remoteHeads) throw new CliError("CONFLICT", "Artifact needs a complete current record listing");
-      const remote = remoteHeads.heads.map(h => h.id);
-      const blobAdapter = createHostedBlobReadAdapter({ carrier: session.carrier, bundleId: binding.bundle_id, prefix: session.routes, signal: signal ?? new AbortController().signal, capabilities: () => Promise.resolve(session.capabilities) });
-      const remoteBlobs = (await blobAdapter.heads()).heads;
-      const taken = new Set([...heads.map(h => h.id), ...blobs.map(k => k.replace(/\.[^/.]+$/, "")), ...remote.filter(id => id.startsWith("artifacts/")), ...remoteBlobs.map(h => h.key.replace(/\.[^/.]+$/, "")), ...all.map(p => p.id)]);
-      const id = firstFreeId(slugifyTitle(input.title), taken), entry = `${id}.html`;
-      if (source !== path.join(binding.path, ...entry.split("/"))) throw new CliError("USAGE", "hosted Artifact requires its source at the canonical checkout target", { help: `copy the source to ${commandToken(path.join(binding.path, ...entry.split("/")))}, then ${cliInvocation()} artifact create ${commandToken(path.join(binding.path, ...entry.split("/")))} --title ${commandToken(input.title)} --actor ${commandToken(input.actor)} --dir ${commandToken(binding.path)}${input.description ? commandFragment` --description ${commandToken(input.description)}` : commandFragment``}` });
+      const { id, entry } = await freshArtifactEntry(all);
+      if (source !== path.join(binding.path, ...entry.split("/"))) throw new CliError("USAGE", "hosted Artifact requires its source at the canonical checkout target", { help: `copy the source to ${commandToken(path.join(binding.path, ...entry.split("/")))}, then ${createCommand(path.join(binding.path, ...entry.split("/")))}` });
       const file = readRegularFileNoFollowSync(source, { maximumBytes: 16 * 1024 * 1024 });
       if (file.state !== "present") throw new CliError("CONFLICT", "Artifact source is unsafe or missing");
       const doc = readRegularFileNoFollowSync(path.join(binding.path, `${id}.md`), { maximumBytes: 1 });
@@ -1538,6 +1599,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       notSent: outcome.notSent,
       ...(outcome.batch ? { deferred: new Set((await store.listIntents("pending")).filter(row => row.attempts === 0 && !outcome.batch!.selected.has(row.target)).map(row => row.target)) } : {}),
       ...(root.row ? { root: root.row } : {}),
+      findings: await rowFindings(store, outcome.findings, outcome.replaced, session.okfVersion),
     });
     const counts = countRows(rows);
     const deferred = rows.filter(row => row.state === "paused" && row.reason === "document_limit").length;

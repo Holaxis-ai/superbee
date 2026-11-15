@@ -70,7 +70,7 @@ import { readProjection, writeProjection } from "../hosted/sync-scan.js";
 import { withIdleCheckoutStore } from "../hosted/checkout-store.js";
 import { checkoutHolds } from "../hosted/status.js";
 import { unstorableReceipt } from "../hosted/sync-rows.js";
-import { addCatalogEntry, assertCatalogLabel, loadCatalog, removeCatalogEntry } from "../catalog.js";
+import { addCatalogEntry, catalogLabelCandidates, loadCatalog, removeCatalogEntry } from "../catalog.js";
 import { checkoutMarkerBytes, readCheckoutMarker, removeCheckoutMarker, writeCheckoutMarker } from "../hosted/marker.js";
 import { adopt } from "./checkout-adopt.js";
 import { EXPORT_DEADLINE_MS, fetchExportThrough, type ExportRequest } from "./export.js";
@@ -868,19 +868,6 @@ export async function connectHostedBundle(
   return { identity, reader, listed, workspace: tenantId ?? workspace, reference, client, definitionWrites: capabilities.definitionWrites, documentInputBytes: capabilities.documentInputBytes };
 }
 
-/** Catalog labels tried for a checkout: the bundle id, then `-2` to `-9` when another entry holds it. */
-function catalogLabels(bundleId: string): string[] {
-  const base = bundleId.slice(0, 60).replace(/[._-]+$/, "");
-  return [base, ...Array.from({ length: 8 }, (_, index) => `${base}-${index + 2}`)].filter((label) => {
-    try {
-      assertCatalogLabel(label);
-      return true;
-    } catch {
-      return false;
-    }
-  });
-}
-
 /**
  * Register a new checkout in the person's workspace catalog, so other sessions and the local MCP
  * app can find it; the catalog derives its home (hosted) from the binding. Registration never
@@ -894,7 +881,7 @@ export async function registerInCatalog(home: string, binding: CheckoutBinding):
     const existing = entries.find((entry) => samePhysicalPath(entry.locator.path, binding.path));
     if (existing) return { registered: true, existing: true, label: existing.label, id: existing.id, home: "hosted" };
     const taken = new Set(entries.map((entry) => entry.label));
-    const label = catalogLabels(binding.bundle_id).find((candidate) => !taken.has(candidate));
+    const label = catalogLabelCandidates(binding.bundle_id).find((candidate) => !taken.has(candidate));
     if (label === undefined) return { registered: false, note: "every catalog label for this bundle id is taken", help: byHand };
     const { entry } = await addCatalogEntry(label, binding.path, { home });
     return { registered: true, label: entry.label, id: entry.id, home: "hosted" };
@@ -913,7 +900,7 @@ export async function dropCheckoutLabel(home: string, binding: CheckoutBinding):
   try {
     const entry = (await loadCatalog(home)).entries.find((item) => samePhysicalPath(item.locator.path, binding.path));
     if (!entry) return { removed: false, reason: "not_registered" };
-    if (!catalogLabels(binding.bundle_id).includes(entry.label)) return { removed: false, label: entry.label, reason: "chosen_label" };
+    if (!catalogLabelCandidates(binding.bundle_id).includes(entry.label)) return { removed: false, label: entry.label, reason: "chosen_label" };
     const result = await removeCatalogEntry(entry, { home });
     if (!result.changed) return { removed: false, label: entry.label, reason: result.reason };
     return { removed: true, label: entry.label, help: `${cliInvocation()} catalog add ${commandToken(entry.label)} --dir ${commandToken(entry.locator.path)}` };

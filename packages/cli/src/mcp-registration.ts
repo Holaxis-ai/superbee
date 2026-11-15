@@ -11,7 +11,6 @@ import {
   classifyMcpRegistration,
   CURRENT_MCP_REGISTRATION,
   inspectCodexMcp,
-  LEGACY_MCP_REGISTRATIONS,
   openCodeConfigCandidates,
   parseMcpConfigRoot,
   parseClaudeMcpEntries,
@@ -180,8 +179,7 @@ function classify(
 function selectedSources<T extends { path: string; text: string; entries: readonly McpRegistrationEntry[] }>(
   sources: readonly T[],
 ): T[] {
-  const reserved = new Set<string>([CURRENT_MCP_REGISTRATION, ...LEGACY_MCP_REGISTRATIONS]);
-  return sources.filter((source) => source.entries.some((entry) => reserved.has(entry.name)));
+  return sources.filter((source) => source.entries.some((entry) => entry.name === CURRENT_MCP_REGISTRATION));
 }
 
 function inspectTarget(
@@ -293,8 +291,7 @@ function inspectTarget(
       ? "v1"
       : undefined;
   if (isRecord(servers)) {
-    const mixedReserved = [CURRENT_MCP_REGISTRATION, ...LEGACY_MCP_REGISTRATIONS]
-      .some((name) => own(mcp as Record<string, unknown>, name) !== undefined);
+    const mixedReserved = own(mcp as Record<string, unknown>, CURRENT_MCP_REGISTRATION) !== undefined;
     if (mixedReserved) {
       throw new McpRegistrationError("OpenCode configuration mixes V1 and V2 MCP declarations", {
         host: target.id,
@@ -531,13 +528,6 @@ export function mutateMcpRegistration(
       state: beforeClass.state,
       config: before.config,
     }, [target.docs_url]);
-  }
-  if (beforeClass.state === "known_legacy") {
-    throw new McpRegistrationError("a legacy per-bundle MCP registration needs explicit migration", {
-      host: target.id,
-      state: beforeClass.state,
-      config: before.config,
-    }, ["Remove or migrate the legacy registration after its bundle is in the Superbee catalog."]);
   }
   const alreadyDesired = operation === "install"
     ? beforeClass.state === "owned_current" && exactEntry(before.selected, desired)

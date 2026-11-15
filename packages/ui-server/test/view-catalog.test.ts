@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { MemoryBackend, writeBlob, writeDoc, type Bundle } from "@superbee/core";
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../src/bundle-router.js";
 import { bootUiServer } from "../src/server.js";
 
 test("the web launcher endpoint serves the shared durable View catalog", async () => {
@@ -42,7 +42,7 @@ test("the web launcher endpoint serves the shared durable View catalog", async (
   const server = await bootUiServer({
     mode: "dir",
     bundle,
-    router: createRouter(bundle),
+    router: createBundleRouter(bundle),
     sessionSecret: secret,
     renderDocument: ({ body }) => ({ html: body, bounded: false }),
     serveAsset: () => ({

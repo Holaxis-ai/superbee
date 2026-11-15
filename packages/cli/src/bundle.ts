@@ -58,6 +58,7 @@ import {
 } from "@superbee/core";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
+import { noBundleNextStep } from "./no-bundle-guidance.js";
 import {
   assertBundleOutsidePrivateState,
   assertSearchDirOutsidePrivateState,
@@ -1305,7 +1306,7 @@ export async function resolveLocalBundleTarget(
     throw new CliError(
       "NOT_FOUND",
       `no OKF bundle found (no index.md, and no ${CONVENTIONAL_BUNDLE_DIR_NAME}/index.md, in the current directory or its ancestors)`,
-      { help: `${cliInvocation()} init --create-only --dir ${commandToken(CONVENTIONAL_BUNDLE_DIR_NAME)}` },
+      { help: await noBundleNextStep(startDir) },
     );
   }
   const canonicalRoot = await canonicalDirectoryRoot(

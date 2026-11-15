@@ -5,6 +5,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type {
   CliRuntimeOptions,
   CliDistribution,
+  DistributionInstallLayout,
   HostCommands,
   PrivateStateHost,
   FilesystemHostPolicy,
@@ -142,21 +143,8 @@ export function distributionPackageName(): string {
 export function distributionBinName(): string {
   return distribution?.install.bins[0] ?? "superbee";
 }
-export function distributionLayouts() {
-  return distribution
-    ? [distribution.install, ...distribution.predecessorLayouts]
-    : [
-        {
-          packageName: "superbee",
-          entryRelativePath: "dist/superbee.mjs",
-          bins: ["superbee"],
-        },
-        {
-          packageName: "@holaxis/aslite",
-          entryRelativePath: "dist/superbee.mjs",
-          bins: ["aslite", "agentstate-lite"],
-        },
-      ];
+export function distributionLayouts(): readonly DistributionInstallLayout[] {
+  return [distribution?.install ?? { packageName: "superbee", entryRelativePath: "dist/superbee.mjs", bins: ["superbee"] }];
 }
 export function installCommand(): string {
   return `npm install -g ${distributionPackageName()}`;

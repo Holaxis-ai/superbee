@@ -464,3 +464,15 @@ test("T21 a v0.1 ops bundle creates Signals with status todo, collapses only whi
   ] }, { content: w.content, ops: w.ops, policy: w.policy, actor: ACTOR });
   assert.deepEqual([forced.results[0]!.code, forced.results[0]!.details], ["SIGNAL_CLAIMED", { field: "status" }]);
 });
+
+test("findings: a feed slug outside the canonical id spelling still yields a creatable Signal id", async () => {
+  const w = await overlayWorld();
+  const ops = w.ops;
+  const observedAt = "2026-10-11T02:00:00Z";
+  const slug = " lib\u{200b}ra\u{308}ry-source";
+  const steps = await planFindings({ ops, provider: "process:review", slug, observedAt, findings: [{ key: "places/z", title: "Check places/z", facts: { open: false } }] });
+  assert.equal(steps[0]!.op, "create-signal");
+  assert.match(steps[0]!.target!, /^signals\/libr\u{e4}ry-source-[0-9a-f]{12}$/u);
+  const r = await applyRecordOverlay({ feed: null, provider: "process:review", observed_at: observedAt, steps, refusals: [] }, { content: ops, ops, policy: { owned_fields: [], provider: "process:review" }, actor: ACTOR });
+  assert.deepEqual(r.results.map((x) => x.outcome), ["applied"]);
+});

@@ -8,6 +8,7 @@
  */
 
 import * as engine from "./engine.js";
+import type { IndexedRelationshipPage, RelationshipPosition } from "./relationships.js";
 import { InvalidInputError } from "./errors.js";
 import type { WalkPathClass } from "./paths.js";
 import type {
@@ -141,6 +142,16 @@ export async function queryEdges(
   options: engine.QueryOptions = {},
 ): Promise<Link[]> {
   return engine.queryEdges(backendFor(bundle), filter, options);
+}
+
+export async function readRelationshipPage(
+  bundle: Bundle,
+  documentId: ConceptId,
+  limit: number,
+  after?: RelationshipPosition,
+  options?: engine.QueryOptions,
+): Promise<IndexedRelationshipPage> {
+  return engine.readRelationshipPage(backendFor(bundle), documentId, limit, after, options);
 }
 
 export async function backlinks(bundle: Bundle, target: ConceptId, options: engine.QueryOptions = {}): Promise<Link[]> {

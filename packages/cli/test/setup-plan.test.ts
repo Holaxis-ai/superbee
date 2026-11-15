@@ -4,7 +4,7 @@ import { buildSetupPlan, type SetupAction, type SetupPlanInput } from "../src/se
 import { USER_STATE_QUARANTINE_COMMAND } from "../src/user-state.js";
 
 const VERSION = "1.2.3-rc.4";
-const CURRENT_SKILL = { canonical: { state: "installed" as const }, legacy: { state: "absent" as const } };
+const CURRENT_SKILL = { canonical: { state: "installed" as const } };
 const CURRENT_HOOK = { installed: true, compatibility: { state: "current" as const, reason: "current" } };
 
 function input(overrides: Partial<SetupPlanInput> = {}): SetupPlanInput {
@@ -34,9 +34,10 @@ test("setup plan agreement: every supported host has a ready agent protocol", ()
     assert.equal(plan.next, undefined, host);
     assert.deepEqual(plan.verify, {
       action: "run", command: ["superbee", "setup", "--host", host, "--scope", "user", "--json"],
-      description: "Reinspect setup readiness after the preceding action.", mutates: false,
+      description: plan.verify.description, mutates: false,
       approval: { required: false, reason: null },
     });
+    assert.match(plan.verify.description, /^Check setup again\. This reads files on disk only\. Restart .+ to load Superbee\.$/, host);
   }
 });
 
@@ -54,7 +55,7 @@ test("OpenCode treats the managed Claude-compatible Skill as a required host cap
 
   const absent = buildSetupPlan(input({
     host: "opencode",
-    skill: { canonical: { state: "absent" }, legacy: { state: "absent" } },
+    skill: { canonical: { state: "absent" } },
   }));
   assert.deepEqual(next(absent).command, ["superbee", "skill", "install", "--scope", "user"]);
   assert.equal(absent.capabilities.find((capability) => capability.id === "skill")?.reason,
@@ -64,7 +65,7 @@ test("OpenCode treats the managed Claude-compatible Skill as a required host cap
 test("mutating setup actions are argv-based and declare their approval scope", () => {
   const migration = next(buildSetupPlan(input({
     state: { state: "migratable", reason: "validated legacy operational state is ready to migrate", records: 2 },
-    skill: { canonical: { state: "absent" }, legacy: { state: "absent" } },
+    skill: { canonical: { state: "absent" } },
   })));
   assert.deepEqual(migration, {
     action: "run", command: ["superbee", "setup", "migrate-state"],
@@ -73,7 +74,7 @@ test("mutating setup actions are argv-based and declare their approval scope", (
   });
 
   const projectSkill = next(buildSetupPlan(input({
-    scope: "project", skill: { canonical: { state: "absent" }, legacy: { state: "absent" } },
+    scope: "project", skill: { canonical: { state: "absent" } },
   })));
   assert.deepEqual(projectSkill.command, ["superbee", "skill", "install", "--scope", "project"]);
   assert.equal(projectSkill.mutates, true);
@@ -89,7 +90,7 @@ test("mutating setup actions are argv-based and declare their approval scope", (
 test("follow-up actions retain a no-download local invocation", () => {
   const action = next(buildSetupPlan(input({
     invocation: ["npx", "--no-install", "superbee"],
-    skill: { canonical: { state: "absent" }, legacy: { state: "absent" } },
+    skill: { canonical: { state: "absent" } },
   })));
   assert.deepEqual(action.command, ["npx", "--no-install", "superbee", "skill", "install", "--scope", "user"]);
   assert.equal(action.approval.required, true);
@@ -162,7 +163,7 @@ test("recognized state-permission repair remains a user-approved mutation", () =
 test("dependency order still yields exactly one action", () => {
   const distribution = next(buildSetupPlan(input({
     distribution: { allowed: false, state: "unknown", reason: "transient", persistent: false },
-    skill: { canonical: { state: "absent" }, legacy: { state: "absent" } }, mcp: { state: "absent", reason: "absent" },
+    skill: { canonical: { state: "absent" } }, mcp: { state: "absent", reason: "absent" },
   })));
   assert.deepEqual(distribution.command, ["npm", "install", "-g", `superbee@${VERSION}`]);
   assert.equal(distribution.approval.required, true);
@@ -180,7 +181,7 @@ test("dependency order still yields exactly one action", () => {
 
 test("foreign integrations fail closed onto unapproved read-only inspection", () => {
   const skill = next(buildSetupPlan(input({
-    skill: { canonical: { state: "unmanaged" }, legacy: { state: "absent" } },
+    skill: { canonical: { state: "unmanaged" } },
   })));
   assert.equal(skill.action, "inspect");
   assert.deepEqual(skill.command, ["superbee", "skill", "status", "--scope", "user"]);
@@ -204,13 +205,13 @@ test("an absent Codex CLI blocks setup on the same truthful MCP state", () => {
 
 test("bundle creation and catalog templates remain distinguishable to the agent", () => {
   const missingBundle = next(buildSetupPlan(input({
+    projectSelection: "confirmed",
     workspace: { bundle: "absent", catalog: "empty", selected_registered: false },
   })));
   assert.deepEqual(missingBundle.command, ["superbee", "init", "--create-only", "--recipe", "work-tracking", "--dir", ".superbee"]);
   assert.equal(missingBundle.approval.required, true);
 
   const uncataloged = next(buildSetupPlan(input({
-    hook: { installed: false, compatibility: { state: "absent", reason: "absent" } },
     workspace: { bundle: "selected", catalog: "empty", selected_registered: false },
   })));
   assert.match(buildSetupPlan(input({ workspace: { bundle: "selected", catalog: "empty", selected_registered: false } })).capabilities.find(capability => capability.id === "catalog")!.reason, /catalog relocate.*sameness is not inferred/);
@@ -219,6 +220,16 @@ test("bundle creation and catalog templates remain distinguishable to the agent"
   assert.equal(uncataloged.command_template, "superbee catalog add <label>");
   assert.equal(uncataloged.mutates, true);
   assert.equal(uncataloged.approval.required, true);
+
+  // With a label derived from the project folder, the catalog row is runnable argv.
+  const labeled = next(buildSetupPlan(input({
+    workspace: { bundle: "selected", catalog: "empty", selected_registered: false, catalog_label: "my-project" },
+  })));
+  assert.equal(labeled.action, "run");
+  assert.deepEqual(labeled.command, ["superbee", "catalog", "add", "my-project"]);
+  assert.equal(labeled.command_template, undefined);
+  assert.equal(labeled.mutates, true);
+  assert.equal(labeled.approval.required, true);
 });
 
 test("the global install action pins the running version and stays approval-gated", () => {
@@ -241,4 +252,58 @@ test("an unknown running version withholds the global install instead of offerin
   assert.equal(capability?.state, "blocked");
   assert.match(capability?.reason ?? "", /running version is unknown/);
   assert.doesNotMatch(JSON.stringify(plan.next ?? {}), /npm.*install/);
+});
+
+test("first notes folder requires a project choice regardless of unrelated catalog entries", () => {
+  for (const catalog of ["empty", "ready"] as const) {
+    const plan = buildSetupPlan(input({ workspace: { bundle: "absent", catalog, selected_registered: false } }));
+    assert.equal(next(plan).action, "choose_value");
+    assert.equal(next(plan).command, undefined);
+    assert.equal(next(plan).command_template, undefined);
+    assert.deepEqual(next(plan).choices?.map((choice) => choice.command), [
+      ["superbee", "setup", "--host", "codex", "--scope", "user", "--no-project", "--json"],
+    ], "without a known cwd only --no-project is runnable");
+    assert.match(next(plan).description, /--no-project to set this up later/);
+    assert.equal(next(plan).mutates, false);
+    assert.equal(plan.workspace.project_selection, "unselected");
+    assert.ok(!plan.capabilities.some((row) => row.command?.startsWith("superbee init")));
+    const confirmed = buildSetupPlan(input({ projectSelection: "confirmed", workspace: { bundle: "absent", catalog, selected_registered: false } }));
+    assert.deepEqual(next(confirmed).command, ["superbee", "init", "--create-only", "--recipe", "work-tracking", "--dir", ".superbee"]);
+  }
+});
+
+test("user hook configuration progresses before project choice; project installs require selection", () => {
+  const absentSkill = { canonical: { state: "absent" as const } };
+  const missingHook = { installed: false, compatibility: { state: "absent" as const, reason: "absent" } };
+  const workspace = { bundle: "absent" as const, catalog: "empty" as const, selected_registered: false };
+  assert.deepEqual(next(buildSetupPlan(input({ workspace, hook: missingHook }))).command, ["superbee", "hook", "install", "--scope", "user"]);
+  const project = next(buildSetupPlan(input({ scope: "project", workspace, skill: absentSkill, hook: missingHook })));
+  assert.equal(project.action, "choose_value");
+  assert.equal(project.mutates, false);
+  assert.doesNotMatch(project.description, /--no-project/);
+});
+
+test("deferred projects finish configuration without claiming live activation", () => {
+  for (const host of ["codex", "claude-code", "claude-desktop", "opencode"] as const) {
+    const cwd = "/tmp/notes with ' $x; literal";
+    const plan = buildSetupPlan(input({ host, cwd, projectSelection: "deferred", workspace: { bundle: "not_checked", catalog: "not_checked", selected_registered: false } }));
+    assert.equal(plan.complete, true);
+    assert.equal(plan.workspace.project_selection, "deferred");
+    assert.equal(plan.workspace.project_directory, null);
+    assert.deepEqual(plan.verification, { configured_only: true, live_host_activation: "not_observed" });
+    assert.equal(plan.verify.cwd, cwd);
+    assert.ok(plan.verify.command?.includes("--no-project"));
+    for (const id of ["bundle", "catalog"]) assert.equal(plan.capabilities.find((row) => row.id === id)?.state, "not_applicable");
+  }
+});
+
+test("every setup continuation preserves literal cwd and explicit project choice", () => {
+  const cwd = "/tmp/project with ' $(not-executed);";
+  for (const invocation of [["superbee"], ["npx", "--no-install", "superbee"]]) {
+    const plan = buildSetupPlan(input({ cwd, invocation, projectSelection: "confirmed", workspace: { bundle: "absent", catalog: "empty", selected_registered: false } }));
+    assert.equal(next(plan).cwd, cwd);
+    assert.equal(plan.verify.cwd, cwd);
+    assert.deepEqual(plan.verify.command, [...invocation, "setup", "--host", "codex", "--scope", "user", "--project", cwd, "--json"]);
+    assert.ok(!next(plan).command?.includes("sh"));
+  }
 });

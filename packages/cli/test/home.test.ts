@@ -225,13 +225,9 @@ test("A1.3 no-bundle fallback: no bundle block, getting_started hint, commands p
   const view = buildHomeView(BASE_DEPS, null);
   assert.equal(view.bundle, undefined);
   assert.equal(typeof view.getting_started, "string");
-  assert.match(
-    view.getting_started as string,
-    new RegExp(
-      `${INVOKE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} init --create-only --recipe none --dir ${shellArg(".superbee").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
-    ),
-  );
-  assert.match(view.getting_started as string, new RegExp(`${INVOKE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} recipes`));
+  assert.ok((view.getting_started as string).includes(`${INVOKE} setup --project .\` for this folder`));
+  assert.ok((view.getting_started as string).includes(`${INVOKE} setup --no-project`));
+  assert.doesNotMatch(view.getting_started as string, / init /, "setup owns the project-folder choice");
   assert.ok(view.commands);
 
   // home() itself must resolve (never reject) with a null summarizer.
@@ -245,7 +241,7 @@ test("A1.3 no-bundle fallback: no bundle block, getting_started hint, commands p
   assert.ok(out.length > 0);
 });
 
-test("A1.3b no-bundle --dir fallback creates in the explicit project's conventional child", async () => {
+test("A1.3b no-bundle --dir fallback offers the explicit project folder to setup", async () => {
   let out = "";
   const selected = path.join(tmpdir(), "selected bundle");
   await home(["--dir", selected, "--json"], {
@@ -260,11 +256,9 @@ test("A1.3b no-bundle --dir fallback creates in the explicit project's conventio
   });
 
   const gettingStarted = (JSON.parse(out) as Record<string, unknown>).getting_started as string;
-  const target = path.join(selected, ".superbee");
-  assert.ok(gettingStarted.includes(`${INVOKE} init --create-only --recipe none --dir ${shellArg(target)}`));
-  assert.ok(gettingStarted.includes(`${INVOKE} recipes`));
-  assert.ok(gettingStarted.includes(`${INVOKE} init --create-only --recipe <name> --dir ${shellArg(target)}`));
-  assert.ok(!gettingStarted.includes(`recipes --dir`));
+  assert.ok(gettingStarted.includes(`${INVOKE} setup --project ${shellArg(selected)}\` for this folder`), gettingStarted);
+  assert.ok(gettingStarted.includes(`${INVOKE} setup --no-project`));
+  assert.doesNotMatch(gettingStarted, / init /);
 });
 
 test("home preserves a conventional-directory conflict outside Git and never suggests init", async () => {

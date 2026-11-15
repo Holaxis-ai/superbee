@@ -56,12 +56,15 @@ import { promises as fs } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import type { Stats } from "node:fs";
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 import { ConcurrentReplacementError, FilesystemIdentityAliasError, InvalidInputError } from "./errors.js";
-import { acquireFilesystemIdentityLock, filesystemMutationLockRoot } from "./filesystem-lock.js";
+import { acquireFilesystemIdentityLock, filesystemMutationLockRoot, filesystemRelationshipCache } from "./filesystem-lock.js";
 import { captureFilesystemHostPolicy, type FilesystemHostPolicy } from "./filesystem-host.js";
 import { foldSegment } from "./identity-fold.js";
+import { identityTempName } from "./filesystem-temp-name.js";
 
 export { foldSegment };
 
@@ -131,6 +134,8 @@ export interface FilesystemIdentityPort {
   /** Open for reading and `fstat` the handle; throws the filesystem error otherwise. */
   open(target: string): Promise<OpenedFile>;
   readAll(handle: PortHandle): Promise<Buffer>;
+  contentStamp?(handle: PortHandle): Promise<{ value: string; settled: boolean } | undefined>;
+  relationshipCache?(root: string, key: string): ReturnType<typeof filesystemRelationshipCache> | undefined;
   close(handle: PortHandle): Promise<void>;
   stat(target: string): Promise<{ mtime: Date }>;
   mkdir(dir: string): Promise<"created" | "exists">;
@@ -142,6 +147,8 @@ export interface FilesystemIdentityPort {
    */
   link(from: string, to: string): Promise<"linked" | "exists" | "unsupported">;
   rename(from: string, to: string): Promise<void>;
+  /** Give `to` the read, write and execute bits of `from` (never setuid, setgid or sticky), so a replacement keeps them. */
+  copyMode?(from: string, to: string): Promise<void>;
   unlink(target: string): Promise<void>;
   claim(key: string, identity: IdentityDescriptor): Promise<() => Promise<void>>;
 }
@@ -254,7 +261,17 @@ async function existingAnchor(resolved: string): Promise<{ anchor: string; tail:
 async function foldedPhysicalRoot(root: string): Promise<string> {
   const { anchor, tail } = await existingAnchor(path.resolve(root));
   const anchorSegments = anchor.split(path.sep).filter((segment, index) => index === 0 || segment !== "");
-  return [...anchorSegments, ...tail].map(foldSegment).join("/");
+  return [...anchorSegments, ...tail].map(foldRootSegment).join("/");
+}
+
+/**
+ * The bundle root's own segments fold with compatibility decomposition, which is wider than
+ * {@link foldSegment}. Every released build derives the root key this way, and processes on
+ * different builds exclude each other only while they derive the same root key. A wider root
+ * fold can only make two differently spelled roots share one lock.
+ */
+function foldRootSegment(segment: string): string {
+  return segment.normalize("NFKD").toLowerCase().toUpperCase().toLowerCase();
 }
 
 export async function identityKey(root: string, rel: string): Promise<string> {
@@ -400,19 +417,56 @@ function hasExact(listing: ListedEntry[], segment: string): boolean {
   return listing.some((entry) => entry.name === segment);
 }
 
+/** The one listed spelling other than `segment` that folds to it, for the refusal message only. */
+function existingSpelling(names: Iterable<string>, segment: string): string | undefined {
+  const folded = foldSegment(segment);
+  const matches = [...names].filter((name) => name !== segment && foldSegment(name) === folded);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+/** "folder" or "file" for the entry an alias spelling reaches; position decides when its kind is unknown. */
+function entryNoun(kind: EntryKind | undefined, leaf: boolean): "file" | "folder" {
+  if (kind === undefined) return leaf ? "file" : "folder";
+  return kind === "directory" ? "folder" : "file";
+}
+
+function aliasRefusal(
+  rel: string,
+  segments: string[],
+  index: number,
+  names: Iterable<string>,
+  kind: EntryKind | undefined,
+): FilesystemIdentityAliasError {
+  const segment = segments[index]!;
+  return new FilesystemIdentityAliasError(rel, segment, existingSpelling(names, segment), entryNoun(kind, index === segments.length - 1), index);
+}
+
+/** {@link aliasRefusal} from a listing with kinds: the folded match's own kind names it. */
+function aliasRefusalFromListing(rel: string, index: number, listing: ListedEntry[], leaf: boolean): FilesystemIdentityAliasError {
+  const segment = relSegments(rel)[index]!;
+  const existing = existingSpelling(listing.map((entry) => entry.name), segment);
+  const kind = existing === undefined ? undefined : listing.find((entry) => entry.name === existing)?.kind;
+  return new FilesystemIdentityAliasError(rel, segment, existing, entryNoun(kind, leaf), index);
+}
+
 /** What a verifying walk needs from a parent listing: exact-spelling membership. */
 interface ListingView {
   has(name: string): boolean;
+  names(): Iterable<string>;
 }
 
 /** Where a verifying walk gets each parent listing; `null` when the directory is absent. */
 type ListingSource = (dir: string) => Promise<ListingView | null>;
 
+function listingView(names: Set<string>): ListingView {
+  return { has: (name) => names.has(name), names: () => names };
+}
+
 /** One fresh `entries` call per use: the single-read protocol. */
 function freshListings(port: FilesystemIdentityPort): ListingSource {
   return async (dir) => {
     const listing = await port.entries(dir);
-    return listing === null ? null : { has: (name) => hasExact(listing, name) };
+    return listing === null ? null : { has: (name) => hasExact(listing, name), names: () => listing.map((entry) => entry.name) };
   };
 }
 
@@ -441,7 +495,7 @@ async function walkExact(
     if (probed === null) return { state: "absent", depth: index };
     const listing = await port.entries(parent);
     if (listing === null) return { state: "absent", depth: index };
-    if (!hasExact(listing, segment)) throw new FilesystemIdentityAliasError(rel, segment);
+    if (!hasExact(listing, segment)) throw aliasRefusal(rel, segments, index, listing.map((entry) => entry.name), probed.kind);
     if (index === segments.length - 1) return { state: "exact", leaf: probed };
     if (probed.kind !== "directory") return { state: "shape-mismatch", segment };
     parent = candidate;
@@ -457,25 +511,30 @@ export type Observation<T> = { state: "exact"; value: T } | { state: "absent" };
 
 type WalkVerdict = "continue" | "absent" | "restart";
 
-/** O-PROBE: walk `rel` root to leaf recording each segment's witness; `null` when any segment is absent. */
+/**
+ * O-PROBE: walk `rel` root to leaf recording each segment's witness. `complete` is false when a
+ * segment is absent or a non-leaf segment is not a directory; `recorded` then holds every segment
+ * that exists (the non-directory included), which the caller still confirms so an alias spelling of an existing
+ * directory prefix is refused rather than reported as absent.
+ */
 async function recordWalk(
   port: FilesystemIdentityPort,
   rootResolved: string,
   segments: string[],
   rel: string,
-): Promise<ProbeResult[] | null> {
+): Promise<{ recorded: ProbeResult[]; complete: boolean }> {
   const recorded: ProbeResult[] = [];
   let parent = rootResolved;
   for (let index = 0; index < segments.length; index++) {
     const segment = segments[index]!;
     const candidate = path.join(parent, segment);
     const probed = await probeSegment(port, candidate, rel, segment);
-    if (probed === null) return null;
-    if (index < segments.length - 1 && probed.kind !== "directory") return null;
+    if (probed === null) return { recorded, complete: false };
     recorded.push(probed);
+    if (index < segments.length - 1 && probed.kind !== "directory") return { recorded, complete: false };
     parent = candidate;
   }
-  return recorded;
+  return { recorded, complete: true };
 }
 
 /**
@@ -499,27 +558,65 @@ async function confirmedWalk(
   recorded: ProbeResult[],
   handle: EntryWitness | null,
   listings: ListingSource = freshListings(port),
+  stopAt: number = segments.length,
 ): Promise<WalkVerdict | "exact"> {
   let parent = rootResolved;
-  for (let index = 0; index < segments.length; index++) {
+  for (let index = 0; index < stopAt; index++) {
     const segment = segments[index]!;
     const candidate = path.join(parent, segment);
     const listing = await listings(parent);
     if (listing === null) return "absent";
     const listed = listing.has(segment);
     if (handle !== null && index === segments.length - 1) {
-      const verdict = classifyLeaf({ listed, probe: await probeSegment(port, candidate, rel, segment), handle });
-      if (verdict === "aliased") throw new FilesystemIdentityAliasError(rel, segment);
+      const probe = await probeSegment(port, candidate, rel, segment);
+      const verdict = classifyLeaf({ listed, probe, handle });
+      if (verdict === "aliased") throw aliasRefusal(rel, segments, index, listing.names(), probe?.kind);
       return verdict === "replaced" ? "restart" : verdict;
     }
     if (index < segments.length - 1 || !listed) {
-      const verdict = confirmAlias(listed, await probeSegment(port, candidate, rel, segment), recorded[index]!);
-      if (verdict === "aliased") throw new FilesystemIdentityAliasError(rel, segment);
+      const probe = await probeSegment(port, candidate, rel, segment);
+      const verdict = confirmAlias(listed, probe, recorded[index]!);
+      if (verdict === "aliased") throw aliasRefusal(rel, segments, index, listing.names(), probe?.kind);
       if (verdict !== "continue") return verdict;
     }
     parent = candidate;
   }
   return "continue";
+}
+
+/**
+ * An incomplete O-PROBE is ABSENT only once the segments that did exist are confirmed under their
+ * exact spelling. Without this, `Concepts/new.md` beside an existing `concepts/` would read as
+ * absent while every mutation of it refuses the alias, so a caller that treats absence as
+ * "may be created later" would promise a write that can never succeed.
+ *
+ * Parent listings come from a per-port witnessed cache, so batches of absent probes do not list a
+ * large directory once each. Only ABSENT may rest on a reused listing: a refusal or restart reached
+ * through one is re-decided with fresh listings. Where a directory witness can lie (network
+ * attribute caches, settable Windows directory times), an absent verdict can therefore miss a
+ * directory renamed to another case within the cache's life; writes still refuse it.
+ */
+async function confirmPrefix(
+  port: FilesystemIdentityPort,
+  rootResolved: string,
+  segments: string[],
+  rel: string,
+  recorded: ProbeResult[],
+): Promise<"absent" | "restart"> {
+  if (recorded.length === 0) return "absent";
+  let kept = prefixListings.get(port);
+  if (kept === undefined) prefixListings.set(port, (kept = new Map()));
+  const cached = witnessedListings(port, kept, Date.now, PREFIX_LISTING_CAPACITY);
+  let verdict: WalkVerdict | "exact";
+  try {
+    verdict = await confirmedWalk(port, rootResolved, segments, rel, recorded, null, cached.source, recorded.length);
+  } catch (error) {
+    if (!cached.reused()) throw error;
+    kept.clear();
+    verdict = await confirmedWalk(port, rootResolved, segments, rel, recorded, null, freshListings(port), recorded.length);
+  }
+  if (verdict === "restart" && cached.reused()) kept.clear();
+  return verdict === "restart" ? "restart" : "absent";
 }
 
 function countRestart(restarts: number, rel: string): number {
@@ -556,8 +653,14 @@ async function observeWith<T>(
   const target = path.join(rootResolved, ...segments);
 
   for (let restarts = 0; ; ) {
-    const recorded = await recordWalk(port, rootResolved, segments, rel);
-    if (recorded === null) return { state: "absent" };
+    const walk = await recordWalk(port, rootResolved, segments, rel);
+    if (!walk.complete) {
+      const prefix = await confirmPrefix(port, rootResolved, segments, rel, walk.recorded);
+      if (prefix === "absent") return { state: "absent" };
+      restarts = countRestart(restarts, rel);
+      continue;
+    }
+    const recorded = walk.recorded;
     const verified = await confirmedWalk(port, rootResolved, segments, rel, recorded, null, listings);
     if (verified === "absent") return { state: "absent" };
     if (verified === "restart") {
@@ -609,8 +712,14 @@ export async function probeExact(
   const rootResolved = path.resolve(root);
 
   for (let restarts = 0; ; ) {
-    const recorded = await recordWalk(port, rootResolved, segments, rel);
-    if (recorded === null) return { state: "absent" };
+    const walk = await recordWalk(port, rootResolved, segments, rel);
+    if (!walk.complete) {
+      const prefix = await confirmPrefix(port, rootResolved, segments, rel, walk.recorded);
+      if (prefix === "absent") return { state: "absent" };
+      restarts = countRestart(restarts, rel);
+      continue;
+    }
+    const recorded = walk.recorded;
     const leaf = recorded[recorded.length - 1]!;
     const verified = await confirmedWalk(port, rootResolved, segments, rel, recorded, null);
     const verdict = verified === "continue" ? await confirmedWalk(port, rootResolved, segments, rel, recorded, leaf) : verified;
@@ -632,6 +741,16 @@ export async function probeExact(
  */
 const SETTLED_AFTER_NS = 3_000_000_000n;
 
+/**
+ * Whether a directory witness can detect change at all. Some volumes report times that never
+ * move: macOS gives an exFAT volume's root directory mtime and ctime 0 forever. A time at or
+ * before the epoch is never a real modification of a bundle directory, so such a witness is
+ * treated as absent and its listing is neither kept nor reused.
+ */
+export function witnessCanDetectChange(witness: DirectoryWitness): boolean {
+  return witness.mtimeNs > 0n && witness.ctimeNs > 0n;
+}
+
 function witnessKey(witness: DirectoryWitness): string {
   return `${witness.dev}:${witness.ino}:${witness.mtimeNs}:${witness.ctimeNs}`;
 }
@@ -648,6 +767,63 @@ interface ReusedVerdict {
   readonly recorded: ProbeResult[];
   readonly handle: EntryWitness;
 }
+
+/**
+ * A listing source that keeps each directory's listing while its settled change witness is
+ * unchanged (see {@link openObservationPass} for why a settled witness is a change detector on
+ * local disks). `reused()` says whether any listing it returned came from `kept`. A port without
+ * directory witnesses lists afresh on every use.
+ */
+function witnessedListings(
+  port: FilesystemIdentityPort,
+  kept: Map<string, KeptListing>,
+  now: () => number,
+  capacity = Infinity,
+): { source: ListingSource; reused(): boolean } {
+  let reused = false;
+  const portWitness = port.directoryWitness?.bind(port);
+  if (portWitness === undefined) return { source: freshListings(port), reused: () => false };
+  const witnessOf = async (dir: string): Promise<DirectoryWitness | null> => {
+    const witness = await portWitness(dir);
+    return witness !== null && witnessCanDetectChange(witness) ? witness : null;
+  };
+  const settled = (witness: DirectoryWitness): boolean => {
+    const nowNs = BigInt(Math.floor(now())) * 1_000_000n;
+    const latest = witness.mtimeNs > witness.ctimeNs ? witness.mtimeNs : witness.ctimeNs;
+    return nowNs - latest >= SETTLED_AFTER_NS;
+  };
+  const source: ListingSource = async (dir) => {
+    const keep = kept.get(dir);
+    if (keep !== undefined) {
+      const current = await witnessOf(dir);
+      if (current !== null && witnessKey(current) === keep.witness) {
+        reused = true;
+        return listingView(keep.names);
+      }
+      kept.delete(dir);
+    }
+    const before = await witnessOf(dir);
+    const listing = await port.entries(dir);
+    if (listing === null) return null;
+    const names = new Set(listing.map((entry) => entry.name));
+    const after = await witnessOf(dir);
+    if (before !== null && after !== null && witnessKey(before) === witnessKey(after) && settled(after)) {
+      kept.delete(dir);
+      kept.set(dir, { witness: witnessKey(after), names });
+      while (kept.size > capacity) kept.delete(kept.keys().next().value!);
+    }
+    return listingView(names);
+  };
+  return { source, reused: () => reused };
+}
+
+/**
+ * Prefix-confirmation listings kept per port, so a run of absent probes under one directory (a
+ * batch of `exists` calls) lists each parent once rather than once per probe. Bounded; entries
+ * are only ever reused under an unchanged settled witness.
+ */
+const prefixListings = new WeakMap<FilesystemIdentityPort, Map<string, KeptListing>>();
+const PREFIX_LISTING_CAPACITY = 64;
 
 /**
  * An observation pass: many observations over one bundle that share each directory's listing
@@ -703,41 +879,9 @@ export function openObservationPass(port: FilesystemIdentityPort, root: string, 
   const rootResolved = path.resolve(root);
   const kept = new Map<string, KeptListing>();
   const reusedVerdicts: ReusedVerdict[] = [];
-  const fresh = freshListings(port);
-  const witnessOf = port.directoryWitness?.bind(port);
-
-  const settled = (witness: DirectoryWitness): boolean => {
-    const nowNs = BigInt(Math.floor(now())) * 1_000_000n;
-    const latest = witness.mtimeNs > witness.ctimeNs ? witness.mtimeNs : witness.ctimeNs;
-    return nowNs - latest >= SETTLED_AFTER_NS;
-  };
 
   /** Listings for one observation; `reused()` says whether any came from the kept set. */
-  const listingsFor = (): { source: ListingSource; reused(): boolean } => {
-    let reused = false;
-    if (witnessOf === undefined) return { source: fresh, reused: () => false };
-    const source: ListingSource = async (dir) => {
-      const keep = kept.get(dir);
-      if (keep !== undefined) {
-        const current = await witnessOf(dir);
-        if (current !== null && witnessKey(current) === keep.witness) {
-          reused = true;
-          return keep.names;
-        }
-        kept.delete(dir);
-      }
-      const before = await witnessOf(dir);
-      const listing = await port.entries(dir);
-      if (listing === null) return null;
-      const names = new Set(listing.map((entry) => entry.name));
-      const after = await witnessOf(dir);
-      if (before !== null && after !== null && witnessKey(before) === witnessKey(after) && settled(after)) {
-        kept.set(dir, { witness: witnessKey(after), names });
-      }
-      return names;
-    };
-    return { source, reused: () => reused };
-  };
+  const listingsFor = () => witnessedListings(port, kept, now);
 
   return {
     async observe<T>(rel: string, read: (handle: PortHandle, target: string) => Promise<T | null>): Promise<Observation<T>> {
@@ -888,6 +1032,7 @@ async function mkdirExact(
   segment: string,
   isTail: boolean,
   rel: string,
+  index = -1,
 ): Promise<void> {
   const outcome = await port.mkdir(path.join(parent, segment));
   if (outcome === "created") return;
@@ -897,7 +1042,9 @@ async function mkdirExact(
     throw new FilesystemSymlinkEntryError(rel, segment);
   }
   const verdict = classifyMkdir(outcome, listing, segment, isTail);
-  if (verdict === "aliased") throw new FilesystemIdentityAliasError(rel, segment);
+  if (verdict === "aliased") {
+    throw aliasRefusalFromListing(rel, index, listing, false);
+  }
   if (verdict === "shape-mismatch") throw new FilesystemShapeMismatchError(rel, segment);
 }
 
@@ -930,8 +1077,9 @@ async function ensureExactDirectories(
     }
   }
   let parent = path.join(rootResolved, ...segments.slice(0, existingDepth));
-  for (const segment of segments.slice(existingDepth, -1)) {
-    await mkdirExact(port, parent, segment, false, rel);
+  for (let index = existingDepth; index < segments.length - 1; index++) {
+    const segment = segments[index]!;
+    await mkdirExact(port, parent, segment, false, rel, index);
     parent = path.join(parent, segment);
   }
 }
@@ -968,7 +1116,7 @@ async function createExactLeaf(
   }
   const listing = (await port.entries(path.dirname(target))) ?? [];
   if (hasExact(listing, leaf)) throw new ConcurrentReplacementError(rel, 1);
-  throw new FilesystemIdentityAliasError(rel, leaf);
+  throw aliasRefusalFromListing(rel, relSegments(rel).length - 1, listing, true);
 }
 
 /**
@@ -1002,13 +1150,13 @@ export async function mutateExact<T>(
         async replace(bytes) {
           await ensureExactDirectories(port, rootResolved, segments, existingDepth, rel);
           const dir = path.dirname(target);
-          // Unique per call, not per process: one process can issue two writes to the same
-          // target within a millisecond, and the second's temp file must not clobber the first's.
-          const tmpName = `.${leaf}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
+          const tmpName = identityTempName(leaf);
           const tmp = path.join(dir, tmpName);
           await port.writeTemp(dir, tmpName, bytes);
           try {
             if (realized.state === "exact") {
+              // Best effort: a replacement that cannot carry the old permission bits still lands.
+              await port.copyMode?.(target, tmp).catch(() => {});
               // Replace: the target exists under our exact spelling, so any writer of an
               // equated spelling is refused at its own M-REALIZE; an atomic rename is safe.
               await replaceExistingLeaf(port, tmp, target, rel);
@@ -1090,10 +1238,63 @@ function witnessTrust(): (dev: bigint, dir: string) => Promise<boolean> {
   };
 }
 
+// Persistent reuse needs a reliable independent ctime, beyond directory enumeration semantics.
+const CONTENT_LINUX_FILESYSTEMS = new Set([
+  0xef53, // ext2/3/4
+  0x58465342, // xfs
+  0x9123683e, // btrfs
+  0x01021994, // tmpfs
+  0x858458f6, // ramfs
+  0x2fc12fc1, // zfs
+  0xf2f52010, // f2fs
+  0xca451a4e, // bcachefs
+]);
+const DARWIN_DATA_VOLUME = "/System/Volumes/Data";
+const runFile = promisify(execFile);
+
+async function darwinDataVolumeDevice(): Promise<bigint | undefined> {
+  try {
+    const before = await fs.lstat(DARWIN_DATA_VOLUME, { bigint: true });
+    if (!before.isDirectory()) return;
+    const { stdout } = await runFile("/usr/sbin/diskutil", ["info", "-plist", DARWIN_DATA_VOLUME], {
+      timeout: 2_000,
+      maxBuffer: 64 * 1024,
+    });
+    // Darwin's numeric statfs type is not a stable filesystem name. Only this OS-managed
+    // volume is qualified; a secondary or unreadable volume uses the body scan.
+    if (!/<key>FilesystemType<\/key>\s*<string>apfs<\/string>/.test(stdout) ||
+        !/<key>MountPoint<\/key>\s*<string>\/System\/Volumes\/Data<\/string>/.test(stdout)) return;
+    const after = await fs.lstat(DARWIN_DATA_VOLUME, { bigint: true });
+    if (after.isDirectory() && before.dev === after.dev && before.ino === after.ino) return after.dev;
+  } catch {
+    // A device whose filesystem cannot be identified is unsuitable for persistent reuse.
+  }
+}
+
+function contentWitnessTrust(): (dev: bigint, handle: FileHandle) => Promise<boolean> {
+  let darwin: Promise<bigint | undefined> | undefined;
+  const linux = new Map<bigint, Promise<boolean>>();
+  return async (dev, handle) => {
+    if (process.platform === "darwin") return (await (darwin ??= darwinDataVolumeDevice())) === dev;
+    if (process.platform !== "linux") return false;
+    let trusted = linux.get(dev);
+    if (trusted === undefined) {
+      // The descriptor identifies the file's mount even for a separately mounted leaf.
+      trusted = fs.statfs(`/proc/self/fd/${handle.fd}`).then(
+        info => CONTENT_LINUX_FILESYSTEMS.has(Number(info.type)),
+        () => false,
+      );
+      linux.set(dev, trusted);
+    }
+    return trusted;
+  };
+}
+
 /** The one production binding: `node:fs`, the temp-file convention, and the identity lock. */
 export function createNodeFilesystemIdentityPort(hostPolicy?: FilesystemHostPolicy): FilesystemIdentityPort {
   const policy = captureFilesystemHostPolicy(hostPolicy);
   const witnessTrustedOn = witnessTrust();
+  const contentWitnessTrustedOn = contentWitnessTrust();
   return Object.freeze({
     isTransientOpenError: policy.isTransientOpenError,
     isReplacementConflict: policy.isReplacementConflict,
@@ -1140,6 +1341,20 @@ export function createNodeFilesystemIdentityPort(hostPolicy?: FilesystemHostPoli
     readAll(handle: PortHandle): Promise<Buffer> {
       return (handle as FileHandle).readFile();
     },
+    async contentStamp(handle: PortHandle) {
+      const file = handle as FileHandle;
+      const stat = await file.stat({ bigint: true });
+      if (!stat.isFile() || stat.ctimeNs <= 0n || !(await contentWitnessTrustedOn(stat.dev, file))) return undefined;
+      const latest = stat.mtimeNs > stat.ctimeNs ? stat.mtimeNs : stat.ctimeNs;
+      return {
+        value: [stat.dev, stat.ino, stat.birthtimeNs, stat.ctimeNs, stat.mtimeNs, stat.size].join(":"),
+        settled: BigInt(Date.now()) * 1_000_000n - latest >= SETTLED_AFTER_NS,
+      };
+    },
+    relationshipCache(root: string, key: string) {
+      if (!policy.enforcePrivateMode || process.getuid === undefined) return undefined;
+      return filesystemRelationshipCache(root, policy, key);
+    },
     close(handle: PortHandle): Promise<void> {
       return (handle as FileHandle).close();
     },
@@ -1171,6 +1386,9 @@ export function createNodeFilesystemIdentityPort(hostPolicy?: FilesystemHostPoli
     },
     async rename(from: string, to: string): Promise<void> {
       await fs.rename(from, to);
+    },
+    async copyMode(from: string, to: string): Promise<void> {
+      await fs.chmod(to, (await fs.lstat(from)).mode & 0o777);
     },
     async unlink(target: string): Promise<void> {
       await fs.unlink(target);

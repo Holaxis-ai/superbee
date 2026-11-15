@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { MemoryBackend, writeBlob, writeDoc, type Bundle } from "@superbee/core";
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../src/bundle-router.js";
 import { bootUiServer, type UiServerHandle } from "../src/server.js";
 
 const SECRET = "view-launch-errors-secret";
@@ -16,7 +16,7 @@ async function boot(bundle: Bundle): Promise<UiServerHandle> {
   return bootUiServer({
     mode: "dir",
     bundle,
-    router: createRouter(bundle),
+    router: createBundleRouter(bundle),
     sessionSecret: SECRET,
     renderDocument: ({ body }) => ({ html: body, bounded: false }),
     serveAsset: () => ({

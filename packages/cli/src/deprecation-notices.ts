@@ -9,15 +9,10 @@
 import { SUPERBEE_NO_AUTOPULL_ENV } from "@superbee/board-git";
 import { SUPERBEE_ACTOR_ENV, SUPERBEE_NO_UPDATE_CHECK_ENV } from "./env-policy.js";
 import { CliError, toEnvelope } from "./errors.js";
-import type { InstallScope } from "./install-scope.js";
 import { cliInvocation } from "./invocation.js";
 import { renderErrorEnvelope } from "./output.js";
 
 export type DeprecationNoticeCode =
-  | "DEPRECATED_SOURCE_PLUGIN_POINTER"
-  | "DEPRECATED_LEGACY_HOOK"
-  | "DEPRECATED_LEGACY_SKILL_FOLDER"
-  | "DEPRECATED_LEGACY_MCP_REGISTRATION"
   | "DEPRECATED_LEGACY_USER_STATE";
 
 export interface DeprecationNotice {
@@ -25,8 +20,8 @@ export interface DeprecationNotice {
   readonly code: DeprecationNoticeCode;
   readonly old: string;
   readonly replacement: string;
-  /** The exact fix, given this executable's own command prefix and any install scopes it found. */
-  readonly fix: (cli: string, scopes: readonly InstallScope[]) => string;
+  /** The exact fix, given this executable's own command prefix. */
+  readonly fix: (cli: string) => string;
 }
 
 /** Retired environment names and the Superbee name that replaced each one. */
@@ -139,6 +134,18 @@ export function retiredInputRefusal(input: "--remote" | "serve"): CliError {
 }
 
 /**
+ * The refusal for a pre-v2 source plugin pointer (the single GitHub record 0.4.3 wrote). Registering
+ * or removing github replaces it; the accepted generation it named stays on disk.
+ */
+export function retiredSourcePluginPointerRefusal(): CliError {
+  const cli = cliInvocation();
+  return new CliError("USAGE", "The source plugin pointer source-plugin-github.json uses the retired pre-v2 format, which is no longer read.", {
+    help: `Re-register the GitHub plugin: run ${cli} source plugin register <built-folder>, then ${cli} source plugin register <built-folder> --accept <digest>. Or run ${cli} source plugin remove github to clear it. Neither deletes the old accepted copy.`,
+    details: { code: "RETIRED_SOURCE_PLUGIN_POINTER" },
+  });
+}
+
+/**
  * The CLI entry's refusal for `--remote` in a leading flag block with no command word to parse it.
  * The envelope goes where the command puts its errors, as for retired environment names.
  */
@@ -207,36 +214,7 @@ export function retiredEnvHomeLine(env: Readonly<Record<string, string | undefin
   return `${refusal.message} This session skips the update check and automatic pull until it is fixed. Fix: ${refusal.help}`;
 }
 
-/** The install verbs default to project scope, so a fix must name the scope the old thing is in. */
-function scopedInstalls(cli: string, verb: "hook" | "skill", scopes: readonly InstallScope[]): string {
-  return scopes.map((scope) => `${cli} ${verb} install --scope ${scope}`).join(" and ");
-}
-
 export const DEPRECATION_NOTICES: readonly DeprecationNotice[] = Object.freeze([
-  {
-    code: "DEPRECATED_SOURCE_PLUGIN_POINTER",
-    old: "the pre-v2 source plugin pointer",
-    replacement: "the v2 source plugin registry",
-    fix: (cli) => `run ${cli} source plugin register <built-folder> and accept its digest, which rewrites the pointer`,
-  },
-  {
-    code: "DEPRECATED_LEGACY_HOOK",
-    old: "a SessionStart hook written by aslite or agentstate-lite",
-    replacement: "the Superbee hook",
-    fix: (cli, scopes) => `run ${scopedInstalls(cli, "hook", scopes)} from a global install (npm install -g superbee), which replaces it`,
-  },
-  {
-    code: "DEPRECATED_LEGACY_SKILL_FOLDER",
-    old: "the aslite skill folder",
-    replacement: "the superbee skill folder",
-    fix: (cli, scopes) => `run ${scopedInstalls(cli, "skill", scopes)} from a global install (npm install -g superbee), which moves a Superbee-owned folder; delete the folder if it remains`,
-  },
-  {
-    code: "DEPRECATED_LEGACY_MCP_REGISTRATION",
-    old: "an aslite-views or agentstate-lite-experimental MCP registration",
-    replacement: "the superbee MCP registration",
-    fix: (cli) => `delete that entry from the host configuration, then run ${cli} mcp install --host <id> from a global install (npm install -g superbee)`,
-  },
   {
     code: "DEPRECATED_LEGACY_USER_STATE",
     old: "private state under ~/.agentstate or ~/.config/superbee",
@@ -251,6 +229,7 @@ const BYTE_CHANNEL_FLAGS = ["--out", "--body-out", "--rendered-out"];
 let open = false;
 let stderrErrorsAbsorbed = false;
 const shown = new Set<DeprecationNoticeCode>();
+const shownWarnings = new Set<string>();
 
 function requestsByteChannel(argv: readonly string[]): boolean {
   return argv.some((arg, index) =>
@@ -282,10 +261,9 @@ export function renderDeprecationNotice(
   row: DeprecationNotice,
   cli: string,
   locations: readonly string[] = [],
-  scopes: readonly InstallScope[] = ["project", "user"],
 ): string {
   const where = locations.length ? ` (${locations.join(", ")})` : "";
-  const line = `superbee: warning: ${row.old}${where} is deprecated and will be removed; use ${row.replacement} instead. Fix: ${row.fix(cli, scopes)}. [${row.code}]`;
+  const line = `superbee: warning: ${row.old}${where} is deprecated and will be removed; use ${row.replacement} instead. Fix: ${row.fix(cli)}. [${row.code}]`;
   return `${line.replace(/[\u0000-\u001f\u007f]/g, " ")}\n`;
 }
 
@@ -293,7 +271,6 @@ export function renderDeprecationNotice(
 export function emitDeprecationNotice(
   code: DeprecationNoticeCode,
   locations: readonly string[] = [],
-  scopes?: readonly InstallScope[],
 ): void {
   if (!open || shown.has(code)) return;
   shown.add(code);
@@ -305,9 +282,48 @@ export function emitDeprecationNotice(
     process.stderr.on("error", () => {});
   }
   try {
-    process.stderr.write(renderDeprecationNotice(ROWS.get(code)!, cliInvocation(), locations, scopes));
+    process.stderr.write(renderDeprecationNotice(ROWS.get(code)!, cliInvocation(), locations));
   } catch {
     // A synchronous write failure is the same case.
+  }
+}
+
+/** Something a retired package left that Superbee leaves in place because it does not match what Superbee wrote. */
+export type RetiredWarningCode = "RETIRED_HOOK" | "RETIRED_SKILL_FOLDER";
+
+export function retiredHookWarning(path: string): string {
+  return `${path} has a hook that runs aslite or agentstate-lite, and Superbee did not remove it because it was edited. It may fail or duplicate context. To remove it, delete that entry.`;
+}
+
+export function retiredPluginWarning(path: string): string {
+  return `${path} has the old agentstate-lite plugin name but does not match a file Superbee wrote, so Superbee left it. Delete it to stop it loading.`;
+}
+
+export function retiredSkillFolderWarning(dir: string, canonicalDir: string): string {
+  return `${dir} is the old aslite skill and has local edits, so Superbee left it. It teaches commands that no longer exist. Delete the folder. The current skill is at ${canonicalDir}.`;
+}
+
+export function retiredSkillFolderRemovalWarning(dir: string, canonicalDir: string): string {
+  return `The current skill is installed at ${canonicalDir}, but ${dir}, the old aslite skill, could not be fully removed. It teaches commands that no longer exist. Delete the folder.`;
+}
+
+export function retiredSkillFolderInstallWarning(dir: string, install: string): string {
+  return `${dir} is the old aslite skill. It teaches commands that no longer exist. Run ${install}, which deletes it.`;
+}
+
+/** One warning line on the notice channel, once per process per message. Never throws. */
+export function emitRetiredWarning(code: RetiredWarningCode, message: string): void {
+  const line = `superbee: warning: ${message} [${code}]`;
+  if (!open || shownWarnings.has(line)) return;
+  shownWarnings.add(line);
+  if (!stderrErrorsAbsorbed) {
+    stderrErrorsAbsorbed = true;
+    process.stderr.on("error", () => {});
+  }
+  try {
+    process.stderr.write(`${line.replace(/[\u0000-\u001f\u007f]/g, " ")}\n`);
+  } catch {
+    // A synchronous write failure costs only the warning.
   }
 }
 

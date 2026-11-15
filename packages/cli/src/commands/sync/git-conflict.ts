@@ -12,13 +12,17 @@
 //   --resolve revise   the document as it is now (edited to the result first) is the resolution;
 //                      refused while it equals its upstream version and does not hold your copy
 //
+// A file that is not a document is named by its path and settled byte for byte: keep writes the saved
+// bytes whole, and is refused while the file holds changes that are neither side or a later copy waits.
+//
 // A document conflicted more than once has several copies. The verbs take them oldest first, so
 // the newest has the last word, and a take leaves the document alone until the last one.
 //
 // Nothing here fetches, commits or pushes: the next plain `sync` shares keep and revise.
 import { constants as fsConstants, existsSync, promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
-import { assertSafeConceptId, conceptIdFromPath, isReservedFile, MalformedDocumentError, parseMarkdown, pathFromConceptId, versionOfBytes } from "@superbee/core";
+import { assertSafeConceptId, blobVersion, conceptIdFromPath, FilesystemBackend, replaceFilesystemFile, VersionConflict, isReservedFile, MalformedDocumentError, parseMarkdown, pathFromConceptId, versionOfBytes } from "@superbee/core";
 import { boardRefOf, bundleDirNameForProject, isConceptDocPath, listSavedCopies, readDocBytesAtRef, repoTopLevel, resolveBundleKey, retargetBoardInterior, runGit, saveCopyWithBody } from "@superbee/board-git";
 import { resolveLocalBundleRoute } from "../../bundle.js";
 import { commandFragment, commandToken, type CommandText } from "../../command-text.js";
@@ -119,11 +123,14 @@ function parseConflictArgs(argv: string[]): ConflictArgs {
     throw new CliError("USAGE", "--out writes the teammate's version for --inspect", { help: `${inv} sync --inspect --doc <id> --out <file>` });
   }
   const raw = (target ?? "").trim();
+  if (path.isAbsolute(raw) || /^[A-Za-z]:[\\/]/.test(raw)) {
+    throw new CliError("USAGE", `'${raw}' is an absolute path; --doc takes a document id or a file's path inside the bundle, such as feeds/a.json`, { help: `${inv} sync --inspect --doc <id|path>` });
+  }
   const id = conceptIdFromPath(raw);
   try {
     assertSafeConceptId(id);
   } catch (error) {
-    throw new CliError("USAGE", `'${raw}' is not a document id (${(error as Error).message})`, { help: `${inv} sync --inspect --doc <id>` });
+    throw new CliError("USAGE", `'${raw}' is not a document id or file path (${(error as Error).message})`, { help: `${inv} sync --inspect --doc <id>` });
   }
   if (isReservedFile(pathFromConceptId(id))) {
     throw new CliError("USAGE", `'${raw}' is a reserved file, not a document; view its incoming version with --show-incoming`, { help: `${inv} sync --show-incoming ${commandToken(raw)}` });
@@ -140,6 +147,8 @@ function parseConflictArgs(argv: string[]): ConflictArgs {
 
 /** The board a conflict verb reads: its folder, the state key its exports live under, and the id's saved copy. */
 interface Board {
+  /** A Markdown document settled through the document verbs, or any other file settled byte for byte. */
+  kind: "document" | "file";
   root: string;
   relPath: string;
   file: string;
@@ -163,6 +172,24 @@ async function readIfPresent(file: string): Promise<Buffer | null> {
     return await fs.readFile(file);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/** The refusal for a conflict path that is a folder, a link, or sits under a file or link. */
+function notRegularFile(args: ConflictArgs, board: Board): CliError {
+  return new CliError("CONFLICT", `'${args.id}' is not a regular file in the bundle (a folder, a link, or under a file or link), so nothing changed; your saved copy stays at ${board.exportPath}`, {
+    details: { id: args.id, saved_at: board.exportPath, reason: "not_a_regular_file" },
+  });
+}
+
+/** The conflicted file's bytes, or null when it is absent; a path that cannot hold a file is refused. */
+async function readBoardFile(args: ConflictArgs, board: Board): Promise<Buffer | null> {
+  try {
+    return await readIfPresent(board.file);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EISDIR" || code === "ENOTDIR") throw notRegularFile(args, board);
     throw error;
   }
 }
@@ -205,20 +232,27 @@ async function locateBoard(args: ConflictArgs, cwd: string): Promise<Board> {
   const copies = listSavedCopies(exportDir).filter((copy) => copy.relPath === relPath);
   const oldest = copies[0];
   if (oldest === undefined) {
-    // A raw file's copy is saved under its own path, which a document id does not map to.
+    // A file that is not a document is saved under its own path, which a document id does not map to.
     const raw = listSavedCopies(exportDir).filter((copy) => copy.relPath === args.id);
     if (raw[0] !== undefined) {
-      throw new CliError("CONFLICT", `'${args.id}' has a saved conflict copy, but it is a raw file, which --inspect and --resolve do not take; merge what you need into it by hand from ${raw[0].file}, then delete that file`, {
-        details: { path: args.id, saved_at: raw[0].file, copies: raw.length },
-        help: removeCommand(raw[0]),
-      });
+      return {
+        kind: "file",
+        root,
+        relPath: args.id,
+        file: path.join(root, args.id),
+        exportPath: raw[0].file,
+        bodyExportPath: null,
+        laterCopies: raw.slice(1).map((copy) => copy.file),
+        exportDir,
+      };
     }
-    throw new CliError("NOT_FOUND", `'${args.id}' has no saved conflict on this board: sync saves your version only when a teammate changed the same document`, {
+    throw new CliError("NOT_FOUND", `'${args.id}' has no saved conflict on this board: sync saves your version only when a teammate changed the same file; a file other than a document is named by its full path`, {
       details: { id: args.id, board: root },
       help: `${inv} sync${dirSuffix(args)}`,
     });
   }
   return {
+    kind: "document",
     root,
     relPath,
     file: path.join(root, relPath),
@@ -347,43 +381,47 @@ function commandFor(args: ConflictArgs, choice: Choice): string {
   return `${cliInvocation()} sync --resolve ${choice} --doc ${commandToken(args.id)}${dirSuffix(args)}`;
 }
 
+/** `--inspect --out`: the teammate's version written whole to a file outside the bundle. */
+async function writeRemoteOut(args: ConflictArgs, board: Board, remote: Buffer | null, cwd: string): Promise<void> {
+  if (args.out === undefined) return;
+  if (remote === null) throw new CliError("NOT_FOUND", `the teammate's side has no version of '${args.id}' to write: it was deleted there`, { details: { id: args.id } });
+  const outHelp = `${cliInvocation()} sync --inspect --doc ${commandToken(args.id)} --out <file outside the bundle>`;
+  if (args.out.trim() === "" || args.out.trim() === "-") {
+    throw new CliError("USAGE", "--out takes a file path; the teammate's version is not streamed to stdout here", { help: outHelp });
+  }
+  const out = path.resolve(cwd, args.out);
+  let landing = out;
+  try {
+    landing = path.join(await fs.realpath(path.dirname(out)), path.basename(out));
+  } catch {
+    // The parent does not exist yet; the write below fails on its own.
+  }
+  assertPathOutsidePrivateState(out);
+  assertPathOutsidePrivateState(landing);
+  const root = await fs.realpath(board.root);
+  if (landing === root || landing.startsWith(`${root}${path.sep}`)) {
+    throw new CliError("USAGE", "--out must be outside the bundle, or the file would be synced as a document", { help: outHelp });
+  }
+  // A link at the target itself would carry the write wherever it points, so the open refuses one
+  // (O_NOFOLLOW) in the same step that creates or truncates the file.
+  let handle: fs.FileHandle;
+  try {
+    handle = await fs.open(out, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | (fsConstants.O_NOFOLLOW ?? 0), 0o644);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") throw new CliError("USAGE", "--out must not be a symbolic link", { help: outHelp });
+    throw error;
+  }
+  try {
+    await handle.writeFile(remote);
+  } finally {
+    await handle.close();
+  }
+}
+
 async function runInspect(args: ConflictArgs, board: Board, cwd: string): Promise<Record<string, unknown>> {
   const local = await fs.readFile(board.exportPath);
   const remote = readUpstream(board, args.id);
-  if (args.out !== undefined) {
-    if (remote === null) throw new CliError("NOT_FOUND", `the teammate's side has no version of '${args.id}' to write: it was deleted there`, { details: { id: args.id } });
-    const outHelp = `${cliInvocation()} sync --inspect --doc ${commandToken(args.id)} --out <file outside the bundle>`;
-    if (args.out.trim() === "" || args.out.trim() === "-") {
-      throw new CliError("USAGE", "--out takes a file path; the teammate's version is not streamed to stdout here", { help: outHelp });
-    }
-    const out = path.resolve(cwd, args.out);
-    let landing = out;
-    try {
-      landing = path.join(await fs.realpath(path.dirname(out)), path.basename(out));
-    } catch {
-      // The parent does not exist yet; the write below fails on its own.
-    }
-    assertPathOutsidePrivateState(out);
-    assertPathOutsidePrivateState(landing);
-    const root = await fs.realpath(board.root);
-    if (landing === root || landing.startsWith(`${root}${path.sep}`)) {
-      throw new CliError("USAGE", "--out must be outside the bundle, or the file would be synced as a document", { help: outHelp });
-    }
-    // A link at the target itself would carry the write wherever it points, so the open refuses one
-    // (O_NOFOLLOW) in the same step that creates or truncates the file.
-    let handle: fs.FileHandle;
-    try {
-      handle = await fs.open(out, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | (fsConstants.O_NOFOLLOW ?? 0), 0o644);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ELOOP") throw new CliError("USAGE", "--out must not be a symbolic link", { help: outHelp });
-      throw error;
-    }
-    try {
-      await handle.writeFile(remote);
-    } finally {
-      await handle.close();
-    }
-  }
+  await writeRemoteOut(args, board, remote, cwd);
   const localText = local.toString("utf8");
   const remoteText = remote === null ? null : remote.toString("utf8");
   const divergence = await divergenceOf(board, local, remote);
@@ -392,8 +430,8 @@ async function runInspect(args: ConflictArgs, board: Board, cwd: string): Promis
   // A lost claim with nothing else to carry offers no keep: keeping would only retake ownership.
   const claimOnly = divergence.claim?.only === true;
   const keptRefused = keptRefusalCode(remote, board.relPath);
-  const keepLoses = keepWouldLose(board, local, remote, await readIfPresent(board.file), divergence);
-  const present = await readIfPresent(board.file);
+  const keepLoses = keepWouldLose(board, local, remote, await readBoardFile(args, board), divergence);
+  const present = await readBoardFile(args, board);
   const keepOverwrites = keepWouldOverwrite(board, local, remote, present);
   const unsent = takeWouldErase(board, local, remote, present);
   const takeNote = board.laterCopies.length > 0
@@ -452,6 +490,103 @@ async function runInspect(args: ConflictArgs, board: Board, cwd: string): Promis
   };
 }
 
+/** One side of a file conflict: its size and digest always, its text only when it decodes losslessly. */
+function fileSide(bytes: Buffer): Record<string, unknown> {
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  return { bytes: bytes.length, sha256, ...(decodesLosslessly(bytes) ? preview(bytes.toString("utf8")) : { content: null, binary: true }) };
+}
+
+/** True when a file holds bytes that are neither its upstream version nor the saved copy. */
+function fileHoldsUnsent(local: Buffer, remote: Buffer | null, present: Buffer | null): boolean {
+  return present !== null && !(remote !== null && present.equals(remote)) && !present.equals(local);
+}
+
+/** `--inspect` for a file that is not a document: both sides byte for byte, with no frontmatter to compare. */
+async function runInspectFile(args: ConflictArgs, board: Board, cwd: string): Promise<Record<string, unknown>> {
+  const local = await fs.readFile(board.exportPath);
+  const remote = readUpstream(board, args.id);
+  await writeRemoteOut(args, board, remote, cwd);
+  const present = await readBoardFile(args, board);
+  const deleted = remote === null;
+  const later = board.laterCopies.length > 0;
+  const unsent = fileHoldsUnsent(local, remote, present);
+  const keepOffered = !later && !unsent;
+  const choices: Record<string, string> = {
+    ...(unsent ? { revise: "the file holds unsent changes that keep would overwrite: edit it to the result you want first, then record it" } : {}),
+    ...(keepOffered ? { keep: deleted ? "re-create the file from your saved copy, byte for byte" : "your saved copy replaces the teammate's version, byte for byte" } : {}),
+    take: later
+      ? "this copy is discarded and the file left as it is, since a later copy waits"
+      : unsent
+        ? "your unsent change in the file is saved as a new copy, the teammate's version is restored, and this saved copy is discarded"
+        : deleted
+          ? "accept the deletion: the file is removed and your saved copy is discarded"
+          : "the teammate's version stays: your saved copy is discarded",
+    ...(unsent ? {} : { revise: "edit the file to the result you want first, then record it" }),
+  };
+  const help = Object.keys(choices).map((choice) => commandFor(args, choice as Choice));
+  return {
+    conflict: args.id,
+    kind: "file",
+    file: board.file,
+    reason: deleted ? "deleted_remotely" : "changed_remotely",
+    local: { saved_at: board.exportPath, ...fileSide(local) },
+    remote: { ref: `${boardRefOf(board.root)} (as of the last fetch)`, ...(deleted ? { deleted: true } : fileSide(remote)) },
+    ...(later ? { later_copies: board.laterCopies } : {}),
+    ...(args.out !== undefined ? { remote_written_to: path.resolve(cwd, args.out) } : {}),
+    choices,
+    help,
+  };
+}
+
+/**
+ * `--resolve keep` for a file that is not a document: the saved bytes replace the file whole. The
+ * newest copy has the last word, so an older copy is never written while a later one waits, and
+ * nothing the person changed since the converge is overwritten.
+ */
+async function keepFile(args: ConflictArgs, board: Board, local: Buffer, remote: Buffer | null, present: Buffer | null): Promise<string> {
+  if (board.laterCopies.length > 0) {
+    throw new CliError("CONFLICT", `a later saved copy of '${args.id}' waits and has the last word, so keep of this older copy is refused and nothing changed; set this one aside with take, which leaves the file as it is, then settle the later copy`, {
+      details: { id: args.id, saved_at: board.exportPath, later_copies: board.laterCopies, reason: "later_copy_waits" },
+      help: commandFor(args, "take"),
+    });
+  }
+  try {
+    if (!(await fs.lstat(board.file)).isFile()) throw notRegularFile(args, board);
+  } catch (error) {
+    if (error instanceof CliError) throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const unsentRefusal = (): CliError =>
+    new CliError("CONFLICT", `'${args.id}' holds unsent changes that are neither its upstream version nor your saved copy, and keep would overwrite them, so nothing changed and your saved copy stays at ${board.exportPath}`, {
+      details: { id: args.id, saved_at: board.exportPath, reason: "unsent_edit" },
+      help: `edit the file to the result you want → ${commandFor(args, "revise")}`,
+    });
+  if (fileHoldsUnsent(local, remote, present)) throw unsentRefusal();
+  if (present !== null && present.equals(local)) return "unchanged";
+  // Core owns the replace: its identity lock, exact spelling and compare-and-swap against the bytes
+  // judged above, so a change since that read is refused, never overwritten. Which files keep may
+  // write is this verb's rule (a saved copy's own path inside the bundle), not the blob namespace's.
+  try {
+    await replaceFilesystemFile(new FilesystemBackend(board.root), board.relPath, local, present === null ? null : blobVersion(present));
+  } catch (error) {
+    if (error instanceof VersionConflict) {
+      // Say what the file holds now: another keep may have written the same bytes, or it was deleted.
+      const now = await readBoardFile(args, board);
+      if (now !== null && now.equals(local)) return "unchanged";
+      if (now === null) {
+        throw new CliError("CONFLICT", `'${args.id}' was deleted while keep was writing it, so nothing changed and your saved copy stays at ${board.exportPath}`, {
+          details: { id: args.id, saved_at: board.exportPath, reason: "deleted_since_read" },
+          help: commandFor(args, "keep"),
+        });
+      }
+      throw unsentRefusal();
+    }
+    if (error instanceof Error && (error.name === "FilesystemShapeMismatchError" || error.name === "FilesystemSymlinkEntryError")) throw notRegularFile(args, board);
+    throw error;
+  }
+  return present === null ? "re-created" : "written";
+}
+
 /** Run one `doc` verb in-process and return its JSON receipt. */
 async function runDocVerb(verb: typeof docUpdate, argv: string[]): Promise<Record<string, unknown>> {
   const out: string[] = [];
@@ -474,11 +609,13 @@ async function runResolve(args: ConflictArgs, choice: Choice, board: Board, cwd:
   const bundleDir = conflictBundleDir(args.dir, cwd);
   const dirArgs = bundleDir !== undefined ? ["--dir", bundleDir] : [];
   const local = await fs.readFile(board.exportPath);
-  const divergence = await divergenceOf(board, local, remote);
-  const present = await readIfPresent(board.file);
+  const divergence: Divergence = board.kind === "file" ? { differs: [] } : await divergenceOf(board, local, remote);
+  const present = await readBoardFile(args, board);
   let fileState: string;
   let unsentSavedAt: string | undefined;
-  if (choice === "keep") {
+  if (choice === "keep" && board.kind === "file") {
+    fileState = await keepFile(args, board, local, remote, present);
+  } else if (choice === "keep") {
     if (divergence.claim?.only === true) {
       throw new CliError("CONFLICT", `'${args.id}' differs only by a claim the teammate's version won, so there is nothing of yours to keep`, {
         details: { id: args.id, claim_only: true, ...claimFields(divergence) },
@@ -564,7 +701,7 @@ async function runResolve(args: ConflictArgs, choice: Choice, board: Board, cwd:
       });
     }
     if (remote !== null && present.equals(remote) && !copyIsCarried(board.relPath, local, present)) {
-      throw new CliError("CONFLICT", `'${args.id}' equals its upstream version and does not hold your saved copy, so revise would discard the copy with nothing carried; edit the document first, or use take, which discards the copy and leaves this document unchanged`, {
+      throw new CliError("CONFLICT", `'${args.id}' equals its upstream version and does not hold your saved copy, so revise would discard the copy with nothing carried; edit the ${board.kind} first, or use take, which discards the copy and leaves this ${board.kind} unchanged`, {
         details: { id: args.id, saved_at: board.exportPath },
         help: commandFor(args, "take"),
       });
@@ -573,7 +710,7 @@ async function runResolve(args: ConflictArgs, choice: Choice, board: Board, cwd:
   }
   // The resolution is recorded by removing the saved copy, after any write it needed.
   await discardSavedCopy(board);
-  const now = await readIfPresent(board.file);
+  const now = await readBoardFile(args, board);
   const sends = now === null ? remote !== null : remote === null || !now.equals(remote);
   const sync = `${inv} sync${dirSuffix(args)}`;
   return {
@@ -589,10 +726,10 @@ async function runResolve(args: ConflictArgs, choice: Choice, board: Board, cwd:
     next: unsentSavedAt !== undefined
       ? `your unsent edit is saved at ${unsentSavedAt} and stays listed until you settle it`
       : board.laterCopies.length > 0
-      ? `this copy is settled; ${board.laterCopies.length} later saved copy of this document remains to settle the same way`
+      ? `this copy is settled; ${board.laterCopies.length} later saved copy of this ${board.kind} remains to settle the same way`
       : sends
-        ? `resolved, not pushed yet: run ${sync} to share the document as it is now`
-        : "resolved: the document matches the teammate's version, so there is nothing to push for it",
+        ? `resolved, not pushed yet: run ${sync} to share the ${board.kind} as it is now`
+        : `resolved: the ${board.kind} matches the teammate's version, so there is nothing to push for it`,
     help: board.laterCopies.length > 0 || unsentSavedAt !== undefined ? [inspectCommand(inv, args.id, args.dir)] : sends ? [sync] : [],
   };
 }
@@ -607,6 +744,6 @@ export async function gitConflictVerb(argv: string[], deps: GitConflictDeps = {}
   const cwd = deps.cwd ?? process.cwd();
   const mode = resolveMode({ json: args.json });
   const board = await locateBoard(args, cwd);
-  const record = args.inspect ? await runInspect(args, board, cwd) : await runResolve(args, args.resolve!, board, cwd);
+  const record = args.inspect ? (board.kind === "file" ? await runInspectFile(args, board, cwd) : await runInspect(args, board, cwd)) : await runResolve(args, args.resolve!, board, cwd);
   stdout(render(record, mode));
 }

@@ -87,7 +87,7 @@ import {
 } from "@superbee/core/journaled-backend";
 import type { KindRegistry } from "@superbee/core/kinds";
 import { deletionBound, acceptsRefusal, type RefusedDeletions, type RefusedDeletionsReason, type UnstorableDocument as PlatformUnstorableDocument } from "@superbee/core/platform";
-import type { RemoteBackend, WireCapabilities } from "@superbee/core/remote";
+import type { HeadsOptions, HeadsResult, RemoteSnapshot, WireCapabilities } from "@superbee/core/remote";
 import { InvalidInputError } from "@superbee/core/storage";
 import { isSnapshotRestart } from "@superbee/core/hosted-transport";
 import {
@@ -544,18 +544,30 @@ async function reconcileDeletions(
 // ── wire features ──────────────────────────────────────────────────────────────────────────
 
 /**
- * Structural, not `instanceof`: the read side may be the core class, a subclass, or a proxy
- * over one. The three members the fetching verbs use beyond the storage seam are the shape.
+ * A shared authority's read side with the inventory protocol: the storage seam (bootstrap and
+ * pull read through `read`, `readMany`, `readReserved` and `list`) plus `heads`, `snapshot` and
+ * `wireCapabilities`, which enable bounded deletion reconciliation and whole-bundle snapshots.
+ * Structural, never a class: a host supplies its own adapter (`docs/WIRE-PROTOCOL.md` grammar).
  */
-function asWireRemote(remote: StorageBackend): RemoteBackend | null {
-  const candidate = remote as Partial<RemoteBackend>;
+export interface WireAuthority extends StorageBackend {
+  /** Every document id and version under one digest; `null` when `ifNoneMatch` still holds. */
+  heads(options?: HeadsOptions): Promise<HeadsResult | null>;
+  /** Every document in one terminated stream, with the digest of its heads. */
+  snapshot(): Promise<RemoteSnapshot>;
+  /** The authority's capability booleans; a feature it does not report is never used. */
+  wireCapabilities(): Promise<WireCapabilities>;
+}
+
+/** Structural, not `instanceof`: the three members beyond the storage seam are the shape. */
+function asWireRemote(remote: StorageBackend): WireAuthority | null {
+  const candidate = remote as Partial<WireAuthority>;
   return typeof candidate.heads === "function" && typeof candidate.snapshot === "function" && typeof candidate.wireCapabilities === "function"
-    ? (remote as RemoteBackend)
+    ? (remote as WireAuthority)
     : null;
 }
 
 /** The authority's capabilities: kept on the opened bundle; a bare adapter has nowhere to keep them, so they are read per call. */
-function capabilitiesOf(local: LocalTarget, remote: RemoteBackend): Promise<WireCapabilities> {
+function capabilitiesOf(local: LocalTarget, remote: WireAuthority): Promise<WireCapabilities> {
   if (!isLocalBundle(local)) return remote.wireCapabilities();
   if (!local.capabilities) {
     const pending = remote.wireCapabilities();
@@ -572,7 +584,7 @@ function capabilitiesOf(local: LocalTarget, remote: RemoteBackend): Promise<Wire
  * not refused the feature, and the authority reports it. Otherwise `null`, and the caller takes
  * the list path. A refused feature costs no request.
  */
-async function wireFor(remote: StorageBackend, local: LocalTarget, feature: keyof WireOptions, options: FetchOptions): Promise<RemoteBackend | null> {
+async function wireFor(remote: StorageBackend, local: LocalTarget, feature: keyof WireOptions, options: FetchOptions): Promise<WireAuthority | null> {
   if (options.wire?.[feature] === false) return null;
   const wire = asWireRemote(remote);
   if (!wire) return null;

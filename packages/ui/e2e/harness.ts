@@ -494,7 +494,6 @@ function loadEmbeddedUiAssets(): Promise<EmbeddedUiAssets> {
  * correctly — makes impossible from the outside (the secret rotates every boot).
  */
 export async function bootUiServerInProcess(opts: { dir: string; port?: number; sessionSecret: string }): Promise<InProcessUiServer> {
-  const { createRouter } = await import("@superbee/server");
   const bundle = { root: opts.dir };
   const assets = await loadEmbeddedUiAssets();
   let viewAuthorization = inProcessViewAuthorizations.get(opts.dir);
@@ -505,7 +504,6 @@ export async function bootUiServerInProcess(opts: { dir: string; port?: number; 
   return bootUiServer({
     mode: "dir",
     port: opts.port ?? 0,
-    router: createRouter(bundle),
     bundle,
     sessionSecret: opts.sessionSecret,
     renderDocument: ({ body }) => ({ html: body, bounded: false }),

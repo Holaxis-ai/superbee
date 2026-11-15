@@ -1,5 +1,4 @@
-import { currentHost, distributionLayouts, distributionBinName, currentDistribution } from "./runtime-context.js";
-import path from "node:path";
+import { currentHost, distributionLayouts, distributionBinName } from "./runtime-context.js";
 
 /** Compatibility states shared by status, install reconciliation, probes, and uninstall. */
 export type HookCompatibilityState =
@@ -61,58 +60,50 @@ export function tokenizeGeneratedHookCommand(
   return lexicalHookTokens(command, platform)?.map(({ value }) => value);
 }
 
-function bareManagedBinIdentity(value: string): "canonical" | "legacy" | undefined {
-  if (value === distributionBinName()) return "canonical";
-  if (distributionLayouts().slice(1).some(layout=>layout.bins.includes(value))) return "legacy";
-  return undefined;
-}
+function isCanonicalAbsolutePath(value: string): boolean { return currentHost().isCanonicalAbsolutePath(value); }
 
-// Migration-only recognition of executable paths written by the retired marketplace channel.
-// This does not discover, launch, or otherwise restore that channel: it lets npm `hook install`
-// replace an exact historical hook instead of preserving a broken duplicate forever.
-type ManagedExecutableLayout =
-  | "canonical_npm"
-  | "legacy_npm"
-  | "canonical_local_dev"
-  | "legacy_local_dev"
-  | "retired_marketplace";
+function isSuperbeeDistribution(): boolean { return distributionBinName() === "superbee"; }
 
-function isCanonicalAbsolutePath(value:string,_platform:string):boolean {return currentHost().isCanonicalAbsolutePath(value);}
+// The hook commands the retired aslite and agentstate-lite packages wrote, kept so `hook install`
+// replaces an unedited one instead of leaving a second hook beside it. A path entry matches the end
+// of an absolute path, run directly or through an absolute Node runtime. Any form may end in
+// `session-start`; the forms without it predate that subcommand.
+const RETIRED_HOOK_BINS: readonly string[] = ["aslite", "agentstate-lite"];
+const RETIRED_HOOK_NPX_PACKAGES: readonly string[] = ["agentstate-lite", "@holaxis/agentstate-lite"];
+const RETIRED_HOOK_ENTRIES: readonly RegExp[] = [
+  /\/node_modules\/@holaxis\/aslite\/dist\/(?:agentstate-lite|superbee)\.mjs$/,
+  /\/node_modules\/aslite\/dist\/superbee\.mjs$/,
+  /\/node_modules\/agentstate-lite\/dist\/(?:agentstate-lite|superbee)\.mjs$/,
+  /\/packages\/cli\/dist\/agentstate-lite\.mjs$/,
+  /\/\.(?:claude|codex)\/plugins\/cache\/[^/]+\/agentstate-lite\/[^/]+\/skills\/agentstate-lite\/scripts\/agentstate-lite\.mjs$/,
+  /\/plugins\/agentstate-lite\/skills\/agentstate-lite\/scripts\/agentstate-lite\.mjs$/,
+];
 
-function hookLayouts() {
- const layouts=distributionLayouts();
- if(distributionBinName()==='superbee')layouts.push(
- {packageName:'@holaxis/aslite',entryRelativePath:'dist/agentstate-lite.mjs',bins:['aslite','agentstate-lite']},
- {packageName:'aslite',entryRelativePath:'dist/superbee.mjs',bins:['aslite']},
- {packageName:'agentstate-lite',entryRelativePath:'dist/superbee.mjs',bins:['agentstate-lite']},
- {packageName:'agentstate-lite',entryRelativePath:'dist/agentstate-lite.mjs',bins:['agentstate-lite']},
- );
- return layouts;
-}
-function managedExecutableLayout(value: string, platform: string): ManagedExecutableLayout | undefined {
-  if (!isCanonicalAbsolutePath(value, platform)) return undefined;
+function isRetiredHookEntry(value: string): boolean {
+  if (!isCanonicalAbsolutePath(value)) return false;
   const portable = value.replaceAll("\\", "/");
-  const layouts=hookLayouts();
-  for(const [index,layout] of layouts.entries()) {
-    if(portable.endsWith('/node_modules/'+layout.packageName+'/'+layout.entryRelativePath)) return index===0?'canonical_npm':'legacy_npm';
-  }
-  if(currentDistribution() && currentDistribution()!.predecessorLayouts.length===0) return undefined;
-  if (/\/packages\/(?:cli|superbee)\/dist\/superbee\.mjs$/.test(portable)) return "canonical_local_dev";
-  if (/\/packages\/cli\/dist\/agentstate-lite\.mjs$/.test(portable)) return "legacy_local_dev";
-  if (
-    /\/(?:\.claude|\.codex)\/plugins\/cache\/[^/]+\/agentstate-lite\/[^/]+\/skills\/agentstate-lite\/scripts\/agentstate-lite\.mjs$/.test(portable) ||
-    /\/plugins\/agentstate-lite\/skills\/agentstate-lite\/scripts\/agentstate-lite\.mjs$/.test(portable)
-  ) {
-    return "retired_marketplace";
-  }
-  return undefined;
+  return RETIRED_HOOK_ENTRIES.some((entry) => entry.test(portable));
 }
 
-function stableNpmRuntimePair(program:string,executable:string,platform:string):'canonical'|'legacy'|undefined {
- if(!isCanonicalAbsolutePath(program,platform)||!isCanonicalAbsolutePath(executable,platform))return undefined;
- const layouts=hookLayouts();
- for(const [index,layout]of layouts.entries()) if(currentHost().isStableRuntimePair(program,executable,layout))return index===0?'canonical':'legacy';
- return undefined;
+/** Whether decoded hook tokens are exactly a command the retired packages wrote. */
+export function isRetiredHookCommand(tokens: readonly string[]): boolean {
+  if (!isSuperbeeDistribution()) return false;
+  const launch = tokens.at(-1) === "session-start" ? tokens.slice(0, -1) : tokens;
+  if (launch.length === 1) return RETIRED_HOOK_BINS.includes(launch[0]!) || isRetiredHookEntry(launch[0]!);
+  if (launch.length === 2) {
+    return isCanonicalAbsolutePath(launch[0]!) && currentHost().isNodeRuntimePath(launch[0]!) && isRetiredHookEntry(launch[1]!);
+  }
+  return launch.length === 3 && launch[0] === "npx" && launch[1] === "-y" && RETIRED_HOOK_NPX_PACKAGES.includes(launch[2]!);
+}
+
+/** The running distribution's own entry: from its npm install, or a source build of this repo. */
+function canonicalExecutableLayout(value: string): "npm" | "local_dev" | undefined {
+  if (!isCanonicalAbsolutePath(value)) return undefined;
+  const portable = value.replaceAll("\\", "/");
+  const layout = distributionLayouts()[0]!;
+  if (portable.endsWith(`/node_modules/${layout.packageName}/${layout.entryRelativePath}`)) return "npm";
+  if (isSuperbeeDistribution() && /\/packages\/(?:cli|superbee)\/dist\/superbee\.mjs$/.test(portable)) return "local_dev";
+  return undefined;
 }
 
 /** Classify a complete command token sequence; near-matches are always unmanaged. */
@@ -124,75 +115,45 @@ export function classifyHookCommand(
   if (!lexical) return result("unmanaged", "command is outside the generated-command grammar");
   const tokens = lexical.map(({ value }) => value);
 
-  const stableIdentity = tokens.length === 3
-    ? stableNpmRuntimePair(tokens[0]!, tokens[1]!, platform)
-    : undefined;
-  if (stableIdentity && tokens[2] === "session-start") {
-    return stableIdentity === "canonical"
-      ? result("current", "command uses the canonical Superbee npm-prefix Node launcher and package entry")
-      : result("legacy_identity", "recognized managed hook uses the legacy ASLite npm package identity");
+  if (isRetiredHookCommand(tokens)) {
+    return result("legacy_identity", "recognized hook written by aslite or agentstate-lite; hook install replaces it");
   }
-
-  const bareIdentity = bareManagedBinIdentity(tokens[0]!);
-  if (tokens.length === 2 && bareIdentity && tokens[1] === "session-start") {
-    return result(
-      "legacy_path_bound",
-      bareIdentity === "canonical"
-        ? "recognized canonical bare command depends on ambient PATH"
-        : "recognized historical generated command depends on ambient PATH",
-    );
-  }
-  if (tokens.length === 1 && bareIdentity) {
-    return result("stale", "recognized pre-session-start generated bare-bin command");
-  }
-
-  const directLayout = tokens.length <= 2 ? managedExecutableLayout(tokens[0]!, platform) : undefined;
-  if (tokens.length === 2 && directLayout && tokens[1] === "session-start") {
-    return result(
-      directLayout.startsWith("legacy_") ? "legacy_identity" : "legacy_path_bound",
-      directLayout === "retired_marketplace"
-        ? "recognized historical marketplace hook; npm hook install will replace it"
-        : directLayout.startsWith("legacy_")
-          ? "recognized direct-executable hook uses the legacy ASLite identity"
-          : "recognized generated direct-executable command bound to one path",
-    );
-  }
-  if (tokens.length === 1 && directLayout) {
-    return result(
-      "stale",
-      directLayout === "retired_marketplace"
-        ? "recognized pre-session-start historical marketplace hook"
-        : "recognized pre-session-start generated direct-executable command",
-    );
-  }
-
-  const legacyNpx =
-    tokens.length >= 3 &&
-    (!currentDistribution() || currentDistribution()!.predecessorLayouts.length > 0) &&
-    tokens[0] === "npx" &&
-    tokens[1] === "-y" &&
-    (tokens[2] === "agentstate-lite" || tokens[2] === "@holaxis/agentstate-lite");
-  if (legacyNpx && tokens.length === 4 && tokens[3] === "session-start") {
-    return result("legacy_path_bound", "recognized historical generated npx session-start command");
-  }
-  if (legacyNpx && tokens.length === 3) {
-    return result("stale", "recognized pre-session-start generated npx command");
-  }
-
-  const executableLayout = tokens.length === 3 ? managedExecutableLayout(tokens[1]!, platform) : undefined;
   if (
     tokens.length === 3 &&
-    isCanonicalAbsolutePath(tokens[0]!, platform) &&
-    currentHost().isNodeRuntimePath(tokens[0]!) &&
-    (executableLayout === "canonical_local_dev" || executableLayout === "legacy_local_dev") &&
-    tokens[2] === "session-start"
+    tokens[2] === "session-start" &&
+    isCanonicalAbsolutePath(tokens[0]!) &&
+    isCanonicalAbsolutePath(tokens[1]!) &&
+    currentHost().isStableRuntimePair(tokens[0]!, tokens[1]!, distributionLayouts()[0]!)
   ) {
-    return executableLayout === "canonical_local_dev"
-      ? result("current", "recognized canonical Superbee PATH-independent Node launch")
-      : result("legacy_identity", "recognized PATH-independent Node launch uses the legacy ASLite identity");
+    return result("current", "command uses the canonical Superbee npm-prefix Node launcher and package entry");
   }
 
-  return result("unmanaged", "command is not an exact generated Superbee or supported legacy form");
+  if (tokens[0] === distributionBinName()) {
+    if (tokens.length === 2 && tokens[1] === "session-start") {
+      return result("legacy_path_bound", "recognized canonical bare command depends on ambient PATH");
+    }
+    if (tokens.length === 1) return result("stale", "recognized pre-session-start generated bare-bin command");
+  }
+
+  const directLayout = tokens.length <= 2 ? canonicalExecutableLayout(tokens[0]!) : undefined;
+  if (tokens.length === 2 && directLayout && tokens[1] === "session-start") {
+    return result("legacy_path_bound", "recognized generated direct-executable command bound to one path");
+  }
+  if (tokens.length === 1 && directLayout) {
+    return result("stale", "recognized pre-session-start generated direct-executable command");
+  }
+
+  if (
+    tokens.length === 3 &&
+    tokens[2] === "session-start" &&
+    isCanonicalAbsolutePath(tokens[0]!) &&
+    currentHost().isNodeRuntimePath(tokens[0]!) &&
+    canonicalExecutableLayout(tokens[1]!) === "local_dev"
+  ) {
+    return result("current", "recognized canonical Superbee PATH-independent Node launch");
+  }
+
+  return result("unmanaged", "command is not an exact generated Superbee form");
 }
 
 /** Classify command ownership together with the host hook shape the generator owns. */

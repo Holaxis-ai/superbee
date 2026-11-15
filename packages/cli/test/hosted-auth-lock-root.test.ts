@@ -43,7 +43,6 @@ test("a refused lock root passes through unchanged, never as an orphaned session
       executablePath: fileURLToPath(import.meta.url),
       assetRoot: path.dirname(fileURLToPath(import.meta.url)),
       install: { packageName: "superbee", entryRelativePath: "dist/superbee.mjs", bins: ["superbee"] },
-      predecessorLayouts: [],
       ownedSkillPackages: ["superbee"],
       updatesEnabled: false,
     },

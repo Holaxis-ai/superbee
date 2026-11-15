@@ -145,14 +145,14 @@ test("N1: index.ts exports exactly the allowlisted names from the storage module
     values: [...(bucket?.values ?? [])].sort(),
     types: [...(bucket?.types ?? [])].sort(),
   });
-  assert.deepEqual(sorted(exported.get("./backend.js")), { values: ["FilesystemBackend", "probeFilesystemPath"], types: [] });
+  assert.deepEqual(sorted(exported.get("./backend.js")), { values: ["FilesystemBackend", "probeFilesystemPath", "replaceFilesystemFile"], types: [] });
   assert.deepEqual(sorted(exported.get("./filesystem-lock.js")), {
     values: ["FilesystemMutationLockError", "filesystemMutationLockPath", "withFilesystemMutationLock"],
     types: ["FilesystemMutationLockOptions", "FilesystemMutationLockOwner"],
   });
   assert.equal(exported.has("./filesystem-identity.js"), false, "the identity module is not exported at all");
   assert.deepEqual(sorted(exported.get("./errors.js")), {
-    values: ["ConcurrentReplacementError", "FilesystemIdentityAliasError", "FrontmatterRefusedError", "InvalidInputError", "OkfActorError"],
+    values: ["ConcurrentReplacementError", "FilesystemIdentityAliasError", "FrontmatterRefusedError", "InvalidInputError", "NonCanonicalDocumentIdError", "OkfActorError"],
     types: [],
   });
 });
@@ -404,8 +404,8 @@ test("N4: every protocol call uses the backend port or its private publication c
   // The metadata-only projection probe adds one probeExact call under that same private context.
   // Five ordinary mutation sites now share one private root-before-leaf wrapper; guarded apply
   // adds its own already-held leaf path. Two root witness observations bring 11 leaf/read
-  // sites to 13 production-port protocol calls.
-  assert.equal(passed.length, 13, `expected the backend's protocol call sites, found ${passed.length}`);
+  // sites to 13 production-port protocol calls. Relationship projection adds one exact read.
+  assert.equal(passed.length, 14, `expected the backend's protocol call sites, found ${passed.length}`);
   assert.deepEqual([...new Set(passed)].sort(), ["port", "this.#port"], "a protocol call bypasses the instance/publication context");
   assert.equal(passed.filter((name) => name === "port").length, 3, "only the raw publication readers and metadata-only projection probe use their captured context port");
 });

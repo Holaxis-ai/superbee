@@ -324,3 +324,68 @@ test("pin: MemoryBackend re-writing IDENTICAL bytes with a DIFFERENT explicit co
   const read = await backend.readBlob("data/x.bin");
   assert.equal(read?.contentType, "text/plain; charset=utf-8");
 });
+
+test("a filesystem replace keeps the replaced file's permission bits, and its temp name is recognizable", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sb-blob-mode-"));
+  try {
+    const backend = new FilesystemBackend(root);
+    await backend.writeBlob("tools/run.sh", new TextEncoder().encode("echo one\n"));
+    await chmod(path.join(root, "tools/run.sh"), 0o755);
+    await backend.writeBlob("tools/run.sh", new TextEncoder().encode("echo two\n"));
+    assert.equal((await stat(path.join(root, "tools/run.sh"))).mode & 0o777, 0o755, "an executable stays one");
+    const { identityTempName, isIdentityTempName } = await import("../src/filesystem-temp-name.js");
+    assert.equal(isIdentityTempName(identityTempName("run.sh")), true, "the predicate matches the names writes use");
+    assert.equal(isIdentityTempName(".run.sh.4242.1730000000000.0d6c1f4e-7a7e-4c39-9a51-2c5e3b8a9f10.tmp"), true);
+    assert.equal(isIdentityTempName(".cache.tmp"), false);
+    assert.equal(isIdentityTempName("run.sh"), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a replace carries only the read, write and execute bits, never setuid, setgid or sticky", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sb-blob-suid-"));
+  try {
+    const backend = new FilesystemBackend(root);
+    await backend.writeBlob("tools/run.sh", new TextEncoder().encode("echo one\n"));
+    await chmod(path.join(root, "tools/run.sh"), 0o4755);
+    await backend.writeBlob("tools/run.sh", new TextEncoder().encode("echo two\n"));
+    assert.equal((await stat(path.join(root, "tools/run.sh"))).mode & 0o7777, 0o755);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a port whose copyMode fails still replaces the file, with the new file's default mode", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sb-blob-copymode-"));
+  try {
+    const { createNodeFilesystemIdentityPort, mutateExact } = await import("../src/filesystem-identity.js");
+    await writeFile(path.join(root, "a.bin"), "old");
+    await chmod(path.join(root, "a.bin"), 0o700);
+    const port = { ...createNodeFilesystemIdentityPort(), copyMode: async () => { throw new Error("chmod refused"); } };
+    await mutateExact(port, root, "a.bin", async (target) => target.replace(new TextEncoder().encode("new")));
+    assert.equal(await (await import("node:fs/promises")).readFile(path.join(root, "a.bin"), "utf8"), "new");
+    assert.notEqual((await stat(path.join(root, "a.bin"))).mode & 0o777, 0o700, "the old mode was not carried");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("replaceFilesystemFile writes any bundle file the blob rules would refuse, under a compare-and-swap", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sb-file-replace-"));
+  try {
+    const { replaceFilesystemFile } = await import("../src/backend.js");
+    const backend = new FilesystemBackend(root);
+    const bytes = new TextEncoder().encode("{}\n");
+    for (const rel of [".github/snap.json", "feeds/.snap.json", "feeds/SNAP.MD"]) {
+      await replaceFilesystemFile(backend, rel, bytes, null);
+      await assert.rejects(replaceFilesystemFile(backend, rel, bytes, null), VersionConflict, "absent was expected, the file is there");
+      await replaceFilesystemFile(backend, rel, new TextEncoder().encode("[]\n"), blobVersion(bytes));
+    }
+    for (const rel of ["../out.json", "/abs.json", "a/./b.json", "a\\b.json", ".git/hooks/pre-commit", ".GIT/config", "x/.superbee-state/y", ".agentstate/mutation-locks/x", "index.md", "a/LOG.md"]) {
+      await assert.rejects(replaceFilesystemFile(backend, rel, bytes, null), InvalidInputError);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

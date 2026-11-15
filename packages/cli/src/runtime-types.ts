@@ -29,7 +29,6 @@ export interface CliDistribution {
   readonly executablePath: string;
   readonly install: DistributionInstallLayout;
   readonly assetRoot: string;
-  readonly predecessorLayouts: readonly DistributionInstallLayout[];
   readonly ownedSkillPackages: readonly string[];
   readonly updatesEnabled: boolean;
 }

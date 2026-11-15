@@ -111,7 +111,8 @@ export type { AppendVerificationOptions, TrustTier, TrustTierCounts, Verificatio
 // the DEGENERATE default adapter (the engine falls back to it for a `{ root }` bundle);
 // `MemoryBackend` implements the SAME contract for the hard case (real version chain,
 // enforced compare-and-swap, per-write actor) and proves the engine is backend-neutral.
-export { FilesystemBackend, probeFilesystemPath } from "./backend.js";
+export { FilesystemBackend, probeFilesystemPath, replaceFilesystemFile } from "./backend.js";
+export { isIdentityTempName } from "./filesystem-temp-name.js";
 export { createFilesystemRuntime } from "./filesystem.js";
 export type { FilesystemRuntime } from "./filesystem.js";
 export type { FilesystemBackendOptions, FilesystemHostPolicy } from "./filesystem-host.js";
@@ -150,21 +151,13 @@ export type {
   FilesystemMutationLockOwner,
 } from "./filesystem-lock.js";
 
-// `RemoteBackend` is the CLIENT half of the wire-protocol v0 seam-over-HTTP contract
-// (docs/WIRE-PROTOCOL.md) — a FUTURE plug-in adapter, proven here against the
-// in-repo reference server (`@superbee/server`) by the tri-backend contract
-// tests. No CF/D1/production deployment is implied by its presence.
-export { RemoteBackend } from "./remote-backend.js";
-export type { FetchLike, HeadsOptions, RemoteBackendOptions, WireCapabilities } from "./remote-backend.js";
+// The wire protocol's answer shapes, parsers and typed rejection, for a host that serves or reads
+// the same grammar (docs/WIRE-PROTOCOL.md). The in-repo test client stays internal.
 export { RemoteError, MalformedAnswer, MALFORMED_ANSWER, isMalformedAnswer } from "./remote-error.js";
 export { SNAPSHOT_DIGEST_MISMATCH, SNAPSHOT_TRUNCATED, parseHeadsAnswer, readSnapshotStream } from "./remote-parsers.js";
-export type { HeadsResult, ReadSnapshotStreamOptions, RemoteSnapshot, SnapshotDocument, SnapshotHeader } from "./remote-parsers.js";
+export type { HeadsOptions, HeadsResult, ReadSnapshotStreamOptions, RemoteSnapshot, SnapshotDocument, SnapshotHeader, WireCapabilities } from "./remote-parsers.js";
 export { headsDigest, isHeadsDigest, sortHeads } from "./heads-digest.js";
 export type { DocumentHead } from "./heads-digest.js";
-// The uncertain-write transport over `RemoteBackend`: identified document writes plus outcome
-// lookup, the client side of the wire's request identity.
-export { createRemoteOperationTransport, openRemoteOperationTransport, OperationsUnsupportedError } from "./remote-operations.js";
-export type { RemoteOperationTransportOptions } from "./remote-operations.js";
 
 // Versioning / attribution primitives shared by every adapter: the content-addressed
 // version token, a default actor, and the typed compare-and-swap conflict error.
@@ -323,8 +316,35 @@ export {
 export type { QualifiedRef, QualifiedLink, ParsedQualifiedHref } from "./qualified-links.js";
 // The typed-edge vocabulary: `link-type text -> declaring kind(s)` over a loaded registry, and the
 // qualified-target checks `link`, `status` and recipe evolution share.
-export { collectLinkDeclarations, localEdgeQualifiedDeclaration, qualifiedEdgeViolation } from "./link-types.js";
+export { collectLinkDeclarations, localEdgeQualifiedDeclaration, localEdgeViolation, qualifiedEdgeViolation } from "./link-types.js";
 export type { LinkTypeDeclaration } from "./link-types.js";
+// Link findings: the edges a body registers and the link-shaped text that will not register.
+export {
+  LINK_NOT_RECOGNIZED,
+  LINK_TARGET_ABSENT,
+  LINK_TYPE_VIOLATION,
+  LINK_TYPE_CASE_VARIANT,
+  inspectDocumentLinks,
+  documentLinkReport,
+  linkTargetAbsentFinding,
+  linkTypeFinding,
+} from "./link-findings.js";
+export type {
+  LinkNotRecognizedReason,
+  LinkFindingLocation,
+  LinkNotRecognizedDetails,
+  LinkTargetAbsentDetails,
+  LinkTypeViolationDetails,
+  LinkTypeCaseVariantDetails,
+  LinkNotRecognizedFinding,
+  LinkTargetAbsentFinding,
+  LinkTypeViolationFinding,
+  LinkTypeCaseVariantFinding,
+  LinkTypeFinding,
+  LinkFinding,
+  LinkTargetReader,
+  DocumentLinkReport,
+} from "./link-findings.js";
 export {
   isHostedBundleId,
   BUNDLE_NAME_DOC_ID,
@@ -395,7 +415,7 @@ export type { FrontmatterLimitCode, MalformedDocumentCode } from "./frontmatter-
 // never on message prose. `FilesystemIdentityAliasError` is the alias verdict of the filesystem
 // adapter (a subclass, so it maps through the same branch); `ConcurrentReplacementError` is its
 // bounded-retry runtime condition.
-export { InvalidInputError, FrontmatterRefusedError, OkfActorError, FilesystemIdentityAliasError, ConcurrentReplacementError } from "./errors.js";
+export { InvalidInputError, FrontmatterRefusedError, NonCanonicalDocumentIdError, OkfActorError, FilesystemIdentityAliasError, ConcurrentReplacementError } from "./errors.js";
 export { applyV02MutationMetadata } from "./document-write-policy.js";
 
 // Kind conventions: a bundle-declared, opt-in document-kind
@@ -436,6 +456,7 @@ export {
   kindFieldTypeProblem,
   kindFieldInputValue,
   isKindListField,
+  UNDECLARED_FIELDS_POLICIES,
 } from "./kinds.js";
 export { loadKinds } from "./kinds-load.js";
 export { compareCodePoints } from "./code-point-order.js";
@@ -451,6 +472,7 @@ export type {
   KindRegistry,
   KindValueGuidance,
   RegistryValidationResult,
+  UndeclaredFieldsPolicy,
 } from "./kinds.js";
 
 // Ported MIME utilities (holaxis-agentstate `packages/schemas/src/content-type.ts`).
@@ -487,9 +509,14 @@ export type {
 export { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 
 export { kindCoverage } from "./kind-coverage.js";
+export { KIND_FIELD_UNDECLARED, KIND_TYPE_UNDECLARED, isKindEnvelopeField, kindDeclaredFieldNames, kindDeclaredStorageFields, kindFieldsUndeclaredFinding, undeclaredFrontmatterKeys, undeclaredFieldWarnings, undeclaredTypeFinding, unknownKindFieldNames } from "./kind-undeclared-fields.js";
+export type { KindFieldUndeclaredDetails, KindFieldUndeclaredFinding, KindTypeUndeclaredDetails, KindTypeUndeclaredFinding } from "./kind-undeclared-fields.js";
+export { isGraphDefinitionDocument, isSystemDocument } from "./system-documents.js";
+
+export { bodyPage, PAGE_DEFAULT_BYTES, PAGE_MAX_BYTES, PAGE_MIN_BYTES, type BodyPage } from "./body-pages.js";
 
 export {
-  BODY_PREVIEW_LIMIT, BODY_PREVIEW_TRUNCATION_MARKER, BODY_PREVIEW_TRUNCATION_SIGNATURE,
+  BODY_PREVIEW_LIMIT, DOC_READ_PREVIEW_BYTES, BODY_PREVIEW_TRUNCATION_MARKER, BODY_PREVIEW_TRUNCATION_SIGNATURE,
   BODY_PREVIEW_KEY, BODY_PREVIEW_RESERVED_KEYS, attachBodyPreview, bodyPreviewFinding,
   BodyReplaceError, computeDroppedLinks, droppedLinks, guardTruncatedBodyPreview,
   guardDroppedLinks, guardBodyReplace, TypedListPatchError, assertTypedListPatch,
@@ -500,3 +527,6 @@ export { inspectKindDeprecatedUsage, kindDeprecationTransition, kindDeprecationP
 export type { KindDeprecation, DeprecatedUsage } from "./kind-deprecation.js";
 export { INVENTORY_GUARD_DOMAIN, InventoryGuardConflict, InventoryGuardUnsupported, inventoryGuardFor } from "./inventory-guard.js";
 export type { InventoryEntry, InventoryGuard, InventoryGuardTarget, InventoryGuardRequest, InventoryGuardResult } from "./inventory-guard.js";
+
+export { readRelationshipPage } from "./bundle-ops.js";
+export { MAX_RELATIONSHIP_PAGE_ROWS, type RelationshipPosition } from "./relationships.js";

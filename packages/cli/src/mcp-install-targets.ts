@@ -81,7 +81,6 @@ export type McpRegistrationState =
   | "absent"
   | "owned_current"
   | "owned_stale"
-  | "known_legacy"
   | "foreign"
   | "unverified"
   | "unreadable"
@@ -123,7 +122,6 @@ export interface McpStatusDeps {
 }
 
 export const CURRENT_MCP_REGISTRATION = "superbee";
-export const LEGACY_MCP_REGISTRATIONS = ["aslite-views", "agentstate-lite-experimental"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -164,12 +162,6 @@ export function classifyMcpRegistration(
   authority: PersistentInstallAuthority,
 ): Pick<McpHostStatus, "state" | "reason"> {
   if (!entry) return { state: "absent", reason: "no Superbee registration found" };
-  if (LEGACY_MCP_REGISTRATIONS.includes(entry.name as (typeof LEGACY_MCP_REGISTRATIONS)[number])) {
-    return {
-      state: "known_legacy",
-      reason: `registration '${entry.name}' is a legacy candidate; inspect it before migration`,
-    };
-  }
   if (entry.name !== CURRENT_MCP_REGISTRATION) {
     return { state: "foreign", reason: `registration '${entry.name}' is not managed by Superbee` };
   }
@@ -369,8 +361,7 @@ export function inspectCodexMcp(
 export function selectMcpRegistration(
   entries: readonly McpRegistrationEntry[],
 ): McpRegistrationEntry | undefined {
-  return entries.find((entry) => entry.name === CURRENT_MCP_REGISTRATION)
-    ?? LEGACY_MCP_REGISTRATIONS.map((name) => entries.find((entry) => entry.name === name)).find(Boolean);
+  return entries.find((entry) => entry.name === CURRENT_MCP_REGISTRATION);
 }
 
 function environment(deps: McpStatusDeps): McpStatusEnvironment {
@@ -417,13 +408,11 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
         }
       }
       entries = sources.flatMap((source) => source.entries);
-      for (const name of [CURRENT_MCP_REGISTRATION, ...LEGACY_MCP_REGISTRATIONS]) {
-        const declarations = sources.filter((source) => source.entries.some((entry) => entry.name === name));
-        if (declarations.length > 1) {
-          throw new Error(
-            `registration '${name}' is declared by multiple OpenCode config sources: ${declarations.map((source) => source.path).join(", ")}`,
-          );
-        }
+      const declarations = sources.filter((source) => source.entries.some((entry) => entry.name === CURRENT_MCP_REGISTRATION));
+      if (declarations.length > 1) {
+        throw new Error(
+          `registration '${CURRENT_MCP_REGISTRATION}' is declared by multiple OpenCode config sources: ${declarations.map((source) => source.path).join(", ")}`,
+        );
       }
       if (target.id === "opencode" && input.env.OPENCODE_CONFIG_CONTENT?.trim()) {
         const inlineEntries = parseOpenCodeMcpEntries(input.env.OPENCODE_CONFIG_CONTENT);

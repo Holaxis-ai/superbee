@@ -2,10 +2,10 @@
 import {
   BodyReplaceError, guardTruncatedBodyPreview as coreGuardTruncatedBodyPreview,
   guardDroppedLinks as coreGuardDroppedLinks, guardBodyReplace as coreGuardBodyReplace,
-  BODY_PREVIEW_LIMIT, BODY_PREVIEW_TRUNCATION_MARKER,
+  BODY_PREVIEW_TRUNCATION_MARKER,
   type Bundle, type OkfDocument, type BodyReplacePosture,
 } from "@superbee/core";
-export { attachBodyPreview, BODY_PREVIEW_LIMIT, BODY_PREVIEW_TRUNCATION_MARKER,
+export { attachBodyPreview, BODY_PREVIEW_LIMIT, DOC_READ_PREVIEW_BYTES, BODY_PREVIEW_TRUNCATION_MARKER,
   BODY_PREVIEW_TRUNCATION_SIGNATURE, BODY_PREVIEW_KEY, BODY_PREVIEW_RESERVED_KEYS,
   droppedLinks, type BodyReplacePosture } from "@superbee/core";
 import { CliError } from "./errors.js";
@@ -60,18 +60,19 @@ export function bodyReplaceCliError(error: BodyReplaceError): CliError {
   }
 
   const storedBodyChars = error.finding.stored_body_chars;
-  const omitted = storedBodyChars - BODY_PREVIEW_LIMIT;
+  const previewLimit = error.finding.preview_limit;
+  const omitted = storedBodyChars - previewLimit;
   return new CliError(
     "USAGE",
-    `the body given for '${existing.id}' is exactly the TRUNCATED ${BODY_PREVIEW_LIMIT}-character ` +
+    `the body given for '${existing.id}' is exactly the TRUNCATED ${previewLimit}-character ` +
       `preview 'doc read' shows for this document — writing it would DESTROY the ${omitted} ` +
-      `character(s) beyond the cut, leaving ${BODY_PREVIEW_LIMIT} of its ${storedBodyChars}-` +
+      `character(s) beyond the cut, leaving ${previewLimit} of its ${storedBodyChars}-` +
       `character body. ${recovery}`,
     {
       help,
       details: {
         reason: "stored_body_preview",
-        preview_limit: BODY_PREVIEW_LIMIT,
+        preview_limit: previewLimit,
         supplied_body_chars: error.finding.supplied_body_chars,
         stored_body_chars: storedBodyChars,
       },

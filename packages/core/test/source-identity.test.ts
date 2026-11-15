@@ -13,7 +13,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../../ui-server/dist/bundle-router.js";
 import { MemoryBackend as ServerMemoryBackend } from "@superbee/core";
 
 import { FilesystemBackend } from "../src/backend.js";
@@ -86,7 +86,7 @@ async function withMem<T>(fn: (bundle: Bundle) => Promise<T>): Promise<T> {
   return fn({ root: "mem://source-identity", backend: new MemoryBackend() });
 }
 async function withRemote<T>(fn: (bundle: Bundle) => Promise<T>): Promise<T> {
-  const router = createRouter({ root: "mem://wire-source-identity", backend: new ServerMemoryBackend() });
+  const router = createBundleRouter({ root: "mem://wire-source-identity", backend: new ServerMemoryBackend() });
   const backend = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: (req: Request) => router(req) });
   return fn({ root: "wire://source-identity", backend });
 }

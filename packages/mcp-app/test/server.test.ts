@@ -1845,6 +1845,7 @@ test("registered Roadmap View runs from unchanged source through the authorized 
           "query.kind-projection",
           "query.newest",
           "query.open",
+          "relationships",
           "render-document",
           "subscribe-deltas",
         ],
@@ -1852,6 +1853,20 @@ test("registered Roadmap View runs from unchanged source through the authorized 
       },
     },
   );
+
+  const neighborhood = await client.callTool({
+    name: DURABLE_VIEW_BRIDGE_TOOL_NAME,
+    arguments: {
+      launchId: view.launch.launchId,
+      request: { bridge: "v0", type: "relationships", id: "relationships", docId: "tasks/alpha" },
+    },
+  });
+  const neighborhoodReply = (neighborhood.structuredContent as {
+    outcome: { reply: { type: string; result: { documentId: string; rows: unknown[] } } };
+  }).outcome.reply;
+  assert.equal(neighborhoodReply.type, "relationships:result");
+  assert.equal(neighborhoodReply.result.documentId, "tasks/alpha");
+  assert.ok(Array.isArray(neighborhoodReply.result.rows));
 
   const query = await client.callTool({
     name: DURABLE_VIEW_BRIDGE_TOOL_NAME,

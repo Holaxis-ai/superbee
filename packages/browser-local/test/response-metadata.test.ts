@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MemoryBackend, RemoteBackend } from "@superbee/core";
-import { createRouter } from "@superbee/server";
+import { MemoryBackend } from "@superbee/core";
+import { createBundleRouter } from "../../ui-server/dist/bundle-router.js";
 import { bootstrap, isComplete, openLocalBundle } from "../src/local-bundle.ts";
 import { MemoryJournaledBackend } from "./fixtures/memory-journaled-backend.ts";
+import { RemoteBackend } from "../../core/dist/remote-backend.js";
 
 test("late incompatible snapshot metadata leaves bootstrap incomplete and does not reconcile deletions", async () => {
   const authority = new MemoryBackend();
@@ -11,7 +12,7 @@ test("late incompatible snapshot metadata leaves bootstrap incomplete and does n
     const id = `notes/${String(index).padStart(3, "0")}`;
     await authority.write(id, { id, frontmatter: { type: "Note", extra: index === 50 ? Infinity : index }, body: "hello" });
   }
-  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "default", fetchImpl: createRouter({ root: "memory://test", backend: authority }), maxRetries: 0 });
+  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "default", fetchImpl: createBundleRouter({ root: "memory://test", backend: authority }), maxRetries: 0 });
   const local = openLocalBundle("response-loss", { backend: new MemoryJournaledBackend() });
   try {
     await local.backend.write("notes/local", { id: "notes/local", frontmatter: { type: "Note" }, body: "keep" });

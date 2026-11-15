@@ -126,7 +126,7 @@ function sharingDetailsFor(err: CliError, context: SharingContext): SharingDetai
         possible_causes: ["url", "authentication", "visibility", "repository-read"],
       };
     }
-    if (err.code === "TRANSIENT") {
+    if (err.code === "TRANSIENT" && err.details?.reason !== "timeout") {
       return {
         ...LOCAL_ESTABLISH_PREFLIGHT,
         cause_certainty: "best-effort",
@@ -300,6 +300,8 @@ export function inTreeNoBasisNote(reason: InTreeNoBasisReason, ref?: string): st
 /** Test-pinned, machine-honest home board-status strings. */
 export const BOARD_UP_TO_DATE = "up to date";
 export const BOARD_OFFLINE_NOTE = "board sync offline — showing last known state";
+/** The pull ran out of its time budget: it names no cause, since a slow remote and a dead link look the same. */
+export const BOARD_TIMEOUT_NOTE = "board sync timed out; showing last known state";
 
 /** The probe-gated first-contact line — NEVER "run init" (the divergent-second-bundle footgun). */
 export function boardFirstContactLine(inv: CommandPrefix): string {
@@ -397,6 +399,11 @@ export const SYNC_OUTCOMES = {
     code: "TRANSIENT",
     message: () => "sync could not reach the remote — offline or the host is unreachable; retry",
     details: () => ({ retryable: true }),
+  }),
+  "ff.timeout": row<Record<string, never>>({
+    code: "TRANSIENT",
+    message: () => "the fetch from the remote did not finish in time and was stopped; retry",
+    details: () => ({ retryable: true, reason: "timeout" }),
   }),
   "ff.busy": row<Record<string, never>>({
     code: "GIT_BUSY",
@@ -790,6 +797,7 @@ export const SYNC_OUTCOME_LINES = {
   "line.home.first-contact": line<{ inv: CommandPrefix }>((p) => boardFirstContactLine(p.inv)),
   "line.home.up-to-date": line<Record<string, never>>(() => BOARD_UP_TO_DATE),
   "line.home.offline-note": line<Record<string, never>>(() => BOARD_OFFLINE_NOTE),
+  "line.home.timeout-note": line<Record<string, never>>(() => BOARD_TIMEOUT_NOTE),
   "line.home.in-tree": line<Record<string, never>>(() => BOARD_IN_TREE_LINE),
   "line.home.unpushed": line<{ n: number }>((p) => unpushedLine(p.n)),
   "line.home.uncommitted": line<{ n: number }>((p) => uncommittedLine(p.n)),
@@ -834,6 +842,8 @@ export function ffSwallowToError(reason: string, inv: CommandPrefix, boardPath?:
       return syncOutcomeError("ff.auth", {});
     case "network":
       return syncOutcomeError("ff.network", {});
+    case "timeout":
+      return syncOutcomeError("ff.timeout", {});
     case "busy":
       return syncOutcomeError("ff.busy", {});
     case "diverged":

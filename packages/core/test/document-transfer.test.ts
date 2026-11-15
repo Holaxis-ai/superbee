@@ -20,6 +20,7 @@ import { extractMarkdownLinkSpans, extractMarkdownLinks, resolveConceptId, rewri
 import { MemoryBackend } from "../src/memory-backend.js";
 import { parseQualifiedHref } from "../src/qualified-links.js";
 import { InvalidInputError } from "../src/errors.js";
+import { foldPath } from "../src/path-fold.js";
 import { MalformedDocumentError } from "../src/frontmatter-contract.js";
 import type { BundleBinding } from "../src/cross-bundle.js";
 import type { ConceptId, DeleteOptions, Frontmatter, OkfDocument, Version, WriteOptions } from "../src/types.js";
@@ -196,6 +197,7 @@ const RULES: RuleRow[] = [
   { name: "10 malformed", body: "[t](okf://Bad/x.md)", kind: "unchanged", reason: "invalid_qualified" },
   { name: "9 case variant of a source id stays unchanged", body: "[t](A.md)", kind: "unchanged", reason: "case_variant" },
   { name: "9 case variant of an unselected source id stays unchanged", body: "[t](../Findings/f1.md)", kind: "unchanged", reason: "case_variant" },
+  { name: "9 compatibility spelling of a source id is another, absent id", body: "[t](../ｆindings/f1.md)", kind: "qualified", to: "okf://wave/ｆindings/f1.md", present: false },
   { name: "reference definition is reported, not rewritten", body: "See [x].\n\n[x]: ../findings/f1.md", kind: "unchanged", reason: "reference_definition" },
 ];
 
@@ -394,6 +396,22 @@ test("conflict case_collision under the filesystem identity fold", async () => {
   assert.ok((await conflictsOf(fx)).includes("case_collision"));
   const again = await fixture();
   assert.ok((await conflictsOf(again, { prefix: "Notes/N" })).every((code) => code === "case_collision"));
+});
+
+test("a compatibility-character spelling is a distinct target, as the export's collision check and the disk agree", async () => {
+  // Fullwidth m (U+FF4D) is its own file name on every supported filesystem; only NFKC would
+  // join it with `m`, and no filesystem applies NFKC.
+  const fullwidth = "imp/ｍemo";
+  assert.notEqual(foldPath(fullwidth), foldPath("imp/memo"));
+  const fx = await fixture();
+  await put(fx.target, fullwidth, { type: "Note", title: "fullwidth" });
+  const plan = await planDocumentTransfer(fx.request());
+  assert.deepEqual(plan.conflicts, []);
+  assert.equal(plan.ready, true);
+  // A case variant of the same name still collides.
+  const cased = await fixture();
+  await put(cased.target, "imp/MEMO", { type: "Note", title: "upper" });
+  assert.ok((await conflictsOf(cased)).includes("case_collision"));
 });
 
 test("conflict kind_missing unless ungoverned is allowed; governed both validates against the target", async () => {

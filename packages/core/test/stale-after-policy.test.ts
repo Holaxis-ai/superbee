@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../../ui-server/dist/bundle-router.js";
 import { readDocVersioned, writeDocVersioned } from "../src/bundle.js";
 import { mutateDocument } from "../src/document-mutation.js";
 import { MemoryBackend } from "../src/memory-backend.js";
@@ -57,7 +57,7 @@ test("v0.1 authored mutations retain legacy extension behavior", async () => {
 test("raw core and wire imports preserve legacy deadlines while authored remote mutations reject new invalid values", async () => {
   const { bundle: server } = await fixture();
   const remote: Bundle = { root: "wire://stale-after", backend: new RemoteBackend({
-    baseUrl: "http://wire.local", bundle: "stale-after", fetchImpl: createRouter(server),
+    baseUrl: "http://wire.local", bundle: "stale-after", fetchImpl: createBundleRouter(server),
   }) };
   for (const bundle of [server, remote]) {
     await writeDocVersioned(bundle, { id: "notes/one", frontmatter: { type: "Note", stale_after: "2020-01-01" }, body: "body\n" });

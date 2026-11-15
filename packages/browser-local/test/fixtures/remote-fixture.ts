@@ -25,10 +25,12 @@
  * router recorded and what it answered from the record is observed by wrapping the store.
  */
 
-import { MemoryBackend, RemoteBackend, type StorageBackend } from "@superbee/core";
-import { openRemoteOperationTransport } from "@superbee/core/remote-operations";
+import { MemoryBackend, type StorageBackend } from "@superbee/core";
 import type { OperationTransport, Outcome } from "@superbee/core/uncertain-write";
-import { createRouter, MemoryOperationOutcomeStore, type OperationOutcomeStore } from "@superbee/server";
+import { MemoryOperationOutcomeStore, type OperationOutcomeStore } from "@superbee/server";
+import { createBundleRouter } from "../../../ui-server/dist/bundle-router.js";
+import { RemoteBackend } from "../../../core/dist/remote-backend.js";
+import { openRemoteOperationTransport } from "../../../core/dist/remote-operations.js";
 
 export const BASE_URL = "http://fixture.invalid";
 export const BUNDLE = "default";
@@ -168,7 +170,7 @@ export async function createRemoteFixture(): Promise<RemoteFixture> {
   const submissions: string[] = [];
   const lookups: string[] = [];
   const served = { documents: 0 };
-  const router = createRouter({ root: "memory://fixture", backend: authority }, { outcomes: observedStore(outcomeStore, history, outcomes, deduplicated) });
+  const router = createBundleRouter({ root: "memory://fixture", backend: authority }, { outcomes: observedStore(outcomeStore, history, outcomes, deduplicated) });
   const knobs: FixtureKnobs = { failBeforeApply: false, dropAfterApply: false, unauthorized: false, lookupFails: false, delayMs: 0, latencyMs: 0, readBudget: null, snapshotCutAfter: null };
 
   /** The router's snapshot, cut after `snapshotCutAfter` lines when the knob is set; served documents are counted either way. */

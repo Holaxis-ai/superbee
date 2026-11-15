@@ -75,6 +75,10 @@ puts its errors (stderr for `mcp` and the byte and raw value channels). `session
 and automatic pull. A `.agentstate.json` project binding is refused at the level where the walk
 finds it with `USAGE`, exit 2, `details.code` `RETIRED_PROJECT_BINDING` and the file in
 `details.binding`; home shows the same text as `project_binding_error`.
+A pre-v2 source plugin pointer (the single GitHub record 0.4.3 wrote) is refused by `source plugin
+list`, selection and any registration or removal of another plugin with `USAGE`, exit 2 and
+`details.code` `RETIRED_SOURCE_PLUGIN_POINTER`. Registering or removing `github` replaces it; the
+accepted snapshot it named stays on disk.
 
 The v0 remote client and its reference server command are removed. `--remote` where a command's
 parser reads a flag (never an option's value, never after `--`) stops the command before any work with `USAGE`, exit 2, `details.code` `RETIRED_FLAG` and
@@ -83,6 +87,16 @@ parser reads a flag (never an option's value, never after `--`) stops the comman
 that still has the old server. A URL-valued project binding is
 refused with `RETIRED_URL_BINDING` and the file in `details.binding`; no refusal echoes the URL.
 `session-start` and `turn-end` never refuse. See `packages/cli/test/local-only-cli-integration.test.ts`.
+
+A third kind covers files the retired aslite and agentstate-lite packages left in host configuration.
+`hook install` and `skill install` remove an old hook, OpenCode plugin or `skills/aslite` folder only
+when it matches exactly what those packages wrote, and say so in the record's `notes`. Anything else
+stays, and the command prints one warning line on stderr tagged `[RETIRED_HOOK]` or
+`[RETIRED_SKILL_FOLDER]` naming the file or folder to delete. `hook status`, `skill status` and
+`setup` print the same lines. Each line appears at most once per process, never echoes a hook command
+or a secret, and never changes stdout records or the exit status. `session-start` prints none. So a
+bracketed `RETIRED_*` tag on a stderr line is a warning on a command that succeeded, while a
+`RETIRED_*` value in an error envelope's `details.code` is a refusal.
 
 ## Standing mutation invariant
 
@@ -397,7 +411,14 @@ upstream by more than engine stamps first saves it as a new copy, named in `unse
 and `--inspect` then offers `revise` first. Text comparison needs a lossless decode on both sides, so
 bytes that decode the same are not treated as equal. A copy that cannot be compared, such as one whose
 upstream version is too large to read, never stops a sync: it stays listed with a `note` and only
-removal offered. Evidence: `packages/cli/test/sync-git-conflict-visible.test.ts` and
+removal offered. A file that is not a document takes the same verbs by its full path and is settled
+byte for byte: `--inspect` reports `kind: file` and each side's `bytes` and `sha256`, with `content`
+only when the bytes decode losslessly (otherwise `binary: true`); `--resolve keep` writes the saved
+bytes whole, keeping the file's mode, and exits 5 with nothing changed and `details.reason`
+`unsent_edit` when the file holds bytes that are neither side's, `later_copy_waits` while a later copy
+of it waits, or `not_a_regular_file` for a link or folder. Its row's `next` and `discard` name the
+verbs; a reserved file keeps the hand merge. Evidence: `packages/cli/test/sync-git-conflict-files.test.ts`,
+`packages/cli/test/sync-git-conflict-visible.test.ts` and
 `packages/board-git/test/saved-copies.test.ts`.
 
 In a local bundle or Git board, one unreadable document does not stop whole-bundle reads: `list`,
@@ -431,7 +452,7 @@ fails when an anchor or its identifying text disappears.
 | --- | --- | --- | --- |
 | AXI-01 | Ordinary output is structured TOON with an explicit JSON hatch; raw/help channels are declared exceptions. | `packages/cli/src/commands/setup.ts::Emit compact JSON instead of TOON` | `packages/cli/test/setup.test.ts::setup defaults to TOON rather than JSON` |
 | AXI-02 | Lists use a uniform minimal schema, count matches, and explicit field projection; `link show` includes outbound and derived backlink totals inline. | `packages/cli/src/commands/list.ts::default schema is` `packages/cli/src/commands/link.ts::outbound_count/backlink_count always report the true` | `packages/cli/test/list.test.ts::list (unscoped): stays the minimal` `packages/cli/test/link.test.ts::link show --limit caps the outbound/backlink lists; counts stay the true totals (A5)` `packages/cli/test/link.test.ts::link show: backlink rows carry the citing link's text` |
-| AXI-03 | Detail shows all fields, bounds body preview, and points to a stdout-safe byte channel. | `packages/cli/src/commands/doc/common.ts::truncates a large body (pointing at --out)` | `packages/cli/test/doc.test.ts::body truncation + --out byte-channel pointer` |
+| AXI-03 | Detail shows all fields, bounds body preview, and points to a stdout-safe byte channel. | `packages/cli/src/commands/doc/common.ts::A larger body arrives as` | `packages/cli/test/doc.test.ts::body truncation + --out byte-channel pointer` |
 | AXI-04 | Home computes whole-bundle orientation rather than requiring client-side joins. | `packages/cli/src/commands/home.ts::render the local orientation view` | `packages/cli/test/home.test.ts::A1.1 dashboard: bundle present, docs>0` |
 | AXI-05 | Empty/unreadable/offline states are explicit and distinct, and a truncated body preview identifies itself instead of passing as the complete body. | `packages/cli/src/commands/list.ts::result reports` `packages/core/src/body-replace-guards.ts::BODY_PREVIEW_TRUNCATION_MARKER` | `packages/cli/test/list.test.ts::definitive empty state` `packages/cli/test/doc.test.ts::a truncated body is named body_preview` |
 | AXI-06 | Ordinary errors are structured TOON on stdout with the capped exit taxonomy; raw `doc read --out -` and MCP JSON-RPC reserve stdout and route errors to stderr. | `packages/cli/src/output.ts::Errors are ALWAYS TOON regardless of --json` `packages/cli/src/errors.ts::The 0/1/2/4/5/6 exit taxonomy is PRESERVED` `packages/cli/src/commands/doc/read.ts::makes the channel invariant unconditional` `packages/cli/src/commands/mcp.ts::must be routed once to stderr` | `packages/cli/test/arity-built.test.ts::must keep its reserved non-error channel byte-clean` `packages/cli/test/error-boundary.test.ts::error matrix: a CliError instance passes through` `packages/cli/test/doc-cli-integration.test.ts::built CLI: raw doc-read channels route early missing-id and unknown-option envelopes only to stderr` `packages/cli/test/mcp.test.ts::mcp routes every pre-initialize failure to stderr and marks it handled` `packages/cli/test/mcp-stdio.test.ts::built npm CLI keeps MCP stdout byte-empty for usage and bundle startup failures` |

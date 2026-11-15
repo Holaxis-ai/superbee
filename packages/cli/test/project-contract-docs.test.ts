@@ -211,8 +211,9 @@ test("wire contract pins the complete implemented route/method table and every p
     Array.from({ length: 13 }, (_, index) => `WIRE-PROOF-${String(index + 1).padStart(2, "0")}`),
   );
 
-  assert.match(contract, /has \*\*no authentication or authorization\*\*/);
-  assert.match(contract, /accepts\s+any syntactically valid `\{bundle\}` segment but does not use it to select/);
+  assert.match(contract, /`@superbee\/server` ships no listener/);
+  assert.match(contract, /binds `127\.0\.0\.1` only, refuses any other `Host` header/);
+  assert.match(contract, /maps the SPA's `default` segment to it; it does not select among bundles/);
   assert.match(contract, /canonical OKF serialization/);
   assert.match(contract, /external formatting, YAML key order, quoting, or whitespace may not survive/);
   assert.match(contract, /The premise does not make expiry safe\. Versions are content hashes/);

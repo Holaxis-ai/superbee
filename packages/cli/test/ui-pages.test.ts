@@ -13,7 +13,7 @@ import { createServer as createHttpServer, type Server, type ServerResponse } fr
 import { connect } from "node:net";
 
 import { deleteDoc, initBundle, readDoc, writeBlob, writeDoc, type Bundle } from "@superbee/core";
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../../ui-server/dist/bundle-router.js";
 import { bootUiServer, type UiServerHandle } from "../src/ui/server.js";
 import {
   PageLaunchRegistry,
@@ -242,7 +242,7 @@ async function bootPagesServer(): Promise<{ handle: UiServerHandle; origin: stri
   await writeDoc(bundle, { id: "tasks/a", frontmatter: { type: "Task", title: "A" }, body: "See [also b](b.md)." });
   await writeDoc(bundle, { id: "tasks/b", frontmatter: { type: "Task", title: "B" }, body: "" });
   await writeDoc(bundle, { id: "roadmap-items/x", frontmatter: { type: "Roadmap Item", title: "X" }, body: "[contains](../tasks/a.md)." });
-  const handle = await bootUiServer({ mode: "dir", port: 0, router: createRouter(bundle), bundle, sessionSecret: SECRET });
+  const handle = await bootUiServer({ mode: "dir", port: 0, router: createBundleRouter(bundle), bundle, sessionSecret: SECRET });
   const origin = `http://${handle.host}:${handle.port}`;
   return {
     handle,
@@ -818,7 +818,7 @@ async function bootWithHeldPut(hold: (release: () => void) => Promise<void> | vo
   const bundle: Bundle = { root: dir };
   let signalEntered!: () => void;
   const putEntered = new Promise<void>((resolve) => (signalEntered = resolve));
-  const real = createRouter(bundle);
+  const real = createBundleRouter(bundle);
   const router = async (req: Request): Promise<Response> => {
     if (req.method === "PUT") {
       signalEntered();

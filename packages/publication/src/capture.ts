@@ -70,12 +70,29 @@ interface PublicationRootIdentity {
 
 async function authorizePublicationRoot(requested: string): Promise<PublicationRootIdentity> {
   const entry = await lstat(requested);
-  if (entry.isSymbolicLink() || !entry.isDirectory()) {
+  // Capture never follows or normalizes the root: identity is re-checked during capture to catch
+  // substitution. The refusal names the caller's own resolved path so the remedy is one call.
+  if (entry.isSymbolicLink()) {
+    const target = await realpath(requested).catch(() => undefined);
+    if (target === undefined) {
+      throw new PublicationError("INVALID_OBJECT_IDENTITY", `the filesystem publication root ${JSON.stringify(requested)} is a symlink that does not resolve to a directory`, { actual: requested });
+    }
+    throw new PublicationError(
+      "INVALID_OBJECT_IDENTITY",
+      `the filesystem publication root ${JSON.stringify(requested)} is a symlink to ${JSON.stringify(target)}; capture does not follow symlinks, so pass the resolved path (await fs.realpath(root))`,
+      { expected: target, actual: requested },
+    );
+  }
+  if (!entry.isDirectory()) {
     throw new PublicationError("INVALID_OBJECT_IDENTITY", "the filesystem publication root must be a real directory");
   }
   const canonical = await realpath(requested);
   if (canonical !== requested) {
-    throw new PublicationError("INVALID_OBJECT_IDENTITY", "the filesystem publication root must not be a symlink or aliased path");
+    throw new PublicationError(
+      "INVALID_OBJECT_IDENTITY",
+      `the filesystem publication root ${JSON.stringify(requested)} is not in canonical form (it resolves to ${JSON.stringify(canonical)}); capture does not follow symlinks or normalize paths, so pass the resolved path (await fs.realpath(root))`,
+      { expected: canonical, actual: requested },
+    );
   }
   const identity = await stat(requested);
   return { requested, canonical, dev: identity.dev, ino: identity.ino };

@@ -116,12 +116,39 @@ test("links: extractMarkdownLinks retains the established valid-link grammar", (
   assert.deepEqual(
     extractMarkdownLinks("[outer[inner](a(b)c) [multi\nline](two) ![image](ignored) [a](one)[b](two)"),
     [
-      { text: "outer[inner", href: "a(b" },
+      { text: "inner", href: "a(b" },
       { text: "multi\nline", href: "two" },
       { text: "a", href: "one" },
       { text: "b", href: "two" },
     ],
   );
+});
+
+test("links: a stray [ before a real link does not become part of that link", () => {
+  const edges = (body: string) => parseLinksFromDoc({ id: "notes/n", frontmatter: { type: "Note" }, body })
+    .map((l) => ({ to: l.to, text: l.text }));
+  const task = [{ to: "tasks/x", text: "Task" }];
+  // In inline code, in a fenced block, and in prose on the same line and on a later line.
+  assert.deepEqual(edges("see `a[0]` and [Task](/tasks/x.md)"), task);
+  assert.deepEqual(edges("see `a[` and [Task](/tasks/x.md)"), task);
+  assert.deepEqual(edges("see `a[` and\n\n[Task](/tasks/x.md)"), task);
+  assert.deepEqual(edges("```\nx = [\n```\n\n[Task](/tasks/x.md)"), task);
+  assert.deepEqual(edges("an open [ bracket then [Task](/tasks/x.md)"), task);
+  assert.deepEqual(edges("an open [ bracket\n\nlater [Task](/tasks/x.md)"), task);
+  assert.deepEqual(edges("\\[ escaped then [Task](/tasks/x.md)"), task);
+  // A stray [ no longer decides whether what follows is an image.
+  assert.deepEqual(edges("![ stray then [Task](/tasks/x.md)"), task);
+  assert.deepEqual(edges("[ stray then ![pic](/tasks/x.md)"), []);
+  // An open bracket inside code within link text does not restart the link.
+  assert.deepEqual(edges("[see `x[` y](/tasks/x.md)"), [{ to: "tasks/x", text: "see `x[` y" }]);
+  assert.deepEqual(edges("`a[` then [see `x[` y](/tasks/x.md)"), [{ to: "tasks/x", text: "see `x[` y" }]);
+  // A link written entirely inside code after a stray prose bracket opens at its own bracket.
+  assert.deepEqual(edges("an open [ bracket then `[a](/tasks/x.md)`"), [{ to: "tasks/x", text: "a" }]);
+  assert.deepEqual(edges("item [3 of the list\n\n```\n[reviews](/tasks/x.md)\n```"), [{ to: "tasks/x", text: "reviews" }]);
+  // Unchanged: nested brackets in link text are still not a link (the scanner does not balance brackets).
+  assert.deepEqual(edges("[a [b] c](/tasks/x.md)"), []);
+  // Unchanged: the scanner does not read backslash escapes, so this still registers.
+  assert.deepEqual(edges("\\[Task\\](/tasks/x.md)"), [{ to: "tasks/x", text: "Task\\" }]);
 });
 
 test("links: resolveConceptId handles absolute, relative, parent, anchors, external", () => {

@@ -7,7 +7,7 @@
 // field included, is something the person wrote.
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
-import { conceptIdFromPath, parseMarkdown } from "@superbee/core";
+import { assertSafeConceptId, conceptIdFromPath, isReservedFile, parseMarkdown } from "@superbee/core";
 import { boardRefOf, isConceptDocPath, listSavedCopies, readDocBytesAtRef, runGitBytes, type SavedCopy } from "@superbee/board-git";
 import { commandFragment, commandToken, type CommandPrefix, type CommandText } from "./command-text.js";
 import { ENGINE_STAMPED_FIELDS, loadClaimPolicy, recordedOwner, type ClaimPolicy } from "./commands/sync/claim-conflict.js";
@@ -96,7 +96,7 @@ async function readIfThere(file: string): Promise<Buffer | null> {
 /** One file with saved copies still to settle. */
 export interface UnsettledConflict {
   relPath: string;
-  /** The document id, or null for a raw or reserved file that the conflict verbs do not take. */
+  /** The document id, or null for a file that is not a document (see {@link conflictVerbTarget}). */
   id: string | null;
   /** Oldest first; the verbs settle them in this order, so the newest has the last word. */
   copies: SavedCopy[];
@@ -230,22 +230,38 @@ export function removeCommand(copy: SavedCopy): string {
   return `rm ${commandToken(copy.file)}${copy.bodyFile === null ? "" : ` ${commandToken(copy.bodyFile)}`}`;
 }
 
+/**
+ * What `--inspect` and `--resolve` take for this conflict: the document id, or a file's own path.
+ * A reserved file, or a path no document id could spell, has no verbs and is merged by hand.
+ */
+export function conflictVerbTarget(conflict: Pick<UnsettledConflict, "id" | "relPath">): string | null {
+  if (conflict.id !== null) return conflict.id;
+  if (isReservedFile(conflict.relPath) || conceptIdFromPath(conflict.relPath) !== conflict.relPath) return null;
+  try {
+    assertSafeConceptId(conflict.relPath);
+    return conflict.relPath;
+  } catch {
+    return null;
+  }
+}
+
 /** The row `sync` reports for one unsettled file. */
 export function unsettledRow(conflict: UnsettledConflict, inv: CommandPrefix, dir: string | undefined): Record<string, unknown> {
   const newest = conflict.copies[conflict.copies.length - 1]!;
   const suffix = dir === undefined ? commandFragment`` : commandFragment` --dir ${commandToken(dir)}`;
+  const target = conflictVerbTarget(conflict);
   return {
     ...(conflict.id !== null ? { id: conflict.id } : { path: conflict.relPath }),
     saved_at: newest.file,
     copies: conflict.copies.length,
     ...(conflict.unreadable ? { note: "this copy could not be compared with the document or its upstream version, so it stays listed" } : {}),
     next:
-      conflict.id !== null && !conflict.unreadable
-        ? String(inspectCommand(inv, conflict.id, dir))
+      target !== null && !conflict.unreadable
+        ? String(inspectCommand(inv, target, dir))
         : `merge what you need into ${conflict.relPath} by hand, then delete the saved file`,
     discard:
-      conflict.id !== null && conflict.discardWith !== "remove" && !conflict.unreadable
-        ? String(commandFragment`${inv} sync --resolve ${commandToken(conflict.discardWith)} --doc ${commandToken(conflict.id)}${suffix}`)
+      target !== null && conflict.discardWith !== "remove" && !conflict.unreadable
+        ? String(commandFragment`${inv} sync --resolve ${commandToken(conflict.discardWith)} --doc ${commandToken(target)}${suffix}`)
         : removeCommand(conflict.copies[0]!),
   };
 }

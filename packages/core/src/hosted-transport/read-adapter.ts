@@ -21,8 +21,7 @@
  */
 
 import { malformed, onRoute, RemoteError } from "../remote-error.js";
-import { parseHeadsAnswer, readSnapshotStream, type HeadsResult, type RemoteSnapshot } from "../remote-parsers.js";
-import type { HeadsOptions, WireCapabilities } from "../remote-backend.js";
+import { parseHeadsAnswer, readSnapshotStream, type HeadsOptions, type HeadsResult, type RemoteSnapshot, type WireCapabilities } from "../remote-parsers.js";
 import type { ConceptId, ReadResult, ReservedFilename, ReservedReadResult, StorageBackend } from "../types.js";
 import { isContentVersion } from "../version-transport.js";
 import { sha256HexOfUtf8 } from "../sha256.js";

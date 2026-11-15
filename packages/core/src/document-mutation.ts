@@ -15,9 +15,11 @@ import { prepareKindFieldMutation, type KindFieldMutation } from "./kind-field-m
 import { appendVerificationEvent, type AppendVerificationOptions } from "./verification.js";
 import { okfValuesEqual } from "./okf-authored-values.js";
 import { isRequestIdentity } from "./uncertain-write.js";
-import { InvalidInputError } from "./errors.js";
+import { FilesystemIdentityAliasError, InvalidInputError, NonCanonicalDocumentIdError } from "./errors.js";
+import { assertCanonicalNewDocumentId, nonCanonicalDocumentId, suggestCanonicalDocumentId } from "./paths.js";
 import { kindDeprecationTransition } from "./kind-deprecation.js";
 import { KindConformanceError } from "./kind-conformance-error.js";
+import { undeclaredFieldWarnings } from "./kind-undeclared-fields.js";
 import { assertAuthoredOkfStandardFields } from "./okf-standard-fields.js";
 import { applyV02MutationMetadata } from "./document-write-policy.js";
 import { assertFieldPreconditions } from "./document-precondition.js";
@@ -34,6 +36,7 @@ import { versionedMutation } from "./mutation.js";
 import { VersionConflict } from "./versioning.js";
 import {
   backendFor,
+  existsDoc,
   readBundleOkfVersion,
   readDocVersioned,
   writeDocVersionedForEdition,
@@ -281,7 +284,7 @@ function validateCandidate(
   okfVersion: "0.1" | "0.2",
   now: () => string,
   existing?: OkfDocument,
-): RegistryValidationResult {
+): RegistryValidationResult & { undeclared: ValidationWarning[] } {
   assertDeprecation(id, candidate, registry, existing);
   const result = defaultTimestampAndValidateAgainstRegistry(
     { id, ...candidate },
@@ -292,7 +295,15 @@ function validateCandidate(
   if (strict && result.kind && result.warnings.length > 0) {
     throw new KindConformanceError(id, result.kind.governs, result.warnings, okfVersion);
   }
-  return result;
+  // Undeclared keys are not conformance debt: they never feed the overwrite ratchet, and a
+  // strict write refuses them only when the Kind opts in with `undeclared_fields: error`.
+  const undeclared = result.kind
+    ? undeclaredFieldWarnings(okfVersion, result.kind, candidate.frontmatter, existing?.frontmatter)
+    : [];
+  if (strict && result.kind?.undeclaredFields === "error" && undeclared.length > 0) {
+    throw new KindConformanceError(id, result.kind.governs, undeclared, okfVersion);
+  }
+  return { ...result, undeclared };
 }
 
 /** Validate unchanged stored content without manufacturing clocks or attribution. */
@@ -396,14 +407,14 @@ export function prepareDocumentMutationCandidate(
   const candidate = mode === "overwrite"
     ? comparison
     : attributeCandidate(comparison, opts.actor, persistActor, opts.okfVersion, opts.registry);
-  const { warnings, kind } = validateCandidate(opts.id, candidate, opts.registry, opts.strict, opts.okfVersion, decisionNow, existing);
+  const { warnings, kind, undeclared } = validateCandidate(opts.id, candidate, opts.registry, opts.strict, opts.okfVersion, decisionNow, existing);
   // Once a stored document conforms to its own Kind, a lenient overwrite cannot regress it.
   // Raw existing values decide eligibility; existing debt remains editable and an ungoverned
   // replacement carries no warnings, preserving the explicit retyping escape.
   if (mode === "overwrite" && !opts.strict && existing && warnings.length > 0 && conforms(existing, opts.registry)) {
     throw new KindConformanceError(opts.id, kind!.governs, warnings, opts.okfVersion);
   }
-  return { candidate, changed: true, warnings, guidance: writeGuidance(opts.registry, opts.okfVersion, existing, candidate) };
+  return { candidate, changed: true, warnings: [...warnings, ...undeclared], guidance: writeGuidance(opts.registry, opts.okfVersion, existing, candidate) };
 }
 
 /**
@@ -508,11 +519,28 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
     await opts.assertCandidate?.(existing === undefined ? undefined : structuredClone(existing), structuredClone(candidate), context);
     return candidate;
   };
-  const prepare = async (existing: OkfDocument | undefined, decisionNow: () => string) =>
-    prepareDocumentMutationCandidate(existing, await build(existing, decisionNow), {
+  const prepare = async (existing: OkfDocument | undefined, decisionNow: () => string) => {
+    // Every mode decides a create here with no existing document, so this is the one place a new
+    // id meets the canonical-spelling rule; ids that already exist stay editable.
+    const why = existing === undefined ? nonCanonicalDocumentId(opts.id) : null;
+    if (why !== null) {
+      const suggested = suggestCanonicalDocumentId(opts.id);
+      let taken = false;
+      try {
+        taken = suggested !== undefined && await existsDoc(opts.bundle, suggested);
+      } catch (error) {
+        // The canonical spelling is itself an alias of an existing entry (a legacy NFD folder,
+        // say), so it can never be created either: offer no suggestion rather than a dead one.
+        if (!(error instanceof FilesystemIdentityAliasError)) throw error;
+        throw new NonCanonicalDocumentIdError(opts.id, why, undefined);
+      }
+      assertCanonicalNewDocumentId(opts.id, () => taken);
+    }
+    return prepareDocumentMutationCandidate(existing, await build(existing, decisionNow), {
       mode: opts.mode, id: opts.id, registry: opts.registry, strict: opts.strict, okfVersion, now: decisionNow,
       actor: opts.actor, producer: opts.producer, persistActor, compareTimestamp, seedGenerationClock: seedClock,
     });
+  };
 
   if (opts.mode === "create-only") {
     // Fail closed: create-only issues NO read — its CAS basis is expect-absent — so there is no

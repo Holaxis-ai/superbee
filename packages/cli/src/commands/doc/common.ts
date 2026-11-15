@@ -85,6 +85,12 @@ replacement. Kind validation is advisory by default: violations appear as warnin
 no-ops. --strict rejects violations without writing. A changed replacement of a previously conforming
 document cannot be nonconforming, even in advisory mode.
 
+After a changed write, warnings also name what it introduced that will not work as meant: a link
+that will not register (LINK_NOT_RECOGNIZED, with the href that would), a link to a document that
+does not exist yet (LINK_TARGET_ABSENT; still allowed) and a type that misses a declared Kind's
+type only by case, spacing, hyphens or underscores (KIND_TYPE_UNDECLARED, naming the declared
+one). They never refuse the write.
+
 Options:
   --type <t>           OKF concept type (non-empty)                          [required]
   --title <t>          Display title
@@ -120,6 +126,8 @@ Options:
   --strict             If a kind convention governs --type, reject (exit 2) instead of writing with
                        warnings when the doc does not satisfy it (default: warn-and-write, exit 0 —
                        see 'superbee kinds')
+                       A new or changed key the kind does not declare is only a warning unless
+                       the kind sets undeclared_fields: error
   --actor <name>       Attribute this write using the bundle's compatible advisory field, used by
                        per-doc sync receipts and version history for a persisting backend.
                        OKF v0.2 bundles accept only an OKF actor: human:<id> for a person,
@@ -150,6 +158,7 @@ timestamp) converges to changed:false (no write, no timestamp refresh).
 Standard-field patches use advisory Kind validation by default, returning warnings even on no-ops;
 --strict rejects violations without writing. Dynamic declared fields are always strict: passing a
 --<field> flag requires the whole resulting document to satisfy its Kind, even for a same-value patch.
+A changed body or type also gets the post-write link and type warnings 'doc write' describes.
 
 Options:
   --title <t>            Replace the title
@@ -183,6 +192,8 @@ Options:
                          their standard generated.at clock automatically.
   --strict               If a kind convention governs the resulting type, reject (exit 2) instead of
                          writing with warnings (default: warn-and-write, exit 0)
+                         A new or changed key the kind does not declare is only a warning unless
+                         the kind sets undeclared_fields: error
   --<field> <value>      Set a kind-declared field of the doc's type (e.g. --progress_status done).
                          The field
                          MUST be declared by the kind governing the doc's type — run 'superbee
@@ -223,12 +234,14 @@ export const DOC_READ_USAGE = `superbee doc read — read a concept document (or
 Usage:
   superbee doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --rendered-out (<path> | -)] [options]
 
-The default (no byte-channel flag) render shows EVERY frontmatter field — the standard keys plus any
-kind-declared fields like progress_status/priority — and truncates a large body (pointing at --out).
-A truncated body is published as 'body_preview' (never 'body'), with body_truncated:true, the true
-body_chars, and a marker inside the value itself. That value is a PREVIEW, not a body: writing it
-back through 'doc write'/'doc update' is refused (exit 2) unless --accept-truncated-body is passed.
-Use --body-out to get the complete body for an edit cycle, or --offset to read it a page at a time.
+The default (no byte-channel flag) render shows EVERY frontmatter field (the standard keys plus any
+kind-declared fields like progress_status/priority) and the whole body as 'body' when the body is
+20,480 UTF-8 bytes or smaller, which fits an agent shell tool's output. A larger body arrives as
+'body_preview': the first page of the body plus a marker inside the value. The record then leads
+with a 'warning' line and body_truncated:true, carries body_chars and next_offset, and its help
+names --body-out (the complete body in a file) and the next page (--offset <next_offset>). A
+preview is not a body: writing it back through 'doc write'/'doc update' is refused (exit 2) unless
+--accept-truncated-body is passed.
 
 Options:
   --offset <n>         Page the record's body: 'body' is the page starting at character n (a

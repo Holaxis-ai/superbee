@@ -93,11 +93,14 @@ export type RootWriteOutcome =
 const UNKNOWN: RootWriteOutcome = Object.freeze({ kind: "unknown" });
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** A root write's `200` success, admitted only for this bundle, a content version and a boolean `changed`. */
+/**
+ * A root write's `200` success, admitted only for this bundle, a content version and a boolean
+ * `changed`. Any other key a host adds is ignored, as `parseWriteResult` ignores it.
+ */
 function rootSuccess(body: unknown, bundleId: string): { version: string; changed: boolean } | null {
   if (!isRecord(body) || body.ok !== true || body.operationId !== ROOT_OPERATION_ID || body.error !== undefined) return null;
   const data = body.data;
-  if (!isRecord(data) || !Object.keys(data).every((key) => key === "bundleId" || key === "version" || key === "changed")) return null;
+  if (!isRecord(data)) return null;
   if (data.bundleId !== bundleId || !isContentVersion(data.version) || typeof data.changed !== "boolean") return null;
   return { version: data.version, changed: data.changed };
 }

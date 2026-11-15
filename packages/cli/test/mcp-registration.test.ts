@@ -116,21 +116,33 @@ test("Codex refuses a disabled exact-command entry instead of reporting it curre
   assert.equal(mutations, 0);
 });
 
-test("foreign same-name and legacy registrations are refused without mutation", () => {
-  for (const [name, command] of [["superbee", "/foreign/node"], ["aslite-views", stable.evidence.runtime_path!]]) {
-    let writes = 0;
-    const text = JSON.stringify({ mcpServers: { [name]: { command, args: ["foreign.mjs", "mcp"] } } });
-    assert.throws(
-      () => mutateMcpRegistration("install", target("claude-desktop"), {}, {
-        environment: environment(),
-        authority: () => stable,
-        readFile: () => text,
-        writeFile: () => { writes += 1; },
-      }),
-      (error: unknown) => error instanceof McpRegistrationError,
-    );
-    assert.equal(writes, 0);
-  }
+test("a foreign same-name registration is refused without mutation", () => {
+  let writes = 0;
+  const text = JSON.stringify({ mcpServers: { superbee: { command: "/foreign/node", args: ["foreign.mjs", "mcp"] } } });
+  assert.throws(
+    () => mutateMcpRegistration("install", target("claude-desktop"), {}, {
+      environment: environment(),
+      authority: () => stable,
+      readFile: () => text,
+      writeFile: () => { writes += 1; },
+    }),
+    (error: unknown) => error instanceof McpRegistrationError,
+  );
+  assert.equal(writes, 0);
+});
+
+test("an old aslite registration name is ignored: install adds superbee beside it untouched", () => {
+  const old = { command: stable.evidence.runtime_path!, args: ["foreign.mjs", "mcp"] };
+  let written: string | undefined;
+  mutateMcpRegistration("install", target("claude-desktop"), {}, {
+    environment: environment(),
+    authority: () => stable,
+    readFile: () => written ?? JSON.stringify({ mcpServers: { "aslite-views": old } }),
+    writeFile: (_path: string, text: string) => { written = text; },
+  });
+  const servers = JSON.parse(written!).mcpServers;
+  assert.deepEqual(servers["aslite-views"], old);
+  assert.equal(servers.superbee.command, stable.evidence.runtime_path);
 });
 
 test("Claude Code uses user-scoped native commands and updates only exact-owned stale bytes", () => {

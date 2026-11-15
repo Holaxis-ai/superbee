@@ -117,6 +117,8 @@ Options:
                             and actor environment variables do not label their frozen requests.
   --strict                 Doc route only: reject (exit 2) instead of writing-with-warnings when a
                             kind convention governs the doc's type and it does not satisfy it
+                            A new or changed key the kind does not declare is only a warning unless
+                            the kind sets undeclared_fields: error
   --accept-truncated-body  Doc route only: required to replace an EXISTING doc's body with a
                             TRUNCATED 'doc read' body preview — one still carrying the generated
                             truncation notice, or one that is exactly the preview slice of that

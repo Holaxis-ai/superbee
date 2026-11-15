@@ -11,6 +11,7 @@
  * `external_id` (default: the key) whose facts changed is updated in place, never duplicated.
  */
 import { queryHeads } from "../bundle-ops.js";
+import { canonicalizeIdText } from "../paths.js";
 import { overlayCanonicalJson } from "./canonical.js";
 import { sha256, shortHash } from "./digest.js";
 import { OverlayRefusal, REFUSAL_CODES } from "./errors.js";
@@ -61,7 +62,9 @@ export async function planFindings({ ops, provider, feed, slug, findings, observ
       continue;
     }
     // An expiring finding raised again after expiry is a new Signal, so its id names the expiry too.
-    const id = `${prefix}${slug}-${f.expires_at ? shortHash(slug, f.key, digest, f.expires_at) : shortHash(slug, f.key, digest)}`;
+    // The slug comes from the feed's id, which may predate the canonical-id rule; a new Signal id
+    // must not inherit a spelling the create would refuse.
+    const id = `${prefix}${canonicalizeIdText(slug)}-${f.expires_at ? shortHash(slug, f.key, digest, f.expires_at) : shortHash(slug, f.key, digest)}`;
     const linkLines: string[] = [];
     if (fromFeed && feed) linkLines.push(linkLine(fromFeed, id, feed));
     // Related documents are linked by id; a value that is not a document id has no line.

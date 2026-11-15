@@ -1,15 +1,13 @@
 /**
- * `@superbee/server` — the wire-protocol v0 REFERENCE server
- * (`docs/WIRE-PROTOCOL.md`): a Web-standard `fetch`-style router over the OKF
- * engine, plus a thin `node:http` bootstrap. A pure consumer of
- * `@superbee/core` — no parsing/link/OKF logic lives here (see `router.ts`
- * module doc). Reference-not-production: no auth, loopback-only default bind.
+ * `@superbee/server` — the wire protocol (`docs/WIRE-PROTOCOL.md`) as a Web-standard
+ * `fetch`-style router over the OKF engine. A pure consumer of `@superbee/core` — no
+ * parsing/link/OKF logic lives here (see `router.ts` module doc). A host mounts the router from
+ * `@superbee/server/router` with its own authenticating context resolver; this root carries the
+ * route table and the reference in-memory outcome store.
  *
  * @packageDocumentation
  */
 
-export { createRouter, createRouterForBackend } from "./legacy-router.js";
-export type { LegacyRouterOptions } from "./legacy-router.js";
 export { MemoryOperationOutcomeStore } from "./operation-outcomes.js";
 export type {
   MemoryOperationOutcomeStoreOptions,
@@ -20,14 +18,3 @@ export type {
   RecordedResponse,
 } from "./operation-outcomes.js";
 export { WIRE_ENDPOINTS } from "./router.js";
-export {
-  RequestBodyTooLargeError,
-  serve,
-  requestFromIncomingMessage,
-  writeResponseToServerResponse,
-} from "./serve.js";
-export type {
-  RequestAdapterOptions,
-  ServeOptions,
-  ServerHandle,
-} from "./serve.js";

@@ -9,13 +9,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { IDBFactory } from "fake-indexeddb";
-import { RemoteBackend } from "@superbee/core";
-import { openRemoteOperationTransport } from "@superbee/core/remote-operations";
 
 import { bootstrap, commitLocal, openLocalBundle } from "../src/local-bundle.ts";
 import { createBrowserLocalRuntime, PushRoleHeldError } from "../src/platform/browser-local.ts";
 import type { LockManagerLike } from "../src/push-role.ts";
 import { BASE_URL, BUNDLE, createRemoteFixture } from "./fixtures/remote-fixture.ts";
+import { RemoteBackend } from "../../core/dist/remote-backend.js";
+import { openRemoteOperationTransport } from "../../core/dist/remote-operations.js";
 
 const immediate = { sleep: async () => {}, lookupDelayMs: 0 };
 

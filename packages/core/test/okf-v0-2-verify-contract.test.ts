@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../../ui-server/dist/bundle-router.js";
 
 import { readDocVersioned } from "../src/bundle.js";
 import { mutateDocument } from "../src/document-mutation.js";
@@ -39,7 +39,7 @@ async function harnesses(): Promise<Harness[]> {
   await memoryBackend.writeReserved("", "index.md", INDEX);
   const serverBackend = new MemoryBackend();
   await serverBackend.writeReserved("", "index.md", INDEX);
-  const router = createRouter({ root: "mem://okf-v02-verify-server", backend: serverBackend });
+  const router = createBundleRouter({ root: "mem://okf-v02-verify-server", backend: serverBackend });
   const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "okf-v02-verify", fetchImpl: router });
   return [
     { name: "filesystem", bundle: { root }, cleanup: () => rm(root, { recursive: true, force: true }) },

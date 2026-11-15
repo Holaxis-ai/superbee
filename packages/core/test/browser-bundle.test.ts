@@ -18,8 +18,8 @@
  * its persistent store candidate and `journaled-backend` the seam its sync runtime programs
  * against; `mutation`, `bundle-ops` and `document-mutation` are its
  * read/decide/CAS document mutation path; `uncertain-write` is the shared unknown-outcome
- * primitive its sync component pushes intents through, and `remote-operations` the transport
- * that carries those intents to a wire authority as identified writes; `platform` is the
+ * primitive its sync component pushes intents through; `remote` holds the wire answer parsers a
+ * host's read adapter uses; `platform` is the
  * contract a presentation programs against above both execution modes. `bundle-health` is the
  * status report a browser host computes in process, and `kinds-load` the registry load it runs.
  * `connectors` is the declaration parser and mapping contract a hosted runner shares;
@@ -58,8 +58,7 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "query-selection.js", symbol: "applyQuerySelectionFilters" },
   { module: "kinds.js", symbol: "isTerminal" },
   { module: "domain-model.js", symbol: "projectDomainModelV0" },
-  { module: "remote.js", symbol: "RemoteBackend" },
-  { module: "remote-operations.js", symbol: "createRemoteOperationTransport" },
+  { module: "remote.js", symbol: "parseHeadsAnswer" },
   { module: "storage.js", symbol: "assertSafeConceptId" },
   { module: "versioning.js", symbol: "contentVersion" },
   { module: "memory-backend.js", symbol: "MemoryBackend" },

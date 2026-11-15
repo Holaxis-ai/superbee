@@ -3,7 +3,7 @@ import test from "node:test";
 import { readFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../../ui-server/dist/bundle-router.js";
 import { parseMarkdown } from "../src/frontmatter.js";
 import { buildKindRegistry, parseConventionDoc } from "../src/kinds.js";
 import { loadKinds } from "../src/kinds-load.js";
@@ -23,7 +23,7 @@ async function adapters(run: (bundle: Bundle, storage: Bundle) => Promise<void>)
   const memory: Bundle = { root: "mem://kind-lifecycle", backend: new MemoryBackend() };
   const filesystem: Bundle = { root: dir, backend: new FilesystemBackend(dir) };
   const server: Bundle = { root: "mem://server", backend: new MemoryBackend() };
-  const remote: Bundle = { root: "wire://kind-lifecycle", backend: new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: createRouter(server) }) };
+  const remote: Bundle = { root: "wire://kind-lifecycle", backend: new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: createBundleRouter(server) }) };
   try {
     for (const [bundle, storage] of [[memory, memory], [filesystem, filesystem], [remote, server]]) await run(bundle!, storage!);
   } finally { await rm(dir, { recursive: true, force: true }); }

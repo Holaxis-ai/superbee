@@ -134,7 +134,7 @@ distinct states.
 
 `createBrowserLocalRuntime({ local, remote, transport })` accepts an existing
 `StorageBackend` for the authority's read side. A host may supply a plain structural
-adapter; it need not construct or subclass `RemoteBackend`. The runtime does not
+adapter; core exports no wire client to construct or subclass. The runtime does not
 call the adapter's mutation methods. All identified shared writes and outcome
 lookups belong to the separately injected `OperationTransport`; local commits still
 use the journaled backend and core mutation engine.
@@ -147,9 +147,13 @@ use the journaled backend and core mutation engine.
 | `syncStatus` | Report pending/conflict/refusal/completeness state, not blanket shared confirmation |
 | Create, delete, frontmatter/model edits, conflict resolution, export, lifecycle | Not verbs of `PlatformRuntime`; lower-level primitives do not imply platform or hosted support |
 
-Bootstrap is caller-owned. The existing optional structural trio `heads`, `snapshot`
-and `wireCapabilities` enables the inventory protocol used by bootstrap/pull,
-including bounded remote-deletion reconciliation. A bare `StorageBackend` can
+Bootstrap is caller-owned. A read side that also has `heads`, `snapshot` and
+`wireCapabilities` is a `WireAuthority` (exported type): a `StorageBackend` plus that
+structural trio, whose answer shapes (`HeadsOptions`, `HeadsResult`, `RemoteSnapshot`,
+`WireCapabilities`) come from `@superbee/core/remote`. It enables the inventory protocol
+used by bootstrap/pull, including bounded remote-deletion reconciliation, for each feature
+the authority's `wireCapabilities` reports. `createRequestDrivenRuntime` takes a
+`RequestDrivenAuthority`, a `WireAuthority` that also names its `origin`. A bare `StorageBackend` can
 bootstrap and refresh via list/read, but that fallback retains documents missing
 from a later listing. It is **not** a deletion-complete SaaS synchronization contract.
 The read-side type alone is not admission of an adapter's completeness, bounds or

@@ -1,6 +1,7 @@
 // Shared typed-edge vocabulary derivation: flattens a loaded `KindRegistry`'s per-kind `links`
-// declarations into one `link-type text -> declaring kind(s)` index. Consumed by the CLI's `link`
-// (write-time lint on a just-added edge) and `status` (bundle-wide `link_type_violations` sweep),
+// declarations into one `link-type text -> declaring kind(s)` index. Consumed by link findings
+// (`link-findings.ts`, the write-time lint every surface renders) and `status` (bundle-wide
+// `link_type_violations` sweep),
 // and by recipe evolution's link-type addition check, so every consumer shares ONE derivation
 // instead of each carrying its own copy (one registry, no parallel logic).
 import { parseQualifiedKindTarget } from "./qualified-links.js";
@@ -51,6 +52,24 @@ export function localEdgeQualifiedDeclaration(
   if (!declared || declared.length === 0) return null;
   const matched = declarationFor(declared, sourceType);
   return parseQualifiedKindTarget(matched.target) === null ? null : matched;
+}
+
+/**
+ * A LOCAL edge whose text is a declared type: the declaration it violates (wrong source kind, or a
+ * resolved target of another kind), else null. `targetType` undefined means the target has no
+ * document, so only the source half is checked; an empty string is an untyped target. The caller
+ * checks {@link localEdgeQualifiedDeclaration} first; this compares kinds only.
+ */
+export function localEdgeViolation(
+  declared: readonly LinkTypeDeclaration[] | undefined,
+  sourceType: string,
+  targetType: string | undefined,
+): LinkTypeDeclaration | null {
+  if (!declared || declared.length === 0) return null;
+  const matched = declarationFor(declared, sourceType);
+  const sourceOk = declared.some((d) => d.governs === sourceType);
+  const targetOk = targetType === undefined || targetType === matched.target;
+  return sourceOk && targetOk ? null : matched;
 }
 
 /**

@@ -666,6 +666,49 @@ test("link add: an alias spelling of an existing target is refused, while an abs
   }
 });
 
+// An alias spelling of an existing DIRECTORY with an absent leaf: core's observation confirms the
+// existing prefix before reporting absence, so link add, the read, and the write it would suggest
+// agree. Decided by whether the host equates THIS pair ('concepts' / 'Concepts'), never the
+// aggregate class: on a case-sensitive volume `Concepts/` is a distinct directory and the link is
+// an ordinary forward declaration whose suggested write succeeds.
+test("link add: an alias spelling of an existing directory prefix is refused like a leaf alias, and agrees with read and write", async () => {
+  const aliasing = hostAliasesPair(await detectHostAliasing(), "concepts", "Concepts");
+  const { dir, cleanup } = await makeFixtureBundle();
+  try {
+    const before = await readDocVersioned({ root: dir }, "concepts/a");
+    const refusal = (err: unknown) => {
+      assert.ok(err instanceof FilesystemIdentityAliasError, `expected the typed alias verdict, got ${String(err)}`);
+      assert.equal(err.segment, "Concepts");
+      assert.equal(err.existing, "concepts");
+      assert.equal(toExit(err).exitCode, 2);
+      const cli = classifyBundleError(err);
+      assert.equal(cli.help, `use the existing spelling: concepts/${err.rel.split("/").pop()}`);
+      assert.deepEqual(cli.details, { reason: "filesystem_alias", path: err.rel, segment: "Concepts", existing: "concepts" });
+      return true;
+    };
+    const write = () => writeDoc({ root: dir }, {
+      id: "Concepts/not-yet",
+      frontmatter: { type: "Concept", title: "N", timestamp: OLD_TS },
+      body: "N.",
+    });
+    if (aliasing) {
+      await assert.rejects(() => linkAdd(dir, ["concepts/a", "Concepts/not-yet"]), refusal);
+      await assert.rejects(() => readDoc({ root: dir }, "Concepts/not-yet"), refusal);
+      await assert.rejects(write, refusal);
+      const after = await readDocVersioned({ root: dir }, "concepts/a");
+      assert.equal(after.version, before.version);
+      assert.deepEqual(parseLinks({ root: dir }, after.doc), []);
+    } else {
+      const distinct = await linkAdd(dir, ["concepts/a", "Concepts/not-yet"]);
+      assert.equal((distinct.warnings as Array<Record<string, unknown>>)[0]!.code, "LINK_TARGET_ABSENT");
+      await write();
+      assert.equal((await readDoc({ root: dir }, "Concepts/not-yet")).body.trim(), "N.");
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
 test("link add: a PRESENT target's success receipt is byte-identical to the pre-fix envelope (no warnings key at all)", async () => {
   const { dir, cleanup } = await makeFixtureBundle();
   try {

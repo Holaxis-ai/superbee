@@ -14,7 +14,6 @@ import { sha256Hex } from "@superbee/core/versioning";
 import { decodePresentDocumentRequestV1, decodePresentDocumentReceiptV1, type DocumentObservationV1, type PresentDocumentReceiptV1 } from "@superbee/core/artifact-contract";
 import { readDocVersioned, type Bundle } from "@superbee/core";
 import { parseRegistration } from "@superbee/core/page";
-import { createRouter } from "@superbee/server";
 import type { UiManagementOptions } from "@superbee/ui-server";
 import {
   assertResolvedLocalRouteIdentity,
@@ -52,7 +51,7 @@ Usage:
 
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd) — mounts the
-                         reference router in-process
+                         bundle's wire routes in-process
   --port <p>            Port to bind (default: 0 — an OS-assigned ephemeral port)
   --actor <name>        Advisory identity for human-confirmed local View actions. Precedence:
                          --actor > SUPERBEE_ACTOR > absent. On an
@@ -434,7 +433,6 @@ async function runUi({ values }: ParsedUiArgs, deps: Partial<UiCliDeps>): Promis
   const options: UiServerOptions = {
     mode: "dir",
     port,
-    router: createRouter(bundle),
     bundle,
     actor,
     renderDocumentOpenCommand,

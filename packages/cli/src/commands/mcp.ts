@@ -115,7 +115,7 @@ Options:
   -h, --help            Show this help
 
 The command removes only a registration proven to belong to the durable Superbee installation.
-Foreign and legacy registrations are left untouched.
+Registrations under other names are left untouched.
 `;
 
 export interface McpCliDeps {

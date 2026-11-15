@@ -24,6 +24,14 @@ export type PublicationSnapshotV1 = DeepReadonly<GeneratedPublicationSnapshotV1>
 
 export interface CapturePublicationSnapshotOptionsV1 {
   schema: typeof PUBLICATION_SNAPSHOT_V1;
+  /**
+   * `root` must be an absolute, canonical directory path: exactly what `await fs.realpath(root)`
+   * returns. Capture never follows or normalizes it, because root identity is re-checked during
+   * capture to catch substitution. A symlinked root, or one reached through a symlinked parent
+   * (macOS `/var` -> `/private/var`, so `os.tmpdir()` paths) or spelled in another case, is refused
+   * with `INVALID_OBJECT_IDENTITY`; that error's `actual` is the path given and `expected` is the
+   * resolved path to pass instead.
+   */
   source: { kind: "filesystem"; root: string };
   maxAttempts?: 1 | 2 | 3;
   limits?: {

@@ -16,13 +16,14 @@ so a change to one of those functions should be mirrored in the spec.
 
 ## Status: fixes on `main` and design targets
 
-The original models each have one `*.fixed.cfg` whose invariants and properties must all hold, and a set of
+The original models each have a `*.fixed.cfg` (filesystem-lock splits it in two to fit the CI budget) whose invariants and properties must all hold, and a set of
 variant configs that must each produce one named counterexample. The fixed configs turn on knobs
 that model fixes. Some of those fixes are on `main`; the others are design targets that `main`
 does not implement:
 
-- `FsLock.fixed.cfg` models the owner re-checks before quarantine and before a "stale" diagnosis,
-  which are on `main` (#310).
+- `FsLock.fixed.cfg` and `FsLock.fixed-stall.cfg` model the owner re-checks before quarantine and
+  before a "stale" diagnosis (#310), and the abandoned-claim removal and `rmdir` rollback (#670),
+  which are on `main`.
 - `WorkingCopy.fixed.cfg` models pull consistency (#314) and one `sync()` at a time per runtime
   (#311), which are on `main`. It also turns on `AckInvalidates` (an acknowledgement drops the
   recorded heads digest), implemented by acknowledgement markers on `main` (#317).
@@ -99,7 +100,9 @@ contending one-shot processes that each claim, mutate and release. Callers are s
 
 | Config | Checks | Expected |
 | --- | --- | --- |
-| `FsLock.fixed.cfg` | Mutual exclusion (`M1`), a holder's record stays at the lock path (`M2`), quarantine destinations hold only their dead owner's directory (`Fence`), rollback never meets a foreign record (`NoImpossible`), and honest "retry" and "stale" diagnoses; three contenders, plain and `ifAvailable` callers, crashes | pass |
+| `FsLock.fixed.cfg` | Mutual exclusion (`M1`), a holder's record stays at the lock path (`M2`), quarantine destinations hold only their dead owner's directory (`Fence`), rollback never meets a foreign record (`NoImpossible`), and honest "retry" and "stale" diagnoses; three contenders, plain and `ifAvailable` callers, crashes, removal of an owner-less lock left by a crashed claimer with `rmdir`, and failed owner writes rolled back with `rmdir` (#670) | pass |
+| `FsLock.fixed-stall.cfg` | The same invariants with one live claimer suspended until its owner-less directory passes the abandoned-claim age, so another claimer removes it; three store-lock contenders, crashes, failed owner writes. Split from `FsLock.fixed.cfg` because the stall with `ifAvailable` callers does not finish within the CI budget | pass |
+| `FsLock.bug-rename-rollback.cfg` | Before #670's review fix, rollback renamed its verified directory aside: another claimer removes it as abandoned, a third claims the path, and the rename moves that live lock away | `M1` violated |
 | `FsLock.bug-quarantine-aba.cfg` | Before the quarantine re-check was added (#310), a lock released and reclaimed after the owner snapshot is moved aside while held | `M1` violated |
 | `FsLock.bug-stale-diagnosis.cfg` | Before the diagnosis re-check was added (#310), a live replacement lock is reported as stale | `StaleDiagAccurate` violated |
 | `FsLock.bug-pid-reuse-diagnosis.cfg` | Open: a crashed holder's reused pid keeps plain and waiting callers on a "retry" diagnosis | `RetryDiagAccurate` violated |
@@ -119,6 +122,27 @@ Assumptions the fixed config relies on:
 - The filesystem reports directory birth times, and POSIX rename semantics hold (renaming onto a
   non-empty directory fails).
 - Owner-record reads are definitive; the code polls transient read errors out and fails closed.
+- A live claimer is suspended past the abandoned-claim age at most once per behavior. Each such
+  removal lets every other claimer claim again without spending its wait budget, and this bound
+  keeps the stall config checkable. The bound does not hide an `M1` or `M2` violation: abandoned
+  removal and rollback remove only a directory with no owner record, a holder always has its
+  record, and an opened owner record pins its directory, so no number of empty-directory removals
+  can unseat a holder. One stall already reaches a claimer observing another claimer's directory.
+- The real removal age comes from the directory's mtime; the model abstracts it as "the creator is
+  dead or stalled". This over-approximates removals; the paths it drops end only in busy or
+  malformed diagnoses, which are always accurate.
+- `WriteFault` models only the owner-file create failing. A failure after a successful open leaves
+  an empty record, which rmdir refuses, so it is equivalent to a crash at the write and affects
+  liveness only.
+
+Coverage limits of the two fixed configs:
+
+- `FsLock.fixed-stall.cfg` uses plain callers only; a stall with `ifAvailable` callers did not
+  finish within 9 million states.
+- Neither fixed config includes `wait` callers.
+- `FsLock.fixed.cfg` keeps main's constants and invariants and adds `WriteFault`. An aged
+  directory with no owner record now goes through a removal attempt instead of straight to the
+  wait check, which matches the code; only always-accurate diagnoses depended on the old branch.
 
 ## intent-journal
 

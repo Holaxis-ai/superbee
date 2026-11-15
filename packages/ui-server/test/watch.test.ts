@@ -15,7 +15,7 @@ import {
   writeDoc,
   type Bundle,
 } from "@superbee/core";
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../src/bundle-router.js";
 import { bootUiServer } from "../src/server.js";
 import { HELD_HINT_MAX_WAIT_MS, startWatcher, watchDirectory, type ChangeEvent } from "../src/watch.js";
 
@@ -470,7 +470,7 @@ test("live revocation: a bridge read is refused at once while the watcher has no
   await writeDoc(bundle, { id: REGISTRY, frontmatter: { type: "View", title: "Board", entry: "views/board.html", access: "bundle-read" }, body: "" });
   await writeBlob(bundle, "views/board.html", new TextEncoder().encode("<!doctype html>"), "text/html; charset=utf-8");
   const server = await bootUiServer({
-    mode: "dir", bundle, router: createRouter(bundle), sessionSecret: "watch-secret",
+    mode: "dir", bundle, router: createBundleRouter(bundle), sessionSecret: "watch-secret",
     renderDocument: ({ id, body }) => ({ html: `<article data-id="${id}">${body}</article>`, bounded: false }),
     serveAsset: () => ({ status: 404, headers: { "content-type": "text/plain; charset=utf-8" }, body: new Uint8Array() }),
   });
@@ -505,6 +505,14 @@ test("native notifications name the changed path relative to the root, including
     watch: (dir, notify) => watchDirectory(dir, (filename) => { seen.push(filename); notify(filename); }),
   });
   t.after(() => handle.stop());
+  // macOS starts the FSEvents stream after fs.watch returns, so a write made at once can go
+  // unreported. Write a probe until the watcher reports one, then make the writes under test.
+  for (let waited = 0; waited < 15_000 && seen.length === 0; waited += 50) {
+    await writeFile(path.join(root, ".git", "ready"), String(waited));
+    await sleep(50);
+  }
+  assert.ok(seen.length > 0, "the native watcher reported no change within 15 s");
+  seen.length = 0;
   await writeFile(path.join(root, ".git", "index"), "x");
   await writeDoc(bundle, { id: "docs/native", frontmatter: { type: "Doc", title: "Native" }, body: "" });
   for (let waited = 0; waited < 15_000 && !events.some((e) => e.docs.changed.some((d) => d.id === "docs/native")); waited += 50) await sleep(50);

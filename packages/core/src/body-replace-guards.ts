@@ -5,8 +5,17 @@ import { isQualifiedHref, parseQualifiedHref } from "./qualified-links.js";
 import { InvalidInputError } from "./errors.js";
 import type { KindConvention } from "./kinds.js";
 import type { Bundle, Link, OkfDocument } from "./types.js";
+import { bodyPage } from "./body-pages.js";
 
+/** The preview bound, in characters, for records that may list many bodies (`doc history`,
+ * `sync show-incoming`). */
 export const BODY_PREVIEW_LIMIT = 1000;
+
+/** The `doc read` record's body bound, in UTF-8 bytes: a body this size or smaller arrives whole.
+ * Agents mostly read through a shell tool, and Claude Code reads back at most 30,000 characters of
+ * a command's output by default (`BASH_MAX_OUTPUT_LENGTH`); 20 KiB of body leaves room for the
+ * frontmatter, string escaping and help inside that. */
+export const DOC_READ_PREVIEW_BYTES = 20_480;
 
 export const BODY_PREVIEW_TRUNCATION_MARKER = "[superbee:body-preview-truncated]";
 
@@ -27,29 +36,76 @@ export const BODY_PREVIEW_RESERVED_KEYS: readonly string[] = [
   "help",
 ];
 
+/** Record fields a truncated preview adds that a document's own frontmatter may also use. They are
+ * claimed only on a truncated record; a document value already there moves to `frontmatter_<key>`,
+ * so the document's field stays visible. */
+function truncatedRecordKeys(paged: boolean): readonly string[] {
+  return paged ? ["warning", "next_offset"] : ["warning"];
+}
+
+/** Where a preview stops, for its help to continue from. */
+export interface BodyPreviewCut {
+  readonly shownChars: number;
+  readonly nextOffset: number;
+}
+
+/** The leading slice of `body` a preview shows, or undefined when the whole body fits. Without
+ * `pageBytes` the bound is BODY_PREVIEW_LIMIT characters; with it, the preview is exactly the first
+ * `doc read --offset 0 --max-bytes <pageBytes>` page, so `--offset <next_offset>` continues it. */
+function previewSlice(body: string, pageBytes?: number): string | undefined {
+  if (pageBytes === undefined) return body.length > BODY_PREVIEW_LIMIT ? body.slice(0, BODY_PREVIEW_LIMIT) : undefined;
+  const page = bodyPage(body, 0, pageBytes)!;
+  return page.range.complete ? undefined : page.body;
+}
+
+/**
+ * Put `body` on `rec` whole, or, when it is over the bound, as a marked `body_preview`. A truncated
+ * record leads with a `warning` sentence and `body_truncated`, so a reader who stops at the first
+ * line still learns the value is partial.
+ */
 export function attachBodyPreview(
   rec: Record<string, unknown>,
   body: string,
-  fullBodyHelp: readonly string[],
+  fullBodyHelp: readonly string[] | ((cut: BodyPreviewCut) => readonly string[]),
+  options: { pageBytes?: number } = {},
 ): void {
-  if (body.length <= BODY_PREVIEW_LIMIT) {
+  const shown = previewSlice(body, options.pageBytes);
+  if (shown === undefined) {
     rec.body = body;
     return;
   }
-  const omitted = body.length - BODY_PREVIEW_LIMIT;
-  rec[BODY_PREVIEW_KEY] =
-    `${body.slice(0, BODY_PREVIEW_LIMIT)}\n\n${previewTruncationNotice(omitted)} — this value is a ` +
-    `preview, not the document body; use this record's help to read the complete body before ` +
+  const cut: BodyPreviewCut = { shownChars: shown.length, nextOffset: shown.length };
+  const omitted = body.length - shown.length;
+  const claimed = truncatedRecordKeys(options.pageBytes !== undefined);
+  const rest: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(rec)) {
+    rest[claimed.includes(key) ? `frontmatter_${key}` : key] = value;
+    delete rec[key];
+  }
+  rec.warning =
+    `body truncated: body_preview shows the first ${shown.length} of ${body.length} characters and is ` +
+    `not the document body. Read the complete body with the first help command before judging or ` +
     `rewriting it.`;
   rec.body_truncated = true;
   rec.body_chars = body.length;
-  rec.help = [...fullBodyHelp];
+  Object.assign(rec, rest);
+  rec[BODY_PREVIEW_KEY] =
+    `${shown}\n\n${previewTruncationNotice(omitted)}. This value is a preview, not the document ` +
+    `body; read the complete body with this record's help before rewriting it.`;
+  if (options.pageBytes !== undefined) rec.next_offset = cut.nextOffset;
+  rec.help = [...(typeof fullBodyHelp === "function" ? fullBodyHelp(cut) : fullBodyHelp)];
+}
+
+/** Spellings that change no text a reader sees: a byte-order mark, CRLF or CR line endings, and
+ * surrounding whitespace. */
+function previewComparable(text: string): string {
+  return text.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").trim();
 }
 
 function matchesPreviewSlice(candidate: string, preview: string): boolean {
   if (candidate === preview) return true;
-  const trimmed = preview.trimEnd();
-  return trimmed !== "" && candidate.trimEnd() === trimmed;
+  const comparable = previewComparable(preview);
+  return comparable !== "" && previewComparable(candidate) === comparable;
 }
 
 
@@ -77,8 +133,11 @@ export function bodyPreviewFinding(existing: OkfDocument, nextBody: string): Bod
   if (isSameStoredBody(nextBody, existing.body)) return;
   const notice = firstForeignNotice(existing.body, nextBody);
   if (notice !== undefined) return { reason: "preview_marker", marker: BODY_PREVIEW_TRUNCATION_MARKER, notice };
-  if (existing.body.length > BODY_PREVIEW_LIMIT && matchesPreviewSlice(nextBody, existing.body.slice(0, BODY_PREVIEW_LIMIT))) {
-    return { reason: "stored_body_preview", preview_limit: BODY_PREVIEW_LIMIT, supplied_body_chars: nextBody.length, stored_body_chars: existing.body.length };
+  for (const pageBytes of [undefined, DOC_READ_PREVIEW_BYTES]) {
+    const preview = previewSlice(existing.body, pageBytes);
+    if (preview !== undefined && matchesPreviewSlice(nextBody, preview)) {
+      return { reason: "stored_body_preview", preview_limit: preview.length, supplied_body_chars: nextBody.length, stored_body_chars: existing.body.length };
+    }
   }
 }
 

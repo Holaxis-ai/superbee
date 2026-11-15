@@ -563,6 +563,29 @@ class PerDocFailureBackend extends MemoryBackend {
   }
 }
 
+/** Fails a whole batch that holds a listed-but-gone or malformed id, as `readMany` does; counts reads. */
+class OneBadIdBackend extends MemoryBackend {
+  batchIdsRead = 0;
+  singleReads = 0;
+
+  override async list(prefix?: string): Promise<ConceptId[]> {
+    return [...(await super.list(prefix)), "gone", "broken"];
+  }
+
+  override async readMany(ids: ConceptId[]) {
+    this.batchIdsRead += ids.length;
+    if (ids.includes("gone")) throw Object.assign(new Error("listed document vanished"), { code: "ENOENT" });
+    if (ids.includes("broken")) throw new MalformedDocumentError("broken", new Error("bad yaml"));
+    return Promise.all(ids.map((id) => super.read(id)));
+  }
+
+  override async read(id: ConceptId) {
+    this.singleReads++;
+    if (id === "broken") throw new MalformedDocumentError("broken", new Error("bad yaml"));
+    return super.read(id);
+  }
+}
+
 test("query owns deterministic id ordering even when a backend returns reversed ids", async () => {
   const backend = new ReverseListBackend();
   const bundle: Bundle = { root: "mem://reverse", backend };
@@ -597,6 +620,22 @@ test("query never converts arbitrary batch or fallback read failures into vanish
     (error: unknown) => error === fallback.failure,
   );
   assert.deepEqual(skipped, []);
+});
+
+test("a vanished or malformed id costs a few more batch reads, not one unbatched read per document", async () => {
+  // Unbatched filesystem reads list the document's directory each time, so a per-id fallback over
+  // a large flat bundle turned one scan from about 1 s into about 30 s of CPU.
+  const backend = new OneBadIdBackend();
+  const ids = Array.from({ length: 1000 }, (_, index) => `notes/n${String(index).padStart(4, "0")}`);
+  for (const id of ids) await backend.write(id, doc(id, { type: "T", timestamp: T }));
+  const skipped: { id: string }[] = [];
+  const heads = await queryHeads({ root: "mem://one-bad-id", backend }, {}, { onSkip: (entry) => skipped.push(entry) });
+  assert.deepEqual(heads.map((head) => head.id), ids);
+  assert.deepEqual(skipped.map((entry) => entry.id), ["broken"]);
+  assert.ok(backend.singleReads <= 4, `single reads: ${backend.singleReads}`);
+  // At most the bad ids and a neighbour each read alone; the first batch plus one halving path per
+  // bad id stays well under three passes over the ids.
+  assert.ok(backend.batchIdsRead <= 3 * ids.length, `ids read in batches: ${backend.batchIdsRead}`);
 });
 
 test("parseLinks remains the public path to the one markdown-link resolver", () => {

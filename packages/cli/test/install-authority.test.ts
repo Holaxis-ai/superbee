@@ -78,7 +78,7 @@ test("durable authority canonicalizes a symlinked npm prefix before comparing it
   assert.equal(result.evidence.runtime_path, `${canonical}/bin/node`);
 });
 
-test("renamed bridge package bytes can authorize legacy-bin persistent hook writes", () => {
+test("the retired @holaxis/aslite bridge package cannot authorize persistent hook writes", () => {
   const result = classifyPersistentInstallAuthority(
     durableFixture({
       prefix: "/opt/aslite-npm",
@@ -86,11 +86,7 @@ test("renamed bridge package bytes can authorize legacy-bin persistent hook writ
       command: "aslite",
     }),
   );
-  assert.equal(result.allowed, true);
-  assert.equal(result.state, "durable_global");
-  assert.equal(result.evidence.bin_path, "/opt/aslite-npm/bin/aslite");
-  assert.equal(result.evidence.npm_prefix, "/opt/aslite-npm");
-  assert.equal(result.evidence.runtime_path, "/opt/aslite-npm/bin/node");
+  assert.equal(result.allowed, false);
 });
 
 test("canonical package bytes cannot authorize through a legacy alias", () => {

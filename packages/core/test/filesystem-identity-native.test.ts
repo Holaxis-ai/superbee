@@ -397,6 +397,54 @@ test("AC-15b (cond): concurrent first creation of a full-case-folding pair never
   }
 });
 
+// ── the one fold against this disk ──────────────────────────────────────────────
+
+/**
+ * Spelling pairs with the verdict of the one fold (`foldPath`, which the lock key derives from).
+ * The disk's own verdict is measured per pair; the key must join every pair the disk joins, and
+ * a pair the fold keeps apart must be two documents wherever the disk keeps it apart.
+ */
+const DISK_FOLD_PAIRS: Array<{ a: string; b: string; folds: boolean }> = [
+  { a: "A", b: "a", folds: true },
+  { a: "é", b: "é", folds: true },
+  { a: "ᾈ", b: "ἀι", folds: true },
+  { a: "ﬁ", b: "fi", folds: true },
+  { a: "ß", b: "ss", folds: true },
+  { a: "ſ", b: "s", folds: true },
+  { a: "ς", b: "σ", folds: true },
+  { a: "İ", b: "i", folds: false },
+  { a: "ｒ", b: "r", folds: false },
+  { a: "①", b: "1", folds: false },
+];
+
+test("one fold: the lock key joins every pair this disk joins, and compatibility spellings stay two documents", async () => {
+  for (const { a, b, folds } of DISK_FOLD_PAIRS) {
+    const label = `${[...a].map((ch) => ch.codePointAt(0)!.toString(16)).join(" ")} / ${[...b].map((ch) => ch.codePointAt(0)!.toString(16)).join(" ")}`;
+    const [first, second] = [`concepts/x${a}`, `concepts/x${b}`];
+    const diskJoins = await nativeAliasesPair(first, second);
+    const keyJoins = (await identityKey("/x/bundle", `${first}.md`)) === (await identityKey("/x/bundle", `${second}.md`));
+    assert.equal(keyJoins, folds, `fold verdict (${label})`);
+    // A disk that joins what the key separates would let two first-creation writers both win.
+    if (diskJoins) assert.ok(keyJoins, `this disk joins a pair the lock key separates (${label})`);
+    const root = await tempRoot("fold-pair");
+    try {
+      const store = new FilesystemBackend(root);
+      await store.write(first, doc(first, "first"));
+      const attempt = store.write(second, doc(second, "second"));
+      if (diskJoins) {
+        await assert.rejects(() => attempt, FilesystemIdentityAliasError, label);
+        assert.deepEqual(await readdir(path.join(root, "concepts")), [`x${a}.md`], label);
+      } else {
+        await attempt;
+        assert.equal((await store.read(first)).doc.body.trimEnd(), "first", label);
+        assert.equal((await store.read(second)).doc.body.trimEnd(), "second", label);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
 // ── AC-4 first creation through the production link binding ──────────────────
 
 // The port's `link` classification is what makes a first creation fail closed on names the host

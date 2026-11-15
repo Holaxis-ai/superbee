@@ -1,6 +1,6 @@
 {
   "name": "@superbee/core",
-  "version": "0.2.0-pre.41",
+  "version": "0.2.0-pre.44",
   "type": "module",
   "description": "OKF store engine \u2014 bundle I/O, cross-links, derived backlinks, freshness, and versioned writes.",
   "license": "Apache-2.0",
@@ -91,9 +91,21 @@
       "types": "./dist/kinds.d.ts",
       "default": "./dist/kinds.js"
     },
+    "./kind-undeclared-fields": {
+      "types": "./dist/kind-undeclared-fields.d.ts",
+      "default": "./dist/kind-undeclared-fields.js"
+    },
     "./links": {
       "types": "./dist/links.d.ts",
       "default": "./dist/links.js"
+    },
+    "./relationships": {
+      "types": "./dist/relationships.d.ts",
+      "default": "./dist/relationships.js"
+    },
+    "./link-findings": {
+      "types": "./dist/link-findings.d.ts",
+      "default": "./dist/link-findings.js"
     },
     "./qualified-links": {
       "types": "./dist/qualified-links.d.ts",
@@ -158,10 +170,6 @@
     "./remote": {
       "types": "./dist/remote.d.ts",
       "default": "./dist/remote.js"
-    },
-    "./remote-operations": {
-      "types": "./dist/remote-operations.d.ts",
-      "default": "./dist/remote-operations.js"
     },
     "./hosted-transport": {
       "types": "./dist/hosted-transport/index.d.ts",

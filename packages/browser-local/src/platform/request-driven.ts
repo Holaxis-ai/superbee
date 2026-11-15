@@ -1,6 +1,6 @@
 /**
  * The request-driven implementation of the platform contract: every verb is a request to the
- * shared authority through a `RemoteBackend`, and every answer is `shared-confirmed` at the
+ * shared authority through a {@link RequestDrivenAuthority}, and every answer is `shared-confirmed` at the
  * version the authority returned, because the authority itself produced it. There is no
  * working copy, so nothing is ever pending: a commit that cannot reach the authority rejects
  * with the carrier error, and the authority is unchanged.
@@ -12,7 +12,7 @@
  * handing out a runtime whose every verb would fail.
  */
 
-import type { Bundle, ConceptId, QueryFilter, RemoteBackend, ValidationWarning } from "@superbee/core";
+import type { Bundle, ConceptId, QueryFilter, ValidationWarning } from "@superbee/core";
 import { queryHeads, readDocVersioned } from "@superbee/core/bundle-ops";
 import { mutateDocument } from "@superbee/core/document-mutation";
 import type { KindRegistry } from "@superbee/core/kinds";
@@ -28,10 +28,16 @@ import {
   type PlatformValidation,
 } from "@superbee/core/platform";
 
+import type { WireAuthority } from "../local-bundle.js";
 import { isAuthorityAnswer, isInputError, kindWarningsFor } from "./shared.js";
 
+/** A {@link WireAuthority} that also names the origin it reads, used as the bundle root. */
+export interface RequestDrivenAuthority extends WireAuthority {
+  readonly origin: string;
+}
+
 export interface RequestDrivenRuntimeOptions {
-  remote: RemoteBackend;
+  remote: RequestDrivenAuthority;
   /** Write attribution for commits; omitted, the authority attributes as it sees fit. */
   actor?: string;
   /** Clock for the edition metadata a commit stamps; the contract kit fixes it so both modes mint one version. */

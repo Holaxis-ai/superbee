@@ -8,7 +8,7 @@ import { KNOWN_COMMANDS } from "../src/cli.js";
 import { view } from "../src/commands/view.js";
 import { COMMAND_GROUPS } from "../src/reference.js";
 import { bootUiServer, type UiServerHandle } from "@superbee/ui-server";
-import { createRouter } from "@superbee/server";
+import { createBundleRouter } from "../../ui-server/dist/bundle-router.js";
 import { CliError } from "../src/errors.js";
 import type { ManagedUiControllerOptions } from "../src/ui/managed-authority.js";
 
@@ -64,7 +64,7 @@ test("view open drives the real managed handoff for the exact selected View with
     spawnWorker: async (input) => {
       spawns++;
       server = await bootUiServer({
-        mode: "dir", bundle, router: createRouter(bundle), sessionSecret: SESSION,
+        mode: "dir", bundle, router: createBundleRouter(bundle), sessionSecret: SESSION,
         sessionCookieName: "superbee_test_view_open", renderDocument: ({ body }) => ({ html: body, bounded: false }),
         serveAsset: () => ({ status: 200, headers: {}, body: new TextEncoder().encode("shell") }),
         management: { secret: input.management_secret, identity: {

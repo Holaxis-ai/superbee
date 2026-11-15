@@ -1,4 +1,8 @@
 /**
+ * Internal: not exported from any package entry point. It is the client the repository's router
+ * and sync tests drive the wire protocol with; packages outside core import it from core's built
+ * output by relative path.
+ *
  * `RemoteBackend` — a {@link StorageBackend} implemented over the wire-protocol v0
  * reference contract (`docs/WIRE-PROTOCOL.md`, `@superbee/server`).
  *
@@ -139,26 +143,9 @@ export interface RemoteBackendOptions {
 // backend calls; it stays importable from here for every existing consumer.
 export { RemoteError } from "./remote-error.js";
 
-/** The deployment-scoped capability booleans a wire authority reports (`docs/WIRE-PROTOCOL.md`). */
-export interface WireCapabilities {
-  history: boolean;
-  enforced_cas: boolean;
-  projections: boolean;
-  backlinks: boolean;
-  blobs: boolean;
-  /** Whether document writes carrying `Idempotency-Key` are recorded and readable by lookup. */
-  operations: boolean;
-  /** Whether `GET /heads` answers every document id and version under one digest, with `304`. */
-  heads: boolean;
-  /** Whether `GET /snapshot` streams every document as terminated NDJSON. */
-  snapshot: boolean;
-}
-
-/** Options for {@link RemoteBackend.heads}. */
-export interface HeadsOptions {
-  /** A digest from an earlier `heads` or `snapshot` answer; the authority answers `304` when it still holds it. */
-  ifNoneMatch?: string;
-}
+// The wire answer shapes live with their parsers, where a host's own read adapter imports them.
+export type { HeadsOptions, WireCapabilities } from "./remote-parsers.js";
+import type { HeadsOptions, WireCapabilities } from "./remote-parsers.js";
 
 /** An ENOENT-shaped rejection so missing-document handling matches the local adapters. */
 function notFound(id: string): NodeJS.ErrnoException {

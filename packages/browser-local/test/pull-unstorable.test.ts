@@ -5,11 +5,12 @@ import assert from "node:assert/strict";
 
 import { FrontmatterRefusedError } from "@superbee/core/document-codec";
 import type { ConceptId, OkfDocument, ReadResult, StorageBackend } from "@superbee/core";
-import { headsDigest, sortHeads, type DocumentHead, type RemoteBackend, type WireCapabilities } from "@superbee/core/remote";
+import { headsDigest, sortHeads, type DocumentHead, type WireCapabilities } from "@superbee/core/remote";
 
 import { baseKey, bootstrap, commitLocal, openLocalBundle, pull, syncStatus, type LocalBundle, type PullMarker, type SharedBase } from "../src/local-bundle.ts";
 import { createBrowserLocalRuntime } from "../src/platform/browser-local.ts";
 import { MemoryJournaledBackend } from "./fixtures/memory-journaled-backend.ts";
+import type { RemoteBackend } from "../../core/dist/remote-backend.js";
 
 const BIG = { type: "Note", title: "Big", blob: "x".repeat(300 * 1024) };
 

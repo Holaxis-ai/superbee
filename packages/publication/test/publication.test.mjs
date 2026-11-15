@@ -535,3 +535,38 @@ test("a bundle-read View's render-document has no anchors, whatever the handle o
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("an aliased or symlinked root is refused with the resolved path to pass instead", async () => {
+  const { root } = await fixture();
+  const holder = await realpath(await mkdtemp(path.join(os.tmpdir(), "superbee-publication-alias-")));
+  try {
+    const linkedParent = path.join(holder, "parent-link");
+    await symlink(path.dirname(root), linkedParent);
+    const linkedRoot = path.join(holder, "root-link");
+    await symlink(root, linkedRoot);
+    const cases = [
+      { given: path.join(linkedParent, path.basename(root)), shape: /is not in canonical form \(it resolves to / },
+      { given: linkedRoot, shape: /is a symlink to / },
+    ];
+    for (const { given, shape } of cases) {
+      await assert.rejects(
+        capturePublicationSnapshot({ schema: PUBLICATION_SNAPSHOT_V1, source: { kind: "filesystem", root: given } }),
+        (error) => {
+          assert.ok(error instanceof PublicationError);
+          assert.equal(error.code, "INVALID_OBJECT_IDENTITY");
+          assert.equal(error.actual, given);
+          assert.equal(error.expected, root);
+          assert.match(error.message, shape);
+          assert.ok(error.message.includes(JSON.stringify(root)));
+          assert.match(error.message, /pass the resolved path \(await fs\.realpath\(root\)\)/);
+          return true;
+        },
+      );
+    }
+    const handle = await capturePublicationSnapshot({ schema: PUBLICATION_SNAPSHOT_V1, source: { kind: "filesystem", root } });
+    await handle.close();
+  } finally {
+    await rm(holder, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -1366,6 +1366,7 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
       case "doc-read":
         return await handleReadDoc(backend, (resolved.resource as { kind: "doc"; id: ConceptId }).id);
       case "doc-write": {
+        // No canonical-id create rule here: this is the storage-seam transport, which carries ids that already exist elsewhere.
         const { id } = resolved.resource as { kind: "doc"; id: ConceptId };
         const write = () => handleWriteDoc(backend, attribution, id, req);
         return identity === null ? await write() : await applyIdentified(resolved.bundleId, identity, "PUT", id, write);

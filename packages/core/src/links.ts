@@ -141,6 +141,8 @@ export function extractMarkdownLinkSpans(source: string, options: { skipCode?: b
   const body = options.skipCode ? maskMarkdownCode(source) : source;
   const out: MarkdownLinkSpan[] = [];
   let textOpen = -1;
+  let codeOpen = -1; // last `[` inside code while textOpen is outside code
+  let masked: string | undefined; // the code-masked body, computed only when a plain scan needs it
   let afterClose: { open: number; close: number } | undefined;
   let hrefFirst: { open: number; close: number; hrefStart: number } | undefined;
   let hrefRest: { open: number; close: number; hrefStart: number } | undefined;
@@ -148,10 +150,13 @@ export function extractMarkdownLinkSpans(source: string, options: { skipCode?: b
   for (let cursor = 0; cursor < body.length; cursor++) {
     const char = body[cursor]!;
 
-    // This is a constant-state simulation of the former
-    // /\[([^\]]*)\]\(([^)\s]+)\)/g expression. Keeping only the earliest
-    // candidate in each state preserves the regex's leftmost-first behavior
-    // without backtracking over hostile input.
+    // This is a constant-state simulation of /\[([^[\]]*)\]\(([^)\s]+)\)/g.
+    // Keeping only the earliest candidate in each state preserves the regex's
+    // leftmost-first behavior without backtracking over hostile input. Link text
+    // opens at the LAST `[` before its `]`, so a stray `[` earlier (in code or
+    // prose) is literal text, not the start of the next link. The one exception:
+    // a `[` inside code does not replace a `[` already open outside code, unless
+    // the `]` closing the text is inside code too (a link written wholly in code).
     if (hrefRest) {
       if (char === ")") {
         const image = hrefRest.open > 0 && body[hrefRest.open - 1] === "!";
@@ -165,6 +170,7 @@ export function extractMarkdownLinkSpans(source: string, options: { skipCode?: b
           image,
         });
         textOpen = -1;
+        codeOpen = -1;
         afterClose = undefined;
         hrefFirst = undefined;
         hrefRest = undefined;
@@ -188,10 +194,21 @@ export function extractMarkdownLinkSpans(source: string, options: { skipCode?: b
     }
 
     if (textOpen >= 0 && char === "]") {
-      afterClose = { open: textOpen, close: cursor };
+      const open = codeOpen >= 0 && masked![cursor] !== "]" ? codeOpen : textOpen;
+      afterClose = { open, close: cursor };
       textOpen = -1;
+      codeOpen = -1;
     }
-    if (char === "[" && textOpen < 0) textOpen = cursor;
+    if (char === "[") {
+      // A `[` inside code never takes over link text already opened outside code, so the
+      // plain scan and the code-masked scan agree on where such a link starts.
+      if (textOpen >= 0 && !options.skipCode) {
+        masked ??= maskMarkdownCode(source);
+        if (masked[cursor] !== "[" && masked[textOpen] === "[") { codeOpen = cursor; continue; }
+      }
+      textOpen = cursor;
+      codeOpen = -1;
+    }
   }
   return out;
 }

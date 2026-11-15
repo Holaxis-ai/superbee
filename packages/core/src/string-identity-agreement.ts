@@ -13,7 +13,7 @@ export interface PathFoldRow {
   /** What the row exercises. */
   readonly note: string;
   readonly input: string;
-  /** `input` under NFC, lower, upper, lower, NFC. */
+  /** `input` under NFD, lower, upper, lower, NFC. */
   readonly fold: string;
 }
 
@@ -40,6 +40,9 @@ export const PATH_FOLD_ROWS: readonly PathFoldRow[] = Object.freeze([
   { note: "capital sharp s", input: "\u1E9E", fold: "ss" },
   { note: "sharp s", input: "\u00DF", fold: "ss" },
   { note: "fullwidth r is not compatibility folded", input: "\uFF52", fold: "\uFF52" },
+  { note: "circled one is not compatibility folded", input: "\u2460", fold: "\u2460" },
+  { note: "fi ligature uppercases to FI", input: "\uFB01", fold: "fi" },
+  { note: "a mark after an iota subscript stays before the iota", input: "\u1FA9\u034D", fold: "\u1F61\u034D\u03B9" },
   { note: "emoji has no case", input: "\u{1F41D}", fold: "\u{1F41D}" },
   { note: "astral capital Deseret long I", input: "\u{10400}", fold: "\u{10428}" },
   { note: "slash is untouched across segments", input: "Notes/Reference\u017F/A-B", fold: "notes/references/a-b" },
@@ -67,6 +70,9 @@ export const PATH_COLLISION_ROWS: readonly PathCollisionRow[] = Object.freeze([
   { a: "a-b", b: "a_b", collide: false },
   { a: "a.b", b: "ab", collide: false },
   { a: "\uFF52", b: "r", collide: false },
+  { a: "\u2460", b: "1", collide: false },
+  { a: "\u1FA9\u034D", b: "\u1F61\u034D\u03B9", collide: true },
+  { a: "\u1FA9\u034D", b: "\u1F61\u03B9\u034D", collide: false },
 ]);
 
 /**

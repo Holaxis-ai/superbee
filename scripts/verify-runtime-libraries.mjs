@@ -83,11 +83,11 @@ async function verifyRuntimeLibraries() {
       `import { writeDocVersioned } from "@superbee/core/engine";
 import { VersionConflict } from "@superbee/core/storage";
 import { parseMarkdown, stringifyDoc, versionFromBytes, resolveContentType } from "@superbee/core/document-codec";
-import { RemoteBackend } from "@superbee/core/remote";
+import { RemoteError } from "@superbee/core/remote";
 import { MemoryBackend } from "@superbee/core/memory-backend";
 import { mutateDocument } from "@superbee/core/document-mutation";
 import { createRouter, resolveWireRequest } from "@superbee/server/router";
-export const runtime = { createRouter, resolveWireRequest, writeDocVersioned, VersionConflict, RemoteBackend, MemoryBackend, mutateDocument, parseMarkdown, stringifyDoc, versionFromBytes, resolveContentType };
+export const runtime = { createRouter, resolveWireRequest, writeDocVersioned, VersionConflict, RemoteError, MemoryBackend, mutateDocument, parseMarkdown, stringifyDoc, versionFromBytes, resolveContentType };
 `,
     );
     const result = await build({

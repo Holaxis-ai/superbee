@@ -41,7 +41,8 @@ import { provisionBoardWorktree } from "../board-runtime.js";
 // a held lock, a missing git binary, a thrown anything — is swallowed into the render. This
 // command NEVER exits nonzero for board reasons and the render ALWAYS appears (test-pinned).
 // Network-unreachable classes render the pinned "board sync offline — showing last known state"
-// note; local-state classes (diverged, dirty, conflict…) render an honest pointer at `sync`,
+// note; a pull that ran out of its budget renders the timeout note instead, never "offline";
+// local-state classes (diverged, dirty, conflict…) render an honest pointer at `sync`,
 // which reports the full story with real exit codes.
 //
 // STATE DISCIPLINE (test-pinned): the CURSOR advances only on a SUCCESSFUL pull; the MARKER is
@@ -338,18 +339,19 @@ export async function sessionStartPull(
     // already spent local-git time, and a tiny/zero injected budget can be spent at entry — never
     // hand a decayed slice to the provision fetch. (The residual guard-to-spawn decay race is
     // closed at the runGitBytes floor — see the module header.)
-    if (remaining() < MIN_USEFUL_BUDGET_MS) return { offline: true };
+    if (remaining() < MIN_USEFUL_BUDGET_MS) return { offline: true, timedOut: true };
 
     if (owner) {
       // A bound session never classifies/provisions from the public checkout. The sole board
       // candidate, state key, and fetch cwd are the owner capability frozen above.
       await defaultSyncStore.refreshMarker(owner.stateKey);
-      if (remaining() < MIN_USEFUL_BUDGET_MS) return { offline: true, boardPath: owner.bundleRoot };
+      if (remaining() < MIN_USEFUL_BUDGET_MS) return { offline: true, timedOut: true, boardPath: owner.bundleRoot };
       const pulled = await pullBoardAndRecord(owner.bundleRoot, owner.stateKey, {
         fetchTimeoutMs: remaining(),
         connectTimeoutSeconds: SESSION_START_CONNECT_TIMEOUT_SECONDS,
       });
       if (pulled.swallowed !== undefined) {
+        if (pulled.swallowed === "timeout") return { offline: true, timedOut: true, boardPath: owner.bundleRoot };
         return OFFLINE_REASONS.has(pulled.swallowed)
           ? { offline: true, boardPath: owner.bundleRoot }
           : { offline: false, boardPath: owner.bundleRoot, notes: [syncOutcomeLine("line.session-start.pull-skipped", { reason: pulled.swallowed, inv: cliInvocation() })] };
@@ -389,7 +391,7 @@ export async function sessionStartPull(
       const key = resolveBundleKey(boardPath);
       // Marker refresh: every pull step that confirmed a board exists for this repo.
       await defaultSyncStore.refreshMarker(key);
-      if (remaining() < MIN_USEFUL_BUDGET_MS) return { offline: true, boardPath };
+      if (remaining() < MIN_USEFUL_BUDGET_MS) return { offline: true, timedOut: true, boardPath };
       // The in-tree fetch-and-report step (NO merge/rebase/checkout — the working tree is never
       // touched; delivery is the user's own `git pull`). State discipline mirrors the branch
       // pull: cursor/cache rewritten only on a successful check; a dead remote degrades silently
@@ -400,6 +402,7 @@ export async function sessionStartPull(
       });
       if (result.state === "refreshed") return { offline: false, refreshed: true, boardPath };
       if (result.state === "fetch-failed") {
+        if (result.failure.details?.reason === "timeout") return { offline: true, timedOut: true, boardPath };
         if (OFFLINE_CODES.has(result.failure.code)) return { offline: true, boardPath };
         return {
           offline: false,
@@ -438,7 +441,7 @@ export async function sessionStartPull(
     await defaultSyncStore.refreshMarker(key);
 
     if (remaining() < MIN_USEFUL_BUDGET_MS) {
-      return { offline: true, boardPath, ...(announcement ? { announcement } : {}) };
+      return { offline: true, timedOut: true, boardPath, ...(announcement ? { announcement } : {}) };
     }
 
     // THE shared pull-and-record step (autopull.ts's `pullBoardAndRecord` — extracted from this
@@ -453,6 +456,9 @@ export async function sessionStartPull(
     if (pulled.swallowed !== undefined) {
       // Offline-class reasons get the pinned note; local-state classes get an honest pointer at
       // the interactive verb.
+      if (pulled.swallowed === "timeout") {
+        return { offline: true, timedOut: true, boardPath, ...(announcement ? { announcement } : {}) };
+      }
       if (OFFLINE_REASONS.has(pulled.swallowed)) {
         return { offline: true, boardPath, ...(announcement ? { announcement } : {}) };
       }
@@ -566,7 +572,7 @@ export async function sessionStart(argv: string[], deps: Partial<SessionStartDep
         timer = setTimeout(() => resolve("timeout"), budgetMs);
       }),
     ]);
-    outcome = raced === "timeout" ? { offline: true } : raced;
+    outcome = raced === "timeout" ? { offline: true, timedOut: true } : raced;
   } catch {
     outcome = { offline: true };
   } finally {

@@ -10,14 +10,14 @@
 
 import type { QueryFilter } from "@superbee/core";
 import type { ExecutionMode, PlatformRuntime } from "@superbee/core/platform";
-import { RemoteBackend } from "@superbee/core/remote";
-import { createRemoteOperationTransport } from "@superbee/core/remote-operations";
 import type { OperationTransport } from "@superbee/core/uncertain-write";
 
 import { bootstrap, openLocalBundle, pull, pushWithRole, type LocalBundle } from "../../src/local-bundle.ts";
 import { createBrowserLocalRuntime, createRequestDrivenRuntime } from "../../src/platform/index.ts";
 import { countingIndexedDb, type TransactionCounts } from "./counting-factory.ts";
 import { mountPresentation, type Presentation } from "./presentation.ts";
+import { RemoteBackend } from "../../../core/dist/remote-backend.js";
+import { createRemoteOperationTransport } from "../../../core/dist/remote-operations.js";
 
 const REMOTE_BUNDLE = "default";
 const ACTOR = "process:measure";

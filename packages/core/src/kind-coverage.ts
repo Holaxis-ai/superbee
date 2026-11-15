@@ -1,8 +1,7 @@
 /** Read-only measurements over canonical documents and the already-loaded Kind registry. */
-import { isStandardDocumentSetField } from "./document-field-actions.js";
-import { freshnessHorizonMs, projectKindForAuthoring, readKindField, resolveKindFieldCoordinate, type KindConvention, type KindRegistry } from "./kinds.js";
+import { freshnessHorizonMs, projectKindForAuthoring, readKindField, type KindConvention, type KindRegistry } from "./kinds.js";
 import { extractMarkdownLinks, parseLinksFromDoc } from "./links.js";
-import { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
+import { isKindEnvelopeField, kindDeclaredStorageFields } from "./kind-undeclared-fields.js";
 import { parseTimestamp } from "./freshness.js";
 import type { OkfDocument } from "./types.js";
 
@@ -16,7 +15,7 @@ const empty = (value: unknown) => value == null || (typeof value === "string" &&
   (Array.isArray(value) ? value.length === 0 : typeof value === "object" && Object.keys(value).length === 0);
 const sentinel = (value: unknown) => typeof value === "string" && SENTINELS.has(value.trim().toLowerCase());
 const filled = (value: unknown) => !empty(value) && !sentinel(value);
-const envelope = (key: string) => isManagedDocumentMetadataField(key) || isStandardDocumentSetField(key, "0.2") || key === "sources" || key === "tags";
+const envelope = isKindEnvelopeField;
 
 function bodyProse(body: string): boolean {
   // Lossless line measurement, not Markdown rendering: every ATX heading is ignored;
@@ -114,7 +113,7 @@ export function kindCoverage(registry: KindRegistry, documents: readonly OkfDocu
     const authoring = projectKindForAuthoring(options.okfVersion, kind);
     const fields = [...new Set([...authoring.fields.required, ...authoring.fields.optional])].sort(compare);
     const stats = fields.map((field) => ({ field, required: authoring.fields.required.includes(field), ...fieldStats(records, (doc) => readKindField(options.okfVersion, kind, doc.frontmatter, field)) }));
-    const declaredStorage = new Set(fields.map((field) => resolveKindFieldCoordinate(options.okfVersion, kind, field)?.storageField ?? field));
+    const declaredStorage = kindDeclaredStorageFields(options.okfVersion, kind);
     const undeclared = new Map<string, string[]>(), envelopes = new Map<string, number>();
     for (const doc of records) for (const key of Object.keys(doc.frontmatter)) {
       if (envelope(key)) { envelopes.set(key, (envelopes.get(key) ?? 0) + 1); continue; }

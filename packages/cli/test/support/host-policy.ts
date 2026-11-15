@@ -31,7 +31,6 @@ export function withTestPolicy<T>(
           entryRelativePath: "dist/superbee.mjs",
           bins: ["superbee"],
         },
-        predecessorLayouts: [],
         ownedSkillPackages: ["superbee"],
         updatesEnabled: false,
       },
