@@ -59,7 +59,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 
 import { ConcurrentReplacementError, FilesystemIdentityAliasError, InvalidInputError } from "./errors.js";
-import { acquireFilesystemIdentityLock, filesystemMutationLockRoot } from "./filesystem-lock.js";
+import { acquireFilesystemIdentityLock, filesystemMutationLockRoot, filesystemRelationshipCache } from "./filesystem-lock.js";
 import { captureFilesystemHostPolicy, type FilesystemHostPolicy } from "./filesystem-host.js";
 import { foldSegment } from "./identity-fold.js";
 import { identityTempName } from "./filesystem-temp-name.js";
@@ -132,6 +132,8 @@ export interface FilesystemIdentityPort {
   /** Open for reading and `fstat` the handle; throws the filesystem error otherwise. */
   open(target: string): Promise<OpenedFile>;
   readAll(handle: PortHandle): Promise<Buffer>;
+  contentStamp?(handle: PortHandle, target: string): Promise<{ value: string; settled: boolean } | undefined>;
+  relationshipCache?(root: string, key: string): ReturnType<typeof filesystemRelationshipCache> | undefined;
   close(handle: PortHandle): Promise<void>;
   stat(target: string): Promise<{ mtime: Date }>;
   mkdir(dir: string): Promise<"created" | "exists">;
@@ -1283,6 +1285,19 @@ export function createNodeFilesystemIdentityPort(hostPolicy?: FilesystemHostPoli
     },
     readAll(handle: PortHandle): Promise<Buffer> {
       return (handle as FileHandle).readFile();
+    },
+    async contentStamp(handle: PortHandle, target: string) {
+      const stat = await (handle as FileHandle).stat({ bigint: true });
+      if (!stat.isFile() || stat.ctimeNs <= 0n || !(await witnessTrustedOn(stat.dev, path.dirname(target)))) return undefined;
+      const latest = stat.mtimeNs > stat.ctimeNs ? stat.mtimeNs : stat.ctimeNs;
+      return {
+        value: [stat.dev, stat.ino, stat.birthtimeNs, stat.ctimeNs, stat.mtimeNs, stat.size].join(":"),
+        settled: BigInt(Date.now()) * 1_000_000n - latest >= SETTLED_AFTER_NS,
+      };
+    },
+    relationshipCache(root: string, key: string) {
+      if (!policy.enforcePrivateMode || process.getuid === undefined) return undefined;
+      return filesystemRelationshipCache(root, policy, key);
     },
     close(handle: PortHandle): Promise<void> {
       return (handle as FileHandle).close();

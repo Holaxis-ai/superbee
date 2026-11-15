@@ -1,5 +1,10 @@
 import {
   compareCodeUnits,
+  assertSafeConceptId,
+  isContentVersion,
+  MAX_RELATIONSHIP_PAGE_ROWS,
+  readRelationshipPage,
+  type RelationshipPosition,
   applyQuerySelectionFilters,
   loadKinds,
   projectLogicalKindFields,
@@ -117,6 +122,7 @@ export const BRIDGE_HOST_CAPABILITIES = Object.freeze({
   openPage: "open-page",
   subscribeDeltas: "subscribe-deltas",
   graph: "graph",
+  relationships: "relationships",
   graphModel: "graph.model",
   recordOpen: "record.open",
   frameResize: "frame.resize",
@@ -187,7 +193,7 @@ interface SubscriptionState {
 interface BaseRequest {
   bridge: typeof BRIDGE_PROTOCOL;
   id: string;
-  type: "hello" | "query" | "read" | "render-document" | "edges" | "graph" | "subscribe" | "host";
+  type: "hello" | "query" | "read" | "render-document" | "edges" | "graph" | "relationships" | "subscribe" | "host";
 }
 
 interface HelloRequest extends BaseRequest {
@@ -233,6 +239,12 @@ interface GraphRequest extends BaseRequest {
   includeBodies: boolean;
 }
 
+interface RelationshipsRequest extends BaseRequest {
+  type: "relationships";
+  docId: string;
+  after?: RelationshipPosition;
+}
+
 interface SubscribeRequest extends BaseRequest {
   type: "subscribe";
 }
@@ -264,12 +276,13 @@ type ParsedBridgeRequest =
   | RenderDocumentRequest
   | EdgesRequest
   | GraphRequest
+  | RelationshipsRequest
   | SubscribeRequest
   | HostRequest
   | OpenPageRequest
   | ReadVersionedRequest;
 
-const V0_REQUEST_TYPES = new Set(["hello", "query", "read", "render-document", "edges", "graph", "subscribe", "host", "open-page"]);
+const V0_REQUEST_TYPES = new Set(["hello", "query", "read", "render-document", "edges", "graph", "relationships", "subscribe", "host", "open-page"]);
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -371,6 +384,32 @@ function normalizeEdgeParams(raw: unknown): EdgeParams | null {
   return out;
 }
 
+function relationshipDocumentId(value: unknown): string | null {
+  const id = boundedString(value, MAX_DOC_ID_BYTES);
+  if (id === null) return null;
+  try {
+    assertSafeConceptId(id);
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+function parseRelationshipsRequest(value: Record<string, unknown>, id: string): RelationshipsRequest | null {
+  const keys = ["bridge", "type", "id", "docId", ...(value.cursor === undefined ? [] : ["cursor"])];
+  const docId = relationshipDocumentId(value.docId);
+  if (docId === null || !exactKeys(value, keys)) return null;
+  const request = { bridge: BRIDGE_PROTOCOL, type: "relationships", id, docId } as const;
+  if (value.cursor === undefined) return request;
+  const cursor = value.cursor;
+  if (!isPlainRecord(cursor) || !exactKeys(cursor, ["docId", "direction", "documentId", "labelKey"]) ||
+      cursor.docId !== docId || !isContentVersion(cursor.labelKey) ||
+      (cursor.direction !== "incoming" && cursor.direction !== "outgoing")) return null;
+  const neighbor = relationshipDocumentId(cursor.documentId);
+  if (neighbor === null) return null;
+  return { ...request, after: { direction: cursor.direction, documentId: neighbor, labelKey: cursor.labelKey } };
+}
+
 export function parseBridgeRequest(value: unknown): ParsedBridgeRequest | null {
   if (!isPlainRecord(value) || typeof value.bridge !== "string" || typeof value.type !== "string") {
     return null;
@@ -419,6 +458,7 @@ export function parseBridgeRequest(value: unknown): ParsedBridgeRequest | null {
     const params = normalizeEdgeParams(value.params);
     return params ? { bridge: BRIDGE_PROTOCOL, type: "edges", id, params } : null;
   }
+  if (value.type === "relationships") return parseRelationshipsRequest(value, id);
   if (value.type === "graph") {
     const expected = value.includeBodies === undefined
       ? ["bridge", "type", "id"]
@@ -706,7 +746,7 @@ export class BridgeService {
 
   /**
    * Whole-bundle projection for graph-shaped Views. The documents come from one head scan and
-   * the relationships from `queryEdges`, which is a second full-bundle scan; the two scans are
+   * the relationships from `queryEdges`, which uses the local index when available; the reads are
    * accepted because the reply is bounded by the exported graph limits and the host never
    * caches bundle state on a View's behalf. No `model` or `definitions` are answered here: the
    * owner of that shape is undecided, and a host that has one declares the `graph.model`
@@ -772,6 +812,34 @@ export class BridgeService {
         ...skippedReply(skipped),
       }),
     };
+  }
+
+  private async relationships(request: RelationshipsRequest): Promise<BridgeOutcome> {
+    if (!this.options.host.capabilities.includes(BRIDGE_HOST_CAPABILITIES.relationships)) {
+      return { reply: fail(request.id, request.bridge, "FORBIDDEN", "this host does not offer relationships") };
+    }
+    const skipped: SkippedDocument[] = [];
+    const page = await readRelationshipPage(this.options.bundle, request.docId, MAX_RELATIONSHIP_PAGE_ROWS, request.after, {
+      onSkip: (row) => skipped.push(row),
+    });
+    if (page.status === "not_found") {
+      return { reply: fail(request.id, request.bridge, "NOT_FOUND", "the document is not available") };
+    }
+    if (page.status !== "ready") {
+      return { reply: fail(request.id, request.bridge, "RUNTIME", "document relationships are temporarily unavailable") };
+    }
+    const last = page.rows.at(-1);
+    return { reply: ok(request.id, request.bridge, request.type, {
+      documentId: request.docId,
+      rows: page.rows.map(row => ({ ...row, label: row.label.slice(0, 256), title: row.title?.slice(0, 256) ?? null })),
+      ...(page.more && last ? { cursor: {
+        docId: request.docId,
+        direction: last.direction,
+        documentId: last.documentId,
+        labelKey: last.labelKey,
+      } } : {}),
+      ...skippedReply(skipped),
+    }) };
   }
 
   private hostDescriptor(): BridgeHostDescriptor {
@@ -931,6 +999,7 @@ export class BridgeService {
     if (request.type === "graph") {
       return this.graph(launch, request);
     }
+    if (request.type === "relationships") return this.relationships(request);
     if (this.options.enablePolling) {
       this.subscriptions.set(launch.launchId, {
         baseline: await this.subscriptionSnapshot(),

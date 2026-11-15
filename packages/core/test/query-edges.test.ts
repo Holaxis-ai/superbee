@@ -11,11 +11,16 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { initBundle, writeDoc, backlinks, queryEdges } from "../src/bundle.js";
+import { FilesystemBackend } from "../src/backend.js";
+import { readRelationshipPage } from "../src/bundle-ops.js";
+import type { FilesystemHostPolicy } from "../src/filesystem-host.js";
 import type { Bundle } from "../src/types.js";
 
 const T = "2026-07-01T00:00:00.000Z";
@@ -296,4 +301,111 @@ test("queryEdges exact selectors keep canonical x and x.md distinct and reject a
     await assert.rejects(() => queryEdges(bundle, { to: "./x" }), /Concept id must be canonical/);
     await assert.rejects(() => queryEdges(bundle, { to: "x//" }), /Concept id must be canonical/);
   });
+});
+
+test("the filesystem relationship cache reopens files and refreshes from direct edits, Git, and repair", async (t) => {
+  const runtime = await fs.mkdtemp(path.join(tmpdir(), "superbee-edge-test-"));
+  t.after(() => fs.rm(runtime, { recursive: true, force: true }));
+  const root = path.join(runtime, "bundle");
+  const policy: FilesystemHostPolicy = {
+    runtimeLockParent: () => runtime,
+    runtimeOwnerKey: () => "test",
+    enforcePrivateMode: true,
+    isTransientOpenError: () => false,
+    isReplacementConflict: () => false,
+    isDirectoryContentionError: () => false,
+  };
+  const bundle = () => ({ root, backend: new FilesystemBackend(root, { hostPolicy: policy }) });
+  const source = path.join(root, "source.md");
+  const target = path.join(root, "target.md");
+  const frontmatter = "---\ntype: Note\ntitle: Example\n---\n\n";
+  const original = frontmatter + "[first](target.md) [first](/target.md) [dangling](absent.md)";
+  await fs.mkdir(root);
+  await fs.writeFile(source, original);
+  await fs.writeFile(target, frontmatter);
+  const git = (args: string[]) => execFileSync("git", ["-C", root, ...args]);
+  git(["init", "-q"]);
+  git(["add", "--", "source.md"]);
+  git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"]);
+  const now = Date.now;
+  t.mock.method(Date, "now", () => now() + 4_000);
+
+  let documentBodyReads = 0;
+  let denySource = false;
+  const actualOpen = fs.open;
+  t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+    if (denySource && args[0] === source) throw Object.assign(new Error("private host path"), { code: "EACCES" });
+    const handle = await actualOpen(...args);
+    if (args[0] === source || args[0] === target) {
+      const read = handle.readFile.bind(handle);
+      handle.readFile = (...options: Parameters<typeof read>) => {
+        documentBodyReads++;
+        return read(...options);
+      };
+    }
+    return handle;
+  });
+  const readEdges = () => backlinks(bundle(), "target");
+  const expected = await readEdges();
+  assert.deepEqual(expected.map(row => [row.text, row.href]), [["first", "target.md"], ["first", "/target.md"]]);
+  assert.equal(documentBodyReads, 2);
+  documentBodyReads = 0;
+  assert.deepEqual(await readEdges(), expected);
+  assert.equal(documentBodyReads, 0, "a fresh backend uses the persisted facts without reading document bodies");
+
+  const skipped: { id: string; reason: string }[] = [];
+  denySource = true;
+  assert.deepEqual(await backlinks(bundle(), "target", { onSkip: row => skipped.push(row) }), []);
+  assert.deepEqual(skipped.map(row => row.id), ["source"]);
+  assert.doesNotMatch(skipped[0]!.reason, /private host path/);
+  await assert.rejects(readEdges(), { code: "EACCES" });
+  denySource = false;
+  assert.deepEqual(await readEdges(), expected);
+
+  documentBodyReads = 0;
+  const times = await fs.stat(source);
+  await fs.writeFile(source, original.replaceAll("first", "other"));
+  await fs.utimes(source, times.atime, times.mtime);
+  assert.deepEqual((await readEdges()).map(row => row.text), ["other", "other"]);
+  assert.equal(documentBodyReads, 1);
+  git(["restore", "--", "source.md"]);
+  assert.deepEqual(await readEdges(), expected);
+
+  const page = await readRelationshipPage(bundle(), "target", 30);
+  assert.equal(page.status, "ready");
+  if (page.status === "ready") {
+    assert.deepEqual(page.rows.map(row => [row.documentId, row.label]), [["source", "first"]]);
+  }
+  assert.equal((await readRelationshipPage(bundle(), "absent", 30)).status, "not_found");
+  assert.equal((await backlinks(bundle(), "absent")).length, 1, "raw queries retain unresolved authored links");
+
+  const cacheDir = path.join(runtime, "agentstate-lite-mutation-locks-test");
+  const cacheFile = path.join(cacheDir, (await fs.readdir(cacheDir)).find(name => name.endsWith(".relationships.json"))!);
+  await fs.writeFile(cacheFile, "{");
+  documentBodyReads = 0;
+  assert.deepEqual(await readEdges(), expected);
+  assert.equal(documentBodyReads, 2, "corrupt derived state is rebuilt from Markdown");
+  const wrongGeneration = JSON.parse(await fs.readFile(cacheFile, "utf8"));
+  await fs.writeFile(cacheFile, JSON.stringify({ ...wrongGeneration, parser: "links/old" }));
+  documentBodyReads = 0;
+  assert.deepEqual(await readEdges(), expected);
+  assert.equal(documentBodyReads, 2, "a different parser generation is rebuilt");
+  await fs.unlink(cacheFile);
+  await fs.writeFile(cacheFile + ".abandoned.tmp", "{");
+  documentBodyReads = 0;
+  assert.deepEqual(await readEdges(), expected);
+  assert.equal(documentBodyReads, 2, "an interrupted write cannot stand in for the missing cache");
+  await fs.unlink(source);
+  assert.deepEqual(await readEdges(), []);
+  await fs.writeFile(source, "---\ntype: [\n---\n");
+  const malformed: string[] = [];
+  assert.deepEqual(await backlinks(bundle(), "target", { onSkip: row => malformed.push(row.id) }), []);
+  assert.deepEqual(malformed, ["source"]);
+  await fs.writeFile(source + ".replacement", original);
+  await fs.rename(source + ".replacement", source);
+  assert.deepEqual(await readEdges(), expected);
+
+  const withoutPrivateCache = new FilesystemBackend(root, { hostPolicy: { ...policy, enforcePrivateMode: false } });
+  assert.equal(await withoutPrivateCache.relationshipSources(), undefined);
+  assert.deepEqual(await backlinks({ root, backend: withoutPrivateCache }, "target"), expected);
 });

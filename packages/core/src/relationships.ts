@@ -5,6 +5,7 @@ import { versionOfBytes } from "./versioning.js";
 
 /** Derived index generation. Advance when parsing or grouping changes the stored occurrences. */
 export const RELATIONSHIP_PARSER_VERSION = "links/v2";
+export const MAX_RELATIONSHIP_PAGE_ROWS = 30;
 
 export interface RelationshipPosition {
   direction: "incoming" | "outgoing";
@@ -55,4 +56,43 @@ export function groupRelationshipOccurrences(
     group.occurrences.push([ordinal, href]);
   }
   return [...groups.values()];
+}
+
+/** Raw occurrences remain available to legacy queryEdges callers. */
+export interface RelationshipSource {
+  id: ConceptId;
+  title: string | null;
+  links: Link[];
+}
+
+/** Shape one current, bounded neighborhood from derived occurrences. */
+export function pageRelationshipSources(
+  sources: readonly RelationshipSource[],
+  documentId: ConceptId,
+  limit: number,
+  after?: RelationshipPosition,
+): IndexedRelationshipPage {
+  const titles = new Map(sources.map(({ id, title }) => [id, title]));
+  if (!titles.has(documentId)) return { status: "not_found" };
+  type Row = Extract<IndexedRelationshipPage, { status: "ready" }>["rows"][number];
+  const rows: Row[] = [];
+  const add = (direction: Row["direction"], neighbor: ConceptId, label: string, labelKey: Version) => {
+    if (neighbor === documentId || !titles.has(neighbor)) return;
+    rows.push({ direction, documentId: neighbor, label, labelKey, title: titles.get(neighbor)! });
+  };
+  for (const source of sources) {
+    if (source.id === documentId) {
+      for (const group of groupRelationshipOccurrences(source.links)) {
+        add("outgoing", group.target, group.label, group.labelKey);
+      }
+    } else {
+      for (const group of groupRelationshipOccurrences(source.links.filter(link => link.to === documentId))) {
+        add("incoming", source.id, group.label, group.labelKey);
+      }
+    }
+  }
+  rows.sort(compareRelationshipPositions);
+  const start = after ? rows.findIndex(row => compareRelationshipPositions(row, after) > 0) : 0;
+  if (start < 0) return { status: "ready", rows: [], more: false };
+  return { status: "ready", rows: rows.slice(start, start + limit), more: rows.length > start + limit };
 }

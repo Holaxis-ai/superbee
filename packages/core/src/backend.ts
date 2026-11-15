@@ -25,10 +25,11 @@
  */
 
 import path from "node:path";
+import { z } from "zod";
 import { assertInventoryGuardBound, bindInventoryGuard, captureInventoryGuardRequest, compareInventoryPremises, guardEdition, inventoryDigest, INVENTORY_GUARD_DOMAIN, InventoryGuardUnsupported, InventoryGuardConflict, type InventoryGuard, type InventoryGuardTarget } from "./inventory-guard.js";
 
 import { MalformedDocumentError, parseMarkdown, stringifyDoc } from "./frontmatter.js";
-import { readBundleOkfVersion } from "./engine.js";
+import { readBundleOkfVersion, relationshipSource } from "./engine.js";
 import { resolveContentType } from "./content-type.js";
 import {
   assertSafeBlobKey,
@@ -47,7 +48,9 @@ import {
 } from "./paths.js";
 import type { WalkPathClass } from "./paths.js";
 import { assertStorableReservedWrite } from "./reserved-write.js";
-import { InvalidInputError } from "./errors.js";
+import { readManyExisting, type QueryOptions, type SkippedDoc } from "./document-scan.js";
+import { RELATIONSHIP_PARSER_VERSION, type RelationshipSource } from "./relationships.js";
+import { ConcurrentReplacementError, InvalidInputError } from "./errors.js";
 import {
   mutateExact,
   createFilesystemMutationCoordinator,
@@ -79,6 +82,32 @@ import type {
   WriteOptions,
 } from "./types.js";
 import type { FilesystemBackendOptions, FilesystemHostPolicy } from "./filesystem-host.js";
+
+const relationshipCacheSchema = z.object({
+  format: z.literal(1),
+  parser: z.literal(RELATIONSHIP_PARSER_VERSION),
+  edition: z.string().nullable(),
+  sources: z.array(z.object({
+    id: z.string(),
+    title: z.string().nullable(),
+    stamp: z.string(),
+    links: z.array(z.object({ from: z.string(), to: z.string(), text: z.string(), href: z.string() })),
+  })),
+});
+type CachedRelationshipSource = RelationshipSource & { stamp: string | null };
+
+function cachedRelationshipSources(raw: string | undefined, edition: string | undefined) {
+  if (raw === undefined) return new Map<string, CachedRelationshipSource>();
+  try {
+    const parsed = relationshipCacheSchema.safeParse(JSON.parse(raw));
+    if (parsed.success && parsed.data.edition === (edition ?? null)) {
+      return new Map(parsed.data.sources.map(source => [source.id, source]));
+    }
+  } catch {
+    // A partial cache file or an older schema can be discarded.
+  }
+  return new Map<string, CachedRelationshipSource>();
+}
 
 const publicationContexts = new WeakMap<FilesystemBackend, { root: string; port: FilesystemIdentityPort }>();
 /** Each backend's own locked exact mutation, for {@link replaceFilesystemFile}; never handed out. */
@@ -289,13 +318,89 @@ export class FilesystemBackend implements StorageBackend {
     const edition = () => editionPromise ??= this.#readEdition();
     // One observation pass per batch, so each directory is listed once rather than twice per
     // document; a path the pass's end check reports is read again on its own.
+    return this.#readBatch(ids, (id, pass) => this.#readWithEdition(id, edition, pass));
+  }
+
+  async #readBatch<T>(
+    ids: ConceptId[],
+    read: (id: ConceptId, pass?: ObservationPass) => Promise<T>,
+  ): Promise<T[]> {
     const pass = openObservationPass(this.#port, this.#root);
-    for (const id of ids) out.push(await this.#readWithEdition(id, edition, pass));
+    const out: T[] = [];
+    for (const id of ids) out.push(await read(id, pass));
     const retry = new Set(await pass.finish());
     for (let index = 0; index < ids.length; index++) {
-      if (retry.has(pathFromConceptId(ids[index]!))) out[index] = await this.#readWithEdition(ids[index]!, edition);
+      if (retry.has(pathFromConceptId(ids[index]!))) out[index] = await read(ids[index]!);
     }
     return out;
+  }
+
+  /** Cache contains parsed link facts only. Every reuse still opens the exact, readable file. */
+  async relationshipSources(options: QueryOptions = {}): Promise<RelationshipSource[] | undefined> {
+    if (Object.getPrototypeOf(this) !== FilesystemBackend.prototype ||
+        this.read !== FilesystemBackend.prototype.read ||
+        this.readMany !== FilesystemBackend.prototype.readMany ||
+        this.list !== FilesystemBackend.prototype.list) return undefined;
+    const ids = await this.list();
+    if (ids.length === 0) return [];
+    const edition = await this.#readEdition();
+    const key = await filesystemRootMutationKey(this.#root);
+    const cache = this.#port.relationshipCache?.(this.#root, key);
+    if (!cache) return undefined;
+    const cached = cachedRelationshipSources(await cache.read(), edition);
+    const read = (id: ConceptId, pass?: ObservationPass) =>
+      this.#observeRelationshipSource(id, edition, cached.get(id), pass);
+    const backend = { read, readMany: (batch: ConceptId[]) => this.#readBatch(batch, read) };
+
+    // The exact path observation pass is sequential. A bounded cohort of independent passes
+    // keeps the storage I/O busy without letting one scan open the entire bundle at once.
+    const batchSize = Math.ceil(ids.length / 8);
+    const batches = await Promise.all(Array.from({ length: Math.ceil(ids.length / batchSize) }, async (_, index) => {
+      const skipped: SkippedDoc[] = [];
+      const onSkip = options.onSkip ? (row: SkippedDoc) => skipped.push(row) : undefined;
+      const sources = await readManyExisting(
+        backend,
+        ids.slice(index * batchSize, (index + 1) * batchSize),
+        onSkip,
+        undefined,
+        onSkip,
+      );
+      return { sources, skipped };
+    }));
+    const records = batches.flatMap(batch => batch.sources);
+    for (const { skipped } of batches) for (const row of skipped) options.onSkip?.(row);
+    if (records.length !== cached.size || records.some(record => cached.get(record.id) !== record)) {
+      await cache.write(JSON.stringify({
+        format: 1,
+        parser: RELATIONSHIP_PARSER_VERSION,
+        edition: edition ?? null,
+        sources: records.filter(record => record.stamp !== null),
+      }));
+    }
+    return records;
+  }
+
+  async #observeRelationshipSource(
+    id: ConceptId,
+    edition: string | undefined,
+    cached: CachedRelationshipSource | undefined,
+    pass?: ObservationPass,
+  ): Promise<CachedRelationshipSource> {
+    const rel = pathFromConceptId(id);
+    const read = async (handle: PortHandle, target: string) => {
+      const before = await this.#port.contentStamp?.(handle, target);
+      if (before && cached?.stamp === before.value) return { cached };
+      const bytes = await readBytes(this.#port, handle);
+      if (bytes === null) return null;
+      const after = await this.#port.contentStamp?.(handle, target);
+      if (before?.value !== after?.value) throw new ConcurrentReplacementError(rel, 1);
+      return { bytes, stamp: before?.settled ? before.value : null };
+    };
+    const observed = pass ? await pass.observe(rel, read) : await observeExact(this.#port, this.#root, rel, read);
+    if (observed.state === "absent") throw notFound(this.#root, rel);
+    if (observed.value.cached) return observed.value.cached;
+    const { frontmatter, body } = parseMarkdown(observed.value.bytes.toString("utf8"), rel, { okfVersion: edition });
+    return { ...relationshipSource({ id, frontmatter, body }), stamp: observed.value.stamp };
   }
 
   async write(id: ConceptId, doc: OkfDocument, options: WriteOptions = {}): Promise<Version> {
