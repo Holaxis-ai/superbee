@@ -264,12 +264,37 @@ test("reader: a document read through the bundle's read adapter under the family
   assert.deepEqual(sent[0], { path: "/sync/v1/read", body: { bundleId: BUNDLE, documentId: "notes/one" }, authorization: "Bearer token-1" });
 });
 
-test("history: the golden page, newest first", async () => {
-  const { fetch, sent } = serving({ history: "history-200-ok" });
+test("history: the golden page, newest first, run by id", async () => {
+  const { fetch, sent } = serving({ run: "run-200-ok" });
   const answer = await clientOf(fetch).history(BUNDLE, { documentId: "notes/via", limit: 20 });
   assert.equal(answer.ok, true);
   assert.ok(answer.ok && answer.page.versions.length > 0);
-  assert.deepEqual(sent[0]?.body, { bundleId: BUNDLE, documentId: "notes/via", limit: 20 });
+  // The same page the history route answers, byte for byte.
+  assert.equal(fixture("run-200-ok").response.body, fixture("history-200-ok").response.body);
+  assert.deepEqual(sent.map((request) => request.path), ["/sync/v1/run"]);
+  assert.deepEqual(sent[0]?.body, { bundleId: BUNDLE, operationId: "documents.history.v1", input: { bundleId: BUNDLE, documentId: "notes/via", limit: 20 } });
+  // The kernel's refusal is the page's answer, not a reason to try the route.
+  const absent = serving({ run: "run-200-document-not-found", history: "history-200-ok" });
+  const refused = await clientOf(absent.fetch).history(BUNDLE, { documentId: "notes/absent", limit: 20 });
+  assert.equal(!refused.ok && refused.refusal.code, "document_not_found");
+  assert.deepEqual(absent.sent.map((request) => request.path), ["/sync/v1/run"]);
+});
+
+test("history: a host that does not run it by id is read at the history route, from then on", async () => {
+  for (const run of ["run-400-unknown-operation", undefined]) {
+    const { fetch, sent } = serving({ ...(run ? { run } : {}), history: "history-200-ok" });
+    const client = clientOf(fetch);
+    for (let page = 0; page < 2; page += 1) {
+      const answer = await client.history(BUNDLE, { documentId: "notes/via", limit: 20 });
+      assert.ok(answer.ok && answer.page.versions.length > 0);
+    }
+    assert.deepEqual(sent.map((request) => request.path), ["/sync/v1/run", "/sync/v1/history", "/sync/v1/history"], String(run));
+    assert.deepEqual(sent[1]?.body, { bundleId: BUNDLE, documentId: "notes/via", limit: 20 });
+  }
+  // The run's other refusals are the answer.
+  const invalid = serving({ run: "run-400-invalid-input", history: "history-200-ok" });
+  await assert.rejects(clientOf(invalid.fetch).history(BUNDLE, { documentId: "notes/via", limit: 20 }), (error: unknown) => error instanceof RemoteError && error.code === "invalid_input");
+  assert.deepEqual(invalid.sent.map((request) => request.path), ["/sync/v1/run"]);
 });
 
 test("listOperations: the golden listing, and bundle_not_found as a refusal", async () => {
@@ -298,7 +323,7 @@ test("malformed answers are MalformedAnswer naming the route", async () => {
     ["/sync/v1/whoami", () => clientOf(host(() => json({ principalId: "p", tenantIds: ["a"], workspaces: [{ tenantId: "a", slug: "Not A Slug" }] })).fetch).whoami()],
     ["/sync/v1/whoami", () => clientOf(host(() => json({ principalId: "p", tenantIds: ["a", "b"], workspaces: [{ tenantId: "a", slug: null }, { tenantId: "a", slug: null }] })).fetch).whoami()],
     ["/sync/v1/bundles", () => clientOf(host(() => json({ ok: true, data: {} })).fetch).bundles()],
-    ["/sync/v1/history", () => clientOf(host(() => json({ ok: true, operationId: "documents.history.v1", data: { versions: "no" } })).fetch).history(BUNDLE, { documentId: "notes/via", limit: 20 })],
+    ["/sync/v1/run", () => clientOf(host(() => json({ ok: true, operationId: "documents.history.v1", data: { versions: "no" } })).fetch).history(BUNDLE, { documentId: "notes/via", limit: 20 })],
     ["/sync/v1/operations", () => clientOf(host(() => json({ operations: "no" })).fetch).listOperations(BUNDLE)],
     ["/sync/v1/run", () => clientOf(host(() => json({ ok: true, operationId: "other.v1", data: {} })).fetch).runOperation(BUNDLE, "documents.history.v1", {})],
   ];
@@ -384,7 +409,6 @@ test("within: bundle-scoped requests name <slug>/<id>; unscoped ones and the ans
     if (pathname.endsWith("/bundles")) return replay("bundles-200");
     if (pathname.endsWith("/read")) return replay("read-200-ok-qualified");
     if (pathname.endsWith("/run")) return replay("run-200-ok-qualified");
-    if (pathname.endsWith("/history")) return replay("history-200-ok");
     return replay("operations-200");
   });
   const client = clientOf(fetch).within("south");
@@ -399,7 +423,6 @@ test("within: bundle-scoped requests name <slug>/<id>; unscoped ones and the ans
     whoami: undefined,
     bundles: undefined,
     read: `south/${BUNDLE}`,
-    history: `south/${BUNDLE}`,
     operations: `south/${BUNDLE}`,
     run: `south/${BUNDLE}`,
   });

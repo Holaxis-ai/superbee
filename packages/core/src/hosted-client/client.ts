@@ -14,6 +14,7 @@ import {
   decodeOperationListing,
   decodeOperationRun,
   familyRefusal,
+  HISTORY_OPERATION_ID,
   historyInput,
   HOSTED_READ_BOUNDS,
   operationRunBody,
@@ -213,7 +214,10 @@ export interface HostedClient {
   bundles(): Promise<HostedBundleRow[]>;
   /** The read adapter (capabilities, heads, snapshot, read) for one bundle. */
   reader(bundleId: string): HostedReadAdapter;
-  /** One page of a document's history (`documents.history.v1`), validated against the page asked for. */
+  /**
+   * One page of a document's history (`documents.history.v1`), validated against the page asked
+   * for. Run by id (`<prefix>/run`); a host that does not run it by id is read at `<prefix>/history`.
+   */
   history(bundleId: string, request: HostedHistoryRequest): Promise<HostedHistoryAnswer>;
   /**
    * The same client, naming its bundles in the workspace with this slug: every bundle-scoped
@@ -446,6 +450,9 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
    * unknown-route 404, which is {@link HostedRouteNotServed}. An answer larger than `maximum` is
    * the carrier's `unavailable` whose cause is `HostedAnswerTooLarge` (see `isAnswerTooLarge`).
    */
+  /** History pages go through `run` until this host refuses `documents.history.v1` by id. */
+  let historyByRun = true;
+
   async function send(route: string, input: unknown, maximum: number): Promise<HostedAnswer> {
     const answer = await carrier.json(route, input, signal, { maximum });
     if (answer.status === 404 && isUnknownRoute(answer.body)) throw new HostedRouteNotServed(route);
@@ -572,6 +579,21 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
       throw readRefusal(answer);
     },
     async history(bundleId, request) {
+      if (historyByRun) {
+        // `run` answers the same `OperationResult` bytes as the `history` route. A host from before
+        // it ran history by id refuses `unknown_operation` (or has no `run`): read the route there.
+        const route = `${prefix}/run`;
+        const input = historyInput(bundleId, request) as JsonObject;
+        let answer: HostedAnswer | undefined;
+        try {
+          answer = await send(route, operationRunBody(bundleId, HISTORY_OPERATION_ID, input), HOSTED_READ_BOUNDS.historyBytes);
+        } catch (error) {
+          if (!(error instanceof HostedRouteNotServed)) throw error;
+        }
+        if (answer?.status === 200) return decodeHistoryAnswer(request, answer.body, route);
+        if (answer !== undefined && !(answer.status === 400 && familyRefusal(answer)?.code === "unknown_operation")) throw readRefusal(answer);
+        historyByRun = false;
+      }
       const route = `${prefix}/history`;
       const answer = await send(route, historyInput(bundleId, request), HOSTED_READ_BOUNDS.historyBytes);
       if (answer.status !== 200) throw readRefusal(answer);

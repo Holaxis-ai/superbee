@@ -32,7 +32,8 @@
 //   each version's stored bytes with `includeContent`; `document_not_found` for an absent document
 //   (a delete moves the lineage to the tombstone, and a recreate starts at seq 1 again); the agent
 //   label a write named in `X-Superbee-Via` as the host records it. `history: false` is a gateway
-//   from before the route: its `404 {"error":"not_found"}`.
+//   from before the route: its `404 {"error":"not_found"}`. `historyByRun: false` is a gateway that
+//   serves the route but does not run `documents.history.v1` by id: `run` refuses it.
 // - `/export` (superbee-hosted PR 650, `src/sync-v1-export.ts`): the portable export of the fake's
 //   bundle as the host writes it (`fake-export-archive.ts`): the documents' stored bytes, the root
 //   index, and any reserved files or blobs a test adds to `exportExtras`; a 404 `bundle_not_found`
@@ -167,8 +168,10 @@ export interface FakeHostOptions {
   syncSurface?: boolean;
   /** False is a person with only a read grant: every write is refused `insufficient_scope`. */
   writable?: boolean;
-  /** False is a gateway from before `/history`: the route is the family's unknown-route 404. */
+  /** False is a gateway from before `/history`: the route is the family's unknown-route 404, and `run` does not run history by id. */
   history?: boolean;
+  /** False is a gateway that serves `/history` but does not run `documents.history.v1` by id (before superbee-hosted PR 1778): `run` refuses it `unknown_operation`. */
+  historyByRun?: boolean;
   /**
    * True models the host's mass-delete hold (superbee-hosted `docs/sync-v1-writes.md`): the
    * documents present at construction or `put` by the host are the old ones; a delete of one that
@@ -671,7 +674,8 @@ export class FakeHost {
     const { bundleId, operationId, input } = body;
     if (!onlyKeys(body, ["bundleId", "operationId", "input"]) || typeof bundleId !== "string" || typeof operationId !== "string" || typeof input !== "object" || input === null || Array.isArray(input)) return invalid();
     // The listing is what the host runs by id: any other id, a write's included, is refused before anything else.
-    if (!this.listing().some((descriptor) => descriptor.operationId === operationId)) return Response.json({ error: { code: "unknown_operation" } }, { status: 400 });
+    const runsHistory = this.options.history !== false && this.options.historyByRun !== false;
+    if (!this.listing().some((descriptor) => descriptor.operationId === operationId) || (operationId === "documents.history.v1" && !runsHistory)) return Response.json({ error: { code: "unknown_operation" } }, { status: 400 });
     const operationInput = input as Record<string, unknown>;
     if (operationInput.bundleId !== bundleId) return invalid();
     if (bundleId !== BUNDLE) return Response.json({ ok: false, operationId, error: { code: "bundle_not_found", message: BUNDLE_UNAVAILABLE, retryable: false } });
