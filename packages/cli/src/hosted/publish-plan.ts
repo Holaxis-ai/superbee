@@ -43,9 +43,9 @@ import { IMPORT_CARRIED_FIELDS, IMPORT_DROPPED_FIELDS, wholeDocumentRequest, Who
 import { versionOfBytes } from "@superbee/core/versioning";
 
 import type { GitBoardFacts } from "../bundle-home.js";
-import { digestOf, findPathCollision, fold } from "./projection.js";
+import { digestOf, findPathCollision } from "./projection.js";
 import { FRONTMATTER_JSON_BYTES, unsendable, utf8 } from "./sync-scan.js";
-import { stripHostText } from "@superbee/core";
+import { foldPath, stripHostText } from "@superbee/core";
 
 const MiB = 1024 * 1024;
 
@@ -445,7 +445,7 @@ export async function planPublish(
   } else {
     const claimed = new Map<string, string>();
     for (const file of [...documents.map((doc) => `${doc.id}.md`), ...reserved.map((r) => (r.dir === "" ? r.name : `${r.dir}/${r.name}`)), ...blobs.map((b) => b.key)]) {
-      const key = file.split("/").map(fold).join("/");
+      const key = foldPath(file);
       const other = claimed.get(key);
       if (other !== undefined) {
         blockers.push({ path: file, reason: "path_collision", message: `'${other}' and '${file}' would be one file on a case-insensitive disk` });
