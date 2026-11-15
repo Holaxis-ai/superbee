@@ -53,6 +53,7 @@ const ACCESS = {
   existsBlob: "read",
   listBlobs: "read",
   queryHeads: "read",
+  relationshipSources: "read",
   capabilities: "meta",
   classifyChangedPath: "meta",
   write: "write",

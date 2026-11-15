@@ -527,3 +527,6 @@ export { inspectKindDeprecatedUsage, kindDeprecationTransition, kindDeprecationP
 export type { KindDeprecation, DeprecatedUsage } from "./kind-deprecation.js";
 export { INVENTORY_GUARD_DOMAIN, InventoryGuardConflict, InventoryGuardUnsupported, inventoryGuardFor } from "./inventory-guard.js";
 export type { InventoryEntry, InventoryGuard, InventoryGuardTarget, InventoryGuardRequest, InventoryGuardResult } from "./inventory-guard.js";
+
+export { readRelationshipPage } from "./bundle-ops.js";
+export { MAX_RELATIONSHIP_PAGE_ROWS, type RelationshipPosition } from "./relationships.js";

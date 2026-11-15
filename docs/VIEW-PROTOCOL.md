@@ -46,6 +46,7 @@ messages from the exact current frame and validates every request before touchin
 | `render-document` | v0 | `{ docId }` | `{ document: { id, version }, html, bounded }` |
 | `edges` | v0 | `{ params: { from?, to?, text? } }` | `{ edges: { from, to, text }[], count }` |
 | `graph` | v0 | `{ includeBodies? }` | `{ okfVersion, documents, relationships, counts }` |
+| `relationships` | v0 | `{ docId, cursor? }` | `{ documentId, rows, cursor?, skipped? }` |
 | `subscribe` | v0 | none | `{ ok: true }`, then `change` events |
 | `host` | v0 | `{ capability, input? }` | `{ capability, output }` |
 | `open-page` | v0 | `{ pageId }` (`id` optional) | none on success; an error reply when refused |
@@ -184,6 +185,23 @@ Backlinks are `edges({ to: docId })`; a container's contents are `edges({ from: 
 "contains" })`. A source linking to one target twice with different text yields two rows. More rows
 than `limits.edges` answers `TOO_LARGE`.
 
+### `relationships`
+
+Read one document's neighborhood in local browser and MCP Views. It uses the same read grant as
+`edges`. The request is independent of the whole graph limits. Each page contains up to 30 rows
+with `direction`, `documentId` (the neighbor), `label`, `labelKey` and `title` (or `null`).
+The page omits self-links and missing or skipped endpoints, and groups repeated occurrences with
+the same direction, neighbor and full label. Rows sort by direction (incoming first), then
+neighbor ID in Unicode code point order, then the stable key for the full label. Display labels
+and titles contain at most 256 UTF-16 code units.
+
+Send the returned `cursor` unchanged with the same `docId` to continue. The absence of a cursor
+ends the read. Each page sees current files; start again to include edits that moved before the
+cursor. A missing subject gives `NOT_FOUND`. Use the `relationships` capability in `hello` to
+discover whether the host offers this request. Local file reads reuse cached link facts on
+recognized Linux filesystems and the verified APFS system data volume on macOS. Files on other
+volumes are read from Markdown each time.
+
 ### `graph`
 
 The whole-bundle projection for graph-shaped Views: every document head and every derived edge in
@@ -253,9 +271,10 @@ Errors:
 - `TOO_LARGE`: one of the three limits above, or a document body above 1 MiB with `includeBodies`.
 - `RUNTIME`, `REVOKED`: as for every other request.
 
-Cost: `graph` performs one head scan for documents and one full-bundle scan inside `queryEdges`
-for relationships; with `includeBodies` it additionally reads each document so that a row's body
-and version come from one read. The host keeps no cache on a View's behalf. Portal's
+Cost: `graph` scans document heads and calls `queryEdges` for relationships. Local filesystem
+bundles reuse the relationship index for edges. With `includeBodies`, the request also reads each
+document so that a row's body and version come from one read. The host keeps no cache on a View's
+behalf. Portal's
 `createPublicationBridge` answers `graph` through the shared service with no publication-specific
 code.
 
@@ -355,6 +374,7 @@ Names a host may list in `hello.host.capabilities`. `BRIDGE_HOST_CAPABILITIES` i
 | `open-page` | `open-page` navigates the shell | none |
 | `subscribe-deltas` | `change` events carry real deltas | none |
 | `graph` | the `graph` request is answered, bounded by `limits.graphDocuments` and `limits.graphRelationships` | none (a request); declared by every OSS host |
+| `relationships` | the `relationships` request is answered, with up to 30 neighbors per page | none (a request); declared by local browser and MCP hosts |
 | `graph.model` | `graph` also returns `model` and `definitions` | reserved; no OSS host declares it until the model shape has an owner |
 | `record.open` | the host opens its own reader for one document | `host` input `{ documentId }`; output `{ opened: true }`; `NOT_FOUND` for a missing document |
 | `frame.resize` | the host sizes the View's frame to the reported document height, bounded by `host.frame.maxHeight` | `host` input exactly `{ height }` (a finite CSS pixel count, at least 0; no other keys); output `{ height }` as applied after the host's floor, `maxHeight` and damping (see `host.frame`); `USAGE` for any other input. Answered at once; touches no bundle data, so a host may answer it for any launch it admits. Declared only with `host.frame` |
@@ -380,6 +400,7 @@ what it observed so the declaration can be checked against behavior.
 | `limits.query` | 500 | 500 | 500 | its `hello` says |
 | `edges` | yes | yes | yes | its `hello` says |
 | `graph` | yes, without `model` | yes, without `model` | yes, through the shared service | its `hello` says |
+| `relationships` | yes | yes | no | its `hello` says |
 | `graph.model` | no | no | no | its `hello` says |
 | `render-document` | yes | yes | yes, pre-rendered from the snapshot | its `hello` says |
 | `open-page` | yes | yes, consumes the source launch | yes when the embedding client navigates | its `hello` says |

@@ -22,7 +22,7 @@ import {
   queryEdges,
   writeDoc,
 } from "@superbee/core";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { CODE_UNIT_ORDER } from "@superbee/core/string-identity-agreement";
@@ -1299,3 +1299,60 @@ for (const row of NEWEST_FIXTURE.cases) {
       "the default order is UTF-16 code-unit ID order");
   });
 }
+
+test("a filesystem View pages one neighborhood in a 10,000-document bundle", async (t) => {
+  const runtime = await mkdtemp(path.join(tmpdir(), "superbee-relationship-view-"));
+  t.after(() => rm(runtime, { recursive: true, force: true }));
+  const root = path.join(runtime, "bundle");
+  await mkdir(root);
+  const content = "---\ntype: Note\ntitle: Target\n---\n\n";
+  await writeFile(path.join(root, "target.md"), content + "[self](target.md) [dangling](absent.md)");
+  await Promise.all(Array.from({ length: 100 }, async (_, group) => {
+    const dir = path.join(root, "docs-" + String(group).padStart(2, "0"));
+    await mkdir(dir);
+    await Promise.all(Array.from({ length: group === 99 ? 99 : 100 }, (_, index) => {
+      const name = String(index).padStart(3, "0") + ".md";
+      const body = group === 0 && index < 33 ? "[relates](/target.md) [relates](../target.md)" : "";
+      return writeFile(path.join(dir, name), content + body);
+    }));
+  }));
+  const host = {
+    kind: "oss",
+    capabilities: [...BRIDGE_SERVICE_CAPABILITIES, BRIDGE_HOST_CAPABILITIES.relationships],
+    limits: BRIDGE_SERVICE_LIMITS,
+  };
+  const options = {
+    bundle: { root, backend: new FilesystemBackend(root, { hostPolicy: {
+      runtimeLockParent: () => runtime,
+      runtimeOwnerKey: () => "test",
+      enforcePrivateMode: true,
+      isTransientOpenError: () => false,
+      isReplacementConflict: () => false,
+      isDirectoryContentionError: () => false,
+    } }) },
+    launches: { resolve: async () => ({ launchId: "local", capability: "bundle-read" }), revoke() {} },
+    config: async () => ({ root, name: "Fixture", mode: "dir" }),
+    renderDocument: () => ({ html: "", bounded: true }),
+    host,
+  };
+  const now = Date.now;
+  t.mock.method(Date, "now", () => now() + 4000);
+  const service = new BridgeService(options);
+  const request = { bridge: "v0", type: "relationships", id: "page", docId: "target" };
+  const first = (await service.handle("local", request)).reply;
+  assert.equal(first.type, "relationships:result");
+  assert.equal(first.result.rows.length, 30);
+  assert.equal(first.result.rows[0].documentId, "docs-00/000");
+  assert.equal(first.result.rows[29].documentId, "docs-00/029");
+  assert.ok(first.result.rows.every(row => row.direction === "incoming"));
+  const cursor = first.result.cursor;
+  const second = (await service.handle("local", { ...request, cursor })).reply;
+  assert.deepEqual(second.result.rows.map(row => row.documentId), ["docs-00/030", "docs-00/031", "docs-00/032"]);
+  assert.equal(second.result.cursor, undefined);
+  assert.equal((await service.handle("local", { ...request, cursor, docId: "absent" })).reply.error.code, "USAGE");
+  assert.equal((await service.handle("local", { ...request, docId: "absent" })).reply.error.code, "NOT_FOUND");
+  const refused = new BridgeService({ ...options, host: { ...host, capabilities: BRIDGE_SERVICE_CAPABILITIES } });
+  assert.equal((await refused.handle("local", request)).reply.error.code, "FORBIDDEN");
+  const denied = new BridgeService({ ...options, launches: { resolve: async () => null, revoke() {} } });
+  assert.equal((await denied.handle("local", request)).reply.error.code, "FORBIDDEN");
+});

@@ -1,4 +1,4 @@
-import { promises as fs, realpathSync } from "node:fs";
+import { constants, promises as fs, realpathSync } from "node:fs";
 import type { BigIntStats, Stats } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { captureFilesystemHostPolicy, type FilesystemHostPolicy } from "./filesystem-host.js";
@@ -6,6 +6,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
 const OWNER_FILE = "owner.json";
+const MAX_RELATIONSHIP_CACHE_BYTES = 64 * 1024 * 1024;
 const DEFAULT_WAIT_MS = 5_000;
 const DEFAULT_POLL_MS = 25;
 /**
@@ -360,6 +361,50 @@ async function ensurePrivateLockRoot(root: string, policy: FilesystemHostPolicy)
       { lockPath: root, owner: null, stale: false, malformed: true },
     );
   }
+}
+
+// Keep derived links in the owner-checked runtime directory outside the portable bundle.
+export function filesystemRelationshipCache(
+  root: string,
+  policy: FilesystemHostPolicy,
+  key: string,
+): { read: () => Promise<string | undefined>; write: (raw: string) => Promise<void> } {
+  const location = async () => {
+    const directory = filesystemMutationLockRoot(root, policy);
+    await ensurePrivateLockRoot(directory, policy);
+    return path.join(directory, createHash("sha256").update(key).digest("hex") + ".relationships.json");
+  };
+  return {
+    async read() {
+      try {
+        const handle = await fs.open(await location(), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        try {
+          const stat = await handle.stat();
+          if (!stat.isFile() || stat.size > MAX_RELATIONSHIP_CACHE_BYTES || (stat.mode & 0o077) !== 0 ||
+              stat.uid !== process.getuid?.()) return undefined;
+          return await handle.readFile("utf8");
+        } finally {
+          await handle.close();
+        }
+      } catch {
+        return undefined; // Unavailable cache state only costs a rebuild.
+      }
+    },
+    async write(raw) {
+      if (Buffer.byteLength(raw) > MAX_RELATIONSHIP_CACHE_BYTES) return;
+      let temp: string | undefined;
+      try {
+        const file = await location();
+        temp = file + "." + randomUUID() + ".tmp";
+        await fs.writeFile(temp, raw, { flag: "wx", mode: 0o600 });
+        await fs.rename(temp, file);
+      } catch {
+        // The bundle remains usable on a read-only or unavailable runtime directory.
+      } finally {
+        if (temp) await fs.unlink(temp).catch(() => {});
+      }
+    },
+  };
 }
 
 async function canonicalTargetInDirectory(directory: string, requestedBasename: string): Promise<string> {
