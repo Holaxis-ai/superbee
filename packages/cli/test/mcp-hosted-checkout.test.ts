@@ -167,7 +167,7 @@ test("an MCP write landing while sync places the host's change to the same docum
   const during: typeof c.host.fetch = async (input, init) => {
     const response = await c.host.fetch(input, init);
     const route = new URL(String(input)).pathname.split("/").pop();
-    if (!wrote && (route === "read" || route === "snapshot")) {
+    if (!wrote && (route === "run" || route === "snapshot")) {
       wrote = true;
       await writeDoc(context.bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha through MCP" }, body: alpha.body });
     }

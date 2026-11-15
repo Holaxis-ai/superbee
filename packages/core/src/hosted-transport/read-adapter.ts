@@ -27,6 +27,7 @@ import { isContentVersion } from "../version-transport.js";
 import { sha256HexOfUtf8 } from "../sha256.js";
 import { stripHostText } from "../host-text.js";
 import { HostedCarrierError, type HostedAnswer, type HostedCarrier } from "./carrier.js";
+import type { HostedPortRunner } from "./port-run.js";
 import { decodeHeadsPage, HEADS_PAGE_ATTEMPTS, HeadsPages, isPageRestart, pageRestartDelay, pause, stitchSnapshotPages } from "./paged-reads.js";
 
 /** What a capabilities answer says about changing the bundle's model (its Kind conventions). */
@@ -122,7 +123,12 @@ export const HOSTED_READ_BOUNDS = Object.freeze({
   readConcurrency: 8,
 });
 
-/** The routes one client family reads; the browser's are the defaults. */
+/**
+ * The routes one client family reads; the browser's are the defaults. `capabilities`, `heads` and
+ * `snapshot` are the working copy, which no port operation serves yet: the one remaining exception
+ * to reading through the port. A document read goes through the adapter's `runner` when it has
+ * one (`documents.read.v1`), and to `read` only without one (an in-process carrier).
+ */
 export interface HostedReadRoutes {
   capabilities: string;
   heads: string;
@@ -159,6 +165,11 @@ export interface HostedReadAdapterOptions {
   routes?: HostedReadRoutes;
   /** Pinned on every document read, when the family binds reads (the browser's recovery target). */
   binding?: string;
+  /**
+   * The Sync door's port runner: document reads run `documents.read.v1` through it (`run`, or the
+   * read route on an older host). Without one, reads go to `routes.read` (an in-process carrier).
+   */
+  runner?: HostedPortRunner;
   /** Test seam: how the adapter waits before a heads restart. Default: a timer that the adapter's abort cancels. */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
@@ -553,11 +564,14 @@ export function createHostedReadAdapter(options: HostedReadAdapterOptions): Host
     await acquire();
     try {
       assertOpen();
-      const answer = await carrier
-        .json(routes.read, { bundleId, documentId: id }, controller.signal, { maximum: HOSTED_READ_BOUNDS.documentBytes, ...(options.binding ? { binding: options.binding } : {}) })
-        .catch(carrierFailure);
+      const bounds = { maximum: HOSTED_READ_BOUNDS.documentBytes, ...(options.binding ? { binding: options.binding } : {}) };
+      const input = { bundleId, documentId: id };
+      const { route, answer } = await (options.runner
+        ? options.runner.run(bundleId, "documents.read.v1", input, controller.signal, bounds)
+        : carrier.json(routes.read, input, controller.signal, bounds).then((answer) => ({ route: routes.read, answer }))
+      ).catch(carrierFailure);
       if (answer.status !== 200) refused(answer);
-      const refusal = await onRoute(routes.read, async () => operationRefusal(answer.body, "documents.read.v1"));
+      const refusal = await onRoute(route, async () => operationRefusal(answer.body, "documents.read.v1"));
       if (refusal) {
         const { code, message } = refusal;
         if (code === "document_not_found") throw notFound(id);
@@ -568,7 +582,7 @@ export function createHostedReadAdapter(options: HostedReadAdapterOptions): Host
         if (TRANSIENT_READ_CODES.has(code)) throw new HostedCarrierError("unavailable");
         throw new RemoteError(message, code, 422);
       }
-      return decodeDocumentRead(id, answer.body, routes.read);
+      return decodeDocumentRead(id, answer.body, route);
     } finally {
       release();
     }

@@ -10,12 +10,14 @@
 import {
   createFetchCarrier,
   createHostedReadAdapter,
+  createPortRunner,
   decodeHistoryAnswer,
   decodeOperationListing,
   decodeOperationRun,
   familyRefusal,
   HISTORY_OPERATION_ID,
   historyInput,
+  isUnknownRouteAnswer,
   HOSTED_READ_BOUNDS,
   operationRunBody,
   readRefusal,
@@ -216,7 +218,7 @@ export interface HostedClient {
   reader(bundleId: string): HostedReadAdapter;
   /**
    * One page of a document's history (`documents.history.v1`), validated against the page asked
-   * for. Run by id (`<prefix>/run`); a host that does not run it by id is read at `<prefix>/history`.
+   * for, run through the port runner (`createPortRunner`).
    */
   history(bundleId: string, request: HostedHistoryRequest): Promise<HostedHistoryAnswer>;
   /**
@@ -450,12 +452,18 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
    * unknown-route 404, which is {@link HostedRouteNotServed}. An answer larger than `maximum` is
    * the carrier's `unavailable` whose cause is `HostedAnswerTooLarge` (see `isAnswerTooLarge`).
    */
-  /** History pages go through `run` until this host refuses `documents.history.v1` by id. */
-  let historyByRun = true;
+  /** The Sync door's one port runner: runs by id, reads and history, with the older-host fallback. */
+  const runner = createPortRunner({ carrier, prefix });
+  /** One port run, as `send` answers a route: the family's unknown-route 404 is {@link HostedRouteNotServed}. */
+  async function run(bundleId: string, operationId: string, input: Readonly<Record<string, unknown>>, maximum: number, fallback = true) {
+    const ran = await runner.run(bundleId, operationId, input, signal, { maximum, fallback });
+    if (isUnknownRouteAnswer(ran.answer)) throw new HostedRouteNotServed(ran.route);
+    return ran;
+  }
 
   async function send(route: string, input: unknown, maximum: number): Promise<HostedAnswer> {
     const answer = await carrier.json(route, input, signal, { maximum });
-    if (answer.status === 404 && isUnknownRoute(answer.body)) throw new HostedRouteNotServed(route);
+    if (isUnknownRouteAnswer(answer)) throw new HostedRouteNotServed(route);
     return answer;
   }
 
@@ -519,7 +527,7 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
         .map((row) => ({ bundleId: row.bundleId, name: row.name, lifecycle: typeof row.lifecycle === "string" ? row.lifecycle : null }));
     },
     reader(bundleId) {
-      return createHostedReadAdapter({ carrier, bundleId, routes: syncReadRoutes(prefix) });
+      return createHostedReadAdapter({ carrier, bundleId, routes: syncReadRoutes(prefix), runner });
     },
     within(workspace) {
       return clientIn(options, signal, workspace, writes);
@@ -579,23 +587,7 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
       throw readRefusal(answer);
     },
     async history(bundleId, request) {
-      if (historyByRun) {
-        // `run` answers the same `OperationResult` bytes as the `history` route. A host from before
-        // it ran history by id refuses `unknown_operation` (or has no `run`): read the route there.
-        const route = `${prefix}/run`;
-        const input = historyInput(bundleId, request) as JsonObject;
-        let answer: HostedAnswer | undefined;
-        try {
-          answer = await send(route, operationRunBody(bundleId, HISTORY_OPERATION_ID, input), HOSTED_READ_BOUNDS.historyBytes);
-        } catch (error) {
-          if (!(error instanceof HostedRouteNotServed)) throw error;
-        }
-        if (answer?.status === 200) return decodeHistoryAnswer(request, answer.body, route);
-        if (answer !== undefined && !(answer.status === 400 && familyRefusal(answer)?.code === "unknown_operation")) throw readRefusal(answer);
-        historyByRun = false;
-      }
-      const route = `${prefix}/history`;
-      const answer = await send(route, historyInput(bundleId, request), HOSTED_READ_BOUNDS.historyBytes);
+      const { route, answer } = await run(bundleId, HISTORY_OPERATION_ID, historyInput(bundleId, request), HOSTED_READ_BOUNDS.historyBytes);
       if (answer.status !== 200) throw readRefusal(answer);
       return decodeHistoryAnswer(request, answer.body, route);
     },
@@ -611,8 +603,7 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
       return { ok: true, listing: decodeOperationListing(answer.body, route) };
     },
     async runOperation(bundleId, operationId, input, runOptions = {}) {
-      const route = `${prefix}/run`;
-      const answer = await send(route, operationRunBody(bundleId, operationId, input), runOptions.maximumBytes ?? HOSTED_READ_BOUNDS.runBytes);
+      const { route, answer } = await run(bundleId, operationId, operationRunBody(bundleId, operationId, input).input, runOptions.maximumBytes ?? HOSTED_READ_BOUNDS.runBytes, false);
       if (answer.status !== 200) {
         // The route's own refusals of the request, before any operation ran: an id the host does
         // not run by id, and an envelope or input it refuses. Both are typed, for the caller to word.
@@ -641,7 +632,3 @@ function directoryWorkspaces(value: unknown, tenantIds: readonly string[]): { no
   return offered.length === 0 ? {} : { notificationDirectoryWorkspaces: offered };
 }
 
-/** The sync family's answer to a route it does not have: `404 {"error":"not_found"}`, nothing else. */
-function isUnknownRoute(body: unknown): boolean {
-  return typeof body === "object" && body !== null && !Array.isArray(body) && Object.keys(body).length === 1 && (body as { error?: unknown }).error === "not_found";
-}

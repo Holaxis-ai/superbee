@@ -34,6 +34,8 @@
 //   label a write named in `X-Superbee-Via` as the host records it. `history: false` is a gateway
 //   from before the route: its `404 {"error":"not_found"}`. `historyByRun: false` is a gateway that
 //   serves the route but does not run `documents.history.v1` by id: `run` refuses it.
+// - `/read` and a run of `documents.read.v1` answer the same document read; `readByRun: false` is
+//   a gateway that does not run it by id (a run of it is `400 unknown_operation`).
 // - `/export` (superbee-hosted PR 650, `src/sync-v1-export.ts`): the portable export of the fake's
 //   bundle as the host writes it (`fake-export-archive.ts`): the documents' stored bytes, the root
 //   index, and any reserved files or blobs a test adds to `exportExtras`; a 404 `bundle_not_found`
@@ -172,6 +174,8 @@ export interface FakeHostOptions {
   history?: boolean;
   /** False is a gateway that serves `/history` but does not run `documents.history.v1` by id (before superbee-hosted PR 1778): `run` refuses it `unknown_operation`. */
   historyByRun?: boolean;
+  /** False is a gateway that does not run `documents.read.v1` by id: `run` refuses it `unknown_operation`, and reads go to `/read`. */
+  readByRun?: boolean;
   /**
    * True models the host's mass-delete hold (superbee-hosted `docs/sync-v1-writes.md`): the
    * documents present at construction or `put` by the host are the old ones; a delete of one that
@@ -506,16 +510,8 @@ export class FakeHost {
         lines.push(JSON.stringify(page.next === undefined ? { kind: "end", count: listing.count } : { kind: "page", count: page.heads.length, next: page.next }));
         return new Response(`${lines.join("\n")}\n`, { status: 200, headers: { "content-type": "application/x-ndjson; charset=utf-8", etag: `"${listing.digest}"` } });
       }
-      case "read": {
-        if (!onlyKeys(body, ["bundleId", "documentId"])) return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
-        if (body.bundleId !== BUNDLE) return Response.json({ ok: false, operationId: "documents.read.v1", error: { code: "bundle_not_found", message: "The bundle is unavailable for this operation.", retryable: false } });
-        const id = String(body.documentId);
-        const doc = this.docs.get(id);
-        if (!doc) {
-          return Response.json({ ok: false, operationId: "documents.read.v1", error: { code: "document_not_found", message: "No document", retryable: false } });
-        }
-        return Response.json({ ok: true, operationId: "documents.read.v1", data: { document: { id, frontmatter: doc.frontmatter, body: doc.body }, version: doc.version } });
-      }
+      case "read":
+        return this.readDocument(body);
       case "history":
         return this.options.history === false ? unknownRoute() : this.history(body);
       case "operations":
@@ -669,11 +665,29 @@ export class FakeHost {
     return new Response(JSON.stringify({ operations: this.operationsListing }), { status: 200, headers: { "content-type": "application/json; charset=utf-8" } });
   }
 
+  /** `documents.read.v1`, as `/read` answers it and `run` runs it by id. */
+  private readDocument(body: Record<string, unknown>): Response {
+    if (!onlyKeys(body, ["bundleId", "documentId"])) return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
+    if (body.bundleId !== BUNDLE) return Response.json({ ok: false, operationId: "documents.read.v1", error: { code: "bundle_not_found", message: "The bundle is unavailable for this operation.", retryable: false } });
+    const id = String(body.documentId);
+    const doc = this.docs.get(id);
+    if (!doc) {
+      return Response.json({ ok: false, operationId: "documents.read.v1", error: { code: "document_not_found", message: "No document", retryable: false } });
+    }
+    return Response.json({ ok: true, operationId: "documents.read.v1", data: { document: { id, frontmatter: doc.frontmatter, body: doc.body }, version: doc.version } });
+  }
+
   private run(body: Record<string, unknown>): Response {
     const invalid = () => Response.json({ error: { code: "invalid_input" } }, { status: 400 });
     const { bundleId, operationId, input } = body;
     if (!onlyKeys(body, ["bundleId", "operationId", "input"]) || typeof bundleId !== "string" || typeof operationId !== "string" || typeof input !== "object" || input === null || Array.isArray(input)) return invalid();
     // The listing is what the host runs by id: any other id, a write's included, is refused before anything else.
+    // The host runs `documents.read.v1` by id whatever the pinned listing names (its run list).
+    if (operationId === "documents.read.v1" && this.options.readByRun !== false) {
+      const operationInput = input as Record<string, unknown>;
+      if (operationInput.bundleId !== bundleId) return invalid();
+      return this.readDocument(operationInput);
+    }
     const runsHistory = this.options.history !== false && this.options.historyByRun !== false;
     if (!this.listing().some((descriptor) => descriptor.operationId === operationId) || (operationId === "documents.history.v1" && !runsHistory)) return Response.json({ error: { code: "unknown_operation" } }, { status: 400 });
     const operationInput = input as Record<string, unknown>;

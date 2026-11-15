@@ -377,7 +377,9 @@ test("RS4b the host changes during --resolve itself: stale_review", async () => 
   await ok(h, ["--inspect", "notes/alpha"]);
   let reads = 0;
   h.before = (route, body) => {
-    if (route === "read" && body.documentId === "notes/alpha" && (reads += 1) === 2) {
+    // A document read runs `documents.read.v1` by id.
+    const read = route === "run" && body.operationId === "documents.read.v1" ? (body.input as Record<string, unknown>) : undefined;
+    if (read?.documentId === "notes/alpha" && (reads += 1) === 2) {
       h.host.put("notes/alpha", { type: "Note", title: "Alpha" }, "Host v3 mid-resolve.\n");
     }
   };

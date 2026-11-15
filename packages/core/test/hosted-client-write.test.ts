@@ -94,13 +94,15 @@ test("golden: a create on an absent id commits at the host's version, with the e
 });
 
 test("golden: a create over an existing document is a conflict naming the version the host serves", async () => {
-  const { fetch, sent } = golden({ capabilities: ["capabilities-200"], create: ["create-200-document-exists"], read: ["read-200-ok"] });
+  // The re-read runs documents.read.v1 by id; the read route's golden answer is the run's too.
+  const { fetch, sent } = golden({ capabilities: ["capabilities-200"], create: ["create-200-document-exists"], run: ["read-200-ok"] });
   const result = await clientOf(fetch).write(BUNDLE, { id: "notes/one", document: doc("dup"), expectAbsent: true });
   assert.equal(result.status, "conflict");
   assert.equal(result.status === "conflict" && result.reason, "version_conflict");
   assert.equal(result.status === "conflict" && result.reason === "version_conflict" && result.currentVersion, JSON.parse(fixture("read-200-ok").response.body).data.version);
-  assert.deepEqual(routes(sent), ["capabilities", "create", "read"]);
+  assert.deepEqual(routes(sent), ["capabilities", "create", "run"]);
   assert.deepEqual(JSON.parse(sent[1]!.body), JSON.parse(fixture("create-200-document-exists").request.body));
+  assert.equal(JSON.parse(sent[2]!.body).operationId, "documents.read.v1");
 });
 
 test("golden: a replace at the current version commits", async () => {

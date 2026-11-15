@@ -257,11 +257,28 @@ test("readBundleListing: a qualified collision, and a capped list", () => {
   assert.equal(capped.complete, false);
 });
 
-test("reader: a document read through the bundle's read adapter under the family's routes", async () => {
-  const { fetch, sent } = serving({ read: "read-200-ok" });
+test("reader: a document read runs documents.read.v1 through the port runner", async () => {
+  // The read route's golden answer is the run's too: hosted answers both from one code path
+  // (`runOperation` in superbee-hosted `src/sync-v1-reads.ts`); no golden pins a run of this read yet.
+  const { fetch, sent } = serving({ run: "read-200-ok" });
   const result = await clientOf(fetch).reader(BUNDLE).read("notes/one");
   assert.equal(result.version, "sha256:dfc05cf336bf2eaa2bf4a3319609f596514c2ec0f5abf3e7a173aafe7baac5c4");
-  assert.deepEqual(sent[0], { path: "/sync/v1/read", body: { bundleId: BUNDLE, documentId: "notes/one" }, authorization: "Bearer token-1" });
+  assert.deepEqual(sent, [{ path: "/sync/v1/run", body: { bundleId: BUNDLE, operationId: "documents.read.v1", input: { bundleId: BUNDLE, documentId: "notes/one" } }, authorization: "Bearer token-1" }]);
+});
+
+test("reader: a host that does not run the read by id is read at its route, from then on", async () => {
+  for (const run of ["run-400-unknown-operation", undefined]) {
+    const { fetch, sent } = serving({ ...(run ? { run } : {}), read: "read-200-ok" });
+    const reader = clientOf(fetch).reader(BUNDLE);
+    await reader.read("notes/one");
+    await reader.read("notes/one");
+    assert.deepEqual(sent.map((request) => request.path), ["/sync/v1/run", "/sync/v1/read", "/sync/v1/read"], String(run));
+    assert.deepEqual(sent[1]?.body, { bundleId: BUNDLE, documentId: "notes/one" });
+  }
+  // A refusal of the read itself is the answer, never a reason to try the route.
+  const absent = serving({ run: "read-200-document-not-found", read: "read-200-ok" });
+  await assert.rejects(clientOf(absent.fetch).reader(BUNDLE).read("notes/one"), (error: unknown) => (error as { code?: string }).code === "ENOENT");
+  assert.deepEqual(absent.sent.map((request) => request.path), ["/sync/v1/run"]);
 });
 
 test("history: the golden page, newest first, run by id", async () => {
@@ -369,6 +386,7 @@ test("a route a gateway does not have yet is HostedRouteNotServed naming it", as
   for (const [route, call] of [
     ["/sync/v1/history", () => client.history(BUNDLE, { documentId: "notes/via", limit: 20 })],
     ["/sync/v1/operations", () => client.listOperations(BUNDLE)],
+    // A run by id names the run route, even for an id an older host served on a route of its own.
     ["/sync/v1/run", () => client.runOperation(BUNDLE, "documents.history.v1", {})],
   ] as const) {
     await assert.rejects(call(), (error: unknown) => {
@@ -404,11 +422,10 @@ test("the error classes are core's own identities, re-exported", () => {
 // ── within ─────────────────────────────────────────────────────────────────────────────────
 
 test("within: bundle-scoped requests name <slug>/<id>; unscoped ones and the answers do not", async () => {
-  const { fetch, sent } = host((pathname) => {
+  const { fetch, sent } = host((pathname, body) => {
     if (pathname.endsWith("/whoami")) return replay("whoami-200");
     if (pathname.endsWith("/bundles")) return replay("bundles-200");
-    if (pathname.endsWith("/read")) return replay("read-200-ok-qualified");
-    if (pathname.endsWith("/run")) return replay("run-200-ok-qualified");
+    if (pathname.endsWith("/run")) return replay(body.operationId === "documents.read.v1" ? "read-200-ok-qualified" : "run-200-ok-qualified");
     return replay("operations-200");
   });
   const client = clientOf(fetch).within("south");
@@ -419,10 +436,10 @@ test("within: bundle-scoped requests name <slug>/<id>; unscoped ones and the ans
   await client.listOperations(BUNDLE);
   await client.runOperation(BUNDLE, "documents.history.v1", { documentId: "notes/via" });
   const named = Object.fromEntries(sent.map((request) => [request.path.slice("/sync/v1/".length), request.body.bundleId]));
+  assert.equal(sent.filter((request) => request.path === "/sync/v1/run").length, 3, "the read, the history page and the run");
   assert.deepEqual(named, {
     whoami: undefined,
     bundles: undefined,
-    read: `south/${BUNDLE}`,
     operations: `south/${BUNDLE}`,
     run: `south/${BUNDLE}`,
   });

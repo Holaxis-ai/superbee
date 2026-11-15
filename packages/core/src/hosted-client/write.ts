@@ -5,6 +5,7 @@
 import { readBundleOkfVersion } from "../engine.js";
 import {
   createHostedReadAdapter,
+  createPortRunner,
   createWholeDocumentTransport,
   type HostedCarrier,
   type HostedCapabilities,
@@ -229,7 +230,8 @@ export function writeSide(context: HostedWriteContext, workspace: string | null,
   const held = cache.entries.get(key);
   if (held && !fresh && live(held)) return held;
   for (const [other, side] of cache.entries) if (!live(side)) cache.entries.delete(other);
-  const reader = createHostedReadAdapter({ carrier: context.carrierFor(workspace), bundleId, routes: context.readRoutes });
+  const carrier = context.carrierFor(workspace);
+  const reader = createHostedReadAdapter({ carrier, bundleId, routes: context.readRoutes, runner: createPortRunner({ carrier, prefix: context.prefix }) });
   const answer = reader.hostedCapabilities().then(async (capabilities): Promise<WriteSideAnswer> => {
     // The edition from this same answer's root; the editions core parses, any other reads as
     // none, as the CLI's checkout reads it.
