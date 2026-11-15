@@ -20,7 +20,7 @@
       "content-type": "application/json; charset=utf-8",
       "x-superbee-write-settled": "4a2f9c1e-8b3d-4e6f-9a1b-000000000283"
     },
-    "body": "{\"ok\":false,\"operationId\":\"documents.create.v1\",\"error\":{\"code\":\"invalid_input\",\"message\":\"The create input is invalid. For a new document, use bundleId, documentId, expectAbsent: true, frontmatter and body. Omit managed frontmatter such as actor, timestamp and okf_version. For retained-candidate edit or replace-all, supply expectedCandidateVersion from candidates.read.\",\"retryable\":false,\"writeState\":\"not_applied\"}}",
+    "body": "{\"ok\":false,\"operationId\":\"documents.create.v1\",\"error\":{\"code\":\"invalid_input\",\"message\":\"The create input is invalid; nothing was saved. Send bundleId, documentId, expectAbsent: true, frontmatter (type, title and the fields the Kind requires) and body. Do not send managed frontmatter (timestamp, actor, generated, superbee_updated_by, verified, okf_version).\",\"retryable\":false,\"writeState\":\"not_applied\",\"inputIssues\":[{\"path\":\"documentId\",\"message\":\"This id or type is kept for Superbee's own documents (conventions, connectors, sites, views, reserved files). Choose another folder or type.\"}]}}",
     "truncated": false
   }
 }
