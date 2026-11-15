@@ -8,6 +8,7 @@ import {
   KIND_FIELD_UNDECLARED,
   documentLinkReport,
   inspectDocumentLinks,
+  parseMarkdown,
   readDoc,
   undeclaredTypeFinding,
   type Bundle,
@@ -224,10 +225,11 @@ function hostWarningMessage(code: string, field: string | undefined): string {
  * The findings the host returned with a hosted write, in the same vocabulary as
  * {@link writeFindings}: its warnings (host text, already stripped by core), a link whose target
  * `present` does not hold as `LINK_TARGET_ABSENT` with the local wording (at most
- * {@link LINK_FINDINGS_SHOWN}), its guidance, and a refusal's diagnostics and input issues.
+ * {@link LINK_FINDINGS_SHOWN}; none for a target in `linkedBefore`, the links of the version this
+ * write replaced, which was named when that link was first sent), its guidance, and a refusal's diagnostics and input issues.
  * Undefined when there is nothing to show, as for an older host that sends no report.
  */
-export function hostedRowFindings(findings: HostedWriteFindings | undefined, present: (id: string) => boolean): HostedRowFindings | undefined {
+export function hostedRowFindings(findings: HostedWriteFindings | undefined, present: (id: string) => boolean, linkedBefore: ReadonlySet<string> = new Set()): HostedRowFindings | undefined {
   if (findings === undefined) return undefined;
   const warnings: ValidationWarning[] = (findings.warnings ?? []).map((w) => ({
     code: w.code,
@@ -237,7 +239,7 @@ export function hostedRowFindings(findings: HostedWriteFindings | undefined, pre
     severity: "warning",
     ...(w.severity === "error" ? { details: { host_severity: "error" } } : {}),
   }));
-  const absent = [...new Set(findings.links?.targets ?? [])].filter((to) => !present(to));
+  const absent = [...new Set(findings.links?.targets ?? [])].filter((to) => !present(to) && !linkedBefore.has(to));
   for (const to of absent.slice(0, LINK_FINDINGS_SHOWN)) {
     warnings.push({ code: "LINK_TARGET_ABSENT", message: absentTargetMessage(to), field: "body", severity: "warning", details: { to } });
   }
@@ -248,4 +250,13 @@ export function hostedRowFindings(findings: HostedWriteFindings | undefined, pre
     ...(findings.inputIssues?.length ? { input_issues: findings.inputIssues } : {}),
   };
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** The link targets of a document's stored text; empty when the text does not parse. */
+export function linkedTargets(content: string, id: string, okfVersion: string | undefined): Set<string> {
+  try {
+    return new Set(inspectDocumentLinks({ ...parseMarkdown(content, id, { okfVersion }), id: id as ConceptId }).links.map((link) => link.to));
+  } catch {
+    return new Set();
+  }
 }

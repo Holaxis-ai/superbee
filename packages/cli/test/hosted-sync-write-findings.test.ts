@@ -81,6 +81,17 @@ test("--json carries the host's findings as data on the row", async () => {
   assert.deepEqual(row.warnings?.map((w) => [w.code, w.field]), [["LINK_TARGET_ABSENT", "body"]]);
 });
 
+test("a later sync of the same document names only an absent target its replaced version did not link", async () => {
+  const h = await harness();
+  const file = path.join(h.folder, "notes", "new.md");
+  await writeFile(file, note("[Gone](/notes/gone.md)"));
+  assert.deepEqual(rowOf((await runSync(h, true)).rows, "notes/new").warnings?.map((w) => w.message.match(/'([^']+)'/)?.[1]), ["notes/gone"]);
+  await writeFile(file, note("[Gone](/notes/gone.md), edited."));
+  assert.equal(rowOf((await runSync(h, true)).rows, "notes/new").warnings, undefined);
+  await writeFile(file, note("[Gone](/notes/gone.md) and [Other](/notes/other.md)."));
+  assert.deepEqual(rowOf((await runSync(h, true)).rows, "notes/new").warnings?.map((w) => w.message.match(/'([^']+)'/)?.[1]), ["notes/other"]);
+});
+
 test("a refused write shows the host's diagnostics with the document id, in its message and as data", async () => {
   const h = await harness({ definitionWrites: "allowed" });
   await writeFile(path.join(h.folder, "notes", "alpha.md"), note("alpha", "\nstage: later"));
