@@ -487,9 +487,8 @@
     if (!e || !e.edges || typeof e.edges.length !== "number" || e.count !== e.edges.length) return null;
     var out = [];
     for (var i = 0; i < e.edges.length; i++) {
-      var row = e.edges[i], keys = 0;
-      for (var key in row) keys += 1;
-      if (keys !== 3 || typeof row.from !== "string" || typeof row.to !== "string" || typeof row.text !== "string") return null;
+      var row = e.edges[i];
+      if (!row || typeof row !== "object" || Object.keys(row).length !== 3 || typeof row.from !== "string" || typeof row.to !== "string" || typeof row.text !== "string") return null;
       out.push([row.from, row.to, row.text]);
     }
     return out;
