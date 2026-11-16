@@ -1,3 +1,4 @@
+import { boundaryFixture, runCli } from "./support/private-state-fixtures.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, symlink } from "node:fs/promises";
@@ -51,9 +52,15 @@ test("explicit existing prerequisites are observed without changing source or bu
   } finally { await f.cleanup(); }
 });
 test("unsupported legacy assets, source symlinks, duplicate JSON and --out produce no success artifact", async () => {
-  for (const mode of ["asset", "symlink", "duplicate", "out"]) { const f = await fixture(); try {
+  for (const mode of ["asset", "symlink", "root-symlink", "duplicate", "out"]) { const f = await fixture(); try {
     if (mode === "asset") await writeFile(path.join(f.source, "unknown.txt"), "not silently dropped");
     if (mode === "symlink") await symlink(path.join(f.source, "recipe.md"), path.join(f.source, "alias.md"));
+    if (mode === "root-symlink") {
+      await symlink(f.source, path.join(f.root, "source-alias"));
+      const config = JSON.parse(await readFile(f.config, "utf8"));
+      config.recipes[0].source = "./source-alias";
+      await writeFile(f.config, JSON.stringify(config));
+    }
     if (mode === "duplicate") await writeFile(f.config, '{"schema":"recipe-qualification/v1","schema":"recipe-qualification/v1","recipes":[]}');
     const before = await snapshot(f.root); const entries = await readdir(f.root); let stdout = "";
     await assert.rejects(recipe(["qualify", f.config, ...(mode === "out" ? ["--out", path.join(f.root, "output")] : [])], { stdout: s => { stdout += s; } }));
@@ -69,4 +76,21 @@ test("serialized output is bounded before any success byte is emitted", async ()
     let stdout = ""; await assert.rejects(recipe(["qualify", f.config], { stdout: s => { stdout += s; } }), /Serialized qualification output exceeds/);
     assert.equal(stdout, "");
   } finally { await f.cleanup(); }
+});
+
+test("selected source-root aliases into private state refuse before acquisition", async () => {
+  const f = await boundaryFixture();
+  try {
+    await symlink(f.stateRoot, path.join(f.outside, "source-alias"));
+    const config = path.join(f.outside, "config.json");
+    await writeFile(config, JSON.stringify({ schema: "recipe-qualification/v1", recipes: [
+      { key: "private", source: "./source-alias", namespace: "github.com/123/private" },
+    ] }));
+    const before = await snapshot(f.root);
+    const result = runCli(["recipe", "qualify", config, "--json"], { cwd: f.outside, home: f.home });
+    assert.notEqual(result.status, 0);
+    assert.doesNotMatch(result.stdout, /recipe-qualification-output/);
+    assert.match(result.stderr + result.stdout, /CONFLICT|private.*state/i);
+    assert.deepEqual(await snapshot(f.root), before);
+  } finally { f.cleanup(); }
 });

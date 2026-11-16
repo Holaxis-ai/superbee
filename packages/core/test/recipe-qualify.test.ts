@@ -116,3 +116,27 @@ test("qualification refuses generated files that exceed the byte bound after exp
   source.files = [source.files[0]!, { ...convention, bytes: convention.bytes + "x".repeat(2 * 1024 * 1024 - Buffer.byteLength(convention.bytes) - 1) }];
   assert.throws(() => qualifyRecipeSet([source]), /prepared output exceeds/);
 });
+test("unsupported nested reference definitions refuse with source lines; frontmatter remains disclosed", () => {
+  for (const definition of ["> [ref]: x.md", "  - [ref]: x.md"]) {
+    assert.throws(() => qualifyRecipeSet([input("a", "A", {}, `Intro\n${definition}\n[ref]\n`)]), /a\/conventions\/nested\/kind:line 2: unsupported/);
+  }
+  const source = input("a", "A", { description: "[ref](../../references/guide.md)" });
+  const result = qualifyRecipeSet([source]);
+  assert.equal(result.recipes[0]!.recipe.docs[0]!.frontmatter.description, "[ref](../../references/guide.md)");
+  assert.match(result.receipt.untransformed.join(" "), /Frontmatter Markdown strings/);
+});
+test("malformed relationship declarations refuse as input errors", () => {
+  for (const field of ["links", "expects_inbound"]) {
+    for (const value of [5, null, ["A"], { relation: 5 }, { relation: null }, { relation: "" }]) {
+      assert.throws(() => qualifyRecipeSet([input("a", "A", { [field]: value })]), error => {
+        assert.ok(error instanceof Error);
+        assert.notEqual(error.name, "TypeError");
+        assert.match(error.message, /must be|invalid|Invalid/);
+        return true;
+      });
+    }
+  }
+  const own = input("a", "A", { links: { self: "A" } });
+  own.entry.bindings = { A: { existing: "Task" } };
+  assert.throws(() => qualifyRecipeSet([own], [task]), /cannot override own Kind/);
+});

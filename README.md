@@ -293,15 +293,16 @@ The complete input set is bounded to 32 selections, 512 files, 2 MiB per file an
 generated recipe files have the same bounds, the serialized output document is bounded to 16 MiB,
 and configuration is bounded to 256 KiB. Preparation supports Conventions and declared static
 References. Views, Connectors, undeclared assets, symlinked source entries and unsupported link
-constructs refuse before output. Structural inline Markdown links relocate using the ordinary
-resolver, including nested paths and fragments. Prose, fenced examples and query strings are
-untransformed and remain author-owned. OKF 0.2 field rules and logical progress-status
+constructs refuse before output. Supported inline Markdown links in document bodies relocate using
+the ordinary resolver, including nested paths and fragments. Unsupported HTML and reference-link
+syntax is conservatively rejected with a source line number. Prose, fenced examples, query strings
+and Markdown strings in frontmatter remain unchanged and author-owned. OKF 0.2 field rules and logical progress-status
 materialization still apply; qualifying a Kind does not make reserved field conflicts valid.
 
 Keep one canonical source/configuration, regenerate the complete JSON artifact for each release,
 and review generated differences. Publish only the expanded artifacts under their actual source
 and file digests. Index generation and publication are separate, explicit work. Namespace changes
-create new identities; they never adopt or migrate old records. Optional-field evolution uses the
+create new identities; preparation does not adopt or migrate existing records. Optional-field evolution uses the
 ordinary plan/apply workflow and preserves instance bytes; incompatible changes require a separate
 migration decision.
 

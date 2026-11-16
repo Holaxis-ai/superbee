@@ -32,8 +32,9 @@ Qualified entries may set paths:{source-governs:record-prefix}; otherwise author
 remain unchanged. Friendly titles are labels; stored type/governs are always exact selectors.
 
 Supports Conventions and declared static References only. Views, Connectors, undeclared assets,
-unsupported HTML/reference links and relative non-concept assets refuse before output. Structural
-inline Markdown links relocate; prose/code examples remain author-owned and untransformed.
+unsupported HTML/reference links and relative non-concept assets refuse before output. Unsupported
+syntax is conservatively rejected with a source line. Supported inline body links relocate;
+frontmatter Markdown strings, prose and code examples remain author-owned and untransformed.
 Complete input/output: at most 512 files, 2 MiB/file, 8 MiB total; source nesting at most 12.
 Output is always one JSON document with schema recipe-qualification-output/v1, receipt and
 files:[{path,bytes}]. The serialized document is bounded to 16 MiB. No folders or files are written.
@@ -66,6 +67,9 @@ export async function recipeQualify(argv: string[], deps: { stdout?: (text: stri
   const inputs = [];
   for (const entry of config.recipes) {
     const source = path.resolve(path.dirname(configPath), entry.source); assertPathOutsidePrivateState(source);
+    if ((await fs.lstat(source).catch(() => undefined))?.isSymbolicLink()) {
+      throw new CliError("USAGE", `Selected recipe '${entry.key}' root must not be a symlink`);
+    }
     const folder = await readAuthorFolder(source, { requiredFile: "recipe.md" });
     if (!folder.ok) throw new CliError("USAGE", `Cannot read selected recipe '${entry.key}'`, { details: { diagnostics: folder.diagnostics } });
     inputs.push({ entry, source: await fs.realpath(source), files: folder.files });

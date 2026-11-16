@@ -52,6 +52,34 @@ function text(value: unknown, at: string): string {
   if (typeof value !== "string" || !value || value !== value.trim()) fail(`${at} must be a non-empty exact string`);
   return value as string;
 }
+// This is deliberately a conservative subset check, not a Markdown parser. Scan once:
+// unmatched delimiters must not trigger backtracking, even at the file byte limit.
+function unsupportedLinkLine(body: string): number | undefined {
+  let line = 1;
+  let htmlLine: number | undefined;
+  let bracketLine: number | undefined;
+  let closed: { line: number; immediate: boolean } | undefined;
+  for (let i = 0; i < body.length; i++) {
+    const char = body[i]!;
+    if (char === ">" && htmlLine !== undefined) return htmlLine;
+    if (char === "<" && htmlLine === undefined) {
+      const first = body.charCodeAt(i + (body[i + 1] === "/" ? 2 : 1));
+      if ((first >= 65 && first <= 90) || (first >= 97 && first <= 122)) htmlLine = line;
+    }
+    if (closed) {
+      if (char === "(" || char === "[" || (char === ":" && closed.immediate)) return closed.line;
+      if (/\s/.test(char)) closed.immediate = false;
+      else closed = undefined;
+    }
+    if (char === "[") bracketLine ??= line;
+    if (char === "]") {
+      if (bracketLine !== undefined) closed = { line: bracketLine, immediate: true };
+      bracketLine = undefined;
+    }
+    if (char === "\n") { line++; bracketLine = undefined; }
+  }
+  return undefined;
+}
 function recordPath(value: string): string {
   const trimmed = value.endsWith("/") ? value.slice(0,-1) : value;
   assertSafeConceptId(trimmed);
@@ -170,7 +198,7 @@ export function qualifyRecipeSet(inputs: readonly RecipeQualificationInput[], ex
   });
   const byKey = new Map(allocated.map(a => [a.entry.key, a]));
   const prerequisites = new Map<string, ExistingQualificationKind>();
-  const receipt: RecipeQualificationResult["receipt"] = { schema: "recipe-qualification-receipt/v1", recipes: [], prerequisites: [], shared_record_paths: [], untransformed: ["Prose, code examples and query strings remain author-owned and are not transformed."] };
+  const receipt: RecipeQualificationResult["receipt"] = { schema: "recipe-qualification-receipt/v1", recipes: [], prerequisites: [], shared_record_paths: [], untransformed: ["Frontmatter Markdown strings, prose, code examples and query strings remain author-owned and are not transformed."] };
   const recordPaths = new Map<string, string[]>();
   const recipes = allocated.map(a => {
     const { input, entry, source, manifest, owner, names, destinations } = a;
@@ -198,9 +226,17 @@ export function qualifyRecipeSet(inputs: readonly RecipeQualificationInput[], ex
       used.add(kind); return resolved;
     }
     function bodyAt(body: string, from: string, to: string): string {
-      const spans = extractMarkdownLinkSpans(body, { skipCode: true }); let remaining = maskMarkdownCode(body);
-      for (const span of [...spans].reverse()) remaining = remaining.slice(0, span.start) + " ".repeat(span.end - span.start) + remaining.slice(span.end);
-      if (/<\/?[A-Za-z][^>]*>|\[[^\]\n]*\]\s*(?:\(|\[)|^ {0,3}\[[^\]\n]+\]:/m.test(remaining)) fail(`${entry.key}/${from}: unsupported HTML or Markdown link syntax; use plain inline Markdown links or code-fenced examples`);
+      const spans = extractMarkdownLinkSpans(body, { skipCode: true });
+      const masked = maskMarkdownCode(body);
+      const chunks: string[] = [];
+      let cursor = 0;
+      for (const span of spans) {
+        chunks.push(masked.slice(cursor, span.start), masked.slice(span.start, span.end).replace(/[^\r\n]/g, " "));
+        cursor = span.end;
+      }
+      chunks.push(masked.slice(cursor));
+      const unsupportedLine = unsupportedLinkLine(chunks.join(""));
+      if (unsupportedLine !== undefined) fail(`${entry.key}/${from}:line ${unsupportedLine}: unsupported HTML or Markdown link syntax; use plain inline Markdown links or code-fenced examples`);
       return rewriteMarkdownLinks(body, spans, span => {
         if (isExternalHref(span.href)) return undefined;
         const local = resolveConceptId(from, span.href);
@@ -235,8 +271,11 @@ export function qualifyRecipeSet(inputs: readonly RecipeQualificationInput[], ex
         if (entry.namespace) frontmatter.title ??= name;
         if (Object.hasOwn(entry.paths ?? {}, name)) frontmatter.path = entry.paths![name];
         for (const field of ["links", "expects_inbound"]) {
-          const map = frontmatter[field] as Record<string, string> | undefined;
-          if (map) frontmatter[field] = Object.fromEntries(Object.entries(map).map(([label, kind]) => [label, target(kind)]));
+          if (frontmatter[field] !== undefined) {
+            const at = `${entry.key}/${doc.id}.${field}`;
+            const map = object(frontmatter[field], at);
+            frontmatter[field] = Object.fromEntries(Object.entries(map).map(([label, kind]) => [label, target(text(kind, `${at}.${label}`))]));
+          }
         }
         const prefix = frontmatter.path as string | undefined;
         kinds.push({ source: name, selector: names.get(name)!, title: (frontmatter.title as string | undefined) ?? name, ...(prefix ? { path: prefix } : {}) });
