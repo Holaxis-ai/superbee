@@ -118,7 +118,8 @@ export function rewriteMarkdownLinks(
   replace: (span: MarkdownLinkSpan) => string | undefined,
 ): string {
   const ordered = [...spans].sort((a, b) => b.hrefStart - a.hrefStart);
-  let out = body;
+  const chunks: string[] = [];
+  let cursor = body.length;
   let floor = Number.POSITIVE_INFINITY;
   for (const span of ordered) {
     if (span.hrefEnd > floor) throw new InvalidInputError("link spans overlap; refusing to rewrite the body");
@@ -128,9 +129,11 @@ export function rewriteMarkdownLinks(
     }
     const next = replace(span);
     if (next === undefined || next === span.href) continue;
-    out = out.slice(0, span.hrefStart) + next + out.slice(span.hrefEnd);
+    chunks.push(body.slice(span.hrefEnd, cursor), next);
+    cursor = span.hrefStart;
   }
-  return out;
+  chunks.push(body.slice(0, cursor));
+  return chunks.reverse().join("");
 }
 
 /**

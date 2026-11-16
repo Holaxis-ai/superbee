@@ -935,3 +935,16 @@ test("v0.1: copies written before a crash are adopted on resume, not flagged for
   assert.equal(resumed.left, undefined);
   assert.deepEqual((await planDocumentRefresh(refresh)).entries.map((e) => [e.action, e.edited]), [["unchanged", false], ["unchanged", false]]);
 });
+
+test("href chunk assembly retains descending callbacks, unchanged spans and validation", () => {
+  const body = "[a](a.md) [b](b.md) [c](c.md)";
+  const spans = extractMarkdownLinkSpans(body);
+  const visited: string[] = [];
+  assert.equal(rewriteMarkdownLinks(body, [spans[1]!, spans[0]!, spans[2]!], span => {
+    visited.push(span.href);
+    return span.href === "b.md" ? undefined : `long/${span.href}`;
+  }), "[a](long/a.md) [b](b.md) [c](long/c.md)");
+  assert.deepEqual(visited, ["c.md", "b.md", "a.md"]);
+  assert.equal(rewriteMarkdownLinks(body, spans, span => span.href), body);
+  assert.throws(() => rewriteMarkdownLinks(body, [spans[0]!, spans[0]!], () => "x"), /overlap/);
+});

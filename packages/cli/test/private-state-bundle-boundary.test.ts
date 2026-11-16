@@ -663,7 +663,25 @@ function benignTarget(role: CliPathRole, fixture: BoundaryFixture, key: string):
 
 const VIEW_CONTENT_CONTROL = "a local bundle answers view read/update USAGE (not a hosted checkout) after the path guards; hosted-view-content.test.ts runs both in a checkout with an ordinary --file and --out";
 
+function qualificationControl(fixture: BoundaryFixture, name: string): string {
+  const source = path.join(fixture.outside, "qualification-source");
+  for (const file of builtinRecipeFiles("context-notes")!) {
+    mkdirSync(path.dirname(path.join(source, file.path)), { recursive: true });
+    writeFileSync(path.join(source, file.path), file.bytes);
+  }
+  const config = path.join(fixture.project, `qualification-${name}.json`);
+  writeFileSync(config, JSON.stringify({ schema: "recipe-qualification/v1", recipes: [{ key: "notes", source: path.relative(fixture.project, source), namespace: "github.com/123/notes" }] }));
+  return config;
+}
+
 const CROSSING_ROWS: readonly CrossingRow[] = [
+  { leaf: "recipeQualify", surface: "<0>",
+    argv: t => ["recipe", "qualify", t, "--json"],
+    control: f => qualificationControl(f, "config") },
+  { leaf: "recipeQualify", surface: "--dir",
+    argv: t => ["recipe", "qualify", "qualification-dir.json", "--dir", t, "--json"],
+    control: f => { qualificationControl(f, "dir"); return f.bundle; } },
+
   // ── Bundle roots (`--dir`): the target BECOMES the bundle. ──────────────────
   { leaf: "bundleLocate", surface: "--dir", argv: (t) => ["bundle", "locate", "--dir", t, "--json"] },
   { leaf: "catalogRelocate", surface: "--dir", argv: (t) => ["catalog", "relocate", "probe-label", "--dir", t, "--json"], controlExit: 6 },

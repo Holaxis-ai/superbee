@@ -1,3 +1,4 @@
+import { kindTitleCandidates } from "../kind-title-candidates.js";
 import { renderUsage } from "../output.js";
 // `superbee list` / `superbee query` — query concepts over their frontmatter.
 //
@@ -420,6 +421,13 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
   // but only when there's something to drill into. A truncation hint (if capped) and the corrupt-doc
   // hint (if any) precede the browse hints so the most actionable line is first.
   const help: string[] = [];
+  if (filter.type) {
+    const candidates = kindTitleCandidates(await getRegistry(), filter.type);
+    if (candidates) {
+      out.kind_candidates = candidates;
+      help.push(`--type ${commandToken(filter.type)} matched only that exact type; the matching titled Kinds were not searched. Choose an exact governs value from '${cliInvocation()} kinds'.`);
+    }
+  }
   if (truncated) {
     help.push(
       `showing ${shownRows.length} of ${total} — run \`${cliInvocation()} list --limit 0\` (or a higher --limit) for all`,

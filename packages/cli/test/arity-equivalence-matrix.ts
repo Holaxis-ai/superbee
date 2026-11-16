@@ -140,6 +140,7 @@ export const BEHAVIOR_ASSIGNMENTS = [
   ordinary("recipeAdd", 1),
   ordinary("recipeEvolve", 1),
   ordinary("recipeValidate", 1),
+  ordinary("recipeQualify", 1),
   ordinary("sourcePluginRegister", 1),
   ordinary("sourcePluginList", 0),
   ordinary("sourcePluginRemove", 1),
