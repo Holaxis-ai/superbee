@@ -61,7 +61,7 @@ client below wraps all of them.
 | request | ask | answer |
 | --- | --- | --- |
 | `hello` | who is hosting me | `{ bundle: { root, name }, mode, protocol, grant, host: { kind, capabilities, limits } }` |
-| `query` | `{ type?, prefix?, field?, open?, limit?, order? }` | `{ rows: [{ id, version, frontmatter }], count }` |
+| `query` | `{ type?, prefix?, field?, open?, limit?, order? }` | `{ rows: [{ id, version, frontmatter }], count, more? }` |
 | `read` | `docId` | `{ id, frontmatter, body }` |
 | `read-versioned` | `docId` | `{ doc, version }` |
 | `render-document` | `docId` | `{ document: { id, version }, html, bounded }` |
@@ -76,6 +76,12 @@ client below wraps all of them.
 `query.open`, `edges`, `graph`, `subscribe-deltas`) instead of assuming; every host refuses what it
 does not offer with an error (`FORBIDDEN` for request types, `USAGE` for query params), never
 silently.
+
+Hosts differ in how many rows a `query` returns. Pass `limit: 0` to mean "up to this host's
+ceiling" and read the ceiling from `hello.result.host.limits.query`; a fixed larger `limit` is
+refused with `USAGE` on a host with a lower ceiling. When `result.more` is true or `result.count` is
+above `result.rows.length`, the result was cut short: show a visible note such as "showing the
+first N" instead of presenting it as complete.
 
 Query rows come in canonical id order. On a host that declares `query.newest`, pass
 `order: "newest"` to get CLI `list` order instead (newest `generated.at` or `timestamp` first, rows

@@ -538,6 +538,21 @@ function skippedReply(skipped: SkippedDocument[]): { skipped?: SkippedDocument[]
   return { skipped: [...skipped].sort((a, b) => compareCodeUnits(a.id, b.id)).slice(0, MAX_QUERY_ROWS) };
 }
 
+/** A read of a document that does not exist: the backend's ENOENT-shaped rejection. */
+function isMissingDocument(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException)?.code === "ENOENT";
+}
+
+/**
+ * True when a `field` filter names more than one value, by the grammar `applyQuerySelectionFilters`
+ * applies: split at the first `=`, a nonempty key, then more than one nonempty trimmed value.
+ */
+function isMultiValueField(field: string): boolean {
+  const at = field.indexOf("=");
+  if (at < 0 || field.slice(0, at).trim() === "") return false;
+  return field.slice(at + 1).split(",").filter((value) => value.trim() !== "").length > 1;
+}
+
 function boundedRows(rows: HeadResult[], params: BridgeQueryParams, kinds: KindConvention[]): {
   rows: HeadResult[];
   count: number;
@@ -903,6 +918,15 @@ export class BridgeService {
         // A host that does not declare query.newest answers `order` exactly like any unknown key.
         return { reply: fail(request.id, request.bridge, "USAGE", "invalid or unsupported bridge request") };
       }
+      // Refuse, never degrade: a query feature the host does not declare is refused like `order`.
+      if (request.params.field !== undefined && isMultiValueField(request.params.field)
+        && !this.options.host.capabilities.includes(BRIDGE_HOST_CAPABILITIES.queryFieldOr)) {
+        return { reply: fail(request.id, request.bridge, "USAGE", "this host does not offer multi-value field filters") };
+      }
+      if (request.params.open === true
+        && !this.options.host.capabilities.includes(BRIDGE_HOST_CAPABILITIES.queryOpen)) {
+        return { reply: fail(request.id, request.bridge, "USAGE", "this host does not offer open filtering") };
+      }
       const skipped: SkippedDocument[] = [];
       const rows = await queryHeads(this.options.bundle, {
         ...(request.params.type ? { type: request.params.type } : {}),
@@ -926,11 +950,21 @@ export class BridgeService {
           ? { ...row, frontmatter: projectLogicalKindFields(okfVersion, kind, row.frontmatter) }
           : row;
       });
-      return { reply: ok(request.id, request.bridge, request.type, { ...result, ...skippedReply(skipped) }) };
+      // `more` is present only when the cap cut matching rows; `count` says how many matched.
+      const more = result.count > result.rows.length ? { more: true as const } : {};
+      return { reply: ok(request.id, request.bridge, request.type, { ...result, ...more, ...skippedReply(skipped) }) };
     }
     if (request.type === "read" || request.type === "read-versioned") {
-      const [result, registry, okfVersion] = await Promise.all([
-        readDocVersioned(this.options.bundle, request.docId),
+      let result;
+      try {
+        result = await readDocVersioned(this.options.bundle, request.docId);
+      } catch (error) {
+        if (isMissingDocument(error)) {
+          return { reply: fail(request.id, request.bridge, "NOT_FOUND", `Document '${request.docId}' is not available`) };
+        }
+        throw error;
+      }
+      const [registry, okfVersion] = await Promise.all([
         loadKinds(this.options.bundle),
         readBundleOkfVersion(this.options.bundle),
       ]);
@@ -955,7 +989,7 @@ export class BridgeService {
       try {
         result = await readDocVersioned(this.options.bundle, request.docId);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+        if (isMissingDocument(error)) {
           return {
             reply: fail(
               request.id,
