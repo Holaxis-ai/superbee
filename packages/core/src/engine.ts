@@ -1,3 +1,4 @@
+import { compareCodePoints } from "./code-point-order.js";
 import { compareCodeUnits } from "./code-unit-order.js";
 import { captureBodyReplacePosture, guardBodyReplace } from "./body-replace-guards.js";
 import { inventoryGuardFor, InventoryGuardConflict, type InventoryGuardRequest } from "./inventory-guard.js";
@@ -264,7 +265,9 @@ export async function queryEdges(
       edges.push(link);
     }
   }
-  edges.sort((a, b) => compareCodeUnits(a.from, b.from) || compareCodeUnits(a.to, b.to) || compareCodeUnits(a.text, b.text));
+  // Code point order is UTF-8 byte order, the order an indexed store sorts and seeks in, and the
+  // order the relationship page uses. The sort is stable, so equal rows keep authored order.
+  edges.sort((a, b) => compareCodePoints(a.from, b.from) || compareCodePoints(a.to, b.to) || compareCodePoints(a.text, b.text));
   return edges;
 }
 

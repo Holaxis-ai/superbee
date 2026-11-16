@@ -185,15 +185,28 @@ is a face over). `params` accepts only `from`, `to` and `text`:
 
 - `from` and `to` are each one exact nonblank concept id, a bundle-relative `prefix/` (trailing
   slash), or an array of 1 to 32 such strings (union within a facet; giving both facets ANDs them).
-  Omit a facet for no restriction. Empty or all-whitespace strings, empty arrays, blank or
-  non-string entries, and arrays above 32 entries are malformed. Every string is preserved
-  byte-for-byte and may be at most 1024 UTF-8 bytes; duplicates count toward 32.
+  Omit a facet for no restriction. An id matches only itself (`tasks/a` never matches `tasks/ab`
+  or `tasks/a/b`); only a trailing slash makes a prefix. Empty or all-whitespace strings, empty
+  arrays, blank or non-string entries, arrays above 32 entries, and a string that is not a
+  canonical concept id or one followed by `/` (a `.` or `..` segment, an empty segment or leading
+  `/`, a backslash, a control character) are malformed and answer `USAGE`. Every string is
+  preserved byte-for-byte and may be at most 1024 UTF-8 bytes; duplicates count toward 32.
 - `text` is one exact nonblank link-display string (never a substring or pattern), preserved
   byte-for-byte, at most 1024 UTF-8 bytes.
 
 Backlinks are `edges({ to: docId })`; a container's contents are `edges({ from: itemId, text:
-"contains" })`. A source linking to one target twice with different text yields two rows. More rows
-than `limits.edges` answers `TOO_LARGE`.
+"contains" })`. Each row is exactly `{ from, to, text }`, and `count` is the number of rows.
+
+- **Rows** are the links Core's link parser reads in each source body (`queryEdges` over
+  `parseLinksFromDoc`): one row per authored occurrence, so a link written twice is two identical
+  rows and a source linking to one target with different text yields a row for each. A link inside
+  a code block or inline code counts. Self-links and links to documents that do not exist are rows.
+  Images, external links and links to anything but a `.md` concept are not.
+- **Order** is `from`, then `to`, then `text`, each by Unicode code point (the order of their UTF-8
+  bytes), then authored order. Code point order differs from UTF-16 code unit order (plain `<` in
+  JavaScript) only where a character above U+FFFF meets one from U+E000 to U+FFFF.
+- **Cap:** more rows than `limits.edges` answers `TOO_LARGE` with no rows; a host never returns the
+  first `limits.edges` rows as if they were all.
 
 ### `relationships`
 
@@ -248,7 +261,8 @@ Reply (`type: "graph:result"`):
   that a plain `read` would refuse: one document body above 1 MiB answers `TOO_LARGE` for the
   whole request, while the same graph without bodies stays answerable.
 - `relationships` is the whole derived edge list, the same derivation and order as `edges` (which
-  refuses above 1000 rows where `graph` answers up to 10000), in `from`, `to`, `text` order.
+  refuses above 1000 rows where `graph` answers up to 10000), in `from`, `to`, `text` code point
+  order.
 - `counts` reports the array lengths.
 - `okfVersion` is the bundle's declared OKF edition, `0.1` when undeclared.
 
@@ -433,7 +447,7 @@ author, host by host:
 | `USAGE` | the request is malformed: wrong keys, bounds or value shapes, or a query feature the host does not declare | before any bundle work; `id` echoed only when it was a bounded string | same | `invalid_input` from the parent |
 | `FORBIDDEN` | not offered here: no grant, an unknown launch, a write on a read-only host, a request type or capability the host does not offer | `access: none` data requests; unknown or expired launch; unsupported types | every write; unsupported types; undeclared extensions | `unsupported_operation`; anything outside the slot allowlist |
 | `REVOKED` | the View changed while the request ran; reload | entry bytes or registration changed mid-request | never (immutable snapshot) | `denied` from the parent (grant lost, binding changed) |
-| `TOO_LARGE` | the answer exceeded a declared limit; narrow the request | reply above `limits.replyBytes`, body above 1 MiB, edges above `limits.edges`, a graph above `limits.graphDocuments` or `limits.graphRelationships` | same | size errors from the parent |
+| `TOO_LARGE` | the answer exceeded a declared limit; narrow the request (never a cut answer) | reply above `limits.replyBytes`, body above 1 MiB, edges above `limits.edges`, a graph above `limits.graphDocuments` or `limits.graphRelationships` | same | size errors from the parent |
 | `RUNTIME` | the host failed; retry later or show "unavailable" | storage or renderer failure | same | `unavailable` from the parent |
 | `NOT_FOUND` | the named document or View target does not exist | `read`, `read-versioned`, `render-document`, `relationships`, `open-page` | same | `document_not_found`; `record.open` on a missing document |
 
@@ -587,7 +601,7 @@ self-contained entry (`views/conformance.html`) that embeds the client above and
 `hello`, `query`, `query-newest` (a `query` with `order: "newest"`, skipped unless the host declares
 `query.newest`), `read`, `read-versioned`, `edges`, `graph`, `render-document`, `subscribe`,
 `host` (an undeclared capability, expecting `FORBIDDEN`), `action.propose`, `burst` (12 `read`
-requests in flight at once), then the revision 5 and 6 rows, and last `open-page` (a registry id
+requests in flight at once), then the revision 5, 6 and 7 rows, and last `open-page` (a registry id
 that must not exist). A host may cap in-flight requests, but it must queue or refuse the excess
 with an error reply, never drop it, so the `burst` row expects all 12 results.
 
@@ -607,6 +621,27 @@ bundle described under "Running it on another host"; "matched" below is `count` 
   holds at least two documents; with `query.count`, `count` above 1;
 - `read-missing` and `read-versioned-missing` of `docs/conformance-missing-document`: `NOT_FOUND`
   on every host.
+
+The revision 7 rows hold `edges` to the rules above over the fixed `edges/` documents in the
+expected table's `edgeDocuments`. Each is skipped when the host does not declare `edges`; otherwise
+an answer must equal the listed rows exactly, in order, each row exactly `{ from, to, text }` with
+`count` equal to the rows:
+
+- `edges-from`, `from: ["edges/a", "edges/b"]`: nine rows, including two occurrences of one link, a
+  self-link, a link to a missing document, a link inside a code block, and `edges/U+E000` before
+  the astral `edges/U+1F41D`; no row from `edges/ab`;
+- `edges-from-text`, `from: "edges/a", text: "beta"`: the two `beta` rows, not `Beta`;
+- `edges-to`, `to: "edges/b"`: six rows from `edges/a`, `edges/ab` and `edges/sub/c`;
+- `edges-prefix-union`, `from: ["edges/sub/", "edges/b"]`: one row each;
+- `edges-dangling`, `to: "edges/missing"`: the one link to a document that does not exist;
+- `edges-from-list-limit`: `from` with 32 ids answers the rows of `edges/a`; 33 ids answer `USAGE`;
+- `edges-invalid-selector`, `from: "edges/../a"`: `USAGE`;
+- `edges-too-large`, `text: "conformance-bulk"`: 1005 links, so `TOO_LARGE` on a host whose
+  `limits.edges` is below 1005.
+
+A host that ignores a filter, matches an id as a prefix, drops or merges occurrences, self-links,
+dangling links or links in code, orders by code units, cuts a large answer or answers a malformed
+selector fails at least one of these rows; `conformance.test.mjs` proves each case.
 
 It renders one table row per request with the request name, a status (`answered`, `refused`,
 `sent`, `skipped` or `failed`) and a one-line summary, and exposes the same rows on
@@ -633,10 +668,14 @@ commit, the way the hosted sync fixtures are mirrored in the other direction:
    - a first document by id with a nonempty `type` without a comma, and one document of another
      `type`;
    - a Kind declaring `fields.terminal` for one type, and at least one document of that type whose
-     value is in the terminal set.
+     value is in the terminal set;
+   - the table's `edgeDocuments`, each with its frontmatter and its `body` written `repeat` times
+     (once when absent), and no other document with an id under `edges/`, linking to one, or using
+     the link text `conformance-bulk`;
+   - `limits.edges` below 1005.
 
    The table's `bundle` field repeats these. `conventions/doc`, `docs/alpha`, `docs/beta` and a
-   closed `docs/gamma` in `conformance.test.mjs` are one such bundle.
+   closed `docs/gamma` in `conformance.test.mjs`, with the `edgeDocuments`, are one such bundle.
 4. Run it in the host's own frame, wait for `window.__conformance.done`, and assert `revision` and
    each row against the table for the capabilities the host's `hello` declared.
 
@@ -651,7 +690,10 @@ requests that were never valid before. Refusing an undeclared query feature with
 an answer only on a host that never honored that feature. Answering `NOT_FOUND` instead of
 `RUNTIME` for a `read` or `read-versioned` of a missing document narrows the code of an existing
 error reply; older hosts answer `RUNTIME`, so a View that must run on them treats `RUNTIME` from
-`read` as possibly missing. A change that alters an existing reply
+`read` as possibly missing. Likewise an `edges` selector that is not a canonical id answers `USAGE`
+where older OSS hosts answered `RUNTIME`, and `edges` and `graph` rows sort by code points where
+older OSS hosts sorted by UTF-16 code units; the two orders differ only where a character above
+U+FFFF meets one from U+E000 to U+FFFF. A change that alters an existing reply
 or request shape needs a new envelope value and a change here first.
 
 ### Body proposals

@@ -136,8 +136,10 @@ test("edge selectors preserve exact nonblank UTF-8 bytes and retain transport bo
     "reviews/café-🚀",
     "reviews/line\nbreak",
   ];
+  // A line break is fine in link text but makes no concept id, so it is a text value only.
+  const exactIds = exactValues.filter((value) => !value.includes("\n"));
   for (const facet of ["from", "to"]) {
-    for (const value of exactValues) {
+    for (const value of exactIds) {
       const parsed = parseBridgeRequest({
         bridge: "v0",
         type: "edges",
@@ -213,6 +215,18 @@ test("edge selectors preserve exact nonblank UTF-8 bytes and retain transport bo
     { to: "" },
     { to: [] },
     { text: " \t\n" },
+    // Not a canonical id or `id/` prefix: refused here with USAGE, never a Core throw (RUNTIME).
+    { from: "reviews/line\nbreak" },
+    { from: "../reviews/one" },
+    { from: "reviews/../one" },
+    { to: "reviews//one" },
+    { to: "reviews/./one" },
+    { from: "/reviews/one" },
+    { from: "/" },
+    { to: "reviews//" },
+    { to: "reviews\\one" },
+    { from: ["reviews/one", "reviews/../one"] },
+    { to: ["reviews/one.md/two"] },
   ];
   for (const params of invalidParams) {
     assert.equal(
@@ -465,6 +479,8 @@ test("invalid v0 envelopes correlate only a bounded existing id and perform no l
     { bridge: "v0", type: "host", id: "host-input", capability: "record.open", input: [] },
     { bridge: "v0", type: "edges", id: "thirty-three", params: { from: Array.from({ length: 33 }, (_, i) => `reviews/${i}`) } },
     { bridge: "v0", type: "edges", id: "selector-bytes", params: { to: `x${"y".repeat(1024)}` } },
+    { bridge: "v0", type: "edges", id: "not-canonical", params: { from: "reviews/../one" } },
+    { bridge: "v0", type: "edges", id: "not-canonical-prefix", params: { to: ["reviews/", "reviews//"] } },
     { bridge: "v0", type: "edges", id: id128, params: { from: [] } },
   ];
   for (const request of correlated) {

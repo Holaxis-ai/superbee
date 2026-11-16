@@ -351,17 +351,30 @@ function normalizeQueryParams(raw: unknown): BridgeQueryParams | null {
   return out;
 }
 
+/**
+ * One `edges` selector: a canonical concept id, matched exactly, or a canonical id followed by `/`,
+ * matched as a prefix. Anything else is malformed and refused with `USAGE` before Core sees it;
+ * Core's `queryEdges` applies the same rule and would throw.
+ */
+function edgeSelector(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim() || Buffer.byteLength(value, "utf8") > MAX_SELECTOR_BYTES) return null;
+  try {
+    assertSafeConceptId(value.endsWith("/") ? value.slice(0, -1) : value);
+    return value;
+  } catch {
+    return null;
+  }
+}
+
 function selector(value: unknown): string | string[] | undefined | null {
   if (value === undefined) return undefined;
-  if (typeof value === "string") {
-    return value.trim() && Buffer.byteLength(value, "utf8") <= MAX_SELECTOR_BYTES ? value : null;
-  }
+  if (typeof value === "string") return edgeSelector(value);
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_SELECTOR_VALUES) return null;
   const selectors: string[] = [];
   for (const entry of value) {
-    if (typeof entry !== "string") return null;
-    if (!entry.trim() || Buffer.byteLength(entry, "utf8") > MAX_SELECTOR_BYTES) return null;
-    selectors.push(entry);
+    const valid = edgeSelector(entry);
+    if (valid === null) return null;
+    selectors.push(valid);
   }
   return selectors;
 }

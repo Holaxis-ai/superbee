@@ -58,7 +58,7 @@ export function groupRelationshipOccurrences(
   return [...groups.values()];
 }
 
-/** Raw occurrences remain available to legacy queryEdges callers. */
+/** One document's raw link occurrences: the source of both queryEdges and the relationship page. */
 export interface RelationshipSource {
   id: ConceptId;
   title: string | null;

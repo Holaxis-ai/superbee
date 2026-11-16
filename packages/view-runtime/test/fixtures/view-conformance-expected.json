@@ -3,9 +3,26 @@
   "bundle": [
     "at most limits.query documents that query returns, and at least two of them",
     "the first document by id has a nonempty type with no comma, and another document has a different type",
-    "a Kind that declares fields.terminal for one type, and at least one document of that type whose value is in the terminal set"
+    "a Kind that declares fields.terminal for one type, and at least one document of that type whose value is in the terminal set",
+    "the documents in edgeDocuments, each written with its frontmatter and its body repeated `repeat` times (once when absent); no other document has an id starting with edges/, links to one, or links with the text conformance-bulk",
+    "limits.edges below 1005, the number of conformance-bulk links in edgeDocuments"
   ],
-  "revision": "6",
+  "edgeDocuments": [
+    {
+      "id": "edges/a",
+      "frontmatter": { "type": "Doc", "title": "Edges A", "timestamp": "2026-09-01T00:00:00.000Z" },
+      "body": "# Edges A\n\n[beta](b.md) and again [beta](b.md), then [Beta](b.md).\n[self](a.md) [missing](missing.md) [astral](\ud83d\udc1d.md) [private use](\ue000.md)\n\n```text\n[code](b.md)\n```\n"
+    },
+    { "id": "edges/ab", "frontmatter": { "type": "Doc", "title": "Edges AB", "timestamp": "2026-09-01T00:00:00.000Z" }, "body": "[beta](b.md)\n" },
+    { "id": "edges/b", "frontmatter": { "type": "Doc", "title": "Edges B", "timestamp": "2026-09-01T00:00:00.000Z" }, "body": "[alpha](a.md)\n" },
+    { "id": "edges/sub/c", "frontmatter": { "type": "Doc", "title": "Edges C", "timestamp": "2026-09-01T00:00:00.000Z" }, "body": "[beta](../b.md)\n" },
+    { "id": "edges/bulk/1", "frontmatter": { "type": "Doc", "title": "Bulk 1", "timestamp": "2026-09-01T00:00:00.000Z" }, "body": "[conformance-bulk](../bulk-target.md)\n", "repeat": 201 },
+    { "id": "edges/bulk/2", "frontmatter": { "type": "Doc", "title": "Bulk 2", "timestamp": "2026-09-01T00:00:00.000Z" }, "body": "[conformance-bulk](../bulk-target.md)\n", "repeat": 201 },
+    { "id": "edges/bulk/3", "frontmatter": { "type": "Doc", "title": "Bulk 3", "timestamp": "2026-09-01T00:00:00.000Z" }, "body": "[conformance-bulk](../bulk-target.md)\n", "repeat": 201 },
+    { "id": "edges/bulk/4", "frontmatter": { "type": "Doc", "title": "Bulk 4", "timestamp": "2026-09-01T00:00:00.000Z" }, "body": "[conformance-bulk](../bulk-target.md)\n", "repeat": 201 },
+    { "id": "edges/bulk/5", "frontmatter": { "type": "Doc", "title": "Bulk 5", "timestamp": "2026-09-01T00:00:00.000Z" }, "body": "[conformance-bulk](../bulk-target.md)\n", "repeat": 201 }
+  ],
+  "revision": "7",
   "rows": [
     { "request": "hello", "expect": { "status": ["answered"] } },
     { "request": "query", "expect": { "status": ["answered"] } },
@@ -61,6 +78,54 @@
     { "request": "query-more", "expect": { "status": ["answered"] } },
     { "request": "read-missing", "expect": { "status": ["refused"], "code": "NOT_FOUND" } },
     { "request": "read-versioned-missing", "expect": { "status": ["refused"], "code": "NOT_FOUND" } },
+    {
+      "request": "edges-from",
+      "capability": "edges",
+      "declared": { "status": ["answered"] },
+      "undeclared": { "status": ["skipped"] }
+    },
+    {
+      "request": "edges-from-text",
+      "capability": "edges",
+      "declared": { "status": ["answered"] },
+      "undeclared": { "status": ["skipped"] }
+    },
+    {
+      "request": "edges-to",
+      "capability": "edges",
+      "declared": { "status": ["answered"] },
+      "undeclared": { "status": ["skipped"] }
+    },
+    {
+      "request": "edges-prefix-union",
+      "capability": "edges",
+      "declared": { "status": ["answered"] },
+      "undeclared": { "status": ["skipped"] }
+    },
+    {
+      "request": "edges-dangling",
+      "capability": "edges",
+      "declared": { "status": ["answered"] },
+      "undeclared": { "status": ["skipped"] }
+    },
+    {
+      "request": "edges-from-list-limit",
+      "capability": "edges",
+      "declared": { "status": ["answered"] },
+      "undeclared": { "status": ["skipped"] }
+    },
+    {
+      "request": "edges-invalid-selector",
+      "capability": "edges",
+      "declared": { "status": ["refused"], "code": "USAGE" },
+      "undeclared": { "status": ["skipped"] }
+    },
+    {
+      "request": "edges-too-large",
+      "capability": "edges",
+      "declared": { "status": ["refused"], "code": "TOO_LARGE" },
+      "undeclared": { "status": ["skipped"] }
+    },
     { "request": "open-page", "expect": { "status": ["refused", "sent"] } }
   ]
 }

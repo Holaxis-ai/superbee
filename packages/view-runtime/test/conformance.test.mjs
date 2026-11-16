@@ -10,7 +10,19 @@ import {
   BRIDGE_SERVICE_LIMITS,
   BridgeService,
 } from "../dist/index.js";
-import { MemoryBackend, parseMarkdown, writeBlob, writeDoc } from "@superbee/core";
+import {
+  compareCodePoints,
+  compareCodeUnits,
+  extractMarkdownLinks,
+  MemoryBackend,
+  parseMarkdown,
+  queryEdges,
+  queryHeads,
+  readDoc,
+  resolveConceptId,
+  writeBlob,
+  writeDoc,
+} from "@superbee/core";
 import { admitActiveView } from "@superbee/core/view-admission";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -21,7 +33,7 @@ const REFERENCE_DOC = path.join(repoRoot, "examples/views/references/view-author
 const ENTRY = path.join(FIXTURE_DIR, "views/conformance.html");
 const REGISTRY = path.join(FIXTURE_DIR, "views-registry/conformance.md");
 const EXPECTED = JSON.parse(readFileSync(path.join(here, "fixtures/view-conformance-expected.json"), "utf8"));
-const REVISION = "6";
+const REVISION = "7";
 
 const REQUEST_ORDER = [
   "hello",
@@ -43,8 +55,17 @@ const REQUEST_ORDER = [
   "query-more",
   "read-missing",
   "read-versioned-missing",
+  "edges-from",
+  "edges-from-text",
+  "edges-to",
+  "edges-prefix-union",
+  "edges-dangling",
+  "edges-from-list-limit",
+  "edges-invalid-selector",
+  "edges-too-large",
   "open-page",
 ];
+const EDGE_ROWS = REQUEST_ORDER.filter((request) => request.startsWith("edges-"));
 /** The request type each row sends on the wire, where it differs from the row name. */
 const WIRE_TYPE = {
   "query-newest": "query",
@@ -54,6 +75,8 @@ const WIRE_TYPE = {
   "query-more": "query",
   "read-missing": "read",
   "read-versioned-missing": "read-versioned",
+  ...Object.fromEntries(EDGE_ROWS.map((request) => [request, "edges"])),
+  "edges-from-list-limit": ["edges", "edges"],
 };
 const BURST_READS = 12;
 /** The wire order: the burst row is BURST_READS `read` requests fired at once. */
@@ -147,7 +170,8 @@ function fakeDocument() {
 
 /**
  * The bundle the expected table names: two types (Convention and Doc), a Kind with a terminal set
- * and one closed document, so `open: true` has a row to drop and a dropped `field` shows.
+ * and one closed document, so `open: true` has a row to drop and a dropped `field` shows, and the
+ * table's edgeDocuments, written as another host writes them.
  */
 async function fixtureBundle() {
   const bundle = { root: "mem://conformance", backend: new MemoryBackend() };
@@ -176,6 +200,9 @@ async function fixtureBundle() {
     frontmatter: { type: "Doc", title: "Beta", timestamp: "2026-09-16T00:00:00.000Z" },
     body: "# Beta\n",
   });
+  for (const { id, frontmatter, body, repeat = 1 } of EXPECTED.edgeDocuments) {
+    await writeDoc(bundle, { id, frontmatter, body: body.repeat(repeat) });
+  }
   const registry = parseMarkdown(readFileSync(REGISTRY, "utf8"));
   await writeDoc(bundle, { id: "views-registry/conformance", frontmatter: registry.frontmatter, body: registry.body });
   await writeBlob(bundle, "views/conformance.html", new Uint8Array(readFileSync(ENTRY)), "text/html; charset=utf-8");
@@ -258,9 +285,9 @@ test("the conformance View exercises every request type against the OSS service 
   assert.equal(byRequest.hello.status, "answered");
   assert.match(byRequest.hello.summary, /^kind=oss grant=read limits\.query=500 capabilities=edges,graph,open-page,query\.count,query\.field-or,query\.kind-projection,query\.newest,query\.open,relationships,render-document,subscribe-deltas$/);
   assert.equal(byRequest.query.status, "answered");
-  assert.equal(byRequest.query.summary, "rows=5 count=5");
+  assert.equal(byRequest.query.summary, "rows=5 count=14");
   assert.equal(byRequest["query-newest"].status, "answered");
-  assert.equal(byRequest["query-newest"].summary, "rows=5 count=5 first=docs/beta", "the newer document leads");
+  assert.equal(byRequest["query-newest"].summary, "rows=5 count=14 first=docs/beta", "the newer document leads");
   assert.deepEqual(sent.filter((message) => message.type === "query").map((message) => message.params), [
     { limit: 5 },
     { order: "newest", limit: 5 },
@@ -279,7 +306,7 @@ test("the conformance View exercises every request type against the OSS service 
   assert.equal(byRequest.edges.status, "answered");
   assert.match(byRequest.edges.summary, /^from=\S+ count=\d+$/);
   assert.equal(byRequest.graph.status, "answered");
-  assert.equal(byRequest.graph.summary, "okfVersion=0.1 documents=5 relationships=1 model=absent bodies=0");
+  assert.equal(byRequest.graph.summary, "okfVersion=0.1 documents=14 relationships=1017 model=absent bodies=0");
   assert.equal(sent.find((message) => message.type === "graph").includeBodies, undefined, "the fixture asks for heads only");
   assert.equal(byRequest["render-document"].status, "answered");
   assert.match(byRequest["render-document"].summary, /^version=sha256:[0-9a-f]{64} html=\d+ chars bounded=false$/);
@@ -303,13 +330,23 @@ test("the conformance View exercises every request type against the OSS service 
   assert.equal(byRequest["query-field-or"].summary,
     "field=type=conformance-missing-type,Convention matched=1 type=Convention matched=1 other-type rows=0", "the second value is honored");
   assert.equal(byRequest["query-open"].status, "answered");
-  assert.equal(byRequest["query-open"].summary, "open matched=4 of 5", "the closed document is dropped");
+  assert.equal(byRequest["query-open"].summary, "open matched=13 of 14", "the closed document is dropped");
   assert.equal(byRequest["query-more"].status, "answered");
-  assert.equal(byRequest["query-more"].summary, "rows=1 count=5 more=true");
+  assert.equal(byRequest["query-more"].summary, "rows=1 count=14 more=true");
   assert.equal(byRequest["read-missing"].status, "refused");
   assert.match(byRequest["read-missing"].summary, /^NOT_FOUND: .* for docs\/conformance-missing-document \(expected\)$/);
   assert.equal(byRequest["read-versioned-missing"].status, "refused");
   assert.match(byRequest["read-versioned-missing"].summary, /^NOT_FOUND: .* for docs\/conformance-missing-document \(expected\)$/);
+  assert.deepEqual(Object.fromEntries(EDGE_ROWS.map((request) => [request, byRequest[request].summary])), {
+    "edges-from": "from=[2] rows=9",
+    "edges-from-text": "from=edges/a text=beta rows=2",
+    "edges-to": "to=edges/b rows=6",
+    "edges-prefix-union": "from=[2] rows=2",
+    "edges-dangling": "to=edges/missing rows=1",
+    "edges-from-list-limit": "from=[32] rows=8; from=[33] USAGE: invalid or unsupported bridge request",
+    "edges-invalid-selector": "USAGE: invalid or unsupported bridge request for from=edges/../a (expected)",
+    "edges-too-large": "TOO_LARGE: the edge query exceeded 1000 rows for 1005 rows above limits.edges=1000 (expected)",
+  });
   assert.equal(byRequest["open-page"].status, "refused");
   assert.equal(byRequest["open-page"].summary, "NOT_FOUND for views-registry/conformance-missing-target");
   assertExpected(rows, byRequest.hello.summary.split("capabilities=")[1].split(","));
@@ -322,7 +359,7 @@ test("the conformance View exercises every request type against the OSS service 
     assert.deepEqual([...tr.children.map((td) => td.textContent)], [rows[index].request, rows[index].status, rows[index].summary]);
   });
   assert.equal(document.getElementById("host").textContent, "host: oss (test)");
-  assert.match(document.getElementById("status").textContent, /^complete: 20 rows, 0 change events/);
+  assert.match(document.getElementById("status").textContent, /^complete: 28 rows, 0 change events/);
   assert.equal(
     sent.find((message) => message.type === "action.propose").action.expectedVersion,
     byRequest["read-versioned"].summary.split("version=")[1],
@@ -353,7 +390,7 @@ test("the conformance View reports refresh-only subscriptions and refused reads 
   }
   for (const request of [
     "query-newest", "read", "read-versioned", "render-document", "burst", "relationships", "query-over-limit",
-    "query-field-or", "query-open", "query-more", "read-missing", "read-versioned-missing",
+    "query-field-or", "query-open", "query-more", "read-missing", "read-versioned-missing", ...EDGE_ROWS,
   ]) {
     assert.equal(rows.find((candidate) => candidate.request === request).status, "skipped", request);
   }
@@ -429,14 +466,14 @@ function driftingHost(service, drift) {
 test("a host that declares a query feature and ignores it fails that row", async () => {
   const query = (message, change) => (message.type === "query" ? { ...message, params: change({ ...message.params }) } : message);
   for (const [request, drift, summary] of [
-    ["query-open", { request: (m) => query(m, ({ open, ...rest }) => rest) }, /^open matched=5 of 5; expected the terminal document to be dropped$/],
-    ["query-field-or", { request: (m) => query(m, ({ field, ...rest }) => rest) }, /other-type rows=4; expected exactly the rows of type Convention$/],
+    ["query-open", { request: (m) => query(m, ({ open, ...rest }) => rest) }, /^open matched=14 of 14; expected the terminal document to be dropped$/],
+    ["query-field-or", { request: (m) => query(m, ({ field, ...rest }) => rest) }, /other-type rows=13; expected exactly the rows of type Convention$/],
     ["query-field-or", { request: (m) => query(m, (p) => (p.field ? { ...p, field: p.field.split(",")[0] } : p)) }, /matched=0 type=Convention matched=1 .*; expected exactly/],
     ["query-more", { reply: (m, reply) => {
       if (m.type !== "query" || reply?.type !== "query:result") return reply;
       const { more, ...result } = reply.result;
       return { ...reply, result };
-    } }, /^rows=1 count=5 more=false; expected one row and more: true from a capped reply$/],
+    } }, /^rows=1 count=14 more=false; expected one row and more: true from a capped reply$/],
   ]) {
     const service = readOnlyService(await fixtureBundle(), BRIDGE_SERVICE_CAPABILITIES);
     const { rows } = await runFixture(driftingHost(service, drift), "launch");
@@ -449,6 +486,118 @@ test("a host that declares a query feature and ignores it fails that row", async
 test("the rows hold on a host without query.count, where rows are the only total", async () => {
   const capabilities = BRIDGE_SERVICE_CAPABILITIES.filter((name) => name !== BRIDGE_HOST_CAPABILITIES.queryCount);
   const { rows } = await runFixture(readOnlyService(await fixtureBundle(), capabilities), "launch");
-  assert.equal(rows.find((row) => row.request === "query-open").summary, "open matched=4 of 5");
+  assert.equal(rows.find((row) => row.request === "query-open").summary, "open matched=13 of 14");
   assertExpected(rows, capabilities);
+});
+
+test("a host that does not declare edges skips the edges rows, and the table expects it", async () => {
+  const capabilities = BRIDGE_SERVICE_CAPABILITIES.filter((name) => name !== BRIDGE_HOST_CAPABILITIES.edges);
+  // Every OSS host offers edges, so this host refuses it the way a host without the request does.
+  const withoutEdges = driftingHost(readOnlyService(await fixtureBundle(), capabilities), {
+    reply: (message, reply) => (message.type === "edges"
+      ? { bridge: "v0", id: message.id, type: "error", error: { code: "FORBIDDEN", message: "not offered here" } }
+      : reply),
+  });
+  const { rows, sent } = await runFixture(withoutEdges, "launch");
+  for (const request of EDGE_ROWS) {
+    assert.deepEqual(rows.find((row) => row.request === request), { request, status: "skipped", summary: "edges not declared" });
+  }
+  assert.equal(sent.filter((message) => message.type === "edges").length, 1, "only the plain edges row is sent");
+  assertExpected(rows, capabilities);
+});
+
+const EDGE_ROW_LIMIT = BRIDGE_SERVICE_LIMITS.edges;
+
+/**
+ * A host that answers `edges` itself, the way a store-backed host does: it parses every document
+ * once, then filters, orders and caps. With no `change` it must give Core's answer and pass every
+ * row; each `change` breaks one rule of the dialect, so the rows that fail show what each row pins.
+ */
+async function edgesHost(bundle, change = {}) {
+  const service = readOnlyService(bundle, BRIDGE_SERVICE_CAPABILITIES);
+  const ids = (await queryHeads(bundle)).map((head) => head.id);
+  const existing = new Set(ids);
+  const all = [];
+  for (const id of ids) {
+    const doc = await readDoc(bundle, id);
+    for (const link of extractMarkdownLinks(doc.body, { skipCode: change.skipCode === true })) {
+      const to = resolveConceptId(id, link.href);
+      if (to !== null) all.push({ from: id, to, text: link.text });
+    }
+  }
+  const compare = change.codeUnits ? compareCodeUnits : compareCodePoints;
+  all.sort((a, b) => compare(a.from, b.from) || compare(a.to, b.to) || compare(a.text, b.text));
+  const matches = (value, selectors) => selectors === undefined || [selectors].flat().some((selector) => {
+    if (change.prefixAsExact) return value === selector;
+    if (change.exactAsPrefix) return value.startsWith(selector);
+    return selector.endsWith("/") ? value.startsWith(selector) : value === selector;
+  });
+  return {
+    all,
+    async handle(launchId, message) {
+      const answer = await service.handle(launchId, message);
+      if (message.type !== "edges") return answer;
+      const code = answer.reply?.type === "error" ? answer.reply.error.code : null;
+      if (code === "USAGE" && change.malformed === "RUNTIME") {
+        return { reply: { ...answer.reply, error: { code: "RUNTIME", message: "the View request failed" } } };
+      }
+      if (code === "USAGE" && !change.malformed) return answer;
+      const { from, to, text } = message.params ?? {};
+      let rows = all.filter((row) => (change.ignore === "from" || matches(row.from, from)) &&
+        (change.ignore === "to" || matches(row.to, to)) &&
+        (change.ignore === "text" || text === undefined || row.text === text));
+      if (change.dropDangling) rows = rows.filter((row) => existing.has(row.to));
+      if (change.dropSelf) rows = rows.filter((row) => row.from !== row.to);
+      if (change.dedupe) rows = rows.filter((row, index) => index === 0 || JSON.stringify(row) !== JSON.stringify(rows[index - 1]));
+      if (rows.length > EDGE_ROW_LIMIT) {
+        if (!change.truncate) {
+          return { reply: { bridge: "v0", id: message.id, type: "error", error: { code: "TOO_LARGE", message: "too many edges" } } };
+        }
+        rows = rows.slice(0, EDGE_ROW_LIMIT);
+      }
+      const edges = rows.map((row) => (change.href ? { ...row, href: `${row.to}.md` } : row));
+      return { reply: { bridge: "v0", id: message.id, type: "edges:result", result: { edges, count: edges.length } } };
+    },
+  };
+}
+
+test("a host that answers edges itself passes every row only when it keeps every rule of the dialect", async () => {
+  const bundle = await fixtureBundle();
+  const faithful = await edgesHost(bundle);
+  const core = (await queryEdges(bundle, {})).map(({ from, to, text }) => ({ from, to, text }));
+  assert.deepEqual(faithful.all, core, "the reimplementation without a change is Core's queryEdges");
+  assertExpected((await runFixture(faithful, "launch")).rows, BRIDGE_SERVICE_CAPABILITIES);
+
+  const failing = async (change) => {
+    const { rows } = await runFixture(await edgesHost(bundle, change), "launch");
+    for (const row of rows.filter((candidate) => !candidate.request.startsWith("edges-"))) {
+      assert.notEqual(row.status, "failed", `${JSON.stringify(change)} broke ${row.request}: ${row.summary}`);
+    }
+    return rows.filter((row) => row.status === "failed").map((row) => row.request);
+  };
+  for (const [change, rows] of [
+    // Filters: a host that ignores a facet answers more rows, or TOO_LARGE once the bulk links count.
+    [{ ignore: "from" }, ["edges-from", "edges-from-text", "edges-prefix-union", "edges-from-list-limit"]],
+    [{ ignore: "to" }, ["edges-to", "edges-dangling"]],
+    [{ ignore: "text" }, ["edges-from-text"]],
+    // Selectors: an id is exact (edges/a never matches edges/ab, edges/b never edges/bulk/1); only a
+    // trailing slash is a prefix.
+    [{ exactAsPrefix: true }, ["edges-from", "edges-from-text", "edges-to", "edges-prefix-union", "edges-from-list-limit"]],
+    [{ prefixAsExact: true }, ["edges-prefix-union"]],
+    // Rows: every occurrence, self-links, links to missing documents and links in code are rows (the
+    // bulk links are repeated occurrences of one link to a missing document).
+    [{ dedupe: true }, ["edges-from", "edges-from-text", "edges-to", "edges-from-list-limit", "edges-too-large"]],
+    [{ dropSelf: true }, ["edges-from", "edges-from-list-limit"]],
+    [{ dropDangling: true }, ["edges-from", "edges-dangling", "edges-from-list-limit", "edges-too-large"]],
+    [{ skipCode: true }, ["edges-from", "edges-to", "edges-from-list-limit"]],
+    [{ href: true }, ["edges-from", "edges-from-text", "edges-to", "edges-prefix-union", "edges-dangling", "edges-from-list-limit"]],
+    // Order: code units put the astral id before U+E000.
+    [{ codeUnits: true }, ["edges-from", "edges-from-list-limit"]],
+    // Cap and refusals: above limits.edges is TOO_LARGE, never cut; a malformed selector is USAGE.
+    [{ truncate: true }, ["edges-too-large"]],
+    [{ malformed: "RUNTIME" }, ["edges-from-list-limit", "edges-invalid-selector"]],
+    [{ malformed: "answer" }, ["edges-from-list-limit", "edges-invalid-selector"]],
+  ]) {
+    assert.deepEqual(await failing(change), rows, JSON.stringify(change));
+  }
 });
