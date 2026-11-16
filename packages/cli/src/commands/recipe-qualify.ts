@@ -18,7 +18,7 @@ import { commandToken } from "../command-text.js";
 export const RECIPE_QUALIFY_USAGE = `superbee recipe qualify - prepare an explicitly bound set of ordinary recipes
 
 Usage:
-  superbee recipe qualify <config.json> [--dir <existing-bundle>] [--json]
+  superbee recipe qualify <file> [--dir <existing-bundle>] [--json]
 
 Configuration schema recipe-qualification/v1 selects 1 to 32 local recipes with unique keys,
 relative source folders, and exactly namespace or preserve:true. Qualified names use explicit
@@ -33,7 +33,7 @@ remain unchanged. Friendly titles are labels; stored type/governs are always exa
 
 Supports Conventions and declared static References only. Views, Connectors, undeclared assets,
 unsupported HTML/reference links and relative non-concept assets refuse before output. Unsupported
-syntax is conservatively rejected with a source line. Supported inline body links relocate;
+syntax is conservatively rejected with a body-relative line number (excluding frontmatter). Supported inline body links relocate;
 frontmatter Markdown strings, prose and code examples remain author-owned and untransformed.
 Complete input/output: at most 512 files, 2 MiB/file, 8 MiB total; source nesting at most 12.
 Output is always one JSON document with schema recipe-qualification-output/v1, receipt and

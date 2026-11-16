@@ -522,7 +522,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "recipeQualify",
         leaves: [publicLeaf("recipeQualify", "recipe qualify", one, undefined, { flags: pathFlags({ flag: "dir", role: "bundle-root" }), positionals: [{ index: 0, role: "ingress" as const }] })],
-        usage: "recipe qualify <config.json> [--dir <existing-bundle>] [--json]",
+        usage: "recipe qualify <file> [--dir <existing-bundle>] [--json]",
         summary: "Emit a bounded JSON artifact of explicitly bound ordinary recipes without writing files",
       },
       {

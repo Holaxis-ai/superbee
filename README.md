@@ -295,7 +295,7 @@ and configuration is bounded to 256 KiB. Preparation supports Conventions and de
 References. Views, Connectors, undeclared assets, symlinked source entries and unsupported link
 constructs refuse before output. Supported inline Markdown links in document bodies relocate using
 the ordinary resolver, including nested paths and fragments. Unsupported HTML and reference-link
-syntax is conservatively rejected with a source line number. Prose, fenced examples, query strings
+syntax is conservatively rejected with a body-relative line number (excluding frontmatter). Prose, fenced examples, query strings
 and Markdown strings in frontmatter remain unchanged and author-owned. OKF 0.2 field rules and logical progress-status
 materialization still apply; qualifying a Kind does not make reserved field conflicts valid.
 
