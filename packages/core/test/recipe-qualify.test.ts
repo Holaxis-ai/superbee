@@ -98,3 +98,10 @@ test("prepared outputs resolve as an ordinary existing-format indexed cookbook w
   const loaded = await resolveCookbook(parsed.index, "paired", async path => { const bytes = files.get(path); assert.ok(bytes); return bytes; });
   assert.ok(loaded.ok); assert.deepEqual(loaded.recipes.map(row => row.recipe.id), entries.map(row => row.id));
 });
+
+test("qualification refuses generated files that exceed the byte bound after expansion", () => {
+  const source = input("a", "Decision");
+  const convention = source.files[1]!;
+  source.files = [source.files[0]!, { ...convention, bytes: convention.bytes + "x".repeat(2 * 1024 * 1024 - Buffer.byteLength(convention.bytes) - 1) }];
+  assert.throws(() => qualifyRecipeSet([source]), /prepared output exceeds/);
+});

@@ -241,7 +241,7 @@ no access or authority; see
 
 ### Prepare a cookbook with explicit Kind bindings
 
-`superbee recipe qualify ./qualification.json --out ./dist-next --dir ./existing-bundle`
+`superbee recipe qualify ./qualification.json --dir ./existing-bundle`
 prepares a complete, finite selection of local recipes without changing their sources or installing
 anything. `--dir` is needed only for bindings to an already declared Kind. For example:
 
@@ -277,8 +277,12 @@ identities are allocated before binding. Missing, unused, ambiguous or conflicti
 the entire preparation. `{existing: ...}` checks an exact declared Kind and records the observed
 definition/version as a prerequisite; it does not bind to ungoverned records or lock later edits.
 
-The new output root contains one ordinary recipe folder per key and `preparation-receipt.json`
-with mappings, digests, prerequisites and ordinary install/evolve commands. Qualified ownership is
+The command emits one complete JSON document with schema `recipe-qualification-output/v1`,
+`receipt` and `files: [{path, bytes}]`. File paths describe one ordinary recipe folder per key;
+`bytes` is its exact UTF-8 text. The receipt records mappings, digests, prerequisites and ordinary
+install/evolve commands. No files or directories are created. Materialize the entries separately
+under a chosen external root, then run those commands from that root. `--out` is refused;
+`--json` is optional because successful output is always JSON. Qualified ownership is
 `ns-<SHA256 of exact namespace>` and does not depend on release or schema. Definition paths are
 stable and namespace-owned. Record paths remain human-authored or explicitly overridden; shared
 record prefixes are reported and ordinary create-only ID collisions still apply. `preserve:true`
@@ -286,24 +290,25 @@ retains authored identities and placement, while explicitly mapped external rela
 change; existing evolution rules can refuse that retargeting.
 
 The complete input set is bounded to 32 selections, 512 files, 2 MiB per file and 8 MiB total;
-configuration is bounded to 256 KiB. Preparation supports Conventions and declared static
+generated recipe files have the same bounds, the serialized output document is bounded to 16 MiB,
+and configuration is bounded to 256 KiB. Preparation supports Conventions and declared static
 References. Views, Connectors, undeclared assets, symlinked source entries and unsupported link
 constructs refuse before output. Structural inline Markdown links relocate using the ordinary
 resolver, including nested paths and fragments. Prose, fenced examples and query strings are
 untransformed and remain author-owned. OKF 0.2 field rules and logical progress-status
 materialization still apply; qualifying a Kind does not make reserved field conflicts valid.
 
-Keep one canonical source/configuration, regenerate into a fresh output directory for each release,
+Keep one canonical source/configuration, regenerate the complete JSON artifact for each release,
 and review generated differences. Publish only the expanded artifacts under their actual source
 and file digests. Index generation and publication are separate, explicit work. Namespace changes
 create new identities; they never adopt or migrate old records. Optional-field evolution uses the
 ordinary plan/apply workflow and preserves instance bytes; incompatible changes require a separate
 migration decision.
 
-Output requires an existing parent and refuses existing targets, source descendants, bundle
-ancestors and private state. Staging and exclusive creates prevent overwrites; runtime interruption
-may leave reported residue. Installing several output recipes remains per-artifact and can partially
-complete. Titles are display labels: use exact `governs` selectors from `kinds`. Bare selectors
+Qualification reads sources and the explicitly selected registry without materializing output.
+It emits a success artifact only after complete validation and serialization. External materialization
+has its own filesystem and overwrite responsibilities; qualification does not perform or authorize
+that step. Installing several materialized recipes remains per-artifact and can partially complete. Titles are display labels: use exact `governs` selectors from `kinds`. Bare selectors
 never expand to similarly titled qualified Kinds, and an existing bare Kind remains valid.
 
 The full recipe/Reference workflow is local. Current hosted CLI recipe admission is convention-only;

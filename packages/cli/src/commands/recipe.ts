@@ -35,7 +35,7 @@ import { commandFragment, commandLiteral, commandQuoted, commandToken, type Comm
 export const RECIPE_USAGE = `superbee recipe — apply a recipe to this bundle
 
 Usage:
-  superbee recipe qualify <config.json> --out <new-folder> [--dir <existing-bundle>] [--json]
+  superbee recipe qualify <config.json> [--dir <existing-bundle>] [--json]
   superbee recipe validate <path> [--readme] [--json]
   superbee recipe add <name-or-path> [--actor <name>] [--dir <path>]
   superbee recipe add <recipe-or-cookbook-id> --index <path-or-https-url> [--cookbook] [options]

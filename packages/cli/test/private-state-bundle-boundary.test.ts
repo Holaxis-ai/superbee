@@ -676,13 +676,10 @@ function qualificationControl(fixture: BoundaryFixture, name: string): string {
 
 const CROSSING_ROWS: readonly CrossingRow[] = [
   { leaf: "recipeQualify", surface: "<0>",
-    argv: t => ["recipe", "qualify", t, "--out", "qualification-config-output", "--json"],
+    argv: t => ["recipe", "qualify", t, "--json"],
     control: f => qualificationControl(f, "config") },
-  { leaf: "recipeQualify", surface: "--out",
-    argv: t => ["recipe", "qualify", "qualification-out.json", "--out", t, "--json"],
-    control: f => { qualificationControl(f, "out"); return path.join(f.outside, "qualification-output"); } },
   { leaf: "recipeQualify", surface: "--dir",
-    argv: t => ["recipe", "qualify", "qualification-dir.json", "--dir", t, "--out", "qualification-dir-output", "--json"],
+    argv: t => ["recipe", "qualify", "qualification-dir.json", "--dir", t, "--json"],
     control: f => { qualificationControl(f, "dir"); return f.bundle; } },
 
   // ── Bundle roots (`--dir`): the target BECOMES the bundle. ──────────────────

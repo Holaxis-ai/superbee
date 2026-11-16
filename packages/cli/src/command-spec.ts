@@ -521,9 +521,9 @@ export const CLI_COMMAND_GROUPS = [
       },
       {
         id: "recipeQualify",
-        leaves: [publicLeaf("recipeQualify", "recipe qualify", one, undefined, { flags: pathFlags({ flag: "out", role: "egress" }, { flag: "dir", role: "bundle-root" }), positionals: [{ index: 0, role: "ingress" as const }] })],
-        usage: "recipe qualify <config.json> --out <new-folder> [--dir <existing-bundle>] [--json]",
-        summary: "Prepare a new ordinary recipe with namespace-owned Kind identities and paths",
+        leaves: [publicLeaf("recipeQualify", "recipe qualify", one, undefined, { flags: pathFlags({ flag: "dir", role: "bundle-root" }), positionals: [{ index: 0, role: "ingress" as const }] })],
+        usage: "recipe qualify <config.json> [--dir <existing-bundle>] [--json]",
+        summary: "Emit a bounded JSON artifact of explicitly bound ordinary recipes without writing files",
       },
       {
         id: "recipeValidate",
