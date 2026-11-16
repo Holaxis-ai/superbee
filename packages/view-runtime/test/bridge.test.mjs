@@ -1274,6 +1274,63 @@ test("unknown order values, cursor, and order on a host without query.newest ans
   assert.deepEqual(plain.reply.result.rows.map((row) => row.id), ["docs/one"], "order-less queries are unchanged");
 });
 
+test("a host without query.field-or or query.open refuses those features with USAGE instead of ignoring them", async () => {
+  const bundle = { root: "mem://bridge-refuse-not-degrade", backend: new MemoryBackend() };
+  await writeDoc(bundle, { id: "docs/one", frontmatter: { type: "Note", title: "One" }, body: "" });
+  await writeDoc(bundle, { id: "docs/two", frontmatter: { type: "Memo", title: "Two" }, body: "" });
+  const query = async (bridge, id, params) => (await bridge.handle("launch", { bridge: "v0", type: "query", id, params })).reply;
+
+  const full = newestBridge(bundle);
+  assert.deepEqual((await query(full, "or", { field: "type=Note,Memo" })).result.rows.map((row) => row.id), ["docs/one", "docs/two"]);
+  assert.equal((await query(full, "open", { open: true })).result.count, 2, "the declaring host still honors open");
+
+  const less = newestBridge(bundle, TEST_HOST.capabilities.filter((name) => name !== "query.field-or" && name !== "query.open"));
+  for (const [id, params] of [["or", { field: "type=Note,Memo" }], ["or-spaced", { field: "type= Note , Memo" }], ["open", { open: true }]]) {
+    const reply = await query(less, id, params);
+    assert.equal(reply.type, "error", id);
+    assert.equal(reply.id, id);
+    assert.equal(reply.error.code, "USAGE", id);
+  }
+  for (const [id, params, expected] of [
+    ["single", { field: "type=Note" }, ["docs/one"]],
+    ["trailing-comma", { field: "type=Note," }, ["docs/one"]],
+    ["no-key", { field: "=Note,Memo" }, ["docs/one", "docs/two"]],
+    ["open-false", { open: false }, ["docs/one", "docs/two"]],
+  ]) {
+    assert.deepEqual((await query(less, id, params)).result.rows.map((row) => row.id), expected, `${id} names one value or none and is answered`);
+  }
+});
+
+test("read and read-versioned of a missing document answer NOT_FOUND", async () => {
+  const bundle = { root: "mem://bridge-read-missing", backend: new MemoryBackend() };
+  await writeDoc(bundle, { id: "docs/one", frontmatter: { type: "Note", title: "One" }, body: "" });
+  const bridge = newestBridge(bundle);
+  for (const [bridgeVersion, type] of [["v0", "read"], ["v1", "read-versioned"]]) {
+    const reply = (await bridge.handle("launch", { bridge: bridgeVersion, type, id: "m", docId: "docs/missing" })).reply;
+    assert.deepEqual(reply, {
+      bridge: bridgeVersion,
+      id: "m",
+      type: "error",
+      error: { code: "NOT_FOUND", message: "Document 'docs/missing' is not available" },
+    }, type);
+  }
+});
+
+test("a query reply cut short by its cap says more: true, and a whole reply carries no more key", async () => {
+  const bundle = { root: "mem://bridge-more", backend: new MemoryBackend() };
+  for (const id of ["docs/a", "docs/b", "docs/c"]) await writeDoc(bundle, { id, frontmatter: { type: "Note", title: id }, body: "" });
+  const bridge = newestBridge(bundle);
+  const query = async (params) => (await bridge.handle("launch", { bridge: "v0", type: "query", id: "q", params })).reply.result;
+  const cut = await query({ limit: 2 });
+  assert.equal(cut.rows.length, 2);
+  assert.equal(cut.count, 3);
+  assert.equal(cut.more, true);
+  for (const params of [{}, { limit: 3 }, { limit: 0 }, { order: "newest" }]) {
+    assert.equal(Object.hasOwn(await query(params), "more"), false, JSON.stringify(params));
+  }
+  assert.equal((await query({ order: "newest", limit: 1 })).more, true);
+});
+
 for (const row of NEWEST_FIXTURE.cases) {
   test(`order: "newest" answers the shared fixture over a ${row.okfVersion} bundle: ${row.name}`, async () => {
     const backend = new MemoryBackend();
