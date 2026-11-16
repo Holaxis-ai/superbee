@@ -389,12 +389,13 @@ Names a host may list in `hello.host.capabilities`. `BRIDGE_HOST_CAPABILITIES` i
 | `record.open` | the host opens its own reader for one document | `host` input `{ documentId }`; output `{ opened: true }`; `NOT_FOUND` for a missing document |
 | `frame.resize` | the host sizes the View's frame to the reported document height, bounded by `host.frame.maxHeight` | `host` input exactly `{ height }` (a finite CSS pixel count, at least 0; no other keys); output `{ height }` as applied after the host's floor, `maxHeight` and damping (see `host.frame`); `USAGE` for any other input. Answered at once; touches no bundle data, so a host may answer it for any launch it admits. Declared only with `host.frame` |
 
-Refuse, never degrade. A host without `query.newest`, `query.field-or` or `query.open` refuses the
-param that needs it (`order`, a multi-value `field`, `open: true`) with `USAGE` and answers every
-other query. Without `query.kind-projection` rows carry only raw frontmatter, and without
-`query.count` `count` is the rows returned; both are visible in the reply, and a View reads
-`hello` for them. A host without `edges`, `graph`, `relationships` or `render-document` answers
-those requests with `FORBIDDEN`.
+Request-side query features are refused, never ignored. A host without `query.newest`,
+`query.field-or` or `query.open` refuses the param that needs it (`order`, a multi-value `field`,
+`open: true`) with `USAGE` and answers every other query. Two reply-side features cannot be
+refused, because no request names them: without `query.kind-projection` rows carry only raw
+frontmatter (no logical fields such as `progress_status`), and without `query.count` `count` is
+the rows returned. A View reads `hello` for those two. A host without `edges`, `graph`,
+`relationships` or `render-document` answers those requests with `FORBIDDEN`.
 
 ## Conformance levels
 
@@ -586,19 +587,24 @@ self-contained entry (`views/conformance.html`) that embeds the client above and
 `hello`, `query`, `query-newest` (a `query` with `order: "newest"`, skipped unless the host declares
 `query.newest`), `read`, `read-versioned`, `edges`, `graph`, `render-document`, `subscribe`,
 `host` (an undeclared capability, expecting `FORBIDDEN`), `action.propose`, `burst` (12 `read`
-requests in flight at once), then the revision 5 rows, and last `open-page` (a registry id that
-must not exist). A host may cap in-flight requests, but it must queue or refuse the excess with an
-error reply, never drop it, so the `burst` row expects all 12 results.
+requests in flight at once), then the revision 5 and 6 rows, and last `open-page` (a registry id
+that must not exist). A host may cap in-flight requests, but it must queue or refuse the excess
+with an error reply, never drop it, so the `burst` row expects all 12 results.
 
-The revision 5 rows are judged against the host's own `hello`:
+The rows added in revisions 5 and 6 are judged against the host's own `hello`. Each needs the
+bundle described under "Running it on another host"; "matched" below is `count` on a host with
+`query.count` and the rows of a `limit: 0` reply otherwise.
 
 - `relationships` for the first document: answered when declared, `FORBIDDEN` otherwise;
 - `query-over-limit`, a `query` with `limit` one above `limits.query`: `USAGE` on every host;
-- `query-field-or`, `field: "type=conformance-missing-type,<first document's type>"`: one row of
-  that type when `query.field-or` is declared (the missing value comes first, so honoring only the
-  first value finds nothing), `USAGE` otherwise;
-- `query-open`, `open: true`: answered when `query.open` is declared (with `query.count`, its
-  `count` must not exceed the plain query's), `USAGE` otherwise;
+- `query-field-or`, `field: "type=conformance-missing-type,<first document's type>"`: when
+  `query.field-or` is declared, at least one row, every row of that type, and as many matched as
+  `type: <that type>`; the missing value comes first, so honoring only the first value finds
+  nothing, and dropping `field` returns rows of the bundle's other type. `USAGE` otherwise;
+- `query-open`, `open: true`: when `query.open` is declared, fewer matched than the plain query,
+  because the bundle holds a terminal document. `USAGE` otherwise;
+- `query-more` (revision 6), `limit: 1`: one row and `more: true` on every host, since the bundle
+  holds at least two documents; with `query.count`, `count` above 1;
 - `read-missing` and `read-versioned-missing` of `docs/conformance-missing-document`: `NOT_FOUND`
   on every host.
 
@@ -621,10 +627,18 @@ commit, the way the hosted sync fixtures are mirrored in the other direction:
    `packages/view-runtime/test/fixtures/view-conformance-expected.json` from one commit on `main`.
 2. Record that commit's full SHA beside the copies, and check in CI that the copies equal the files
    at the pinned commit and that the pin never moves back.
-3. Install the View as `views-registry/conformance` with `access: bundle-read` over a bundle whose
-   first document by id has a nonempty `type`, run it in the host's own frame, wait for
-   `window.__conformance.done`, and assert `revision` and each row against the table for the
-   capabilities the host's `hello` declared.
+3. Install the View as `views-registry/conformance` with `access: bundle-read` over a bundle that
+   holds, as documents `query` returns:
+   - at least two and at most `limits.query` documents;
+   - a first document by id with a nonempty `type` without a comma, and one document of another
+     `type`;
+   - a Kind declaring `fields.terminal` for one type, and at least one document of that type whose
+     value is in the terminal set.
+
+   The table's `bundle` field repeats these. `conventions/doc`, `docs/alpha`, `docs/beta` and a
+   closed `docs/gamma` in `conformance.test.mjs` are one such bundle.
+4. Run it in the host's own frame, wait for `window.__conformance.done`, and assert `revision` and
+   each row against the table for the capabilities the host's `hello` declared.
 
 To take a new revision, bump the pin to a later commit and copy the three files again.
 
@@ -634,7 +648,10 @@ To take a new revision, bump the pin to a later commit and copy the three files 
 are compatible with every existing v0 View: new reply fields (`host`), new request types (`graph`,
 `host`), new optional request params behind a capability (`order`) and new error semantics for
 requests that were never valid before. Refusing an undeclared query feature with `USAGE` changes
-an answer only on a host that never honored that feature. A change that alters an existing reply
+an answer only on a host that never honored that feature. Answering `NOT_FOUND` instead of
+`RUNTIME` for a `read` or `read-versioned` of a missing document narrows the code of an existing
+error reply; older hosts answer `RUNTIME`, so a View that must run on them treats `RUNTIME` from
+`read` as possibly missing. A change that alters an existing reply
 or request shape needs a new envelope value and a change here first.
 
 ### Body proposals

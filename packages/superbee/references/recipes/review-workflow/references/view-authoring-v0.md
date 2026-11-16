@@ -81,7 +81,12 @@ Hosts differ in how many rows a `query` returns. Pass `limit: 0` to mean "up to 
 ceiling" and read the ceiling from `hello.result.host.limits.query`; a fixed larger `limit` is
 refused with `USAGE` on a host with a lower ceiling. When `result.more` is true or `result.count` is
 above `result.rows.length`, the result was cut short: show a visible note such as "showing the
-first N" instead of presenting it as complete.
+first N" instead of presenting it as complete. An older host, or one without `query.count`, may
+send neither, so there `rows.length` equal to the `limit` you asked for (or `limits.query` for
+`limit: 0`) is the only signal, and it gets the same note.
+
+A `read` or `read-versioned` of a missing document answers `NOT_FOUND`. Older hosts answer
+`RUNTIME`, so a View that must run on them treats `RUNTIME` from `read` as possibly missing.
 
 Query rows come in canonical id order. On a host that declares `query.newest`, pass
 `order: "newest"` to get CLI `list` order instead (newest `generated.at` or `timestamp` first, rows

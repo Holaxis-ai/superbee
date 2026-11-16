@@ -21,7 +21,7 @@ const REFERENCE_DOC = path.join(repoRoot, "examples/views/references/view-author
 const ENTRY = path.join(FIXTURE_DIR, "views/conformance.html");
 const REGISTRY = path.join(FIXTURE_DIR, "views-registry/conformance.md");
 const EXPECTED = JSON.parse(readFileSync(path.join(here, "fixtures/view-conformance-expected.json"), "utf8"));
-const REVISION = "5";
+const REVISION = "6";
 
 const REQUEST_ORDER = [
   "hello",
@@ -40,6 +40,7 @@ const REQUEST_ORDER = [
   "query-over-limit",
   "query-field-or",
   "query-open",
+  "query-more",
   "read-missing",
   "read-versioned-missing",
   "open-page",
@@ -48,8 +49,9 @@ const REQUEST_ORDER = [
 const WIRE_TYPE = {
   "query-newest": "query",
   "query-over-limit": "query",
-  "query-field-or": "query",
-  "query-open": "query",
+  "query-field-or": ["query", "query"],
+  "query-open": ["query", "query"],
+  "query-more": "query",
   "read-missing": "read",
   "read-versioned-missing": "read-versioned",
 };
@@ -57,7 +59,7 @@ const BURST_READS = 12;
 /** The wire order: the burst row is BURST_READS `read` requests fired at once. */
 const SENT_ORDER = REQUEST_ORDER.flatMap((request) => {
   if (request === "burst") return Array(BURST_READS).fill("read");
-  return [WIRE_TYPE[request] ?? request];
+  return [WIRE_TYPE[request] ?? request].flat();
 });
 
 /**
@@ -143,25 +145,27 @@ function fakeDocument() {
   };
 }
 
-async function fixtureBundle({ terminal = false } = {}) {
+/**
+ * The bundle the expected table names: two types (Convention and Doc), a Kind with a terminal set
+ * and one closed document, so `open: true` has a row to drop and a dropped `field` shows.
+ */
+async function fixtureBundle() {
   const bundle = { root: "mem://conformance", backend: new MemoryBackend() };
-  if (terminal) {
-    // A Kind with a terminal set and one closed document, so `open: true` has a row to drop.
-    await writeDoc(bundle, {
-      id: "conventions/doc",
-      frontmatter: {
-        type: "Convention",
-        governs: "Doc",
-        fields: { required: ["title"], optional: ["status"], values: { status: ["open", "closed"] }, terminal: { status: ["closed"] } },
-      },
-      body: "",
-    });
-    await writeDoc(bundle, {
-      id: "docs/gamma",
-      frontmatter: { type: "Doc", title: "Gamma", status: "closed", timestamp: "2026-09-14T00:00:00.000Z" },
-      body: "# Gamma\n",
-    });
-  }
+  await writeDoc(bundle, {
+    id: "conventions/doc",
+    frontmatter: {
+      type: "Convention",
+      governs: "Doc",
+      timestamp: "2026-09-13T00:00:00.000Z",
+      fields: { required: ["title"], optional: ["status"], values: { status: ["open", "closed"] }, terminal: { status: ["closed"] } },
+    },
+    body: "",
+  });
+  await writeDoc(bundle, {
+    id: "docs/gamma",
+    frontmatter: { type: "Doc", title: "Gamma", status: "closed", timestamp: "2026-09-14T00:00:00.000Z" },
+    body: "# Gamma\n",
+  });
   await writeDoc(bundle, {
     id: "docs/alpha",
     frontmatter: { type: "Doc", title: "Alpha", timestamp: "2026-09-15T00:00:00.000Z" },
@@ -254,15 +258,18 @@ test("the conformance View exercises every request type against the OSS service 
   assert.equal(byRequest.hello.status, "answered");
   assert.match(byRequest.hello.summary, /^kind=oss grant=read limits\.query=500 capabilities=edges,graph,open-page,query\.count,query\.field-or,query\.kind-projection,query\.newest,query\.open,relationships,render-document,subscribe-deltas$/);
   assert.equal(byRequest.query.status, "answered");
-  assert.equal(byRequest.query.summary, "rows=3 count=3");
+  assert.equal(byRequest.query.summary, "rows=5 count=5");
   assert.equal(byRequest["query-newest"].status, "answered");
-  assert.equal(byRequest["query-newest"].summary, "rows=3 count=3 first=docs/beta", "the newer document leads");
+  assert.equal(byRequest["query-newest"].summary, "rows=5 count=5 first=docs/beta", "the newer document leads");
   assert.deepEqual(sent.filter((message) => message.type === "query").map((message) => message.params), [
     { limit: 5 },
     { order: "newest", limit: 5 },
     { limit: BRIDGE_SERVICE_LIMITS.query + 1 },
-    { field: "type=conformance-missing-type,Doc", limit: 1 },
-    { open: true, limit: 1 },
+    { field: "type=conformance-missing-type,Convention", limit: 0 },
+    { type: "Convention", limit: 0 },
+    { open: true, limit: 0 },
+    { limit: 0 },
+    { limit: 1 },
   ]);
   const firstDoc = sent.find((message) => message.type === "read").docId;
   assert.equal(byRequest.read.status, "answered");
@@ -272,7 +279,7 @@ test("the conformance View exercises every request type against the OSS service 
   assert.equal(byRequest.edges.status, "answered");
   assert.match(byRequest.edges.summary, /^from=\S+ count=\d+$/);
   assert.equal(byRequest.graph.status, "answered");
-  assert.equal(byRequest.graph.summary, "okfVersion=0.1 documents=3 relationships=1 model=absent bodies=0");
+  assert.equal(byRequest.graph.summary, "okfVersion=0.1 documents=5 relationships=1 model=absent bodies=0");
   assert.equal(sent.find((message) => message.type === "graph").includeBodies, undefined, "the fixture asks for heads only");
   assert.equal(byRequest["render-document"].status, "answered");
   assert.match(byRequest["render-document"].summary, /^version=sha256:[0-9a-f]{64} html=\d+ chars bounded=false$/);
@@ -289,13 +296,16 @@ test("the conformance View exercises every request type against the OSS service 
   assert.equal(new Set(burstReads.map((message) => message.id)).size, BURST_READS, "every burst read carries its own id");
   assert.ok(burstReads.every((message) => message.docId === firstDoc));
   assert.equal(byRequest.relationships.status, "answered");
-  assert.equal(byRequest.relationships.summary, `documentId=${firstDoc} rows=1 cursor=absent`);
+  assert.equal(byRequest.relationships.summary, `documentId=${firstDoc} rows=0 cursor=absent`);
   assert.equal(byRequest["query-over-limit"].status, "refused");
   assert.match(byRequest["query-over-limit"].summary, /^USAGE: .* for limit=501 above limits\.query=500 \(expected\)$/);
   assert.equal(byRequest["query-field-or"].status, "answered");
-  assert.equal(byRequest["query-field-or"].summary, "field=type=conformance-missing-type,Doc rows=1 count=2", "the second value is honored");
+  assert.equal(byRequest["query-field-or"].summary,
+    "field=type=conformance-missing-type,Convention matched=1 type=Convention matched=1 other-type rows=0", "the second value is honored");
   assert.equal(byRequest["query-open"].status, "answered");
-  assert.equal(byRequest["query-open"].summary, "rows=1 count=3 of 3", "no Kind declares a terminal set, so nothing is dropped");
+  assert.equal(byRequest["query-open"].summary, "open matched=4 of 5", "the closed document is dropped");
+  assert.equal(byRequest["query-more"].status, "answered");
+  assert.equal(byRequest["query-more"].summary, "rows=1 count=5 more=true");
   assert.equal(byRequest["read-missing"].status, "refused");
   assert.match(byRequest["read-missing"].summary, /^NOT_FOUND: .* for docs\/conformance-missing-document \(expected\)$/);
   assert.equal(byRequest["read-versioned-missing"].status, "refused");
@@ -312,7 +322,7 @@ test("the conformance View exercises every request type against the OSS service 
     assert.deepEqual([...tr.children.map((td) => td.textContent)], [rows[index].request, rows[index].status, rows[index].summary]);
   });
   assert.equal(document.getElementById("host").textContent, "host: oss (test)");
-  assert.match(document.getElementById("status").textContent, /^complete: 19 rows, 0 change events/);
+  assert.match(document.getElementById("status").textContent, /^complete: 20 rows, 0 change events/);
   assert.equal(
     sent.find((message) => message.type === "action.propose").action.expectedVersion,
     byRequest["read-versioned"].summary.split("version=")[1],
@@ -343,7 +353,7 @@ test("the conformance View reports refresh-only subscriptions and refused reads 
   }
   for (const request of [
     "query-newest", "read", "read-versioned", "render-document", "burst", "relationships", "query-over-limit",
-    "query-field-or", "query-open", "read-missing", "read-versioned-missing",
+    "query-field-or", "query-open", "query-more", "read-missing", "read-versioned-missing",
   ]) {
     assert.equal(rows.find((candidate) => candidate.request === request).status, "skipped", request);
   }
@@ -406,11 +416,39 @@ test("a host that does not declare a query feature or relationships refuses it, 
   assertExpected(rows, capabilities);
 });
 
-test("query-open drops a terminal row on a host that declares query.open", async () => {
-  const { rows } = await runFixture(readOnlyService(await fixtureBundle({ terminal: true }), BRIDGE_SERVICE_CAPABILITIES), "launch");
-  const byRequest = Object.fromEntries(rows.map((row) => [row.request, row]));
-  assert.equal(byRequest.query.summary, "rows=5 count=5");
-  assert.equal(byRequest["query-open"].status, "answered");
-  assert.equal(byRequest["query-open"].summary, "rows=1 count=4 of 5", "the closed document is dropped");
-  assertExpected(rows, BRIDGE_SERVICE_CAPABILITIES);
+/** A host that declares every query feature but quietly mishandles one: the drift the rows catch. */
+function driftingHost(service, drift) {
+  return {
+    handle(launchId, message) {
+      const request = drift.request ? drift.request(message) : message;
+      return service.handle(launchId, request).then((outcome) => (drift.reply ? { ...outcome, reply: drift.reply(message, outcome.reply) } : outcome));
+    },
+  };
+}
+
+test("a host that declares a query feature and ignores it fails that row", async () => {
+  const query = (message, change) => (message.type === "query" ? { ...message, params: change({ ...message.params }) } : message);
+  for (const [request, drift, summary] of [
+    ["query-open", { request: (m) => query(m, ({ open, ...rest }) => rest) }, /^open matched=5 of 5; expected the terminal document to be dropped$/],
+    ["query-field-or", { request: (m) => query(m, ({ field, ...rest }) => rest) }, /other-type rows=4; expected exactly the rows of type Convention$/],
+    ["query-field-or", { request: (m) => query(m, (p) => (p.field ? { ...p, field: p.field.split(",")[0] } : p)) }, /matched=0 type=Convention matched=1 .*; expected exactly/],
+    ["query-more", { reply: (m, reply) => {
+      if (m.type !== "query" || reply?.type !== "query:result") return reply;
+      const { more, ...result } = reply.result;
+      return { ...reply, result };
+    } }, /^rows=1 count=5 more=false; expected one row and more: true from a capped reply$/],
+  ]) {
+    const service = readOnlyService(await fixtureBundle(), BRIDGE_SERVICE_CAPABILITIES);
+    const { rows } = await runFixture(driftingHost(service, drift), "launch");
+    const row = rows.find((candidate) => candidate.request === request);
+    assert.equal(row.status, "failed", `${request}: ${row.summary}`);
+    assert.match(row.summary, summary);
+  }
+});
+
+test("the rows hold on a host without query.count, where rows are the only total", async () => {
+  const capabilities = BRIDGE_SERVICE_CAPABILITIES.filter((name) => name !== BRIDGE_HOST_CAPABILITIES.queryCount);
+  const { rows } = await runFixture(readOnlyService(await fixtureBundle(), capabilities), "launch");
+  assert.equal(rows.find((row) => row.request === "query-open").summary, "open matched=4 of 5");
+  assertExpected(rows, capabilities);
 });
