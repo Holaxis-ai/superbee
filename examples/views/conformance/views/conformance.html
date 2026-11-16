@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="superbee-conformance-revision" content="6">
+<meta name="superbee-conformance-revision" content="7">
 <title>View protocol conformance</title>
 <style>
   /* Superbee View theme, the same tokens the shipped example Views use. */
@@ -129,14 +129,18 @@
 // the host's own hello: relationships, a limit above limits.query, a multi-value field, open: true,
 // more on a capped reply, and a read and read-versioned of a missing document. A declared feature
 // must be answered correctly; an undeclared one must be refused (FORBIDDEN for a request, USAGE for
-// a query feature), never silently ignored. packages/view-runtime/test/fixtures/view-conformance-expected.json
+// a query feature), never silently ignored. Revision 7 adds edges rows over the fixed edges/
+// documents the expected table lists: each answer must equal Core's queryEdges row for row (exact
+// ids, prefixes, lists of up to 32 ids, exact text, one row per occurrence, self-links, links to
+// missing documents and links in code kept, code point order), a malformed selector is USAGE and
+// an answer above limits.edges is TOO_LARGE, never cut. packages/view-runtime/test/fixtures/view-conformance-expected.json
 // lists the expected status of every row and the bundle the rows need.
 // Statuses: answered (a result reply), refused (an error reply, code named in the summary),
 // sent (no reply expected and none arrived), skipped (a precondition was missing), failed
 // (a wrong shape, a wrong code, or no reply within the window). Other hosts byte-copy this
 // entry and record the revision from <meta name="superbee-conformance-revision">.
 (function conformance() {
-  var REVISION = "6";
+  var REVISION = "7";
   var REPLY_WINDOW_MS = 5000;
   var NAVIGATION_WINDOW_MS = 1500;
   var UNDECLARED_CAPABILITY = "conformance.undeclared";
@@ -210,6 +214,7 @@
   var firstDoc = null;
   var firstType = null;
   var version = null;
+  var edgeLimit = null;
   var changes = 0;
 
   function stepHello() {
@@ -222,6 +227,7 @@
       capabilities = host.capabilities;
       described = true;
       queryLimit = host.limits.query;
+      edgeLimit = host.limits.edges;
       setText("host", "host: " + host.kind + " (" + h.mode + ")");
       record("hello", "answered", "kind=" + host.kind + " grant=" + h.grant + " limits.query=" + host.limits.query +
         " capabilities=" + capabilities.join(","));
@@ -449,13 +455,119 @@
     return expectRefusal("read-versioned-missing", Bridge.readVersioned(MISSING_DOCUMENT), "NOT_FOUND", "for " + MISSING_DOCUMENT);
   }
 
+  // The edges/ documents in the expected table's edgeDocuments, and the rows Core's queryEdges
+  // answers over them, written from the definition. Order is from, then to, then text, each by
+  // code point, so edges/U+E000 comes before the astral edges/U+1F41D (code units invert the two).
+  var EDGE_A = "edges/a", EDGE_AB = "edges/ab", EDGE_B = "edges/b", EDGE_SUB = "edges/sub/c";
+  var EDGE_MISSING = "edges/missing", EDGE_PRIVATE = "edges/", EDGE_ASTRAL = "edges/🐝";
+  var EDGE_BULK_TEXT = "conformance-bulk", EDGE_BULK_ROWS = 1005, EDGE_SELECTOR_MAX = 32;
+  var EDGES_OF_A = [
+    [EDGE_A, EDGE_A, "self"],
+    [EDGE_A, EDGE_B, "Beta"],
+    [EDGE_A, EDGE_B, "beta"],
+    [EDGE_A, EDGE_B, "beta"],
+    [EDGE_A, EDGE_B, "code"],
+    [EDGE_A, EDGE_MISSING, "missing"],
+    [EDGE_A, EDGE_PRIVATE, "private use"],
+    [EDGE_A, EDGE_ASTRAL, "astral"]
+  ];
+  function skipEdgeRow(request) {
+    if (skipWithoutHello(request)) return true;
+    if (has(capabilities, "edges")) return false;
+    record(request, "skipped", "edges not declared");
+    return true;
+  }
+  function edgeText(params) {
+    var parts = [];
+    for (var key in params) parts.push(key + "=" + (typeof params[key] === "string" ? params[key] : "[" + params[key].length + "]"));
+    return parts.join(" ");
+  }
+  // Rows exactly { from, to, text } (strings, no other key) and count equal to the rows; null otherwise.
+  function edgeRows(e) {
+    if (!e || !e.edges || typeof e.edges.length !== "number" || e.count !== e.edges.length) return null;
+    var out = [];
+    for (var i = 0; i < e.edges.length; i++) {
+      var row = e.edges[i];
+      if (!row || typeof row !== "object" || Object.keys(row).length !== 3 || typeof row.from !== "string" || typeof row.to !== "string" || typeof row.text !== "string") return null;
+      out.push([row.from, row.to, row.text]);
+    }
+    return out;
+  }
+  function expectEdges(request, params, expected) {
+    if (skipEdgeRow(request)) return Promise.resolve();
+    return within(Bridge.edges(params), REPLY_WINDOW_MS).then(function (e) {
+      var got = edgeRows(e);
+      if (!got) { record(request, "failed", edgeText(params) + " reply is not { edges: [{ from, to, text }], count } with count equal to the rows"); return; }
+      var ok = JSON.stringify(got) === JSON.stringify(expected);
+      record(request, ok ? "answered" : "failed", edgeText(params) + " rows=" + got.length +
+        (ok ? "" : "; expected " + JSON.stringify(expected) + " got " + JSON.stringify(got.slice(0, 12))));
+    }, function (err) { record(request, "failed", describe(err) + "; " + edgeText(params) + " expected " + expected.length + " rows"); });
+  }
+  function stepEdgesFrom() {
+    // Two exact ids: edges/ab is not a row, since an id without a trailing slash is never a prefix.
+    return expectEdges("edges-from", { from: [EDGE_A, EDGE_B] }, EDGES_OF_A.concat([[EDGE_B, EDGE_A, "alpha"]]));
+  }
+  function stepEdgesFromText() {
+    return expectEdges("edges-from-text", { from: EDGE_A, text: "beta" }, [[EDGE_A, EDGE_B, "beta"], [EDGE_A, EDGE_B, "beta"]]);
+  }
+  function stepEdgesTo() {
+    return expectEdges("edges-to", { to: EDGE_B }, [
+      [EDGE_A, EDGE_B, "Beta"], [EDGE_A, EDGE_B, "beta"], [EDGE_A, EDGE_B, "beta"], [EDGE_A, EDGE_B, "code"],
+      [EDGE_AB, EDGE_B, "beta"], [EDGE_SUB, EDGE_B, "beta"]
+    ]);
+  }
+  function stepEdgesPrefixUnion() {
+    return expectEdges("edges-prefix-union", { from: ["edges/sub/", EDGE_B] }, [[EDGE_B, EDGE_A, "alpha"], [EDGE_SUB, EDGE_B, "beta"]]);
+  }
+  function stepEdgesDangling() {
+    return expectEdges("edges-dangling", { to: EDGE_MISSING }, [[EDGE_A, EDGE_MISSING, "missing"]]);
+  }
+  function stepEdgesFromListLimit() {
+    var request = "edges-from-list-limit";
+    if (skipEdgeRow(request)) return Promise.resolve();
+    var ids = [EDGE_A];
+    while (ids.length < EDGE_SELECTOR_MAX) ids.push("edges/none-" + ids.length);
+    var over = ids.concat(["edges/none-" + ids.length]);
+    return within(Bridge.edges({ from: ids }), REPLY_WINDOW_MS).then(function (e) {
+      var got = edgeRows(e);
+      if (!got || JSON.stringify(got) !== JSON.stringify(EDGES_OF_A)) {
+        record(request, "failed", "from=[" + ids.length + "] rows=" + (got ? got.length : "malformed") + "; expected the " + EDGES_OF_A.length + " rows of " + EDGE_A);
+        return;
+      }
+      return within(Bridge.edges({ from: over }), REPLY_WINDOW_MS).then(function () {
+        record(request, "failed", "from=[" + over.length + "] answered; expected USAGE above " + EDGE_SELECTOR_MAX + " ids");
+      }, function (err) {
+        var ok = err && err.code === "USAGE";
+        record(request, ok ? "answered" : "failed", "from=[" + ids.length + "] rows=" + got.length + "; from=[" + over.length + "] " + describe(err) +
+          (ok ? "" : "; expected USAGE above " + EDGE_SELECTOR_MAX + " ids"));
+      });
+    }, function (err) { record(request, "failed", describe(err) + "; from=[" + ids.length + "] is within the limit"); });
+  }
+  function stepEdgesInvalidSelector() {
+    if (skipEdgeRow("edges-invalid-selector")) return Promise.resolve();
+    // Not a canonical id: refused, never resolved to edges/a and never a host failure.
+    return expectRefusal("edges-invalid-selector", Bridge.edges({ from: "edges/../a" }), "USAGE", "for from=edges/../a");
+  }
+  function stepEdgesTooLarge() {
+    var request = "edges-too-large";
+    if (skipEdgeRow(request)) return Promise.resolve();
+    if (typeof edgeLimit !== "number" || !(edgeLimit >= 0) || edgeLimit >= EDGE_BULK_ROWS) {
+      record(request, "failed", "limits.edges=" + edgeLimit + "; the bundle's " + EDGE_BULK_ROWS + " " + EDGE_BULK_TEXT + " links must exceed it");
+      return Promise.resolve();
+    }
+    return expectRefusal(request, Bridge.edges({ text: EDGE_BULK_TEXT }), "TOO_LARGE",
+      "for " + EDGE_BULK_ROWS + " rows above limits.edges=" + edgeLimit);
+  }
+
   // Order matters: open-page is last because some hosts retire the source launch on it. The
-  // revision 5 and 6 rows follow burst so the earlier rows keep their order.
+  // revision 5, 6 and 7 rows follow burst so the earlier rows keep their order.
   stepHello()
     .then(stepQuery).then(stepQueryNewest).then(stepRead).then(stepReadVersioned).then(stepEdges).then(stepGraph).then(stepRender)
     .then(stepSubscribe).then(stepHost).then(stepPropose).then(stepBurst)
     .then(stepRelationships).then(stepQueryOverLimit).then(stepQueryFieldOr).then(stepQueryOpen).then(stepQueryMore)
-    .then(stepReadMissing).then(stepReadVersionedMissing).then(stepOpenPage)
+    .then(stepReadMissing).then(stepReadVersionedMissing)
+    .then(stepEdgesFrom).then(stepEdgesFromText).then(stepEdgesTo).then(stepEdgesPrefixUnion).then(stepEdgesDangling)
+    .then(stepEdgesFromListLimit).then(stepEdgesInvalidSelector).then(stepEdgesTooLarge).then(stepOpenPage)
     .then(function () {
       setText("status", "complete: " + rows.length + " rows, " + changes + " change events during the run");
       finished(rows);
