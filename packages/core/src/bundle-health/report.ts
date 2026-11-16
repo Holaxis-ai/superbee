@@ -95,7 +95,7 @@ export interface UnresolvedLinkRow {
   href: string;
 }
 
-/** A resolved local edge whose text is a declared link type its source or target does not conform to. */
+/** A resolved local edge whose target does not conform to its exact source Kind's declaration. */
 export interface LinkTypeViolationRow {
   from: string;
   to: string;

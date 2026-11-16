@@ -23,6 +23,20 @@ can change capped query results and fresh publication snapshot digests. Existing
 snapshots retain their serialized bytes and identities. See the [ordering compatibility note](../publication/ORDERING.md)
 for cursor, envelope and snapshot-version compatibility.
 
+## Outbound relationship compatibility
+
+`localEdgeViolation` and `qualifiedEdgeViolation` apply only the declaration whose
+`governs` exactly matches the source document's type. They return `null` when that
+source Kind does not declare the label, even if another Kind does. This replaces
+the previous fallback to another Kind's declaration. Matching-source target and
+cross-bundle alias checks remain in effect; inbound expectations are unchanged.
+
+Consumers upgrading to a Core release containing this change, including hosted
+consumers, should expect unrelated-source relationship warnings to disappear.
+Write findings, bundle health and recipe evolution use the same source-scoped
+rule. No record migration is required, and a lower warning count does not indicate
+that stored relationships were edited.
+
 ## Kind declaration changes
 
 `@superbee/core/kind-changes` exports `classifyKindChanges(current, desired)` over parsed

@@ -11,6 +11,7 @@ import path from "node:path";
 
 import { bundleHealth, type BundleHealthReport } from "../src/bundle-health/index.js";
 import { QUALIFIED_EDGE_CASES } from "./fixtures/qualified-edge-cases.js";
+import { SOURCE_SCOPED_EDGE_CASES, SOURCE_SCOPED_DECLARATIONS } from "./fixtures/source-scoped-edge-cases.js";
 import type { BundleBinding, PinCheck } from "../src/cross-bundle.js";
 import { FrontmatterRefusedError, InvalidInputError } from "../src/errors.js";
 import { MalformedDocumentError } from "../src/frontmatter-contract.js";
@@ -425,7 +426,6 @@ test("bundle health: a link to a document the scan skipped is not a broken link;
   }
 });
 
-import { SOURCE_SCOPED_EDGE_CASES, SOURCE_SCOPED_DECLARATIONS } from "./fixtures/source-scoped-edge-cases.js";
 for (const row of SOURCE_SCOPED_EDGE_CASES) test(`source-scoped bundle health: ${row.name}`, async () => {
   const { backend } = await store("0.2", {
     ...Object.fromEntries(SOURCE_SCOPED_DECLARATIONS.map((d, i) => [`conventions/source-${i}`, convention(d.governs, { links: { "follow-up": d.target } })])),

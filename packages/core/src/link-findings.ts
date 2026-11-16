@@ -9,8 +9,10 @@
  *   - `LINK_NOT_RECOGNIZED`: written like a link to a document but not a graph edge
  *     (a `[[wikilink]]`, a target without `.md`, a reserved file, an invalid id).
  *   - `LINK_TARGET_ABSENT`: an edge whose target has no document yet (still legal).
- *   - `LINK_TYPE_VIOLATION`, `LINK_TYPE_CASE_VARIANT`: an edge whose text is, or nearly is, a
- *     declared link type its source or target does not conform to.
+ *   - `LINK_TYPE_VIOLATION`: an edge whose target does not conform to its exact source Kind's
+ *     declaration.
+ *   - `LINK_TYPE_CASE_VARIANT`: an edge whose text differs only in case from a label declared by
+ *     its exact source Kind.
  *
  * Pure apart from the caller-supplied target reader, so it stays backend- and browser-neutral.
  */

@@ -11,6 +11,7 @@ import {
 import { parseLinksFromDoc } from "../src/links.js";
 import type { KindConvention, KindRegistry } from "../src/kinds.js";
 import type { OkfDocument } from "../src/types.js";
+import { SOURCE_SCOPED_EDGE_CASES, SOURCE_SCOPED_DECLARATIONS } from "./fixtures/source-scoped-edge-cases.js";
 
 const doc = (id: string, body: string, type = "Note"): OkfDocument => ({ id, frontmatter: { type, title: id }, body });
 const store = (...docs: OkfDocument[]): LinkTargetReader => {
@@ -177,7 +178,6 @@ test("offsets are UTF-16 code units", () => {
 });
 
 // The same rows exercise write lint and the bundle-health projection.
-import { SOURCE_SCOPED_EDGE_CASES, SOURCE_SCOPED_DECLARATIONS } from "./fixtures/source-scoped-edge-cases.js";
 for (const row of SOURCE_SCOPED_EDGE_CASES) test(`source-scoped write lint: ${row.name}`, async () => {
   const registry = registryOf(kindWithLinks("Note", {}), ...SOURCE_SCOPED_DECLARATIONS.map(d => kindWithLinks(d.governs, { "follow-up": d.target })));
   const target = doc("target", "", row.target);
