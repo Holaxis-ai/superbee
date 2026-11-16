@@ -95,7 +95,7 @@ export interface UnresolvedLinkRow {
   href: string;
 }
 
-/** A resolved local edge whose text is a declared link type its source or target does not conform to. */
+/** A resolved local edge whose target does not conform to its exact source Kind's declaration. */
 export interface LinkTypeViolationRow {
   from: string;
   to: string;
@@ -390,7 +390,7 @@ export async function bundleHealth(bundle: Bundle, options: BundleHealthOptions 
         inboundEdges.set(l.to, list);
       }
 
-      // A resolved edge whose text is a declared link type its source or target does not conform to.
+      // A resolved edge whose target violates its source Kind's declared link type.
       const matched = qualifiedDeclaration
         ? null
         : localEdgeViolation(linkTypeDeclarations.get(l.text), docType(doc), docType(docsById.get(l.to)!));

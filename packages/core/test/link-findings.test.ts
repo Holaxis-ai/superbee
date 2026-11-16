@@ -11,6 +11,7 @@ import {
 import { parseLinksFromDoc } from "../src/links.js";
 import type { KindConvention, KindRegistry } from "../src/kinds.js";
 import type { OkfDocument } from "../src/types.js";
+import { SOURCE_SCOPED_EDGE_CASES, SOURCE_SCOPED_DECLARATIONS } from "./fixtures/source-scoped-edge-cases.js";
 
 const doc = (id: string, body: string, type = "Note"): OkfDocument => ({ id, frontmatter: { type, title: id }, body });
 const store = (...docs: OkfDocument[]): LinkTargetReader => {
@@ -95,13 +96,12 @@ test("documentLinkReport reads each distinct target once and lints link types on
   assert.deepEqual(report.findings[2]!.details, { text: "Contains", to: "tasks/t", start: 48, end: 71, declaredText: "contains" });
 });
 
-test("linkTypeFinding: unresolved targets check the source only; qualified declarations name the alias", async () => {
+test("linkTypeFinding: unresolved targets remain unchecked; qualified declarations name the alias", async () => {
   const registry = registryOf(kindWithLinks("Epic", { contains: "Task" }), kindWithLinks("Pub", { pours: "beers:Beer" }));
   const none = store();
   assert.equal(await linkTypeFinding(registry, { sourceType: "Epic", text: "contains", to: "x" }, none), undefined);
   const wrongSource = await linkTypeFinding(registry, { sourceType: "Note", text: "contains", to: "x" }, none);
-  assert.equal(wrongSource!.code, "LINK_TYPE_VIOLATION");
-  assert.equal((wrongSource!.details as { targetType: unknown }).targetType, null);
+  assert.equal(wrongSource, undefined);
   const qualified = await linkTypeFinding(registry, { sourceType: "Pub", text: "pours", to: "x" }, none);
   assert.equal((qualified!.details as { targetAlias?: string }).targetAlias, "beers");
   assert.equal(await linkTypeFinding(registry, { sourceType: "Epic", text: "relates", to: "x" }, async () => {
@@ -175,4 +175,14 @@ test("offsets are UTF-16 code units", () => {
   const [finding] = inspectDocumentLinks(doc("notes/a", body)).findings;
   assert.equal(body.slice(finding!.details.start!, finding!.details.end!), "[x](notes/b)");
   assert.equal(finding!.details.start, 4);
+});
+
+// The same rows exercise write lint and the bundle-health projection.
+for (const row of SOURCE_SCOPED_EDGE_CASES) test(`source-scoped write lint: ${row.name}`, async () => {
+  const registry = registryOf(kindWithLinks("Note", {}), ...SOURCE_SCOPED_DECLARATIONS.map(d => kindWithLinks(d.governs, { "follow-up": d.target })));
+  const target = doc("target", "", row.target);
+  const result = await linkTypeFinding(registry, { sourceType: row.source, text: "follow-up", to: "target" }, store(target));
+  assert.equal(result?.code === "LINK_TYPE_VIOLATION", row.violation);
+  const near = await linkTypeFinding(registry, { sourceType: row.source, text: "Follow-up", to: "target" }, store(target));
+  assert.equal(near?.code === "LINK_TYPE_CASE_VARIANT", SOURCE_SCOPED_DECLARATIONS.some(d => d.governs === row.source));
 });

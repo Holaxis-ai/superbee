@@ -112,7 +112,7 @@ cross_bundle_unresolved_rows:
     menus/whale,"okf://ciders/ciders/dry.md",unknown_alias,alias 'ciders' is not declared in docs/dependencies
 cross_bundle_link_type_violations_rows:
   shown: 1
-  total: 2
+  total: 1
   rows[1]{from,href,text,expected}:
     menus/whale,../notes/target.md,pours,"Menu Item -> beers:Beer"
 dangling_view_entries_rows:

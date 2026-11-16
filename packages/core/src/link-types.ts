@@ -34,10 +34,10 @@ export function collectLinkDeclarations(registry: KindRegistry): Map<string, Lin
 
 /**
  * The declaration a typed edge from `sourceType` is checked against: the one its source kind
- * declares, else the first. Shared by the local and qualified checks so both pick the same one.
+ * declares, or none. A label declared by another source Kind imposes no constraint.
  */
-function declarationFor(declared: readonly LinkTypeDeclaration[], sourceType: string): LinkTypeDeclaration {
-  return declared.find((d) => d.governs === sourceType) ?? declared[0]!;
+function declarationFor(declared: readonly LinkTypeDeclaration[], sourceType: string): LinkTypeDeclaration | undefined {
+  return declared.find((d) => d.governs === sourceType);
 }
 
 /**
@@ -51,13 +51,14 @@ export function localEdgeQualifiedDeclaration(
 ): LinkTypeDeclaration | null {
   if (!declared || declared.length === 0) return null;
   const matched = declarationFor(declared, sourceType);
+  if (!matched) return null;
   return parseQualifiedKindTarget(matched.target) === null ? null : matched;
 }
 
 /**
- * A LOCAL edge whose text is a declared type: the declaration it violates (wrong source kind, or a
- * resolved target of another kind), else null. `targetType` undefined means the target has no
- * document, so only the source half is checked; an empty string is an untyped target. The caller
+ * A LOCAL edge whose source Kind declares its text: the declaration it violates when the
+ * resolved target is another kind, else null. `targetType` undefined means the target has no
+ * document, so no target check applies; an empty string is an untyped target. The caller
  * checks {@link localEdgeQualifiedDeclaration} first; this compares kinds only.
  */
 export function localEdgeViolation(
@@ -67,14 +68,14 @@ export function localEdgeViolation(
 ): LinkTypeDeclaration | null {
   if (!declared || declared.length === 0) return null;
   const matched = declarationFor(declared, sourceType);
-  const sourceOk = declared.some((d) => d.governs === sourceType);
+  if (!matched) return null;
   const targetOk = targetType === undefined || targetType === matched.target;
-  return sourceOk && targetOk ? null : matched;
+  return targetOk ? null : matched;
 }
 
 /**
- * A qualified edge (`okf://<alias>/...`) whose text is a declared type: the declaration it violates
- * (wrong source kind, or a target that is local or names another alias), else null. The target's
+ * A qualified edge (`okf://<alias>/...`) whose source Kind declares its text: the declaration it violates
+ * when the target is local or names another alias, else null. The target's
  * kind is checked only when the caller supplies the type of an admitted resolved document.
  * Omitting actualTargetType preserves metadata-only lint; an empty type is a known mismatch.
  */
@@ -86,9 +87,9 @@ export function qualifiedEdgeViolation(
 ): LinkTypeDeclaration | null {
   if (!declared || declared.length === 0) return null;
   const matched = declarationFor(declared, sourceType);
-  const sourceOk = declared.some((d) => d.governs === sourceType);
+  if (!matched) return null;
   const target = parseQualifiedKindTarget(matched.target);
   const targetOk = target !== null && target.alias === alias &&
     (actualTargetType === undefined || actualTargetType === target.kind);
-  return sourceOk && targetOk ? null : matched;
+  return targetOk ? null : matched;
 }

@@ -2089,7 +2089,7 @@ test("recipe evolve: a new outbound link type is additive and revalidates the ed
   assert.equal(settled.changed, false);
 });
 
-test("recipe evolve: a new link type blocks when an existing edge with its text would violate it, from any kind", async () => {
+test("recipe evolve: a new link type blocks only when an edge from its declaring Kind would violate it", async () => {
   const bundle = await linkedBundle(
     "mem://recipe-evolution-link-violation",
     "[explained in](../places/hall.md)\n",
@@ -2100,7 +2100,7 @@ test("recipe evolve: a new link type blocks when an existing edge with its text 
   const plan = await planRecipeEvolution(bundle, desired);
   assert.equal(plan.ready, false);
   const invalid = plan.blockers.filter((blocker) => blocker.code === "RECIPE_EVOLUTION_INSTANCE_INVALID");
-  assert.deepEqual(invalid.map((blocker) => blocker.id).sort(), ["events/meeting", "places/annex"]);
+  assert.deepEqual(invalid.map((blocker) => blocker.id).sort(), ["events/meeting"]);
   assert.ok(invalid.every((blocker) => blocker.field === "links.explained in"));
   // The other-kind doc is bound into the plan token like a changing kind's instance.
   assert.equal(plan.counts.instances_checked, 2);

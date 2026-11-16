@@ -78,7 +78,7 @@ Kind schema vocabulary (the product-facing projection; raw document reads remain
                                  item. An unknown type is a registry warning
   links                map      link type name -> allowed TARGET kind, for typed edges instances
                                  of this kind may carry as link SOURCE (e.g. contains: Task). A
-                                 link whose display text exactly matches a declared type is a
+                                 link whose display text exactly matches a type declared by its source kind is a
                                  typed edge; every other link is an untyped citation. Write typed
                                  edges with 'link add <from> <to> --text <type>' and query them
                                  with 'link show <id> --text <type>'

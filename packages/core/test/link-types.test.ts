@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { qualifiedEdgeViolation } from "../src/link-types.js";
+import { localEdgeQualifiedDeclaration, localEdgeViolation, qualifiedEdgeViolation } from "../src/link-types.js";
 import { QUALIFIED_EDGE_CASES } from "./fixtures/qualified-edge-cases.js";
 
 for (const row of QUALIFIED_EDGE_CASES) test(`qualified typed edge: ${row.name}`, () => {
@@ -24,4 +24,14 @@ test("qualified typed edge: wrong-Kind regression kills target-check removal", a
   const row = QUALIFIED_EDGE_CASES.find(r => r.name === "wrong actual Kind")!;
   assert.notEqual(qualifiedEdgeViolation(row.declared, row.source, row.alias, row.actual), null);
   assert.equal(changed.qualifiedEdgeViolation(row.declared, row.source, row.alias, row.actual), null);
+});
+
+test("source-scoped local edges ignore another Kind's qualified declaration", () => {
+  const declared = [{ governs: "Menu Item", target: "beers:Beer" }];
+  for (const source of ["Task", "", "menu item"]) {
+    assert.equal(localEdgeQualifiedDeclaration(declared, source), null);
+    assert.equal(localEdgeViolation(declared, source, "Task"), null);
+    assert.equal(qualifiedEdgeViolation(declared, source, "other", "Wrong"), null);
+  }
+  assert.deepEqual(localEdgeQualifiedDeclaration(declared, "Menu Item"), declared[0]);
 });

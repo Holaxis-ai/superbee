@@ -811,7 +811,7 @@ test("link add: an absent target ALSO carries a type-conformance warning when --
   }
 });
 
-test("link add: a wrong-kind violation (source AND target type mismatches against a declared 'links' vocabulary) attaches a warnings[] to the success envelope, exit 0 (the link is already written)", async () => {
+test("link add: a wrong target for the declaring source Kind attaches a warnings[] to the success envelope, exit 0 (the link is already written)", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "agentstate-lite-link-test-"));
   try {
     const bundle = await initBundle(dir);
@@ -832,18 +832,10 @@ test("link add: a wrong-kind violation (source AND target type mismatches agains
     await writeDoc(bundle, { id: "crate-1", frontmatter: { type: "Crate", title: "Crate1", timestamp: OLD_TS }, body: "" });
     await writeDoc(bundle, { id: "widget-1", frontmatter: { type: "Widget", title: "Widget1", timestamp: OLD_TS }, body: "" });
 
-    // Wrong SOURCE: a Widget (not a Box) using the 'contains' text against a conforming target.
-    const wrongSource = await linkAdd(dir, ["widget-1", "crate-1", "--text", "contains"]);
-    assert.equal(wrongSource.changed, true);
-    const sourceWarnings = wrongSource.warnings as Array<Record<string, unknown>>;
-    assert.ok(sourceWarnings, "expected a warnings array for a wrong-source edge");
-    assert.equal(sourceWarnings.length, 1);
-    assert.equal(sourceWarnings[0]!.code, "LINK_TYPE_VIOLATION");
-    assert.equal(sourceWarnings[0]!.severity, "warning");
-    assert.match(
-      sourceWarnings[0]!.message as string,
-      /'contains' is declared by 'Box' -> Crate; this link is Widget -> Crate\./,
-    );
+    // An unrelated source does not inherit Box's declaration.
+    const unrelated = await linkAdd(dir, ["widget-1", "crate-1", "--text", "contains"]);
+    assert.equal(unrelated.changed, true);
+    assert.equal(unrelated.warnings, undefined);
 
     // Wrong TARGET: a conforming Box source, but the target is a Widget instead of a Crate.
     const wrongTarget = await linkAdd(dir, ["box-1", "widget-1", "--text", "contains"]);
@@ -941,9 +933,9 @@ test("link add: the idempotent no-op path (changed:false) performs no registry l
       id: "conventions/box",
       frontmatter: {
         type: "Convention",
-        governs: "Box",
+        governs: "Widget",
         fields: { required: ["title"], optional: [] },
-        links: { contains: "Crate" },
+        links: { contains: "Box" },
         timestamp: OLD_TS,
       },
       body: "Box declares its typed-edge vocabulary.",
@@ -953,7 +945,7 @@ test("link add: the idempotent no-op path (changed:false) performs no registry l
 
     const first = await linkAdd(dir, ["widget-1", "crate-1", "--text", "contains"]);
     assert.equal(first.changed, true);
-    assert.ok(first.warnings, "first add of a wrong-source edge should warn");
+    assert.ok(first.warnings, "first add of a wrong-target edge should warn");
 
     const second = await linkAdd(dir, ["widget-1", "crate-1", "--text", "contains"]);
     assert.equal(second.changed, false);

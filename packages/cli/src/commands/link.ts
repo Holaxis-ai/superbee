@@ -16,7 +16,7 @@ import { renderUsage } from "../output.js";
 // substring match) — a reader-side lens over the same edges, never a second derivation.
 // `link add`'s SUCCESS envelope (`changed:true` only — the idempotent no-op path never checks) also
 // carries a graph-lint `warnings[]` when the link's text matches a bundle-declared typed-edge
-// vocabulary entry (a kind's `links` map) but the actual source/target kinds don't conform, or when
+// vocabulary entry in its source kind's `links` map but the actual target kind doesn't conform, or when
 // the text is a same-spelling-different-case near miss of a declared type — warn-only, never
 // blocking, since the link is already written by the time this check runs. The SAME `warnings[]`
 // carries a `LINK_TARGET_ABSENT` entry when the target has no document YET (dangling links stay
@@ -104,8 +104,8 @@ Idempotent: re-adding the same target with the same exact display text is a no-o
 changed:false, no duplicate link, no timestamp refresh. Different text to the same target is a
 distinct semantic edge and is added.
 
-Graph lint: if this bundle declares a kind's 'links' vocabulary (see 'kinds --help') and --text
-matches a declared type, the just-written link is checked against the actual source/target kinds;
+Graph lint: if the source's exact kind declares a 'links' vocabulary (see 'kinds --help') and --text
+matches one of its declared types, the just-written link is checked against the actual target kind;
 a mismatch or a same-spelling-different-case near miss attaches a 'warnings' array to the success
 envelope (exit 0 — the link is already written). An untyped --text (no declared match, any casing)
 or a conventions-free bundle never warns.
@@ -219,7 +219,7 @@ function docType(doc: OkfDocument): string {
 
 /**
  * Write-time type-conformance lint for a just-written link (graph lints unit), worded for the CLI.
- * Core's `linkTypeFinding` owns the rule (exact match checks the actual source/target kinds; a
+ * Core's `linkTypeFinding` owns the rule (exact match checks the target against the source Kind's declaration; a
  * case-only match names the declared spelling; untyped text and conventions-free bundles never
  * warn); this function only renders its details as `link add` flags. A target read failure other
  * than absence is classified as a bundle error, as before.
