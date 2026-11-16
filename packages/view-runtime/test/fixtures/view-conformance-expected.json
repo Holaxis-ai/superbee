@@ -1,0 +1,66 @@
+{
+  "description": "Expected status of every row the conformance View (examples/views/conformance/views/conformance.html) reports, judged against the capabilities the host declares in hello.host.capabilities. Run it as views-registry/conformance with access bundle-read over a bundle described by `bundle`. A row with `capability` expects `declared` when the host lists that name and `undeclared` otherwise; a row without one expects `expect` on every host. `status` lists the acceptable statuses; `code`, when present, is the error code the summary must start with. No row may ever be `failed`.",
+  "bundle": [
+    "at most limits.query documents that query returns, and at least two of them",
+    "the first document by id has a nonempty type with no comma, and another document has a different type",
+    "a Kind that declares fields.terminal for one type, and at least one document of that type whose value is in the terminal set"
+  ],
+  "revision": "6",
+  "rows": [
+    { "request": "hello", "expect": { "status": ["answered"] } },
+    { "request": "query", "expect": { "status": ["answered"] } },
+    {
+      "request": "query-newest",
+      "capability": "query.newest",
+      "declared": { "status": ["answered"] },
+      "undeclared": { "status": ["skipped"] }
+    },
+    { "request": "read", "expect": { "status": ["answered"] } },
+    { "request": "read-versioned", "expect": { "status": ["answered"] } },
+    {
+      "request": "edges",
+      "capability": "edges",
+      "declared": { "status": ["answered"] },
+      "undeclared": { "status": ["refused"], "code": "FORBIDDEN" }
+    },
+    {
+      "request": "graph",
+      "capability": "graph",
+      "declared": { "status": ["answered"] },
+      "undeclared": { "status": ["refused"], "code": "FORBIDDEN" }
+    },
+    {
+      "request": "render-document",
+      "capability": "render-document",
+      "declared": { "status": ["answered"] },
+      "undeclared": { "status": ["refused"], "code": "FORBIDDEN" }
+    },
+    { "request": "subscribe", "expect": { "status": ["answered"] } },
+    { "request": "host", "expect": { "status": ["refused"], "code": "FORBIDDEN" } },
+    { "request": "action.propose", "expect": { "status": ["refused"] } },
+    { "request": "burst", "expect": { "status": ["answered"] } },
+    {
+      "request": "relationships",
+      "capability": "relationships",
+      "declared": { "status": ["answered"] },
+      "undeclared": { "status": ["refused"], "code": "FORBIDDEN" }
+    },
+    { "request": "query-over-limit", "expect": { "status": ["refused"], "code": "USAGE" } },
+    {
+      "request": "query-field-or",
+      "capability": "query.field-or",
+      "declared": { "status": ["answered"] },
+      "undeclared": { "status": ["refused"], "code": "USAGE" }
+    },
+    {
+      "request": "query-open",
+      "capability": "query.open",
+      "declared": { "status": ["answered"] },
+      "undeclared": { "status": ["refused"], "code": "USAGE" }
+    },
+    { "request": "query-more", "expect": { "status": ["answered"] } },
+    { "request": "read-missing", "expect": { "status": ["refused"], "code": "NOT_FOUND" } },
+    { "request": "read-versioned-missing", "expect": { "status": ["refused"], "code": "NOT_FOUND" } },
+    { "request": "open-page", "expect": { "status": ["refused", "sent"] } }
+  ]
+}

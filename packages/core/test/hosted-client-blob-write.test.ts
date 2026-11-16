@@ -1132,6 +1132,9 @@ test("key policy: writeBlob and deleteBlob refuse reserved files and Superbee's 
   assert.deepEqual(await blobJournal.listBlobIntents(), []);
   assert.equal(isOrdinaryBlobKey("media/views/a.png"), true);
   assert.equal(isOrdinaryBlobKey("viewsx/a.png"), true);
+  // A fullwidth letter is never the same folder name as its ASCII letter on any supported filesystem.
+  assert.equal(isOrdinaryBlobKey("\uff56iews/a.png"), true);
+  assert.equal(isOrdinaryBlobKey("Views/a.png"), false);
   const check = checkBlobAdmission({ operation: "create", key: "recipes/a.bin", contentType: SVG, byteLength: 1 });
   assert.equal(!check.ok && check.reason, "protected_key");
 });

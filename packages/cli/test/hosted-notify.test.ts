@@ -236,7 +236,7 @@ test("notify --doc points at the document at the version the host holds, under t
     eventVersion: version,
   });
   assert.deepEqual(h.attention.calls[0]!.body.meta, { "com.anthropic.claude-code": { run: "run 7" } });
-  assert.deepEqual(h.host.requests.map((request) => request.path), ["/sync/v1/whoami", "/sync/v1/read"]);
+  assert.deepEqual(h.host.requests.map((request) => request.path), ["/sync/v1/whoami", "/sync/v1/run"]);
 });
 
 test("notify --doc on a host that does not report its document authority (every /sync/v1 host today) is refused before anything is sent", async () => {
@@ -556,7 +556,7 @@ test("outside a checkout --doc needs --bundle, refused before any request; with 
     document: { schemaVersion: "superbee.document-target.v1", authority: { mode: "hosted", authorityKey: "orgs", workspaceKey: "tenant:a" }, bundleKey: BUNDLE, documentId: id },
     eventVersion: a.host.docs.get(id)!.version,
   });
-  const read = a.host.requests.find((request) => request.path === "/sync/v1/read")!;
+  const read = a.host.requests.find((request) => request.path === "/sync/v1/run" && (request.body as { operationId?: unknown }).operationId === "documents.read.v1")!;
   assert.equal((read.body as { bundleId?: unknown }).bundleId, `north/${BUNDLE}`, "the read names the bundle in its workspace");
   const clash = await rejects(() => runAt(a, cwd, notify, ["self", "--kind", "ready", "--doc", id, "--bundle", `north/${BUNDLE}`, "--workspace", "tenant-b"]));
   assert.equal(clash.code, "USAGE");

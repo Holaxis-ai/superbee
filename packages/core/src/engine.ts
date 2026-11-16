@@ -19,6 +19,7 @@ import { isUsableTimestamp } from "./frontmatter-contract.js";
 import { parseLinksFromDoc } from "./links.js";
 import { assertSafeConceptId, isReservedFile, pathFromConceptId } from "./paths.js";
 import { parseLeadingFrontmatter } from "./portable-frontmatter.js";
+import { MAX_RELATIONSHIP_PAGE_ROWS, pageRelationshipSources, type IndexedRelationshipPage, type RelationshipPosition, type RelationshipSource } from "./relationships.js";
 import { matchesFilter } from "./query-filter.js";
 import type {
   BlobKey,
@@ -254,9 +255,11 @@ export async function queryEdges(
 ): Promise<Link[]> {
   const fromSelectors = toSelectorList(filter.from)?.map(normalizeEdgeSelector);
   const toSelectors = toSelectorList(filter.to)?.map(normalizeEdgeSelector);
+  const indexed = await backend.relationshipSources?.(options);
+  const sources = indexed ?? (await query(backend, {}, options)).map(doc => ({ links: parseLinksFromDoc(doc) }));
   const edges: Link[] = [];
-  for (const doc of await query(backend, {}, options)) {
-    for (const link of parseLinksFromDoc(doc)) {
+  for (const { links } of sources) {
+    for (const link of links) {
       if (!matchesEdgeSelector(link.from, fromSelectors)) continue;
       if (!matchesEdgeSelector(link.to, toSelectors)) continue;
       if (filter.text !== undefined && link.text !== filter.text) continue;
@@ -265,6 +268,31 @@ export async function queryEdges(
   }
   edges.sort((a, b) => compareCodeUnits(a.from, b.from) || compareCodeUnits(a.to, b.to) || compareCodeUnits(a.text, b.text));
   return edges;
+}
+
+/** Read a bounded neighborhood from the same source as edge queries. */
+export async function readRelationshipPage(
+  backend: StorageBackend,
+  documentId: ConceptId,
+  limit: number,
+  after?: RelationshipPosition,
+  options: QueryOptions = {},
+): Promise<IndexedRelationshipPage> {
+  assertReadableConceptId(documentId);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_RELATIONSHIP_PAGE_ROWS) {
+    throw new InvalidInputError(`Relationship page limit must be between 1 and ${MAX_RELATIONSHIP_PAGE_ROWS}.`);
+  }
+  const sources = await backend.relationshipSources?.(options) ?? (await query(backend, {}, options)).map(relationshipSource);
+  return pageRelationshipSources(sources, documentId, limit, after);
+}
+
+export function relationshipSource(doc: OkfDocument): RelationshipSource {
+  const title = doc.frontmatter.title;
+  return {
+    id: doc.id,
+    title: typeof title === "string" && title.trim() ? title.trim() : null,
+    links: parseLinksFromDoc(doc),
+  };
 }
 
 export async function backlinks(backend: StorageBackend, target: ConceptId, options: QueryOptions = {}): Promise<Link[]> {

@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { decode } from "@toon-format/toon";
 import { filesystemPushRoleLocks } from "@superbee/core/filesystem-push-role";
 import { headsDigest } from "@superbee/core";
+import { PATH_COLLISION_ROWS } from "@superbee/core/string-identity-agreement";
 
 import { CliError } from "../src/errors.js";
 import { checkout, CHECKOUT_DOCUMENT_LIMIT } from "../src/commands/checkout.js";
@@ -922,6 +923,14 @@ test("ids that differ only in letter case are refused before any file is written
   assert.equal(error.details?.reason, "path_collision");
   assert.deepEqual(await readdir(h.cwd), []);
   assert.ok(!fake.requests.some((r) => r.path.endsWith("/snapshot")));
+});
+
+test("checkout refuses exactly the id pairs foldPath joins, so compatibility characters stay distinct files", () => {
+  const hex = (value: string) => [...value].map((char) => char.codePointAt(0)!.toString(16)).join(" ");
+  for (const { a, b, collide } of PATH_COLLISION_ROWS) {
+    assert.equal(findPathCollision([`notes/${a}`, `notes/${b}`]) !== null, collide, `documents ${hex(a)} vs ${hex(b)}`);
+    assert.equal(findPathCollision([`${a}/x`, `${b}/y`]) !== null, collide, `folders ${hex(a)} vs ${hex(b)}`);
+  }
 });
 
 test("a bundle past one working copy page checks out whole, its heads and snapshot read a page at a time", async () => {

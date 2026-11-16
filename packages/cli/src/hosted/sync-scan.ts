@@ -26,7 +26,7 @@ import path from "node:path";
 import { commitLocal, deleteLocal, UNSETTLED_STATES, type LocalBundle } from "@superbee/browser-local";
 import { DOCUMENT_DELETE_KIND, equalJournalValue } from "@superbee/core/journaled-backend";
 import type { MalformedDocumentCode } from "@superbee/core";
-import { assertSafeConceptId, BodyReplaceError, conceptIdFromPath, guardDroppedLinks, CONVENTION_TYPE, InvalidInputError, isConventionId, isReservedFile, MalformedDocumentError, parseLinksFromDoc, parseMarkdown, VersionConflict, type Frontmatter, type JournaledBackend, type OkfDocument } from "@superbee/core";
+import { assertSafeConceptId, BodyReplaceError, conceptIdFromPath, foldPath, guardDroppedLinks, CONVENTION_TYPE, InvalidInputError, isConventionId, isReservedFile, MalformedDocumentError, parseLinksFromDoc, parseMarkdown, VersionConflict, type Frontmatter, type JournaledBackend, type OkfDocument } from "@superbee/core";
 import { DELETIONS_HELD_REFUSAL_CODE, MAXIMUM_ACCEPTED_DELETIONS, type HostedDefinitionWrites, type HostedRootWrites, FRONTMATTER_KEY_LIMIT, HOSTED_MANAGED_FIELDS, WHOLE_DOCUMENT_BOUNDS, wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
 import { mintRequestId } from "@superbee/core/uncertain-write";
 import type { IntentRecord, NewIntentRecord } from "@superbee/core/journaled-backend";
@@ -35,7 +35,7 @@ import { commandToken } from "../command-text.js";
 import { cliInvocation } from "../invocation.js";
 import { readUserStateFile, writeUserStateFileAtomic0600 } from "../user-state.js";
 import { checkoutDir } from "./binding.js";
-import { digestOf, ensureParentInside, fold, parentUnsafe, placeNew, PLACEMENT_TEMP, replaceGuarded, ROOT_INDEX, UnsafePlacementError } from "./projection.js";
+import { digestOf, ensureParentInside, parentUnsafe, placeNew, PLACEMENT_TEMP, replaceGuarded, ROOT_INDEX, UnsafePlacementError } from "./projection.js";
 
 import { captureTrackedBlobChanges, type BlobCaptureContext } from "./blob-sync.js";
 
@@ -56,7 +56,7 @@ export type DefinitionWritesState = HostedDefinitionWrites | null;
 
 /** True when `rel`, folded, is `folder` or under it. */
 function underFolded(rel: string, folder: string): boolean {
-  const folded = foldedPath(rel);
+  const folded = foldPath(rel);
   return folded === folder || folded.startsWith(`${folder}/`);
 }
 
@@ -614,11 +614,6 @@ export function sameAsStored(bytes: Uint8Array, id: string, doc: { frontmatter: 
   }
 }
 
-/** A path spelling folded as a case-insensitive, normalizing filesystem equates it. */
-function foldedPath(id: string): string {
-  return id.split("/").map(fold).join("/");
-}
-
 export interface ScanContext {
   /** Optional file-journal-only capture; never a generic backend requirement. */
   readonly blobs?: BlobCaptureContext;
@@ -843,7 +838,7 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
       continue;
     }
     if (!entry && !stored.document) {
-      const twin = (await caseTwins(local.backend, projection)).get(foldedPath(id));
+      const twin = (await caseTwins(local.backend, projection)).get(foldPath(id));
       if (twin !== undefined && twin !== id) {
         report.held.push(held(id, rel, "case_collision", `'${id}' differs only in letter case from '${twin}', which a case-insensitive disk treats as the same file`));
         continue;
@@ -1091,7 +1086,7 @@ export async function exportCheckout(
     const rel = `${head.id}.md`;
     const file = path.join(folder, rel);
     if (!entry) {
-      const twin = twins.get(foldedPath(head.id));
+      const twin = twins.get(foldPath(head.id));
       if (twin !== undefined && twin !== head.id) {
         report.held.push(held(head.id, rel, "case_collision", `the host's '${head.id}' differs only in letter case from '${twin}', which a case-insensitive disk treats as the same file; rename one in the Superbee app`));
         continue;
@@ -1251,8 +1246,8 @@ export async function folderConflicts(folder: string, store: JournaledBackend, p
 /** Every document spelling the store and the record know, by its case-folded path. */
 async function caseTwins(store: JournaledBackend, projection: ProjectionRecord): Promise<Map<string, string>> {
   const twins = new Map<string, string>();
-  for (const id of Object.keys(projection.files)) twins.set(foldedPath(id), id);
-  for (const id of await store.readHeads({ project: (head) => head.id })) if (!twins.has(foldedPath(id))) twins.set(foldedPath(id), id);
+  for (const id of Object.keys(projection.files)) twins.set(foldPath(id), id);
+  for (const id of await store.readHeads({ project: (head) => head.id })) if (!twins.has(foldPath(id))) twins.set(foldPath(id), id);
   return twins;
 }
 
@@ -1327,7 +1322,7 @@ export async function placeQueuedLocalCreate(folder: string, store: JournaledBac
   const snapshot = await store.readWithJournal(admission.id), row = snapshot.intents[0];
   if (!snapshot.document || snapshot.intents.length !== 1 || !row || row.requestId !== admission.requestId || row.kind !== "document.write" || row.target !== admission.id || row.base !== null || row.baseContent !== null || row.after || row.recreates || row.local !== admission.localVersion || snapshot.document.version !== admission.localVersion || !snapshot.raw || digestOf(Buffer.from(snapshot.raw)) !== admission.rawDigest || row.content !== snapshot.raw) return false;
   const file = path.join(folder, `${admission.id}.md`);
-  const twins = await caseTwins(store, projection), twin = twins.get(foldedPath(admission.id));
+  const twins = await caseTwins(store, projection), twin = twins.get(foldPath(admission.id));
   if (twin !== undefined && twin !== admission.id || await parentUnsafe(folder, file)) return false;
   const next = Buffer.from(snapshot.raw), found = readRegularFileNoFollowSync(file, { maximumBytes: Buffer.byteLength(snapshot.raw) });
   if (found.state === "unsafe" || found.state === "present" && !found.bytes.equals(next)) return false;

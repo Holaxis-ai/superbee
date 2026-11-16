@@ -1103,6 +1103,7 @@ export async function bootUiServer(options: UiServerOptions): Promise<UiServerHa
         kind: "oss",
         capabilities: [
           ...BRIDGE_SERVICE_CAPABILITIES,
+          BRIDGE_HOST_CAPABILITIES.relationships,
           BRIDGE_HOST_CAPABILITIES.openPage,
           BRIDGE_HOST_CAPABILITIES.subscribeDeltas,
         ],

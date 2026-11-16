@@ -68,6 +68,155 @@ The package proof installs core alone, typechecks the public subpaths, runs pars
 checks in Node, and executes a browser-target bundle without Node globals. This is not a live
 browser or Worker integration guarantee. No CLI runtime dependency or new package is required.
 
+## Recipe sources and published indexes
+
+`@superbee/core/recipe-sources` owns the source contract every host composes. A `RecipeSource`
+has a `kind` (`builtin`, `files` or `index`) and `resolve(ref)`, which returns `null` when the
+source does not address the reference. `resolveRecipe(ref, sources)` asks each source in order and
+returns the first answer, or `RECIPE_NOT_FOUND`. `builtinRecipeSource()` lives in
+`@superbee/core/builtin-recipes`; sources that need a filesystem or a network stay in their host.
+
+A published index is one JSON document, `recipe-index/v1`:
+
+```json
+{
+  "format": "recipe-index/v1",
+  "source": "example",
+  "title": "Example recipes",
+  "recipes": [
+    { "id": "context-notes", "version": "1", "designation": "supported", "maintainer": "Holaxis-ai",
+      "source_digest": "sha256:<64 hex>", "files_digest": "sha256:<64 hex>", "root": "recipes/context-notes",
+      "files": ["recipe.md", "conventions/context-note.md"] }
+  ],
+  "cookbooks": [
+    { "id": "starter", "title": "Starter", "summary": "Notes for agents.", "designation": "supported",
+      "maintainer": "Holaxis-ai", "recipes": ["context-notes"] }
+  ]
+}
+```
+
+A cookbook is a named, ordered group of recipes the index lists. `root` is relative to the index
+location and optional. `files` are relative to `root`, and a
+reader fetches exactly those files. `parseRecipeIndex` refuses unknown keys (except `discovery`, below)
+and formats, absolute
+paths, `..`, backslashes, dot entries, duplicates (file paths compare case-insensitively), and
+cookbooks that name a recipe the index does not list or, for a `supported` cookbook, a `community`
+recipe. Its codes are `RECIPE_INDEX_MALFORMED`,
+`RECIPE_INDEX_FORMAT_UNSUPPORTED`, `RECIPE_INDEX_PATH_INVALID`, `RECIPE_INDEX_DUPLICATE` and
+`RECIPE_INDEX_COOKBOOK_INVALID`.
+
+Every recipe and cookbook carries a required `designation`, `supported` (maintained by Holaxis) or
+`community`, and a required nonempty `maintainer`, for example a GitHub org or handle. Any other
+designation is refused. A `supported` cookbook may hold only `supported` recipes; a `community`
+cookbook may hold either. The designation is set by whoever controls the published index; for
+superbee-plugins, that is Holaxis maintainers through review. Core does not verify it, it is not a
+security property, and it promises no service level. It exists for discovery. The digests below are
+the only integrity guarantee, and verified results carry the designation and maintainer only so a
+host can display them.
+
+Each recipe carries two pins. `files_digest` is `recipeFilesDigest` of the exact listed files as
+raw bytes. Each file becomes a row `{"digest": "sha256:<hex of its bytes>", "path": <recipe-relative
+path>}`, the row shape the CLI reports for source plugin files. The rows are sorted by path in
+code-unit order, and `files_digest` is `sha256:` and the hex SHA-256 of the UTF-8 JSON array of rows,
+keys in that order. Every file is hashed to a fixed length and JSON quoting delimits every path, so
+concatenation cannot collide, and listing order does not matter. `source_digest` is
+`recipeSourceDigest` of the parsed recipe, the value install stamps record.
+
+`resolveIndexRecipe(index, id, read)` and `createIndexRecipeSource(index, read)` take a
+host-supplied async reader that returns raw bytes (`Uint8Array`) and never decodes. Core checks
+`files_digest` on those bytes, then decodes each file once as strict UTF-8 (one leading BOM is
+dropped), parses, and checks `source_digest`. A difference in either pin is
+`RECIPE_INDEX_DIGEST_MISMATCH`, with `digest` naming the pin that failed, and no recipe is returned.
+Bytes that are not UTF-8 are `RECIPE_INDEX_ENCODING_INVALID`. Frontmatter that the bounded loader refuses, on
+read or in the bytes a write would store, is `RECIPE_INDEX_FRONTMATTER_REFUSED`, with `frontmatter`
+carrying the code and document, because nothing was tampered with. Every prepared document, for both
+editions, goes through the real serializer before a recipe counts as verified, so a recipe whose
+aliases expand past the limits fails here and not between two cookbook members. A recipe preparation
+or authoring admission refuses is `RECIPE_MALFORMED`. A reader that throws is
+`RECIPE_INDEX_READ_FAILED`. `parseRecipeIndex` also accepts the index as raw bytes and decodes it
+the same way. `resolveCookbook(index, id, read)` verifies every member in order and returns either
+all of them or a refusal naming the failed member, never a partial set. It then refuses with
+`RECIPE_INDEX_COOKBOOK_CONFLICT` when two members would install the same target, whether or not
+their bytes agree, because create-only installs keep the first and never converge on the second.
+Targets are the ids `prepareRecipeInstall` produces, and a View's legacy `pages-registry/` and
+`pages/` spellings count as the same target as `views-registry/` and `views/`, as they do at
+install. `conflict` names both members and the shared ids in each member's spelling.
+
+`files_digest` covers every listed byte, including the manifest's title, summary, offer and prose
+and any listed README. `source_digest` covers what install writes. Neither authenticates a
+publisher. Bound the reader's sizes and times in the host, and keep local reads inside the index
+directory. Path segments may not start or end with `.`.
+
+### Discovery, display text and the format rule
+
+The format rule for `recipe-index/v1`: keys that change what a reader fetches, verifies or installs
+are strict, and changing them is a new format version. Everything for finding and grouping entries
+sits in one optional `discovery` object at index, recipe and cookbook level, and readers tolerate it:
+
+```json
+{ "id": "my-home", "title": "My Home", "summary": "...", "designation": "supported", "maintainer": "Holaxis-ai",
+  "recipes": ["my-home", "my-home-maintenance", "my-home-costs"],
+  "discovery": {
+    "offer": "Keep track of your home: rooms, appliances, repairs, warranties and what you spent.",
+    "keywords": ["house", "appliance", "repair", "warranty"],
+    "categories": ["home", "money"],
+    "audience": "personal" } }
+```
+
+- Known keys: `keywords` (at most 12, each matching `^[a-z0-9][a-z0-9 -]{0,39}$`, for search),
+  `categories` (one or two ids from `RECIPE_CATEGORIES`, the first is the primary) and `audience`
+  (`personal`, `work` or `both`) on recipes and cookbooks; `offer` (display text of at most 140
+  characters) on cookbooks only. A recipe's `offer` is the manifest's `offer` in `recipe.md`. The
+  index level has no known key yet.
+- `readRecipeDiscovery(value, level)` reads one object. It drops unknown keys and invalid values (one
+  item at a time inside a list), keeps the first 12 keywords and the first two categories, and
+  never refuses. A `discovery` that is not an object is dropped whole. Dropped data is not kept in
+  the parse result, so nothing Core does not understand reaches an agent or a page. Parsed entries
+  carry `discovery` only when something survives, and `resolveIndexRecipe` and `resolveCookbook`
+  pass it through. When an older reader drops an
+  unknown first category, the next one becomes the primary.
+- Readers never refuse an index because of `discovery`, so a later, wider rule (a new category, a
+  third audience) leaves older readers working; they simply do not show the new value until they run
+  a Core that knows it. `readRecipeDiscovery` also returns `problems`, one sentence per drop, so a
+  generator refuses what readers tolerate and authors see their mistakes.
+- `RECIPE_CATEGORIES` is the one category table: `home` (Home and family), `money`, `learning`
+  (Learning and hobbies), `productivity`, `research`, `business` (Business operations) and `software`
+  (Software and engineering). Ids are permanent and never reused; display names may change. A host
+  shows only categories that hold at least one entry. There is no health category.
+
+The display text rule is `recipeDisplayText(value, max)`: a nonempty string with no control
+character (Unicode category Cc, C0 and C1, newline and tab included), no format character (category
+Cf: bidirectional marks and overrides, the zero-width space U+200B, U+FEFF and the U+E0000 tag
+block) except the zero-width non-joiner and joiner (U+200C, U+200D), which Persian, Indic scripts
+and emoji need, and no line or paragraph separator (U+2028, U+2029), cut to `max` UTF-16 code units without splitting a surrogate
+pair, or null. `parseRecipeIndex` refuses the index (`RECIPE_INDEX_MALFORMED`) when its `title`, a
+cookbook's `title` or `summary`, a `maintainer` or a `version` breaks it, and `discovery.offer`
+follows the drop rule. Whatever builds listing rows from verified recipes uses
+`recipeDisplayFields(recipe)`, which clamps the file-derived `title` to 200, `summary` to 1000 and
+`offer` to 140 characters (`RECIPE_DISPLAY_LIMITS`), leaves out a value with a refused character, and
+falls back from `offer` to the title and from the title to the id. No character rule catches an
+instruction-shaped sentence, so this text stays data.
+
+What Core verifies, and what is only the publisher's statement:
+
+- Verified: a recipe's id, version, `files_digest`, `source_digest` and storability, after every
+  listed file is fetched. So a verified recipe's `title`, `summary`, `offer` and Kinds are pinned: fixed to digests the same
+  publisher wrote, so still the publisher's words, only unchangeable once pinned.
+- Not verified: everything in `discovery`, every cookbook field (`title`, `summary`, `offer`,
+  `recipes`), `designation`, `maintainer` and the index `source` and `title`. The index document has
+  no pin of its own and its digests come from the same publisher, so they prove consistency, not who
+  published. A reader holding only the index has only unpinned text. Tool and page output built from
+  an index says which of its text is the publisher's statement.
+
+A recipe manifest's `offer`, `title` and `summary` are covered by `files_digest` and not by
+`source_digest`, so rewording them keeps install stamps current. After an index lists a recipe
+version, its bytes are immutable, so a rewording needs a new recipe version.
+
+**Qualified recipe identity, later.** A qualified recipe identity (authority, repository and
+recipe-local id) will come with a new format version. A key that older readers ignore is not enough:
+they would still resolve by the bare `id`, and two entries with the same `id` are refused as
+duplicates. Any new key outside `discovery` is a new format version.
+
 ## Deprecating declarations
 
 A convention can keep a declaration readable while preventing new admitted usage:

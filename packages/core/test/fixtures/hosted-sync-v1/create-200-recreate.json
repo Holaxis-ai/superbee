@@ -21,7 +21,7 @@
       "content-type": "application/json; charset=utf-8",
       "x-superbee-write-settled": "4a2f9c1e-8b3d-4e6f-9a1b-000000000011"
     },
-    "body": "{\"ok\":true,\"operationId\":\"documents.create.v1\",\"data\":{\"bundleId\":\"notes.a\",\"documentId\":\"notes/two\",\"version\":\"sha256:801e3b995994a61026ed8730a1a5aa62b3f625e58b9d6cd9241e2df08efb57d1\",\"changed\":true}}",
+    "body": "{\"ok\":true,\"operationId\":\"documents.create.v1\",\"data\":{\"bundleId\":\"notes.a\",\"documentId\":\"notes/two\",\"version\":\"sha256:801e3b995994a61026ed8730a1a5aa62b3f625e58b9d6cd9241e2df08efb57d1\",\"changed\":true,\"links\":{\"count\":0,\"targets\":[],\"truncated\":false}}}",
     "truncated": false
   }
 }

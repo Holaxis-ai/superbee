@@ -32,6 +32,7 @@ import {
   retrySnapshotRestarts,
   SNAPSHOT_RESTART_ATTEMPTS,
   decodeOutcomeAnswer,
+  parseWriteResult,
   capacityScopeOf,
   HostedCarrierError,
   HostedOutcomeError,
@@ -443,6 +444,127 @@ function transportOver(script: Parameters<typeof replayCarrier>[0], intent: Oper
   const deliver = (candidate = intent) => performUncertainWrite(transport, candidate, { settlement: transport.settlement, sleep: async () => {}, lookupDelayMs: 0 });
   return { transport, deliver, reads, requests: replay.requests };
 }
+
+// ── a tolerant reader: keys a host adds are ignored, the fields the client reads are still checked ──
+
+const UPDATE_EXPECTED = { operationIds: ["documents.update.v1"], documentId: "notes/alpha", bundleId: "team.knowledge" };
+const okBody = () => answerOf(fixture("update-200-ok")).body as { ok: true; operationId: string; data: Record<string, unknown> };
+const refusedBody = (error: Record<string, unknown>) => ({ ok: false, operationId: "documents.update.v1", error: { message: "refused", retryable: false, writeState: "not_applied", ...error } });
+const LINKS = { count: 3, targets: ["context-notes/q1-offsite", "notes/beta"], truncated: false };
+const WARNINGS = [{ code: "KIND_FIELD_UNDECLARED", severity: "warning", field: "owner" }];
+const GUIDANCE = [{ field: "status", value: "draft", description: "Not ready for review." }];
+
+test("tolerant reader: a saved write's report (links, warnings, guidance) is admitted and readable, the receipt as before", () => {
+  const plain = parseWriteResult(okBody(), UPDATE_EXPECTED);
+  const body = okBody();
+  const reported = parseWriteResult({ ...body, data: { ...body.data, links: LINKS, warnings: WARNINGS, guidance: GUIDANCE } }, UPDATE_EXPECTED);
+  assert.ok(plain.ok && reported.ok);
+  assert.deepEqual(reported.data, { ...plain.data, links: LINKS, warnings: WARNINGS, guidance: GUIDANCE });
+  assert.equal(classifyWriteAnswer({ status: 200, headers: new Headers(), body: { ...body, data: { ...body.data, links: LINKS } } }, UPDATE_EXPECTED).row.answer, "200 ok");
+  // An old-shape receipt parses to exactly its own fields: nothing is added.
+  assert.deepEqual(plain, { ok: true, operationId: "documents.update.v1", data: body.data });
+});
+
+test("tolerant reader: a key the client does not know, anywhere in the envelope, is ignored and not carried", () => {
+  const body = okBody();
+  const extended = { ...body, trace: { id: 1 }, data: { ...body.data, futureField: ["x"], links: { ...LINKS, perTarget: [1, 2] } } };
+  const parsed = parseWriteResult(extended, UPDATE_EXPECTED);
+  assert.ok(parsed.ok);
+  assert.deepEqual(parsed, { ok: true, operationId: "documents.update.v1", data: { ...body.data, links: LINKS } });
+  assert.equal(classifyWriteAnswer({ status: 200, headers: new Headers(), body: extended }, UPDATE_EXPECTED).row.answer, "200 ok");
+  const refusal = parseWriteResult({ ...refusedBody({ code: "validation_failed", hint: "x" }), requestEcho: true }, UPDATE_EXPECTED);
+  assert.deepEqual(refusal, { ok: false, operationId: "documents.update.v1", error: { code: "validation_failed", message: "refused", retryable: false, writeState: "not_applied" } });
+});
+
+test("tolerant reader: a refusal's diagnostics and input issues are typed and carried", () => {
+  const diagnostics = {
+    version: 2,
+    truncated: false,
+    items: [{ code: "KIND_SECTION_MISSING", severity: "error", message: "'Context Note' expects a '# Summary' body section (declared by conventions/context-note).", location: { kind: "section", name: "Summary" }, kindId: "conventions/context-note" }],
+  };
+  const refused = parseWriteResult(refusedBody({ code: "validation_failed", diagnostics }), UPDATE_EXPECTED);
+  assert.ok(!refused.ok);
+  assert.deepEqual(refused.error.diagnostics, diagnostics);
+  assert.equal(refused.error.diagnostics?.items[0]?.code, "KIND_SECTION_MISSING");
+  const inputIssues = [{ path: "frontmatter.timestamp", message: "Managed frontmatter is set by the server." }];
+  const invalid = parseWriteResult(refusedBody({ code: "invalid_input", inputIssues }), UPDATE_EXPECTED);
+  assert.ok(!invalid.ok);
+  assert.deepEqual(invalid.error.inputIssues, inputIssues);
+  assert.equal(classifyWriteAnswer({ status: 200, headers: new Headers(), body: refusedBody({ code: "invalid_input", inputIssues }) }, UPDATE_EXPECTED).row.answer, "200 invalid_input");
+});
+
+test("tolerant reader: a malformed report is left out, never a reason to refuse a saved write", () => {
+  const body = okBody();
+  for (const report of [
+    { links: { count: "3", targets: [] } },
+    { links: { count: -1, targets: [] } },
+    { links: { count: 1, targets: [7] } },
+    { links: { count: 1, targets: [], truncated: "no" } },
+    { links: "3" },
+    { warnings: "KIND_FIELD_UNDECLARED" },
+    { warnings: [{ code: 1, severity: "warning" }, { code: "X", severity: "fatal" }] },
+    { guidance: [{ field: "status", value: 1, description: "x" }] },
+  ]) {
+    const parsed = parseWriteResult({ ...body, data: { ...body.data, ...report } }, UPDATE_EXPECTED);
+    assert.deepEqual(parsed, { ok: true, operationId: "documents.update.v1", data: body.data }, JSON.stringify(report));
+  }
+  // Only the well-formed items of a list are kept.
+  const mixed = parseWriteResult({ ...body, data: { ...body.data, warnings: [...WARNINGS, { code: 2 }] } }, UPDATE_EXPECTED);
+  assert.ok(mixed.ok);
+  assert.deepEqual(mixed.data.warnings, WARNINGS);
+  for (const [error, kept] of [
+    [{ code: "validation_failed", diagnostics: { version: 2, items: [{ severity: "error" }] } }, "diagnostics"],
+    [{ code: "validation_failed", diagnostics: "x" }, "diagnostics"],
+    [{ code: "invalid_input", inputIssues: [{ path: 1, message: "x" }] }, "inputIssues"],
+  ] as const) {
+    const parsed = parseWriteResult(refusedBody(error), UPDATE_EXPECTED);
+    assert.ok(!parsed.ok);
+    assert.equal(kept in parsed.error, false);
+  }
+});
+
+test("tolerant reader: a malformed or misplaced field the client reads still refuses the envelope", () => {
+  const body = okBody();
+  const bad: unknown[] = [
+    { ...body, data: { ...body.data, version: "v2" } },
+    { ...body, data: { ...body.data, changed: "yes" } },
+    { ...body, data: { ...body.data, bundleId: "" } },
+    { ...body, data: { ...body.data, links: LINKS, documentId: "notes/beta" } },
+    // A delete's fields on another write, and data beside error.
+    { ...body, data: { ...body.data, deleted: true } },
+    { ...body, data: { ...body.data, deletedVersion: BASE } },
+    { ...body, error: { code: "internal_error" } },
+    { ...body, ok: "true" },
+    refusedBody({ code: "no_such_code" }),
+    refusedBody({ code: "validation_failed", retryable: true }),
+    refusedBody({ code: "validation_failed", writeState: "applied" }),
+    refusedBody({ code: "validation_failed", currentVersion: "v1" }),
+    refusedBody({ code: "write_outcome_unknown" }),
+    refusedBody({ code: "validation_failed", scope: "bundle" }),
+    refusedBody({ code: "validation_failed", deletions: 3, baseline: 4 }),
+    refusedBody({ code: "validation_failed", definitionDetails: { findings: [] } }),
+    { ...refusedBody({ code: "validation_failed" }), data: body.data },
+  ];
+  for (const envelope of bad) {
+    assert.throws(() => parseWriteResult(envelope, UPDATE_EXPECTED), (error: unknown) => error instanceof Error && error.name === "HostedAnswerError", JSON.stringify(envelope));
+    assert.equal(classifyWriteAnswer({ status: 200, headers: new Headers(), body: envelope }, UPDATE_EXPECTED).row.answer, "200 other");
+  }
+});
+
+test("tolerant reader: an outcome lookup and a whole-document write settle a reported receipt as committed", async () => {
+  const exchange = fixture("outcome-200-committed");
+  const expected = { requestId: exchange.request.headers["x-superbee-write-request"]!, binding: exchange.request.headers["x-superbee-recovery-target"]!, bundleId: "team.knowledge", documentId: "notes/alpha", operationIds: ["documents.update.v1"] };
+  const answer = answerOf(exchange).body as { result: { data: Record<string, unknown> } };
+  const reported = { ...answer, result: { ...answer.result, data: { ...answer.result.data, links: LINKS, warnings: WARNINGS, extra: 1 } } };
+  const decoded = decodeOutcomeAnswer(reported, expected);
+  assert.equal(decoded.status, "committed");
+  assert.ok(decoded.status === "committed" && decoded.result.data.links?.count === 3);
+  const intent = intentOf(BASE);
+  const withReport = (text: string) => toReplace(text).replace('"changed":true}', `"changed":true,"links":${JSON.stringify(LINKS)},"guidance":${JSON.stringify(GUIDANCE)},"nextField":{}}`);
+  const { deliver, requests } = transportOver({ "/sync/v1/replace": [fixture("update-200-ok")] }, intent, { rewrite: withReport });
+  assert.deepEqual((await deliver()).outcome, { kind: "committed", version: "sha256:e83157678e87513662c069849c1ff1095c24189bfc5207b5a37f9243413eac6f" });
+  assert.equal(requests.length, 1, "a reported receipt settles at once: no lookup");
+});
 
 test("whole-document request: a base makes a replace against it, no base a create-only write, managed fields never leave", () => {
   const replace = wholeDocumentRequest("team.knowledge", intentOf(BASE));
@@ -1153,6 +1275,10 @@ test("a root write's answers: success only for the bytes sent, refusals final, a
   assert.equal(classify(200, { ok: true, operationId: ROOT_OPERATION_ID, data: { bundleId: ROOT_BUNDLE, version: ROOT_BASE, changed: true } }).kind, "unknown");
   assert.equal(classify(200, { ok: true, operationId: ROOT_OPERATION_ID, data: { bundleId: "other", version: sent, changed: true } }).kind, "unknown");
   assert.equal(classify(200, { ok: true, operationId: "documents.replace.v1", data: { bundleId: ROOT_BUNDLE, version: sent, changed: true } }).kind, "unknown");
+  // A key the client does not know is ignored (a tolerant reader); the fields it reads are still checked.
+  assert.deepEqual(classify(200, { ok: true, operationId: ROOT_OPERATION_ID, trace: 1, data: { bundleId: ROOT_BUNDLE, version: sent, changed: true, links: { count: 0, targets: [] } } }), { kind: "committed", version: sent, changed: true });
+  assert.equal(classify(200, { ok: true, operationId: ROOT_OPERATION_ID, data: { bundleId: ROOT_BUNDLE, version: sent, changed: "yes", links: { count: 0, targets: [] } } }).kind, "unknown");
+  assert.deepEqual(classify(200, rootFailure("validation_failed", "not_applied", { diagnostics: { version: 2, items: [], truncated: false }, hint: "x" })), { kind: "refused", code: "validation_failed", message: "refused: validation_failed" });
   assert.deepEqual(classify(200, rootFailure("version_conflict", "not_applied", { currentVersion: ROOT_BASE })), { kind: "conflict", current: ROOT_BASE });
   assert.deepEqual(classify(200, rootFailure("document_exists", "not_applied", { currentVersion: ROOT_BASE })), { kind: "conflict", current: ROOT_BASE });
   assert.deepEqual(classify(200, rootFailure("validation_failed")), { kind: "refused", code: "validation_failed", message: "refused: validation_failed" });

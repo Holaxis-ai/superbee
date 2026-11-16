@@ -4,7 +4,7 @@
 // `hosted-create-fake-contract.test.ts`). No request leaves the process.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -133,12 +133,22 @@ test("the preview names the staged path past one request's bounds; a small bundl
   assert.match(String(((await run(h, ["--to", "hosted", "--dir", small, "--host", HOST], fake)).travels as Record<string, unknown>).sent), /^staged: a file over 1 MB \(big\.bin\)/);
   await writeFile(path.join(small, "big.bin"), "tiny");
   assert.equal(((await run(h, ["--to", "hosted", "--dir", small, "--host", HOST], fake)).travels as Record<string, unknown>).sent, "one request");
-  // Two files that are one on a case- or compatibility-folding disk block, naming the rule.
+  // Two files that are one on a case-insensitive disk block, naming the rule. Only a
+  // case-sensitive disk can hold both to test it.
   await writeFile(path.join(small, "f.txt"), "a");
+  await writeFile(path.join(small, "F.txt"), "b");
+  const names = await readdir(small);
+  if (names.includes("F.txt") && names.includes("f.txt")) {
+    const folded = await run(h, ["--to", "hosted", "--dir", small, "--host", HOST], fake);
+    assert.equal(folded.ready, false);
+    assert.ok((folded.blockers as { rows: { reason: string }[] }).rows.some((row) => row.reason === "path_collision"), JSON.stringify(folded.blockers));
+  }
+  await rm(path.join(small, "F.txt"), { force: true });
+  await writeFile(path.join(small, "f.txt"), "a");
+  // A fullwidth letter is a distinct name on every supported filesystem, so it does not block.
   await writeFile(path.join(small, "\uff46.txt"), "b");
-  const folded = await run(h, ["--to", "hosted", "--dir", small, "--host", HOST], fake);
-  assert.equal(folded.ready, false);
-  assert.ok((folded.blockers as { rows: { reason: string }[] }).rows.some((row) => row.reason === "path_collision"), JSON.stringify(folded.blockers));
+  const fullwidth = await run(h, ["--to", "hosted", "--dir", small, "--host", HOST], fake);
+  assert.ok(!JSON.stringify(fullwidth.blockers ?? null).includes("path_collision"), JSON.stringify(fullwidth.blockers));
   await rm(path.join(small, "\uff46.txt"));
   // A file over 16 MiB blocks either way.
   await writeFile(path.join(small, "big.bin"), Buffer.alloc(STAGED_PUBLISH_BOUNDS.blobBytes + 1));

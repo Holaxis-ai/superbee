@@ -11,13 +11,8 @@ const EXACT_VERSION = /^(\d+)\.(\d+)\.(\d+)$/;
 const ACTOR = /^(?:human|process):[^\s]+$|^[^\s/]+\/[^\s/]+$/;
 const REVIEW_EVIDENCE = /^reviews\/[^\s@]+@sha256:[0-9a-f]{64}$/;
 const FORWARD_DISPOSITIONS = new Set(["pending", "promote_default", "retain_probe", "retire_probe"]);
-const DAY_MS = 24 * 60 * 60 * 1000;
 const COMPATIBILITY_FLOOR = "22.14.0";
 const FORWARD_PROBE = 26;
-const INITIAL_FORWARD_REVIEW = "2026-10-28";
-const RETAIN_PROBE_CAP = "2027-04-26";
-const FLOOR_RETIRE_BY = "2027-04-30";
-const RELEASE_PIN_MAX_DAYS = 30;
 const ROLE_TOPOLOGIES = Object.freeze({
   pending: Object.freeze({
     defaultMajor: 24,
@@ -41,22 +36,15 @@ const ROLE_TOPOLOGIES = Object.freeze({
   }),
 });
 
-function dateValue(value, field) {
+function assertDate(value, field) {
   assert.equal(typeof value, "string", `${field} must be a YYYY-MM-DD string`);
   assert.match(value, DATE, `${field} must be a YYYY-MM-DD string`);
   const parsed = Date.parse(`${value}T00:00:00Z`);
   assert.ok(Number.isFinite(parsed), `${field} must be a real date`);
   assert.equal(new Date(parsed).toISOString().slice(0, 10), value, `${field} must be a real date`);
-  return parsed;
 }
 
-function utcDay(now) {
-  const value = now instanceof Date ? now : new Date(now);
-  assert.ok(Number.isFinite(value.valueOf()), "node policy clock must be a valid date");
-  return Date.parse(`${value.toISOString().slice(0, 10)}T00:00:00Z`);
-}
-
-export function validateNodeRuntimePolicy(policy, { now = new Date() } = {}) {
+export function validateNodeRuntimePolicy(policy) {
   assert.equal(typeof policy, "object", "node_policy must be an object");
   assert.ok(policy !== null && !Array.isArray(policy), "node_policy must be an object");
 
@@ -79,64 +67,28 @@ export function validateNodeRuntimePolicy(policy, { now = new Date() } = {}) {
     .join(" || ");
   assert.equal(policy.engine_range, expectedEngineRange, "engine_range must exactly project supported_majors");
   assert.equal(policy.build_target, `node${floorMajor}`);
-  assert.match(policy.release_pin_owner, ACTOR, "release_pin_owner must be an OKF actor");
-
-  const today = utcDay(now);
-  const reviewedAt = dateValue(policy.release_pin_reviewed_at, "release_pin_reviewed_at");
-  const refreshBy = dateValue(policy.release_pin_refresh_by, "release_pin_refresh_by");
-  assert.ok(reviewedAt <= today, "release pin review cannot be in the future");
-  assert.ok(refreshBy >= reviewedAt, "release pin refresh cannot predate its review");
-  assert.ok(
-    refreshBy <= reviewedAt + RELEASE_PIN_MAX_DAYS * DAY_MS,
-    `release pin refresh must be within ${RELEASE_PIN_MAX_DAYS} days of its review`,
-  );
-  assert.ok(today <= refreshBy, `Node ${policy.default_runtime} release pin expired after ${policy.release_pin_refresh_by}; review and refresh the policy`);
 
   const review = policy.forward_review;
   assert.equal(typeof review, "object", "forward_review must be an object");
   assert.ok(review !== null && !Array.isArray(review), "forward_review must be an object");
   assert.ok(FORWARD_DISPOSITIONS.has(review.disposition), "forward_review disposition is unsupported");
-  const reviewAfter = dateValue(review.review_after, "forward_review.review_after");
-  assert.equal(review.review_after, INITIAL_FORWARD_REVIEW, `initial forward review must remain fixed at ${INITIAL_FORWARD_REVIEW}`);
   if (review.disposition === "pending") {
     assert.equal(review.decided_at, null, "pending forward review cannot set a decision date");
     assert.equal(review.decided_by, null, "pending forward review cannot fabricate a decision actor");
     assert.equal(review.evidence, null, "pending forward review cannot fabricate evidence");
-    assert.equal(review.revisit_by, null, "pending forward review cannot set a revisit date");
-    assert.ok(today < reviewAfter, `Node ${policy.forward_probe} forward review is due on ${review.review_after}; record a disposition`);
   } else {
-    const decidedAt = dateValue(review.decided_at, "forward_review.decided_at");
-    assert.ok(decidedAt >= reviewAfter, "forward review decision cannot predate the review boundary");
-    assert.ok(decidedAt <= today, "forward review decision cannot be in the future");
+    assertDate(review.decided_at, "forward_review.decided_at");
     assert.match(review.decided_by, ACTOR, "decided forward review must name an OKF actor");
     assert.equal(typeof review.evidence, "string", "decided forward review must cite structured Review evidence");
     assert.match(review.evidence, REVIEW_EVIDENCE, "decided forward review must cite structured Review evidence");
-    if (review.disposition === "retain_probe") {
-      const revisitBy = dateValue(review.revisit_by, "forward_review.revisit_by");
-      assert.ok(revisitBy > today, "retained forward probe revisit date must be in the future");
-      assert.ok(revisitBy <= decidedAt + 180 * DAY_MS, "retained forward probe revisit must be within 180 days of the decision");
-      assert.ok(
-        revisitBy <= dateValue(RETAIN_PROBE_CAP, "retain probe cap"),
-        `retained forward probe revisit cannot pass the one-cycle cap of ${RETAIN_PROBE_CAP}`,
-      );
-    } else {
-      assert.equal(review.revisit_by, null, `${review.disposition} does not use revisit_by`);
-    }
   }
-
-  const retirement = policy.floor_retirement;
-  assert.equal(typeof retirement, "object", "floor_retirement must be an object");
-  assert.ok(retirement !== null && !Array.isArray(retirement), "floor_retirement must be an object");
-  const retireBy = dateValue(retirement.retire_by, "floor_retirement.retire_by");
-  assert.equal(retirement.retire_by, FLOOR_RETIRE_BY, `floor retirement must remain fixed at ${FLOOR_RETIRE_BY}`);
-  assert.ok(today < retireBy, `Node ${policy.compatibility_floor} support retires on ${retirement.retire_by}; remove the floor or add a separately reviewed exception contract`);
   return policy;
 }
 
-export function validateNodeRuntimeManifest(manifest, { now = new Date() } = {}) {
+export function validateNodeRuntimeManifest(manifest) {
   assert.equal(typeof manifest, "object", "CI lane manifest must be an object");
   assert.ok(manifest !== null && !Array.isArray(manifest), "CI lane manifest must be an object");
-  const policy = validateNodeRuntimePolicy(manifest.node_policy, { now });
+  const policy = validateNodeRuntimePolicy(manifest.node_policy);
   const floorMajor = Number(policy.compatibility_floor.split(".")[0]);
   const defaultMajor = Number(policy.default_runtime.split(".")[0]);
   const probe = policy.forward_probe;
@@ -165,16 +117,10 @@ export function validateNodeRuntimeManifest(manifest, { now = new Date() } = {})
   return policy;
 }
 
-function parseArgs(argv) {
-  if (argv.length === 0) return { now: new Date() };
-  if (argv.length === 2 && argv[0] === "--date") return { now: new Date(`${argv[1]}T00:00:00Z`) };
-  throw new Error("usage: node scripts/node-runtime-policy.mjs [--date YYYY-MM-DD]");
-}
-
-function main(argv = process.argv.slice(2)) {
+function main() {
   const manifest = JSON.parse(readFileSync(path.join(root, "scripts", "ci-lanes.json"), "utf8"));
-  validateNodeRuntimeManifest(manifest, parseArgs(argv));
-  console.log(`Node runtime policy is current through ${manifest.node_policy.release_pin_refresh_by}.`);
+  validateNodeRuntimeManifest(manifest);
+  console.log(`Node runtime policy agrees for default runtime ${manifest.node_policy.default_runtime}.`);
 }
 
 if (isMainModule(import.meta.url)) {

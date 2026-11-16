@@ -22,7 +22,7 @@ import {
   queryEdges,
   writeDoc,
 } from "@superbee/core";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { CODE_UNIT_ORDER } from "@superbee/core/string-identity-agreement";
@@ -1274,6 +1274,63 @@ test("unknown order values, cursor, and order on a host without query.newest ans
   assert.deepEqual(plain.reply.result.rows.map((row) => row.id), ["docs/one"], "order-less queries are unchanged");
 });
 
+test("a host without query.field-or or query.open refuses those features with USAGE instead of ignoring them", async () => {
+  const bundle = { root: "mem://bridge-refuse-not-degrade", backend: new MemoryBackend() };
+  await writeDoc(bundle, { id: "docs/one", frontmatter: { type: "Note", title: "One" }, body: "" });
+  await writeDoc(bundle, { id: "docs/two", frontmatter: { type: "Memo", title: "Two" }, body: "" });
+  const query = async (bridge, id, params) => (await bridge.handle("launch", { bridge: "v0", type: "query", id, params })).reply;
+
+  const full = newestBridge(bundle);
+  assert.deepEqual((await query(full, "or", { field: "type=Note,Memo" })).result.rows.map((row) => row.id), ["docs/one", "docs/two"]);
+  assert.equal((await query(full, "open", { open: true })).result.count, 2, "the declaring host still honors open");
+
+  const less = newestBridge(bundle, TEST_HOST.capabilities.filter((name) => name !== "query.field-or" && name !== "query.open"));
+  for (const [id, params] of [["or", { field: "type=Note,Memo" }], ["or-spaced", { field: "type= Note , Memo" }], ["open", { open: true }]]) {
+    const reply = await query(less, id, params);
+    assert.equal(reply.type, "error", id);
+    assert.equal(reply.id, id);
+    assert.equal(reply.error.code, "USAGE", id);
+  }
+  for (const [id, params, expected] of [
+    ["single", { field: "type=Note" }, ["docs/one"]],
+    ["trailing-comma", { field: "type=Note," }, ["docs/one"]],
+    ["no-key", { field: "=Note,Memo" }, ["docs/one", "docs/two"]],
+    ["open-false", { open: false }, ["docs/one", "docs/two"]],
+  ]) {
+    assert.deepEqual((await query(less, id, params)).result.rows.map((row) => row.id), expected, `${id} names one value or none and is answered`);
+  }
+});
+
+test("read and read-versioned of a missing document answer NOT_FOUND", async () => {
+  const bundle = { root: "mem://bridge-read-missing", backend: new MemoryBackend() };
+  await writeDoc(bundle, { id: "docs/one", frontmatter: { type: "Note", title: "One" }, body: "" });
+  const bridge = newestBridge(bundle);
+  for (const [bridgeVersion, type] of [["v0", "read"], ["v1", "read-versioned"]]) {
+    const reply = (await bridge.handle("launch", { bridge: bridgeVersion, type, id: "m", docId: "docs/missing" })).reply;
+    assert.deepEqual(reply, {
+      bridge: bridgeVersion,
+      id: "m",
+      type: "error",
+      error: { code: "NOT_FOUND", message: "Document 'docs/missing' is not available" },
+    }, type);
+  }
+});
+
+test("a query reply cut short by its cap says more: true, and a whole reply carries no more key", async () => {
+  const bundle = { root: "mem://bridge-more", backend: new MemoryBackend() };
+  for (const id of ["docs/a", "docs/b", "docs/c"]) await writeDoc(bundle, { id, frontmatter: { type: "Note", title: id }, body: "" });
+  const bridge = newestBridge(bundle);
+  const query = async (params) => (await bridge.handle("launch", { bridge: "v0", type: "query", id: "q", params })).reply.result;
+  const cut = await query({ limit: 2 });
+  assert.equal(cut.rows.length, 2);
+  assert.equal(cut.count, 3);
+  assert.equal(cut.more, true);
+  for (const params of [{}, { limit: 3 }, { limit: 0 }, { order: "newest" }]) {
+    assert.equal(Object.hasOwn(await query(params), "more"), false, JSON.stringify(params));
+  }
+  assert.equal((await query({ order: "newest", limit: 1 })).more, true);
+});
+
 for (const row of NEWEST_FIXTURE.cases) {
   test(`order: "newest" answers the shared fixture over a ${row.okfVersion} bundle: ${row.name}`, async () => {
     const backend = new MemoryBackend();
@@ -1299,3 +1356,60 @@ for (const row of NEWEST_FIXTURE.cases) {
       "the default order is UTF-16 code-unit ID order");
   });
 }
+
+test("a filesystem View pages one neighborhood in a 10,000-document bundle", async (t) => {
+  const runtime = await mkdtemp(path.join(tmpdir(), "superbee-relationship-view-"));
+  t.after(() => rm(runtime, { recursive: true, force: true }));
+  const root = path.join(runtime, "bundle");
+  await mkdir(root);
+  const content = "---\ntype: Note\ntitle: Target\n---\n\n";
+  await writeFile(path.join(root, "target.md"), content + "[self](target.md) [dangling](absent.md)");
+  await Promise.all(Array.from({ length: 100 }, async (_, group) => {
+    const dir = path.join(root, "docs-" + String(group).padStart(2, "0"));
+    await mkdir(dir);
+    await Promise.all(Array.from({ length: group === 99 ? 99 : 100 }, (_, index) => {
+      const name = String(index).padStart(3, "0") + ".md";
+      const body = group === 0 && index < 33 ? "[relates](/target.md) [relates](../target.md)" : "";
+      return writeFile(path.join(dir, name), content + body);
+    }));
+  }));
+  const host = {
+    kind: "oss",
+    capabilities: [...BRIDGE_SERVICE_CAPABILITIES, BRIDGE_HOST_CAPABILITIES.relationships],
+    limits: BRIDGE_SERVICE_LIMITS,
+  };
+  const options = {
+    bundle: { root, backend: new FilesystemBackend(root, { hostPolicy: {
+      runtimeLockParent: () => runtime,
+      runtimeOwnerKey: () => "test",
+      enforcePrivateMode: true,
+      isTransientOpenError: () => false,
+      isReplacementConflict: () => false,
+      isDirectoryContentionError: () => false,
+    } }) },
+    launches: { resolve: async () => ({ launchId: "local", capability: "bundle-read" }), revoke() {} },
+    config: async () => ({ root, name: "Fixture", mode: "dir" }),
+    renderDocument: () => ({ html: "", bounded: true }),
+    host,
+  };
+  const now = Date.now;
+  t.mock.method(Date, "now", () => now() + 4000);
+  const service = new BridgeService(options);
+  const request = { bridge: "v0", type: "relationships", id: "page", docId: "target" };
+  const first = (await service.handle("local", request)).reply;
+  assert.equal(first.type, "relationships:result");
+  assert.equal(first.result.rows.length, 30);
+  assert.equal(first.result.rows[0].documentId, "docs-00/000");
+  assert.equal(first.result.rows[29].documentId, "docs-00/029");
+  assert.ok(first.result.rows.every(row => row.direction === "incoming"));
+  const cursor = first.result.cursor;
+  const second = (await service.handle("local", { ...request, cursor })).reply;
+  assert.deepEqual(second.result.rows.map(row => row.documentId), ["docs-00/030", "docs-00/031", "docs-00/032"]);
+  assert.equal(second.result.cursor, undefined);
+  assert.equal((await service.handle("local", { ...request, cursor, docId: "absent" })).reply.error.code, "USAGE");
+  assert.equal((await service.handle("local", { ...request, docId: "absent" })).reply.error.code, "NOT_FOUND");
+  const refused = new BridgeService({ ...options, host: { ...host, capabilities: BRIDGE_SERVICE_CAPABILITIES } });
+  assert.equal((await refused.handle("local", request)).reply.error.code, "FORBIDDEN");
+  const denied = new BridgeService({ ...options, launches: { resolve: async () => null, revoke() {} } });
+  assert.equal((await denied.handle("local", request)).reply.error.code, "FORBIDDEN");
+});

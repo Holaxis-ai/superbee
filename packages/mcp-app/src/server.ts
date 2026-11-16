@@ -637,6 +637,7 @@ function createMcpBundleRuntime(
       kind: "oss",
       capabilities: [
         ...BRIDGE_SERVICE_CAPABILITIES,
+        BRIDGE_HOST_CAPABILITIES.relationships,
         BRIDGE_HOST_CAPABILITIES.openPage,
         BRIDGE_HOST_CAPABILITIES.subscribeDeltas,
       ],

@@ -57,9 +57,11 @@ import type { FileHandle } from "node:fs/promises";
 import type { Stats } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 import { ConcurrentReplacementError, FilesystemIdentityAliasError, InvalidInputError } from "./errors.js";
-import { acquireFilesystemIdentityLock, filesystemMutationLockRoot } from "./filesystem-lock.js";
+import { acquireFilesystemIdentityLock, filesystemMutationLockRoot, filesystemRelationshipCache } from "./filesystem-lock.js";
 import { captureFilesystemHostPolicy, type FilesystemHostPolicy } from "./filesystem-host.js";
 import { foldSegment } from "./identity-fold.js";
 import { identityTempName } from "./filesystem-temp-name.js";
@@ -132,6 +134,8 @@ export interface FilesystemIdentityPort {
   /** Open for reading and `fstat` the handle; throws the filesystem error otherwise. */
   open(target: string): Promise<OpenedFile>;
   readAll(handle: PortHandle): Promise<Buffer>;
+  contentStamp?(handle: PortHandle): Promise<{ value: string; settled: boolean } | undefined>;
+  relationshipCache?(root: string, key: string): ReturnType<typeof filesystemRelationshipCache> | undefined;
   close(handle: PortHandle): Promise<void>;
   stat(target: string): Promise<{ mtime: Date }>;
   mkdir(dir: string): Promise<"created" | "exists">;
@@ -257,7 +261,17 @@ async function existingAnchor(resolved: string): Promise<{ anchor: string; tail:
 async function foldedPhysicalRoot(root: string): Promise<string> {
   const { anchor, tail } = await existingAnchor(path.resolve(root));
   const anchorSegments = anchor.split(path.sep).filter((segment, index) => index === 0 || segment !== "");
-  return [...anchorSegments, ...tail].map(foldSegment).join("/");
+  return [...anchorSegments, ...tail].map(foldRootSegment).join("/");
+}
+
+/**
+ * The bundle root's own segments fold with compatibility decomposition, which is wider than
+ * {@link foldSegment}. Every released build derives the root key this way, and processes on
+ * different builds exclude each other only while they derive the same root key. A wider root
+ * fold can only make two differently spelled roots share one lock.
+ */
+function foldRootSegment(segment: string): string {
+  return segment.normalize("NFKD").toLowerCase().toUpperCase().toLowerCase();
 }
 
 export async function identityKey(root: string, rel: string): Promise<string> {
@@ -1224,10 +1238,63 @@ function witnessTrust(): (dev: bigint, dir: string) => Promise<boolean> {
   };
 }
 
+// Persistent reuse needs a reliable independent ctime, beyond directory enumeration semantics.
+const CONTENT_LINUX_FILESYSTEMS = new Set([
+  0xef53, // ext2/3/4
+  0x58465342, // xfs
+  0x9123683e, // btrfs
+  0x01021994, // tmpfs
+  0x858458f6, // ramfs
+  0x2fc12fc1, // zfs
+  0xf2f52010, // f2fs
+  0xca451a4e, // bcachefs
+]);
+const DARWIN_DATA_VOLUME = "/System/Volumes/Data";
+const runFile = promisify(execFile);
+
+async function darwinDataVolumeDevice(): Promise<bigint | undefined> {
+  try {
+    const before = await fs.lstat(DARWIN_DATA_VOLUME, { bigint: true });
+    if (!before.isDirectory()) return;
+    const { stdout } = await runFile("/usr/sbin/diskutil", ["info", "-plist", DARWIN_DATA_VOLUME], {
+      timeout: 2_000,
+      maxBuffer: 64 * 1024,
+    });
+    // Darwin's numeric statfs type is not a stable filesystem name. Only this OS-managed
+    // volume is qualified; a secondary or unreadable volume uses the body scan.
+    if (!/<key>FilesystemType<\/key>\s*<string>apfs<\/string>/.test(stdout) ||
+        !/<key>MountPoint<\/key>\s*<string>\/System\/Volumes\/Data<\/string>/.test(stdout)) return;
+    const after = await fs.lstat(DARWIN_DATA_VOLUME, { bigint: true });
+    if (after.isDirectory() && before.dev === after.dev && before.ino === after.ino) return after.dev;
+  } catch {
+    // A device whose filesystem cannot be identified is unsuitable for persistent reuse.
+  }
+}
+
+function contentWitnessTrust(): (dev: bigint, handle: FileHandle) => Promise<boolean> {
+  let darwin: Promise<bigint | undefined> | undefined;
+  const linux = new Map<bigint, Promise<boolean>>();
+  return async (dev, handle) => {
+    if (process.platform === "darwin") return (await (darwin ??= darwinDataVolumeDevice())) === dev;
+    if (process.platform !== "linux") return false;
+    let trusted = linux.get(dev);
+    if (trusted === undefined) {
+      // The descriptor identifies the file's mount even for a separately mounted leaf.
+      trusted = fs.statfs(`/proc/self/fd/${handle.fd}`).then(
+        info => CONTENT_LINUX_FILESYSTEMS.has(Number(info.type)),
+        () => false,
+      );
+      linux.set(dev, trusted);
+    }
+    return trusted;
+  };
+}
+
 /** The one production binding: `node:fs`, the temp-file convention, and the identity lock. */
 export function createNodeFilesystemIdentityPort(hostPolicy?: FilesystemHostPolicy): FilesystemIdentityPort {
   const policy = captureFilesystemHostPolicy(hostPolicy);
   const witnessTrustedOn = witnessTrust();
+  const contentWitnessTrustedOn = contentWitnessTrust();
   return Object.freeze({
     isTransientOpenError: policy.isTransientOpenError,
     isReplacementConflict: policy.isReplacementConflict,
@@ -1273,6 +1340,20 @@ export function createNodeFilesystemIdentityPort(hostPolicy?: FilesystemHostPoli
     },
     readAll(handle: PortHandle): Promise<Buffer> {
       return (handle as FileHandle).readFile();
+    },
+    async contentStamp(handle: PortHandle) {
+      const file = handle as FileHandle;
+      const stat = await file.stat({ bigint: true });
+      if (!stat.isFile() || stat.ctimeNs <= 0n || !(await contentWitnessTrustedOn(stat.dev, file))) return undefined;
+      const latest = stat.mtimeNs > stat.ctimeNs ? stat.mtimeNs : stat.ctimeNs;
+      return {
+        value: [stat.dev, stat.ino, stat.birthtimeNs, stat.ctimeNs, stat.mtimeNs, stat.size].join(":"),
+        settled: BigInt(Date.now()) * 1_000_000n - latest >= SETTLED_AFTER_NS,
+      };
+    },
+    relationshipCache(root: string, key: string) {
+      if (!policy.enforcePrivateMode || process.getuid === undefined) return undefined;
+      return filesystemRelationshipCache(root, policy, key);
     },
     close(handle: PortHandle): Promise<void> {
       return (handle as FileHandle).close();

@@ -3,6 +3,7 @@
 // never on whether the files came from built-in constants, a folder, or a future source adapter.
 import { CONNECTOR_TYPE, CONNECTORS_PREFIX, parseConnectorDoc, type Connector, type ConnectorErrorCode } from "./connectors.js";
 import { parseMarkdown } from "./frontmatter.js";
+import type { MalformedDocumentCode } from "./frontmatter-contract.js";
 import { buildKindRegistry, parseConventionDoc, CONVENTIONS_PREFIX, CONVENTION_TYPE } from "./kinds.js";
 import { conceptIdFromPath, assertSafeConceptId, isReservedFile } from "./paths.js";
 import type { OkfDocument } from "./types.js";
@@ -89,13 +90,33 @@ export type RecipeErrorCode =
   | "RECIPE_MALFORMED"
   | "RECIPE_EMPTY"
   | "RECIPE_UNSAFE_PATH"
-  | "RECIPE_CONNECTOR_INVALID";
+  | "RECIPE_CONNECTOR_INVALID"
+  | RecipeIndexErrorCode;
+
+/** Refusals of a published recipe index (`@superbee/core/recipe-sources`). */
+export type RecipeIndexErrorCode =
+  | "RECIPE_INDEX_MALFORMED"
+  | "RECIPE_INDEX_FORMAT_UNSUPPORTED"
+  | "RECIPE_INDEX_PATH_INVALID"
+  | "RECIPE_INDEX_DUPLICATE"
+  | "RECIPE_INDEX_COOKBOOK_INVALID"
+  | "RECIPE_INDEX_COOKBOOK_CONFLICT"
+  | "RECIPE_INDEX_FRONTMATTER_REFUSED"
+  | "RECIPE_INDEX_READ_FAILED"
+  | "RECIPE_INDEX_ENCODING_INVALID"
+  | "RECIPE_INDEX_DIGEST_MISMATCH";
 
 export interface RecipeError {
   code: RecipeErrorCode;
   message: string;
   /** `RECIPE_CONNECTOR_INVALID`: the first refusal of the connector named, and how many it had. */
   connector?: { id: string; code: ConnectorErrorCode; path: string; count: number };
+  /** `RECIPE_INDEX_DIGEST_MISMATCH`: which pin the recipe failed. */
+  digest?: "files_digest" | "source_digest";
+  /** `RECIPE_INDEX_COOKBOOK_CONFLICT`: the first two members that write the same targets, and those targets. */
+  conflict?: { recipes: [string, string]; ids: string[] };
+  /** `RECIPE_INDEX_FRONTMATTER_REFUSED`: the frontmatter code and, when known, the document. */
+  frontmatter?: { code: MalformedDocumentCode; document?: string };
 }
 
 /** The connectors a recipe carries; empty when its manifest declares none. */

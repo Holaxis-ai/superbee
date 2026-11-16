@@ -140,6 +140,7 @@ test("bundle ids come from the bundle's name", () => {
   assert.equal(bundleIdFrom("Team notes"), "team-notes");
   assert.equal(bundleIdFrom("2026 Plans!"), "bundle-2026-plans");
   assert.equal(bundleIdFrom("Équipe"), "equipe");
+  assert.equal(bundleIdFrom("\uff34eam \ufb01les"), "team-files");
 });
 
 test("the preview makes no request and lists what travels, what stays, and the next command", async () => {

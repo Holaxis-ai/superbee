@@ -25,6 +25,7 @@ test("N2: FilesystemBackend retains one required constructor argument, the contr
     "readMany",
     "readQualifiedRecords",
     "readReserved",
+    "relationshipSources",
     "snapshotQualified",
     "versions",
     "write",
