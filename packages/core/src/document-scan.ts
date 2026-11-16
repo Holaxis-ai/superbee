@@ -2,7 +2,7 @@
 import { FilesystemIdentityAliasError } from "./errors.js";
 import { MalformedDocumentError } from "./frontmatter-contract.js";
 import { permissionDeniedReason } from "./skip-reasons.js";
-import type { ConceptId, ReadResult, StorageBackend } from "./types.js";
+import type { ConceptId } from "./types.js";
 
 /** A document a resilient scan skipped because it was malformed or the host denied reading it. */
 export interface SkippedDoc {
@@ -39,19 +39,19 @@ function deniedReason(err: unknown): string | undefined {
  * document's directory for every document. Shared by the scan path and the cross-bundle resolver,
  * which issues one call per bound alias.
  */
-export async function readManyExisting(
-  backend: StorageBackend,
+export async function readManyExisting<T>(
+  backend: { read(id: ConceptId): Promise<T>; readMany(ids: ConceptId[]): Promise<T[]> },
   ids: ConceptId[],
   onMalformed?: (skip: SkippedDoc) => void,
   onAliased?: (skip: SkippedDoc) => void,
   onDenied?: (skip: SkippedDoc) => void,
-): Promise<ReadResult[]> {
+): Promise<T[]> {
   const tolerated = (err: unknown): boolean =>
     isEnoent(err) ||
     (err instanceof MalformedDocumentError && onMalformed !== undefined) ||
     (err instanceof FilesystemIdentityAliasError && onAliased !== undefined) ||
     (deniedReason(err) !== undefined && onDenied !== undefined);
-  const readOne = async (id: ConceptId): Promise<ReadResult[]> => {
+  const readOne = async (id: ConceptId): Promise<T[]> => {
     try {
       return [await backend.read(id)];
     } catch (candidate) {
@@ -72,7 +72,7 @@ export async function readManyExisting(
       throw candidate;
     }
   };
-  const readBatch = async (batch: ConceptId[]): Promise<ReadResult[]> => {
+  const readBatch = async (batch: ConceptId[]): Promise<T[]> => {
     try {
       return await backend.readMany(batch);
     } catch (err) {

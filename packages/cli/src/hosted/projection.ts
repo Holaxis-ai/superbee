@@ -18,7 +18,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { assertSafeConceptId, pathFromConceptId, FilesystemBackend, probeFilesystemPath, InvalidInputError, type JournaledBackend } from "@superbee/core";
+import { assertSafeConceptId, foldPath, pathFromConceptId, FilesystemBackend, probeFilesystemPath, InvalidInputError, type JournaledBackend } from "@superbee/core";
 
 export type PlaceOutcome =
   | { readonly placed: true }
@@ -154,13 +154,6 @@ export interface ExportReport {
 
 export const ROOT_INDEX = "index.md";
 
-/**
- * One path segment folded as a case-insensitive host equates it: NFKD, then lower-upper-lower
- * (the same fold core's filesystem identity uses), so ß/ss and final-sigma pairs collide too.
- */
-export function fold(segment: string): string {
-  return segment.normalize("NFKD").toLowerCase().toUpperCase().toLowerCase();
-}
 /** Exact native spelling only: metadata probes create no paths and read no bodies. */
 export async function projectionPathExact(folder: string, rel: string): Promise<boolean> {
   if (await parentUnsafe(folder, path.join(folder, ...rel.split("/")))) return false;
@@ -176,7 +169,7 @@ export interface PathCollision {
 }
 
 /**
- * Check relative physical paths using the existing portable projection fold. The caller owns
+ * Check relative physical paths under `foldPath`, the fold the export and the host use. The caller owns
  * its path grammar; this owner checks leaf and ancestor spelling and file/directory ownership.
  * Returns the first collision, or null. Native exact spelling is observed separately.
  */
@@ -186,7 +179,7 @@ export function findFilePathCollision(files: Iterable<string>): PathCollision | 
     const segments = file.split("/");
     for (let depth = 1; depth <= segments.length; depth += 1) {
       const spelling = segments.slice(0, depth).join("/") + (depth < segments.length ? "/" : "");
-      const key = segments.slice(0, depth).map(fold).join("/");
+      const key = foldPath(segments.slice(0, depth).join("/"));
       const seen = spelled.get(key);
       if (seen !== undefined && seen !== spelling) return { first: seen, second: spelling };
       spelled.set(key, spelling);

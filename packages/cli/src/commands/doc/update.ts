@@ -6,10 +6,12 @@ import { parseArgs } from "node:util";
 import { refuseTypedListPatch } from "../../kind-write.js";
 import {
   kindFieldInputValue,
+  kindFieldsUndeclaredFinding,
   loadKinds,
   progressStatusCoordinate,
-  projectKindForAuthoring,
   resolveKindFieldCoordinate,
+  unknownKindFieldNames,
+  type OkfDocument,
 } from "@superbee/core";
 import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, resolveLocalBundleRoute } from "../../bundle.js";
 import { parseDocUpdateTokensOrUsage } from "../../args.js";
@@ -18,6 +20,7 @@ import { assertLeafArity } from "../../positional-arity.js";
 import { CliError } from "../../errors.js";
 import { render, resolveMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
+import { writeFindings, writeFindingsHelp } from "../../write-findings.js";
 import { mutateDoc } from "../../mutate.js";
 import { isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../../legacy-page.js";
 import { boardPostPersistHook } from "../../board-attribution.js";
@@ -326,6 +329,8 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   // validate -> CAS-write-with-bounded-retry itself (the exact shape `link add` proved for this
   // seam) and throws our NOT_FOUND/STALE_HEAD before/after semantic input preparation ever runs on an absent
   // doc, so `existing` below is guaranteed defined.
+  // The version this patch replaced (the winning attempt's): findings are those it introduced.
+  let prior: OkfDocument | undefined;
   if (route) await assertResolvedLocalRouteIdentity(route);
   const result = await mutateDoc({
     bundle,
@@ -348,6 +353,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     input: async (existingDoc, context) => {
       assertStaleAfterEdition(staleAfter, context.okfVersion);
       const existing = existingDoc!;
+      prior = existing;
       const nextFrontmatter: Record<string, unknown> = {};
       if (staleAfter !== undefined) nextFrontmatter.stale_after = staleAfter;
       if (p.title !== undefined) nextFrontmatter.title = p.title;
@@ -395,26 +401,28 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
             { help: `${cliInvocation()} kinds` },
           );
         }
-        const authoringKind = projectKindForAuthoring(context.okfVersion, kind);
         const progressCoordinate = progressStatusCoordinate(context.okfVersion, kind);
-        const declared = [...authoringKind.fields.required, ...authoringKind.fields.optional];
-        const resolvedFields = new Map<string, ReturnType<typeof resolveKindFieldCoordinate>>();
-        for (const field of p.kindFields.keys()) {
-          resolvedFields.set(field, resolveKindFieldCoordinate(context.okfVersion, kind, field));
-        }
-        const unknown = [...resolvedFields.entries()]
-          .filter(([, coordinate]) => coordinate === undefined)
-          .map(([field]) => field);
-        if (unknown.length > 0) {
+        // Core owns which named fields the Kind does not declare; this command words the remedy.
+        const undeclared = kindFieldsUndeclaredFinding(
+          context.okfVersion,
+          kind,
+          unknownKindFieldNames(context.okfVersion, kind, p.kindFields.keys()),
+        );
+        if (undeclared) {
+          const { kind: governs, fields: unknown, declared } = undeclared.details;
           throw new CliError(
             "USAGE",
-            `unknown field(s) for kind '${kind.governs}': ${unknown.join(", ")} ` +
+            `unknown field(s) for kind '${governs}': ${unknown.join(", ")} ` +
               `(declared: ${declared.length > 0 ? declared.join(", ") : "none"}; standard patch flags: ` +
               `title, description, type, body, body-file)` +
-              ` — to ADD a field to the '${kind.governs}' kind: \`${cliInvocation()} kind field ${commandToken(kind.governs)} add <name>\`.` +
+              ` — to ADD a field to the '${governs}' kind: \`${cliInvocation()} kind field ${commandToken(governs)} add <name>\`.` +
               ` Flags address declared fields only; an undeclared key written in frontmatter follows the kind's undeclared_fields setting (warn by default).`,
             { help: `${cliInvocation()} kinds` },
           );
+        }
+        const resolvedFields = new Map<string, NonNullable<ReturnType<typeof resolveKindFieldCoordinate>>>();
+        for (const field of p.kindFields.keys()) {
+          resolvedFields.set(field, resolveKindFieldCoordinate(context.okfVersion, kind, field)!);
         }
         const suppliedByStorageField = new Map<string, string>();
         if (staleAfter !== undefined) suppliedByStorageField.set("stale_after", "stale-after");
@@ -462,11 +470,14 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     // subsequent `--expected-version` compare-and-swap.
     version: result.version,
   };
-  if (result.warnings.length > 0) receipt.warnings = result.warnings;
+  // Post-write findings on a changed write only (see `write-findings.ts`); never fail the write.
+  const findings = result.changed ? await writeFindings(bundle, result.doc, registry, prior) : [];
+  const warnings = [...result.warnings, ...findings];
+  if (warnings.length > 0) receipt.warnings = warnings;
   if (result.guidance.length > 0) receipt.guidance = result.guidance;
   // Legacy-naming nudge (legacy-page.ts): fires on the RESULT doc's type at an authoring moment
   // only — never blocks, never on reads.
   if (isLegacyPageDoc(result.doc.frontmatter)) receipt.hint = LEGACY_PAGE_TYPE_HINT;
-  receipt.help = [`${cliInvocation()} doc read ${commandToken(result.doc.id)}`];
+  receipt.help = [`${cliInvocation()} doc read ${commandToken(result.doc.id)}`, ...writeFindingsHelp(findings)];
   stdout(render(receipt, mode));
 }

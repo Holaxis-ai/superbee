@@ -442,6 +442,9 @@ test("promote .md: an undeclared key warns under --strict by default; undeclared
     await writeFile(file, "---\ntype: Context Note\ntitle: T\nsumary: typo\n---\n\n# Summary\n\nHi.\n");
     const p = await runPromote([file, "--doc-key", "context-notes/u.md", "--strict", "--dir", dir]);
     assert.deepEqual((p.warnings as { code: string; field: string }[]).map((w) => [w.code, w.field]), [["KIND_FIELD_UNDECLARED", "sumary"]]);
+    assert.deepEqual((p.warnings as { details?: unknown }[])[0]!.details, {
+      kind: "Context Note", fields: ["sumary"], declared: ["title", "timestamp", "description", "tags"],
+    });
 
     const convention = path.join(dir, "conventions", "context-note.md");
     const text = await readFile(convention, "utf8");

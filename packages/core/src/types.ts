@@ -424,6 +424,9 @@ export interface StorageBackend {
    * cross-process CAS and retained history are now intentionally different capabilities.
    */
   capabilities?(): StorageCapabilities;
+
+  /** Derived authored links and endpoint titles at the filesystem scan's current observations. */
+  relationshipSources?(options?: import("./document-scan.js").QueryOptions): Promise<import("./relationships.js").RelationshipSource[] | undefined>;
 }
 
 /** Options for {@link initBundle}. */

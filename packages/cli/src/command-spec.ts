@@ -515,8 +515,8 @@ export const CLI_COMMAND_GROUPS = [
       },
       {
         id: "recipeAdd",
-        leaves: [publicLeaf("recipeAdd", "recipe add", one, 17, DIR_RECIPE_ROOT_SURFACE)],
-        usage: "recipe add <name-or-path> [--actor <name>] [--dir <path>]",
+        leaves: [publicLeaf("recipeAdd", "recipe add", one, 17, { ...DIR_RECIPE_ROOT_SURFACE, flags: pathFlags(...BUNDLE_DIR, { flag: "index", role: "ingress" }) })],
+        usage: "recipe add <name-or-path> [--index <path-or-https-url> [--cookbook]] [--actor <name>] [--dir <path>]",
         summary: "Apply a recipe's content-free definitions — Kinds plus optional declared References and Views — idempotently",
       },
       {

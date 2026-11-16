@@ -125,9 +125,12 @@ export interface HostedCarrier {
 export class HostedAnswerTooLarge extends Error {
   override readonly name = "HostedAnswerTooLarge";
   readonly maximum: number;
-  constructor(maximum: number) {
+  /** The route that answered, when the caller that sent it names it (the port runner does). */
+  readonly route?: string;
+  constructor(maximum: number, route?: string) {
     super(`the answer is larger than ${maximum} bytes`);
     this.maximum = maximum;
+    if (route !== undefined) this.route = route;
   }
 }
 

@@ -44,7 +44,7 @@ import {
 import { DocumentNotFoundError, mutateDocument, prepareDocumentMutationCandidate, type DocumentMutationCandidate } from "./document-mutation.js";
 import { readManyExisting } from "./engine.js";
 import { FilesystemIdentityAliasError, InvalidInputError, OkfActorError } from "./errors.js";
-import { foldIdentityPath } from "./identity-fold.js";
+import { foldPath } from "./path-fold.js";
 import { loadKinds } from "./kinds-load.js";
 import { CONVENTIONS_PREFIX, type KindRegistry } from "./kinds.js";
 import { emitLinkHref } from "./link-emit.js";
@@ -335,7 +335,7 @@ async function readSource(binding: BundleBinding): Promise<SourceSnapshot> {
   const docs = new Map(results.map((result) => [result.doc.id, result]));
   const ids = new Set<ConceptId>([...docs.keys(), ...malformed.keys()]);
   const dependencies = parseDependencies(docs.get(DEPENDENCIES_DOC_ID)?.doc ?? null, { selfBundleId: binding.identity });
-  const folds = new Set([...ids].map(foldIdentityPath));
+  const folds = new Set([...ids].map(foldPath));
   return { ids, folds, docs, malformed, dependencies, registry: await loadKinds(bundle), bundle };
 }
 
@@ -443,7 +443,7 @@ function planLink(
   const present = ctx.source.ids.has(resolved);
   // A spelling variant of a source id names no document under the exact-identity rule; qualifying
   // it would send a reader to an id the source bundle refuses to serve.
-  if (!present && ctx.source.folds.has(foldIdentityPath(resolved))) return keep("case_variant", { source_target: resolved });
+  if (!present && ctx.source.folds.has(foldPath(resolved))) return keep("case_variant", { source_target: resolved });
   const withFragment = fragment === undefined ? {} : { fragment };
   const mapped = ctx.mapping.get(resolved);
   if (mapped !== undefined) {
@@ -551,14 +551,14 @@ function normalizePrefix(prefix: string | undefined): string | undefined {
   return trimmed === "" ? undefined : trimmed;
 }
 
-/** Every planned id must be safe, absent, unique and distinct under the filesystem identity fold. */
-const PROTECTED_TARGET_FOLDS = new Set([BUNDLE_NAME_DOC_ID, DEPENDENCIES_DOC_ID].map(foldIdentityPath));
-const CONVENTIONS_FOLD = `${foldIdentityPath(CONVENTIONS_PREFIX.replace(/\/$/, ""))}/`;
+/** Every planned id must be safe, absent, unique and distinct under `foldPath`. */
+const PROTECTED_TARGET_FOLDS = new Set([BUNDLE_NAME_DOC_ID, DEPENDENCIES_DOC_ID].map(foldPath));
+const CONVENTIONS_FOLD = `${foldPath(CONVENTIONS_PREFIX.replace(/\/$/, ""))}/`;
 
 /**
  * Throw {@link InvalidInputError} unless an import may create `id`: a safe, unreserved concept id
  * that is not the target's own identity or dependency declaration and not a Kind convention
- * (installing Kinds is not part of v1). Compared under the identity fold, so a case or
+ * (installing Kinds is not part of v1). Compared under `foldPath`, so a case or
  * normalization variant of a protected id is refused too.
  */
 function assertImportableTargetId(id: ConceptId, newTarget?: { exists: (candidate: ConceptId) => boolean }): void {
@@ -567,7 +567,7 @@ function assertImportableTargetId(id: ConceptId, newTarget?: { exists: (candidat
   // and any create its resume still performs meets the rule in mutateDocument.
   if (newTarget) assertCanonicalNewDocumentId(id, newTarget.exists);
   if (isReservedFile(pathFromConceptId(id))) throw new InvalidInputError("index.md and log.md are reserved files, not documents");
-  const fold = foldIdentityPath(id);
+  const fold = foldPath(id);
   if (PROTECTED_TARGET_FOLDS.has(fold)) throw new InvalidInputError("it is the bundle's own identity or dependency declaration");
   if (fold.startsWith(CONVENTIONS_FOLD)) throw new InvalidInputError("an import never installs a Kind convention");
 }
@@ -579,11 +579,11 @@ function checkTargetIds(
 ): void {
   const folds = new Map<string, string>();
   const remember = (id: ConceptId): Array<[string, string]> => {
-    const keys: Array<[string, string]> = [[`${foldIdentityPath(id)}.md`, `${id}.md`]];
+    const keys: Array<[string, string]> = [[`${foldPath(id)}.md`, `${id}.md`]];
     const segments = id.split("/");
     for (let i = 1; i < segments.length; i++) {
       const dir = segments.slice(0, i).join("/");
-      keys.push([`${foldIdentityPath(dir)}/`, `${dir}/`]);
+      keys.push([`${foldPath(dir)}/`, `${dir}/`]);
     }
     return keys;
   };

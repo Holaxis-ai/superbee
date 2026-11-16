@@ -54,6 +54,7 @@ import { assertAuthoredLegacyTimestamp } from "../legacy-timestamp.js";
 import {
   loadKinds,
   kindFieldInputValue,
+  kindFieldsUndeclaredFinding,
   kindInputFieldNames,
   progressStatusCoordinate,
   projectKindForAuthoring,
@@ -71,6 +72,7 @@ import { parseLeafOrUsage, parseNewSchemaPhaseOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
+import { writeFindings, writeFindingsHelp } from "../write-findings.js";
 import { mutateDoc } from "../mutate.js";
 import { kindDeclaresAnything, kindInstanceCandidate } from "@superbee/core/kind-authoring";
 import { isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../legacy-page.js";
@@ -96,6 +98,8 @@ The kind's declared body 'sections' (if any) are scaffolded as empty '# Heading'
 'path' prefix (if any) is prepended onto <id> unless <id> already carries it. Validation is
 STRICT: a missing required field, a disallowed enum value, or a value that does not match the
 field's declared type (fields.types) rejects the write (exit 2) rather than writing-with-a-warning.
+Links in the body that will not register, or whose target does not exist yet, are named in the
+receipt's warnings (LINK_NOT_RECOGNIZED, LINK_TARGET_ABSENT) without refusing the create.
 A typed number, integer, latitude, longitude, or boolean field is stored as that YAML type
 (--latitude 43.1 stores the number 43.1; pass a negative number as --longitude=-77.4); a
 string-list or https-url-list field is always stored as a list, even from one flag. An integer
@@ -462,8 +466,6 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   // Phase 2 — strict, kind-aware, AUTHORITATIVE parse. Core strips every centrally-reserved kind
   // field before this point (including `body` and `body-file`); only `actor` and `link` remain
   // command controls with intentional kind-aware behavior, so they are excluded here explicitly.
-  const authoringKind = projectKindForAuthoring(okfVersion, kind);
-  const declaredFields = [...authoringKind.fields.required, ...authoringKind.fields.optional];
   const fieldNames = kindInputFieldNames(okfVersion, kind).filter((f) => f !== "actor" && f !== "link");
   const fieldOptions = Object.fromEntries(
     fieldNames.map((f) => [f, { type: "string", multiple: true } as const]),
@@ -487,13 +489,16 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
       if ((err as { code?: unknown } | null)?.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
         const raw = /'([^']+)'/.exec((err as Error).message)?.[1] ?? "";
         const field = raw.replace(/^--?/, ""); // node quotes the raw '--name'; strip the dashes
+        // The parser already decided the flag is not a field; core supplies the structured
+        // finding (the Kind and its declared fields) and this command words the remedy.
+        const { kind: governs, declared } = kindFieldsUndeclaredFinding(okfVersion, kind, [field])!.details;
         throw new CliError(
           "USAGE",
-          `unknown field(s) for kind '${kind.governs}': ${field}` +
-            (declaredFields.length > 0
-              ? ` (declared: ${declaredFields.join(", ")})`
+          `unknown field(s) for kind '${governs}': ${field}` +
+            (declared.length > 0
+              ? ` (declared: ${declared.join(", ")})`
               : " (this kind declares no fields)") +
-            ` — to ADD it to the '${kind.governs}' kind: \`${cliInvocation()} kind field ${commandToken(kind.governs)} add ${commandToken(field)}\` (then re-run).`,
+            ` — to ADD it to the '${governs}' kind: \`${cliInvocation()} kind field ${commandToken(governs)} add ${commandToken(field)}\` (then re-run).`,
           { help: `${cliInvocation()} kinds` },
         );
       }
@@ -663,7 +668,11 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   const conventionWarnings = registry.warnings.filter((warning) =>
     warning.message.startsWith(conventionWarningPrefix),
   );
-  if (conventionWarnings.length > 0) receipt.warnings = conventionWarnings;
+  // Post-write findings on the body `new` wrote (see `write-findings.ts`), before any --link: each
+  // --link entry reports its own target on its own row. Advisory; never fails the create.
+  const findings = await writeFindings(bundle, saved, registry, undefined);
+  const warnings = [...conventionWarnings, ...findings];
+  if (warnings.length > 0) receipt.warnings = warnings;
   if (result.guidance.length > 0) receipt.guidance = result.guidance;
   // Surface the path-prefixing so it isn't silent: an agent that passed a bare id (or a
   // differently-prefixed one) sees the final id it actually got (cold-start study: C4 nearly
@@ -740,7 +749,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   // outbound = this kind's own). Capped per direction; a bundle declaring no links adds nothing.
   // An outbound type already satisfied via --link above is dropped from its own hint — suggesting
   // a follow-up `link add` for a relationship this very command just established would be noise.
-  const help = [`${cliInvocation()} doc read ${commandToken(saved.id)}`];
+  const help = [`${cliInvocation()} doc read ${commandToken(saved.id)}`, ...writeFindingsHelp(findings)];
   const HINTS_PER_DIRECTION = 3;
   for (const { source, linkType } of inboundLinkDecls(registry, kind).slice(0, HINTS_PER_DIRECTION)) {
     help.push(

@@ -21,6 +21,7 @@ import { hostedBundleReferenceText } from "./reference.js";
 
 import { CliError, type CliErrorCode } from "../errors.js";
 import type { FolderConflict, HeldFile } from "./sync-scan.js";
+import type { HostedRowFindings } from "../write-findings.js";
 
 /** Recorded refusals that say the bundle was busy, not that the content is wrong: requeued under a fresh identity, or folded into a later edit. The working copy owns the set. */
 export { BUSY_REFUSAL_CODES };
@@ -36,6 +37,12 @@ export interface SyncRow {
   /** The committed version for a committed row; null otherwise. */
   readonly version: string | null;
   readonly message: string;
+  /** On a committed row: what the host reported with the write, in a local receipt's terms (`write-findings.ts`). */
+  readonly warnings?: HostedRowFindings["warnings"];
+  readonly guidance?: HostedRowFindings["guidance"];
+  /** On a refused row: the host's findings, as data (its message names them too). */
+  readonly diagnostics?: HostedRowFindings["diagnostics"];
+  readonly input_issues?: HostedRowFindings["input_issues"];
 }
 
 const SIGN_IN_CODES: ReadonlySet<string> = new Set(["AUTH_REQUIRED", "UNAUTHORIZED", "FORBIDDEN"]);
@@ -134,6 +141,22 @@ export interface RowInputs {
   readonly deferred?: ReadonlySet<string>;
   /** The bundle's front page (the root `index.md`), synced by its own step: its row, if any. */
   readonly root?: SyncRow;
+  /** What the host reported with this run's write of each document ({@link HostedRowFindings}). */
+  readonly findings?: ReadonlyMap<string, HostedRowFindings>;
+}
+
+/** A row with the host's findings on its write: a commit's warnings and guidance, a refusal's diagnostics and input issues. */
+function withFindings(row: SyncRow, findings: HostedRowFindings | undefined): SyncRow {
+  if (!findings) return row;
+  if (row.state === "committed" && row.reason === "committed") {
+    const { warnings, guidance } = findings;
+    return { ...row, ...(warnings ? { warnings } : {}), ...(guidance ? { guidance } : {}) };
+  }
+  if (row.state === "refused") {
+    const { diagnostics, input_issues } = findings;
+    return { ...row, ...(diagnostics ? { diagnostics } : {}), ...(input_issues ? { input_issues } : {}) };
+  }
+  return row;
 }
 
 /** One row per document, in a stable order: not-committed rows first, then by id. */
@@ -213,7 +236,7 @@ export function buildRows(inputs: RowInputs): SyncRow[] {
     out.set(file.id, { id: file.id, state: "held", reason: file.reason, version: null, message: file.standalone ? file.message : `${file.message}. The file stays as it is and nothing is sent.` });
   }
   const order = (row: SyncRow) => (row.state === "committed" ? 1 : 0);
-  return [...out.values()].sort((a, b) => order(a) - order(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return [...out.values()].map((row) => withFindings(row, inputs.findings?.get(row.id))).sort((a, b) => order(a) - order(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
 export function countRows(rows: readonly SyncRow[]): Record<RowState, number> {

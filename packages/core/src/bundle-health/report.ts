@@ -16,9 +16,7 @@ import { listBlobs, query, readBundleOkfVersion } from "../bundle-ops.js";
 import { createLocalResolver, resolveQualifiedLinks, type BundleBinding, type UnresolvedReason } from "../cross-bundle.js";
 import {
   BUNDLE_NAME_DOC_ID,
-  BUNDLE_NAME_DOC_TYPE,
   DEPENDENCIES_DOC_ID,
-  DEPENDENCIES_DOC_TYPE,
   declaredBundleId,
   parseDependencies,
   type ParsedDependencies,
@@ -35,7 +33,7 @@ import {
 } from "../kinds.js";
 import { inspectKindDeprecatedUsage, type DeprecatedUsage } from "../kind-deprecation.js";
 import { loadKinds } from "../kinds-load.js";
-import { collectLinkDeclarations, localEdgeQualifiedDeclaration, qualifiedEdgeViolation } from "../link-types.js";
+import { collectLinkDeclarations, localEdgeQualifiedDeclaration, localEdgeViolation, qualifiedEdgeViolation } from "../link-types.js";
 import { parseLinksFromDoc } from "../links.js";
 import { isOkfLifecycleStatus } from "../okf-lifecycle.js";
 import { invalidOkfTimestamps } from "../okf-timestamps.js";
@@ -52,7 +50,7 @@ import { isQualifiedHref, parseQualifiedLinks, type QualifiedLink, type Qualifie
 import type { Bundle, OkfDocument } from "../types.js";
 import type { ValidationWarning } from "../validation.js";
 import { trustTierCounts, type TrustTierCounts } from "../verification.js";
-import { isLegacyPageDoc } from "./legacy-page.js";
+import { isGraphDefinitionDocument } from "../system-documents.js";
 
 /**
  * Binds declared dependencies: called once, after every read has completed and `docs/dependencies`
@@ -267,20 +265,6 @@ function diagnosticValue(value: unknown): unknown {
   }
 }
 
-/**
- * Documents that define the bundle's operating model or identity rather than participating as
- * concept instances. Their lack of inbound concept links is intentional, so they are never orphans.
- */
-function isGraphDefinition(doc: OkfDocument): boolean {
-  const type = docType(doc);
-  return type === "Convention" ||
-    isPageTypeName(type) ||
-    isLegacyPageDoc(doc.frontmatter) ||
-    (type === "Reference" && doc.id.startsWith("references/")) ||
-    (type === BUNDLE_NAME_DOC_TYPE && doc.id === BUNDLE_NAME_DOC_ID) ||
-    (type === DEPENDENCIES_DOC_TYPE && doc.id === DEPENDENCIES_DOC_ID);
-}
-
 function okfV02WorkflowStatusCollisions(registry: KindRegistry, docs: OkfDocument[]): StatusFieldRow[] {
   const affectedByKind = new Map<string, number>();
   const observedValuesByKind = new Map<string, Set<string>>();
@@ -407,21 +391,16 @@ export async function bundleHealth(bundle: Bundle, options: BundleHealthOptions 
       }
 
       // A resolved edge whose text is a declared link type its source or target does not conform to.
-      const declared = linkTypeDeclarations.get(l.text);
-      if (declared && declared.length > 0 && !qualifiedDeclaration) {
-        const sourceType = docType(doc);
-        const targetType = docType(docsById.get(l.to)!);
-        const matched = declared.find((d) => d.governs === sourceType) ?? declared[0]!;
-        const sourceOk = declared.some((d) => d.governs === sourceType);
-        const targetOk = targetType === matched.target;
-        if (!sourceOk || !targetOk) {
-          linkTypeViolations.push({
-            from: doc.id,
-            to: l.to,
-            text: l.text,
-            expected: `${matched.governs} -> ${matched.target}`,
-          });
-        }
+      const matched = qualifiedDeclaration
+        ? null
+        : localEdgeViolation(linkTypeDeclarations.get(l.text), docType(doc), docType(docsById.get(l.to)!));
+      if (matched) {
+        linkTypeViolations.push({
+          from: doc.id,
+          to: l.to,
+          text: l.text,
+          expected: `${matched.governs} -> ${matched.target}`,
+        });
       }
     }
   }
@@ -522,7 +501,7 @@ export async function bundleHealth(bundle: Bundle, options: BundleHealthOptions 
   const orphans: DocTypeRow[] = [];
   if (inbound.size > 0) {
     for (const doc of docs) {
-      if (!inbound.has(doc.id) && !outbound.has(doc.id) && !isGraphDefinition(doc)) {
+      if (!inbound.has(doc.id) && !outbound.has(doc.id) && !isGraphDefinitionDocument(doc)) {
         orphans.push({ id: doc.id, type: docType(doc) });
       }
     }

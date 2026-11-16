@@ -40,12 +40,13 @@ messages from the exact current frame and validates every request before touchin
 | type | bridge | payload | reply `result` |
 | --- | --- | --- | --- |
 | `hello` | v0 | none | `{ bundle: { root, name }, mode, protocol: "v0", grant, host }` |
-| `query` | v0 | `{ params: { type?, prefix?, field?, open?, limit?, order? } }` | `{ rows: DocHead[], count }` |
+| `query` | v0 | `{ params: { type?, prefix?, field?, open?, limit?, order? } }` | `{ rows: DocHead[], count, more? }` |
 | `read` | v0 | `{ docId }` | `{ id, frontmatter, body }` |
 | `read-versioned` | v1 | `{ docId }` | `{ doc: { id, frontmatter, body }, version }` |
 | `render-document` | v0 | `{ docId }` | `{ document: { id, version }, html, bounded }` |
 | `edges` | v0 | `{ params: { from?, to?, text? } }` | `{ edges: { from, to, text }[], count }` |
 | `graph` | v0 | `{ includeBodies? }` | `{ okfVersion, documents, relationships, counts }` |
+| `relationships` | v0 | `{ docId, cursor? }` | `{ documentId, rows, cursor?, skipped? }` |
 | `subscribe` | v0 | none | `{ ok: true }`, then `change` events |
 | `host` | v0 | `{ capability, input? }` | `{ capability, output }` |
 | `open-page` | v0 | `{ pageId }` (`id` optional) | none on success; an error reply when refused |
@@ -99,22 +100,31 @@ name the shell shows, never an internal identifier. `mode` is host-specific (`di
 
 `params` accepts only `type`, `prefix`, `field`, `open`, `limit` and, on a host that declares
 `query.newest`, `order`. Any other key, or `order` on a host without `query.newest`, answers
-`USAGE`.
+`USAGE`. So does a feature the host does not declare: a `field` with more than one value on a host
+without `query.field-or`, and `open: true` on a host without `query.open`. A host never answers
+such a query by ignoring the feature.
 
 - `type` (string, at most 256 bytes, trimmed, nonempty) and `prefix` (string, at most 1024 bytes,
   trimmed, nonempty) are storage-side facets: an exact frontmatter `type` and a bundle-relative id
   prefix.
 - `limit` is a safe integer from `0` to the host's `limits.query`; `0` or absence means the host's
-  maximum. `count` is the number of rows that matched after `field` and `open` filtering and before
-  the cap, matching CLI `list`. A host without `query.count` returns `count` equal to the rows it
-  returned.
+  maximum, and a larger value answers `USAGE`. `count` is the number of rows that matched after
+  `field` and `open` filtering and before the cap, matching CLI `list`. A host without
+  `query.count` returns `count` equal to the rows it returned.
+- `more` is optional. `more: true` means the cap (the request's `limit`, or `limits.query`) may
+  have cut matching rows from the reply; absent means the reply holds every match. A host with
+  `query.count` sets it exactly when `count` is above the rows returned. A host without
+  `query.count` cannot give a total, so it sets it whenever it returned as many rows as the cap
+  allowed. A View shows a visible "showing the first N" note when `more` is true or `count` is above
+  the rows it got.
 - `field` is one filter string, at most 1024 bytes, trimmed, nonempty. Its exact grammar is the one
   `applyQuerySelectionFilters` in `@superbee/core` applies:
   1. Split at the first `=`. If there is no `=`, or the key before it is empty, the filter is
      ignored and no rows are removed.
   2. `key` is the text before `=`, trimmed. `values` is the text after `=`, split on `,`, each
      value trimmed, empty values dropped. An empty `values` list matches nothing.
-  3. A row matches when any value matches (OR). For every key except `progress_status` the row's
+  3. A row matches when any value matches (OR). More than one value needs `query.field-or`; a host
+     without it answers `USAGE`. For every key except `progress_status` the row's
      raw frontmatter value is coerced: absent or `null` becomes an empty list, an array stays a
      list, a scalar becomes a one-element list, every element becomes a string, and the value must
      be a member. Scalars and arrays therefore use the same membership rule as CLI `list`.
@@ -124,7 +134,8 @@ name the shell shows, never an internal identifier. `mode` is host-specific (`di
 - `open: true` drops terminal rows exactly like CLI `list --open`: a row is dropped when the Kind
   convention governing its `type` declares `fields.terminal` and the row's own value for such a
   field is in the terminal set. A row with no governing Kind is kept; a bundle whose Kinds declare
-  no terminal set drops nothing. `open: false` is accepted and means absent.
+  no terminal set drops nothing. `open: false` is accepted and means absent. `open: true` needs
+  `query.open`; a host without it answers `USAGE`.
 - `order` is `"id"` or `"newest"`; any other value answers `USAGE`. It decides the row order and
   therefore which rows a capped reply keeps:
   - `"id"`, or absence, orders rows by canonical id in UTF-16 code-unit order through
@@ -151,7 +162,7 @@ field an edition selects. The same projection applies to `read` and `read-versio
 
 Both return one canonical document with the logical Kind projection above. `read-versioned` also
 returns the content-addressed `version` from the same read; use it as `expectedVersion` for a
-proposal. A body above 1 MiB answers `TOO_LARGE`. `read-versioned` is a read: every host, including
+proposal. A missing document answers `NOT_FOUND`. A body above 1 MiB answers `TOO_LARGE`. `read-versioned` is a read: every host, including
 read-only hosts, answers it. The OSS shells validate v1 envelopes before forwarding them: the `id`
 is at most 64 characters and `docId` must be one canonical bundle-relative id (no leading slash,
 backslash, empty, `.` or `..` segments).
@@ -183,6 +194,23 @@ is a face over). `params` accepts only `from`, `to` and `text`:
 Backlinks are `edges({ to: docId })`; a container's contents are `edges({ from: itemId, text:
 "contains" })`. A source linking to one target twice with different text yields two rows. More rows
 than `limits.edges` answers `TOO_LARGE`.
+
+### `relationships`
+
+Read one document's neighborhood in local browser and MCP Views. It uses the same read grant as
+`edges`. The request is independent of the whole graph limits. Each page contains up to 30 rows
+with `direction`, `documentId` (the neighbor), `label`, `labelKey` and `title` (or `null`).
+The page omits self-links and missing or skipped endpoints, and groups repeated occurrences with
+the same direction, neighbor and full label. Rows sort by direction (incoming first), then
+neighbor ID in Unicode code point order, then the stable key for the full label. Display labels
+and titles contain at most 256 UTF-16 code units.
+
+Send the returned `cursor` unchanged with the same `docId` to continue. The absence of a cursor
+ends the read. Each page sees current files; start again to include edits that moved before the
+cursor. A missing subject gives `NOT_FOUND`. Use the `relationships` capability in `hello` to
+discover whether the host offers this request. Local file reads reuse cached link facts on
+recognized Linux filesystems and the verified APFS system data volume on macOS. Files on other
+volumes are read from Markdown each time.
 
 ### `graph`
 
@@ -253,9 +281,10 @@ Errors:
 - `TOO_LARGE`: one of the three limits above, or a document body above 1 MiB with `includeBodies`.
 - `RUNTIME`, `REVOKED`: as for every other request.
 
-Cost: `graph` performs one head scan for documents and one full-bundle scan inside `queryEdges`
-for relationships; with `includeBodies` it additionally reads each document so that a row's body
-and version come from one read. The host keeps no cache on a View's behalf. Portal's
+Cost: `graph` scans document heads and calls `queryEdges` for relationships. Local filesystem
+bundles reuse the relationship index for edges. With `includeBodies`, the request also reads each
+document so that a row's body and version come from one read. The host keeps no cache on a View's
+behalf. Portal's
 `createPublicationBridge` answers `graph` through the shared service with no publication-specific
 code.
 
@@ -346,8 +375,8 @@ Names a host may list in `hello.host.capabilities`. `BRIDGE_HOST_CAPABILITIES` i
 | name | means | input and output |
 | --- | --- | --- |
 | `query.kind-projection` | `query`, `read` and `read-versioned` rows carry logical Kind fields beside raw coordinates | none (a query feature) |
-| `query.field-or` | `field` honors comma-separated OR values | none |
-| `query.open` | `open: true` drops Kind-declared terminal rows | none |
+| `query.field-or` | `field` honors comma-separated OR values | none; a host without it refuses a `field` with more than one value with `USAGE` |
+| `query.open` | `open: true` drops Kind-declared terminal rows | none; a host without it refuses `open: true` with `USAGE` |
 | `query.count` | `count` is the total matched before the cap | none |
 | `query.newest` | `query` accepts `order: "id" \| "newest"` (newest meaningful change first, then id in code-unit order) | none; a host without it refuses `order` with `USAGE` like any unknown key |
 | `edges` | the `edges` request is answered | none |
@@ -355,20 +384,26 @@ Names a host may list in `hello.host.capabilities`. `BRIDGE_HOST_CAPABILITIES` i
 | `open-page` | `open-page` navigates the shell | none |
 | `subscribe-deltas` | `change` events carry real deltas | none |
 | `graph` | the `graph` request is answered, bounded by `limits.graphDocuments` and `limits.graphRelationships` | none (a request); declared by every OSS host |
+| `relationships` | the `relationships` request is answered, with up to 30 neighbors per page | none (a request); declared by local browser and MCP hosts |
 | `graph.model` | `graph` also returns `model` and `definitions` | reserved; no OSS host declares it until the model shape has an owner |
 | `record.open` | the host opens its own reader for one document | `host` input `{ documentId }`; output `{ opened: true }`; `NOT_FOUND` for a missing document |
 | `frame.resize` | the host sizes the View's frame to the reported document height, bounded by `host.frame.maxHeight` | `host` input exactly `{ height }` (a finite CSS pixel count, at least 0; no other keys); output `{ height }` as applied after the host's floor, `maxHeight` and damping (see `host.frame`); `USAGE` for any other input. Answered at once; touches no bundle data, so a host may answer it for any launch it admits. Declared only with `host.frame` |
 
-A host without a query capability still answers `query`; it just honors less. The exception is
-`order`, which a host without `query.newest` refuses with `USAGE`. A host without `edges`,
-`graph` or `render-document` answers those requests with `FORBIDDEN`.
+Request-side query features are refused, never ignored. A host without `query.newest`,
+`query.field-or` or `query.open` refuses the param that needs it (`order`, a multi-value `field`,
+`open: true`) with `USAGE` and answers every other query. Two reply-side features cannot be
+refused, because no request names them: without `query.kind-projection` rows carry only raw
+frontmatter (no logical fields such as `progress_status`), and without `query.count` `count` is
+the rows returned. A View reads `hello` for those two. A host without `edges`, `graph`,
+`relationships` or `render-document` answers those requests with `FORBIDDEN`.
 
 ## Conformance levels
 
 A host states which query features it honors by listing the five `query.*` capabilities, and its
 default and maximum limit through `limits.query`. OSS declares all five with a maximum of 500 rows
-and `0` or absence meaning 500. A host may declare a subset; the conformance fixture View reports
-what it observed so the declaration can be checked against behavior.
+and `0` or absence meaning 500. A host may declare a subset and refuses what it leaves out (see
+above); the conformance fixture View judges each row against the declaration, so a host that
+declares a feature it does not honor, or ignores one it does not declare, fails a row.
 
 | feature | OSS web | OSS MCP | publication (Portal) | hosted (declared in its own repository) |
 | --- | --- | --- | --- | --- |
@@ -380,6 +415,7 @@ what it observed so the declaration can be checked against behavior.
 | `limits.query` | 500 | 500 | 500 | its `hello` says |
 | `edges` | yes | yes | yes | its `hello` says |
 | `graph` | yes, without `model` | yes, without `model` | yes, through the shared service | its `hello` says |
+| `relationships` | yes | yes | no | its `hello` says |
 | `graph.model` | no | no | no | its `hello` says |
 | `render-document` | yes | yes | yes, pre-rendered from the snapshot | its `hello` says |
 | `open-page` | yes | yes, consumes the source launch | yes when the embedding client navigates | its `hello` says |
@@ -394,12 +430,12 @@ author, host by host:
 
 | code | meaning | OSS web and MCP | publication (Portal) | hosted |
 | --- | --- | --- | --- | --- |
-| `USAGE` | the request is malformed: wrong keys, bounds or value shapes | before any bundle work; `id` echoed only when it was a bounded string | same | `invalid_input` from the parent |
+| `USAGE` | the request is malformed: wrong keys, bounds or value shapes, or a query feature the host does not declare | before any bundle work; `id` echoed only when it was a bounded string | same | `invalid_input` from the parent |
 | `FORBIDDEN` | not offered here: no grant, an unknown launch, a write on a read-only host, a request type or capability the host does not offer | `access: none` data requests; unknown or expired launch; unsupported types | every write; unsupported types; undeclared extensions | `unsupported_operation`; anything outside the slot allowlist |
 | `REVOKED` | the View changed while the request ran; reload | entry bytes or registration changed mid-request | never (immutable snapshot) | `denied` from the parent (grant lost, binding changed) |
 | `TOO_LARGE` | the answer exceeded a declared limit; narrow the request | reply above `limits.replyBytes`, body above 1 MiB, edges above `limits.edges`, a graph above `limits.graphDocuments` or `limits.graphRelationships` | same | size errors from the parent |
 | `RUNTIME` | the host failed; retry later or show "unavailable" | storage or renderer failure | same | `unavailable` from the parent |
-| `NOT_FOUND` | the named document or View target does not exist | `render-document`, `open-page` | same | `document_not_found`; `record.open` on a missing document |
+| `NOT_FOUND` | the named document or View target does not exist | `read`, `read-versioned`, `render-document`, `relationships`, `open-page` | same | `document_not_found`; `record.open` on a missing document |
 
 Legacy note: the MCP frame answers an `UNSUPPORTED` error locally when its host tool call fails; a
 View treats any unlisted code like `RUNTIME`.
@@ -551,22 +587,72 @@ self-contained entry (`views/conformance.html`) that embeds the client above and
 `hello`, `query`, `query-newest` (a `query` with `order: "newest"`, skipped unless the host declares
 `query.newest`), `read`, `read-versioned`, `edges`, `graph`, `render-document`, `subscribe`,
 `host` (an undeclared capability, expecting `FORBIDDEN`), `action.propose`, `burst` (12 `read`
-requests in flight at once) and `open-page` (a registry id that must not exist). A host may cap
-in-flight requests, but it must queue or refuse the excess with an error reply, never drop it, so
-the `burst` row expects all 12 results. It renders one table row per request with the request
-name, a status (`answered`, `refused`, `sent`, `skipped` or `failed`) and a one-line summary, and
-exposes the same rows on `window.__conformance` for harnesses. The View names its revision in
-`<meta name="superbee-conformance-revision">`; a host that byte-copies it records that value with
-its result. `packages/view-runtime/test/conformance.test.mjs` runs the entry against the OSS
-service over a fixture bundle and asserts every row.
+requests in flight at once), then the revision 5 and 6 rows, and last `open-page` (a registry id
+that must not exist). A host may cap in-flight requests, but it must queue or refuse the excess
+with an error reply, never drop it, so the `burst` row expects all 12 results.
+
+The rows added in revisions 5 and 6 are judged against the host's own `hello`. Each needs the
+bundle described under "Running it on another host"; "matched" below is `count` on a host with
+`query.count` and the rows of a `limit: 0` reply otherwise.
+
+- `relationships` for the first document: answered when declared, `FORBIDDEN` otherwise;
+- `query-over-limit`, a `query` with `limit` one above `limits.query`: `USAGE` on every host;
+- `query-field-or`, `field: "type=conformance-missing-type,<first document's type>"`: when
+  `query.field-or` is declared, at least one row, every row of that type, and as many matched as
+  `type: <that type>`; the missing value comes first, so honoring only the first value finds
+  nothing, and dropping `field` returns rows of the bundle's other type. `USAGE` otherwise;
+- `query-open`, `open: true`: when `query.open` is declared, fewer matched than the plain query,
+  because the bundle holds a terminal document. `USAGE` otherwise;
+- `query-more` (revision 6), `limit: 1`: one row and `more: true` on every host, since the bundle
+  holds at least two documents; with `query.count`, `count` above 1;
+- `read-missing` and `read-versioned-missing` of `docs/conformance-missing-document`: `NOT_FOUND`
+  on every host.
+
+It renders one table row per request with the request name, a status (`answered`, `refused`,
+`sent`, `skipped` or `failed`) and a one-line summary, and exposes the same rows on
+`window.__conformance` for harnesses. The View names its revision in
+`<meta name="superbee-conformance-revision">`. `packages/view-runtime/test/fixtures/view-conformance-expected.json`
+lists every row in order with the status it must have when the host declares the row's capability
+and when it does not; no row may be `failed`. `packages/view-runtime/test/conformance.test.mjs`
+runs the entry against the OSS service over fixture bundles, with full and reduced declarations,
+and holds every run to that table.
+
+### Running it on another host
+
+Another host runs the same bytes and the same table, mirrored from this repository at a pinned
+commit, the way the hosted sync fixtures are mirrored in the other direction:
+
+1. Copy, byte for byte, `examples/views/conformance/views/conformance.html`,
+   `examples/views/conformance/views-registry/conformance.md` and
+   `packages/view-runtime/test/fixtures/view-conformance-expected.json` from one commit on `main`.
+2. Record that commit's full SHA beside the copies, and check in CI that the copies equal the files
+   at the pinned commit and that the pin never moves back.
+3. Install the View as `views-registry/conformance` with `access: bundle-read` over a bundle that
+   holds, as documents `query` returns:
+   - at least two and at most `limits.query` documents;
+   - a first document by id with a nonempty `type` without a comma, and one document of another
+     `type`;
+   - a Kind declaring `fields.terminal` for one type, and at least one document of that type whose
+     value is in the terminal set.
+
+   The table's `bundle` field repeats these. `conventions/doc`, `docs/alpha`, `docs/beta` and a
+   closed `docs/gamma` in `conformance.test.mjs` are one such bundle.
+4. Run it in the host's own frame, wait for `window.__conformance.done`, and assert `revision` and
+   each row against the table for the capabilities the host's `hello` declared.
+
+To take a new revision, bump the pin to a later commit and copy the three files again.
 
 ## Versioning
 
 `bridge: "v0"` and `"v1"` name wire envelopes, not a semantic version. Additions in this document
 are compatible with every existing v0 View: new reply fields (`host`), new request types (`graph`,
 `host`), new optional request params behind a capability (`order`) and new error semantics for
-requests that were never valid before. A change that alters an existing reply or request shape
-needs a new envelope value and a change here first.
+requests that were never valid before. Refusing an undeclared query feature with `USAGE` changes
+an answer only on a host that never honored that feature. Answering `NOT_FOUND` instead of
+`RUNTIME` for a `read` or `read-versioned` of a missing document narrows the code of an existing
+error reply; older hosts answer `RUNTIME`, so a View that must run on them treats `RUNTIME` from
+`read` as possibly missing. A change that alters an existing reply
+or request shape needs a new envelope value and a change here first.
 
 ### Body proposals
 

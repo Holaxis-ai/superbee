@@ -1,5 +1,10 @@
 import {
   compareCodeUnits,
+  assertSafeConceptId,
+  isContentVersion,
+  MAX_RELATIONSHIP_PAGE_ROWS,
+  readRelationshipPage,
+  type RelationshipPosition,
   applyQuerySelectionFilters,
   loadKinds,
   projectLogicalKindFields,
@@ -117,6 +122,7 @@ export const BRIDGE_HOST_CAPABILITIES = Object.freeze({
   openPage: "open-page",
   subscribeDeltas: "subscribe-deltas",
   graph: "graph",
+  relationships: "relationships",
   graphModel: "graph.model",
   recordOpen: "record.open",
   frameResize: "frame.resize",
@@ -187,7 +193,7 @@ interface SubscriptionState {
 interface BaseRequest {
   bridge: typeof BRIDGE_PROTOCOL;
   id: string;
-  type: "hello" | "query" | "read" | "render-document" | "edges" | "graph" | "subscribe" | "host";
+  type: "hello" | "query" | "read" | "render-document" | "edges" | "graph" | "relationships" | "subscribe" | "host";
 }
 
 interface HelloRequest extends BaseRequest {
@@ -233,6 +239,12 @@ interface GraphRequest extends BaseRequest {
   includeBodies: boolean;
 }
 
+interface RelationshipsRequest extends BaseRequest {
+  type: "relationships";
+  docId: string;
+  after?: RelationshipPosition;
+}
+
 interface SubscribeRequest extends BaseRequest {
   type: "subscribe";
 }
@@ -264,12 +276,13 @@ type ParsedBridgeRequest =
   | RenderDocumentRequest
   | EdgesRequest
   | GraphRequest
+  | RelationshipsRequest
   | SubscribeRequest
   | HostRequest
   | OpenPageRequest
   | ReadVersionedRequest;
 
-const V0_REQUEST_TYPES = new Set(["hello", "query", "read", "render-document", "edges", "graph", "subscribe", "host", "open-page"]);
+const V0_REQUEST_TYPES = new Set(["hello", "query", "read", "render-document", "edges", "graph", "relationships", "subscribe", "host", "open-page"]);
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -371,6 +384,32 @@ function normalizeEdgeParams(raw: unknown): EdgeParams | null {
   return out;
 }
 
+function relationshipDocumentId(value: unknown): string | null {
+  const id = boundedString(value, MAX_DOC_ID_BYTES);
+  if (id === null) return null;
+  try {
+    assertSafeConceptId(id);
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+function parseRelationshipsRequest(value: Record<string, unknown>, id: string): RelationshipsRequest | null {
+  const keys = ["bridge", "type", "id", "docId", ...(value.cursor === undefined ? [] : ["cursor"])];
+  const docId = relationshipDocumentId(value.docId);
+  if (docId === null || !exactKeys(value, keys)) return null;
+  const request = { bridge: BRIDGE_PROTOCOL, type: "relationships", id, docId } as const;
+  if (value.cursor === undefined) return request;
+  const cursor = value.cursor;
+  if (!isPlainRecord(cursor) || !exactKeys(cursor, ["docId", "direction", "documentId", "labelKey"]) ||
+      cursor.docId !== docId || !isContentVersion(cursor.labelKey) ||
+      (cursor.direction !== "incoming" && cursor.direction !== "outgoing")) return null;
+  const neighbor = relationshipDocumentId(cursor.documentId);
+  if (neighbor === null) return null;
+  return { ...request, after: { direction: cursor.direction, documentId: neighbor, labelKey: cursor.labelKey } };
+}
+
 export function parseBridgeRequest(value: unknown): ParsedBridgeRequest | null {
   if (!isPlainRecord(value) || typeof value.bridge !== "string" || typeof value.type !== "string") {
     return null;
@@ -419,6 +458,7 @@ export function parseBridgeRequest(value: unknown): ParsedBridgeRequest | null {
     const params = normalizeEdgeParams(value.params);
     return params ? { bridge: BRIDGE_PROTOCOL, type: "edges", id, params } : null;
   }
+  if (value.type === "relationships") return parseRelationshipsRequest(value, id);
   if (value.type === "graph") {
     const expected = value.includeBodies === undefined
       ? ["bridge", "type", "id"]
@@ -496,6 +536,21 @@ interface SkippedDocument {
 function skippedReply(skipped: SkippedDocument[]): { skipped?: SkippedDocument[] } {
   if (skipped.length === 0) return {};
   return { skipped: [...skipped].sort((a, b) => compareCodeUnits(a.id, b.id)).slice(0, MAX_QUERY_ROWS) };
+}
+
+/** A read of a document that does not exist: the backend's ENOENT-shaped rejection. */
+function isMissingDocument(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException)?.code === "ENOENT";
+}
+
+/**
+ * True when a `field` filter names more than one value, by the grammar `applyQuerySelectionFilters`
+ * applies: split at the first `=`, a nonempty key, then more than one nonempty trimmed value.
+ */
+function isMultiValueField(field: string): boolean {
+  const at = field.indexOf("=");
+  if (at < 0 || field.slice(0, at).trim() === "") return false;
+  return field.slice(at + 1).split(",").filter((value) => value.trim() !== "").length > 1;
 }
 
 function boundedRows(rows: HeadResult[], params: BridgeQueryParams, kinds: KindConvention[]): {
@@ -706,7 +761,7 @@ export class BridgeService {
 
   /**
    * Whole-bundle projection for graph-shaped Views. The documents come from one head scan and
-   * the relationships from `queryEdges`, which is a second full-bundle scan; the two scans are
+   * the relationships from `queryEdges`, which uses the local index when available; the reads are
    * accepted because the reply is bounded by the exported graph limits and the host never
    * caches bundle state on a View's behalf. No `model` or `definitions` are answered here: the
    * owner of that shape is undecided, and a host that has one declares the `graph.model`
@@ -774,6 +829,34 @@ export class BridgeService {
     };
   }
 
+  private async relationships(request: RelationshipsRequest): Promise<BridgeOutcome> {
+    if (!this.options.host.capabilities.includes(BRIDGE_HOST_CAPABILITIES.relationships)) {
+      return { reply: fail(request.id, request.bridge, "FORBIDDEN", "this host does not offer relationships") };
+    }
+    const skipped: SkippedDocument[] = [];
+    const page = await readRelationshipPage(this.options.bundle, request.docId, MAX_RELATIONSHIP_PAGE_ROWS, request.after, {
+      onSkip: (row) => skipped.push(row),
+    });
+    if (page.status === "not_found") {
+      return { reply: fail(request.id, request.bridge, "NOT_FOUND", "the document is not available") };
+    }
+    if (page.status !== "ready") {
+      return { reply: fail(request.id, request.bridge, "RUNTIME", "document relationships are temporarily unavailable") };
+    }
+    const last = page.rows.at(-1);
+    return { reply: ok(request.id, request.bridge, request.type, {
+      documentId: request.docId,
+      rows: page.rows.map(row => ({ ...row, label: row.label.slice(0, 256), title: row.title?.slice(0, 256) ?? null })),
+      ...(page.more && last ? { cursor: {
+        docId: request.docId,
+        direction: last.direction,
+        documentId: last.documentId,
+        labelKey: last.labelKey,
+      } } : {}),
+      ...skippedReply(skipped),
+    }) };
+  }
+
   private hostDescriptor(): BridgeHostDescriptor {
     const declared = new Set<string>(this.options.host.capabilities);
     for (const name of Object.keys(this.options.hostHandlers ?? {})) declared.add(name);
@@ -835,6 +918,15 @@ export class BridgeService {
         // A host that does not declare query.newest answers `order` exactly like any unknown key.
         return { reply: fail(request.id, request.bridge, "USAGE", "invalid or unsupported bridge request") };
       }
+      // Refuse, never degrade: a query feature the host does not declare is refused like `order`.
+      if (request.params.field !== undefined && isMultiValueField(request.params.field)
+        && !this.options.host.capabilities.includes(BRIDGE_HOST_CAPABILITIES.queryFieldOr)) {
+        return { reply: fail(request.id, request.bridge, "USAGE", "this host does not offer multi-value field filters") };
+      }
+      if (request.params.open === true
+        && !this.options.host.capabilities.includes(BRIDGE_HOST_CAPABILITIES.queryOpen)) {
+        return { reply: fail(request.id, request.bridge, "USAGE", "this host does not offer open filtering") };
+      }
       const skipped: SkippedDocument[] = [];
       const rows = await queryHeads(this.options.bundle, {
         ...(request.params.type ? { type: request.params.type } : {}),
@@ -858,11 +950,21 @@ export class BridgeService {
           ? { ...row, frontmatter: projectLogicalKindFields(okfVersion, kind, row.frontmatter) }
           : row;
       });
-      return { reply: ok(request.id, request.bridge, request.type, { ...result, ...skippedReply(skipped) }) };
+      // `more` is present only when the cap cut matching rows; `count` says how many matched.
+      const more = result.count > result.rows.length ? { more: true as const } : {};
+      return { reply: ok(request.id, request.bridge, request.type, { ...result, ...more, ...skippedReply(skipped) }) };
     }
     if (request.type === "read" || request.type === "read-versioned") {
-      const [result, registry, okfVersion] = await Promise.all([
-        readDocVersioned(this.options.bundle, request.docId),
+      let result;
+      try {
+        result = await readDocVersioned(this.options.bundle, request.docId);
+      } catch (error) {
+        if (isMissingDocument(error)) {
+          return { reply: fail(request.id, request.bridge, "NOT_FOUND", `Document '${request.docId}' is not available`) };
+        }
+        throw error;
+      }
+      const [registry, okfVersion] = await Promise.all([
         loadKinds(this.options.bundle),
         readBundleOkfVersion(this.options.bundle),
       ]);
@@ -887,7 +989,7 @@ export class BridgeService {
       try {
         result = await readDocVersioned(this.options.bundle, request.docId);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+        if (isMissingDocument(error)) {
           return {
             reply: fail(
               request.id,
@@ -931,6 +1033,7 @@ export class BridgeService {
     if (request.type === "graph") {
       return this.graph(launch, request);
     }
+    if (request.type === "relationships") return this.relationships(request);
     if (this.options.enablePolling) {
       this.subscriptions.set(launch.launchId, {
         baseline: await this.subscriptionSnapshot(),

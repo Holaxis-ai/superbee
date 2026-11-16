@@ -148,6 +148,8 @@ function publishDeps(partial: Partial<PublishDeps>): PublishDeps {
 /** A hosted bundle id from a display name: lower-case words joined by dashes, starting with a letter. */
 export function bundleIdFrom(name: string): string {
   const words = name
+    // Transliteration, not a path identity: compatibility decomposition keeps fullwidth and
+    // ligature letters (`Ｔeam`, `ﬁles`) as ASCII words instead of dropping them.
     .normalize("NFKD")
     .replace(/\p{M}/gu, "")
     .toLowerCase()

@@ -260,6 +260,7 @@ test("the web host declares itself in hello, forwards the v1 read, and refuses w
         "query.kind-projection",
         "query.newest",
         "query.open",
+        "relationships",
         "render-document",
         "subscribe-deltas",
       ],
@@ -269,6 +270,9 @@ test("the web host declares itself in hello, forwards the v1 read, and refuses w
     const versioned = await bridge({ bridge: "v1", type: "read-versioned", id: "rv", docId: "docs/one" });
     assert.equal(versioned.reply.type, "read-versioned:result");
     assert.equal(versioned.reply.result.doc.body, "one\n");
+    const neighborhood = await bridge({ bridge: "v0", type: "relationships", id: "p", docId: "docs/one" });
+    assert.equal(neighborhood.reply.type, "relationships:result");
+    assert.deepEqual(neighborhood.reply.result, { documentId: "docs/one", rows: [] });
 
     const extension = await bridge({ bridge: "v0", type: "host", id: "x", capability: "record.open", input: { documentId: "docs/one" } });
     assert.equal(extension.reply.error.code, "FORBIDDEN");

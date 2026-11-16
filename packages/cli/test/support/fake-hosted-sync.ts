@@ -32,7 +32,10 @@
 //   each version's stored bytes with `includeContent`; `document_not_found` for an absent document
 //   (a delete moves the lineage to the tombstone, and a recreate starts at seq 1 again); the agent
 //   label a write named in `X-Superbee-Via` as the host records it. `history: false` is a gateway
-//   from before the route: its `404 {"error":"not_found"}`.
+//   from before the route: its `404 {"error":"not_found"}`. `historyByRun: false` is a gateway that
+//   serves the route but does not run `documents.history.v1` by id: `run` refuses it.
+// - `/read` and a run of `documents.read.v1` answer the same document read; `readByRun: false` is
+//   a gateway that does not run it by id (a run of it is `400 unknown_operation`).
 // - `/export` (superbee-hosted PR 650, `src/sync-v1-export.ts`): the portable export of the fake's
 //   bundle as the host writes it (`fake-export-archive.ts`): the documents' stored bytes, the root
 //   index, and any reserved files or blobs a test adds to `exportExtras`; a 404 `bundle_not_found`
@@ -80,7 +83,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildKindRegistry, CONVENTION_TYPE, headsDigest, isConventionId, stringifyDoc, validateAgainstKind, type OkfDocument } from "@superbee/core";
+import { buildKindRegistry, CONVENTION_TYPE, headsDigest, inspectDocumentLinks, isConventionId, stringifyDoc, validateAgainstKind, type OkfDocument } from "@superbee/core";
 import { versionOfBytes } from "@superbee/core/versioning";
 import { isAcceptedDeletionCount, isAgentLabelVia } from "@superbee/core/hosted-transport";
 import { deletionHold } from "../../src/hosted/sync-scan.js";
@@ -167,8 +170,12 @@ export interface FakeHostOptions {
   syncSurface?: boolean;
   /** False is a person with only a read grant: every write is refused `insufficient_scope`. */
   writable?: boolean;
-  /** False is a gateway from before `/history`: the route is the family's unknown-route 404. */
+  /** False is a gateway from before `/history`: the route is the family's unknown-route 404, and `run` does not run history by id. */
   history?: boolean;
+  /** False is a gateway that serves `/history` but does not run `documents.history.v1` by id (before superbee-hosted PR 1778): `run` refuses it `unknown_operation`. */
+  historyByRun?: boolean;
+  /** False is a gateway that does not run `documents.read.v1` by id: `run` refuses it `unknown_operation`, and reads go to `/read`. */
+  readByRun?: boolean;
   /**
    * True models the host's mass-delete hold (superbee-hosted `docs/sync-v1-writes.md`): the
    * documents present at construction or `put` by the host are the old ones; a delete of one that
@@ -196,6 +203,12 @@ export interface FakeHostOptions {
   viewContent?: boolean;
   /** False is a gateway from before the paged export: a paged request's body is `400 invalid_input`. */
   exportPaging?: boolean;
+  /**
+   * `earlier` is a host from before the Sync door returned the operations port's native write
+   * results: no `links`, `warnings` or `guidance` on a saved write, no `diagnostics` on a Kind's
+   * refusal and no `inputIssues` on `invalid_input`. Absent: the current shape.
+   */
+  writeResults?: "current" | "earlier";
   /**
    * What the capabilities answer says about replacing the root `index.md`: absent, a host from
    * before the root write (the answer has no `rootWrites`, and the route refuses the write as a
@@ -497,16 +510,8 @@ export class FakeHost {
         lines.push(JSON.stringify(page.next === undefined ? { kind: "end", count: listing.count } : { kind: "page", count: page.heads.length, next: page.next }));
         return new Response(`${lines.join("\n")}\n`, { status: 200, headers: { "content-type": "application/x-ndjson; charset=utf-8", etag: `"${listing.digest}"` } });
       }
-      case "read": {
-        if (!onlyKeys(body, ["bundleId", "documentId"])) return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
-        if (body.bundleId !== BUNDLE) return Response.json({ ok: false, operationId: "documents.read.v1", error: { code: "bundle_not_found", message: "The bundle is unavailable for this operation.", retryable: false } });
-        const id = String(body.documentId);
-        const doc = this.docs.get(id);
-        if (!doc) {
-          return Response.json({ ok: false, operationId: "documents.read.v1", error: { code: "document_not_found", message: "No document", retryable: false } });
-        }
-        return Response.json({ ok: true, operationId: "documents.read.v1", data: { document: { id, frontmatter: doc.frontmatter, body: doc.body }, version: doc.version } });
-      }
+      case "read":
+        return this.readDocument(body);
       case "history":
         return this.options.history === false ? unknownRoute() : this.history(body);
       case "operations":
@@ -660,12 +665,31 @@ export class FakeHost {
     return new Response(JSON.stringify({ operations: this.operationsListing }), { status: 200, headers: { "content-type": "application/json; charset=utf-8" } });
   }
 
+  /** `documents.read.v1`, as `/read` answers it and `run` runs it by id. */
+  private readDocument(body: Record<string, unknown>): Response {
+    if (!onlyKeys(body, ["bundleId", "documentId"])) return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
+    if (body.bundleId !== BUNDLE) return Response.json({ ok: false, operationId: "documents.read.v1", error: { code: "bundle_not_found", message: "The bundle is unavailable for this operation.", retryable: false } });
+    const id = String(body.documentId);
+    const doc = this.docs.get(id);
+    if (!doc) {
+      return Response.json({ ok: false, operationId: "documents.read.v1", error: { code: "document_not_found", message: "No document", retryable: false } });
+    }
+    return Response.json({ ok: true, operationId: "documents.read.v1", data: { document: { id, frontmatter: doc.frontmatter, body: doc.body }, version: doc.version } });
+  }
+
   private run(body: Record<string, unknown>): Response {
     const invalid = () => Response.json({ error: { code: "invalid_input" } }, { status: 400 });
     const { bundleId, operationId, input } = body;
     if (!onlyKeys(body, ["bundleId", "operationId", "input"]) || typeof bundleId !== "string" || typeof operationId !== "string" || typeof input !== "object" || input === null || Array.isArray(input)) return invalid();
     // The listing is what the host runs by id: any other id, a write's included, is refused before anything else.
-    if (!this.listing().some((descriptor) => descriptor.operationId === operationId)) return Response.json({ error: { code: "unknown_operation" } }, { status: 400 });
+    // The host runs `documents.read.v1` by id whatever the pinned listing names (its run list).
+    if (operationId === "documents.read.v1" && this.options.readByRun !== false) {
+      const operationInput = input as Record<string, unknown>;
+      if (operationInput.bundleId !== bundleId) return invalid();
+      return this.readDocument(operationInput);
+    }
+    const runsHistory = this.options.history !== false && this.options.historyByRun !== false;
+    if (!this.listing().some((descriptor) => descriptor.operationId === operationId) || (operationId === "documents.history.v1" && !runsHistory)) return Response.json({ error: { code: "unknown_operation" } }, { status: 400 });
     const operationInput = input as Record<string, unknown>;
     if (operationInput.bundleId !== bundleId) return invalid();
     if (bundleId !== BUNDLE) return Response.json({ ok: false, operationId, error: { code: "bundle_not_found", message: BUNDLE_UNAVAILABLE, retryable: false } });
@@ -832,8 +856,9 @@ export class FakeHost {
     const under = (folder: string) => folded === folder || folded.startsWith(`${folder}/`);
     const types = [this.docs.get(id)?.frontmatter.type, route === "delete" ? undefined : (body.frontmatter as Record<string, unknown>).type].filter((type) => type !== undefined);
     const definition = served === "allowed" && isConventionId(id);
-    if (under("views-registry") || types.includes("View")) return failure(operationId, "invalid_input");
-    if (definition ? types.some((type) => type !== CONVENTION_TYPE) : under("conventions") || types.includes(CONVENTION_TYPE)) return failure(operationId, "invalid_input");
+    const reserved = () => this.current(failure(operationId, "invalid_input"), { inputIssues: [{ path: "documentId", message: "This id or type is kept for Superbee's own documents (conventions, connectors, sites, views, reserved files). Choose another folder or type." }] });
+    if (under("views-registry") || types.includes("View")) return reserved();
+    if (definition ? types.some((type) => type !== CONVENTION_TYPE) : under("conventions") || types.includes(CONVENTION_TYPE)) return reserved();
     const stored = (type: string) => [...this.docs].filter(([docId, doc]) => !isConventionId(docId) && doc.frontmatter.type === type);
     if (definition) {
       // The proof: the Kind this write leaves must hold every stored document of its type.
@@ -868,8 +893,21 @@ export class FakeHost {
     if (route === "delete") return null;
     const frontmatter = body.frontmatter as Record<string, unknown>;
     const kind = this.kinds().kinds.get(String(frontmatter.type));
-    if (kind && validateAgainstKind({ id, frontmatter, body: String(body.body) } as OkfDocument, kind).length > 0) {
-      return { ok: false, operationId, error: { code: "validation_failed", message: "The candidate or bundle conventions failed validation; no change was saved.", retryable: false, writeState: "not_applied" } };
+    const refused = kind ? validateAgainstKind({ id, frontmatter, body: String(body.body) } as OkfDocument, kind) : [];
+    if (kind && refused.length > 0) {
+      const kindId = [...this.docs].find(([docId, doc]) => isConventionId(docId) && doc.frontmatter.governs === kind.governs)?.[0];
+      const items = refused.slice(0, 16).map((warning) => ({
+        code: warning.code,
+        severity: "error",
+        message: warning.code === "KIND_FIELD_VALUE" ? "This field's value is not one of the allowed values." : "This field does not fit the Kind.",
+        ...(warning.field ? { location: { kind: "field", name: warning.field } } : {}),
+        ...(kindId ? { kindId } : {}),
+        ...(warning.code === "KIND_FIELD_VALUE" && warning.field ? { allowedValues: (kind.fields.values?.[warning.field] ?? []).map(String) } : {}),
+      }));
+      return this.current(
+        { ok: false, operationId, error: { code: "validation_failed", message: "The candidate or bundle conventions failed validation; no change was saved.", retryable: false, writeState: "not_applied" } },
+        { diagnostics: { version: 2, items, truncated: refused.length > 16 } },
+      );
     }
     return null;
   }
@@ -912,10 +950,28 @@ export class FakeHost {
     if (route === "create" || existing!.version !== version) this.record(id, this.principal, recordedAgentLabel(via));
     this.revision += 1;
     this.applied.push(id);
-    return {
-      result: { ok: true, operationId, data: { bundleId: BUNDLE, documentId: id, version, changed: route === "create" || existing!.version !== version } },
-      content: { version, raw },
-    };
+    const data = { bundleId: BUNDLE, documentId: id, version, changed: route === "create" || existing!.version !== version };
+    return { result: this.current({ ok: true, operationId, data }, this.writeReport(id, { id, frontmatter, body: String(body.body) } as unknown as OkfDocument)), content: { version, raw } };
+  }
+
+  /**
+   * Extra findings a test adds to a saved write's report (a host's `warnings` and `guidance`),
+   * by document id. The links are always the stored document's own.
+   */
+  reportHook: ((id: string) => { warnings?: unknown[]; guidance?: unknown[] } | undefined) | undefined;
+
+  /** A saved write's report, as the operations port answers it: its links, and any findings. */
+  private writeReport(id: string, doc: OkfDocument): Record<string, unknown> {
+    const targets = [...new Set(inspectDocumentLinks(doc).links.map((link) => link.to as string))];
+    const extra = this.reportHook?.(id) ?? {};
+    return { links: { count: inspectDocumentLinks(doc).links.length, targets: targets.slice(0, 64), truncated: targets.length > 64 }, ...extra };
+  }
+
+  /** A write answer in the current shape: `report` merged into its `data` or `error`; the earlier shape is the answer as it is. */
+  private current(answer: Record<string, unknown>, report: Record<string, unknown>): Record<string, unknown> {
+    if (this.options.writeResults === "earlier") return answer;
+    const into = answer.ok === true ? "data" : "error";
+    return { ...answer, [into]: { ...(answer[into] as Record<string, unknown>), ...report } };
   }
 
   private outcome(requestId: string, binding: string, body: Record<string, unknown>): Response {

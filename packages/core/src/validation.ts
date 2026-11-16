@@ -19,4 +19,9 @@ export type ValidationWarning = {
   field?: string;
   /** Strictly non-fatal. There is NO "error" severity on a 200 response. */
   severity: "warning" | "info";
+  /**
+   * Structured facts behind the finding, so each surface can word its own next step without
+   * parsing `message`. Findings that carry details keep `message` a fixed sentence per code.
+   */
+  details?: Readonly<Record<string, unknown>>;
 };
