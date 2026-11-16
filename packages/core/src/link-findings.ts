@@ -127,7 +127,7 @@ const NOT_RECOGNIZED_MESSAGES: Record<LinkNotRecognizedReason, string> = {
   "invalid-target": "This link's target is not a valid document id, so it is not a link to a document.",
 };
 const TARGET_ABSENT_MESSAGE = "No document exists at this link's target yet; the link is kept as a forward declaration.";
-const TYPE_VIOLATION_MESSAGE = "This link's text is a declared link type, but its source or target is not the declared kind.";
+const TYPE_VIOLATION_MESSAGE = "This link's text is a declared link type, but its target is not the declared kind.";
 const TYPE_QUALIFIED_MESSAGE = "This link's text is declared as a link into another bundle, but it points inside this bundle.";
 const TYPE_CASE_VARIANT_MESSAGE = "This link's text differs only in case from a declared link type.";
 
@@ -266,7 +266,7 @@ async function typeFinding(
   if (declarations.size === 0) return undefined;
   const { sourceType, ...where } = link;
   const exact = declarations.get(link.text);
-  if (exact && exact.length > 0) {
+  if (exact?.some(d => d.governs === sourceType)) {
     // Only an exact match needs the target's actual type; a near miss never pays for the read.
     const target = await readTarget(link.to);
     const targetType = target === undefined ? null : docType(target);
@@ -298,8 +298,8 @@ async function typeFinding(
     };
   }
   const lower = link.text.toLowerCase();
-  for (const declaredText of declarations.keys()) {
-    if (declaredText.toLowerCase() === lower) {
+  for (const [declaredText, declared] of declarations) {
+    if (declaredText.toLowerCase() === lower && declared.some(d => d.governs === sourceType)) {
       return {
         code: LINK_TYPE_CASE_VARIANT,
         message: TYPE_CASE_VARIANT_MESSAGE,
@@ -313,10 +313,10 @@ async function typeFinding(
 }
 
 /**
- * Type-conformance finding for one local edge. When `text` exactly matches a declared link type,
- * the source and the target's actual kinds are checked against it (`LINK_TYPE_VIOLATION`; a
- * missing target checks the source only). When `text` matches a declared type only
- * case-insensitively, `LINK_TYPE_CASE_VARIANT` names the declared spelling. Untyped text, or a
+ * Type-conformance finding for one local edge. When `text` exactly matches a link type declared by
+ * the source's exact Kind, the target's actual Kind is checked (`LINK_TYPE_VIOLATION`; a
+ * missing target remains unchecked). When `text` matches a declared type only
+ * case-insensitively within that source Kind, `LINK_TYPE_CASE_VARIANT` names the declared spelling. Untyped text, or a
  * registry with no `links` declarations, yields undefined without reading anything.
  */
 export function linkTypeFinding(

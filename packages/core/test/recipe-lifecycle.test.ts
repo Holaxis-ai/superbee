@@ -2014,3 +2014,16 @@ test("recipe enum restrictions: literal prototype field names still require conf
     });
   }
 });
+
+test("evolution scopes added relationships to their source and does not hide a newly governed mismatch", async () => {
+  for (const source of ["Task", "Widget"]) {
+    const bundle = await v02Bundle(`source-scope-${source}`);
+    await installRecipe(bundle, loadRecipe("1", INSTALLED), { now: NOW });
+    await writeDoc(bundle, { id: "conventions/other", frontmatter: { type: "Convention", governs: "Other", links: { "follow-up": "Other" } }, body: "" });
+    await writeDoc(bundle, { id: "source", frontmatter: { type: source, title: "Source", setting: "outdoor" }, body: "[follow-up](/target.md)" });
+    await writeDoc(bundle, { id: "target", frontmatter: { type: "Task", title: "Target" }, body: "" });
+    const desired = loadRecipe("2", INSTALLED.replace("---\n# Widget", "links:\n  follow-up: Widget\n---\n# Widget"));
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.blockers.some(b => b.code === "RECIPE_EVOLUTION_INSTANCE_INVALID" && b.id === "source"), source === "Widget");
+  }
+});

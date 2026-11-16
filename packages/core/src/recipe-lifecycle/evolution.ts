@@ -24,7 +24,7 @@ import {
   type KindConvention,
   type KindRegistry,
 } from "../kinds.js";
-import { collectLinkDeclarations, type LinkTypeDeclaration } from "../link-types.js";
+import { collectLinkDeclarations, localEdgeViolation } from "../link-types.js";
 import { parseLinksFromDoc } from "../links.js";
 import { okfValuesEqual } from "../okf-authored-values.js";
 import type { LoadedRecipe } from "../recipes.js";
@@ -534,8 +534,8 @@ function addedLinkTypes(current: KindConvention, desired: KindConvention): strin
 }
 
 /**
- * Declaring a link type turns every existing edge with that exact text into a typed edge, across
- * the whole bundle (the vocabulary is global; see `collectLinkDeclarations`). Apply the same rule
+ * Declaring a link type constrains existing edges with that exact text from its declaring Kind.
+ * Other source Kinds remain independent. Apply the same rule
  * `status` uses for `link_type_violations` to those edges under the prospective registry, so an
  * evolution never introduces a violation. Returns the docs whose edges were checked.
  */
@@ -559,16 +559,13 @@ function linkTypeAdditionBlockers(
       const target = docsById.get(link.to);
       if (!target) continue; // unresolved edges are their own `status` finding
       const sourceType = docType(doc);
-      const violates = (declared: readonly LinkTypeDeclaration[]): LinkTypeDeclaration | null => {
-        if (declared.length === 0) return null;
-        const matched = declared.find((declaration) => declaration.governs === sourceType);
-        return matched && docType(target) === matched.target ? null : matched ?? declared[0]!;
-      };
-      const expected = violates(declarations.get(link.text) ?? []);
+      const violates = (declared: ReturnType<typeof collectLinkDeclarations>) =>
+        localEdgeViolation(declared.get(link.text), sourceType, docType(target));
+      const expected = violates(declarations);
       if (!expected) continue;
-      // Already a violation before this evolution (another Kind declared the text): status
+      // Already a violation for this source Kind before this evolution: status
       // reports it today; this plan neither creates nor fixes it.
-      if (violates(currentDeclarations.get(link.text) ?? [])) continue;
+      if (violates(currentDeclarations)) continue;
       evolutionBlocker(
         blockers,
         "RECIPE_EVOLUTION_INSTANCE_INVALID",

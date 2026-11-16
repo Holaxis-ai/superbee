@@ -117,7 +117,7 @@ Category semantics (one line each):
   registry_warnings  Malformed conventions or v0.2 workflow status collisions — a problem in
                       the schema declaration, not in a doc that kind governs.
   link_type_violations  An edge whose text EXACTLY matches a declared typed-edge vocabulary entry
-                      (some kind's 'links' map) but the actual source and/or target doc's type
+                      in its source Kind's 'links' map but the actual target doc's type
                       doesn't conform to that declaration — the same rule 'link add' warns on at
                       write time, applied bundle-wide.
   missing_expected_links  A kind instance whose OWN kind declares 'expects_inbound' but lacks at
@@ -160,8 +160,8 @@ Category semantics (one line each):
                       when the bound copy's subtree at HEAD equals it and has no uncommitted change.
   dependency_problems  Defects in 'docs/dependencies' (DEP_* codes) and in binding (BIND_* codes,
                       e.g. a --with-deps path outside the repository).
-  cross_bundle_link_type_violations_rows  A qualified link whose text is a declared type that does
-                      not conform (wrong source kind, or the declaration names another or no alias),
+  cross_bundle_link_type_violations_rows  A qualified link whose source Kind declares its text but
+                      the declaration names another or no alias,
                       or a local link under a qualified declaration ('links: {pours: "beers:Beer"}').
                       An explicitly bound resolved target must have the declared kind. Inspect the
                       target's type and the source convention's links declaration when this row appears.

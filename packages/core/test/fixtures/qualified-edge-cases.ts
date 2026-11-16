@@ -14,7 +14,7 @@ export const QUALIFIED_EDGE_CASES: {
   { name: "wrong actual Kind", declared: shared, source: "Menu Item", alias: "beers", actual: "Reference", violation: true },
   { name: "absent actual type", declared: shared, source: "Menu Item", alias: "beers", actual: "", violation: true },
   { name: "metadata-only remains unchecked", declared: shared, source: "Menu Item", alias: "beers", violation: false },
-  { name: "wrong source", declared: shared, source: "Note", alias: "beers", actual: "Beer", violation: true },
+  { name: "unrelated source remains unconstrained", declared: shared, source: "Note", alias: "beers", actual: "Beer", violation: false },
   { name: "wrong alias and actual Kind", declared: shared, source: "Menu Item", alias: "wines", actual: "Reference", violation: true },
   { name: "local declaration with qualified edge", declared: [{ governs: "Menu Item", target: "Beer" }], source: "Menu Item", alias: "beers", actual: "Beer", violation: true },
   { name: "shared label selects matching source", declared: shared, source: "Milestone", alias: "goals", actual: "Goal", violation: false },

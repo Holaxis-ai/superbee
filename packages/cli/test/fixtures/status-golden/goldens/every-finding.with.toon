@@ -134,11 +134,10 @@ cross_bundle_unresolved_rows:
     menus/whale,"okf://ciders/ciders/dry.md",unknown_alias,alias 'ciders' is not declared in docs/dependencies
     menus/whale,"okf:beers/beers/little-whale.md",invalid_ref,"a cross-bundle link must start with okf://"
 cross_bundle_link_type_violations_rows:
-  shown: 2
-  total: 2
-  rows[2]{from,href,text,expected}:
+  shown: 1
+  total: 1
+  rows[1]{from,href,text,expected}:
     menus/whale,../notes/target.md,pours,"Menu Item -> beers:Beer"
-    notes/pours-from-note,"okf://beers/beers/little-whale.md",pours,"Menu Item -> beers:Beer"
 dangling_view_entries_rows:
   shown: 1
   total: 1

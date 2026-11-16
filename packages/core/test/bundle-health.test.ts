@@ -424,3 +424,15 @@ test("bundle health: a link to a document the scan skipped is not a broken link;
     await rm(root, { recursive: true, force: true });
   }
 });
+
+import { SOURCE_SCOPED_EDGE_CASES, SOURCE_SCOPED_DECLARATIONS } from "./fixtures/source-scoped-edge-cases.js";
+for (const row of SOURCE_SCOPED_EDGE_CASES) test(`source-scoped bundle health: ${row.name}`, async () => {
+  const { backend } = await store("0.2", {
+    ...Object.fromEntries(SOURCE_SCOPED_DECLARATIONS.map((d, i) => [`conventions/source-${i}`, convention(d.governs, { links: { "follow-up": d.target } })])),
+    "conventions/note": convention("Note"),
+    source: { frontmatter: { type: row.source }, body: "[follow-up](/target.md)" },
+    target: { frontmatter: { type: row.target }, body: "" },
+  });
+  const report = await bundleHealth({ root: "mem://source-scope", backend });
+  assert.equal(report.linkTypeViolations.length, row.violation ? 1 : 0);
+});

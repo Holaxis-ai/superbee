@@ -953,8 +953,7 @@ test("status: a link to a reserved file (index.md/log.md) is never counted as un
  *     satisfies good-crate's expects_inbound, never a violation.
  *   - `items/box-to-widget` -> `items/rogue` (text 'contains'): wrong TARGET (Box -> Widget, not
  *     Crate) — a link_type_violations row.
- *   - `items/rogue` -> `items/good-crate` (text 'contains'): wrong SOURCE (Widget -> Crate, not
- *     Box -> Crate) — a SECOND link_type_violations row. (`items/rogue` is type 'Widget', an
+ *   - `items/rogue` -> `items/good-crate` (text 'contains'): unrelated source (Widget -> Crate) — no link_type_violations row. (`items/rogue` is type 'Widget', an
  *     undeclared kind, so it never itself appears in any kind-governed finding.)
  *   - `items/missing-crate` (status: queued) and `items/done-crate` (status: done) — Crate
  *     instances with NO inbound 'contains' edge from a Box at all -> two missing_expected_links
@@ -1025,25 +1024,20 @@ test("status: link_type_violations — every edge violating a declared 'links' v
   const { dir, cleanup } = await makeGraphLintFixtureBundle();
   try {
     const result = await runJson(["--dir", dir]);
-    assert.equal(result.link_type_violations, 2);
+    assert.equal(result.link_type_violations, 1);
     const violations = result.link_type_violations_rows as {
       shown: number;
       total: number;
       rows: Record<string, unknown>[];
     };
-    assert.equal(violations.total, 2);
+    assert.equal(violations.total, 1);
     assert.ok(
       violations.rows.some(
         (r) => r.from === "items/box-to-widget" && r.to === "items/rogue" && r.text === "contains" && r.expected === "Box -> Crate",
       ),
       "expected the wrong-TARGET violation row",
     );
-    assert.ok(
-      violations.rows.some(
-        (r) => r.from === "items/rogue" && r.to === "items/good-crate" && r.text === "contains" && r.expected === "Box -> Crate",
-      ),
-      "expected the wrong-SOURCE violation row",
-    );
+    assert.ok(!violations.rows.some(r => r.from === "items/rogue"), "unrelated source remains unconstrained");
     // The CONFORMING edge (good-box -> good-crate) must never appear as a violation.
     assert.ok(!violations.rows.some((r) => r.from === "items/good-box"));
   } finally {
