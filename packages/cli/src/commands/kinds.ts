@@ -144,6 +144,7 @@ function toRow(kind: KindConvention, okfVersion: string | undefined): Record<str
   kind = projectKindForAuthoring(okfVersion, kind);
   const row: Record<string, unknown> = {
     governs: kind.governs,
+    title: kind.title,
     required: kind.fields.required,
     optional: kind.fields.optional,
   };

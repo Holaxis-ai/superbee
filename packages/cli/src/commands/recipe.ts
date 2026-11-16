@@ -1,6 +1,7 @@
 import { admitRecipeRetirementRoute } from "../recipe-retirement-route.js";
 import { readExternalTextFile } from "../external-file.js";
 import { renderUsage } from "../output.js";
+import { recipeQualify } from "./recipe-qualify.js";
 import { recipeValidate } from "./recipe-validate.js";
 // `superbee recipe add <name-or-path>` installs definitions create-only; `recipe evolve` is the
 // separate explicit, state-bound authority for updating already-installed conventions in place.
@@ -34,6 +35,7 @@ import { commandFragment, commandLiteral, commandQuoted, commandToken, type Comm
 export const RECIPE_USAGE = `superbee recipe — apply a recipe to this bundle
 
 Usage:
+  superbee recipe qualify <config.json> --out <new-folder> [--dir <existing-bundle>] [--json]
   superbee recipe validate <path> [--readme] [--json]
   superbee recipe add <name-or-path> [--actor <name>] [--dir <path>]
   superbee recipe add <recipe-or-cookbook-id> --index <path-or-https-url> [--cookbook] [options]
@@ -146,6 +148,7 @@ export async function recipe(argv: string[], deps: Partial<RecipeCliDeps> = {}):
   const sub = argv[0];
   const rest = argv.slice(1);
 
+  if (sub === "qualify") return recipeQualify(rest, { stdout });
   if (sub === "validate") return recipeValidate(rest, { stdout });
   if (sub === "add") return recipeAdd(rest, stdout, { ...(deps.fetch ? { fetch: deps.fetch } : {}), ...(deps.indexLimits ? { limits: deps.indexLimits } : {}) });
   if (sub === "evolve") return recipeEvolve(rest, stdout);
@@ -153,7 +156,7 @@ export async function recipe(argv: string[], deps: Partial<RecipeCliDeps> = {}):
     stdout(renderUsage(RECIPE_USAGE));
     return;
   }
-  throw new CliError("USAGE", `unknown recipe subcommand: ${sub} (expected add, evolve or validate)`, {
+  throw new CliError("USAGE", `unknown recipe subcommand: ${sub} (expected add, evolve, validate or qualify)`, {
     help: `${cliInvocation()} recipe --help`,
   });
 }

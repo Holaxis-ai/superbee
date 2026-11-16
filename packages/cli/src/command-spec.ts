@@ -520,6 +520,12 @@ export const CLI_COMMAND_GROUPS = [
         summary: "Apply a recipe's content-free definitions — Kinds plus optional declared References and Views — idempotently",
       },
       {
+        id: "recipeQualify",
+        leaves: [publicLeaf("recipeQualify", "recipe qualify", one, undefined, { flags: pathFlags({ flag: "out", role: "egress" }, { flag: "dir", role: "bundle-root" }), positionals: [{ index: 0, role: "ingress" as const }] })],
+        usage: "recipe qualify <config.json> --out <new-folder> [--dir <existing-bundle>] [--json]",
+        summary: "Prepare a new ordinary recipe with namespace-owned Kind identities and paths",
+      },
+      {
         id: "recipeValidate",
         leaves: [publicLeaf("recipeValidate", "recipe validate", one, undefined, { positionals: Object.freeze([Object.freeze({ index: 0, role: "recipe-source" as const })]) })],
         usage: "recipe validate <path> [--readme] [--json]",

@@ -753,3 +753,5 @@ export function parseRecipeFiles(
   if (contentPolicy === "definitions-only") recipe.contentPolicy = contentPolicy;
   return { ok: true, recipe };
 }
+
+export { qualifyRecipeSet, parseRecipeQualificationConfig, qualificationRecipeId, type RecipeQualificationConfig, type RecipeQualificationEntry, type RecipeQualificationInput, type RecipeQualificationResult, type ExistingQualificationKind } from "./recipe-qualify.js";

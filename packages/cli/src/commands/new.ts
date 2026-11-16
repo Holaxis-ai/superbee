@@ -1,3 +1,4 @@
+import { kindTitleCandidates } from "../kind-title-candidates.js";
 import { renderUsage } from "../output.js";
 // `superbee new "<Kind>" <id> --<field> <value> …` — create a new instance of a
 // bundle-declared kind.
@@ -446,6 +447,13 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     if (pre.values.help) {
       stdout(renderUsage(NEW_USAGE)); // named kind isn't declared here — the generic help is the most we can show
       return;
+    }
+    const candidates = kindTitleCandidates(registry, kindName);
+    if (candidates) {
+      throw new CliError("USAGE", `'${kindName}' is a display title, not a declared exact Kind selector; choose an exact governs value.`, {
+        details: { kind_candidates: candidates },
+        help: `${cliInvocation()} kinds`,
+      });
     }
     const known = [...registry.kinds.entries()]
       .filter(([, candidate]) => kindDeclaresAnything(candidate))

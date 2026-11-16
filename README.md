@@ -239,6 +239,78 @@ no access or authority; see
   `examples/recipes/review-workflow` is a complete content-free cognitive ecosystem: a
   self-describing Review Request kind plus a generic live View, with no review instances.
 
+### Prepare a cookbook with explicit Kind bindings
+
+`superbee recipe qualify ./qualification.json --out ./dist-next --dir ./existing-bundle`
+prepares a complete, finite selection of local recipes without changing their sources or installing
+anything. `--dir` is needed only for bindings to an already declared Kind. For example:
+
+```json
+{
+  "schema": "recipe-qualification/v1",
+  "recipes": [
+    {"key": "base", "source": "./base", "preserve": true},
+    {
+      "key": "decisions", "source": "./decisions",
+      "namespace": "github.com/123/decisions",
+      "bindings": {
+        "Asset": {"recipe": "base", "kind": "Asset"},
+        "Task": {"existing": "Task"}
+      },
+      "paths": {"Decision": "decisions/"}
+    }
+  ]
+}
+```
+
+These coordinates are synthetic examples, not a first-party publisher identity. Namespaces accept
+canonical lowercase `github.com/<positive-decimal-id>/<slug>` or
+`github.com/<owner>/<repository>/<slug>`, at most 220 UTF-8 bytes. Slugs are alphanumeric words
+separated by single hyphens. Readable coordinates require an explicit continuity decision after
+renames or transfers. Numeric coordinates are less coupled to names but harder to read. Neither
+form authenticates ownership. Qualified source Kind names use ASCII alphanumeric words separated
+by single spaces, underscores or hyphens; full selectors are bounded at 256 UTF-8 bytes.
+
+Every external `links` or `expects_inbound` target requires one explicit binding, including an
+intentionally retained bare `Task`. Selected recipes can refer to each other cyclically: all
+identities are allocated before binding. Missing, unused, ambiguous or conflicting bindings refuse
+the entire preparation. `{existing: ...}` checks an exact declared Kind and records the observed
+definition/version as a prerequisite; it does not bind to ungoverned records or lock later edits.
+
+The new output root contains one ordinary recipe folder per key and `preparation-receipt.json`
+with mappings, digests, prerequisites and ordinary install/evolve commands. Qualified ownership is
+`ns-<SHA256 of exact namespace>` and does not depend on release or schema. Definition paths are
+stable and namespace-owned. Record paths remain human-authored or explicitly overridden; shared
+record prefixes are reported and ordinary create-only ID collisions still apply. `preserve:true`
+retains authored identities and placement, while explicitly mapped external relationships may
+change; existing evolution rules can refuse that retargeting.
+
+The complete input set is bounded to 32 selections, 512 files, 2 MiB per file and 8 MiB total;
+configuration is bounded to 256 KiB. Preparation supports Conventions and declared static
+References. Views, Connectors, undeclared assets, symlinked source entries and unsupported link
+constructs refuse before output. Structural inline Markdown links relocate using the ordinary
+resolver, including nested paths and fragments. Prose, fenced examples and query strings are
+untransformed and remain author-owned. OKF 0.2 field rules and logical progress-status
+materialization still apply; qualifying a Kind does not make reserved field conflicts valid.
+
+Keep one canonical source/configuration, regenerate into a fresh output directory for each release,
+and review generated differences. Publish only the expanded artifacts under their actual source
+and file digests. Index generation and publication are separate, explicit work. Namespace changes
+create new identities; they never adopt or migrate old records. Optional-field evolution uses the
+ordinary plan/apply workflow and preserves instance bytes; incompatible changes require a separate
+migration decision.
+
+Output requires an existing parent and refuses existing targets, source descendants, bundle
+ancestors and private state. Staging and exclusive creates prevent overwrites; runtime interruption
+may leave reported residue. Installing several output recipes remains per-artifact and can partially
+complete. Titles are display labels: use exact `governs` selectors from `kinds`. Bare selectors
+never expand to similarly titled qualified Kinds, and an existing bare Kind remains valid.
+
+The full recipe/Reference workflow is local. Current hosted CLI recipe admission is convention-only;
+a recipe carrying References is not claimed installable through that route. Shared-contract tests
+are not deployed-host evidence. Full hosted cookbook adoption requires a separate approved
+admission change and verification of the target versions.
+
 Bundles use [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format)
 v0.2 by default - plain markdown any tool conforming to that edition can read. Existing OKF v0.1
 bundles remain supported without rewriting their declared edition.
@@ -265,10 +337,9 @@ bundles remain supported without rewriting their declared edition.
   not published to npm.
   See the [CLI upgrade guidance](packages/superbee/README.md#upgrading-an-existing-windows-installation)
   and [core filesystem migration](packages/core/README.md#filesystem-platform-migration) before upgrading.
-- **Recipes as composition** is a thesis under test, not a result. The repository includes
-  small first-party definitions-only packages, including a Kind-plus-View reference, but package
-  dependencies, upgrades, migrations, and marketplace discovery remain future work. "Cookbooks"
-  (composed recipes with typed-link glue) are design intent only.
+- **Recipe composition** supports finite explicit local preparation and existing indexed cookbooks.
+  Automatic dependency solving, migrations, namespace authentication and marketplace discovery
+  remain future work. Preparation does not change ordinary installation or hosted admission limits.
 - **Provider integrations** live in [superbee-plugins](https://github.com/Holaxis-ai/superbee-plugins),
   which owns the GitHub package, shared recipes and GitHub/Linear examples. Generic Core helpers
   and the CLI's explicit `source plugin` registration remain in this repository.

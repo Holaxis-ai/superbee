@@ -1,3 +1,4 @@
+import { kindTitleCandidates } from "../../kind-title-candidates.js";
 import { renderUsage } from "../../output.js";
 // `doc write <id>` — see `../doc.ts`'s header comment for the full F1 (P1, data loss) rationale and
 // the stdin-detection rule this verb's body-source guard depends on.
@@ -273,8 +274,17 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   }
   // Post-write findings (links that will not register, absent targets, an undeclared type) on
   // a changed write only; advisory, so they never fail the write and print nothing when empty.
+  // Title-selection guidance also explains unchanged writes: no matching titled schema was used.
   const findings = result.changed ? await writeFindings(bundle, saved, registry, prior) : [];
-  const warnings = [...result.warnings, ...findings];
+  const candidates = typeof saved.frontmatter.type === "string" ? kindTitleCandidates(registry, saved.frontmatter.type) : undefined;
+  const warnings = [...result.warnings, ...findings].filter((warning) => !candidates || warning.code !== "KIND_TYPE_UNDECLARED");
+  if (candidates) warnings.push({
+    code: "KIND_TYPE_UNDECLARED",
+    message: `'${saved.frontmatter.type}' has no declared Kind. This document remains ungoverned; schemas with that display title were not used. Choose an exact governs value to use a listed schema.`,
+    field: "type",
+    severity: "warning",
+    details: { kind_candidates: candidates },
+  });
   if (warnings.length > 0) receipt.warnings = warnings;
   if (result.guidance.length > 0) receipt.guidance = result.guidance;
   // Retired-kind hint: authoring-moment only, never blocks, never on reads.
