@@ -69,6 +69,12 @@ async function harness(host = new FakeHost(), env: NodeJS.ProcessEnv = { SUPERBE
 
 const instant = async () => {};
 
+/** The document reads a host received: runs of `documents.read.v1`, as their inputs. */
+const documentReads = (host: FakeHost) =>
+  host.requests
+    .filter((request) => request.path === "/sync/v1/run" && (request.body as { operationId?: unknown }).operationId === "documents.read.v1")
+    .map((request) => (request.body as { input: Record<string, unknown> }).input);
+
 async function runSync(h: Harness, argv: string[] = []): Promise<Record<string, unknown>> {
   h.out.length = 0;
   await sync(["--dir", h.folder, ...argv], {
@@ -247,7 +253,7 @@ test("a new file is created against absence, and creates are sent before replace
   assert.equal(hostDoc(h, "notes/gamma").frontmatter.title, "Gamma");
 });
 
-test("an existing checkout pulls a document created, one replaced and one deleted on the host through /read", async () => {
+test("an existing checkout pulls a document created, one replaced and one deleted on the host, each read by id", async () => {
   const h = await harness();
   const created = h.host.put("notes/delta", { type: "Note", title: "Delta from the host" }, "Delta body.\n");
   const replaced = h.host.put("notes/beta", { type: "Note", title: "Beta from the host" }, "Beta host body.\n");
@@ -258,7 +264,7 @@ test("an existing checkout pulls a document created, one replaced and one delete
   assert.deepEqual(receipt.pulled, { refreshed: 2, removed: 1 });
   assert.deepEqual(rowsOf(receipt), []);
   // The new and the replaced documents are each read whole: the path a fresh checkout never takes.
-  const reads = h.host.requests.filter((request) => request.path === "/sync/v1/read").map((request) => (request.body as { documentId: string }).documentId).sort();
+  const reads = documentReads(h.host).map((input) => input.documentId as string).sort();
   assert.deepEqual(reads, ["notes/beta", "notes/delta"]);
   const delta = parseMarkdown(await readFile(path.join(h.folder, "notes/delta.md"), "utf8"), "notes/delta");
   assert.equal(delta.frontmatter.title, "Delta from the host");
@@ -273,7 +279,7 @@ test("an existing checkout pulls a document created, one replaced and one delete
   h.host.requests.length = 0;
   const again = await runSync(h);
   assert.equal(again.status, "up_to_date");
-  assert.equal(h.host.requests.filter((request) => request.path === "/sync/v1/read").length, 0);
+  assert.equal(documentReads(h.host).length, 0);
   assert.equal(h.host.writes.length, 0);
 
   // A local edit on a pulled document goes out against the host's version it pulled.
@@ -283,22 +289,42 @@ test("an existing checkout pulls a document created, one replaced and one delete
   assert.equal(writeRoutes(h).at(-1)!.body.expectedVersion, created);
 });
 
+test("a pull of 8 changed documents: 11 requests on a current host; an older host is checked once, 12", async () => {
+  for (const [options, expected] of [
+    [{}, { whoami: 1, capabilities: 1, heads: 1, run: 8 }],
+    [{ readByRun: false }, { whoami: 1, capabilities: 1, heads: 1, run: 1, read: 8 }],
+  ] as const) {
+    const h = await harness(new FakeHost(options));
+    const ids = [...h.host.docs.keys()];
+    for (const id of ids) h.host.put(id, { type: "Note" }, `changed ${id}\n`);
+    for (let n = ids.length; n < 8; n += 1) h.host.put(`notes/new-${n}`, { type: "Note" }, `new ${n}\n`);
+    const receipt = await runSync(h);
+    assert.equal(receipt.status, "up_to_date", JSON.stringify(receipt));
+    const counts: Record<string, number> = {};
+    for (const request of h.host.requests) {
+      const route = request.path.slice("/sync/v1/".length);
+      counts[route] = (counts[route] ?? 0) + 1;
+    }
+    assert.deepEqual(counts, expected, JSON.stringify(options));
+  }
+});
+
 test("an answer the CLI cannot read is a non-retryable RUNTIME naming the route, never TRANSIENT", async () => {
   const h = await harness();
   h.host.put("notes/beta", { type: "Note", title: "Beta from the host" }, "Beta host body.\n");
   // The host answers 200, in a shape this client does not admit (the write result's shape).
   h.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const response = await h.host.fetch(input, init);
-    if (new URL(String(input)).pathname !== "/sync/v1/read") return response;
+    if (new URL(String(input)).pathname !== "/sync/v1/run" || (JSON.parse(String(init?.body ?? "{}")) as { operationId?: unknown }).operationId !== "documents.read.v1") return response;
     const { data } = (await response.json()) as { data: { document: { id: string; frontmatter: unknown; body: string }; version: string } };
     return Response.json({ ok: true, operationId: "documents.read.v1", data: { bundleId: BUNDLE, documentId: data.document.id, version: data.version, document: { frontmatter: data.document.frontmatter, body: data.document.body } } });
   }) as typeof fetch;
   const { error } = await failingSync(h);
   assert.equal(error.code, "RUNTIME", error.message);
-  assert.match(error.message, /\/sync\/v1\/read/);
+  assert.match(error.message, /\/sync\/v1\/run/);
   assert.match(error.message, /contract mismatch/);
   const details = error.details as { route?: string; retryable?: boolean; code?: string };
-  assert.equal(details.route, "/sync/v1/read");
+  assert.equal(details.route, "/sync/v1/run");
   assert.equal(details.retryable, false);
   assert.equal(details.code, "MALFORMED_ANSWER");
   assert.doesNotMatch(error.help ?? "", /retry the same command/);

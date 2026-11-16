@@ -257,19 +257,88 @@ test("readBundleListing: a qualified collision, and a capped list", () => {
   assert.equal(capped.complete, false);
 });
 
-test("reader: a document read through the bundle's read adapter under the family's routes", async () => {
-  const { fetch, sent } = serving({ read: "read-200-ok" });
+test("reader: a document read runs documents.read.v1 through the port runner", async () => {
+  // The read route's golden answer is the run's too: hosted answers both from one code path
+  // (`runOperation` in superbee-hosted `src/sync-v1-reads.ts`); no golden pins a run of this read yet.
+  const { fetch, sent } = serving({ run: "read-200-ok" });
   const result = await clientOf(fetch).reader(BUNDLE).read("notes/one");
   assert.equal(result.version, "sha256:dfc05cf336bf2eaa2bf4a3319609f596514c2ec0f5abf3e7a173aafe7baac5c4");
-  assert.deepEqual(sent[0], { path: "/sync/v1/read", body: { bundleId: BUNDLE, documentId: "notes/one" }, authorization: "Bearer token-1" });
+  assert.deepEqual(sent, [{ path: "/sync/v1/run", body: { bundleId: BUNDLE, operationId: "documents.read.v1", input: { bundleId: BUNDLE, documentId: "notes/one" } }, authorization: "Bearer token-1" }]);
 });
 
-test("history: the golden page, newest first", async () => {
-  const { fetch, sent } = serving({ history: "history-200-ok" });
+test("reader: a host that does not run the read by id is read at its route, from then on", async () => {
+  for (const run of ["run-400-unknown-operation", undefined]) {
+    const { fetch, sent } = serving({ ...(run ? { run } : {}), read: "read-200-ok" });
+    const reader = clientOf(fetch).reader(BUNDLE);
+    await reader.read("notes/one");
+    await reader.read("notes/one");
+    assert.deepEqual(sent.map((request) => request.path), ["/sync/v1/run", "/sync/v1/read", "/sync/v1/read"], String(run));
+    assert.deepEqual(sent[1]?.body, { bundleId: BUNDLE, documentId: "notes/one" });
+  }
+  // A refusal of the read itself is the answer, never a reason to try the route.
+  const absent = serving({ run: "read-200-document-not-found", read: "read-200-ok" });
+  await assert.rejects(clientOf(absent.fetch).reader(BUNDLE).read("notes/one"), (error: unknown) => (error as { code?: string }).code === "ENOENT");
+  assert.deepEqual(absent.sent.map((request) => request.path), ["/sync/v1/run"]);
+});
+
+test("port runner: an older host is checked once per client, while parallel reads wait for the answer", async () => {
+  for (const [run, runs] of [["run-400-unknown-operation", 1], ["read-200-ok", 8]] as const) {
+    const { fetch, sent } = host((pathname) => replay(pathname.endsWith("/run") ? run : "read-200-ok"));
+    const reader = clientOf(fetch).reader(BUNDLE);
+    await Promise.all(Array.from({ length: 8 }, () => reader.read("notes/one")));
+    assert.equal(sent.filter((request) => request.path === "/sync/v1/run").length, runs, run);
+    assert.equal(sent.length, runs === 1 ? 9 : 8, run);
+  }
+  // One decision for the client, its `within` clients and its write path.
+  const older = serving({ run: "run-400-unknown-operation", read: "read-200-ok" });
+  const client = clientOf(older.fetch);
+  await client.reader(BUNDLE).read("notes/one");
+  await client.reader(BUNDLE).read("notes/one");
+  await client.within("south").reader(BUNDLE).read("notes/one");
+  assert.deepEqual(older.sent.map((request) => request.path), ["/sync/v1/run", "/sync/v1/read", "/sync/v1/read", "/sync/v1/read"]);
+});
+
+test("port runner: an answer over its bound names the route that gave it", async () => {
+  const big = JSON.stringify({ ok: true, operationId: "documents.history.v1", data: "x".repeat(2 * 1024 * 1024) });
+  const { fetch } = host((pathname) => (pathname.endsWith("/run") ? replay("run-400-unknown-operation") : new Response(big, { status: 200, headers: { "content-type": "application/json" } })));
+  await assert.rejects(clientOf(fetch).history(BUNDLE, { documentId: "notes/via", limit: 20 }), (error: unknown) => {
+    assert.ok(isAnswerTooLarge(error));
+    assert.equal(((error as HostedCarrierError).cause as { route?: string }).route, "/sync/v1/history");
+    return true;
+  });
+});
+
+test("history: the golden page, newest first, run by id", async () => {
+  const { fetch, sent } = serving({ run: "run-200-ok" });
   const answer = await clientOf(fetch).history(BUNDLE, { documentId: "notes/via", limit: 20 });
   assert.equal(answer.ok, true);
   assert.ok(answer.ok && answer.page.versions.length > 0);
-  assert.deepEqual(sent[0]?.body, { bundleId: BUNDLE, documentId: "notes/via", limit: 20 });
+  // The same page the history route answers, byte for byte.
+  assert.equal(fixture("run-200-ok").response.body, fixture("history-200-ok").response.body);
+  assert.deepEqual(sent.map((request) => request.path), ["/sync/v1/run"]);
+  assert.deepEqual(sent[0]?.body, { bundleId: BUNDLE, operationId: "documents.history.v1", input: { bundleId: BUNDLE, documentId: "notes/via", limit: 20 } });
+  // The kernel's refusal is the page's answer, not a reason to try the route.
+  const absent = serving({ run: "run-200-document-not-found", history: "history-200-ok" });
+  const refused = await clientOf(absent.fetch).history(BUNDLE, { documentId: "notes/absent", limit: 20 });
+  assert.equal(!refused.ok && refused.refusal.code, "document_not_found");
+  assert.deepEqual(absent.sent.map((request) => request.path), ["/sync/v1/run"]);
+});
+
+test("history: a host that does not run it by id is read at the history route, from then on", async () => {
+  for (const run of ["run-400-unknown-operation", undefined]) {
+    const { fetch, sent } = serving({ ...(run ? { run } : {}), history: "history-200-ok" });
+    const client = clientOf(fetch);
+    for (let page = 0; page < 2; page += 1) {
+      const answer = await client.history(BUNDLE, { documentId: "notes/via", limit: 20 });
+      assert.ok(answer.ok && answer.page.versions.length > 0);
+    }
+    assert.deepEqual(sent.map((request) => request.path), ["/sync/v1/run", "/sync/v1/history", "/sync/v1/history"], String(run));
+    assert.deepEqual(sent[1]?.body, { bundleId: BUNDLE, documentId: "notes/via", limit: 20 });
+  }
+  // The run's other refusals are the answer.
+  const invalid = serving({ run: "run-400-invalid-input", history: "history-200-ok" });
+  await assert.rejects(clientOf(invalid.fetch).history(BUNDLE, { documentId: "notes/via", limit: 20 }), (error: unknown) => error instanceof RemoteError && error.code === "invalid_input");
+  assert.deepEqual(invalid.sent.map((request) => request.path), ["/sync/v1/run"]);
 });
 
 test("listOperations: the golden listing, and bundle_not_found as a refusal", async () => {
@@ -298,7 +367,7 @@ test("malformed answers are MalformedAnswer naming the route", async () => {
     ["/sync/v1/whoami", () => clientOf(host(() => json({ principalId: "p", tenantIds: ["a"], workspaces: [{ tenantId: "a", slug: "Not A Slug" }] })).fetch).whoami()],
     ["/sync/v1/whoami", () => clientOf(host(() => json({ principalId: "p", tenantIds: ["a", "b"], workspaces: [{ tenantId: "a", slug: null }, { tenantId: "a", slug: null }] })).fetch).whoami()],
     ["/sync/v1/bundles", () => clientOf(host(() => json({ ok: true, data: {} })).fetch).bundles()],
-    ["/sync/v1/history", () => clientOf(host(() => json({ ok: true, operationId: "documents.history.v1", data: { versions: "no" } })).fetch).history(BUNDLE, { documentId: "notes/via", limit: 20 })],
+    ["/sync/v1/run", () => clientOf(host(() => json({ ok: true, operationId: "documents.history.v1", data: { versions: "no" } })).fetch).history(BUNDLE, { documentId: "notes/via", limit: 20 })],
     ["/sync/v1/operations", () => clientOf(host(() => json({ operations: "no" })).fetch).listOperations(BUNDLE)],
     ["/sync/v1/run", () => clientOf(host(() => json({ ok: true, operationId: "other.v1", data: {} })).fetch).runOperation(BUNDLE, "documents.history.v1", {})],
   ];
@@ -344,6 +413,7 @@ test("a route a gateway does not have yet is HostedRouteNotServed naming it", as
   for (const [route, call] of [
     ["/sync/v1/history", () => client.history(BUNDLE, { documentId: "notes/via", limit: 20 })],
     ["/sync/v1/operations", () => client.listOperations(BUNDLE)],
+    // A run by id names the run route, even for an id an older host served on a route of its own.
     ["/sync/v1/run", () => client.runOperation(BUNDLE, "documents.history.v1", {})],
   ] as const) {
     await assert.rejects(call(), (error: unknown) => {
@@ -379,12 +449,10 @@ test("the error classes are core's own identities, re-exported", () => {
 // ── within ─────────────────────────────────────────────────────────────────────────────────
 
 test("within: bundle-scoped requests name <slug>/<id>; unscoped ones and the answers do not", async () => {
-  const { fetch, sent } = host((pathname) => {
+  const { fetch, sent } = host((pathname, body) => {
     if (pathname.endsWith("/whoami")) return replay("whoami-200");
     if (pathname.endsWith("/bundles")) return replay("bundles-200");
-    if (pathname.endsWith("/read")) return replay("read-200-ok-qualified");
-    if (pathname.endsWith("/run")) return replay("run-200-ok-qualified");
-    if (pathname.endsWith("/history")) return replay("history-200-ok");
+    if (pathname.endsWith("/run")) return replay(body.operationId === "documents.read.v1" ? "read-200-ok-qualified" : "run-200-ok-qualified");
     return replay("operations-200");
   });
   const client = clientOf(fetch).within("south");
@@ -395,11 +463,10 @@ test("within: bundle-scoped requests name <slug>/<id>; unscoped ones and the ans
   await client.listOperations(BUNDLE);
   await client.runOperation(BUNDLE, "documents.history.v1", { documentId: "notes/via" });
   const named = Object.fromEntries(sent.map((request) => [request.path.slice("/sync/v1/".length), request.body.bundleId]));
+  assert.equal(sent.filter((request) => request.path === "/sync/v1/run").length, 3, "the read, the history page and the run");
   assert.deepEqual(named, {
     whoami: undefined,
     bundles: undefined,
-    read: `south/${BUNDLE}`,
-    history: `south/${BUNDLE}`,
     operations: `south/${BUNDLE}`,
     run: `south/${BUNDLE}`,
   });

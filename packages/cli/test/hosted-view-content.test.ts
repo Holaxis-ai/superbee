@@ -84,7 +84,7 @@ test("view read: the page's key, version, size and type, pinned to the registrat
   );
   assert.match(String((record.help as string[])[0]), new RegExp(`view update ${VIEW} --expected-version ${h.v1}`));
   assert.doesNotMatch(JSON.stringify(record), /board v1/);
-  assert.deepEqual(routes(h), ["/sync/v1/whoami", "/sync/v1/read", "/sync/v1/view-content-read"]);
+  assert.deepEqual(routes(h), ["/sync/v1/whoami", "/sync/v1/run", "/sync/v1/view-content-read"]);
   assert.deepEqual(h.host.requests.at(-1)!.body, { bundleId: BUNDLE, registryId: VIEW, expectedRegistryVersion: h.host.docs.get(VIEW)!.version });
   // The TOON rendering carries the same record.
   const out: string[] = [];
@@ -240,7 +240,7 @@ test("a lost answer is settled by one re-read: applied, not applied, or someone 
   assert.equal(record.version, pageVersion("<p>v2</p>"));
   assert.match(String(record.confirmed_by), /re-read/);
   assert.equal(sentUpdates(applied).length, 1);
-  assert.deepEqual(routes(applied).slice(-2), ["/sync/v1/read", "/sync/v1/view-content-read"]);
+  assert.deepEqual(routes(applied).slice(-2), ["/sync/v1/run", "/sync/v1/view-content-read"]);
 
   // A carrier failure before any answer, and nothing applied: safe to re-run, said so.
   const lost = await harness();

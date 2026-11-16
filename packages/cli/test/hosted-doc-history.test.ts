@@ -1,5 +1,5 @@
-// `superbee doc history` in a hosted checkout: the host's version chain over `/sync/v1/history`
-// (`documents.history.v1`), read through the checkout's own signed-in person, against the stateful
+// `superbee doc history` in a hosted checkout: the host's version chain, `documents.history.v1` run
+// by id over `/sync/v1/run` (the `/sync/v1/history` route on a host that does not run it by id), read through the checkout's own signed-in person, against the stateful
 // fake of the hosted sync routes. The fake's history answers are held to the host's golden
 // exchanges by `hosted-fake-contract.test.ts`. A local bundle keeps its own behavior (`doc.test.ts`).
 import test from "node:test";
@@ -68,7 +68,11 @@ function edits(host: FakeHost, id: string, n: number): void {
   for (let index = 0; index < n; index += 1) host.put(id, { type: "Note" }, `edit ${index}`);
 }
 
-const historyRequests = (host: FakeHost) => host.requests.filter((request) => request.path === "/sync/v1/history").map((request) => request.body as Record<string, unknown>);
+/** A run of `documents.history.v1`, the one way this CLI reads a current host's history. */
+const isHistoryRun = (request: { path: string; body: unknown }) => request.path === "/sync/v1/run" && (request.body as { operationId?: unknown }).operationId === "documents.history.v1";
+const historyRequests = (host: FakeHost) => host.requests.filter(isHistoryRun).map((request) => (request.body as { input: Record<string, unknown> }).input);
+/** Whether a fetch is a history read: a run of `documents.history.v1`. */
+const readsHistory = (input: string | URL | Request, init?: RequestInit) => isHistoryRun({ path: new URL(String(input)).pathname, body: JSON.parse(String(init?.body ?? "{}")) });
 
 test("a hosted checkout lists the host's chain newest first, with seq, principal ids and agent labels, and no --expected-version line", async () => {
   const h = await harness();
@@ -84,7 +88,7 @@ test("a hosted checkout lists the host's chain newest first, with seq, principal
   });
   assert.deepEqual(
     h.host.requests.map((request) => request.path),
-    ["/sync/v1/whoami", "/sync/v1/history"],
+    ["/sync/v1/whoami", "/sync/v1/run"],
     "the checkout's person is checked before the history is read",
   );
   assert.deepEqual(historyRequests(h.host), [{ bundleId: BUNDLE, documentId: h.id, limit: 20 }]);
@@ -128,7 +132,7 @@ test("--limit 0 pages back 100 at a time with before, to the whole chain", async
 function afterHistory(h: Harness, after: (body: { before?: number; limit?: number }) => void): typeof fetch {
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const answer = await h.host.fetch(input, init);
-    if (String(input).endsWith("/history")) after(JSON.parse(String(init?.body ?? "{}")) as { before?: number; limit?: number });
+    if (readsHistory(input, init)) after((JSON.parse(String(init?.body ?? "{}")) as { input: { before?: number; limit?: number } }).input);
     return answer;
   }) as typeof fetch;
 }
@@ -245,25 +249,60 @@ test("--seq is refused outside a hosted checkout, before anything is read", asyn
   for (const bad of ["0", "x", "-1"]) assert.equal((await rejects(() => history(h, [h.id, `--seq=${bad}`]))).code, "USAGE");
 });
 
+test("a host that does not run history by id is read at /history, and only that route for the rest of the listing", async () => {
+  const h = await harness(new FakeHost({ historyByRun: false }));
+  edits(h.host, h.id, 150);
+  const record = await historyJson(h, [h.id, "--limit", "0"]);
+  assert.equal(record.count, 151);
+  assert.deepEqual((record.versions as { seq: number }[]).map((row) => row.seq), Array.from({ length: 151 }, (_, index) => 151 - index));
+  assert.deepEqual(
+    h.host.requests.map((request) => request.path),
+    ["/sync/v1/whoami", "/sync/v1/run", "/sync/v1/history", "/sync/v1/history", "/sync/v1/history"],
+    "one run refused unknown_operation, then the route for every page",
+  );
+  assert.deepEqual(
+    h.host.requests.filter((request) => request.path === "/sync/v1/history").map((request) => request.body),
+    [
+      { bundleId: BUNDLE, documentId: h.id, limit: 100 },
+      { bundleId: BUNDLE, documentId: h.id, limit: 100, before: 52 },
+      { bundleId: BUNDLE, documentId: h.id, limit: 1, before: 152 },
+    ],
+  );
+  // --seq reads the version's content the same way.
+  h.host.requests.length = 0;
+  const shown = await historyJson(h, [h.id, "--seq", "1"]);
+  assert.equal(shown.content, h.host.histories.get(h.id)![0]!.raw);
+  assert.deepEqual(h.host.requests.map((request) => request.path).slice(-2), ["/sync/v1/run", "/sync/v1/history"]);
+});
+
 test("a gateway from before /history answers its unknown-route 404: 'does not serve document history yet'", async () => {
   const h = await harness(new FakeHost({ history: false }));
   const error = await rejects(() => history(h, [h.id]));
   assert.equal(error.code, "NOT_IMPLEMENTED");
   assert.match(error.message, /does not serve document history yet/);
   assert.equal(error.details?.status, 404);
+  assert.equal(error.details?.route, "/sync/v1/history");
+  // A gateway from before /run too: the same answer.
+  const older = await harness(new FakeHost({ history: false }));
+  const neither = (async (input: string | URL | Request, init?: RequestInit) =>
+    String(input).endsWith("/run") ? Response.json({ error: "not_found" }, { status: 404 }) : older.host.fetch(input, init)) as typeof fetch;
+  const missing = await rejects(() => history(older, [older.id], neither));
+  assert.equal(missing.code, "NOT_IMPLEMENTED");
+  assert.match(missing.message, /does not serve document history yet/);
   // Any other 404 is the host's refusal, not a missing route.
   const h2 = await harness();
   const otherNotFound = (async (input: string | URL | Request, init?: RequestInit) =>
-    String(input).endsWith("/history") ? Response.json({ error: { code: "bundle_not_found" } }, { status: 404 }) : h2.host.fetch(input, init)) as typeof fetch;
+    readsHistory(input, init) ? Response.json({ error: { code: "bundle_not_found" } }, { status: 404 }) : h2.host.fetch(input, init)) as typeof fetch;
   const refused = await rejects(() => history(h2, [h2.id], otherNotFound));
   assert.notEqual(refused.code, "NOT_IMPLEMENTED");
+  assert.ok(!h2.host.requests.some((request) => request.path === "/sync/v1/history"), "a refusal is not a reason to try the route");
 });
 
 test("a bundle the host no longer serves is the checkout's conflict, as sync reports it; other refusals go through the hosted translation", async () => {
   const h = await harness();
   const refusing = (code: string, retryable = false) =>
     (async (input: string | URL | Request, init?: RequestInit) =>
-      String(input).endsWith("/history")
+      readsHistory(input, init)
         ? Response.json({ ok: false, operationId: "documents.history.v1", error: { code, message: code, retryable } })
         : h.host.fetch(input, init)) as typeof fetch;
   const gone = await rejects(() => history(h, [h.id], refusing("bundle_not_found")));
@@ -319,13 +358,13 @@ test("an answer outside the page asked for is a contract mismatch, not a listing
   const h = await harness();
   const unasked = (async (input: string | URL | Request, init?: RequestInit) => {
     const answer = await h.host.fetch(input, init);
-    if (!String(input).endsWith("/history")) return answer;
+    if (!readsHistory(input, init)) return answer;
     const body = (await answer.json()) as { data: { versions: Record<string, unknown>[] } };
     body.data.versions[0]!.content = "not asked for";
     return Response.json(body);
   }) as typeof fetch;
   const error = await rejects(() => history(h, [h.id], unasked));
   assert.equal(error.code, "RUNTIME");
-  assert.equal(error.details?.route, "/sync/v1/history");
+  assert.equal(error.details?.route, "/sync/v1/run");
   assert.equal(error.details?.retryable, false);
 });
