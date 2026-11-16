@@ -61,6 +61,17 @@ test("nested references, outside bundle links, cross-source links and fragments 
   assert.deepEqual(extractMarkdownLinks(doc.body, { skipCode: true }).map(link => resolveConceptId(doc.id, link.href)), [prepared.recipes[0]!.recipe.references[0]!.doc.id, "tasks/one", prepared.recipes[1]!.recipe.docs[0]!.id]);
   assert.match(doc.body, /#part/); assert.ok(doc.body.includes("`[code](../../references/guide.md)`")); assert.match(doc.body, /Decision prose/);
 });
+test("relocation preserves the first query or fragment delimiter and long suffixes", () => {
+  const suffixes = ["", "?query=one#part", "#part?query=one", "?#", "#".repeat(16384)];
+  for (const suffix of suffixes) {
+    const source = input("a", "Decision", {}, `[target](../../tasks/one.md${suffix})`);
+    const doc = qualifyRecipeSet([source]).recipes[0]!.recipe.docs[0]!;
+    const [link] = extractMarkdownLinks(doc.body);
+    assert.ok(link);
+    assert.equal(resolveConceptId(doc.id, link.href), "tasks/one");
+    assert.equal(link.href.slice(link.href.indexOf(".md") + 3), suffix);
+  }
+});
 test("strict inventory, unsupported relocation, malformed config and reserved fields refuse", () => {
   for (const extra of [{ path: "readme.txt", bytes: "hidden asset" }, { path: "views/app.html", bytes: "<html>" }, { path: "../escape.md", bytes: "x" }]) { const a = input("a", "A"); a.files = [...a.files, extra]; assert.throws(() => qualifyRecipeSet([a])); }
   for (const body of ['<a href="x.md">x</a>', "[x][ref]\n[ref]: x.md", "[x](image.png)", "[x](../../../missing/doc.md)"]) assert.throws(() => qualifyRecipeSet([input("a", "A", {}, body)]));

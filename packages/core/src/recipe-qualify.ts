@@ -215,7 +215,11 @@ export function qualifyRecipeSet(inputs: readonly RecipeQualificationInput[], ex
           const localSegments = normalizeSegments([...from.split("/").slice(0,-1), ...relativePath.split("/")]);
           if (localSegments[0] === ".." && !cross) fail(`${entry.key}/${from}: structural link '${span.href}' leaves its recipe without an unambiguous selected destination`);
         }
-        return relativeHref(to, destination ?? local) + (/[?#].*$/.exec(span.href)?.[0] ?? "");
+        const queryStart = span.href.indexOf("?");
+        const fragmentStart = span.href.indexOf("#");
+        const suffixStart = queryStart < 0 ? fragmentStart
+          : fragmentStart < 0 ? queryStart : Math.min(queryStart, fragmentStart);
+        return relativeHref(to, destination ?? local) + (suffixStart < 0 ? "" : span.href.slice(suffixStart));
       });
     }
     const output: RecipeFile[] = [];
