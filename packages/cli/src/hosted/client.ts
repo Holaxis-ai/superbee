@@ -195,6 +195,16 @@ function wording(client: HostedClient, target: HostedTarget, resume: string | un
         throw readFailure(error, `${prefix}/view-content-update`, viewContentMissing);
       }
     },
+    async createView(bundleId, request) {
+      try {
+        return await client.createView(bundleId, request);
+      } catch (error) {
+        throw readFailure(error, `${prefix}/view-create`, {
+          message: `${target.origin} does not offer View creation yet`,
+          help: "a later release of the host offers it",
+        });
+      }
+    },
     async listOperations(bundleId, listOptions = {}) {
       try {
         return await client.listOperations(bundleId);

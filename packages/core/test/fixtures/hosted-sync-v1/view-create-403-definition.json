@@ -1,0 +1,23 @@
+{
+  "name": "view-create-403-definition",
+  "description": "A create by a person whose write grant does not carry the definitions flag: refused definition_writes_refused, nothing saved.",
+  "route": "/sync/v1/view-create",
+  "rows": [
+    "403 definition_writes_refused"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"name\":\"status-board\",\"title\":\"Product Overview\",\"access\":\"bundle-read\",\"html\":\"<!doctype html><title>Overview</title><p>Product overview</p>\"}"
+  },
+  "response": {
+    "status": 403,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"views.create.v1\",\"error\":{\"code\":\"definition_writes_refused\",\"writeState\":\"not_applied\",\"retryable\":false}}",
+    "truncated": false
+  }
+}

@@ -159,6 +159,7 @@ export const BEHAVIOR_ASSIGNMENTS = [
   selector("viewOpen", "leading-navigation", 1),
   ordinary("viewRead", 1),
   ordinary("viewUpdate", 1),
+  ordinary("viewCreate", 1),
   ordinary("sync", 0),
   ordinary("version", 0),
   ordinary("sessionStart", 0),

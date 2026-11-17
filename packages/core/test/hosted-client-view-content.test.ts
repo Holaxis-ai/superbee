@@ -3,11 +3,14 @@
  * against a scripted host: the request bodies, every answer checked against the bytes it
  * describes, the operation's refusals typed with their write state, an update's lost answer as
  * `write_outcome_unknown` (never resent), a gateway without the routes, and the refusals made
- * before anything is sent.
+ * before anything is sent. `createView` against the `/sync/v1/view-create` golden exchanges.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   bearerCredentials,
@@ -19,6 +22,7 @@ import {
   RemoteError,
   VIEW_CONTENT_MAX_BYTES,
   viewContentVersion,
+  viewCreateTarget,
 } from "../src/hosted-client/index.js";
 
 const ORIGIN = "https://hosted.example";
@@ -164,4 +168,94 @@ test("within: the View content routes name the bundle in the workspace", async (
   const { fetch, sent } = host(() => json(readData()));
   await clientOf(fetch).within("acme").readViewContent(BUNDLE, { registryId: VIEW, expectedRegistryVersion: REGISTRY });
   assert.equal(sent[0]!.body.bundleId, `acme/${BUNDLE}`);
+});
+
+// ── createView ──────────────────────────────────────────────────────────────────────────────
+
+const GOLDEN = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "hosted-sync-v1");
+const golden = (name: string) => JSON.parse(readFileSync(path.join(GOLDEN, `${name}.json`), "utf8")) as { request: { body: string }; response: { status: number; headers: Record<string, string>; body: string } };
+const answering = (name: string) => () => {
+  const { response } = golden(name);
+  return new Response(response.body, { status: response.status, headers: response.headers });
+};
+/** A golden create's request, as the client is asked to send it. */
+const createOf = (name: string) => {
+  const { name: viewName, title, description, access, html } = JSON.parse(golden(name).request.body) as { name: string; title: string; description?: string; access?: "bundle-read" | "none"; html: string };
+  return { name: viewName, title, ...(description === undefined ? {} : { description }), ...(access === undefined ? {} : { access }), html };
+};
+
+test("golden: createView sends the golden request and decodes the created answer", async () => {
+  const { fetch, sent } = host(answering("view-create-200"));
+  const answer = await clientOf(fetch).createView(BUNDLE, createOf("view-create-200"));
+  assert.deepEqual(sent, [{ path: "/sync/v1/view-create", body: JSON.parse(golden("view-create-200").request.body) }]);
+  assert.ok(answer.ok);
+  const html = createOf("view-create-200").html;
+  assert.deepEqual(answer.create, {
+    bundleId: BUNDLE,
+    registryId: "views-registry/product-overview",
+    registryVersion: answer.create.registryVersion,
+    key: "views/product-overview.html",
+    version: version(html),
+    byteCount: Buffer.byteLength(html),
+    contentType: "text/html; charset=utf-8",
+    created: true,
+    requestId: answer.create.requestId,
+  });
+  assert.ok(isViewContentVersion(answer.create.registryVersion));
+});
+
+test("golden: createView's refusals are typed with their target and version, and not applied", async () => {
+  const conflict = host(answering("view-create-409-registry"));
+  const taken = await clientOf(conflict.fetch).createView(BUNDLE, createOf("view-create-409-registry"));
+  assert.ok(!taken.ok);
+  assert.deepEqual([taken.refusal.code, taken.refusal.status, taken.refusal.target, taken.refusal.writeState, taken.refusal.expected], ["version_conflict", 409, "registry", "not_applied", undefined]);
+  assert.ok(isViewContentVersion(taken.refusal.actual));
+  assert.deepEqual(conflict.sent[0]!.body, JSON.parse(golden("view-create-409-registry").request.body));
+  const refused = host(answering("view-create-403-definition"));
+  const denied = await clientOf(refused.fetch).createView(BUNDLE, createOf("view-create-403-definition"));
+  assert.ok(!denied.ok);
+  assert.deepEqual([denied.refusal.code, denied.refusal.status, denied.refusal.writeState], ["definition_writes_refused", 403, "not_applied"]);
+});
+
+test("createView: an answer for another View, page, size or bundle, or with no created flag, is malformed", async () => {
+  const request = createOf("view-create-200");
+  const body = JSON.parse(golden("view-create-200").response.body) as { data: Record<string, unknown> };
+  for (const overrides of [{ registryId: "views-registry/other" }, { key: "views/other.html" }, { version: version("other") }, { byteCount: 1 }, { bundleId: "other" }, { created: "yes" }, { requestId: "" }, { registryVersion: "v1" }]) {
+    const lying = host(() => json({ ...body, data: { ...body.data, ...overrides } }));
+    await assert.rejects(clientOf(lying.fetch).createView(BUNDLE, request), (error: unknown) => isMalformedAnswer(error), JSON.stringify(overrides));
+  }
+});
+
+test("createView: a lost or unreadable answer is write_outcome_unknown and sent once; a host without the route is HostedRouteNotServed", async () => {
+  const request = createOf("view-create-200");
+  for (const answer of [() => refusal("views.create.v1", "write_outcome_unknown", 503, { writeState: "unknown" }), () => new Response("<html>bad gateway</html>", { status: 502 }), () => Promise.reject(new TypeError("socket hang up"))]) {
+    const { fetch, sent } = host(answer);
+    const result = await clientOf(fetch).createView(BUNDLE, request);
+    assert.ok(!result.ok);
+    assert.deepEqual([result.refusal.code, result.refusal.writeState], ["write_outcome_unknown", "unknown"]);
+    assert.equal(sent.length, 1);
+  }
+  const old = host(() => json({ error: "not_found" }, 404));
+  await assert.rejects(clientOf(old.fetch).createView(BUNDLE, request), (error: unknown) => isRouteNotServed(error));
+});
+
+test("createView: refused before sending: a name outside the grammar, a bad title, description or access, a page that is not UTF-8 text within the bound", async () => {
+  const { fetch, sent } = host(() => json({}));
+  const client = clientOf(fetch);
+  const base = { name: "product-overview", title: "Product Overview", html: "<p>x</p>" };
+  for (const name of ["Product", "a/b", "1abc", "-abc", "", `a${"b".repeat(55)}`, "views-registry/product-overview"]) {
+    await assert.rejects(client.createView(BUNDLE, { ...base, name }), RangeError, name);
+  }
+  assert.ok(viewCreateTarget(`a${"b".repeat(54)}`), "56 characters is too many; 55 is the bound");
+  await assert.rejects(client.createView(BUNDLE, { ...base, title: "   " }), RangeError);
+  await assert.rejects(client.createView(BUNDLE, { ...base, title: "t".repeat(121) }), RangeError);
+  await assert.rejects(client.createView(BUNDLE, { ...base, description: "d".repeat(321) }), RangeError);
+  await assert.rejects(client.createView(BUNDLE, { ...base, access: "bundle-propose" as never }), RangeError);
+  await assert.rejects(client.createView(BUNDLE, { ...base, html: "a".repeat(VIEW_CONTENT_MAX_BYTES + 1) }), RangeError);
+  await assert.rejects(client.createView(BUNDLE, { ...base, html: "\ud800" }), RangeError);
+  assert.equal(sent.length, 0);
+  // The bounds themselves are admitted, trimmed and sent with the default access.
+  const ok = host((_, body) => json({ ok: false, operationId: "views.create.v1", error: { code: "invalid_input", writeState: "not_applied", retryable: false } }, 400));
+  await clientOf(ok.fetch).createView(BUNDLE, { ...base, title: ` ${"t".repeat(120)} `, description: "d".repeat(320) });
+  assert.deepEqual(ok.sent[0]!.body, { bundleId: BUNDLE, name: base.name, title: "t".repeat(120), description: "d".repeat(320), access: "bundle-read", html: base.html });
 });

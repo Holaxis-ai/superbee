@@ -201,6 +201,8 @@ export interface FakeHostOptions {
   definitionWrites?: "allowed" | "refused";
   /** False is a gateway from before `/view-content-read` and `/view-content-update`: both are the family's unknown-route 404. */
   viewContent?: boolean;
+  /** False is a gateway from before `/view-create`: the family's unknown-route 404. */
+  viewCreate?: boolean;
   /** False is a gateway from before the paged export: a paged request's body is `400 invalid_input`. */
   exportPaging?: boolean;
   /**
@@ -300,12 +302,14 @@ export class FakeHost {
   readonly viewPages = new Map<string, { key: string; contentType: string; html: string }>();
   /** Every View content update the fake applied, in order. */
   readonly viewUpdates: { registryId: string; html: string }[] = [];
+  /** Every View the fake created (`views.create.v1`), in order. */
+  readonly viewCreates: { registryId: string; html: string }[] = [];
   /**
    * Called before a View content route answers, with the route and body: a response it returns is
    * answered instead; `"apply-then"` with a response applies the update first and then answers it
    * (a lost or failed answer after the write).
    */
-  viewContentHook: ((route: "view-content-read" | "view-content-update", body: Record<string, unknown>) => Response | { applyThen: Response } | undefined) | undefined;
+  viewContentHook: ((route: "view-content-read" | "view-content-update" | "view-create", body: Record<string, unknown>) => Response | { applyThen: Response } | undefined) | undefined;
   /** The data a run of a listed operation other than `documents.history.v1` answers. */
   runHook: ((operationId: string, input: Record<string, unknown>) => unknown) | undefined;
   capabilities: string;
@@ -530,6 +534,8 @@ export class FakeHost {
       case "view-content-read":
       case "view-content-update":
         return this.options.viewContent === false ? unknownRoute() : this.viewContent(route, body);
+      case "view-create":
+        return this.options.viewCreate === false ? unknownRoute() : this.viewCreate(body);
       default:
         return unknownRoute();
     }
@@ -572,6 +578,57 @@ export class FakeHost {
     }
     const answer = Response.json({ ok: true, operationId, data: { bundleId: BUNDLE, registryId, registryVersion: registration.version, key: page.key, changed, version: next, previousVersion: version, byteCount: Buffer.byteLength(html, "utf8"), contentType: page.contentType, requestId: `req-${this.viewUpdates.length}` } });
     return hooked && "applyThen" in hooked ? hooked.applyThen : answer;
+  }
+
+  /**
+   * `views.create.v1`: the registration the host builds (type, title, description, entry, access;
+   * no body) and the page, both expecting absence, compared folded. An equal resend (the same
+   * registration and page bytes) answers `created: false` and writes nothing.
+   */
+  private viewCreate(body: Record<string, unknown>): Response {
+    const operationId = "views.create.v1";
+    const refuse = (status: number, code: string, extra: Record<string, unknown> = {}, writeState = "not_applied") =>
+      Response.json({ ok: false, operationId, error: { code, writeState, retryable: false, ...extra } }, { status });
+    const strings = ["bundleId", "name", "title", "html"];
+    if (!onlyKeys(body, [...strings, "description", "access"]) || strings.some((key) => typeof body[key] !== "string")) return refuse(400, "invalid_input");
+    if (body.bundleId !== BUNDLE) return refuse(403, "bundle_access_denied");
+    const hooked = this.viewContentHook?.("view-create", body);
+    if (hooked instanceof Response) return hooked;
+    if (this.definitionWrites === "refused") return refuse(403, "definition_writes_refused");
+    const name = String(body.name);
+    const title = String(body.title).trim();
+    const description = typeof body.description === "string" ? body.description.trim() : undefined;
+    const access = body.access ?? "bundle-read";
+    const html = String(body.html);
+    if (
+      !/^[a-z][a-z0-9-]{0,54}$/.test(name) ||
+      title === "" || title.length > 120 ||
+      (body.description !== undefined && (description === undefined || description === "" || description.length > 320)) ||
+      (access !== "bundle-read" && access !== "none") ||
+      Buffer.byteLength(html, "utf8") > 512 * 1024
+    ) {
+      return refuse(400, "invalid_input");
+    }
+    const registryId = `views-registry/${name}`;
+    const key = `views/${name}.html`;
+    const frontmatter = { type: "View", title, ...(description === undefined ? {} : { description }), entry: key, access };
+    const raw = stringifyDoc(frontmatter as never, "");
+    const registryVersion = versionOfBytes(raw);
+    const version = pageVersion(html);
+    const answer = (created: boolean) =>
+      Response.json({ ok: true, operationId, data: { bundleId: BUNDLE, registryId, registryVersion, key, version, byteCount: Buffer.byteLength(html, "utf8"), contentType: "text/html; charset=utf-8", created, requestId: `req-create-${this.viewCreates.length}` } });
+    const registration = [...this.docs].find(([id]) => id.toLowerCase() === registryId);
+    const page = [...this.viewPages.values()].find((candidate) => candidate.key.toLowerCase() === key);
+    if (registration?.[1].version === registryVersion && page && pageVersion(page.html) === version) return answer(false);
+    if (registration) return refuse(409, "version_conflict", { target: "registry", actual: registration[1].version });
+    if (page) return refuse(409, "version_conflict", { target: "content", actual: pageVersion(page.html) });
+    this.docs.set(registryId, { frontmatter, body: "", version: registryVersion, raw });
+    this.record(registryId, this.principal, undefined);
+    this.revision += 1;
+    this.viewPages.set(registryId, { key, contentType: "text/html; charset=utf-8", html });
+    this.viewCreates.push({ registryId, html });
+    const created = answer(true);
+    return hooked && "applyThen" in hooked ? hooked.applyThen : created;
   }
 
   /** The root the host stores now: its exact content and version, or null without one. */

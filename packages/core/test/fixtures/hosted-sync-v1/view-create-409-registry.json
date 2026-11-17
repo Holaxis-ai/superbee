@@ -1,0 +1,23 @@
+{
+  "name": "view-create-409-registry",
+  "description": "The same name created again with another title: refused, naming the record that exists and its version; nothing saved.",
+  "route": "/sync/v1/view-create",
+  "rows": [
+    "409 version_conflict"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"name\":\"product-overview\",\"title\":\"Products\",\"access\":\"bundle-read\",\"html\":\"<!doctype html><title>Overview</title><p>Product overview</p>\"}"
+  },
+  "response": {
+    "status": 409,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"views.create.v1\",\"error\":{\"code\":\"version_conflict\",\"writeState\":\"not_applied\",\"retryable\":false,\"target\":\"registry\",\"actual\":\"sha256:434d0e36bd7a926a7465b30eedcbc4d3411a52fa057cd2db93c806a9071cf43b\"}}",
+    "truncated": false
+  }
+}

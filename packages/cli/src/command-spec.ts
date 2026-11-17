@@ -629,6 +629,12 @@ export const CLI_COMMAND_GROUPS = [
         summary: "In a hosted checkout, replace a registered View's page on the host from --file (default: its entry in the checkout), pinned to the page version you started from; uploading never approves execution",
       },
       {
+        id: "viewCreate",
+        leaves: [publicLeaf("viewCreate", "view create", one, undefined, { flags: pathFlags({ flag: "dir", role: "bundle-root" }, { flag: "file", role: "ingress" }) })],
+        usage: "view create <name> --title <text> [--description <text>] [--access bundle-read|none] [--file <path>] [--dir <path>] [--json]",
+        summary: "In a hosted checkout, add a View on the host: its record views-registry/<name> and its page views/<name>.html from --file (default: views/<name>.html in the checkout); needs the permission to change the bundle's model",
+      },
+      {
         id: "sync",
         leaves: [publicLeaf("sync", "sync", zero, 21, DIR_SYNC_SURFACE)],
         usage: "sync [--establish [--yes] | --pull-only | --show-incoming <id> [--out <file> | --body-out <file>] | --inspect --doc <id> [--out <file>] | --resolve keep|take|revise --doc <id> | --restore-deletes | --accept-deletes <token> | --take-host-deletions <token> | --replace-links <id>] [--dir <path>] [--limit <n>]",

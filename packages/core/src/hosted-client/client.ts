@@ -40,18 +40,24 @@ import { HostedCarrierError } from "../hosted-transport/index.js";
 import {
   decodeViewContentRead,
   decodeViewContentUpdate,
+  decodeViewCreate,
   unknownOutcome,
   VIEW_CONTENT_READ_ANSWER_BYTES,
   VIEW_CONTENT_READ_OPERATION,
   VIEW_CONTENT_UPDATE_ANSWER_BYTES,
   VIEW_CONTENT_UPDATE_OPERATION,
+  VIEW_CREATE_OPERATION,
   viewContentReadBody,
   viewContentRefusal,
   viewContentUpdateBody,
+  viewCreateBody,
   type HostedViewContentReadRequest,
   type HostedViewContentReadResult,
+  type HostedViewContentRefusal,
   type HostedViewContentUpdateRequest,
   type HostedViewContentUpdateResult,
+  type HostedViewCreateRequest,
+  type HostedViewCreateResult,
 } from "./view-content.js";
 import type { HostedBundleRow } from "./bundle-listing.js";
 import { HostedRouteNotServed } from "./errors.js";
@@ -305,6 +311,16 @@ export interface HostedClient {
    * (`HostedRouteNotServed`) throw. Uploading a page never approves its execution.
    */
   updateViewContent(bundleId: string, request: HostedViewContentUpdateRequest): Promise<HostedViewContentUpdateResult>;
+  /**
+   * Create a View (`<prefix>/view-create`, `views.create.v1`): the host builds the registration
+   * `views-registry/<name>` and stores the page `views/<name>.html`, both expecting absence. A
+   * resend of the same create answers `created: false` once the first landed, so a caller may
+   * resend once after a lost answer. A lost or unreadable answer is the refusal
+   * `write_outcome_unknown`, `writeState: "unknown"`, as for an update; this method sends once and
+   * the caller decides. A request refused before it left (`RangeError`, the transport's `denied`)
+   * and a host without the route (`HostedRouteNotServed`) throw.
+   */
+  createView(bundleId: string, request: HostedViewCreateRequest): Promise<HostedViewCreateResult>;
 }
 
 /**
@@ -472,6 +488,39 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
     return answer;
   }
 
+  /**
+   * One View write sent once: its `200` envelope to decode, or its refusal. An answer that may
+   * follow an applied write and cannot be read (none at all, a `5xx` without the operation's
+   * refusal) is `write_outcome_unknown`; the caller settles it.
+   */
+  async function sendViewWrite(route: string, body: unknown, operationId: string, act: string): Promise<{ body: unknown } | { refusal: HostedViewContentRefusal }> {
+    let answer: HostedAnswer;
+    try {
+      answer = await send(route, body, VIEW_CONTENT_UPDATE_ANSWER_BYTES);
+    } catch (error) {
+      // `denied` sent nothing; `unavailable` may have left and been applied.
+      if (error instanceof HostedCarrierError && error.code === "unavailable") return { refusal: unknownOutcome(0, `no answer was read; the ${act} may have been applied`) };
+      throw error;
+    }
+    if (answer.status === 200 && (answer.body as { ok?: unknown } | undefined)?.ok === true) return { body: answer.body };
+    if (answer.status === 401) throw readRefusal(answer);
+    let refusal;
+    try {
+      // A refusal that states no write state is unknown only where the host may have failed mid-write.
+      refusal = viewContentRefusal(answer.status, answer.body, operationId, answer.status >= 500 ? "unknown" : "not_applied", route);
+    } catch (error) {
+      // A failure answer this client cannot read says nothing about whether the write applied.
+      if (isMalformedAnswer(error) && answer.status >= 500) return { refusal: unknownOutcome(answer.status, `the host's failure answer could not be read; the ${act} may have been applied`) };
+      // A create's 4xx is a definite refusal even in another operation's envelope: reported with its status, never resent.
+      if (isMalformedAnswer(error) && act === "create") throw readRefusal(answer);
+      throw error;
+    }
+    if (refusal) return { refusal };
+    if (answer.status >= 500) return { refusal: unknownOutcome(answer.status, `the host answered ${answer.status}; the ${act} may have been applied`) };
+    if (answer.status === 200) throw new MalformedAnswer(`${route.slice(route.lastIndexOf("/") + 1)} answered an envelope that is not ${operationId}'s result`, route);
+    throw readRefusal(answer);
+  }
+
   return {
     target,
     prefix,
@@ -565,31 +614,16 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
     async updateViewContent(bundleId, request) {
       const route = `${prefix}/view-content-update`;
       const { body, bytes } = viewContentUpdateBody(bundleId, request);
-      let answer: HostedAnswer;
-      try {
-        answer = await send(route, body, VIEW_CONTENT_UPDATE_ANSWER_BYTES);
-      } catch (error) {
-        // `denied` sent nothing; `unavailable` may have left and been applied.
-        if (error instanceof HostedCarrierError && error.code === "unavailable") return { ok: false, refusal: unknownOutcome(0, "no answer was read; the update may have been applied") };
-        throw error;
-      }
-      if (answer.status === 200 && (answer.body as { ok?: unknown } | undefined)?.ok === true) {
-        return { ok: true, update: decodeViewContentUpdate(bundleId, request, bytes, answer.body, route) };
-      }
-      if (answer.status === 401) throw readRefusal(answer);
-      let refusal;
-      try {
-        // A refusal that states no write state is unknown only where the host may have failed mid-write.
-        refusal = viewContentRefusal(answer.status, answer.body, VIEW_CONTENT_UPDATE_OPERATION, answer.status >= 500 ? "unknown" : "not_applied", route);
-      } catch (error) {
-        // A failure answer this client cannot read says nothing about whether the update applied.
-        if (isMalformedAnswer(error) && answer.status >= 500) return { ok: false, refusal: unknownOutcome(answer.status, "the host's failure answer could not be read; the update may have been applied") };
-        throw error;
-      }
-      if (refusal) return { ok: false, refusal };
-      if (answer.status >= 500) return { ok: false, refusal: unknownOutcome(answer.status, `the host answered ${answer.status}; the update may have been applied`) };
-      if (answer.status === 200) throw new MalformedAnswer(`view-content-update answered an envelope that is not ${VIEW_CONTENT_UPDATE_OPERATION}'s result`, route);
-      throw readRefusal(answer);
+      const answer = await sendViewWrite(route, body, VIEW_CONTENT_UPDATE_OPERATION, "update");
+      if ("refusal" in answer) return { ok: false, refusal: answer.refusal };
+      return { ok: true, update: decodeViewContentUpdate(bundleId, request, bytes, answer.body, route) };
+    },
+    async createView(bundleId, request) {
+      const route = `${prefix}/view-create`;
+      const { body, bytes, registryId, key } = viewCreateBody(bundleId, request);
+      const answer = await sendViewWrite(route, body, VIEW_CREATE_OPERATION, "create");
+      if ("refusal" in answer) return { ok: false, refusal: answer.refusal };
+      return { ok: true, create: decodeViewCreate(bundleId, { registryId, key }, bytes, answer.body, route) };
     },
     async history(bundleId, request) {
       const { route, answer } = await run(bundleId, HISTORY_OPERATION_ID, historyInput(bundleId, request), HOSTED_READ_BOUNDS.historyBytes);

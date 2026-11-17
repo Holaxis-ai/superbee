@@ -58,6 +58,13 @@ export {
   VIEW_CONTENT_MAX_BYTES,
   VIEW_CONTENT_READ_OPERATION,
   VIEW_CONTENT_UPDATE_OPERATION,
+  VIEW_CREATE_ACCESS,
+  VIEW_CREATE_NAME,
+  VIEW_CREATE_OPERATION,
+  VIEW_DESCRIPTION_MAX_CHARS,
+  VIEW_TITLE_MAX_CHARS,
+  viewCreateTarget,
+  viewCreateTextProblem,
   WRITE_OUTCOME_UNKNOWN,
   type HostedViewContent,
   type HostedViewContentReadRequest,
@@ -66,6 +73,10 @@ export {
   type HostedViewContentUpdate,
   type HostedViewContentUpdateRequest,
   type HostedViewContentUpdateResult,
+  type HostedViewCreate,
+  type HostedViewCreateAccess,
+  type HostedViewCreateRequest,
+  type HostedViewCreateResult,
 } from "./view-content.js";
 export { HostedBlobWritesNotServed, HostedRouteNotServed, isRouteNotServed, ROUTE_NOT_SERVED } from "./errors.js";
 export {
