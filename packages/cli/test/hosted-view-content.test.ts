@@ -590,3 +590,60 @@ test("view create: a host without the route is NOT_IMPLEMENTED; a local bundle i
   assert.equal(local.details?.reason, "not_a_hosted_checkout");
   assert.match(local.message, /add the page and its views-registry\/ record as plain files/);
 });
+
+test("view create: a definite answer (a 429, a plain 4xx, another operation's envelope) is sent once and reported as itself", async () => {
+  const answers: [string, () => Response][] = [
+    ["429", () => Response.json({ error: { code: "request_capacity" } }, { status: 429, headers: { "retry-after": "5" } })],
+    ["plain 409", () => Response.json({ error: "gone" }, { status: 409 })],
+    ["another operation's envelope", () => Response.json({ ok: false, operationId: "views.content.update.v1", error: { code: "invalid_input", writeState: "not_applied", retryable: false } }, { status: 400 })],
+  ];
+  for (const [name, answer] of answers) {
+    const h = await harness();
+    h.host.viewContentHook = (route) => (route === "view-create" ? answer() : undefined);
+    await writeFile(path.join(h.folder, NEW_KEY), NEW_PAGE);
+    const error = await rejects(create(h));
+    assert.equal(sentCreates(h).length, 1, `${name}: sent once`);
+    assert.notEqual(error.details?.reason, "write_outcome_unknown", name);
+    if (name === "429") assert.match(`${error.code} ${error.message} ${JSON.stringify(error.details)}`, /429|request_capacity|TRANSIENT|RATE/i);
+  }
+});
+
+test("view create: a local views-registry/<name>.md (any case) is refused before sending, naming the file and the flags", async () => {
+  const h = await harness();
+  await writeFile(path.join(h.folder, NEW_KEY), NEW_PAGE);
+  await writeFile(path.join(h.folder, "views-registry", "Product-Overview.md"), "---\ntype: View\ntitle: Product Overview\nentry: views/product-overview.html\naccess: bundle-read\n---\n");
+  const error = await rejects(create(h));
+  assert.equal(error.code, "USAGE");
+  assert.equal(error.details?.reason, "local_registry_file");
+  assert.match(error.message, /views-registry\/Product-Overview\.md/);
+  assert.match(error.message, /nothing was sent/);
+  assert.match(error.message, /Remove that file and pass its fields as flags/);
+  assert.deepEqual(routes(h), [], "refused before any request");
+});
+
+test("view create: a refusal on the resend does not say nothing was saved; it says the first attempt is unknown and how to check", async () => {
+  const h = await harness();
+  let calls = 0;
+  h.host.viewContentHook = (route) => {
+    if (route !== "view-create") return undefined;
+    calls += 1;
+    return calls === 1
+      ? Response.json({ ok: false, operationId: "views.create.v1", error: { code: "write_outcome_unknown", writeState: "unknown", retryable: false } }, { status: 503 })
+      : Response.json({ ok: false, operationId: "views.create.v1", error: { code: "bundle_access_denied", writeState: "not_applied", retryable: false } }, { status: 403 });
+  };
+  await writeFile(path.join(h.folder, NEW_KEY), NEW_PAGE);
+  const error = await rejects(create(h));
+  assert.equal(error.code, "FORBIDDEN");
+  assert.doesNotMatch(error.message, /nothing was saved/);
+  assert.match(error.message, /the first attempt's outcome is unknown; check with .*view read views-registry\/product-overview/);
+  assert.equal(sentCreates(h).length, 2);
+});
+
+test("view create: when both answers are unreadable, the last one's details are carried", async () => {
+  const h = await harness();
+  h.host.viewContentHook = (route) => (route === "view-create" ? Response.json({ ok: false, operationId: "views.create.v1", error: { code: "write_outcome_unknown", writeState: "unknown", retryable: false } }, { status: 503 }) : undefined);
+  await writeFile(path.join(h.folder, NEW_KEY), NEW_PAGE);
+  const error = await rejects(create(h));
+  assert.equal(error.details?.reason, "write_outcome_unknown");
+  assert.deepEqual((error.details as { last_error?: { code: string; status: number } }).last_error && { code: (error.details as { last_error: { code: string } }).last_error.code, status: (error.details as { last_error: { status: number } }).last_error.status }, { code: "write_outcome_unknown", status: 503 });
+});

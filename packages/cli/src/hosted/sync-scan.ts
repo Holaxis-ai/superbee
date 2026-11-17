@@ -456,6 +456,14 @@ export interface ScanReport {
   replaceLinksApplied?: boolean;
 }
 
+/** True when the checkout's projection tracks the document `id` (folded): a record the host sent, not an unsent local file. */
+export async function projectionTracks(home: string, checkoutId: string, id: string): Promise<boolean> {
+  const value = (await readProjectionJson(home, checkoutId)) as { files?: unknown } | null;
+  if (typeof value?.files !== "object" || value.files === null) return false;
+  const folded = id.toLowerCase();
+  return Object.keys(value.files).some((tracked) => tracked.toLowerCase() === folded);
+}
+
 async function readProjectionJson(home: string, checkoutId: string): Promise<unknown> {
   try {
     return JSON.parse(await readUserStateFile(home, path.join(checkoutDir(home, checkoutId), PROJECTION_FILE), PROJECTION_BYTES)) as unknown;

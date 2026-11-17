@@ -11,7 +11,7 @@
 // (`--expected-version`), the same `sha256:` digest a Portal site pins. An update is sent once and
 // never resent: an outcome the CLI cannot read is settled by reading the page again. Uploading a page
 // never approves its execution; that stays separate (a site's pin, a hosted app slot's approval).
-import { lstat, realpath, writeFile } from "node:fs/promises";
+import { lstat, readdir, realpath, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -107,7 +107,9 @@ host needs you to hold the permission for that; without it nothing is saved.
 
 If a View or a page with that name already exists, nothing is saved and the command names it:
 change an existing View's page with view update. If the answer is lost, the command sends the same
-create once more on its own (safe: a create that already landed answers that it did). The View is
+create once more on its own (safe: a create that already landed answers that it did); a refusal
+of that resend says the first attempt's outcome is unknown. A views-registry/<name>.md written in
+the checkout and never sent is refused: remove it and pass its fields as flags. The View is
 listed in the workspace at once; run sync to pull its record into the checkout. A local or Git
 bundle holds its Views as plain files: add the page and its views-registry/ record directly.
 
@@ -485,6 +487,15 @@ export async function viewCreate(argv: string[], deps: Partial<ViewContentDeps> 
   const { binding, root } = await hostedCheckout("create", values.dir, deps);
   const { registryId, key } = target;
   const located: Located = { binding, root, registryId };
+  // An unsent local record of that name would meet the host's on the next sync: the host builds the record from the flags.
+  // A record the host already sent is left to the host's answer (a View of that name exists).
+  const localRecord = await localRegistryFile(root, name);
+  if (localRecord !== null && !(await (await import("../hosted/sync-scan.js")).projectionTracks(homeOf(deps), binding.checkout_id, localRecord.replace(/\.md$/i, "")))) {
+    throw new CliError("USAGE", `the checkout already holds ${localRecord}, which sync never sends: nothing was sent. Remove that file and pass its fields as flags (--title, --description, --access); the host creates the record and sync brings it back`, {
+      details: { reason: "local_registry_file", file: localRecord },
+      help: usage,
+    });
+  }
   // The host said this person may not change the bundle's model: refused before anything is read or sent.
   if (binding.definition_writes === "refused") throw await definitionsRefused(binding, registryId, { host: binding.origin }, "view create", ": nothing was sent");
 
@@ -503,22 +514,28 @@ export async function viewCreate(argv: string[], deps: Partial<ViewContentDeps> 
   // both writes expect absence and the host answers an equal resend `created: false`.
   let created: HostedViewCreate | undefined;
   let resent = false;
+  let lastUnread: CliError | HostedViewContentRefusal | undefined;
   for (let attempt = 0; attempt < 2 && created === undefined; attempt += 1) {
     resent = attempt > 0;
     let answer;
     try {
       answer = await connection.client.createView(binding.bundle_id, request);
     } catch (error) {
-      // A RUNTIME is an answer the CLI could not read (too large, or outside the contract): the
-      // create may have landed, so it is resent like a lost answer. Anything else was not sent.
-      if (!(error instanceof CliError) || error.code !== "RUNTIME") throw error;
+      // A RUNTIME without an HTTP status is an answer the CLI could not read (too large, or
+      // outside the contract): the create may have landed, so it is resent like a lost answer. A
+      // definite answer (a 429, a plain 4xx, another operation's envelope) is reported as itself,
+      // and anything else was not sent.
+      if (!(error instanceof CliError) || error.code !== "RUNTIME" || typeof (error.details as { status?: unknown } | undefined)?.status === "number") throw error;
+      lastUnread = error;
     }
     if (answer?.ok) created = answer.create;
-    else if (answer && answer.refusal.writeState === "not_applied") throw await createRefusalError(answer.refusal, connection, located, { name, file, again });
+    else if (answer && answer.refusal.writeState === "not_applied") throw await createRefusalError(answer.refusal, connection, located, { name, file, again, resent });
+    else if (answer) lastUnread = answer.refusal;
   }
   if (created === undefined) {
+    const last = lastUnread instanceof CliError ? { last_error: { code: lastUnread.code, message: lastUnread.message, ...(lastUnread.details ?? {}) } } : lastUnread ? { last_error: { code: lastUnread.code, status: lastUnread.status, message: lastUnread.message } } : {};
     throw new CliError("RUNTIME", `the create of '${registryId}' was sent twice and neither answer could be read: it may or may not have been saved`, {
-      details: { reason: "write_outcome_unknown", write_state: "unknown", registry_id: registryId, sent_version: viewContentVersion(bytes) },
+      details: { reason: "write_outcome_unknown", write_state: "unknown", registry_id: registryId, sent_version: viewContentVersion(bytes), ...last },
       help: `check with ${cliInvocation()} view read ${commandToken(registryId)} --dir ${commandToken(binding.path)}: version ${commandToken(viewContentVersion(bytes))} means it was saved; a View not found means it was not, and the same command is safe to re-run`,
     });
   }
@@ -544,9 +561,13 @@ export async function viewCreate(argv: string[], deps: Partial<ViewContentDeps> 
   }, mode));
 }
 
-/** The host's refusal of a create, in the CLI's taxonomy; each says nothing was saved. */
-async function createRefusalError(refusal: HostedViewContentRefusal, connection: CheckoutConnection, located: Located, context: { name: string; file: string; again: CommandText }): Promise<unknown> {
+/** The host's refusal of a create, in the CLI's taxonomy: nothing was saved, or, on the resend, the first attempt's outcome is unknown. */
+async function createRefusalError(refusal: HostedViewContentRefusal, connection: CheckoutConnection, located: Located, context: { name: string; file: string; again: CommandText; resent: boolean }): Promise<unknown> {
   const { binding, registryId } = located;
+  // On the resend, the first attempt's answer was lost: this refusal says nothing about it.
+  const outcome = context.resent
+    ? `: the first attempt's outcome is unknown; check with ${cliInvocation()} view read ${commandToken(registryId)} --dir ${commandToken(binding.path)}`
+    : ": nothing was saved";
   const details = { host: binding.origin, registry_id: registryId, code: refusal.code, write_state: refusal.writeState, message: refusal.message };
   switch (refusal.code) {
     case "version_conflict": {
@@ -555,21 +576,21 @@ async function createRefusalError(refusal: HostedViewContentRefusal, connection:
       const update = target === "content" && refusal.actual
         ? `${cliInvocation()} view update ${commandToken(registryId)} --expected-version ${commandToken(refusal.actual)} --file ${commandToken(context.file)} --dir ${commandToken(binding.path)}`
         : `${cliInvocation()} view read ${commandToken(registryId)} --dir ${commandToken(binding.path)} prints the page version, then ${cliInvocation()} view update ${commandToken(registryId)} --expected-version <version> --file ${commandToken(context.file)}`;
-      return new CliError("CONFLICT", `a View or file named ${context.name} already exists on ${binding.origin} (${target === "content" ? "content" : "registry"}: the ${what}${refusal.actual ? `, version ${refusal.actual}` : ""}): nothing was saved`, {
+      return new CliError("CONFLICT", `a View or file named ${context.name} already exists on ${binding.origin} (${target === "content" ? "content" : "registry"}: the ${what}${refusal.actual ? `, version ${refusal.actual}` : ""})${outcome}`, {
         details: { ...details, reason: "already_exists", target, actual: refusal.actual ?? null },
         help: `to change an existing View's page: ${update}`,
       });
     }
     case "concurrent_change":
-      return new CliError("CONFLICT", `another change landed on ${binding.bundle_id} at the same moment: nothing was saved`, {
+      return new CliError("CONFLICT", `another change landed on ${binding.bundle_id} at the same moment${outcome}`, {
         details: { ...details, reason: "concurrent_change" },
         help: `re-run: ${context.again}`,
       });
     case "definition_writes_refused":
-      return definitionsRefused(binding, registryId, details, "view create", ": nothing was saved");
+      return definitionsRefused(binding, registryId, details, "view create", outcome);
     case "bundle_access_denied":
     case "insufficient_scope":
-      return new CliError("FORBIDDEN", `${binding.origin} refused writing to ${binding.bundle_id} (${refusal.code}): nothing was saved`, {
+      return new CliError("FORBIDDEN", `${binding.origin} refused writing to ${binding.bundle_id} (${refusal.code})${outcome}`, {
         details,
         help: "ask whoever manages access to the bundle",
       });
@@ -578,12 +599,22 @@ async function createRefusalError(refusal: HostedViewContentRefusal, connection:
       return bundleAbsent(binding, connection.client);
     }
     case "invalid_input":
-      return new CliError("USAGE", `${binding.origin} refused the create of '${registryId}' as invalid input: nothing was saved`, { details });
+      return new CliError("USAGE", `${binding.origin} refused the create of '${registryId}' as invalid input${outcome}`, { details });
     default: {
       const { hostedFailure } = await import("../hosted/client.js");
       return hostedFailure(new RemoteError(refusal.message, refusal.code, refusal.status || (refusal.retryable ? 503 : 422)), connection.target, connection.resume);
     }
   }
+}
+
+/** The checkout's own `views-registry/<name>.md`, compared folded, as a folder-relative path; null when it holds none. */
+async function localRegistryFile(root: string, name: string): Promise<string | null> {
+  const list = async (dir: string) => readdir(dir).catch(() => [] as string[]);
+  for (const folder of (await list(root)).filter((entry) => entry.toLowerCase() === "views-registry")) {
+    const file = (await list(path.join(root, folder))).find((entry) => entry.toLowerCase() === `${name}.md`);
+    if (file !== undefined) return `${folder}/${file}`;
+  }
+  return null;
 }
 
 /** The registration's entry as the checkout folder holds it, or null when it holds no valid one. */

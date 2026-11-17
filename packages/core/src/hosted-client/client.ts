@@ -511,6 +511,8 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
     } catch (error) {
       // A failure answer this client cannot read says nothing about whether the write applied.
       if (isMalformedAnswer(error) && answer.status >= 500) return { refusal: unknownOutcome(answer.status, `the host's failure answer could not be read; the ${act} may have been applied`) };
+      // A create's 4xx is a definite refusal even in another operation's envelope: reported with its status, never resent.
+      if (isMalformedAnswer(error) && act === "create") throw readRefusal(answer);
       throw error;
     }
     if (refusal) return { refusal };

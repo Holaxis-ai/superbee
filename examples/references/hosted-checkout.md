@@ -282,7 +282,9 @@ superbee view create <name> --title "<title>" [--description "<text>"] [--access
 the record `views-registry/<name>` and the page `views/<name>.html` (sent from `--file`, default that
 path in the checkout) together. It needs the permission to change the bundle's model. If a View or
 a page with that name already exists, nothing is saved and the command names it. A lost answer is
-resent once on its own, which is safe: a create that already landed answers "already created". The
+resent once on its own, which is safe: a create that already landed answers "already created"; a
+definite refusal (such as a `429`) is never resent. Write only the page: a `views-registry/<name>.md`
+you wrote in the checkout is refused (remove it and pass its fields as flags). The
 View is listed in the workspace at once; `superbee sync` pulls its record, and the checkout's page
 stays as it is.
 
