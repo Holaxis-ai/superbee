@@ -1,23 +1,23 @@
 {
   "name": "view-create-200",
-  "description": "A create of a new View that commits: the registration and the page together.",
+  "description": "A definition writer creates a View: its record views-registry/<name> and its page views/<name>.html, together.",
   "route": "/sync/v1/view-create",
   "rows": [
-    "view create 200 created"
+    "200 ok"
   ],
   "request": {
     "method": "POST",
     "headers": {
       "content-type": "application/json"
     },
-    "body": "{\"bundleId\":\"notes.a\",\"name\":\"product-overview\",\"title\":\"Product Overview\",\"access\":\"bundle-read\",\"html\":\"<!doctype html>\\n<title>Product Overview</title>\\n<p>Hello from the product overview.</p>\\n\"}"
+    "body": "{\"bundleId\":\"notes.a\",\"name\":\"product-overview\",\"title\":\"Product Overview\",\"access\":\"bundle-read\",\"html\":\"<!doctype html><title>Overview</title><p>Product overview</p>\"}"
   },
   "response": {
     "status": 200,
     "headers": {
       "content-type": "application/json"
     },
-    "body": "{\"ok\":true,\"operationId\":\"views.create.v1\",\"data\":{\"bundleId\":\"notes.a\",\"registryId\":\"views-registry/product-overview\",\"registryVersion\":\"sha256:434d0e36bd7a926a7465b30eedcbc4d3411a52fa057cd2db93c806a9071cf43b\",\"key\":\"views/product-overview.html\",\"version\":\"sha256:693e5ce00ecd60d86a5ea2a887c2dfd5db9538ea350f5abfa532bc4b5b1890d8\",\"byteCount\":88,\"contentType\":\"text/html; charset=utf-8\",\"created\":true,\"requestId\":\"4a2f9c1e-8b3d-4e6f-9a1b-0000000000c1\"}}",
+    "body": "{\"ok\":true,\"operationId\":\"views.create.v1\",\"data\":{\"bundleId\":\"notes.a\",\"registryId\":\"views-registry/product-overview\",\"registryVersion\":\"sha256:434d0e36bd7a926a7465b30eedcbc4d3411a52fa057cd2db93c806a9071cf43b\",\"key\":\"views/product-overview.html\",\"version\":\"sha256:1789887215cc9e2e2583971723886d8413b3753363aa110efbe030e432f3345a\",\"byteCount\":61,\"contentType\":\"text/html; charset=utf-8\",\"created\":true,\"requestId\":\"4a2f9c1e-8b3d-4e6f-9a1b-000000000290\"}}",
     "truncated": false
   }
 }

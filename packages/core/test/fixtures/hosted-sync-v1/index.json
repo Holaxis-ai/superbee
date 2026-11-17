@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "description": "Golden /sync/v1 exchanges generated from the real hosted gateway app (createApp: real bearer admission, tenant selection, kernel operations, the write ledger and Miniflare D1/R2 storage; only the identity issuer is a fixture) at the fixed instant 2030-01-01T00:00:00.000Z. Each file is one request and the exact answer bytes; response headers are limited to content-type, etag, x-superbee-root-version and x-superbee-write-settled (and content-disposition on the export). The 200 export answer's zip is recorded as bodyBase64.",
-  "source": "Holaxis-ai/superbee-hosted dcb2261230def3c632410d1b8d9ebd8d96b052d8",
+  "source": "Holaxis-ai/superbee-hosted a9c4e372c7fe8a499d3daec1848a867ec592a1d0",
   "generator": "superbee-hosted test/support/sync-v1-exchanges.ts",
   "exchanges": [
     {
@@ -617,6 +617,33 @@
       "status": 200
     },
     {
+      "name": "view-create-200",
+      "file": "view-create-200.json",
+      "route": "/sync/v1/view-create",
+      "rows": [
+        "200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "view-create-409-registry",
+      "file": "view-create-409-registry.json",
+      "route": "/sync/v1/view-create",
+      "rows": [
+        "409 version_conflict"
+      ],
+      "status": 409
+    },
+    {
+      "name": "view-create-403-definition",
+      "file": "view-create-403-definition.json",
+      "route": "/sync/v1/view-create",
+      "rows": [
+        "403 definition_writes_refused"
+      ],
+      "status": 403
+    },
+    {
       "name": "heads-200-page-first",
       "file": "heads-200-page-first.json",
       "route": "/sync/v1/heads",
@@ -939,33 +966,6 @@
         "blob delete 428 deletions_held"
       ],
       "status": 428
-    },
-    {
-      "name": "view-create-200",
-      "file": "view-create-200.json",
-      "route": "/sync/v1/view-create",
-      "rows": [
-        "view create 200 created"
-      ],
-      "status": 200
-    },
-    {
-      "name": "view-create-409-registry",
-      "file": "view-create-409-registry.json",
-      "route": "/sync/v1/view-create",
-      "rows": [
-        "view create 409 version_conflict registry"
-      ],
-      "status": 409
-    },
-    {
-      "name": "view-create-403-definition",
-      "file": "view-create-403-definition.json",
-      "route": "/sync/v1/view-create",
-      "rows": [
-        "view create 403 definition_writes_refused"
-      ],
-      "status": 403
     }
   ]
 }
