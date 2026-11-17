@@ -661,7 +661,7 @@ function benignTarget(role: CliPathRole, fixture: BoundaryFixture, key: string):
   return ".superbee";
 }
 
-const VIEW_CONTENT_CONTROL = "a local bundle answers view read/update USAGE (not a hosted checkout) after the path guards; hosted-view-content.test.ts runs both in a checkout with an ordinary --file and --out";
+const VIEW_CONTENT_CONTROL = "a local bundle answers view read/update/create USAGE (not a hosted checkout) after the path guards; hosted-view-content.test.ts runs them in a checkout with an ordinary --file and --out";
 
 function qualificationControl(fixture: BoundaryFixture, name: string): string {
   const source = path.join(fixture.outside, "qualification-source");
@@ -851,6 +851,8 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
   { leaf: "viewRead", surface: "--dir", argv: (t) => ["view", "read", "views-registry/missing", "--dir", t, "--json"], controlSkip: VIEW_CONTENT_CONTROL },
   { leaf: "viewUpdate", surface: "--dir", argv: (t) => ["view", "update", "views-registry/missing", "--expected-version", `sha256:${"0".repeat(64)}`, "--dir", t, "--json"], controlSkip: VIEW_CONTENT_CONTROL },
   { leaf: "viewUpdate", surface: "--file", argv: (t) => ["view", "update", "views-registry/missing", "--expected-version", `sha256:${"0".repeat(64)}`, "--file", t, "--dir", ".superbee", "--json"], controlSkip: VIEW_CONTENT_CONTROL },
+  { leaf: "viewCreate", surface: "--dir", argv: (t) => ["view", "create", "missing", "--title", "Missing", "--dir", t, "--json"], controlSkip: VIEW_CONTENT_CONTROL },
+  { leaf: "viewCreate", surface: "--file", argv: (t) => ["view", "create", "missing", "--title", "Missing", "--file", t, "--dir", ".superbee", "--json"], controlSkip: VIEW_CONTENT_CONTROL },
   { leaf: "viewRead", surface: "--out", argv: (t) => ["view", "read", "views-registry/missing", "--out", t, "--dir", ".superbee", "--json"], controlSkip: VIEW_CONTENT_CONTROL },
   {
     // checkout's --dir is the folder a hosted checkout becomes; the guard runs before sign-in or any

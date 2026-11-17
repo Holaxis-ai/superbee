@@ -125,7 +125,8 @@ superbee view open <id>   # one exact local registered View, through a private o
 
 In a hosted checkout, `superbee view read <id>` prints a View page's version on the host and
 `superbee view update <id> --expected-version <version>` replaces the page there (sync never sends
-`views/`). Uploading a page never approves its execution.
+`views/`). Uploading a page never approves its execution. `superbee view create <name> --title
+<title>` adds a new View there from `views/<name>.html`, when you may change the bundle's model.
 
 ## Copying documents between bundles
 

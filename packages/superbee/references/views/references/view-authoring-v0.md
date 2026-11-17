@@ -155,6 +155,14 @@ for a static report or diagram. Re-promoting the HTML updates the open View; the
 with a fresh nonce. If the bundle does not yet declare the View Kind, install its View-bearing
 recipe or promote the supplied `conventions/view.md` once before creating the registry entry.
 
+On a hosted bundle (a folder made by `superbee checkout`), sync never sends `views/` or
+`views-registry/`, so add a View on the host instead: write the page as `views/<name>.html` in the
+checkout, then run `superbee view create <name> --title "<title>"` (optionally `--description` and
+`--file`). The host creates the registry entry and the page together, and the View is listed in the
+workspace at once; `superbee sync` then pulls the registry entry into the checkout. Adding a View
+changes the bundle's model, so it needs that permission on the bundle. `--access` takes only
+`bundle-read` (the default) or `none`. Change the page afterwards with `superbee view update`.
+
 Verify the same registered id in both surfaces: open it with `superbee ui`, then have an MCP-capable
 desktop list and show that View. Confirm narrow and expanded layouts without changing the source.
 Startup messages are optional: a View may stay quiet until human input and never has to send

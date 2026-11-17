@@ -398,3 +398,195 @@ test("only a path that could be a View's page points at view update", () => {
   for (const rel of ["views/board.html", "Views/a/b.HTM", "pages/legacy.html"]) assert.equal(isViewPagePath(rel), true, rel);
   for (const rel of ["views/logo.png", "views/board.md", "notes/page.html", "views", "viewsx/a.html"]) assert.equal(isViewPagePath(rel), false, rel);
 });
+
+// ── view create ───────────────────────────────────────────────────────────────
+
+const NEW_NAME = "product-overview";
+const NEW_VIEW = `views-registry/${NEW_NAME}`;
+const NEW_KEY = `views/${NEW_NAME}.html`;
+const NEW_PAGE = "<!doctype html><p>product overview</p>\n";
+const sentCreates = (h: Harness) => h.host.requests.filter((request) => request.path === "/sync/v1/view-create");
+const create = (h: Harness, extra: string[] = []) => run(h, ["create", NEW_NAME, "--title", "Product Overview", ...extra]);
+const syncOnce = async (h: Harness) => {
+  const out: string[] = [];
+  await sync(["--dir", h.folder, "--json"], { stdout: (text: string) => void out.push(text), auth: h.auth, cwd: h.cwd, fetch: h.host.fetch, write: { sleep: async () => {}, lookupDelayMs: 0 }, sleep: async () => {} });
+  return JSON.parse(out.at(-1)!) as { rows: { id: string; state: string }[] };
+};
+
+test("view create: the checkout's views/<name>.html is sent with the title and default access; the record and page are created", async () => {
+  const h = await harness();
+  await writeFile(path.join(h.folder, NEW_KEY), NEW_PAGE);
+  const record = await create(h, ["--description", "  What we sell  "]);
+  assert.equal(record.view, "create");
+  assert.equal(record.create, "created");
+  assert.equal(record.registry_id, NEW_VIEW);
+  assert.equal(record.key, NEW_KEY);
+  assert.equal(record.version, pageVersion(NEW_PAGE));
+  assert.equal(record.byte_count, Buffer.byteLength(NEW_PAGE));
+  assert.equal(record.access, "bundle-read");
+  assert.equal(record.checkout_copy, "current");
+  assert.equal(record.resent, undefined);
+  assert.match((record.notes as string[]).join("\n"), /listed now in this workspace's Views; run sync to pull the record/);
+  assert.match((record.help as string[])[0]!, /sync --dir/);
+  assert.deepEqual(sentCreates(h).map((request) => request.body), [{ bundleId: BUNDLE, name: NEW_NAME, title: "Product Overview", description: "What we sell", access: "bundle-read", html: NEW_PAGE }]);
+  assert.deepEqual(routes(h), ["/sync/v1/whoami", "/sync/v1/view-create"]);
+  assert.equal(h.host.viewPages.get(NEW_VIEW)!.html, NEW_PAGE);
+  assert.deepEqual(h.host.docs.get(NEW_VIEW)!.frontmatter, { type: "View", title: "Product Overview", description: "What we sell", entry: NEW_KEY, access: "bundle-read" });
+});
+
+test("view create then sync: the unsent local page meets the new record and page, and the checkout ends clean with no conflict or duplicate", async () => {
+  const h = await harness();
+  // The usual journey: the page is written in the checkout first. Sync holds it (it never sends views/).
+  await writeFile(path.join(h.folder, NEW_KEY), NEW_PAGE);
+  const before = await rejects(syncOnce(h));
+  assert.equal(before.code, "CONFLICT", "before the create, sync holds the unsent page");
+  await create(h, ["--file", path.join(h.folder, NEW_KEY), "--access", "none"]);
+  const receipt = await syncOnce(h);
+  assert.deepEqual(receipt.rows.filter((row) => row.state !== "committed"), [], "nothing held, conflicted or refused");
+  // The record came down beside the page; the page is the bytes sent, recorded as the host's.
+  const pulled = await readFile(path.join(h.folder, `${NEW_VIEW}.md`), "utf8");
+  assert.match(pulled, /type: View/);
+  assert.match(pulled, /entry: views\/product-overview\.html/);
+  assert.match(pulled, /access: none/);
+  assert.equal(await readFile(path.join(h.folder, NEW_KEY), "utf8"), NEW_PAGE);
+  // A second sync has nothing to do, and nothing was sent as a document or a page.
+  const again = await syncOnce(h);
+  assert.deepEqual(again.rows.filter((row) => row.state !== "committed"), []);
+  assert.equal(sentCreates(h).length, 1);
+  assert.equal(sentUpdates(h).length, 0);
+  assert.equal(h.host.applied.length, 0, "no document write: the record is the host's");
+});
+
+test("view create --file outside the checkout: created, the checkout holds no copy until sync brings the record", async () => {
+  const h = await harness();
+  const file = path.join(h.cwd, "draft.html");
+  await writeFile(file, NEW_PAGE);
+  const record = await create(h, ["--file", file]);
+  assert.equal(record.create, "created");
+  assert.equal(record.checkout_copy, "absent");
+});
+
+test("view create: a View or page of that name already exists: CONFLICT naming it and view update; nothing saved", async () => {
+  const h = await harness();
+  await writeFile(path.join(h.cwd, "board.html"), NEW_PAGE);
+  const taken = await rejects(run(h, ["create", "board", "--title", "Board", "--file", path.join(h.cwd, "board.html")]));
+  assert.equal(taken.code, "CONFLICT");
+  assert.equal(taken.details?.reason, "already_exists");
+  assert.equal(taken.details?.target, "registry");
+  assert.match(taken.message, /a View or file named board already exists .*\(registry: the record views-registry\/board, version sha256:[0-9a-f]{64}\): nothing was saved/);
+  assert.match(taken.help ?? "", /view read views-registry\/board .* view update views-registry\/board --expected-version <version>/);
+  // A page at the key with no record (an orphan): the content target, and the update pinned to it.
+  h.host.viewPages.set("views-registry/orphan", { key: "views/orphan.html", contentType: "text/html", html: "<p>orphan</p>" });
+  const orphan = await rejects(run(h, ["create", "orphan", "--title", "Orphan", "--file", path.join(h.cwd, "board.html")]));
+  assert.equal(orphan.details?.target, "content");
+  assert.match(orphan.message, /\(content: the page views\/orphan\.html, version /);
+  assert.match(orphan.help ?? "", new RegExp(`view update views-registry/orphan --expected-version ${pageVersion("<p>orphan</p>")}`));
+  assert.equal(h.host.viewCreates.length, 0);
+});
+
+test("view create: refusals from the host each say nothing was saved; a person without the model permission is refused before sending", async () => {
+  const h = await harness();
+  await writeFile(path.join(h.folder, NEW_KEY), NEW_PAGE);
+  for (const [code, status, cli] of [["definition_writes_refused", 403, "FORBIDDEN"], ["bundle_access_denied", 403, "FORBIDDEN"], ["invalid_input", 400, "USAGE"], ["concurrent_change", 409, "CONFLICT"]] as const) {
+    h.host.viewContentHook = () => Response.json({ ok: false, operationId: "views.create.v1", error: { code, writeState: "not_applied", retryable: false } }, { status });
+    const error = await rejects(create(h));
+    assert.equal(error.code, cli, code);
+    assert.match(error.message, /nothing was saved/, code);
+  }
+  assert.equal(sentCreates(h).length, 4, "a refusal is never resent");
+  assert.equal(h.host.viewCreates.length, 0);
+
+  const refused = await harness({ definitionWrites: "refused" });
+  await writeFile(path.join(refused.folder, NEW_KEY), NEW_PAGE);
+  const upFront = await rejects(create(refused));
+  assert.equal(upFront.code, "FORBIDDEN");
+  assert.equal(upFront.details?.reason, "definitions_refused");
+  assert.equal(upFront.details?.command, "view create");
+  assert.match(upFront.message, /you don't have permission to change this bundle's model/);
+  assert.deepEqual(routes(refused), [], "refused before any request");
+});
+
+test("view create: a lost answer is resent once; a landed first attempt answers already created", async () => {
+  // 503 write_outcome_unknown after the create landed: the resend answers created: false.
+  const landed = await harness();
+  let calls = 0;
+  landed.host.viewContentHook = (route) =>
+    route === "view-create" && ++calls === 1 ? { applyThen: Response.json({ ok: false, operationId: "views.create.v1", error: { code: "write_outcome_unknown", writeState: "unknown", retryable: false } }, { status: 503 }) } : undefined;
+  await writeFile(path.join(landed.folder, NEW_KEY), NEW_PAGE);
+  const record = await create(landed);
+  assert.equal(record.create, "already_created");
+  assert.equal(record.resent, true);
+  assert.match((record.notes as string[])[0]!, /already created: your earlier attempt was saved/);
+  assert.equal(record.checkout_copy, "current");
+  assert.equal(sentCreates(landed).length, 2);
+  assert.equal(landed.host.viewCreates.length, 1, "created once");
+
+  // No answer at all and nothing landed: the resend creates it.
+  const lost = await harness();
+  let dropped = false;
+  lost.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input).endsWith("/view-create") && !dropped) {
+      dropped = true;
+      lost.host.requests.push({ path: "/sync/v1/view-create", body: JSON.parse(String(init?.body)), headers: new Headers() });
+      throw new TypeError("socket hang up");
+    }
+    return lost.host.fetch(input, init);
+  }) as typeof fetch;
+  await writeFile(path.join(lost.folder, NEW_KEY), NEW_PAGE);
+  const resent = await create(lost);
+  assert.equal(resent.create, "created");
+  assert.equal(resent.resent, true);
+  assert.equal(sentCreates(lost).length, 2);
+
+  // Both answers lost: outcome unknown, sent exactly twice, naming how to check.
+  const twice = await harness();
+  twice.host.viewContentHook = (route) => (route === "view-create" ? new Response("<html>bad gateway</html>", { status: 502 }) : undefined);
+  await writeFile(path.join(twice.folder, NEW_KEY), NEW_PAGE);
+  const unknown = await rejects(create(twice));
+  assert.equal(unknown.code, "RUNTIME");
+  assert.equal(unknown.details?.reason, "write_outcome_unknown");
+  assert.match(unknown.message, /may or may not have been saved/);
+  assert.match(unknown.help ?? "", /view read views-registry\/product-overview/);
+  assert.equal(sentCreates(twice).length, 2);
+});
+
+test("view create: the name, title, description, access and page are checked before anything is sent", async () => {
+  const h = await harness();
+  await writeFile(path.join(h.folder, NEW_KEY), NEW_PAGE);
+  for (const argv of [
+    ["create", "Product", "--title", "T"],
+    ["create", "a/b", "--title", "T"],
+    ["create", `a${"b".repeat(55)}`, "--title", "T"],
+    ["create", NEW_NAME],
+    ["create", NEW_NAME, "--title", "   "],
+    ["create", NEW_NAME, "--title", "t".repeat(121)],
+    ["create", NEW_NAME, "--title", "T", "--description", "d".repeat(321)],
+    ["create", NEW_NAME, "--title", "T", "--access", "bundle-propose"],
+    ["create", "missing-page", "--title", "T"],
+  ]) {
+    const error = await rejects(run(h, argv));
+    assert.ok(error.code === "USAGE" || error.code === "NOT_FOUND", `${argv.join(" ")}: ${error.code}`);
+  }
+  const big = path.join(h.cwd, "big.html");
+  await writeFile(big, Buffer.alloc(512 * 1024 + 1, 0x61));
+  assert.equal((await rejects(create(h, ["--file", big]))).details?.reason, "too_large");
+  const bad = path.join(h.cwd, "bad.html");
+  await writeFile(bad, Buffer.from([0x3c, 0x70, 0x3e, 0xff, 0xfe]));
+  assert.equal((await rejects(create(h, ["--file", bad]))).details?.reason, "invalid_utf8");
+  assert.deepEqual(routes(h), []);
+});
+
+test("view create: a host without the route is NOT_IMPLEMENTED; a local bundle is told to add the files", async () => {
+  const h = await harness({ viewCreate: false });
+  await writeFile(path.join(h.folder, NEW_KEY), NEW_PAGE);
+  const error = await rejects(create(h));
+  assert.equal(error.code, "NOT_IMPLEMENTED");
+  assert.match(error.message, /does not offer View creation yet/);
+
+  const cwd = await realpath(await mkdtemp(path.join(tmpdir(), "sb-viewc-local-")));
+  const home = await mkdtemp(path.join(tmpdir(), "sb-viewc-local-home-"));
+  await init(["--create-only", "--recipe", "none", "--dir", path.join(cwd, "b")], { stdout: () => {} });
+  const local = await rejects(view(["create", NEW_NAME, "--title", "T", "--dir", path.join(cwd, "b")], { stdout: () => {}, cwd, hosted: { auth: defaultHostedAuthDeps(home, { env: {} }) } }));
+  assert.equal(local.details?.reason, "not_a_hosted_checkout");
+  assert.match(local.message, /add the page and its views-registry\/ record as plain files/);
+});

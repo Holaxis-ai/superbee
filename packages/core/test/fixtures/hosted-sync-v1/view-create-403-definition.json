@@ -1,0 +1,23 @@
+{
+  "name": "view-create-403-definition",
+  "description": "A create by a person without the permission to change the bundle's model: refused; nothing written.",
+  "route": "/sync/v1/view-create",
+  "rows": [
+    "view create 403 definition_writes_refused"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"name\":\"pricing-notes\",\"title\":\"Pricing Notes\",\"access\":\"bundle-read\",\"html\":\"<!doctype html>\\n<title>Product Overview</title>\\n<p>Hello from the product overview.</p>\\n\"}"
+  },
+  "response": {
+    "status": 403,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"views.create.v1\",\"error\":{\"code\":\"definition_writes_refused\",\"writeState\":\"not_applied\",\"retryable\":false}}",
+    "truncated": false
+  }
+}

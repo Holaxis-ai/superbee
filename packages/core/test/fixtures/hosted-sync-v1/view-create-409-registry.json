@@ -1,0 +1,23 @@
+{
+  "name": "view-create-409-registry",
+  "description": "A create naming a View whose registration exists with other bytes: refused, naming the registration's version; nothing written.",
+  "route": "/sync/v1/view-create",
+  "rows": [
+    "view create 409 version_conflict registry"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"name\":\"product-overview\",\"title\":\"Product Overview (copy)\",\"access\":\"bundle-read\",\"html\":\"<!doctype html>\\n<title>Product Overview</title>\\n<p>Hello from the product overview.</p>\\n\"}"
+  },
+  "response": {
+    "status": 409,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"views.create.v1\",\"error\":{\"code\":\"version_conflict\",\"writeState\":\"not_applied\",\"retryable\":false,\"target\":\"registry\",\"actual\":\"sha256:434d0e36bd7a926a7465b30eedcbc4d3411a52fa057cd2db93c806a9071cf43b\"}}",
+    "truncated": false
+  }
+}

@@ -2,6 +2,9 @@
 // registered View's page (its `entry`, under `views/`) read and replaced whole on a hosted
 // checkout's host, through `<sync prefix>/view-content-read` and `<sync prefix>/view-content-update`.
 // Sync never sends `views/` (the scan holds it), so this is the one way a checkout changes a page.
+// `superbee view create <name>` adds a View (`<sync prefix>/view-create`): the host writes its
+// record and page together, and an outcome the CLI cannot read is resent once, which the host
+// answers as already created when the first attempt landed.
 //
 // Both pin the registration's version as the host serves it now, read through the checkout's
 // document reader just before; an update also pins the page's version the author started from
@@ -18,9 +21,14 @@ import { isAnyRegistryId, parseRegistration } from "@superbee/core/page";
 import {
   isViewContentVersion,
   viewContentVersion,
+  viewCreateTarget,
+  viewCreateTextProblem,
   VIEW_CONTENT_MAX_BYTES,
+  VIEW_CREATE_ACCESS,
   type HostedViewContentRefusal,
   type HostedViewContentUpdate,
+  type HostedViewCreate,
+  type HostedViewCreateAccess,
 } from "@superbee/core/hosted-client";
 
 import { parseLeafOrUsage } from "../args.js";
@@ -85,6 +93,34 @@ Options:
   -h, --help              Show this help
 `;
 
+export const VIEW_CREATE_USAGE = `superbee view create — add a View to a hosted checkout's bundle on the host
+
+Usage:
+  superbee view create <name> --title <text> [--description <text>] [--access bundle-read|none] [--file <path>] [--dir <path>] [--json]
+
+In a hosted checkout, adds the View <name> on the host: its record views-registry/<name> and its
+page views/<name>.html, sent from --file (default: views/<name>.html in the checkout folder), at
+most 512 KiB of UTF-8, byte for byte. <name> is a lowercase letter then up to 54 lowercase
+letters, digits or hyphens; the title is 1 to 120 characters and the description at most 320.
+--access is bundle-read (the default) or none. Adding a View changes the bundle's model, so the
+host needs you to hold the permission for that; without it nothing is saved.
+
+If a View or a page with that name already exists, nothing is saved and the command names it:
+change an existing View's page with view update. If the answer is lost, the command sends the same
+create once more on its own (safe: a create that already landed answers that it did). The View is
+listed in the workspace at once; run sync to pull its record into the checkout. A local or Git
+bundle holds its Views as plain files: add the page and its views-registry/ record directly.
+
+Options:
+  --title <text>           The View's title, required
+  --description <text>     A short description
+  --access <value>         bundle-read (default) or none
+  --file <path>            The page to send (default: views/<name>.html in the checkout)
+  --dir <path>             Bundle directory (default: discovered from the cwd)
+  --json                   Emit compact JSON instead of TOON
+  -h, --help               Show this help
+`;
+
 /** Said with every update: uploading and approving execution are separate acts. */
 export const EXECUTION_NOTE =
   "uploading does not approve execution: a Portal site serves the version its portal.config pins until you pin this one, and a hosted app slot needs approving again";
@@ -106,24 +142,31 @@ function homeOf(deps: Partial<ViewContentDeps>): string {
   return deps.hosted?.auth?.home ?? homedir();
 }
 
-/** The hosted checkout the command acts in and the View registration id it names; USAGE anywhere else. */
-async function locate(sub: "read" | "update", rawId: string, dir: string | undefined, deps: Partial<ViewContentDeps>): Promise<Located> {
+/** The hosted checkout the command acts in; USAGE anywhere else. */
+async function hostedCheckout(sub: "read" | "update" | "create", dir: string | undefined, deps: Partial<ViewContentDeps>): Promise<{ binding: CheckoutBinding; root: string }> {
   const target = await resolveLocalBundleTarget(dir, deps.cwd ?? process.cwd());
   const facts = await bundleHomeAt(target.canonicalRoot, { home: homeOf(deps) });
   if (facts.home !== "hosted") {
-    throw new CliError("USAGE", `view ${sub} reaches a hosted checkout's host; this is a ${facts.home} bundle, whose View pages are plain files: ${sub === "read" ? "read" : "edit"} the file directly`, {
+    const act = sub === "read" ? "read the file directly" : sub === "update" ? "edit the file directly" : "add the page and its views-registry/ record as plain files";
+    throw new CliError("USAGE", `view ${sub} reaches a hosted checkout's host; this is a ${facts.home} bundle, whose View pages are plain files: ${act}`, {
       details: { reason: "not_a_hosted_checkout", home: facts.home },
       help: `${cliInvocation()} view list --dir ${commandToken(target.canonicalRoot)} names each View; its page is the registration's entry file`,
     });
   }
-  const bundle = await openBundle(target.canonicalRoot);
+  return { binding: facts.binding, root: target.canonicalRoot };
+}
+
+/** The hosted checkout the command acts in and the View registration id it names; USAGE anywhere else. */
+async function locate(sub: "read" | "update", rawId: string, dir: string | undefined, deps: Partial<ViewContentDeps>): Promise<Located> {
+  const { binding, root } = await hostedCheckout(sub, dir, deps);
+  const bundle = await openBundle(root);
   const registryId = await resolveConceptIdCliArgument(bundle, rawId);
   if (!isAnyRegistryId(registryId)) {
     throw new CliError("USAGE", `'${registryId}' is not a View registration id (views-registry/<name>)`, {
-      help: `${cliInvocation()} view list --dir ${commandToken(facts.binding.path)}`,
+      help: `${cliInvocation()} view list --dir ${commandToken(binding.path)}`,
     });
   }
-  return { binding: facts.binding, root: target.canonicalRoot, registryId };
+  return { binding, root, registryId };
 }
 
 /** The registration as the host serves it now: its version (the pin) and its entry. */
@@ -206,11 +249,11 @@ async function refusalError(refusal: HostedViewContentRefusal, connection: Check
   }
 }
 
-async function definitionsRefused(binding: CheckoutBinding, registryId: string, details: Record<string, unknown>): Promise<CliError> {
+async function definitionsRefused(binding: CheckoutBinding, registryId: string, details: Record<string, unknown>, command: "view update" | "view create" = "view update", outcome = ""): Promise<CliError> {
   const { DEFINITIONS_REFUSED } = await import("../hosted/sync-scan.js");
   const { why, instead } = DEFINITIONS_REFUSED;
-  return new CliError("FORBIDDEN", `'view update' refused: ${why} (bundle ${binding.bundle_id} on ${binding.origin}); ${instead}`, {
-    details: { ...details, reason: "definitions_refused", command: "view update", bundle_id: binding.bundle_id, registry_id: registryId },
+  return new CliError("FORBIDDEN", `'${command}' refused: ${why} (bundle ${binding.bundle_id} on ${binding.origin})${outcome}; ${instead}`, {
+    details: { ...details, reason: "definitions_refused", command, bundle_id: binding.bundle_id, registry_id: registryId },
     help: instead,
   });
 }
@@ -384,6 +427,165 @@ export async function viewUpdate(argv: string[], deps: Partial<ViewContentDeps> 
   }, mode));
 }
 
+// ── view create ───────────────────────────────────────────────────────────────
+
+/** Said with every create: where the View shows, and how the checkout gets its record. */
+const LISTED_NOTE = "listed now in this workspace's Views; run sync to pull the record into the checkout";
+
+export async function viewCreate(argv: string[], deps: Partial<ViewContentDeps> = {}): Promise<void> {
+  const stdout = deps.stdout ?? ((text: string) => void process.stdout.write(text));
+  const { values, positionals } = parseLeafOrUsage(
+    () =>
+      parseArgs({
+        args: argv,
+        options: {
+          title: { type: "string" },
+          description: { type: "string" },
+          access: { type: "string" },
+          file: { type: "string" },
+          dir: { type: "string" },
+          json: { type: "boolean" },
+          help: { type: "boolean", short: "h" },
+        },
+        allowPositionals: true,
+      }),
+    CLI_LEAVES.viewCreate,
+  );
+  if (values.help) {
+    stdout(renderUsage(VIEW_CREATE_USAGE));
+    return;
+  }
+  const mode = resolveMode(values);
+  const cwd = deps.cwd ?? process.cwd();
+  const name = positionals[0]!;
+  const usage = `${cliInvocation()} view create <name> --title <text> [--description <text>] [--access bundle-read|none] [--file <path>]`;
+  const target = viewCreateTarget(name);
+  if (!target) {
+    throw new CliError("USAGE", `'${name}' is not a View name: a lowercase letter then up to 54 lowercase letters, digits or hyphens (the record is views-registry/<name>, the page views/<name>.html): nothing was sent`, {
+      details: { reason: "invalid_name", name },
+      help: usage,
+    });
+  }
+  if (values.title === undefined) throw new CliError("USAGE", "view create requires --title: the View's title, 1 to 120 characters", { help: usage });
+  for (const [field, value] of [["title", values.title], ["description", values.description]] as const) {
+    const problem = value === undefined ? null : viewCreateTextProblem(field, value);
+    if (problem) throw new CliError("USAGE", `--${field}: ${problem}: nothing was sent`, { details: { reason: `invalid_${field}` }, help: usage });
+  }
+  const access = values.access ?? "bundle-read";
+  if (!(VIEW_CREATE_ACCESS as readonly string[]).includes(access)) {
+    throw new CliError("USAGE", `--access must be ${VIEW_CREATE_ACCESS.join(" or ")}, not '${access}': nothing was sent`, { details: { reason: "invalid_access", access }, help: usage });
+  }
+  let given: string | undefined;
+  if (values.file !== undefined) {
+    if (values.file.trim() === "") throw new CliError("USAGE", "--file was given an empty value: pass the page's path", { help: usage });
+    given = path.resolve(cwd, values.file);
+    // Caller-supplied bytes never come from private state.
+    assertPathOutsidePrivateState(given, homeOf(deps));
+  }
+  const { binding, root } = await hostedCheckout("create", values.dir, deps);
+  const { registryId, key } = target;
+  const located: Located = { binding, root, registryId };
+  // The host said this person may not change the bundle's model: refused before anything is read or sent.
+  if (binding.definition_writes === "refused") throw await definitionsRefused(binding, registryId, { host: binding.origin }, "view create", ": nothing was sent");
+
+  const file = given ?? path.join(root, ...key.split("/"));
+  // The checkout's own page is read only through plain folders: a symbolic link on the way could reach outside the checkout.
+  if (given === undefined && (await parentUnsafe(root, file))) pageBytes({ state: "unsafe" }, file);
+  const read = given === undefined ? await readLeafNoFollowWithin(file, VIEW_CONTENT_MAX_BYTES) : await readExternalFileBytesNoFollowWithin(file, VIEW_CONTENT_MAX_BYTES, homeOf(deps));
+  const bytes = pageBytes(read, file);
+  const html = decodePage(bytes, file);
+
+  const again = commandFragment`${cliInvocation()} view create ${commandToken(name)} --title ${commandToken(values.title)}${values.description === undefined ? commandFragment`` : commandFragment` --description ${commandToken(values.description)}`}${values.access === undefined ? commandFragment`` : commandFragment` --access ${commandToken(access)}`}${given === undefined ? commandFragment`` : commandFragment` --file ${commandToken(given)}`} --dir ${commandToken(binding.path)}${values.json ? commandFragment` --json` : commandFragment``}`;
+  const connection = await openCheckoutConnection(binding, deps.hosted, again, homeOf(deps));
+  const request = { name, title: values.title, ...(values.description === undefined ? {} : { description: values.description }), access: access as HostedViewCreateAccess, html };
+
+  // Sent at most twice: a create whose outcome is unknown is resent once, which is safe because
+  // both writes expect absence and the host answers an equal resend `created: false`.
+  let created: HostedViewCreate | undefined;
+  let resent = false;
+  for (let attempt = 0; attempt < 2 && created === undefined; attempt += 1) {
+    resent = attempt > 0;
+    let answer;
+    try {
+      answer = await connection.client.createView(binding.bundle_id, request);
+    } catch (error) {
+      // A RUNTIME is an answer the CLI could not read (too large, or outside the contract): the
+      // create may have landed, so it is resent like a lost answer. Anything else was not sent.
+      if (!(error instanceof CliError) || error.code !== "RUNTIME") throw error;
+    }
+    if (answer?.ok) created = answer.create;
+    else if (answer && answer.refusal.writeState === "not_applied") throw await createRefusalError(answer.refusal, connection, located, { name, file, again });
+  }
+  if (created === undefined) {
+    throw new CliError("RUNTIME", `the create of '${registryId}' was sent twice and neither answer could be read: it may or may not have been saved`, {
+      details: { reason: "write_outcome_unknown", write_state: "unknown", registry_id: registryId, sent_version: viewContentVersion(bytes) },
+      help: `check with ${cliInvocation()} view read ${commandToken(registryId)} --dir ${commandToken(binding.path)}: version ${commandToken(viewContentVersion(bytes))} means it was saved; a View not found means it was not, and the same command is safe to re-run`,
+    });
+  }
+
+  const copy = await checkoutCopy({ binding, home: homeOf(deps), file, sentBytes: bytes, update: created });
+  stdout(render({
+    view: "create",
+    create: created.created ? "created" : "already_created",
+    registry_id: created.registryId,
+    registry_version: created.registryVersion,
+    key: created.key,
+    version: created.version,
+    byte_count: created.byteCount,
+    access,
+    ...(resent ? { resent: true } : {}),
+    checkout_copy: copy.state,
+    notes: [
+      ...(created.created ? [] : ["already created: your earlier attempt was saved"]),
+      LISTED_NOTE,
+      ...(copy.note ? [copy.note] : []),
+    ],
+    help: [`${cliInvocation()} sync --dir ${commandToken(binding.path)}`],
+  }, mode));
+}
+
+/** The host's refusal of a create, in the CLI's taxonomy; each says nothing was saved. */
+async function createRefusalError(refusal: HostedViewContentRefusal, connection: CheckoutConnection, located: Located, context: { name: string; file: string; again: CommandText }): Promise<unknown> {
+  const { binding, registryId } = located;
+  const details = { host: binding.origin, registry_id: registryId, code: refusal.code, write_state: refusal.writeState, message: refusal.message };
+  switch (refusal.code) {
+    case "version_conflict": {
+      const target = refusal.target ?? "registry";
+      const what = target === "content" ? `page views/${context.name}.html` : `record ${registryId}`;
+      const update = target === "content" && refusal.actual
+        ? `${cliInvocation()} view update ${commandToken(registryId)} --expected-version ${commandToken(refusal.actual)} --file ${commandToken(context.file)} --dir ${commandToken(binding.path)}`
+        : `${cliInvocation()} view read ${commandToken(registryId)} --dir ${commandToken(binding.path)} prints the page version, then ${cliInvocation()} view update ${commandToken(registryId)} --expected-version <version> --file ${commandToken(context.file)}`;
+      return new CliError("CONFLICT", `a View or file named ${context.name} already exists on ${binding.origin} (${target === "content" ? "content" : "registry"}: the ${what}${refusal.actual ? `, version ${refusal.actual}` : ""}): nothing was saved`, {
+        details: { ...details, reason: "already_exists", target, actual: refusal.actual ?? null },
+        help: `to change an existing View's page: ${update}`,
+      });
+    }
+    case "concurrent_change":
+      return new CliError("CONFLICT", `another change landed on ${binding.bundle_id} at the same moment: nothing was saved`, {
+        details: { ...details, reason: "concurrent_change" },
+        help: `re-run: ${context.again}`,
+      });
+    case "definition_writes_refused":
+      return definitionsRefused(binding, registryId, details, "view create", ": nothing was saved");
+    case "bundle_access_denied":
+    case "insufficient_scope":
+      return new CliError("FORBIDDEN", `${binding.origin} refused writing to ${binding.bundle_id} (${refusal.code}): nothing was saved`, {
+        details,
+        help: "ask whoever manages access to the bundle",
+      });
+    case "bundle_not_found": {
+      const { bundleAbsent } = await import("../hosted/refusals.js");
+      return bundleAbsent(binding, connection.client);
+    }
+    case "invalid_input":
+      return new CliError("USAGE", `${binding.origin} refused the create of '${registryId}' as invalid input: nothing was saved`, { details });
+    default: {
+      const { hostedFailure } = await import("../hosted/client.js");
+      return hostedFailure(new RemoteError(refusal.message, refusal.code, refusal.status || (refusal.retryable ? 503 : 422)), connection.target, connection.resume);
+    }
+  }
+}
+
 /** The registration's entry as the checkout folder holds it, or null when it holds no valid one. */
 async function localRegistrationEntry(root: string, registryId: string): Promise<string | null> {
   try {
@@ -476,7 +678,8 @@ async function checkoutCopy(input: {
   home: string;
   file: string;
   sentBytes: Uint8Array;
-  update: HostedViewContentUpdate;
+  /** The page the host now holds; `previousVersion` is the one it replaced, absent for a create. */
+  update: { readonly registryId: string; readonly key: string; readonly version: string; readonly previousVersion?: string };
 }): Promise<{ state: "current" | "stale" | "differs" | "absent" | "none"; note?: string }> {
   const { binding, update } = input;
   // The registration's page as the host names it: the checkout path of the page just written.
@@ -494,10 +697,10 @@ async function checkoutCopy(input: {
       ? { state: "current" }
       : { state: "current", note: `another command holds the checkout, so sync may list ${entry} as held until it is recorded; record it with ${cliInvocation()} view update ${commandToken(update.registryId)} --expected-version ${commandToken(update.version)} --dir ${commandToken(binding.path)} (a no-op update of the same bytes)` };
   }
-  if (version === update.previousVersion) {
+  if (update.previousVersion !== undefined && version === update.previousVersion) {
     return { state: "stale", note: `the checkout's ${entry} still holds the previous page (${update.previousVersion}); copy the new page there if you keep editing it in the checkout` };
   }
-  return { state: "differs", note: `the checkout's ${entry} holds neither the previous page nor the new one; it was left as it is` };
+  return { state: "differs", note: `the checkout's ${entry} holds ${update.previousVersion === undefined ? "other bytes than the page sent" : "neither the previous page nor the new one"}; it was left as it is` };
 }
 
 /** Record that the checkout's copy holds the host's page, re-reading it under the checkout lock; false when another command holds the checkout. */

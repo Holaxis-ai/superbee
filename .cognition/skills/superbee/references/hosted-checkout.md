@@ -269,9 +269,24 @@ when the whole body fit in one page, so never loop on it. A page is not the docu
 it back as the body. To edit, use `doc read <id> --body-out <path-outside-bundle>`, edit that file,
 then `doc update <id> --body-file <path> --expected-version <version>`.
 
-## View pages: `view read` and `view update`
+## View pages: `view create`, `view read` and `view update`
 
-Sync never sends `views/`. To change a View's page on the host:
+Sync never sends `views/` or `views-registry/`. To add a View on the host, write its page in the
+checkout and create it:
+
+```sh
+superbee view create <name> --title "<title>" [--description "<text>"] [--access bundle-read|none]
+```
+
+`<name>` is a lowercase letter then up to 54 lowercase letters, digits or hyphens; the host creates
+the record `views-registry/<name>` and the page `views/<name>.html` (sent from `--file`, default that
+path in the checkout) together. It needs the permission to change the bundle's model. If a View or
+a page with that name already exists, nothing is saved and the command names it. A lost answer is
+resent once on its own, which is safe: a create that already landed answers "already created". The
+View is listed in the workspace at once; `superbee sync` pulls its record, and the checkout's page
+stays as it is.
+
+To change a View's page on the host:
 
 ```sh
 superbee view read <viewId> --out <new-file>      # version and size; --out saves the exact bytes

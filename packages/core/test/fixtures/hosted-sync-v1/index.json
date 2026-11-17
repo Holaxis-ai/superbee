@@ -939,6 +939,33 @@
         "blob delete 428 deletions_held"
       ],
       "status": 428
+    },
+    {
+      "name": "view-create-200",
+      "file": "view-create-200.json",
+      "route": "/sync/v1/view-create",
+      "rows": [
+        "view create 200 created"
+      ],
+      "status": 200
+    },
+    {
+      "name": "view-create-409-registry",
+      "file": "view-create-409-registry.json",
+      "route": "/sync/v1/view-create",
+      "rows": [
+        "view create 409 version_conflict registry"
+      ],
+      "status": 409
+    },
+    {
+      "name": "view-create-403-definition",
+      "file": "view-create-403-definition.json",
+      "route": "/sync/v1/view-create",
+      "rows": [
+        "view create 403 definition_writes_refused"
+      ],
+      "status": 403
     }
   ]
 }

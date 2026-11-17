@@ -139,6 +139,7 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
     viewOpen: simple(CLI_LEAVES.viewOpen, ["view", "open"], ["existing"], [...dir, "--no-open", "--json"]),
     viewRead: simple(CLI_LEAVES.viewRead, ["view", "read"], ["existing"], dir),
     viewUpdate: simple(CLI_LEAVES.viewUpdate, ["view", "update"], ["existing"], [...dir, "--expected-version", `sha256:${"0".repeat(64)}`]),
+    viewCreate: simple(CLI_LEAVES.viewCreate, ["view", "create"], ["existing"], [...dir, "--title", "Existing"]),
     sync: simple(CLI_LEAVES.sync, ["sync"], [], dir),
     version: simple(CLI_LEAVES.version, ["version"], []),
     sessionStart: simple(CLI_LEAVES.sessionStart, ["session-start"], [], [...dir, "--no-update-check"]),

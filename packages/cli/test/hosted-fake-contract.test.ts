@@ -66,7 +66,7 @@ const NOT_MODELED: Readonly<Record<string, string>> = Object.freeze({
 const VERSION = /^sha256:[a-f0-9]{64}$/;
 
 /** String keys whose value selects a row or an outcome, and so must equal the host's. */
-const DISCRIMINATORS: ReadonlySet<string> = new Set(["operationId", "code", "writeState", "status", "kind", "surface", "scope", "encoding", "consistency", "error", "definitionWrites", "rootWrites", "rule"]);
+const DISCRIMINATORS: ReadonlySet<string> = new Set(["operationId", "code", "writeState", "status", "kind", "surface", "scope", "encoding", "consistency", "error", "definitionWrites", "rootWrites", "rule", "target"]);
 
 /**
  * A value's shape: keys and types all the way down, with the value itself wherever it is a
@@ -287,6 +287,14 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   const rootless = new FakeHost({ rootWrites: "allowed" });
   rootless.clearRoot();
   await observe("root-200-ok-created", sendTo(rootless, "root", { bundleId: BUNDLE, content: "# notes.a\n\nOur front page.\n", expectAbsent: true }, { requestId: null }));
+
+  // View create: a new View, a second create of that name with another record, and a person the
+  // host does not allow to change the bundle's model. The golden requests, sent to the fake's bundle.
+  const viewCreate = (name: string) => ({ ...JSON.parse(golden.get(name)!.request.body), bundleId: BUNDLE });
+  const views = new FakeHost({ definitionWrites: "allowed" });
+  await observe("view-create-200", sendTo(views, "view-create", viewCreate("view-create-200")));
+  await observe("view-create-409-registry", sendTo(views, "view-create", viewCreate("view-create-409-registry")));
+  await observe("view-create-403-definition", sendTo(new FakeHost({ definitionWrites: "refused" }), "view-create", viewCreate("view-create-403-definition")));
 
   for (const [name, exchange] of golden) {
     if (isExport(exchange)) continue;
