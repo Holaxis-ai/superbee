@@ -8,6 +8,7 @@
  * one source per corpus key and keeps it; nothing here re-reads a document after the build.
  */
 import { sha256HexOfUtf8 } from "../sha256.js";
+import { isConventionRecord } from "../convention-record.js";
 import {
   BODY_OCCURRENCE_CAP,
   SEARCH_ALGORITHM,
@@ -221,6 +222,7 @@ export function memorySearchSource(
         if (filters.type !== undefined && row.exactType !== filters.type) continue;
         if (filters.tag !== undefined && !row.exactTags.includes(filters.tag)) continue;
         if (filters.prefix !== undefined && !row.indexedId.startsWith(filters.prefix)) continue;
+        if (filters.excludeConventions && isConventionRecord(row.indexedId, row.exactType)) continue;
         const evidence = evidenceOf(row, terms);
         if (evidence !== undefined) held.push(evidence);
       }

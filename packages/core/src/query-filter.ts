@@ -1,10 +1,10 @@
 /** Browser-safe, storage-free query predicate shared by every head-projection consumer. */
+import { isConventionRecord } from "./convention-record.js";
 import type { ConceptId, Frontmatter, QueryFilter, SourceIdentity } from "./types.js";
 
 /**
- * THE canonical {@link QueryFilter} predicate — every facet (`prefix`, `type`, `tags`, `fields`,
- * `sources`),
- * ANDed. Kept in a storage-free module so both Node consumers and the browser View bridge can use
+ * THE canonical {@link QueryFilter} predicate: all supplied facets are ANDed.
+ * Kept in a storage-free module so both Node consumers and the browser View bridge can use
  * the same scalar/array/string-coercion semantics without importing the filesystem-backed engine.
  */
 export function matchesFilter(
@@ -13,6 +13,7 @@ export function matchesFilter(
 ): boolean {
   if (filter.prefix && !doc.id.startsWith(filter.prefix)) return false;
   if (filter.type && doc.frontmatter.type !== filter.type) return false;
+  if (filter.excludeConventions && isConventionRecord(doc.id, doc.frontmatter.type)) return false;
   if (filter.tags && filter.tags.length > 0) {
     const tags = Array.isArray(doc.frontmatter.tags) ? doc.frontmatter.tags : [];
     if (!filter.tags.every((tag) => tags.includes(tag))) return false;

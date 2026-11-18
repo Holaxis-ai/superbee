@@ -443,6 +443,8 @@ export interface InitBundleOptions {
 
 /** Filter for {@link query}. Provided facets are ANDed; reserved files are always excluded. */
 export interface QueryFilter {
+  /** Exclude records of type Convention under the canonical conventions/ prefix. */
+  excludeConventions?: boolean;
   /** Restrict to concepts whose frontmatter `type` equals this value. */
   type?: string;
   /** Restrict to concepts carrying ALL of these tags. */

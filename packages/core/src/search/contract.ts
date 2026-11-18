@@ -88,6 +88,8 @@ export interface SearchStopV1 {
 
 /** The exact filters a source applies before it answers evidence. */
 export interface SearchFiltersV1 {
+  /** Exclude records of type Convention under the canonical conventions/ prefix. */
+  readonly excludeConventions?: boolean;
   readonly type?: string;
   readonly tag?: string;
   /** Leading characters of the document id. */
@@ -99,6 +101,8 @@ export interface SearchRequestV1 {
   readonly query: string;
   /** `auto` (default): every term, then any term without conversational words when nothing matched. */
   readonly match?: SearchMatchV1;
+  /** Exclude records of type Convention under the canonical conventions/ prefix. */
+  readonly excludeConventions?: boolean;
   /** Exact frontmatter `type`. */
   readonly type?: string;
   /** Exact declared tag. */

@@ -11,8 +11,7 @@
  */
 import { KindConformanceError, prepareDocumentMutationCandidate } from "../document-mutation.js";
 import { InvalidInputError, OkfActorError } from "../errors.js";
-import { buildKindRegistry, CONVENTION_TYPE, CONVENTIONS_PREFIX, type KindRegistry } from "../kinds.js";
-import { matchesFilter } from "../query-filter.js";
+import { buildKindRegistry, isConventionRecord, type KindRegistry } from "../kinds.js";
 import type { OkfDocument } from "../types.js";
 import type { ValidationWarning } from "../validation.js";
 
@@ -43,7 +42,7 @@ export interface BundleKindFindings {
 
 /** Whether `loadKinds` builds the Kind registry from this document: a `Convention` under `conventions/`. */
 export function isRegistryConvention(doc: OkfDocument): boolean {
-  return matchesFilter(doc, { prefix: CONVENTIONS_PREFIX, type: CONVENTION_TYPE });
+  return isConventionRecord(doc.id, doc.frontmatter.type);
 }
 
 /** The Kind registry a bundle holding `documents` loads, built with `loadKinds`' own filter and builder. */
