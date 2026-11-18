@@ -1,6 +1,6 @@
 /**
  * The `@superbee/core/search` boundary: the subpath imports only itself, core's pure SHA-256, canonical paths, typed errors, the shared document scan, heads digest and
- * erased types, and names no Node global, so a Worker, a browser page and the CLI load the same
+ * convention identity and erased types, and names no Node global, so a Worker, a browser page and the CLI load the same
  * bytes. The browser-bundle test runs the built subpath in a sandbox with only TextEncoder and
  * TextDecoder; this one fences the source so a new import is refused before anything is built.
  */
@@ -20,6 +20,7 @@ const ALLOWED_OUTSIDE = new Map([
   ["../errors.js", "value"],
   ["../heads-digest.js", "value"],
   ["../document-scan.js", "value"],
+  ["../convention-record.js", "value"],
   ["../types.js", "type-only"],
 ]);
 const NODE_GLOBALS = new Set(["Buffer", "process", "require", "createRequire", "global", "__dirname", "__filename"]);
@@ -85,9 +86,12 @@ test("the fence refuses an outside import, a value import of types, a node: impo
 
 test("the fence admits only the named pure dependencies, not other pure core modules", () => {
   const file = path.join(SEARCH_ROOT, "planted.ts");
-  for (const module of ["paths", "errors", "heads-digest"])
+  for (const module of ["paths", "errors", "heads-digest", "convention-record"])
     assert.deepEqual(violationsIn(file, `import { value } from "../${module}.js";`), []);
   assert.deepEqual(violationsIn(file, 'import { matchesFilter } from "../query-filter.js";'), [
     'search/planted.ts:1: reaches outside the search subpath: "../query-filter.js"',
+  ]);
+  assert.deepEqual(violationsIn(file, 'import { isConventionRecord } from "../kinds.js";'), [
+    'search/planted.ts:1: reaches outside the search subpath: "../kinds.js"',
   ]);
 });

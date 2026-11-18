@@ -25,6 +25,8 @@
  * between pure parsing and the bundle read, over the same ONE registry.
  */
 import { parseKindDeprecation, kindDeprecationProblems, type KindDeprecation } from "./kind-deprecation.js";
+import { CONVENTION_TYPE } from "./convention-record.js";
+export { CONVENTION_TYPE, CONVENTIONS_PREFIX, isConventionId, isConventionRecord } from "./convention-record.js";
 export { inspectKindDeprecatedUsage, kindDeprecationTransition, kindDeprecationProblems } from "./kind-deprecation.js";
 export type { KindDeprecation, DeprecatedUsage } from "./kind-deprecation.js";
 import { isOkfLifecycleStatus, OKF_LIFECYCLE_STATUSES } from "./okf-lifecycle.js";
@@ -33,21 +35,6 @@ import { parseIsoInstant } from "./verification.js";
 import type { ValidationWarning } from "./validation.js";
 export type { ValidationWarning } from "./validation.js";
 import type { ConceptId, Frontmatter, OkfDocument } from "./types.js";
-
-/** The bundle-relative prefix a kind convention doc MUST live under to be discovered. */
-export const CONVENTIONS_PREFIX = "conventions/";
-
-/**
- * True for an id `loadKinds` reads a convention from: under {@link CONVENTIONS_PREFIX} exactly as
- * spelled (case-sensitive). A case variant is not a convention id; a host that fences folded ids
- * refuses it rather than let it govern after a case-insensitive checkout.
- */
-export function isConventionId(id: string): boolean {
-  return id.startsWith(CONVENTIONS_PREFIX);
-}
-
-/** The OKF `type` value a kind convention doc itself carries. */
-export const CONVENTION_TYPE = "Convention";
 
 /** A kind's declared required/optional fields and any enum-restricted field values. */
 export interface KindFields {

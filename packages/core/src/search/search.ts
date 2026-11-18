@@ -43,7 +43,7 @@ export interface SearchOptionsV1 {
 }
 
 const CURSOR_VERSION = 1;
-const REQUEST_MEMBERS = new Set(["query", "match", "type", "tag", "prefix", "limit", "cursor", "facets"]);
+const REQUEST_MEMBERS = new Set(["query", "match", "type", "tag", "prefix", "excludeConventions", "limit", "cursor", "facets"]);
 
 /** A lone surrogate: matched by code unit in memory, but it has no UTF-8 form a native index can bind. */
 const LONE_SURROGATE = /[\uD800-\uDFFF]/u;
@@ -94,10 +94,13 @@ function checkRequest(request: SearchRequestV1): CheckedRequest {
       throw error;
     }
   }
-  const filters = {
+  if (request.excludeConventions !== undefined && typeof request.excludeConventions !== "boolean")
+    throw new SearchInputError("filter");
+  const filters: SearchFiltersV1 = {
     ...(type === undefined ? {} : { type }),
     ...(tag === undefined ? {} : { tag }),
     ...(prefix === undefined ? {} : { prefix }),
+    ...(request.excludeConventions ? { excludeConventions: true } : {}),
   };
   const limit = request.limit ?? SEARCH_LIMITS.defaultRows;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > SEARCH_LIMITS.maxRows) throw new SearchInputError("limit");
@@ -137,6 +140,7 @@ export function validateSearchRequest(input: unknown): SearchRequestV1 {
     ...(request.type === undefined ? {} : { type: request.type }),
     ...(request.tag === undefined ? {} : { tag: request.tag }),
     ...(request.prefix === undefined ? {} : { prefix: request.prefix }),
+    ...(request.excludeConventions === undefined ? {} : { excludeConventions: request.excludeConventions }),
     ...(request.limit === undefined ? {} : { limit: request.limit }),
     ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
     ...(request.facets === undefined ? {} : { facets: [...request.facets] }),
@@ -146,7 +150,7 @@ export function validateSearchRequest(input: unknown): SearchRequestV1 {
 function bindingOf(
   corpusKey: string,
   scope: string | undefined,
-  state: Record<string, string | null | undefined>,
+  state: Record<string, string | boolean | null | undefined>,
 ): string {
   return sha256HexOfUtf8(
     canonicalJson({
@@ -243,6 +247,7 @@ export async function searchDocuments(
     tag: tag ?? null,
     // Absent when unused, so a request without a prefix binds as it did before the filter existed.
     prefix,
+    excludeConventions: filters.excludeConventions,
   });
   const start = request.cursor === undefined ? 0 : decodeCursor(request.cursor, binding, hits.length);
   const page = hits.slice(start, start + limit);

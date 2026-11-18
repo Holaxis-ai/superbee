@@ -180,6 +180,35 @@ test("queryHeads ≡ query minus bodies over RemoteBackend (push-down path)", as
   await assertParity(bundle, await seed(bundle));
 });
 
+test("query and head projections exclude precisely the Kind convention records when requested", async () => {
+  const { bundle: remote } = recordingWireBundle();
+  const rows = [
+    { id: "conventions/invalid", type: "Convention" },
+    { id: "conventions/nested/duplicate-a", type: "Convention", governs: "Note" },
+    { id: "conventions/nested/duplicate-b", type: "Convention", governs: "Note" },
+    { id: "conventions/ordinary", type: "Note" },
+    { id: "conventions/lowercase", type: "convention" },
+    { id: "Conventions/upper-prefix", type: "Convention" },
+    { id: "notes/definition", type: "Convention" },
+  ];
+  const expected = [
+    "Conventions/upper-prefix", "conventions/lowercase", "conventions/ordinary", "notes/definition",
+  ];
+  assert.equal(matchesFilter({ id: "conventions/untyped", frontmatter: {} }, { excludeConventions: true }), true);
+  for (const bundle of [freshMemoryBundle(), remote]) {
+    for (const { id, ...frontmatter } of rows) await writeDocVersioned(bundle, { id, frontmatter, body: "" });
+    for (const read of [query, queryHeads]) {
+      const all = await read(bundle, {});
+      const scoped = await read(bundle, { excludeConventions: true });
+      assert.equal(all.length, rows.length);
+      assert.deepEqual((await read(bundle, { excludeConventions: false })).map(({ id }) => id), all.map(({ id }) => id));
+      assert.deepEqual(scoped.map(({ id }) => id).sort(), expected);
+      const typed = await read(bundle, { excludeConventions: true, type: "Convention" });
+      assert.deepEqual(typed.map(({ id }) => id).sort(), ["Conventions/upper-prefix", "notes/definition"]);
+    }
+  }
+});
+
 // ── 2. thinness: what actually crosses the wire ───────────────────────────────
 
 test("a remote heads scan is fields=frontmatter round-trips carrying no bodies", async () => {

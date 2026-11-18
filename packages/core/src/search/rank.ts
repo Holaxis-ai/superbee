@@ -3,6 +3,7 @@
  * excerpt window are portal-webmcp 0.3.1's (`search.ts`), read from evidence instead of an index
  * row, so every source ranks with this one code.
  */
+import { isConventionRecord } from "../convention-record.js";
 import {
   BODY_OCCURRENCE_CAP,
   EXCERPT_LEAD_BYTES,
@@ -95,6 +96,7 @@ export function rankEvidence(
     if (filters.type !== undefined && evidence.type !== filters.type) continue;
     if (filters.tag !== undefined && !evidence.tags.includes(filters.tag)) continue;
     if (filters.prefix !== undefined && !evidence.id.startsWith(filters.prefix)) continue;
+    if (filters.excludeConventions && isConventionRecord(evidence.id, evidence.type)) continue;
     const value = score(evidence, query, match);
     if (value === undefined) continue;
     hits.push(Object.freeze({ evidence, score: value.score, matchedTerms: value.matchedTerms }));

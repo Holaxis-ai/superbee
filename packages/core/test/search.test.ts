@@ -112,6 +112,42 @@ test("pages walk the whole ranking; a cursor is refused for another corpus, scop
   assert.equal((await searchDocuments(republished, { query: "lock", type: "Odd", limit: 3 }, { scope: "canal" })).total, 11);
 });
 
+test("convention exclusion precedes evidence, fallback, facets and pagination", async () => {
+  const source = memorySearchSource([
+    doc("conventions/invalid", { type: "Convention" }, "amber violet"),
+    doc("conventions/nested/duplicate", { type: "Convention" }, "amber violet"),
+    doc("conventions/ordinary", { type: "Note" }, "amber"),
+    doc("conventions/untyped", {}, "amber"),
+    doc("notes/convention", { type: "Convention" }, "violet"),
+  ], { key: "conventions-scope" });
+  const unscoped = { query: "amber violet", limit: 1 } as const;
+  const scoped = { ...unscoped, excludeConventions: true, facets: ["type"] } as const;
+  const all = await searchDocuments(source, unscoped);
+  assert.equal(all.total, 2);
+  assert.equal((await searchDocuments(source, { ...unscoped, excludeConventions: false })).nextCursor, all.nextCursor);
+  const first = await searchDocuments(source, scoped);
+  assert.equal(first.query.fallbackUsed, true);
+  assert.equal(first.total, 3);
+  const otherPages = await searchDocuments(source, { ...scoped, limit: 2, cursor: first.nextCursor! });
+  assert.deepEqual([...first.hits, ...otherPages.hits].map(({ id }) => id).sort(), [
+    "conventions/ordinary", "conventions/untyped", "notes/convention",
+  ]);
+  assert.equal(first.facets?.type?.find(({ value }) => value === "Convention")?.count, 1);
+  assert.equal((await refusal(searchDocuments(source, { ...scoped, cursor: all.nextCursor! }))).reason, "cursor");
+  assert.equal((await refusal(searchDocuments(source, { ...unscoped, cursor: first.nextCursor! }))).reason, "cursor");
+
+  const batch = await source.evidence(["amber", "violet"], { excludeConventions: true }, { maxInstances: 100 });
+  assert.deepEqual(batch.documents.map(({ id }) => id).sort(), ["conventions/ordinary", "conventions/untyped", "notes/convention"]);
+  assert.equal(batch.volume, (await source.evidence(["amber", "violet"], {}, { maxInstances: 100 })).volume);
+  const unfiltered: SearchSource = {
+    ...source,
+    evidence: (terms, _filters, bounds, stop) => source.evidence(terms, {}, bounds, stop),
+  };
+  assert.deepEqual(await searchDocuments(unfiltered, scoped), first);
+  assert.deepEqual(validateSearchRequest(scoped), scoped);
+  assert.throws(() => validateSearchRequest({ ...scoped, excludeConventions: "true" }), { reason: "filter" });
+});
+
 test("a page of long hits that would pass the answer budget ends early with a cursor at the cut", async () => {
   const words = Array.from({ length: 16 }, (_, n) => `word${n}`);
   const prose = 'The towpath "runs" east\tpast the lock and the old mill. '.repeat(12);
