@@ -11,7 +11,12 @@ import {
 import * as runtime from "../dist/index.js";
 import * as runtimeActions from "../dist/action-bridge.js";
 import * as runtimePreparation from "../dist/action-preparation.js";
-import { BRIDGE_QUERY_ORDERS, GRAPH_MAX_DOCUMENTS, GRAPH_MAX_RELATIONSHIPS } from "../dist/bridge.js";
+import {
+  BRIDGE_QUERY_ORDERS,
+  BRIDGE_SERVICE_LIMITS,
+  GRAPH_MAX_DOCUMENTS,
+  GRAPH_MAX_RELATIONSHIPS,
+} from "../dist/bridge.js";
 
 test("view-runtime's action contract paths are the View host package's, not a copy", () => {
   assert.deepEqual(Object.keys(runtimeActions).sort(), Object.keys(viewHostActions).sort());
@@ -25,10 +30,11 @@ test("view-runtime's action contract paths are the View host package's, not a co
   assert.equal(runtime.prepareViewDocumentAction, viewHostPreparation.prepareViewDocumentAction);
 });
 
-test("the operation-mapped host's query orders and graph ceilings equal the bridge service's", () => {
+test("the operation-mapped host's query orders and its graph and edges ceilings equal the bridge service's", () => {
   assert.deepEqual([...QUERY_ORDERS], [...BRIDGE_QUERY_ORDERS]);
   assert.equal(HOST_GRAPH_MAX_DOCUMENTS, GRAPH_MAX_DOCUMENTS);
   assert.equal(HOST_GRAPH_MAX_RELATIONSHIPS, GRAPH_MAX_RELATIONSHIPS);
   assert.equal(BRIDGE_LIMITS.graphDocuments, GRAPH_MAX_DOCUMENTS);
   assert.equal(BRIDGE_LIMITS.graphRelationships, GRAPH_MAX_RELATIONSHIPS);
+  assert.equal(BRIDGE_LIMITS.edges, BRIDGE_SERVICE_LIMITS.edges);
 });

@@ -29,7 +29,7 @@
  * the host calls `invalidate()` and answers nothing more, and when `stop()` runs waiting requests are
  * dropped. In both cases the page removes the View's frame (`invalidate` is where it does so).
  */
-import { parseActionBridgeMessage, actionReply, type DocumentAction } from "./action-bridge.js";
+import { ACTION_BRIDGE_PROTOCOL, parseActionBridgeMessage, actionReply, type DocumentAction } from "./action-bridge.js";
 import { assertSafeConceptId } from "@superbee/core/storage";
 import { isAnyRegistryId } from "@superbee/core/page";
 import { compareCodeUnits } from "@superbee/core/code-unit-order";
@@ -46,7 +46,7 @@ export const GRAPH_MAX_DOCUMENTS = 1000;
 export const GRAPH_MAX_RELATIONSHIPS = 10000;
 
 export const BRIDGE_PROTOCOL = "v0";
-export const ACTION_BRIDGE_PROTOCOL = "v1";
+export { ACTION_BRIDGE_PROTOCOL };
 /** The operations a View's requests map onto, by the names the caller's `execute` runs them under. */
 export const VIEW_BRIDGE_OPERATIONS = [
   "documents.read.v1",

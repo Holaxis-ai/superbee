@@ -463,7 +463,7 @@ test("read, read-versioned and render-document map to documents.read.v1", async 
   assert.equal((await f.request({ id: "5", type: "read" })).error.code, "USAGE");
   assert.equal((await f.request({ id: "6", type: "read", docId: "" })).error.code, "USAGE");
   await f.send({ bridge: "v1", id: "x".repeat(65), type: "read-versioned", docId: "bridge/alpha" });
-  assert.equal(f.replies.at(-1).error.code, "USAGE", "a v1 id over 64 bytes is refused as the OSS shells refuse it");
+  assert.equal(f.replies.at(-1).error.code, "USAGE", "a v1 id over 64 bytes is refused as the bundle-reading hosts refuse it");
   assert.equal(f.replies.at(-1).id, undefined);
   await f.send({ bridge: "v1", id: "y".repeat(64), type: "read-versioned", docId: "bridge/alpha" });
   assert.equal(f.replies.at(-1).type, "read-versioned:result", "exactly 64 bytes is accepted");
@@ -526,7 +526,7 @@ test("edges maps to documents.edges.v1: the View's selectors as sent, the operat
   }
 });
 
-test("graph reshapes bundles.graph.v1 to the OSS reply without a model", async () => {
+test("graph reshapes bundles.graph.v1 to the protocol reply without a model", async () => {
   const f = fixture();
   const reply = await f.request({ id: "1", type: "graph" });
   assert.deepEqual(reply.result, {

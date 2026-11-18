@@ -38,8 +38,21 @@ data source, authorization and any confirmation; the host owns parsing, limits, 
 protocol's replies. It admits messages only from the frame it was given, at the opaque origin a
 `sandbox="allow-scripts"` frame has.
 
-Serve the View's entry with `viewFrameHeaders(pageOrigin)` and embed it in
-`<iframe sandbox="allow-scripts">`.
+## What the page must do itself
+
+The host trusts the frame it was given, not what is loaded in it. A page that embeds a View is
+safe only if it also does these:
+
+- **Keep the frame on the View.** Send the embedding page with a `Content-Security-Policy` whose
+  `frame-src` (and `child-src`) allow only the page's own origin. Without it a View can navigate
+  its frame to another site, and that site then receives every answer and has the network.
+- **Sandbox the frame with scripts only.** Embed the entry in `<iframe sandbox="allow-scripts">`.
+  Never add `allow-same-origin`, `allow-popups` or `allow-top-navigation`.
+- **Serve the entry with `viewFrameHeaders(pageOrigin)`.** Take `pageOrigin` from the page's own
+  configuration, never from a request header.
+- **Authorize in `execute`.** Check who is asking on every call; the host passes requests
+  through and does not know the viewer. Enforce the query and edges row ceilings there too: the
+  host declares them in `hello` but answers whatever `execute` returns, up to its reply size cap.
 
 This package is published by hand from a reviewed tarball, as `packages/browser-local/RELEASING.md`
 describes; its workspace `prepublishOnly` refuses a direct publish.
