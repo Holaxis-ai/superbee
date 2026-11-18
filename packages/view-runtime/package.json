@@ -39,7 +39,8 @@
     "test": "node --test ./test/*.test.mjs"
   },
   "dependencies": {
-    "@superbee/core": "*"
+    "@superbee/core": "*",
+    "@superbee/view-host": "*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

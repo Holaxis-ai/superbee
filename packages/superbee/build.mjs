@@ -48,7 +48,7 @@ async function copyDeclarationTree(source, destination) {
 }
 
 export const DISTRIBUTION_TYPE_WORKSPACES = Object.freeze([
-  "core", "markdown-renderer", "view-runtime", "publication", "bundle-descriptor",
+  "core", "markdown-renderer", "view-host", "view-runtime", "publication", "bundle-descriptor",
 ]);
 
 async function compileDeclarations(workspace) {

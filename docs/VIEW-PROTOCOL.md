@@ -370,8 +370,9 @@ their legacy scalar negotiation, but a hosted adapter without this marker is not
 The host advertises only admitted operations with trusted confirmation available. Hosting or
 installing a View does not itself enable writes. The MCP App remains scalar-only.
 
-`action-bridge.ts` owns message parsing; `action-preparation.ts` owns pure proposal policy and
-confirmation values, delegating candidate construction and validation to core. Local and hosted
+In `@superbee/view-host`, `action-bridge.ts` owns message parsing and `action-preparation.ts` owns
+pure proposal policy and confirmation values, delegating candidate construction and validation to
+core. Local and hosted
 adapters must consume that source, not recreate its policy. A pinned generated copy carries exact
 source identity and a byte-agreement check until it can consume a released package. The shared
 conformance vectors run against each adapter's installed core. Hosts separately own authenticated

@@ -53,7 +53,11 @@ this Server/browser-local delivery or the self-contained executable release.
 ## Browser-local and renderer artifacts
 
 There is no browser-local release workflow; browser-local and the renderer are
-published by hand from approved literal tarballs. Repository access is not npm
+published by hand from approved literal tarballs. `@superbee/view-host` follows the
+same process: public access, prereleases on `next`, an exact Core dependency, and
+its own external packed consumer proof in `npm run test:scripts`. Its first
+publication creates the package name on npm, which only a maintainer with npm
+publish rights for the `@superbee` scope can do. Repository access is not npm
 publish access, and npm access alone is not proof of maintainer authorization.
 Use a clean checkout of the reviewed merged source. Run `npm ci`, root build and
 typecheck, then the external packed consumer proof in `npm run test:scripts` and the

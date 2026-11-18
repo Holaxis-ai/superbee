@@ -18,11 +18,11 @@
     "dist"
   ],
   "scripts": {
-    "prebuild": "npm run build -w @superbee/markdown-renderer -w @superbee/view-runtime",
+    "prebuild": "npm run build -w @superbee/markdown-renderer -w @superbee/view-host -w @superbee/view-runtime",
     "build": "node scripts/build-view.mjs && tsc",
-    "pretypecheck": "npm run build -w @superbee/markdown-renderer -w @superbee/view-runtime",
+    "pretypecheck": "npm run build -w @superbee/markdown-renderer -w @superbee/view-host -w @superbee/view-runtime",
     "typecheck": "node scripts/build-view.mjs && tsc --noEmit",
-    "pretest": "npm run build -w @superbee/markdown-renderer -w @superbee/view-runtime",
+    "pretest": "npm run build -w @superbee/markdown-renderer -w @superbee/view-host -w @superbee/view-runtime",
     "test": "node scripts/build-view.mjs && node --test --import ./test/ts-loader.mjs ./test/*.test.ts ./test/*.test.mjs",
     "test:browser": "playwright install chromium && playwright test --config playwright.config.ts"
   },

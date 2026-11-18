@@ -4,8 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-// cli is versioned independently of the core/server pair.
-const names = ['core', 'server', 'markdown-renderer', 'cli'];
+// cli and view-host are versioned independently of the core/server pair.
+const names = ['core', 'server', 'markdown-renderer', 'cli', 'view-host'];
 export const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?$(?![\s\S])/;
 
 // This is the renderer's intentionally bounded policy, not a general semver engine:
@@ -74,6 +74,8 @@ export function checkPackageVersions(directory = root) {
   const browserLocal = read('packages/browser-local/package.json');
   equal('packages/browser-local/package.json', 'dependencies.@superbee/core', browserLocal.dependencies?.['@superbee/core'], core, 'packages/core/package.json version (exact source cohort dependency)');
   equal('package-lock.json', 'packages/browser-local.dependencies.@superbee/core', lock.packages?.['packages/browser-local']?.dependencies?.['@superbee/core'], browserLocal.dependencies?.['@superbee/core'], 'packages/browser-local/package.json');
+  // View host pages pass Core's document ids and errors through one Core; pin the source cohort.
+  equal('packages/view-host/package.json', 'dependencies.@superbee/core', manifests['view-host'].dependencies?.['@superbee/core'], core, 'packages/core/package.json version (exact source cohort dependency)');
   equal('packages/server/package.json', 'version', manifests.server.version, core, 'packages/core/package.json version');
   equal('packages/server/package.json', 'dependencies.@superbee/core', manifests.server.dependencies?.['@superbee/core'], core, 'packages/core/package.json version (exact synchronized dependency)');
   const peer = manifests['markdown-renderer'].peerDependencies?.['@superbee/core'];

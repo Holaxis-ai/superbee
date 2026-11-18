@@ -76,6 +76,8 @@ export const workspaceAliases = {
       // so a clean npm build never depends on sibling dist/ directories existing.
       "@superbee/markdown-renderer/static": r("../markdown-renderer/src/static.tsx"),
       "@superbee/markdown-renderer": r("../markdown-renderer/src/index.tsx"),
+      "@superbee/view-host/action-bridge": r("../view-host/src/action-bridge.ts"),
+      "@superbee/view-host/action-preparation": r("../view-host/src/action-preparation.ts"),
       "@superbee/view-runtime/view-host": r("../view-runtime/src/view-host.ts"),
       "@superbee/view-runtime": r("../view-runtime/src/index.ts"),
       // The loopback UI runtime is a private workspace package; source-alias it so the npm CLI

@@ -61,12 +61,12 @@ test("root aborts on every failed stage without consuming or recording its outpu
 });
 
 test("standalone UI builds always prepare dependencies and rebuild UI; root reuses only supplied completed dependencies", () => {
-  const standalone = ["@superbee/core", "@superbee/view-runtime", "@superbee/ui"];
+  const standalone = ["@superbee/core", "@superbee/view-host", "@superbee/view-runtime", "@superbee/ui"];
   for (let invocation = 0; invocation < 2; invocation++) {
     assert.deepEqual(uiBuildInvocations(), standalone.map(name => ["run", "build", `--workspace=${name}`]));
     assert.deepEqual(uiBuildInvocations(TSC_WORKSPACES), [["run", "build", "--workspace=@superbee/ui", "--ignore-scripts"]]);
   }
-  assert.deepEqual(uiBuildInvocations(["core"]).map(args => args[2]), ["@superbee/view-runtime", "@superbee/markdown-renderer", "@superbee/ui"].map(name => `--workspace=${name}`));
+  assert.deepEqual(uiBuildInvocations(["core"]).map(args => args[2]), ["@superbee/view-host", "@superbee/view-runtime", "@superbee/markdown-renderer", "@superbee/ui"].map(name => `--workspace=${name}`));
 });
 
 test("standalone declaration preparation is fresh, ordered, and fails before dependent work; root reuses completed projects", async () => {
@@ -81,7 +81,7 @@ test("standalone declaration preparation is fresh, ordered, and fails before dep
     failed.push(workspace);
     if (workspace === "view-runtime") throw new Error("tsc failed");
   }), /tsc failed/);
-  assert.deepEqual(failed, ["core", "markdown-renderer", "view-runtime"]);
+  assert.deepEqual(failed, ["core", "markdown-renderer", "view-host", "view-runtime"]);
 });
 
 test("replaced lifecycle hooks have an explicit parity contract that rejects new work", () => {
