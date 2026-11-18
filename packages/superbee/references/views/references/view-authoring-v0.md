@@ -165,8 +165,8 @@ changes the bundle's model, so it needs that permission on the bundle. `--access
 
 Verify the same registered id in both surfaces: open it with `superbee ui`, then have an MCP-capable
 desktop list and show that View. Confirm narrow and expanded layouts without changing the source.
-Startup messages are optional: a View may stay quiet until human input and never has to send
-`hello` to prove it loaded.
+A View never has to send `hello` to prove it loaded, but it should send it once at start to learn
+its host (see "Sizing, title and theme" below).
 
 ## The bridge client (embedded copy)
 
@@ -272,6 +272,83 @@ Bridge.watch(async function (events) {
   render(result.rows, events);
 }).catch(showStartupError);
 ```
+
+## Sizing, title and theme
+
+Send `hello` once at start, even from a View that reads no data, and lay out from its `host`. The
+OSS shell counts `hello` as a data request and refuses it with `FORBIDDEN` for `access: none`; a
+host that embeds Views as pages may answer it for any launch. Treat a refusal, or a reply without
+`host.frame`, as a plain page: keep your own heading and colors and let the page scroll.
+
+- `host.frame.title === "host"`: the host printed the View's name; hide your own top heading.
+- `host.theme`: optional; adopt its `scheme` and tokens, or keep your own look.
+
+Pick one sizing mode by what the View is:
+
+- **Report your height**: content that reads top to bottom with no overlays of its own (lists,
+  tables, dashboards). The host page scrolls, not the View. When `host.frame` is present and
+  `host.capabilities` includes `frame.resize`, report the body's height whenever it changes;
+  without the capability the View sits in the host's window and scrolls as an ordinary page.
+- **Keep the window**: canvases that pan or zoom (diagrams, maps, boards) and any View that opens
+  its own modal dialog or overlay. Never call `frame.resize`. In a content-sized frame the
+  viewport is the whole tall frame, so a modal centers far from where the person is looking and
+  `vh` means the frame's height; when the host offers `record.open`, ask it to open the record
+  (`Bridge.host("record.open", { documentId: id })`) instead of drawing your own reader.
+
+Report your height (`start` is the View's own startup, for example `Bridge.watch(refresh)`):
+
+```js
+var reported = -1;
+function reportHeight() {
+  // The body's height, not the document's: the document follows the frame and never shrinks.
+  var height = Math.ceil(document.body.getBoundingClientRect().height);
+  if (height === reported) return;
+  reported = height; // the reply echoes the applied height; never report from it
+  Bridge.host("frame.resize", { height: height }).catch(function () {});
+}
+Bridge.hello().then(function (hello) {
+  var d = (hello && hello.host) || {};
+  var caps = Array.isArray(d.capabilities) ? d.capabilities : [];
+  if (d.frame && d.frame.title === "host") document.getElementById("title").hidden = true;
+  var scheme = d.theme && d.theme.scheme;
+  if (scheme === "light" || scheme === "dark") document.documentElement.setAttribute("data-scheme", scheme);
+  if (d.frame && caps.indexOf("frame.resize") >= 0 && window.ResizeObserver) {
+    new ResizeObserver(reportHeight).observe(document.body);
+  }
+}, function () { /* no host descriptor: a plain page */ }).then(start);
+```
+
+Keep the window: a column that fills the frame, with exactly one scroll container:
+
+```html
+<style>
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column; }
+  header, footer { flex: none; }
+  main { flex: 1; min-height: 0; overflow: auto; }
+</style>
+<header><h1 id="title">My diagram</h1></header>
+<main id="canvas"></main>
+<script>
+  // after the bridge client:
+  Bridge.hello().then(function (hello) {
+    var d = (hello && hello.host) || {};
+    if (d.frame && d.frame.title === "host") document.getElementById("title").hidden = true;
+  }, function () {}).then(start); // never frame.resize
+</script>
+```
+
+Do not:
+
+- guess the host's chrome with `calc(100vh - Npx)` or any other pixel offset;
+- wrap a report-your-height page in a second scroll container, a `100vh` layout or a
+  `vh`-sized `overflow: auto` box: the body's height must follow its content;
+- report again from the height the host echoed back;
+- mix modes: report a height or keep the window, never both.
+
+Check the View in a host at desktop and phone widths and confirm there is one scrollbar; test in a
+visible window, because a frame in a hidden or background browser tab does not fire
+`ResizeObserver`.
 
 The seed views shipped beside this reference are working examples: `pulse.html` and `roadmap.html`
 are `access: bundle-read` data views (`roadmap.html` exercises `edges` end to end), `about.html` is

@@ -89,7 +89,8 @@ never both. `theme` is the host's own resolved design tokens: `scheme` is `"ligh
 and `ground`, `surface`, `text`, `muted`, `accent`, `border`, `focus`, `fontSans`,
 `fontDisplay`, `fontMono`, `radius` and `spacing` are CSS value strings; a View may adopt them as
 `--sb-*` custom properties and looks native, or ignore them and keep its own brand. Both are absent on the OSS
-shell and on Portal; a View that ignores them draws exactly as before.
+shell and on Portal; a View that ignores them draws exactly as before. The authoring reference's
+"Sizing, title and theme" section shows the two layouts a View picks between.
 
 `bundle.root` is a filesystem path on the OSS web shell in `--dir` mode and `null` elsewhere;
 Portal and hosted hosts may put an opaque artifact or slot id there. `bundle.name` is the display
