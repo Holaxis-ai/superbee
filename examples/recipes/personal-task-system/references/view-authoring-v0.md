@@ -286,18 +286,27 @@ host that embeds Views as pages may answer it for any launch. Treat a refusal, o
 Pick one sizing mode by what the View is:
 
 - **Report your height**: content that reads top to bottom with no overlays of its own (lists,
-  tables, dashboards). The host page scrolls, not the View. When `host.frame` is present and
-  `host.capabilities` includes `frame.resize`, report the body's height whenever it changes;
-  without the capability the View sits in the host's window and scrolls as an ordinary page.
+  tables, dashboards). The host page scrolls, not the View, until the frame reaches `maxHeight`;
+  past that the View scrolls inside it. When `host.frame` is present and `host.capabilities`
+  includes `frame.resize`, report the body's height whenever it changes; without the capability
+  the View sits in the host's window and scrolls as an ordinary page.
 - **Keep the window**: canvases that pan or zoom (diagrams, maps, boards) and any View that opens
   its own modal dialog or overlay. Never call `frame.resize`. In a content-sized frame the
   viewport is the whole tall frame, so a modal centers far from where the person is looking and
   `vh` means the frame's height; when the host offers `record.open`, ask it to open the record
   (`Bridge.host("record.open", { documentId: id })`) instead of drawing your own reader.
 
-Report your height (`start` is the View's own startup, for example `Bridge.watch(refresh)`):
+Report your height. The reported height is the body's own box, so space the page with padding on
+the body, not margin. A content View's `start` draws without `Bridge.watch`.
 
-```js
+```html
+<style>
+  body { margin: 0; padding: 16px; }
+</style>
+<script>
+// after the bridge client:
+function start() { return Bridge.watch(refresh); }
+function showStartupError() { document.body.textContent = "This view could not load."; }
 var reported = -1;
 function reportHeight() {
   // The body's height, not the document's: the document follows the frame and never shrinks.
@@ -309,16 +318,19 @@ function reportHeight() {
 Bridge.hello().then(function (hello) {
   var d = (hello && hello.host) || {};
   var caps = Array.isArray(d.capabilities) ? d.capabilities : [];
-  if (d.frame && d.frame.title === "host") document.getElementById("title").hidden = true;
+  var title = document.getElementById("title");
+  if (title && d.frame && d.frame.title === "host") title.hidden = true;
   var scheme = d.theme && d.theme.scheme;
   if (scheme === "light" || scheme === "dark") document.documentElement.setAttribute("data-scheme", scheme);
   if (d.frame && caps.indexOf("frame.resize") >= 0 && window.ResizeObserver) {
     new ResizeObserver(reportHeight).observe(document.body);
   }
-}, function () { /* no host descriptor: a plain page */ }).then(start);
+}, function () { /* no host descriptor: a plain page */ }).then(start).catch(showStartupError);
+</script>
 ```
 
-Keep the window: a column that fills the frame, with exactly one scroll container:
+Keep the window: a column that fills the frame, with exactly one scroll container. Keep the header
+to one or two lines; a header taller than a small frame makes the document scroll as well.
 
 ```html
 <style>
@@ -330,11 +342,12 @@ Keep the window: a column that fills the frame, with exactly one scroll containe
 <header><h1 id="title">My diagram</h1></header>
 <main id="canvas"></main>
 <script>
-  // after the bridge client:
+  // after the bridge client, with start and showStartupError as above; never frame.resize:
   Bridge.hello().then(function (hello) {
     var d = (hello && hello.host) || {};
-    if (d.frame && d.frame.title === "host") document.getElementById("title").hidden = true;
-  }, function () {}).then(start); // never frame.resize
+    var title = document.getElementById("title");
+    if (title && d.frame && d.frame.title === "host") title.hidden = true;
+  }, function () {}).then(start).catch(showStartupError);
 </script>
 ```
 
