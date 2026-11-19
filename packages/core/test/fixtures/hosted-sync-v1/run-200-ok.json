@@ -1,6 +1,6 @@
 {
   "name": "run-200-ok",
-  "description": "documents.history.v1 run by id: the same answer as history-200-ok.",
+  "description": "documents.history.v1 run by id: a document with two versions, newest first, each with its agent label: the replace, then the create that named its agent in X-Superbee-Via. The first page states the total.",
   "route": "/sync/v1/run",
   "rows": [
     "run 200 ok"

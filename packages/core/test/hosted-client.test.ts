@@ -69,13 +69,23 @@ function replay(name: string): Response {
   return new Response(response.body === "" ? null : response.body, { status: response.status, headers: response.headers });
 }
 
-/** A host answering each route of the sync family with the named exchange (by the route's last segment). */
-function serving(byRoute: Record<string, string>) {
+/**
+ * A host answering each route of the sync family (by the route's last segment) with the named
+ * exchange, or with the answer a function gives for a route no golden records.
+ */
+function serving(byRoute: Record<string, string | (() => Response)>) {
   return host((pathname) => {
     const name = byRoute[pathname.slice(pathname.lastIndexOf("/") + 1)];
+    if (typeof name === "function") return name();
     return name ? replay(name) : replay("unknown-route-404");
   });
 }
+
+// An older host's own read and history routes, which the goldens no longer record: they answered
+// the same OperationResult a run by id does. Inline, so the client's fallback to them stays tested.
+const olderRead = () => Response.json({ ok: true, operationId: "documents.read.v1", data: { document: { id: "notes/one", frontmatter: { type: "Note" }, body: "one\n" }, version: `sha256:${"a".repeat(64)}` } });
+const olderHistory = () =>
+  Response.json({ ok: true, operationId: "documents.history.v1", data: { documentId: "notes/via", versions: [{ seq: 1, version: `sha256:${"b".repeat(64)}`, actor: "person-1", timestamp: "2030-01-01T00:00:00.000Z" }], more: false, total: 1 } });
 
 function clientOf(fetch: typeof globalThis.fetch, overrides: Partial<HostedClientOptions> = {}) {
   return createHostedClient({ target: { origin: ORIGIN, syncPrefix: "/sync/v1" }, credentials: bearerCredentials(() => "token-1"), fetch, ...overrides });
@@ -258,9 +268,7 @@ test("readBundleListing: a qualified collision, and a capped list", () => {
 });
 
 test("reader: a document read runs documents.read.v1 through the port runner", async () => {
-  // The read route's golden answer is the run's too: hosted answers both from one code path
-  // (`runOperation` in superbee-hosted `src/sync-v1-reads.ts`); no golden pins a run of this read yet.
-  const { fetch, sent } = serving({ run: "read-200-ok" });
+  const { fetch, sent } = serving({ run: "run-200-read-ok" });
   const result = await clientOf(fetch).reader(BUNDLE).read("notes/one");
   assert.equal(result.version, "sha256:dfc05cf336bf2eaa2bf4a3319609f596514c2ec0f5abf3e7a173aafe7baac5c4");
   assert.deepEqual(sent, [{ path: "/sync/v1/run", body: { bundleId: BUNDLE, operationId: "documents.read.v1", input: { bundleId: BUNDLE, documentId: "notes/one" } }, authorization: "Bearer token-1" }]);
@@ -268,7 +276,7 @@ test("reader: a document read runs documents.read.v1 through the port runner", a
 
 test("reader: a host that does not run the read by id is read at its route, from then on", async () => {
   for (const run of ["run-400-unknown-operation", undefined]) {
-    const { fetch, sent } = serving({ ...(run ? { run } : {}), read: "read-200-ok" });
+    const { fetch, sent } = serving({ ...(run ? { run } : {}), read: olderRead });
     const reader = clientOf(fetch).reader(BUNDLE);
     await reader.read("notes/one");
     await reader.read("notes/one");
@@ -276,21 +284,21 @@ test("reader: a host that does not run the read by id is read at its route, from
     assert.deepEqual(sent[1]?.body, { bundleId: BUNDLE, documentId: "notes/one" });
   }
   // A refusal of the read itself is the answer, never a reason to try the route.
-  const absent = serving({ run: "read-200-document-not-found", read: "read-200-ok" });
+  const absent = serving({ run: "run-200-read-document-not-found", read: olderRead });
   await assert.rejects(clientOf(absent.fetch).reader(BUNDLE).read("notes/one"), (error: unknown) => (error as { code?: string }).code === "ENOENT");
   assert.deepEqual(absent.sent.map((request) => request.path), ["/sync/v1/run"]);
 });
 
 test("port runner: an older host is checked once per client, while parallel reads wait for the answer", async () => {
-  for (const [run, runs] of [["run-400-unknown-operation", 1], ["read-200-ok", 8]] as const) {
-    const { fetch, sent } = host((pathname) => replay(pathname.endsWith("/run") ? run : "read-200-ok"));
+  for (const [run, runs] of [["run-400-unknown-operation", 1], ["run-200-read-ok", 8]] as const) {
+    const { fetch, sent } = host((pathname) => (pathname.endsWith("/run") ? replay(run) : olderRead()));
     const reader = clientOf(fetch).reader(BUNDLE);
     await Promise.all(Array.from({ length: 8 }, () => reader.read("notes/one")));
     assert.equal(sent.filter((request) => request.path === "/sync/v1/run").length, runs, run);
     assert.equal(sent.length, runs === 1 ? 9 : 8, run);
   }
   // One decision for the client, its `within` clients and its write path.
-  const older = serving({ run: "run-400-unknown-operation", read: "read-200-ok" });
+  const older = serving({ run: "run-400-unknown-operation", read: olderRead });
   const client = clientOf(older.fetch);
   await client.reader(BUNDLE).read("notes/one");
   await client.reader(BUNDLE).read("notes/one");
@@ -313,12 +321,10 @@ test("history: the golden page, newest first, run by id", async () => {
   const answer = await clientOf(fetch).history(BUNDLE, { documentId: "notes/via", limit: 20 });
   assert.equal(answer.ok, true);
   assert.ok(answer.ok && answer.page.versions.length > 0);
-  // The same page the history route answers, byte for byte.
-  assert.equal(fixture("run-200-ok").response.body, fixture("history-200-ok").response.body);
   assert.deepEqual(sent.map((request) => request.path), ["/sync/v1/run"]);
   assert.deepEqual(sent[0]?.body, { bundleId: BUNDLE, operationId: "documents.history.v1", input: { bundleId: BUNDLE, documentId: "notes/via", limit: 20 } });
   // The kernel's refusal is the page's answer, not a reason to try the route.
-  const absent = serving({ run: "run-200-document-not-found", history: "history-200-ok" });
+  const absent = serving({ run: "run-200-document-not-found", history: olderHistory });
   const refused = await clientOf(absent.fetch).history(BUNDLE, { documentId: "notes/absent", limit: 20 });
   assert.equal(!refused.ok && refused.refusal.code, "document_not_found");
   assert.deepEqual(absent.sent.map((request) => request.path), ["/sync/v1/run"]);
@@ -326,7 +332,7 @@ test("history: the golden page, newest first, run by id", async () => {
 
 test("history: a host that does not run it by id is read at the history route, from then on", async () => {
   for (const run of ["run-400-unknown-operation", undefined]) {
-    const { fetch, sent } = serving({ ...(run ? { run } : {}), history: "history-200-ok" });
+    const { fetch, sent } = serving({ ...(run ? { run } : {}), history: olderHistory });
     const client = clientOf(fetch);
     for (let page = 0; page < 2; page += 1) {
       const answer = await client.history(BUNDLE, { documentId: "notes/via", limit: 20 });
@@ -336,7 +342,7 @@ test("history: a host that does not run it by id is read at the history route, f
     assert.deepEqual(sent[1]?.body, { bundleId: BUNDLE, documentId: "notes/via", limit: 20 });
   }
   // The run's other refusals are the answer.
-  const invalid = serving({ run: "run-400-invalid-input", history: "history-200-ok" });
+  const invalid = serving({ run: "run-400-invalid-input", history: olderHistory });
   await assert.rejects(clientOf(invalid.fetch).history(BUNDLE, { documentId: "notes/via", limit: 20 }), (error: unknown) => error instanceof RemoteError && error.code === "invalid_input");
   assert.deepEqual(invalid.sent.map((request) => request.path), ["/sync/v1/run"]);
 });
@@ -382,7 +388,7 @@ test("malformed answers are MalformedAnswer naming the route", async () => {
 });
 
 test("non-200 answers are RemoteError with the host's code and status", async () => {
-  await assert.rejects(clientOf(serving({ whoami: "read-401-unauthenticated" }).fetch).whoami(), (error: unknown) => {
+  await assert.rejects(clientOf(serving({ whoami: "run-401-unauthenticated" }).fetch).whoami(), (error: unknown) => {
     assert.ok(error instanceof RemoteError);
     assert.equal(error.status, 401);
     assert.equal(error.code, "invalid_token");
@@ -393,7 +399,8 @@ test("non-200 answers are RemoteError with the host's code and status", async ()
     assert.deepEqual([error.code, error.status], ["insufficient_scope", 403]);
     return true;
   });
-  await assert.rejects(clientOf(serving({ history: "history-400-invalid-input" }).fetch).history(BUNDLE, { documentId: "notes/via", limit: 20 }), (error: unknown) => {
+  // An older host's history route refusing the input.
+  await assert.rejects(clientOf(serving({ history: () => json({ error: { code: "invalid_input" } }, 400) }).fetch).history(BUNDLE, { documentId: "notes/via", limit: 20 }), (error: unknown) => {
     assert.ok(error instanceof RemoteError);
     assert.deepEqual([error.code, error.status], ["invalid_input", 400]);
     return true;
@@ -452,7 +459,7 @@ test("within: bundle-scoped requests name <slug>/<id>; unscoped ones and the ans
   const { fetch, sent } = host((pathname, body) => {
     if (pathname.endsWith("/whoami")) return replay("whoami-200");
     if (pathname.endsWith("/bundles")) return replay("bundles-200");
-    if (pathname.endsWith("/run")) return replay(body.operationId === "documents.read.v1" ? "read-200-ok-qualified" : "run-200-ok-qualified");
+    if (pathname.endsWith("/run")) return replay(body.operationId === "documents.read.v1" ? "run-200-read-ok-qualified" : "run-200-ok-qualified");
     return replay("operations-200");
   });
   const client = clientOf(fetch).within("south");
@@ -478,7 +485,7 @@ test("within: bundle-scoped requests name <slug>/<id>; unscoped ones and the ans
 
 test("the credential provider is asked once per request, so a renewed bearer is used at once", async () => {
   let calls = 0;
-  const { fetch, sent } = serving({ whoami: "whoami-200", bundles: "bundles-200", read: "read-200-ok" });
+  const { fetch, sent } = serving({ whoami: "whoami-200", bundles: "bundles-200", run: "run-200-read-ok" });
   const client = clientOf(fetch, { credentials: bearerCredentials(async (signal) => {
     assert.ok(signal instanceof AbortSignal);
     calls += 1;

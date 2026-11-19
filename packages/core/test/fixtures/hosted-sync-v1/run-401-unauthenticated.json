@@ -1,7 +1,7 @@
 {
-  "name": "read-401-unauthenticated",
-  "description": "A read without a valid bearer.",
-  "route": "/sync/v1/read",
+  "name": "run-401-unauthenticated",
+  "description": "A run without a valid bearer.",
+  "route": "/sync/v1/run",
   "rows": [
     "refusal 401 unauthenticated"
   ],
@@ -10,7 +10,7 @@
     "headers": {
       "content-type": "application/json"
     },
-    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/one\"}"
+    "body": "{\"bundleId\":\"notes.a\",\"operationId\":\"documents.read.v1\",\"input\":{\"bundleId\":\"notes.a\",\"documentId\":\"notes/one\"}}"
   },
   "response": {
     "status": 401,

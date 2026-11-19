@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "description": "Golden /sync/v1 exchanges generated from the real hosted gateway app (createApp: real bearer admission, tenant selection, kernel operations, the write ledger and Miniflare D1/R2 storage; only the identity issuer is a fixture) at the fixed instant 2030-01-01T00:00:00.000Z. Each file is one request and the exact answer bytes; response headers are limited to content-type, etag, x-superbee-root-version and x-superbee-write-settled (and content-disposition on the export). The 200 export answer's zip is recorded as bodyBase64.",
-  "source": "Holaxis-ai/superbee-hosted a9c4e372c7fe8a499d3daec1848a867ec592a1d0",
+  "source": "Holaxis-ai/superbee-hosted 063c2604d31e9d0d38e4510945e7aecae5296290",
   "generator": "superbee-hosted test/support/sync-v1-exchanges.ts",
   "exchanges": [
     {
@@ -59,63 +59,45 @@
       "status": 200
     },
     {
-      "name": "read-200-ok",
-      "file": "read-200-ok.json",
-      "route": "/sync/v1/read",
+      "name": "run-200-read-ok",
+      "file": "run-200-read-ok.json",
+      "route": "/sync/v1/run",
       "rows": [
-        "read 200 ok"
+        "run 200 ok"
       ],
       "status": 200
     },
     {
-      "name": "read-200-ok-qualified",
-      "file": "read-200-ok-qualified.json",
-      "route": "/sync/v1/read",
+      "name": "run-200-read-ok-qualified",
+      "file": "run-200-read-ok-qualified.json",
+      "route": "/sync/v1/run",
       "rows": [
-        "read 200 ok"
+        "run 200 ok"
       ],
       "status": 200
     },
     {
-      "name": "read-200-document-not-found",
-      "file": "read-200-document-not-found.json",
-      "route": "/sync/v1/read",
+      "name": "run-200-read-document-not-found",
+      "file": "run-200-read-document-not-found.json",
+      "route": "/sync/v1/run",
       "rows": [
-        "read 200 document_not_found"
+        "run 200 document_not_found"
       ],
       "status": 200
     },
     {
-      "name": "read-200-bundle-not-found",
-      "file": "read-200-bundle-not-found.json",
-      "route": "/sync/v1/read",
-      "rows": [
-        "read 200 bundle_not_found"
-      ],
-      "status": 200
-    },
-    {
-      "name": "read-400-invalid-input",
-      "file": "read-400-invalid-input.json",
-      "route": "/sync/v1/read",
-      "rows": [
-        "refusal 400 invalid_input"
-      ],
-      "status": 400
-    },
-    {
-      "name": "read-401-unauthenticated",
-      "file": "read-401-unauthenticated.json",
-      "route": "/sync/v1/read",
+      "name": "run-401-unauthenticated",
+      "file": "run-401-unauthenticated.json",
+      "route": "/sync/v1/run",
       "rows": [
         "refusal 401 unauthenticated"
       ],
       "status": 401
     },
     {
-      "name": "read-403-access-denied",
-      "file": "read-403-access-denied.json",
-      "route": "/sync/v1/read",
+      "name": "run-403-access-denied",
+      "file": "run-403-access-denied.json",
+      "route": "/sync/v1/run",
       "rows": [
         "refusal 403 access_denied"
       ],
@@ -401,42 +383,6 @@
       "status": 200
     },
     {
-      "name": "history-200-ok",
-      "file": "history-200-ok.json",
-      "route": "/sync/v1/history",
-      "rows": [
-        "history 200 ok"
-      ],
-      "status": 200
-    },
-    {
-      "name": "history-200-content",
-      "file": "history-200-content.json",
-      "route": "/sync/v1/history",
-      "rows": [
-        "history 200 ok"
-      ],
-      "status": 200
-    },
-    {
-      "name": "history-200-document-not-found",
-      "file": "history-200-document-not-found.json",
-      "route": "/sync/v1/history",
-      "rows": [
-        "history 200 document_not_found"
-      ],
-      "status": 200
-    },
-    {
-      "name": "history-400-invalid-input",
-      "file": "history-400-invalid-input.json",
-      "route": "/sync/v1/history",
-      "rows": [
-        "refusal 400 invalid_input"
-      ],
-      "status": 400
-    },
-    {
       "name": "operations-200",
       "file": "operations-200.json",
       "route": "/sync/v1/operations",
@@ -457,6 +403,15 @@
     {
       "name": "run-200-ok",
       "file": "run-200-ok.json",
+      "route": "/sync/v1/run",
+      "rows": [
+        "run 200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "run-200-history-content",
+      "file": "run-200-history-content.json",
       "route": "/sync/v1/run",
       "rows": [
         "run 200 ok"

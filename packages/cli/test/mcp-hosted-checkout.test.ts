@@ -583,7 +583,7 @@ async function mcpClient(resolver: McpWorkspaceResolver): Promise<{ call: (name:
   };
 }
 
-const historyDescriptor = (): OperationDescriptor => (JSON.parse(syncFixture("operations-200").response.body) as { operations: OperationDescriptor[] }).operations[0]!;
+const historyDescriptor = (): OperationDescriptor => (JSON.parse(syncFixture("operations-200").response.body) as { operations: OperationDescriptor[] }).operations.find((operation) => operation.operationId === "documents.history.v1")!;
 
 test("list_operations and run_operation reach a hosted checkout's host reads by id, the run's answer passed through unchanged", async () => {
   const c = await hostedCheckout();

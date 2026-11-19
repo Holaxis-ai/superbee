@@ -656,6 +656,9 @@ it. It runs wherever `fetch` does (Node, a browser or a Worker) and reads identi
 the bundle list (`bundles`, with `readBundleListing`), documents (`reader`), document history
 (`history`) and operations run by id (`listOperations`, `runOperation`). `within(slug)` returns
 the same client naming every bundle-scoped request's bundle as `<slug>/<bundle-id>`.
+Document reads and history run `documents.read.v1` and `documents.history.v1` by id on `run`; a
+host from before that is read on its own `read` and `history` routes instead, decided once per
+operation for each client.
 
 ```ts
 import { bearerCredentials, createHostedClient } from "@superbee/core/hosted-client";

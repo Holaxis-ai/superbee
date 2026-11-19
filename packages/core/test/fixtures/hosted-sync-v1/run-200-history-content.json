@@ -1,16 +1,16 @@
 {
-  "name": "history-200-content",
-  "description": "A page back from sequence 2, one version, with its stored content (includeContent): the create's bytes. A later page states no total.",
-  "route": "/sync/v1/history",
+  "name": "run-200-history-content",
+  "description": "documents.history.v1 run by id, a page back from sequence 2, one version, with its stored content (includeContent): the create's bytes. A later page states no total.",
+  "route": "/sync/v1/run",
   "rows": [
-    "history 200 ok"
+    "run 200 ok"
   ],
   "request": {
     "method": "POST",
     "headers": {
       "content-type": "application/json"
     },
-    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/via\",\"limit\":1,\"before\":2,\"includeContent\":true}"
+    "body": "{\"bundleId\":\"notes.a\",\"operationId\":\"documents.history.v1\",\"input\":{\"bundleId\":\"notes.a\",\"documentId\":\"notes/via\",\"limit\":1,\"before\":2,\"includeContent\":true}}"
   },
   "response": {
     "status": 200,

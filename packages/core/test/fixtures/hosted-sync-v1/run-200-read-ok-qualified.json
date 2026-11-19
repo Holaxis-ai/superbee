@@ -1,16 +1,16 @@
 {
-  "name": "read-200-ok-qualified",
-  "description": "documents.read.v1 naming the bundle by its qualified reference, <workspace slug>/<bundle id>; the answer names the bare id.",
-  "route": "/sync/v1/read",
+  "name": "run-200-read-ok-qualified",
+  "description": "documents.read.v1 run by id with the envelope naming the bundle by its qualified reference, <workspace slug>/<bundle id>; the input and the answer name the bare id.",
+  "route": "/sync/v1/run",
   "rows": [
-    "read 200 ok"
+    "run 200 ok"
   ],
   "request": {
     "method": "POST",
     "headers": {
       "content-type": "application/json"
     },
-    "body": "{\"bundleId\":\"tenant-a/notes.a\",\"documentId\":\"notes/one\"}"
+    "body": "{\"bundleId\":\"tenant-a/notes.a\",\"operationId\":\"documents.read.v1\",\"input\":{\"bundleId\":\"notes.a\",\"documentId\":\"notes/one\"}}"
   },
   "response": {
     "status": 200,

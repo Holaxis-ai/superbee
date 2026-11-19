@@ -1,7 +1,7 @@
 {
-  "name": "read-403-access-denied",
-  "description": "A read with a valid bearer from a client whose binding does not list the sync surface.",
-  "route": "/sync/v1/read",
+  "name": "run-403-access-denied",
+  "description": "A run with a valid bearer from a client whose binding does not list the sync surface.",
+  "route": "/sync/v1/run",
   "rows": [
     "refusal 403 access_denied"
   ],
@@ -10,7 +10,7 @@
     "headers": {
       "content-type": "application/json"
     },
-    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/one\"}"
+    "body": "{\"bundleId\":\"notes.a\",\"operationId\":\"documents.read.v1\",\"input\":{\"bundleId\":\"notes.a\",\"documentId\":\"notes/one\"}}"
   },
   "response": {
     "status": 403,

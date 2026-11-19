@@ -168,13 +168,13 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   await observe("heads-200", send("heads", { bundleId: BUNDLE }));
   await observe("heads-304", send("heads", { bundleId: BUNDLE, ifNoneMatch: digest }));
   await observe("snapshot-200", send("snapshot", { bundleId: BUNDLE }));
-  await observe("read-200-ok", send("read", { bundleId: BUNDLE, documentId: firstId }));
-  await observe("read-200-ok-qualified", send("read", { bundleId: `tenant-a/${BUNDLE}`, documentId: firstId }));
-  await observe("read-200-document-not-found", send("read", { bundleId: BUNDLE, documentId: "notes/absent" }));
-  await observe("read-200-bundle-not-found", send("read", { bundleId: "nope.a", documentId: firstId }));
-  await observe("read-400-invalid-input", send("read", { bundleId: BUNDLE, documentId: firstId, extra: true }));
-  await observe("read-401-unauthenticated", send("read", { bundleId: BUNDLE, documentId: firstId }, { bearer: "not-a-token" }));
-  await observe("read-403-access-denied", sendTo(new FakeHost({ syncSurface: false }), "read", { bundleId: BUNDLE, documentId: firstId }));
+  // Document reads run documents.read.v1 by id: the envelope may name the workspace; the input keeps the bare id.
+  const read = (documentId: string, bundleId = BUNDLE) => ({ bundleId, operationId: "documents.read.v1", input: { bundleId: BUNDLE, documentId } });
+  await observe("run-200-read-ok", send("run", read(firstId)));
+  await observe("run-200-read-ok-qualified", send("run", read(firstId, `tenant-a/${BUNDLE}`)));
+  await observe("run-200-read-document-not-found", send("run", read("notes/absent")));
+  await observe("run-401-unauthenticated", send("run", read(firstId), { bearer: "not-a-token" }));
+  await observe("run-403-access-denied", sendTo(new FakeHost({ syncSurface: false }), "run", read(firstId)));
   host.unavailable = true;
   await observe("heads-503-backend-unavailable", send("heads", { bundleId: BUNDLE }));
   host.unavailable = false;
@@ -206,15 +206,12 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   observed.set("create-200-ok-via", await answerOf(await send("create", create("notes/via", "via"), { requestId: identity(22), via: "claude-code" })));
   // History: the labeled create, then a replace, newest first; a page back with its content.
   await send("replace", { bundleId: BUNDLE, documentId: "notes/via", expectedVersion: viaCreated.data.version, frontmatter: { type: "Note" }, body: "via edited" }, { requestId: identity(24) });
-  await observe("history-200-ok", send("history", { bundleId: BUNDLE, documentId: "notes/via" }));
-  await observe("history-200-content", send("history", { bundleId: BUNDLE, documentId: "notes/via", limit: 1, before: 2, includeContent: true }));
-  await observe("history-200-document-not-found", send("history", { bundleId: BUNDLE, documentId: "notes/absent" }));
-  await observe("history-400-invalid-input", send("history", { bundleId: BUNDLE, documentId: "notes/via", extra: true }));
   // Operations by id: the listing, another bundle's, history run by id and the run refusals.
   const history = (documentId: string, bundleId = BUNDLE, operationId = "documents.history.v1", inputBundle = bundleId) => ({ bundleId, operationId, input: { bundleId: inputBundle, documentId } });
   await observe("operations-200", send("operations", { bundleId: BUNDLE }));
   await observe("operations-404-bundle-not-found", send("operations", { bundleId: "nope.a" }));
   await observe("run-200-ok", send("run", history("notes/via")));
+  await observe("run-200-history-content", send("run", { ...history("notes/via"), input: { bundleId: BUNDLE, documentId: "notes/via", limit: 1, before: 2, includeContent: true } }));
   // The envelope names the workspace; the input keeps the bare id.
   await observe("run-200-ok-qualified", send("run", history("notes/via", `tenant-a/${BUNDLE}`, "documents.history.v1", BUNDLE)));
   await observe("run-200-document-not-found", send("run", history("notes/absent")));
@@ -314,7 +311,7 @@ test("the contract catches the read answer the fake used to give, and a wrong er
   const host = new FakeHost();
   const [id, doc] = [...host.docs][0]!;
   const drifted = { ok: true, operationId: "documents.read.v1", data: { bundleId: BUNDLE, documentId: id, version: doc.version, document: { frontmatter: doc.frontmatter, body: doc.body } } };
-  assert.notDeepEqual(shape(drifted), bodyShape(golden.get("read-200-ok")!.response.body));
+  assert.notDeepEqual(shape(drifted), bodyShape(golden.get("run-200-read-ok")!.response.body));
   // Same keys and types, another row: a create over a present document answered as a version conflict.
   const exists = golden.get("create-200-document-exists")!.response.body;
   assert.notDeepEqual(bodyShape(exists.replace('"document_exists"', '"version_conflict"')), bodyShape(exists));
@@ -323,14 +320,14 @@ test("the contract catches the read answer the fake used to give, and a wrong er
   const changed = golden.get("delete-200-unchanged")!.response.body;
   assert.notDeepEqual(bodyShape(changed.replace('"changed":false', '"changed":true')), bodyShape(changed));
   // A history row's keys are grammar: a row named with other keys (`revision`, `at`) is another answer.
-  const history = golden.get("history-200-ok")!.response.body;
+  const history = golden.get("run-200-ok")!.response.body;
   assert.notDeepEqual(bodyShape(history.replaceAll('"seq"', '"revision"').replaceAll('"timestamp"', '"at"')), bodyShape(history));
 });
 
 /** The operations exchanges the fake answers with the host's exact bytes (the golden requests, sent to the fake's bundle). */
 const OPERATIONS_BY_VALUE = ["operations-200", "operations-404-bundle-not-found", "run-200-document-not-found", "run-200-bundle-not-found", "run-400-unknown-operation", "run-400-invalid-input", "unknown-route-404"];
 
-test("the fake answers the operations goldens' requests with the host's status, headers and bytes, and runs history as /history answers it", async () => {
+test("the fake answers the operations goldens' requests with the host's status, headers and bytes, and its older-host routes answer as a run does", async () => {
   const host = new FakeHost();
   const post = (route: string, body: string) =>
     host.fetch(`${host.origin}${route}`, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${host.token}` }, body });
@@ -342,13 +339,15 @@ test("the fake answers the operations goldens' requests with the host's status, 
     assert.deepEqual(Object.fromEntries(Object.keys(exchange.response.headers).map((header) => [header, response.headers.get(header)])), exchange.response.headers, `${name}: headers`);
     assert.equal(await response.text(), exchange.response.body, `${name}: body bytes`);
   }
-  // History run by id is the /history answer, byte for byte, as run-200-ok is history-200-ok.
+  // The routes an older gateway served reads and history on (no longer in the goldens, kept for the
+  // client's fallback) answer what a run by id answers, byte for byte.
   const [id] = [...host.docs.keys()];
-  const run = await post("/sync/v1/run", JSON.stringify({ bundleId: BUNDLE, operationId: "documents.history.v1", input: { bundleId: BUNDLE, documentId: id } }));
-  const direct = await post("/sync/v1/history", JSON.stringify({ bundleId: BUNDLE, documentId: id }));
-  assert.equal(run.status, 200);
-  assert.equal(await run.text(), await direct.text());
-  assert.equal(golden.get("run-200-ok")!.response.body, golden.get("history-200-ok")!.response.body);
+  for (const [operationId, route] of [["documents.history.v1", "history"], ["documents.read.v1", "read"]] as const) {
+    const run = await post("/sync/v1/run", JSON.stringify({ bundleId: BUNDLE, operationId, input: { bundleId: BUNDLE, documentId: id } }));
+    const direct = await post(`/sync/v1/${route}`, JSON.stringify({ bundleId: BUNDLE, documentId: id }));
+    assert.equal(run.status, 200, operationId);
+    assert.equal(await run.text(), await direct.text(), operationId);
+  }
   // An old gateway answers both routes with the family's unknown route.
   const old = new FakeHost({ operations: false });
   for (const route of ["operations", "run"]) {

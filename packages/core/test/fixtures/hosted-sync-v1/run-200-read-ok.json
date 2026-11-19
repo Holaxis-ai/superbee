@@ -1,16 +1,16 @@
 {
-  "name": "read-200-ok",
-  "description": "documents.read.v1 of a present document.",
-  "route": "/sync/v1/read",
+  "name": "run-200-read-ok",
+  "description": "documents.read.v1 run by id: a present document.",
+  "route": "/sync/v1/run",
   "rows": [
-    "read 200 ok"
+    "run 200 ok"
   ],
   "request": {
     "method": "POST",
     "headers": {
       "content-type": "application/json"
     },
-    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/one\"}"
+    "body": "{\"bundleId\":\"notes.a\",\"operationId\":\"documents.read.v1\",\"input\":{\"bundleId\":\"notes.a\",\"documentId\":\"notes/one\"}}"
   },
   "response": {
     "status": 200,
