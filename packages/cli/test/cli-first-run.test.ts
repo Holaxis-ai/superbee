@@ -66,6 +66,7 @@ test("first run: hosted reads and writes with no host are AUTH_REQUIRED not_sign
       assert.equal(e.code, "AUTH_REQUIRED");
       assert.equal(e.exitCode, EXIT.AUTH);
       assert.equal(e.details?.status, "not_signed_in");
+      assert.match(e.message, /no hosted Superbee CLI session in this environment/);
       assert.match(String(e.details?.sign_in_command), FIRST_SIGN_IN);
       assert.match(e.help ?? "", FIRST_SIGN_IN);
       return true;

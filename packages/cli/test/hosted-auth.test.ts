@@ -159,6 +159,27 @@ test("discovery reads the issuer and the published client id from protected-reso
   }
 });
 
+test("discovery distinguishes the gateway from the issuer when a request fails", async () => {
+  const target = resolveHostedTarget("https://mcp.example.test");
+  const issuer = "https://auth.example.test";
+  await assert.rejects(
+    discoverHosted(async () => { throw new TypeError("fetch failed", { cause: { code: "ENOTFOUND" } }); }, target),
+    (error: CliError) =>
+      error.code === "TRANSIENT" && error.details?.phase === "gateway_discovery" &&
+      error.details.host === target.origin && error.details.failure === "dns" && error.details.retryable === true,
+  );
+  await assert.rejects(
+    discoverHosted(async (url) => {
+      if (url === target.metadataUrl) return Response.json({ resource: target.audience, authorization_servers: [issuer] });
+      if (url.endsWith("/openid-configuration")) throw new DOMException("injected timeout", "TimeoutError");
+      return new Response(null, { status: 404 });
+    }, target),
+    (error: CliError) =>
+      error.code === "TRANSIENT" && error.details?.phase === "issuer_discovery" &&
+      error.details.host === issuer && error.details.failure === "timeout",
+  );
+});
+
 test("client id: flag, then env, then host metadata, else a clear USAGE refusal naming the missing field", () => {
   const origin = "https://staging.example";
   const metadataUrl = `${origin}/.well-known/oauth-protected-resource/mcp`;
@@ -334,6 +355,68 @@ test("an expired or denied device code starts a fresh link with the reason named
   }
 });
 
+test("a device poll outage names the failure, backs off, and resumes the same sign-in", async () => {
+  const h = await harness();
+  try {
+    const target = resolveHostedTarget(h.host);
+    let outage: "dns" | "timeout" | undefined;
+    let pollAttempts = 0;
+    const deps: HostedAuthDeps = {
+      ...h.deps,
+      fetch: async (url, init) => {
+        if (url.endsWith("/oauth/token")) {
+          pollAttempts++;
+          if (outage === "dns") throw new TypeError("sensitive request details", { cause: { code: "ENOTFOUND" } });
+          if (outage === "timeout") throw new DOMException("injected timeout", "TimeoutError");
+        }
+        return h.deps.fetch(url, init);
+      },
+    };
+    const first = await authRequired(ensureHostedAccessToken(target, {}, deps));
+    h.clock.advance(1_000);
+    outage = "dns";
+    const expectFailure = (failure: string, afterSeconds: number) => (error: CliError) => {
+      assert.equal(error.code, "TRANSIENT");
+      assert.equal(error.details?.phase, "device_poll");
+      assert.equal(error.details.host, h.host);
+      assert.equal(error.details.failure, failure);
+      assert.equal(error.details.poll_after_seconds, afterSeconds);
+      assert.equal(error.details.retryable, true);
+      assert.doesNotMatch(error.message, /sensitive request details/);
+      assert.equal(error.details.sign_in_url, undefined);
+      return true;
+    };
+    await assert.rejects(ensureHostedAccessToken(target, {}, deps), expectFailure("dns", 1));
+    await assert.rejects(ensureHostedAccessToken(target, {}, deps), expectFailure("dns", 1));
+    assert.equal(pollAttempts, 1);
+
+    for (const flags of [[], ["--host", h.host]]) {
+      let out = "";
+      await whoami([...flags, "--json"], { auth: deps, stdout: (text) => { out += text; } });
+      assert.equal(JSON.parse(out).status, "sign_in_interrupted");
+    }
+
+    outage = "timeout";
+    h.clock.advance(1_000);
+    await assert.rejects(ensureHostedAccessToken(target, {}, deps), expectFailure("timeout", 2));
+    h.clock.advance(1_000);
+    await assert.rejects(ensureHostedAccessToken(target, {}, deps), expectFailure("timeout", 1));
+    assert.equal(pollAttempts, 2);
+
+    outage = undefined;
+    h.clock.advance(1_000);
+    const pending = await authRequired(ensureHostedAccessToken(target, {}, deps));
+    assert.equal(pending.details?.reason, "authorization_pending");
+    assert.equal(pending.details.sign_in_url, first.details?.sign_in_url);
+    h.issuer.approve();
+    h.clock.advance(2_000);
+    assert.equal((await ensureHostedAccessToken(target, {}, deps)).source, "sign-in");
+    assert.equal(h.issuer.counts.deviceCode, 1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
 test("login --wait polls within its bound; it never waits past --timeout", async () => {
   const h = await harness();
   try {
@@ -356,6 +439,43 @@ test("login --wait polls within its bound; it never waits past --timeout", async
     };
     const token = await waitForHostedSignIn(target, { timeoutMs: 60_000 }, deps);
     assert.equal(token.source, "sign-in");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("login --wait retries an unanswered device poll within its budget without repeating the link", async () => {
+  const h = await harness();
+  try {
+    const target = resolveHostedTarget(h.host);
+    let pollAttempts = 0;
+    let announcements = 0;
+    const deps: HostedAuthDeps = {
+      ...h.deps,
+      fetch: async (url, init) => {
+        if (url.endsWith("/oauth/token") && ++pollAttempts === 1) throw new DOMException("injected timeout", "TimeoutError");
+        return h.deps.fetch(url, init);
+      },
+    };
+    const start = h.clock.now();
+    await assert.rejects(
+      waitForHostedSignIn(target, {
+        timeoutMs: 2_000,
+        announce: () => { announcements++; },
+      }, deps),
+      (error: CliError) => error.code === "TRANSIENT" && error.details?.phase === "device_poll",
+    );
+    assert.equal(h.clock.now() - start, 1_000);
+    assert.equal(pollAttempts, 1);
+    h.issuer.approve();
+    const token = await waitForHostedSignIn(target, {
+      timeoutMs: 3_000,
+      announce: () => { announcements++; },
+    }, deps);
+    assert.equal(token.source, "sign-in");
+    assert.equal(pollAttempts, 2);
+    assert.equal(announcements, 1);
+    assert.equal(h.issuer.counts.deviceCode, 1);
   } finally {
     await h.cleanup();
   }
