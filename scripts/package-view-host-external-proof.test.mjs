@@ -28,7 +28,8 @@ test("packed view-host installs outside the workspace with only core, bundles fo
     const sourceCore = await manifestAt(path.join(root, "packages/core"));
     const sourceHost = await manifestAt(path.join(root, "packages/view-host"));
     assert.notEqual(sourceHost.version, "0.0.0");
-    assert.equal(sourceHost.dependencies["@superbee/core"], sourceCore.version, "the consumer must use the exact paired core release");
+    // A range the packed source Core must satisfy: the install below uses only these two tarballs.
+    assert.match(sourceHost.dependencies["@superbee/core"], /^\^/, "the View host takes a Core range, not an exact pin");
     const packed = {};
     // CI builds first. This proof packs those outputs; it is not a publication or staging step.
     for (const name of ["core", "view-host"]) {
@@ -70,7 +71,7 @@ test("packed view-host installs outside the workspace with only core, bundles fo
     const installed = await manifestAt(path.join(scratch, "node_modules/@superbee/view-host"));
     assert.equal(installed.private, undefined);
     assert.equal(installed.version, sourceHost.version);
-    assert.deepEqual(installed.dependencies, { "@superbee/core": sourceCore.version });
+    assert.deepEqual(installed.dependencies, sourceHost.dependencies);
     assert.deepEqual(installed.publishConfig, { access: "public", registry: "https://registry.npmjs.org/" });
     assert.deepEqual(installed.files, sourceHost.files);
     assert.deepEqual(Object.keys(installed.exports), ENTRIES.map(entry => `.${entry}`));

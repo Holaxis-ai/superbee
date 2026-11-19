@@ -74,8 +74,11 @@ export function checkPackageVersions(directory = root) {
   const browserLocal = read('packages/browser-local/package.json');
   equal('packages/browser-local/package.json', 'dependencies.@superbee/core', browserLocal.dependencies?.['@superbee/core'], core, 'packages/core/package.json version (exact source cohort dependency)');
   equal('package-lock.json', 'packages/browser-local.dependencies.@superbee/core', lock.packages?.['packages/browser-local']?.dependencies?.['@superbee/core'], browserLocal.dependencies?.['@superbee/core'], 'packages/browser-local/package.json');
-  // View host pages pass Core's document ids and errors through one Core; pin the source cohort.
-  equal('packages/view-host/package.json', 'dependencies.@superbee/core', manifests['view-host'].dependencies?.['@superbee/core'], core, 'packages/core/package.json version (exact source cohort dependency)');
+  // The View host exchanges no Core objects with another package, so it takes a Core range, not
+  // the exact source version: a Core release needs no release of it. The packed consumer proof
+  // (`package-view-host-external-proof.test.mjs`) installs the source pair together.
+  const viewHostCore = manifests['view-host'].dependencies?.['@superbee/core'];
+  equal('packages/view-host/package.json', 'dependencies.@superbee/core', viewHostCore, typeof viewHostCore === 'string' && viewHostCore.startsWith('^') ? viewHostCore : `^${core}`, 'a caret range from a Core version (not an exact pin)');
   equal('packages/server/package.json', 'version', manifests.server.version, core, 'packages/core/package.json version');
   equal('packages/server/package.json', 'dependencies.@superbee/core', manifests.server.dependencies?.['@superbee/core'], core, 'packages/core/package.json version (exact synchronized dependency)');
   const peer = manifests['markdown-renderer'].peerDependencies?.['@superbee/core'];

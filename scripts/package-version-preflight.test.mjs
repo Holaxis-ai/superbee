@@ -36,8 +36,7 @@ test('a coherent future pair and independent renderer and cli versions need no v
     }
     d['packages/browser-local/package.json'].dependencies['@superbee/core'] = d['packages/core/package.json'].version;
     d['package-lock.json'].packages['packages/browser-local'].dependencies = d['packages/browser-local/package.json'].dependencies;
-    d['packages/view-host/package.json'].dependencies['@superbee/core'] = d['packages/core/package.json'].version;
-    d['package-lock.json'].packages['packages/view-host'].dependencies = d['packages/view-host/package.json'].dependencies;
+    // The View host keeps its Core range: a Core release needs no edit of it.
     d['packages/server/package.json'].dependencies['@superbee/core'] = d['packages/core/package.json'].version;
     d['package-lock.json'].packages['packages/server'].dependencies = d['packages/server/package.json'].dependencies;
     d['packages/markdown-renderer/package.json'].peerDependencies['@superbee/core'] = d['packages/core/package.json'].version;
@@ -56,10 +55,10 @@ for (const [label, mutate, expected] of [
     d['packages/browser-local/package.json'].dependencies['@superbee/core'] = '0.0.0';
     d['package-lock.json'].packages['packages/browser-local'].dependencies['@superbee/core'] = '0.0.0';
   }, /browser-local\/package.json dependencies.@superbee\/core:.*exact source cohort dependency/],
-  ['view-host source Core cohort mismatch', d => {
+  ['view-host pins Core exactly', d => {
     d['packages/view-host/package.json'].dependencies['@superbee/core'] = '0.0.0';
     d['package-lock.json'].packages['packages/view-host'].dependencies['@superbee/core'] = '0.0.0';
-  }, /view-host\/package.json dependencies.@superbee\/core:.*exact source cohort dependency/],
+  }, /view-host\/package.json dependencies.@superbee\/core:.*caret range from a Core version/],
   ['view-host published privately', d => { d['packages/view-host/package.json'].publishConfig.access = 'restricted'; }, /view-host\/package.json publishConfig.access:.*expected "public"/],
   ['stale browser-local lock dependency', d => { d['package-lock.json'].packages['packages/browser-local'].dependencies['@superbee/core'] = '0.0.0'; }, /packages\/browser-local.dependencies.@superbee\/core:.*from packages\/browser-local\/package.json/],
   ['stale exact dependency', d => { d['packages/server/package.json'].dependencies['@superbee/core'] = '*'; }, /dependencies.@superbee\/core:.*exact synchronized dependency/],
