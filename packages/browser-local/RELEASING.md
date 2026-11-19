@@ -54,7 +54,9 @@ this Server/browser-local delivery or the self-contained executable release.
 
 There is no browser-local release workflow; browser-local and the renderer are
 published by hand from approved literal tarballs. `@superbee/view-host` follows the
-same process: public access, prereleases on `next`, an exact Core dependency, and
+same process: public access, stable versions on `latest` and prereleases on `next`
+(its first publication is the stable `0.1.0`, because npm points `latest` at whatever
+a new package name publishes first), an exact Core dependency, and
 its own external packed consumer proof in `npm run test:scripts`. Its first
 publication creates the package name on npm, which only a maintainer with npm
 publish rights for the `@superbee` scope can do. Repository access is not npm
