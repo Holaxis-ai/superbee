@@ -148,12 +148,13 @@ instead. The values travel in the link's fragment, which the browser never sends
 
 ## Sign-in: relay the link, then retry
 
-First run on a machine, in order:
+First run in an environment, in order:
 
-1. `superbee whoami`. It exits 0 either way. `signed_in: false` with `status: not_signed_in` names
-   the command to run; `status: waiting_for_confirmation` lists a sign-in already started, with its
-   link. The CLI never picks a host on its own; if the person may use a host other than the one
-   named, ask them which.
+1. `superbee whoami` checks the CLI session available in this environment and exits 0. A browser
+   or connector sign-in is separate. `not_signed_in` names the command to run.
+   `waiting_for_confirmation` gives the pending sign-in link.
+   `sign_in_interrupted` reports a failed poll for an existing sign-in. Use the resume command in
+   `help`. If the suggested sign-in host may be wrong, ask the person which host they use.
 2. `superbee login --host <url>`. It returns exit 4 while it waits for the person (below).
 3. Once they confirm, re-run the same `login`. It reports `signed_in`, and later hosted reads use
    that host until another is named with `--host`. Writes such as `checkout` and `publish` need
@@ -166,10 +167,15 @@ Read `details.status`:
   1. Give the person `details.sign_in_url` and `details.user_code` exactly as returned.
   2. Wait until they say they have confirmed.
   3. Run the same command again (`details.resume`). It finishes sign-in and continues.
-- `not_signed_in`: no host is known on this machine yet. Run `details.sign_in_command` (or the same
+- `not_signed_in`: this environment has no usable CLI session. Run `details.sign_in_command` (or the same
   `login` with the person's host), then re-run the original command.
 - No `status` (for example a session that ended during a sync): run the `login` command in `help`,
   relay the link it returns as above, then re-run the original command.
+
+A sign-in `TRANSIENT` with `details.phase`, `details.host` and `details.failure` identifies
+the failed request. For DNS or timeout, check reachability to that host from the same
+environment. For `device_poll`, keep the existing code and wait at least
+`details.poll_after_seconds` before retrying the same command.
 
 A `RUNTIME` error with `details.reason: state_dir_not_writable` means this process may not write
 Superbee's private state directory, `~/.superbee-state`. The usual cause is an agent sandbox that

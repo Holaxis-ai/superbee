@@ -444,6 +444,43 @@ test("login --wait polls within its bound; it never waits past --timeout", async
   }
 });
 
+test("login --wait retries an unanswered device poll within its budget without repeating the link", async () => {
+  const h = await harness();
+  try {
+    const target = resolveHostedTarget(h.host);
+    let pollAttempts = 0;
+    let announcements = 0;
+    const deps: HostedAuthDeps = {
+      ...h.deps,
+      fetch: async (url, init) => {
+        if (url.endsWith("/oauth/token") && ++pollAttempts === 1) throw new DOMException("injected timeout", "TimeoutError");
+        return h.deps.fetch(url, init);
+      },
+    };
+    const start = h.clock.now();
+    await assert.rejects(
+      waitForHostedSignIn(target, {
+        timeoutMs: 2_000,
+        announce: () => { announcements++; },
+      }, deps),
+      (error: CliError) => error.code === "TRANSIENT" && error.details?.phase === "device_poll",
+    );
+    assert.equal(h.clock.now() - start, 1_000);
+    assert.equal(pollAttempts, 1);
+    h.issuer.approve();
+    const token = await waitForHostedSignIn(target, {
+      timeoutMs: 3_000,
+      announce: () => { announcements++; },
+    }, deps);
+    assert.equal(token.source, "sign-in");
+    assert.equal(pollAttempts, 2);
+    assert.equal(announcements, 1);
+    assert.equal(h.issuer.counts.deviceCode, 1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
 // ---------------------------------------------------------------------------------------------
 // Refresh
 

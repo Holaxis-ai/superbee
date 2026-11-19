@@ -1213,11 +1213,15 @@ export async function waitForHostedSignIn(target: HostedTarget, options: WaitOpt
     try {
       return await ensureHostedAccessToken(target, options, deps);
     } catch (error) {
-      if (!(error instanceof CliError) || error.code !== "AUTH_REQUIRED") throw error;
-      const link = error.details?.sign_in_url;
-      if (link !== announced) {
-        announced = link;
-        options.announce?.(error);
+      if (!(error instanceof CliError)) throw error;
+      if (error.code === "AUTH_REQUIRED") {
+        const link = error.details?.sign_in_url;
+        if (link !== announced) {
+          announced = link;
+          options.announce?.(error);
+        }
+      } else if (error.code !== "TRANSIENT" || error.details?.phase !== "device_poll") {
+        throw error;
       }
       const pollAfter = Number(error.details?.poll_after_seconds ?? 5) * 1000;
       const now = deps.now();
