@@ -25,11 +25,12 @@ function allowed(specifier) {
     isBuiltin(specifier) ||
     specifier === "@superbee/core" ||
     specifier.startsWith("@superbee/core/") ||
+    specifier.startsWith("@superbee/view-host/") ||
     specifier.startsWith("./")
   );
 }
 
-test("view-runtime imports only Node, core, and its own source", async () => {
+test("view-runtime imports only Node, core, the View host package, and its own source", async () => {
   const violations = [];
   for (const file of await sourceFiles(src)) {
     const source = await readFile(file, "utf8");
@@ -51,9 +52,9 @@ test("view-runtime imports only Node, core, and its own source", async () => {
   assert.deepEqual(violations, []);
 });
 
-test("view-runtime manifest depends only on core", async () => {
+test("view-runtime manifest depends only on core and the View host package", async () => {
   const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
-  assert.deepEqual(Object.keys(manifest.dependencies ?? {}), ["@superbee/core"]);
+  assert.deepEqual(Object.keys(manifest.dependencies ?? {}), ["@superbee/core", "@superbee/view-host"]);
   assert.equal(manifest.peerDependencies, undefined);
   assert.equal(manifest.optionalDependencies, undefined);
 });

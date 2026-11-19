@@ -1,0 +1,58 @@
+{
+  "name": "@superbee/view-host",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Browser-safe host side of the Superbee View protocol: a host that maps a sandboxed View's requests onto named operations, the View action contract, and the View frame's response headers.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Holaxis-ai/superbee.git",
+    "directory": "packages/view-host"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./view-bridge-host": {
+      "types": "./dist/view-bridge-host.d.ts",
+      "default": "./dist/view-bridge-host.js"
+    },
+    "./action-bridge": {
+      "types": "./dist/action-bridge.d.ts",
+      "default": "./dist/action-bridge.js"
+    },
+    "./action-preparation": {
+      "types": "./dist/action-preparation.d.ts",
+      "default": "./dist/action-preparation.js"
+    },
+    "./view-frame": {
+      "types": "./dist/view-frame.d.ts",
+      "default": "./dist/view-frame.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "prepublishOnly": "node -e \"console.error('Publish only the reviewed view-host tarball under the maintainer handoff in packages/browser-local/RELEASING.md; do not publish the workspace'); process.exit(1)\"",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test ./test/*.test.ts ./test/*.test.mjs"
+  },
+  "dependencies": {
+    "@superbee/core": "^0.2.0-pre.47"
+  },
+  "devDependencies": {
+    "@superbee/markdown-renderer": "*",
+    "typescript": "^5.4.0"
+  }
+}

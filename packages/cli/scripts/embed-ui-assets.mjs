@@ -89,6 +89,7 @@ export function npmInvocation(args, env = process.env) {
 /** Dist prerequisites resolved by the UI production build, in dependency order. */
 export const UI_DIST_PREREQUISITE_WORKSPACES = [
   "@superbee/core",
+  "@superbee/view-host",
   "@superbee/view-runtime",
   "@superbee/markdown-renderer",
 ];
@@ -98,7 +99,7 @@ export const UI_DIST_PREREQUISITE_WORKSPACES = [
 export function uiBuildInvocations(compiledWorkspaces = []) {
   if (compiledWorkspaces.length === 0) {
     // Standalone builds retain ordinary lifecycle hooks, including UI's renderer prerequisite.
-    return ["@superbee/core", "@superbee/view-runtime", "@superbee/ui"]
+    return ["@superbee/core", "@superbee/view-host", "@superbee/view-runtime", "@superbee/ui"]
       .map(workspace => ["run", "build", `--workspace=${workspace}`]);
   }
   return [

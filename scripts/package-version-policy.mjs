@@ -4,8 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-// cli is versioned independently of the core/server pair.
-const names = ['core', 'server', 'markdown-renderer', 'cli'];
+// cli and view-host are versioned independently of the core/server pair.
+const names = ['core', 'server', 'markdown-renderer', 'cli', 'view-host'];
 export const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?$(?![\s\S])/;
 
 // This is the renderer's intentionally bounded policy, not a general semver engine:
@@ -74,6 +74,15 @@ export function checkPackageVersions(directory = root) {
   const browserLocal = read('packages/browser-local/package.json');
   equal('packages/browser-local/package.json', 'dependencies.@superbee/core', browserLocal.dependencies?.['@superbee/core'], core, 'packages/core/package.json version (exact source cohort dependency)');
   equal('package-lock.json', 'packages/browser-local.dependencies.@superbee/core', lock.packages?.['packages/browser-local']?.dependencies?.['@superbee/core'], browserLocal.dependencies?.['@superbee/core'], 'packages/browser-local/package.json');
+  // The View host takes a Core range, not the exact source version, so a consumer's own Core
+  // satisfies it and one copy is installed: its action preparation passes Core's typed errors to
+  // callers that classify them by class. The range must admit the source Core: a caret range from
+  // a version of the same major (and, below 1.0, the same minor).
+  const viewHostCore = manifests['view-host'].dependencies?.['@superbee/core'];
+  const floor = typeof viewHostCore === 'string' && viewHostCore.startsWith('^') ? versionPattern.exec(viewHostCore.slice(1)) : null;
+  const source = versionPattern.exec(core);
+  const admits = floor && source && floor[1] === source[1] && (floor[1] !== '0' || floor[2] === source[2]);
+  equal('packages/view-host/package.json', 'dependencies.@superbee/core', viewHostCore, admits ? viewHostCore : `^${core}`, 'a caret range that admits packages/core/package.json version');
   equal('packages/server/package.json', 'version', manifests.server.version, core, 'packages/core/package.json version');
   equal('packages/server/package.json', 'dependencies.@superbee/core', manifests.server.dependencies?.['@superbee/core'], core, 'packages/core/package.json version (exact synchronized dependency)');
   const peer = manifests['markdown-renderer'].peerDependencies?.['@superbee/core'];
