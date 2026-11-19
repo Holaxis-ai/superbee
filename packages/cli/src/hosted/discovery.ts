@@ -7,6 +7,7 @@
 import { CliError } from "../errors.js";
 import { commandToken } from "../command-text.js";
 import { isWorkspaceSlug } from "./reference.js";
+import { networkFailure, requestFailureError } from "./request-failure.js";
 
 /** The default resource path on a hosted origin: the Superbee API audience is `<origin>/mcp`. */
 export const DEFAULT_RESOURCE_PATH = "/mcp";
@@ -111,23 +112,35 @@ export function resolveHostedTarget(host: string): HostedTarget {
   };
 }
 
-async function fetchJson(fetchImpl: FetchLike, url: string, what: string): Promise<Record<string, unknown>> {
+const discoveryPhases = {
+  "protected-resource metadata": "gateway_discovery",
+  "issuer metadata": "issuer_discovery",
+  "workspace pointer": "workspace_discovery",
+} as const;
+
+async function fetchJson(fetchImpl: FetchLike, url: string, what: keyof typeof discoveryPhases): Promise<Record<string, unknown>> {
   let response: Response;
+  const phase = discoveryPhases[what];
+  const action = `read ${what}`;
+  const signal = AbortSignal.timeout(HTTP_TIMEOUT_MS);
   try {
     response = await fetchImpl(url, {
       headers: { accept: "application/json" },
       redirect: "error",
-      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+      signal,
     });
-  } catch {
-    throw new CliError("TRANSIENT", `could not reach ${what} at ${url}`, { details: { retryable: true } });
+  } catch (error) {
+    throw requestFailureError(url, phase, action, networkFailure(signal.reason ?? error));
   }
+  if (response.status >= 500) throw requestFailureError(url, phase, action, `http_${response.status}`, { status: response.status });
   if (!response.ok) {
-    throw new CliError(response.status >= 500 ? "TRANSIENT" : "RUNTIME", `${what} at ${url} returned HTTP ${response.status}`, {
-      details: { status: response.status, ...(response.status >= 500 ? { retryable: true } : {}) },
+    throw new CliError("RUNTIME", `${what} at ${url} returned HTTP ${response.status}`, {
+      details: { status: response.status },
     });
   }
-  const text = await response.text();
+  const text = await response.text().catch((error: unknown) => {
+    throw requestFailureError(url, phase, action, networkFailure(signal.reason ?? error));
+  });
   if (text.length > MAX_METADATA_BYTES) throw new CliError("RUNTIME", `${what} at ${url} is too large`);
   try {
     const parsed: unknown = JSON.parse(text);
@@ -173,7 +186,9 @@ export async function discoverIssuer(fetchImpl: FetchLike, issuer: string): Prom
     try {
       meta = await fetchJson(fetchImpl, url, "issuer metadata");
     } catch (error) {
-      lastError = error;
+      if (!(lastError instanceof CliError && lastError.code === "TRANSIENT" && error instanceof CliError && error.details?.status === 404)) {
+        lastError = error;
+      }
       continue;
     }
     const named = optionalString(meta.issuer);

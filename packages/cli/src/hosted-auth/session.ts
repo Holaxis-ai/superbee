@@ -25,6 +25,7 @@ import { FilesystemMutationLockError } from "@superbee/core";
 
 import { CliError } from "../errors.js";
 import { bindingHostArgument } from "../hosted/marker.js";
+import { isRequestFailure, networkFailure, requestFailureError, type RequestFailure } from "../hosted/request-failure.js";
 import { cliInvocation } from "../invocation.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { cliFilesystemRuntime, withCliFilesystemMutationLock } from "../filesystem-runtime.js";
@@ -156,6 +157,7 @@ export interface PendingRecord {
   readonly expires_at_ms: number;
   readonly interval_s: number;
   readonly next_poll_at_ms: number;
+  readonly last_poll_failure?: RequestFailure | undefined;
 }
 
 export interface TokenSet {
@@ -170,7 +172,7 @@ export type TokenOutcome =
   | { readonly kind: "tokens"; readonly tokens: TokenSet }
   | { readonly kind: "oauth_error"; readonly error: string; readonly description?: string; readonly status: number }
   /** No usable answer: network failure, timeout, 5xx or an unreadable body. The issuer may still have acted. */
-  | { readonly kind: "lost"; readonly reason: string };
+  | { readonly kind: "lost"; readonly reason: RequestFailure };
 
 export interface AccessToken {
   readonly accessToken: string;
@@ -304,7 +306,7 @@ export function notSignedInError(env: NodeJS.ProcessEnv = {}): CliError {
   }
   return new CliError(
     "AUTH_REQUIRED",
-    "not signed in to hosted Superbee yet: run the sign-in command in help (for another hosted Superbee, pass its URL to --host instead)",
+    "no hosted Superbee CLI session in this environment: run the sign-in command in help (for another hosted Superbee, pass its URL to --host instead)",
     { details: { status: "not_signed_in", reason: "no_host", sign_in_command: command }, help: command },
   );
 }
@@ -649,22 +651,24 @@ async function postForm(
   deps: HostedAuthDeps,
   url: string,
   params: Record<string, string>,
-): Promise<{ status: number; body: Record<string, unknown> | null } | { lost: string }> {
+): Promise<{ status: number; body: Record<string, unknown> | null } | { lost: RequestFailure }> {
   let response: Response;
+  let text: string;
+  const signal = AbortSignal.timeout(HTTP_TIMEOUT_MS);
   try {
     response = await deps.fetch(url, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
       body: new URLSearchParams(params).toString(),
       redirect: "error",
-      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+      signal,
     });
+    text = await response.text();
   } catch (error) {
-    return { lost: error instanceof Error ? error.name : "network" };
+    return { lost: networkFailure(signal.reason ?? error) };
   }
   let body: Record<string, unknown> | null = null;
   try {
-    const text = await response.text();
     const parsed: unknown = text ? JSON.parse(text) : null;
     body = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
   } catch {
@@ -922,7 +926,8 @@ async function startDeviceAuthorization(target: HostedTarget, options: SignInOpt
     audience: target.audience,
   });
   if ("lost" in result || result.status >= 500) {
-    throw new CliError("TRANSIENT", `could not start sign-in with ${discovery.issuer}`, { details: { retryable: true } });
+    const failure = "lost" in result ? result.lost : `http_${result.status}` as const;
+    throw requestFailureError(discovery.deviceAuthorizationEndpoint, "device_authorization", "start device sign-in", failure);
   }
   const body = result.body ?? {};
   if (result.status !== 200 || typeof body.device_code !== "string" || typeof body.user_code !== "string" || typeof body.verification_uri !== "string") {
@@ -1019,7 +1024,7 @@ async function advanceDeviceSignIn(
     const started = await startDeviceAuthorization(target, options, deps);
     throw authRequired(target, started, reason, resume, deps.now());
   }
-  if (now < pending.next_poll_at_ms) throw authRequired(target, pending, "authorization_pending", resume, now);
+  if (now < pending.next_poll_at_ms) throw devicePollStatus(target, pending, resume, now);
 
   const outcome = await tokenRequest(deps, pending.token_endpoint, {
     grant_type: "urn:ietf:params:oauth:grant-type:device_code",
@@ -1029,10 +1034,17 @@ async function advanceDeviceSignIn(
   if (outcome.kind === "tokens") return completeDeviceSignIn(target, pending, outcome.tokens, deps);
   const after = deps.now();
   if (outcome.kind === "lost" || outcome.error === "authorization_pending" || outcome.error === "slow_down") {
-    const interval = outcome.kind === "oauth_error" && outcome.error === "slow_down" ? pending.interval_s + 5 : pending.interval_s;
-    const next: PendingRecord = { ...pending, interval_s: interval, next_poll_at_ms: after + interval * 1000 };
+    let interval = pending.interval_s;
+    if (outcome.kind === "lost" && outcome.reason === "timeout") interval *= 2;
+    if (outcome.kind === "oauth_error" && outcome.error === "slow_down") interval += 5;
+    const next: PendingRecord = {
+      ...pending,
+      interval_s: interval,
+      next_poll_at_ms: after + interval * 1000,
+      last_poll_failure: outcome.kind === "lost" ? outcome.reason : undefined,
+    };
     await writeRecord(deps.home, target, PENDING_FILE, next);
-    throw authRequired(target, next, "authorization_pending", resume, after);
+    throw devicePollStatus(target, next, resume, after);
   }
   await clearPending(target, deps);
   // invalid_grant on a device poll means the issuer no longer knows the code: it was already
@@ -1044,6 +1056,14 @@ async function advanceDeviceSignIn(
   }
   throw new CliError("RUNTIME", `the issuer rejected sign-in (${outcome.error})`, {
     details: { error: outcome.error, host: target.origin, client_id: pending.client_id },
+  });
+}
+
+function devicePollStatus(target: HostedTarget, pending: PendingRecord, resume: CommandText, now: number): CliError {
+  if (!isRequestFailure(pending.last_poll_failure)) return authRequired(target, pending, "authorization_pending", resume, now);
+  return requestFailureError(pending.token_endpoint, "device_poll", "check device sign-in", pending.last_poll_failure, {
+    poll_after_seconds: Math.max(0, Math.ceil((pending.next_poll_at_ms - now) / 1000)),
+    resume,
   });
 }
 
@@ -1118,9 +1138,9 @@ export async function ensureHostedAccessToken(
           return { accessToken: next.access_token, source: "refresh", expiresAtMs: next.access_token_expires_at_ms };
         }
         if (outcome.kind === "lost") {
-          throw new CliError("TRANSIENT", `could not refresh the ${target.origin} session (${outcome.reason})`, {
-            details: { reason: "refresh_unanswered", retryable: true, host: target.origin },
-            help: "retry the same command",
+          throw requestFailureError(session.token_endpoint, "token_refresh", "refresh hosted sign-in", outcome.reason, {
+            reason: "refresh_unanswered",
+            gateway: target.origin,
           });
         }
         if (outcome.status === 429 || outcome.error === "too_many_requests") {

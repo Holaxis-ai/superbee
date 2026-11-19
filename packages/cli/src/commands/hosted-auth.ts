@@ -17,6 +17,7 @@ import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 import { loopbackSignIn } from "../hosted-auth/loopback.js";
+import { isRequestFailure } from "../hosted/request-failure.js";
 import {
   ACCESS_TOKEN_ENV,
   CLIENT_ID_ENV,
@@ -39,6 +40,7 @@ import {
   waitingSignIns,
   type AccessToken,
   type HostedAuthDeps,
+  type PendingRecord,
   type SessionRecord,
 } from "../hosted-auth/session.js";
 import { CREDENTIAL_STORE_ENV } from "../hosted-auth/secret-store.js";
@@ -58,6 +60,10 @@ Device sign-in is the default and never blocks: without a session this returns A
 relay to the person. That is a pause, not a failure: re-run the same command after they confirm
 and it completes sign-in. --wait polls instead, for at most --timeout seconds
 (default ${DEFAULT_WAIT_SECONDS}, max ${MAX_WAIT_SECONDS}). Already signed in (including with --loopback): refreshes if needed, reports the session, and starts no sign-in.
+
+If a device sign-in request fails, TRANSIENT gives the phase and endpoint host. Check reachability from this
+environment and retry. If the failure occurred while polling, the existing code can still be used
+until it expires. Wait the reported poll_after_seconds before retrying.
 
 --loopback signs in through a browser redirect to 127.0.0.1 (PKCE), waits at most --timeout
 seconds, then falls back to device sign-in. The link is printed on stderr.
@@ -91,7 +97,9 @@ Read-only: reports the host, issuer, client, the signed-in subject from the toke
 claims (not yet confirmed by the gateway), scopes, token expiry, where the refresh token is kept,
 and any sign-in waiting on the person. Never prints a token. Not signed in is a successful result,
 including on a first run with no host selected yet (it names the sign-in command).
-It reads local state only, except that a host with no stored session that turns out to be a
+It reports the session available to this CLI environment. A sign-in in a browser, connector or
+another machine is separate. A failed device poll is reported as sign_in_interrupted. It reads
+local state only, except that a host with no stored session that turns out to be a
 workspace's browser address is resolved to its gateway first (its metadata and pointer requests).
 
 Options:
@@ -132,6 +140,19 @@ function commandDeps(deps: Partial<HostedAuthCommandDeps>): HostedAuthCommandDep
 
 function iso(ms: number | undefined): string | undefined {
   return ms === undefined ? undefined : new Date(ms).toISOString();
+}
+
+function pendingSignInView(pending: PendingRecord) {
+  const expires_at = iso(pending.expires_at_ms);
+  if (isRequestFailure(pending.last_poll_failure)) {
+    return { status: "sign_in_interrupted" as const, failure: pending.last_poll_failure, expires_at };
+  }
+  return {
+    status: "waiting_for_confirmation" as const,
+    sign_in_url: pending.verification_uri_complete ?? pending.verification_uri,
+    user_code: pending.user_code,
+    expires_at,
+  };
 }
 
 function sessionView(session: SessionRecord): Record<string, unknown> {
@@ -306,19 +327,14 @@ export async function whoami(argv: string[], partial: Partial<HostedAuthCommandD
       deps.stdout(render(notSignedInAnywhere("signed_in"), mode));
       return;
     }
-    // A first sign-in started but not yet confirmed: report it rather than suggest another host.
+    const pending = waiting.map(({ target: t, pending: p }) => ({ host: t.origin, ...pendingSignInView(p) }));
     deps.stdout(
       render(
         {
           host: null,
           signed_in: false,
-          status: "waiting_for_confirmation",
-          pending_sign_ins: waiting.map(({ target: t, pending: p }) => ({
-            host: t.origin,
-            sign_in_url: p.verification_uri_complete ?? p.verification_uri,
-            user_code: p.user_code,
-            expires_at: iso(p.expires_at_ms),
-          })),
+          status: pending.some((entry) => entry.status === "waiting_for_confirmation") ? "waiting_for_confirmation" : "sign_in_interrupted",
+          pending_sign_ins: pending,
           help: waiting.map(({ target: t }) => String(defaultResumeCommand(t))),
         },
         mode,
@@ -329,16 +345,7 @@ export async function whoami(argv: string[], partial: Partial<HostedAuthCommandD
   const session = await readSession(auth.home, target);
   const pending = await readPending(auth.home, target);
   const now = auth.now();
-  const pendingView =
-    pending && pending.expires_at_ms > now
-      ? {
-          pending_sign_in: {
-            sign_in_url: pending.verification_uri_complete ?? pending.verification_uri,
-            user_code: pending.user_code,
-            expires_at: iso(pending.expires_at_ms),
-          },
-        }
-      : {};
+  const pendingView = pending && pending.expires_at_ms > now ? pendingSignInView(pending) : undefined;
   if (!session) {
     deps.stdout(
       render(
@@ -346,8 +353,8 @@ export async function whoami(argv: string[], partial: Partial<HostedAuthCommandD
           host: target.origin,
           audience: target.audience,
           signed_in: false,
-          status: Object.keys(pendingView).length > 0 ? "waiting_for_confirmation" : "not_signed_in",
-          ...pendingView,
+          status: pendingView?.status ?? "not_signed_in",
+          ...(pendingView ? { pending_sign_in: pendingView } : {}),
           help: [defaultResumeCommand(target)],
         },
         mode,
@@ -365,7 +372,7 @@ export async function whoami(argv: string[], partial: Partial<HostedAuthCommandD
         ...sessionView(session),
         access_token_expired: session.access_token_expires_at_ms <= now,
         claims: "unverified (read locally from the token; the gateway confirms identity on hosted commands)",
-        ...pendingView,
+        ...(pendingView ? { pending_sign_in: pendingView } : {}),
         help: [`${cliInvocation()} logout --host ${commandToken(hostArgument(target))}`],
       },
       mode,

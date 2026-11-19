@@ -103,7 +103,7 @@ export async function connectSignedInAccount(
   } catch (error) {
     if (!(error instanceof SignedOutError)) throw error;
     const login = commandFragment`${cliInvocation()} login --host ${commandToken(hostArgument(target))}`;
-    throw new CliError("AUTH_REQUIRED", `not signed in to ${target.origin}: ${request.command} acts as your hosted sign-in`, {
+    throw new CliError("AUTH_REQUIRED", `not signed in to ${target.origin}: this environment has no usable hosted CLI session for ${request.command}`, {
       details: { status: "not_signed_in", reason: "signed_out", host: target.origin, sign_in_command: login, resume: request.resume },
       help: commandFragment`${login}` + ", then re-run: " + request.resume,
     });
