@@ -74,8 +74,8 @@ export async function recipeInstall(argv: string[], deps: RecipeInstallDeps): Pr
     details: { request_id: requestId, retryable: true },
     help: `run the exact command again or add --lookup: ${resume}`,
   });
-  const body = apply === undefined ? { bundleId: reference, recipe: id } : {
-    bundleId: reference, recipe: id, planToken: apply, preparedAt, requestId, mode: values.lookup ? "lookup" : "apply",
+  const body = apply === undefined ? { bundleId: binding.bundle_id, recipe: id } : {
+    bundleId: binding.bundle_id, recipe: id, planToken: apply, preparedAt, requestId, mode: values.lookup ? "lookup" : "apply",
   };
   const reply = await client.carrier.json(client.prefix + "/" + route, body, client.signal, {
     maximum: 64 * 1024, ...(requestId ? { writeRequest: requestId } : {}),
@@ -87,21 +87,29 @@ export async function recipeInstall(argv: string[], deps: RecipeInstallDeps): Pr
   if (reply.status === 404 && answer?.error === "not_found")
     throw new CliError("NOT_IMPLEMENTED", "This Hosted server does not offer recipe installation yet");
   if (reply.status === 401) throw hostedFailure(new RemoteError("Hosted sign-in expired", "UNAUTHENTICATED", 401), target, resume);
-  if (!answer?.ok || !answer.data || Array.isArray(answer.data) || typeof answer.data !== "object") {
+  if (reply.status >= 300 || answer?.ok !== true || !answer.data ||
+      Array.isArray(answer.data) || typeof answer.data !== "object") {
     const error = typeof answer?.error === "object" ? answer.error : null;
-    if (error?.code === "write_outcome_unknown" || (error?.code === "backend_unavailable" && error.writeState === "unknown"))
+    if (requestId && error?.code === "preview_expired")
+      throw new CliError("STALE_HEAD", "The preview has expired", {
+        details: { reason: error.code, request_id: requestId },
+        help: `add --lookup to check the original outcome before requesting a fresh preview: ${resume}`,
+      });
+    if (requestId && (error?.writeState === "unknown" || error?.code === "write_outcome_unknown" ||
+      (error?.writeState !== "not_applied" && (reply.status >= 500 || answer?.ok !== false))))
       throw unknown();
     const code = typeof error?.code === "string" && /^[a-z_]{1,64}$/.test(error.code) ? error.code : undefined;
     const disposition: CliErrorCode =
       code === "insufficient_scope" ? "FORBIDDEN" :
       code === "bundle_not_found" || code === "recipe_not_found" ? "NOT_FOUND" :
-      code === "version_conflict" || code === "preview_expired" ? "STALE_HEAD" : "RUNTIME";
+      code === "version_conflict" ? "STALE_HEAD" : "RUNTIME";
     throw new CliError(disposition, "Hosted could not complete the recipe request", {
       details: { ...(code ? { reason: code } : {}), ...(requestId ? { request_id: requestId } : {}) },
       ...(disposition === "STALE_HEAD" ? { help: `request a fresh preview: ${command}` } : {}),
     });
   }
   const data = answer.data;
+  if (requestId && (data.status !== "committed" || data.requestId !== requestId)) throw unknown();
   const ready = apply === undefined && data.applyAllowed === true &&
     typeof data.planToken === "string" && DIGEST.test(data.planToken) && iso(data.preparedAt);
   const output = {
@@ -109,10 +117,10 @@ export async function recipeInstall(argv: string[], deps: RecipeInstallDeps): Pr
     bundle: reference,
     result: data,
     ...(ready ? { apply_command: commandFragment`${command}${receiptArgs(data.planToken as string, data.preparedAt as string, randomUUID())}` } : {}),
-    ...(apply !== undefined && data.status === "committed"
+    ...(requestId
       ? { sync_command: commandFragment`${cliInvocation()} sync --dir ${commandToken(binding.path)}` }
       : {}),
   };
   deps.stdout(resolveMode(values) === "json" ? escapeHostJson(JSON.stringify(output)) + "\n"
-    : render(stripHostData(output).value, resolveMode(values)));
+    : render({ ...output, result: stripHostData(data).value }, resolveMode(values)));
 }
