@@ -150,12 +150,8 @@ test("undeclaredTypeFinding: only in a bundle with Kinds, never for Superbee's o
   assert.equal(undeclaredTypeFinding(two, at("notes/n", { type: "Context Notes" }))?.details.suggestedType, undefined, "a different word is not a near miss");
 });
 
-test("isSystemDocument: graph definitions plus owned types, whose literals agree with their owning constants", async () => {
-  const { isGraphDefinitionDocument, isSystemDocument, OWNED_INSTANCE_TYPE_NAMES } = await import("../src/system-documents.js");
-  const { CONNECTOR_TYPE } = await import("../src/connectors.js");
-  const { SITE_TYPE } = await import("../src/site-manifest.js");
-  const { PROMOTION_TYPE } = await import("../src/document-transfer.js");
-  assert.deepEqual([...OWNED_INSTANCE_TYPE_NAMES].sort(), [CONNECTOR_TYPE, SITE_TYPE, PROMOTION_TYPE, "Attested Computation"].sort());
+test("isSystemDocument: graph definitions plus types reserved from Kinds", async () => {
+  const { isGraphDefinitionDocument, isSystemDocument } = await import("../src/system-documents.js");
   const reference = { id: "references/site-authoring", frontmatter: { type: "Reference" } };
   assert.ok(isGraphDefinitionDocument(reference) && isSystemDocument(reference));
   const stray = { id: "notes/r", frontmatter: { type: "Reference" } };

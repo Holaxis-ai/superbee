@@ -1,8 +1,9 @@
 /**
  * The document browser's projection (designs/document-discovery Decision 1): the home's "Documents"
  * section — every bundle doc grouped by kind, so the human can find anything, not just the recent
- * pulse the activity feed shows. Reuses {@link isFeedHead}, the ONE plumbing filter (conventions and
- * the View/Page registry docs stay out — conventions are machinery; Views have their own grid).
+ * pulse the activity feed shows. Reuses {@link isFeedHead}, the ONE filter for people's documents
+ * (core's `sectionOf`): conventions and Views stay out, and Superbee's own records (connectors, the
+ * bundle's name, ...) are kept apart in one trailing collapsed group.
  *
  * A kind renders COLLAPSED-by-default when its convention declares `browse_collapsed: true`
  * (core's `KindConvention.browseCollapsed`) — a bundle-DECLARED marker, so the shell never privileges
@@ -13,6 +14,10 @@ import type { DocHead } from "../api/types.js";
 import { isFeedHead } from "./ActivityFeed.js";
 import { formatWhen } from "./format.js";
 import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
+import { sectionOf } from "@superbee/core/system-documents";
+
+/** The label of the group holding Superbee's own records, apart from people's documents. */
+export const OWN_RECORDS_GROUP = "Superbee's own records";
 
 export interface BrowseRow {
   id: string;
@@ -28,6 +33,8 @@ export interface BrowseGroup {
   collapsed: boolean;
   /** This kind's docs, newest-first. */
   rows: BrowseRow[];
+  /** True for the one group of Superbee's own records; its rows mix kinds. */
+  own?: boolean;
 }
 
 function stringField(value: unknown): string | undefined {
@@ -54,7 +61,8 @@ const strip = ({ timestamp: _timestamp, ...row }: BrowseRow & { timestamp: strin
 /**
  * Group browsable heads by kind, newest-first within each group. Group order: EXPANDED kinds first
  * (larger groups before smaller, then by kind name), then the collapsed kinds — durable knowledge on
- * top, the transient/declared-collapsed kinds tucked below. Pure.
+ * top, the transient/declared-collapsed kinds tucked below. Superbee's own records follow last, in
+ * one collapsed group. Pure.
  */
 export function browseGroups(heads: DocHead[], collapsedKinds: ReadonlySet<string>): BrowseGroup[] {
   const byKind = new Map<string, Array<BrowseRow & { timestamp: string }>>();
@@ -70,10 +78,13 @@ export function browseGroups(heads: DocHead[], collapsedKinds: ReadonlySet<strin
     rows.sort(byRecencyThenTitle);
     groups.push({ kind, collapsed: collapsedKinds.has(kind), rows: rows.map(strip) });
   }
-  return groups.sort((a, b) => {
+  groups.sort((a, b) => {
     if (a.collapsed !== b.collapsed) return a.collapsed ? 1 : -1; // expanded tier first
     return b.rows.length - a.rows.length || a.kind.localeCompare(b.kind);
   });
+  const own = heads.filter((head) => sectionOf(head) === "superbee").map(toSortableRow).sort(byRecencyThenTitle);
+  if (own.length > 0) groups.push({ kind: OWN_RECORDS_GROUP, collapsed: true, rows: own.map(strip), own: true });
+  return groups;
 }
 
 /**

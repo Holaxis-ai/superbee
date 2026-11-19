@@ -4,8 +4,11 @@ import { isJsonData } from "./json-data.js";
 import { isOkfStandardField } from "./okf-standard-fields.js";
 import { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 
+/** The marker type of a Site declaration. */
 export const SITE_TYPE = "Site";
+/** Where Site declarations live. */
 export const SITES_PREFIX = "sites/";
+
 /** One site label leaves room for its workspace label in a combined DNS name. */
 export const SITE_LABEL = /^[a-z][a-z0-9-]{1,30}[a-z0-9]$/;
 export const isSiteLabel = (value: unknown): value is string =>

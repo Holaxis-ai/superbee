@@ -8,7 +8,7 @@ import { captureJournalValue, equalJournalValue, assertMetaExpectation, IntentSt
 import type { OperationState } from "./uncertain-write.js";
 import { isReservedFile } from "./paths.js";
 import { foldPath } from "./path-fold.js";
-import { PAGE_ENTRY_PREFIX, PAGE_REGISTRY_PREFIX, VIEW_ENTRY_PREFIX, VIEW_REGISTRY_PREFIX } from "./page.js";
+import { OWNED_BLOB_ROOTS } from "./system-documents.js";
 
 export { isWriteRequestId } from "./write-identity.js";
 
@@ -291,8 +291,7 @@ export function assertBlobGuardMatches(view: BlobJournalView, guard: BlobJournal
   assertBlobJournalGuard(guard, { key: guard.key, intents: [...view.blobIntentsFor(guard.key)], meta: guard.meta.map(row => ({ key: row.key, expected: view.meta(row.key) })) });
 }
 
-/** The top-level folders that hold Superbee's own records, never ordinary files: View and page entries and registries, conventions, recipes and references. */
-const NON_ORDINARY_ROOTS = Object.freeze([PAGE_ENTRY_PREFIX, PAGE_REGISTRY_PREFIX, VIEW_ENTRY_PREFIX, VIEW_REGISTRY_PREFIX, "conventions/", "recipes/", "references/"].map(prefix => prefix.slice(0, -1)));
+const OWNED_BLOB_ROOT_FOLDS: ReadonlySet<string> = new Set(OWNED_BLOB_ROOTS.map(foldPath));
 /**
  * Whether `key` names an ordinary file a blob write may change: a safe blob key that is not a
  * reserved file and does not sit under one of Superbee's own record folders (compared under
@@ -304,7 +303,7 @@ export function isOrdinaryBlobKey(key: unknown): key is string {
   try { assertBlobKey(key); } catch { return false; }
   if (isReservedFile(key)) return false;
   const root = foldPath(key.split("/")[0]!);
-  return !NON_ORDINARY_ROOTS.includes(root);
+  return !OWNED_BLOB_ROOT_FOLDS.has(root);
 }
 
 /** Pre-admit checks a caller runs before durably admitting, against the bound the host advertised.
@@ -315,7 +314,7 @@ export type BlobAdmissionCheck =
 export function checkBlobAdmission(input: { operation: "create" | "replace" | "delete"; key: unknown; contentType?: unknown; expectedContentType?: unknown; byteLength?: number; maximumBytes?: number | null }): BlobAdmissionCheck {
   const refuse = (reason: Extract<BlobAdmissionCheck, { ok: false }>["reason"], message: string): BlobAdmissionCheck => ({ ok: false, code: "invalid_input", reason, message });
   if (!isSafeBlobKey(input.key)) return refuse("unsafe_key", "the blob key is not a safe ordinary-file key");
-  if (!isOrdinaryBlobKey(input.key)) return refuse("protected_key", "the blob key names a reserved file or a folder of Superbee's own records (views, pages, conventions, recipes, references), which blob writes never change");
+  if (!isOrdinaryBlobKey(input.key)) return refuse("protected_key", `the blob key names a reserved file or a folder of Superbee's own records (${OWNED_BLOB_ROOTS.join(", ")}), which blob writes never change`);
   const deletion = input.operation === "delete";
   if (!deletion && !isBlobContentType(input.contentType)) return refuse("invalid_content_type", "the blob content type is not a valid MIME value");
   if (input.operation !== "create" && !isBlobContentType(input.expectedContentType)) return refuse("invalid_expected_content_type", "replace and delete pin the expected content type");

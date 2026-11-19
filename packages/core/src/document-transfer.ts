@@ -54,14 +54,14 @@ import { SUPERBEE_UPDATED_BY_FIELD } from "./mutation-attribution.js";
 import { assertCanonicalNewDocumentId, assertSafeConceptId, compareStorageKeys, isReservedFile, pathFromConceptId, trimTrailingSlashes } from "./paths.js";
 import { isQualifiedHref, parseQualifiedHref, qualifiedHref } from "./qualified-links.js";
 import { sha256HexOfUtf8 } from "./sha256.js";
+import { OWNED_LOCATIONS, PROMOTION_TYPE, PROMOTIONS_PREFIX, sectionOf } from "./system-documents.js";
 import type { ValidationWarning } from "./validation.js";
 import { VersionConflict } from "./versioning.js";
 import type { Bundle, ConceptId, Frontmatter, OkfDocument, ReadResult, Version } from "./types.js";
 
 export const DOCUMENT_TRANSFER_CONTRACT = "document-transfer/v1";
-/** The `type` of the record each transfer writes. Not the `promote` command, which copies one file. */
-export const PROMOTION_TYPE = "Promotion";
-export const PROMOTIONS_PREFIX = "promotions/";
+// The `type` of the record each transfer writes (not the `promote` command, which copies one file), and where it lives.
+export { PROMOTION_TYPE, PROMOTIONS_PREFIX };
 
 /** The source documents to copy: the union of explicit ids, every doc of a type, every doc under a prefix. */
 export interface TransferSelection {
@@ -291,8 +291,13 @@ export class TransferResumeConflict extends Error {
 
 // ── Snapshots ──────────────────────────────────────────────────────────────
 
-/** Documents that describe the source bundle itself; they never transfer. */
-const SOURCE_SELF_DOCS = new Set<ConceptId>([BUNDLE_NAME_DOC_ID, DEPENDENCIES_DOC_ID]);
+/** Documents that describe the source bundle itself (the owned records at exact ids); they never transfer. */
+const SOURCE_SELF_DOCS = new Set<ConceptId>(OWNED_LOCATIONS.flatMap((owned) => owned.id === undefined ? [] : [owned.id]));
+
+/** Only people's documents transfer; Superbee's own records stay behind. */
+function transfersAsDocument(id: ConceptId, doc: OkfDocument): boolean {
+  return sectionOf({ id, frontmatter: doc.frontmatter }) === "documents";
+}
 
 interface SourceSnapshot {
   ids: Set<ConceptId>;
@@ -552,16 +557,20 @@ function normalizePrefix(prefix: string | undefined): string | undefined {
 }
 
 /** Every planned id must be safe, absent, unique and distinct under `foldPath`. */
-const PROTECTED_TARGET_FOLDS = new Set([BUNDLE_NAME_DOC_ID, DEPENDENCIES_DOC_ID].map(foldPath));
-const CONVENTIONS_FOLD = `${foldPath(CONVENTIONS_PREFIX.replace(/\/$/, ""))}/`;
+const PROTECTED_TARGET_FOLDS = new Set([...SOURCE_SELF_DOCS].map(foldPath));
+/** Superbee's own folders, folded; an import never creates a document in one. */
+const OWNED_TARGET_FOLDS: ReadonlyMap<string, string> = new Map(OWNED_LOCATIONS.flatMap((owned) =>
+  owned.prefix === undefined ? [] : [[`${foldPath(owned.prefix.replace(/\/$/, ""))}/`, owned.prefix] as const]));
+const CONVENTIONS_FOLD = [...OWNED_TARGET_FOLDS].find(([, prefix]) => prefix === CONVENTIONS_PREFIX)![0];
 
 /**
  * Throw {@link InvalidInputError} unless an import may create `id`: a safe, unreserved concept id
- * that is not the target's own identity or dependency declaration and not a Kind convention
- * (installing Kinds is not part of v1). Compared under `foldPath`, so a case or
+ * that is not the target's own identity or dependency declaration, not a Kind convention
+ * (installing Kinds is not part of v1) and not under another of Superbee's own folders. The
+ * transfer's own record may sit in its folder. Compared under `foldPath`, so a case or
  * normalization variant of a protected id is refused too.
  */
-function assertImportableTargetId(id: ConceptId, newTarget?: { exists: (candidate: ConceptId) => boolean }): void {
+function assertImportableTargetId(id: ConceptId, newTarget?: { exists: (candidate: ConceptId) => boolean }, record = false): void {
   assertSafeConceptId(id);
   // Only a planned target is a create; a stored record's targets may predate the canonical-id rule,
   // and any create its resume still performs meets the rule in mutateDocument.
@@ -570,6 +579,10 @@ function assertImportableTargetId(id: ConceptId, newTarget?: { exists: (candidat
   const fold = foldPath(id);
   if (PROTECTED_TARGET_FOLDS.has(fold)) throw new InvalidInputError("it is the bundle's own identity or dependency declaration");
   if (fold.startsWith(CONVENTIONS_FOLD)) throw new InvalidInputError("an import never installs a Kind convention");
+  for (const [ownedFold, prefix] of OWNED_TARGET_FOLDS) {
+    if (record && prefix === PROMOTIONS_PREFIX) continue;
+    if (fold.startsWith(ownedFold)) throw new InvalidInputError(`it is under Superbee's own '${prefix}' folder`);
+  }
 }
 
 function checkTargetIds(
@@ -592,7 +605,7 @@ function checkTargetIds(
   for (const row of planned) {
     const where = { ...(row.source === undefined ? {} : { source: row.source }), target: row.target };
     try {
-      assertImportableTargetId(row.target, { exists: (candidate) => existing.has(candidate) });
+      assertImportableTargetId(row.target, { exists: (candidate) => existing.has(candidate) }, row.record === true);
     } catch (error) {
       if (!(error instanceof InvalidInputError)) throw error;
       conflicts.push({ code: "unsafe_target_id", ...where, detail: `'${row.target}' is not a usable document id: ${error.message}` });
@@ -816,6 +829,8 @@ async function computeTransfer(request: TransferRequest): Promise<Computed> {
       conflicts.push({ code: "source_malformed", source: id, detail: `'${id}' is malformed in the source: ${source.malformed.get(id)}` });
     } else if (!source.docs.has(id)) {
       conflicts.push({ code: "source_missing", source: id, detail: `'${id}' is not in ${request.from.binding.label}` });
+    } else if (!transfersAsDocument(id, source.docs.get(id)!.doc)) {
+      conflicts.push({ code: "source_missing", source: id, detail: `'${id}' is Superbee's own record, not a document, and never transfers` });
     } else {
       selected.add(id);
     }
@@ -824,7 +839,7 @@ async function computeTransfer(request: TransferRequest): Promise<Computed> {
   const prefixes = (request.select.prefixes ?? []).map((p) => trimTrailingSlashes(p.trim())).filter((p) => p !== "");
   const underPrefix = (id: ConceptId): boolean => prefixes.some((p) => id === p || id.startsWith(`${p}/`));
   for (const [id, { doc }] of source.docs) {
-    if (SOURCE_SELF_DOCS.has(id)) continue;
+    if (SOURCE_SELF_DOCS.has(id) || !transfersAsDocument(id, doc)) continue;
     if (types.has(String(doc.frontmatter.type)) || underPrefix(id)) selected.add(id);
   }
   // An unreadable document's type is unknowable, so a type selection cannot rule it out: report it

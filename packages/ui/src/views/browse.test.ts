@@ -5,7 +5,7 @@
  * isFeedHead, exercised here so the browser and the feed can never diverge on what "a document" is.
  */
 import { describe, expect, it } from "vitest";
-import { browseGroups, searchRows } from "./browse.js";
+import { OWN_RECORDS_GROUP, browseGroups, searchRows } from "./browse.js";
 import type { DocHead } from "../api/types.js";
 
 const head = (id: string, type: string, title: string, timestamp: string): DocHead => ({
@@ -44,6 +44,21 @@ describe("browseGroups", () => {
     const groups = browseGroups(HEADS, new Set());
     // Design(2) first; Task(1) and Context Note(1) tie on size → kind name ("Context Note" < "Task").
     expect(groups.map((g) => g.kind)).toEqual(["Design", "Context Note", "Task"]);
+  });
+
+  it("keeps Superbee's own records apart, in one trailing collapsed group; marker pairs decide", () => {
+    const groups = browseGroups([
+      ...HEADS,
+      head("docs/bundle", "Bundle Name", "My bundle", "2026-07-30T00:00:00Z"),
+      head("connectors/feed", "Connector", "Feed", "2026-07-29T00:00:00Z"),
+      head("conventions/notes", "Design", "Not a Convention", "2026-07-02T00:00:00Z"), // a person's document
+    ], new Set(["Context Note"]));
+    expect(groups.map((g) => g.kind)).toEqual(["Design", "Task", "Context Note", OWN_RECORDS_GROUP]);
+    expect(groups.find((g) => g.kind === "Design")!.rows.map((r) => r.id)).toContain("conventions/notes");
+    const own = groups.at(-1)!;
+    expect(own).toMatchObject({ collapsed: true, own: true });
+    expect(own.rows.map((r) => r.id)).toEqual(["docs/bundle", "connectors/feed"]);
+    expect(searchRows([head("docs/bundle", "Bundle Name", "My bundle", "2026-07-30T00:00:00Z")], "bundle", 40).total).toBe(0);
   });
 
   it("returns [] when nothing is browsable (only plumbing)", () => {

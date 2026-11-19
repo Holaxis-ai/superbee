@@ -10,9 +10,9 @@
  * option. Rows whose id/version is new since the previous snapshot get a `fresh` marker (a
  * cosmetic land animation; best-effort by set-membership, never claimed as an authoritative verb).
  *
- * FILTERED, so first-run reads as knowledge rather than plumbing: `conventions/` docs (kind
- * declarations) and the View/Page registry docs (the views grid already shows those) stay out of
- * the feed.
+ * FILTERED, so first-run reads as knowledge rather than plumbing: only people's documents (core's
+ * `sectionOf`) appear. Kind declarations, View registrations (the views grid shows those) and
+ * Superbee's own records stay out of the feed.
  *
  * Beneath the SSE mechanism, the query also inherits the app-wide 5s visible-tab poll
  * (queryClient.ts's default `refetchInterval`) — the same SSE-fallback posture the pages query
@@ -24,19 +24,17 @@ import { listAllHeads } from "../api/client.js";
 import { fetchKindContext } from "../api/pages.js";
 import type { DocHead } from "../api/types.js";
 import { subscribeToChanges, subscribeToResync } from "../pages/pageEvents.js";
-import { PAGE_TYPE_NAMES } from "../pages/registry.js";
 import { navigate } from "../routing.js";
 import { formatWhen } from "./format.js";
 import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
 import { mutationActorFromFrontmatter } from "@superbee/core/mutation-attribution";
 import { projectLogicalKindFields, type KindConvention } from "@superbee/core/kinds";
+import { sectionOf } from "@superbee/core/system-documents";
 
 /** How many rows the feed shows — recent pulse, not a history browser. */
 export const FEED_LIMIT = 8;
 /** Collapse a burst of SSE change frames into ONE head-list refetch. */
 export const FEED_REFETCH_DEBOUNCE_MS = 300;
-/** Id prefixes the feed hides (kind declarations are plumbing, not knowledge). */
-const HIDDEN_PREFIXES = ["conventions/"] as const;
 
 export interface FeedRow {
   id: string;
@@ -56,12 +54,9 @@ function stringField(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
-/** True iff a head belongs in the feed — not a convention doc, not a View/Page registry doc. */
+/** True iff a head is one of people's documents, not a Kind declaration, View or Superbee's own record. */
 export function isFeedHead(head: DocHead): boolean {
-  if (HIDDEN_PREFIXES.some((p) => head.id.startsWith(p))) return false;
-  const type = String(head.frontmatter.type ?? "");
-  if ((PAGE_TYPE_NAMES as readonly string[]).includes(type)) return false;
-  return true;
+  return sectionOf(head) === "documents";
 }
 
 /** Project heads into display rows: filtered, newest-first by `timestamp` (undated last), capped at {@link FEED_LIMIT}. Pure — the unit-tested core. */

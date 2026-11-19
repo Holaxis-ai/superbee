@@ -106,6 +106,10 @@ test("bundle health: every section fires on an in-memory v0.2 bundle", async () 
     "views-registry/live": { frontmatter: { type: "View", title: "L", entry: "views/live.html", access: "none", bridge: "none" }, body: "" },
     "notes/view-shaped": { frontmatter: { type: "View", title: "V", entry: "views/live.html", access: "none" }, body: "" },
     "pages-registry/retired": { frontmatter: { type: "Page", title: "R", entry: "pages/retired.html" }, body: "" },
+    "connectors/feed": { frontmatter: { type: "Connector", title: "F" }, body: "" },
+    "sites/www": { frontmatter: { type: "Site", title: "W" }, body: "" },
+    "promotions/copy-1": { frontmatter: { type: "Promotion", title: "P" }, body: "" },
+    "notes/connector-shaped": { frontmatter: { type: "Connector", title: "C" }, body: "" },
   }, { blobs: ["views/live.html", "pages/retired.html"], malformed: ["notes/broken"] });
 
   const report = await bundleHealth({ root: "memory://every", backend }, { now: NOW });
@@ -120,6 +124,10 @@ test("bundle health: every section fires on an in-memory v0.2 bundle", async () 
   assert.deepEqual(report.unresolvedLinks, [{ from: "notes/linker", href: "../ghosts/nope.md" }]);
   assert.ok(report.orphans.some((row) => row.id === "notes/self"), "a self-link rescues nothing");
   assert.ok(report.orphans.some((row) => row.id === "notes/orphan"));
+  for (const id of ["connectors/feed", "sites/www", "promotions/copy-1"]) {
+    assert.ok(!report.orphans.some((row) => row.id === id), `Superbee's own ${id} is never an orphan`);
+  }
+  assert.ok(report.orphans.some((row) => row.id === "notes/connector-shaped"), "a Connector type outside connectors/ is a document");
   assert.deepEqual(report.linkTypeViolations, [{ from: "items/box", to: "notes/target", text: "contains", expected: "Box -> Crate" }]);
   assert.deepEqual(report.crossLinkTypeViolations, [
     { from: "menus/local", href: "../notes/target.md", text: "pours", expected: "Menu Item -> beers:Beer" },

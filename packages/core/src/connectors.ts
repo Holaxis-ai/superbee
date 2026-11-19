@@ -30,9 +30,10 @@ import { definitionCanonicalJson } from "./recipe-lifecycle/stamp.js";
 import type { ConceptId, Frontmatter, OkfDocument } from "./types.js";
 import type { ValidationWarning } from "./validation.js";
 import { sha256Hex } from "./versioning.js";
+import { CONNECTOR_TYPE, CONNECTORS_PREFIX } from "./system-documents.js";
 
-export const CONNECTOR_TYPE = "Connector";
-export const CONNECTORS_PREFIX = "connectors/";
+export { CONNECTOR_TYPE, CONNECTORS_PREFIX };
+
 /** The normalization rules of {@link connectorPinDigest}; bumped whenever a default or sort rule changes. */
 export const CONNECTOR_PIN_RULES = 1;
 
