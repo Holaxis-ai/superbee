@@ -76,6 +76,10 @@ test("recipe install previews first and reuses the exact apply identity after a 
     () => new Response("bad gateway", { status: 502 }),
     () => Response.json({ ok: false, error: { code: "insufficient_scope", writeState: "unknown" } }, { status: 403 }),
     () => Response.json({ ok: true, data: { status: "committed", requestId: "different" } }),
+    (requestId: string) => Response.json({ ok: true, data: { status: "committed", requestId, documents: [] } }),
+    (requestId: string) => Response.json({
+      ok: true, data: { status: "committed", requestId, documents: [{ id: "references/decision-guide", version: "incomplete" }] },
+    }),
   ];
   const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
     const route = new URL(String(input)).pathname;
@@ -87,8 +91,13 @@ test("recipe install previews first and reuses the exact apply identity after a 
       const body = JSON.parse(String(init?.body));
       calls.push(body);
       const interrupted = unconfirmed.shift();
-      if (interrupted) return interrupted();
-      return Response.json({ ok: true, data: { status: "committed", requestId: body.requestId, documents: [] } });
+      if (interrupted) return interrupted(body.requestId);
+      return Response.json({
+        ok: true, data: {
+          status: "committed", requestId: body.requestId,
+          documents: [{ id: "references/decision-guide", version: "sha256:" + "b".repeat(64) }],
+        },
+      });
     }
     return h.host.fetch(input, init);
   }) as typeof fetch;
@@ -105,14 +114,14 @@ test("recipe install previews first and reuses the exact apply identity after a 
   const requestId = preview.apply_command!.match(/ --request-id ([\w-]+)/)?.[1];
   assert.ok(requestId);
   const flags = ["--apply", planToken, "--prepared-at", preparedAt, "--request-id", requestId];
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  while (unconfirmed.length) {
     const interrupted = await rejects(() => install(flags));
     assert.equal(interrupted.code, "TRANSIENT");
     assert.ok(interrupted.help?.includes(requestId));
   }
   assert.equal((await install([...flags, "--lookup"])).result.status, "committed");
   assert.equal((await install(flags)).result.status, "committed");
-  const lookup = calls.splice(5, 1)[0];
+  const [lookup] = calls.splice(-2, 1);
   assert.deepEqual(lookup, { ...calls[1], mode: "lookup" });
   for (const call of calls.slice(1)) assert.deepEqual(call, calls[1]);
 });

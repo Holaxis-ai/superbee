@@ -109,7 +109,14 @@ export async function recipeInstall(argv: string[], deps: RecipeInstallDeps): Pr
     });
   }
   const data = answer.data;
-  if (requestId && (data.status !== "committed" || data.requestId !== requestId)) throw unknown();
+  if (requestId) {
+    const documents = data.documents;
+    if (data.status !== "committed" || data.requestId !== requestId ||
+      !Array.isArray(documents) || !documents.length ||
+      documents.some((doc) => typeof doc?.id !== "string" || !doc.id ||
+        typeof doc.version !== "string" || !DIGEST.test(doc.version)))
+      throw unknown();
+  }
   const ready = apply === undefined && data.applyAllowed === true &&
     typeof data.planToken === "string" && DIGEST.test(data.planToken) && iso(data.preparedAt);
   const output = {
