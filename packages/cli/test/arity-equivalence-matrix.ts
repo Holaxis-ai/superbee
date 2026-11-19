@@ -138,6 +138,7 @@ export const BEHAVIOR_ASSIGNMENTS = [
   selector("kindDismiss", "leading-required", 1),
   ordinary("recipes", 0),
   ordinary("recipeAdd", 1),
+  ordinary("recipeInstall", 1),
   ordinary("recipeEvolve", 1),
   ordinary("recipeValidate", 1),
   ordinary("recipeQualify", 1),

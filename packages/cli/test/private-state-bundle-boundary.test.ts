@@ -803,6 +803,12 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
   { leaf: "kindDraft", surface: "--dir", argv: (t) => ["kind", "draft", "Note", "--dir", t, "--json"] },
   { leaf: "kindDismiss", surface: "--dir", argv: (t) => ["kind", "dismiss", "Probe Type", "--dir", t, "--json"] },
   { leaf: "recipes", surface: "--dir", argv: (t) => ["recipes", "--dir", t, "--json"] },
+  {
+    leaf: "recipeInstall",
+    surface: "--dir",
+    argv: (target) => ["recipe", "install", "holaxis-decision", "--dir", target, "--json"],
+    controlSkip: "An ordinary local bundle answers USAGE after the path guard. hosted-op.test.ts runs the same command in a valid Hosted checkout.",
+  },
   { leaf: "recipeAdd", surface: "--dir", argv: (t) => ["recipe", "add", "work-tracking", "--dir", t, "--json"] },
   {
     leaf: "recipeAdd", surface: "--index",

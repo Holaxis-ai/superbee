@@ -3,6 +3,8 @@ import { readExternalTextFile } from "../external-file.js";
 import { renderUsage } from "../output.js";
 import { recipeQualify } from "./recipe-qualify.js";
 import { recipeValidate } from "./recipe-validate.js";
+import { recipeInstall } from "./recipe-install.js";
+import type { RecipeInstallDeps } from "./recipe-install.js";
 // `superbee recipe add <name-or-path>` installs definitions create-only; `recipe evolve` is the
 // separate explicit, state-bound authority for updating already-installed conventions in place.
 // Both operate on an EXISTING
@@ -35,6 +37,7 @@ import { commandFragment, commandLiteral, commandQuoted, commandToken, type Comm
 export const RECIPE_USAGE = `superbee recipe — apply a recipe to this bundle
 
 Usage:
+  superbee recipe install <catalog-id> [--dir <hosted-checkout>] [--json]
   superbee recipe qualify <config.json> [--dir <existing-bundle>] [--json]
   superbee recipe validate <path> [--readme] [--json]
   superbee recipe add <name-or-path> [--actor <name>] [--dir <path>]
@@ -135,7 +138,7 @@ Options:
   -h, --help            Show this help
 `;
 
-export interface RecipeCliDeps {
+export interface RecipeCliDeps extends RecipeInstallDeps {
   stdout: (s: string) => void;
   /** HTTPS transport for `recipe add --index <url>`; tests inject one so nothing reaches the network. */
   fetch: FetchLike;
@@ -150,13 +153,14 @@ export async function recipe(argv: string[], deps: Partial<RecipeCliDeps> = {}):
 
   if (sub === "qualify") return recipeQualify(rest, { stdout });
   if (sub === "validate") return recipeValidate(rest, { stdout });
+  if (sub === "install") return recipeInstall(rest, { ...deps, stdout });
   if (sub === "add") return recipeAdd(rest, stdout, { ...(deps.fetch ? { fetch: deps.fetch } : {}), ...(deps.indexLimits ? { limits: deps.indexLimits } : {}) });
   if (sub === "evolve") return recipeEvolve(rest, stdout);
   if (sub === "-h" || sub === "--help" || sub === undefined) {
     stdout(renderUsage(RECIPE_USAGE));
     return;
   }
-  throw new CliError("USAGE", `unknown recipe subcommand: ${sub} (expected add, evolve, validate or qualify)`, {
+  throw new CliError("USAGE", `unknown recipe subcommand: ${sub} (expected add, install, evolve, validate or qualify)`, {
     help: `${cliInvocation()} recipe --help`,
   });
 }

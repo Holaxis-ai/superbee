@@ -16,6 +16,7 @@ import { CliError } from "../src/errors.js";
 import { checkout } from "../src/commands/checkout.js";
 import { init } from "../src/commands/init.js";
 import { op } from "../src/commands/op.js";
+import { recipe } from "../src/commands/recipe.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { BUNDLE, FakeHost, HOST, syncFixture, TOKEN, type OperationDescriptor } from "./support/fake-hosted-sync.js";
 
@@ -27,7 +28,7 @@ interface Harness {
   id: string;
 }
 
-async function harness(host = new FakeHost()): Promise<Harness> {
+async function harness(host = new FakeHost(), reference = BUNDLE): Promise<Harness> {
   const home = await mkdtemp(path.join(tmpdir(), "sb-op-home-"));
   const cwd = await realpath(await mkdtemp(path.join(tmpdir(), "sb-op-cwd-")));
   const auth = defaultHostedAuthDeps(home, {
@@ -36,7 +37,7 @@ async function harness(host = new FakeHost()): Promise<Harness> {
       throw new Error("the sign-in module must not be reached");
     },
   });
-  await checkout([BUNDLE, "--host", HOST, "--dir", "team"], { stdout: () => {}, auth, cwd, fetch: host.fetch });
+  await checkout([reference, "--host", HOST, "--dir", "team"], { stdout: () => {}, auth, cwd, fetch: host.fetch });
   host.requests.length = 0;
   return { folder: path.join(cwd, "team"), auth, host, id: [...host.docs.keys()][0]! };
 }
@@ -62,6 +63,68 @@ async function rejects(action: () => Promise<unknown>): Promise<CliError> {
 }
 
 const paths = (host: FakeHost) => host.requests.map((request) => request.path);
+
+test("recipe install previews first and reuses the exact apply identity after a lost reply", async () => {
+  const h = await harness(new FakeHost({
+    tenants: ["tenant-a"], workspaces: [{ tenantId: "tenant-a", slug: "test-ws" }], slug: "test-ws",
+  }), `test-ws/${BUNDLE}`);
+  const planToken = "sha256:" + "a".repeat(64);
+  const preparedAt = "2026-11-19T12:00:00.000Z";
+  const calls: Record<string, unknown>[] = [];
+  const unconfirmed = [
+    () => { throw new Error("request interrupted after commit"); },
+    () => new Response("bad gateway", { status: 502 }),
+    () => Response.json({ ok: false, error: { code: "insufficient_scope", writeState: "unknown" } }, { status: 403 }),
+    () => Response.json({ ok: true, data: { status: "committed", requestId: "different" } }),
+    (requestId: string) => Response.json({ ok: true, data: { status: "committed", requestId, documents: [] } }),
+    (requestId: string) => Response.json({
+      ok: true, data: { status: "committed", requestId, documents: [{ id: "references/decision-guide", version: "incomplete" }] },
+    }),
+  ];
+  const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+    const route = new URL(String(input)).pathname;
+    if (route === "/sync/v1/recipe-preview") {
+      calls.push(JSON.parse(String(init?.body)));
+      return Response.json({ ok: true, data: { status: "ready", applyAllowed: true, planToken, preparedAt } });
+    }
+    if (route === "/sync/v1/recipe-apply") {
+      const body = JSON.parse(String(init?.body));
+      calls.push(body);
+      const interrupted = unconfirmed.shift();
+      if (interrupted) return interrupted(body.requestId);
+      return Response.json({
+        ok: true, data: {
+          status: "committed", requestId: body.requestId,
+          documents: [{ id: "references/decision-guide", version: "sha256:" + "b".repeat(64) }],
+        },
+      });
+    }
+    return h.host.fetch(input, init);
+  }) as typeof fetch;
+  const install = async (args: string[]) => {
+    const output: string[] = [];
+    await recipe(["install", "holaxis-decision", ...args, "--dir", h.folder, "--json"], {
+      stdout: (value) => output.push(value), hosted: { auth: h.auth, fetch: fetcher },
+    });
+    return JSON.parse(output.join("")) as { apply_command?: string; result: { status: string } };
+  };
+  const preview = await install([]);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], { bundleId: `test-ws/${BUNDLE}`, recipe: "holaxis-decision" });
+  const requestId = preview.apply_command!.match(/ --request-id ([\w-]+)/)?.[1];
+  assert.ok(requestId);
+  const flags = ["--apply", planToken, "--prepared-at", preparedAt, "--request-id", requestId];
+  while (unconfirmed.length) {
+    const interrupted = await rejects(() => install(flags));
+    assert.equal(interrupted.code, "TRANSIENT");
+    assert.ok(interrupted.help?.includes(requestId));
+  }
+  assert.equal((await install([...flags, "--lookup"])).result.status, "committed");
+  assert.equal((await install(flags)).result.status, "committed");
+  const [lookup] = calls.splice(-2, 1);
+  assert.deepEqual(lookup, { ...calls[1], mode: "lookup" });
+  for (const call of calls.slice(1)) assert.deepEqual(call, calls[1]);
+});
 
 /** The golden listing's one descriptor (documents.history.v1), as a fresh object to vary. */
 const historyDescriptor = (): OperationDescriptor => (JSON.parse(syncFixture("operations-200").response.body) as { operations: OperationDescriptor[] }).operations.find((operation) => operation.operationId === "documents.history.v1")!;
