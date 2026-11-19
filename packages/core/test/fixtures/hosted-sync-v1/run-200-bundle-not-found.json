@@ -1,6 +1,6 @@
 {
   "name": "run-200-bundle-not-found",
-  "description": "A run in a bundle the bearer cannot reach: the operation's refusal, as the read route answers it.",
+  "description": "A run in a bundle the bearer cannot reach: the operation's refusal.",
   "route": "/sync/v1/run",
   "rows": [
     "run 200 bundle_not_found"

@@ -94,12 +94,12 @@ test("golden: a create on an absent id commits at the host's version, with the e
 });
 
 test("golden: a create over an existing document is a conflict naming the version the host serves", async () => {
-  // The re-read runs documents.read.v1 by id; the read route's golden answer is the run's too.
-  const { fetch, sent } = golden({ capabilities: ["capabilities-200"], create: ["create-200-document-exists"], run: ["read-200-ok"] });
+  // The re-read runs documents.read.v1 by id.
+  const { fetch, sent } = golden({ capabilities: ["capabilities-200"], create: ["create-200-document-exists"], run: ["run-200-read-ok"] });
   const result = await clientOf(fetch).write(BUNDLE, { id: "notes/one", document: doc("dup"), expectAbsent: true });
   assert.equal(result.status, "conflict");
   assert.equal(result.status === "conflict" && result.reason, "version_conflict");
-  assert.equal(result.status === "conflict" && result.reason === "version_conflict" && result.currentVersion, JSON.parse(fixture("read-200-ok").response.body).data.version);
+  assert.equal(result.status === "conflict" && result.reason === "version_conflict" && result.currentVersion, JSON.parse(fixture("run-200-read-ok").response.body).data.version);
   assert.deepEqual(routes(sent), ["capabilities", "create", "run"]);
   assert.deepEqual(JSON.parse(sent[1]!.body), JSON.parse(fixture("create-200-document-exists").request.body));
   assert.equal(JSON.parse(sent[2]!.body).operationId, "documents.read.v1");
@@ -177,7 +177,7 @@ function fakeHost(options: { retentionMs?: number; operations?: boolean } = {}) 
         return Response.json(capabilities);
       case "read": {
         const found = documents.get(input.documentId);
-        if (!found) return replay("read-200-document-not-found");
+        if (!found) return Response.json({ ok: false, operationId: "documents.read.v1", error: { code: "document_not_found", message: "The document was not found.", retryable: false } });
         return Response.json({ ok: true, operationId: "documents.read.v1", data: { document: { id: input.documentId, frontmatter: found.frontmatter, body: found.body }, version: found.version } });
       }
       case "create":

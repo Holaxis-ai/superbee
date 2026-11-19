@@ -64,7 +64,7 @@ async function rejects(action: () => Promise<unknown>): Promise<CliError> {
 const paths = (host: FakeHost) => host.requests.map((request) => request.path);
 
 /** The golden listing's one descriptor (documents.history.v1), as a fresh object to vary. */
-const historyDescriptor = (): OperationDescriptor => (JSON.parse(syncFixture("operations-200").response.body) as { operations: OperationDescriptor[] }).operations[0]!;
+const historyDescriptor = (): OperationDescriptor => (JSON.parse(syncFixture("operations-200").response.body) as { operations: OperationDescriptor[] }).operations.find((operation) => operation.operationId === "documents.history.v1")!;
 
 /** A read the OSS client has never heard of: only a test-local listing names it. */
 function syntheticDescriptor(overrides: Partial<OperationDescriptor> = {}): OperationDescriptor {
@@ -96,7 +96,7 @@ test("op run documents.history.v1 returns the host's history page through the ge
   const record = await json(h, ["run", "documents.history.v1", "--input", JSON.stringify({ documentId: h.id })]);
   const sent = paths(h.host);
   const runBody = h.host.requests[1]!.body;
-  // The same page /history answers for the same input, as run-200-ok is history-200-ok.
+  // The same page an older host's /history route answers for the same input.
   const direct = (await (await h.host.fetch(`${HOST}/sync/v1/history`, { method: "POST", headers: { Authorization: `Bearer ${TOKEN}` }, body: JSON.stringify({ bundleId: BUNDLE, documentId: h.id }) })).json()) as { data: unknown };
   assert.deepEqual(record, { home: "hosted", host: HOST, bundle: BUNDLE, operation: "documents.history.v1", result: direct.data });
   assert.equal(((record.result as { versions: unknown[] }).versions).length, 2);
@@ -194,11 +194,12 @@ test("op list names the host's reads with their inputs and provenance, and omits
   assert.match(notes[1]!, /documents\.query\.v1 is not listed: the folder answers it with list or query/);
   assert.match((record.help as string[])[0]!, /typed verbs come first/);
   assert.deepEqual(paths(h.host), ["/sync/v1/whoami", "/sync/v1/operations"]);
-  // The default listing is the golden one: history alone, and no notes.
+  // The default listing is the golden one: read and history; the folder answers the read.
   h.host.operationsListing = undefined;
   const plain = await json(h, ["list"]);
   assert.deepEqual((plain.operations as { id: string }[]).map((row) => row.id), ["documents.history.v1"]);
-  assert.equal(plain.notes, undefined);
+  assert.equal((plain.notes as string[]).length, 1);
+  assert.match((plain.notes as string[])[0]!, /documents\.read\.v1 is not listed: the folder answers it with doc read/);
 });
 
 test("op run of a read the folder answers is USAGE naming the typed verb, before any request", async () => {
@@ -367,7 +368,7 @@ test("the sign-in resume repeats a small --input, and points to a file for a lar
   const h = await harness();
   const signedOut = (async (input: string | URL | Request, init?: RequestInit) => {
     if (!String(input).endsWith("/whoami")) return h.host.fetch(input, init);
-    const { response } = syncFixture("read-401-unauthenticated");
+    const { response } = syncFixture("run-401-unauthenticated");
     return new Response(response.body, { status: response.status, headers: response.headers });
   }) as typeof fetch;
   const small = await rejects(() => run(h, ["run", "documents.history.v1", "--input", JSON.stringify({ documentId: h.id })], signedOut));

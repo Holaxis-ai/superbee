@@ -1,16 +1,16 @@
 {
-  "name": "read-200-document-not-found",
-  "description": "documents.read.v1 of an absent document.",
-  "route": "/sync/v1/read",
+  "name": "run-200-read-document-not-found",
+  "description": "documents.read.v1 run by id for an absent document: the operation's refusal.",
+  "route": "/sync/v1/run",
   "rows": [
-    "read 200 document_not_found"
+    "run 200 document_not_found"
   ],
   "request": {
     "method": "POST",
     "headers": {
       "content-type": "application/json"
     },
-    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/absent\"}"
+    "body": "{\"bundleId\":\"notes.a\",\"operationId\":\"documents.read.v1\",\"input\":{\"bundleId\":\"notes.a\",\"documentId\":\"notes/absent\"}}"
   },
   "response": {
     "status": 200,

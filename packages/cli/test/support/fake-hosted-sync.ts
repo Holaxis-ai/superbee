@@ -34,8 +34,9 @@
 //   label a write named in `X-Superbee-Via` as the host records it. `history: false` is a gateway
 //   from before the route: its `404 {"error":"not_found"}`. `historyByRun: false` is a gateway that
 //   serves the route but does not run `documents.history.v1` by id: `run` refuses it.
-// - `/read` and a run of `documents.read.v1` answer the same document read; `readByRun: false` is
-//   a gateway that does not run it by id (a run of it is `400 unknown_operation`).
+// - a run of `documents.read.v1` and `/read` (an older gateway's route, which the goldens no longer
+//   record) answer the same document read; `readByRun: false` is a gateway that does not run it by
+//   id (a run of it is `400 unknown_operation`), so reads fall back to `/read`.
 // - `/export` (superbee-hosted PR 650, `src/sync-v1-export.ts`): the portable export of the fake's
 //   bundle as the host writes it (`fake-export-archive.ts`): the documents' stored bytes, the root
 //   index, and any reserved files or blobs a test adds to `exportExtras`; a 404 `bundle_not_found`
@@ -49,7 +50,7 @@
 //   `<slug>/<bundle-id>`, which reaches the bundle only when `slug` is its workspace's (another
 //   slug is absent, as for another bundle). The recorded request keeps the body as sent.
 // - `/operations` and `/run` (superbee-hosted `src/sync-v1-reads.ts`, G1): the listing is the golden
-//   `operations-200` answer (a composition pinned to `documents.history.v1`) unless a test sets
+//   `operations-200` answer (a composition pinned to `documents.read.v1` and `documents.history.v1`) unless a test sets
 //   `operationsListing`; another bundle's listing is the capabilities `404 bundle_not_found`. A run
 //   of an id the listing does not name is `400 unknown_operation`, a malformed envelope or an input
 //   naming another bundle is `400 invalid_input`, another bundle is the `200 bundle_not_found`
@@ -443,7 +444,7 @@ export class FakeHost {
     assert.equal(url.origin, this.origin);
     assert.equal(init?.method, "POST");
     if (headers.get("authorization") !== `Bearer ${this.token}`) {
-      const refusal = syncFixture("read-401-unauthenticated").response;
+      const refusal = syncFixture("run-401-unauthenticated").response;
       return new Response(refusal.body, { status: refusal.status, headers: refusal.headers });
     }
     if (this.options.syncSurface === false) return Response.json({ error: "access_denied" }, { status: 403 });
@@ -739,14 +740,15 @@ export class FakeHost {
     const { bundleId, operationId, input } = body;
     if (!onlyKeys(body, ["bundleId", "operationId", "input"]) || typeof bundleId !== "string" || typeof operationId !== "string" || typeof input !== "object" || input === null || Array.isArray(input)) return invalid();
     // The listing is what the host runs by id: any other id, a write's included, is refused before anything else.
-    // The host runs `documents.read.v1` by id whatever the pinned listing names (its run list).
+    // The host runs `documents.read.v1` by id whatever a test's listing names (its run list).
     if (operationId === "documents.read.v1" && this.options.readByRun !== false) {
       const operationInput = input as Record<string, unknown>;
       if (operationInput.bundleId !== bundleId) return invalid();
       return this.readDocument(operationInput);
     }
     const runsHistory = this.options.history !== false && this.options.historyByRun !== false;
-    if (!this.listing().some((descriptor) => descriptor.operationId === operationId) || (operationId === "documents.history.v1" && !runsHistory)) return Response.json({ error: { code: "unknown_operation" } }, { status: 400 });
+    // A read reaching here is `readByRun: false`: refused by id even though the golden listing names it.
+    if (!this.listing().some((descriptor) => descriptor.operationId === operationId) || (operationId === "documents.history.v1" && !runsHistory) || operationId === "documents.read.v1") return Response.json({ error: { code: "unknown_operation" } }, { status: 400 });
     const operationInput = input as Record<string, unknown>;
     if (operationInput.bundleId !== bundleId) return invalid();
     if (bundleId !== BUNDLE) return Response.json({ ok: false, operationId, error: { code: "bundle_not_found", message: BUNDLE_UNAVAILABLE, retryable: false } });

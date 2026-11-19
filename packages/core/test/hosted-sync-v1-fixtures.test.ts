@@ -18,6 +18,7 @@ import {
   classifyWriteAnswer,
   BLOB_OPERATION_IDS,
   createFetchCarrier,
+  createPortRunner,
   HostedCarrierError,
   isPageRestart,
   createHostedReadAdapter,
@@ -74,24 +75,38 @@ const exchanges = new Map<string, Exchange>(index.exchanges.map((entry) => [entr
 const fixture = (name: string): Exchange => exchanges.get(name) ?? assert.fail(`no fixture ${name}`);
 
 const BUNDLE = "notes.a";
+const OPERATIONS_ROUTE = "/sync/v1/operations";
+const RUN_ROUTE = "/sync/v1/run";
+
+/** The routes the Sync door's read adapter asks: the working copy's, and `run` for document reads. */
+type ReadRoute = keyof typeof SYNC_READ_ROUTES | "run";
+
+/** An answer written in the test, for a situation no golden records. */
+type InlineAnswer = { status: number; headers: Record<string, string>; body: string };
 
 /** A read adapter whose fetch answers every request with the named exchange's exact bytes. */
-function adapterAnswering(byRoute: Partial<Record<keyof typeof SYNC_READ_ROUTES, string>>) {
-  return adapterServing((route) => byRoute[route]);
+function adapterAnswering(byRoute: Partial<Record<ReadRoute, string | InlineAnswer>>, sent: Record<string, unknown>[] = []) {
+  return adapterServing((route) => byRoute[route], sent);
 }
 
-/** A read adapter whose fetch answers each request with the exchange `pick` names for its route and input. */
-function adapterServing(pick: (route: keyof typeof SYNC_READ_ROUTES, input: Record<string, unknown>) => string | undefined) {
+/**
+ * A read adapter, with the Sync door's port runner, whose fetch answers each request with the
+ * exchange `pick` names for its route and input. Each request body is recorded in `sent`.
+ */
+function adapterServing(pick: (route: ReadRoute, input: Record<string, unknown>) => string | InlineAnswer | undefined, sent: Record<string, unknown>[] = []) {
   const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const pathname = new URL(String(input)).pathname;
-    const route = (Object.keys(SYNC_READ_ROUTES) as (keyof typeof SYNC_READ_ROUTES)[]).find((key) => SYNC_READ_ROUTES[key] === pathname);
-    const name = route && pick(route, JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+    const route = pathname === RUN_ROUTE ? "run" : (Object.keys(SYNC_READ_ROUTES) as (keyof typeof SYNC_READ_ROUTES)[]).find((key) => SYNC_READ_ROUTES[key] === pathname);
+    const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    sent.push(body);
+    const name = route && pick(route, body);
     if (!name) return assert.fail(`no exchange for ${pathname}`);
-    const { response } = fixture(name);
+    const response = typeof name === "string" ? fixture(name).response : name;
     return new Response(response.status === 304 || response.body === "" ? null : response.body, { status: response.status, headers: response.headers });
   }) as typeof fetch;
   const carrier = createFetchCarrier({ baseUrl: "https://hosted.example", fetch, credentials: async () => ({ Authorization: "Bearer token" }) });
-  return createHostedReadAdapter({ carrier, bundleId: BUNDLE, routes: SYNC_READ_ROUTES, sleep: async () => {} });
+  const runner = createPortRunner({ carrier, prefix: "/sync/v1" });
+  return createHostedReadAdapter({ carrier, bundleId: BUNDLE, routes: SYNC_READ_ROUTES, runner, sleep: async () => {} });
 }
 
 function answerOf(exchange: Exchange): HostedAnswer {
@@ -125,22 +140,26 @@ test("export 200 is a complete store-only zip whose last entry is the manifest",
 test("export refusals carry the working copy routes' bytes", () => {
   assert.deepEqual(JSON.parse(fixture("export-404-bundle-not-found").response.body).error.code, "bundle_not_found");
   assert.deepEqual(JSON.parse(fixture("export-400-invalid-input").response.body), { error: { code: "invalid_input" } });
-  assert.equal(fixture("export-401-unauthenticated").response.body, fixture("read-401-unauthenticated").response.body);
+  assert.equal(fixture("export-401-unauthenticated").response.body, fixture("run-401-unauthenticated").response.body);
 });
 
 // ── reads ──────────────────────────────────────────────────────────────────────────────────
 
-test("read 200 ok: documents.read.v1 decodes to the document at its version", async () => {
-  const adapter = adapterAnswering({ read: "read-200-ok" });
+test("run 200 read ok: documents.read.v1 run by id decodes to the document at its version, from the golden request", async () => {
+  const sent: Record<string, unknown>[] = [];
+  const adapter = adapterAnswering({ run: "run-200-read-ok" }, sent);
   const read = await adapter.read("notes/one");
-  const expected = JSON.parse(fixture("read-200-ok").response.body) as { data: { document: { frontmatter: object; body: string }; version: string } };
+  const expected = JSON.parse(fixture("run-200-read-ok").response.body) as { data: { document: { frontmatter: object; body: string }; version: string } };
   assert.deepEqual(read, { doc: { id: "notes/one", frontmatter: expected.data.document.frontmatter, body: expected.data.document.body }, version: expected.data.version });
+  assert.deepEqual(sent, [JSON.parse(fixture("run-200-read-ok").request.body)]);
 });
 
-test("read 200 ok qualified: a request naming the bundle <workspace>/<bundle-id> gets the bare id's answer, byte for byte", () => {
-  const qualified = fixture("read-200-ok-qualified");
-  const bare = fixture("read-200-ok");
-  assert.equal(JSON.parse(qualified.request.body).bundleId, `tenant-a/${JSON.parse(bare.request.body).bundleId}`);
+test("run 200 read ok qualified: an envelope naming the bundle <workspace>/<bundle-id> gets the bare id's answer, byte for byte", () => {
+  const qualified = fixture("run-200-read-ok-qualified");
+  const bare = fixture("run-200-read-ok");
+  const [q, b] = [qualified, bare].map((exchange) => JSON.parse(exchange.request.body) as { bundleId: string; input: unknown });
+  assert.equal(q!.bundleId, `tenant-a/${b!.bundleId}`);
+  assert.deepEqual(q!.input, b!.input);
   assert.equal(qualified.response.body, bare.response.body);
 });
 
@@ -149,40 +168,43 @@ test("whoami 200 names each workspace with its slug", () => {
   assert.deepEqual(body.workspaces.map((w) => w.tenantId), body.tenantIds);
 });
 
-test("read 200 ok: an answer naming another document is malformed, naming the route", () => {
-  const body = JSON.parse(fixture("read-200-ok").response.body);
-  assert.throws(() => decodeDocumentRead("notes/other", body, "/sync/v1/read"), (error: unknown) => error instanceof MalformedAnswer && error.route === "/sync/v1/read" && error.code === MALFORMED_ANSWER);
+test("run 200 read ok: an answer naming another document is malformed, naming the route", () => {
+  const body = JSON.parse(fixture("run-200-read-ok").response.body);
+  assert.throws(() => decodeDocumentRead("notes/other", body, RUN_ROUTE), (error: unknown) => error instanceof MalformedAnswer && error.route === RUN_ROUTE && error.code === MALFORMED_ANSWER);
 });
 
 test("read: the write-result shape (bundleId, documentId beside data) is not documents.read.v1's answer", async () => {
-  const real = JSON.parse(fixture("read-200-ok").response.body) as { data: { document: { frontmatter: object; body: string }; version: string } };
+  const real = JSON.parse(fixture("run-200-read-ok").response.body) as { data: { document: { frontmatter: object; body: string }; version: string } };
   const writeShaped = { ok: true, operationId: "documents.read.v1", data: { bundleId: BUNDLE, documentId: "notes/one", version: real.data.version, document: { frontmatter: real.data.document.frontmatter, body: real.data.document.body } } };
   const error = (() => {
     try {
-      decodeDocumentRead("notes/one", writeShaped, "/sync/v1/read");
+      decodeDocumentRead("notes/one", writeShaped, RUN_ROUTE);
     } catch (caught) {
       return caught;
     }
     return undefined;
   })();
   assert.ok(error instanceof MalformedAnswer);
-  assert.equal(error.route, "/sync/v1/read");
+  assert.equal(error.route, RUN_ROUTE);
 });
 
-test("read 200 document_not_found is the ENOENT every backend answers absence with", async () => {
-  const adapter = adapterAnswering({ read: "read-200-document-not-found" });
+test("run 200 read document_not_found is the ENOENT every backend answers absence with", async () => {
+  const adapter = adapterAnswering({ run: "run-200-read-document-not-found" });
   await assert.rejects(adapter.read("notes/absent"), (error: unknown) => (error as { code?: unknown }).code === "ENOENT");
 });
 
-test("read 200 bundle_not_found is an authority refusal, not a malformed answer", async () => {
-  const adapter = adapterAnswering({ read: "read-200-bundle-not-found" });
+test("a read's bundle_not_found is an authority refusal, not a malformed answer", async () => {
+  // The golden bundle refusal is a history run's; a read's names its own operation, with the same error.
+  const golden = fixture("run-200-bundle-not-found").response;
+  const refusal = { ...golden, body: JSON.stringify({ ...JSON.parse(golden.body), operationId: "documents.read.v1" }) };
+  const adapter = adapterAnswering({ run: refusal });
   await assert.rejects(adapter.read("notes/one"), (error: unknown) => error instanceof RemoteError && !(error instanceof MalformedAnswer) && error.code === "bundle_not_found");
 });
 
-test("read 400 and 401 refuse with the host's status", async () => {
-  await assert.rejects(adapterAnswering({ read: "read-400-invalid-input" }).read("notes/one"), (error: unknown) => error instanceof RemoteError && error.status === 400 && error.code === "invalid_input");
+test("run 400 and 401 refuse a read with the host's status", async () => {
+  await assert.rejects(adapterAnswering({ run: "run-400-invalid-input" }).read("notes/one"), (error: unknown) => error instanceof RemoteError && error.status === 400 && error.code === "invalid_input");
   // The sync bearer admission answers `{"error":"invalid_token"}`: a string, not `{ code }`.
-  await assert.rejects(adapterAnswering({ read: "read-401-unauthenticated" }).read("notes/one"), (error: unknown) => error instanceof RemoteError && error.status === 401 && error.code === "AUTH_REQUIRED");
+  await assert.rejects(adapterAnswering({ run: "run-401-unauthenticated" }).read("notes/one"), (error: unknown) => error instanceof RemoteError && error.status === 401 && error.code === "AUTH_REQUIRED");
 });
 
 test("capabilities 200 decodes", () => {
@@ -332,7 +354,7 @@ test("snapshot 200 decodes whole, and each document's version is its read's", as
   const docs = [];
   for await (const doc of snapshot.docs) docs.push(doc);
   assert.equal(docs.length, snapshot.header.count);
-  const read = JSON.parse(fixture("read-200-ok").response.body) as { data: { version: string; document: { body: string } } };
+  const read = JSON.parse(fixture("run-200-read-ok").response.body) as { data: { version: string; document: { body: string } } };
   assert.equal(docs[0]!.version, read.data.version);
   assert.equal(docs[0]!.body, read.data.document.body);
 });
@@ -381,7 +403,7 @@ test("refusal 503 backend_unavailable is the carrier's unavailable, not an autho
 });
 
 test("refusal 403 access_denied (a client without the sync surface) asks for sign-in with the host's status", async () => {
-  await assert.rejects(adapterAnswering({ read: "read-403-access-denied" }).read("notes/one"), (error: unknown) => error instanceof RemoteError && error.status === 403 && error.code === "AUTH_REQUIRED");
+  await assert.rejects(adapterAnswering({ run: "run-403-access-denied" }).read("notes/one"), (error: unknown) => error instanceof RemoteError && error.status === 403 && error.code === "AUTH_REQUIRED");
 });
 
 test("a malformed heads or capabilities answer names its route", async () => {
@@ -396,32 +418,27 @@ test("a malformed heads or capabilities answer names its route", async () => {
 
 // ── history ────────────────────────────────────────────────────────────────────────────────
 
-const HISTORY_ROUTE = "/sync/v1/history";
+// History runs documents.history.v1 by id: each exchange is a run of it.
+const HISTORY_ROUTE = RUN_ROUTE;
 
-/** The page an exchange's request asks for, as the client states it. */
+/** The page a run exchange's input asks for, as the client states it. */
 function historyRequestOf(exchange: Exchange): HostedHistoryRequest {
-  const body = JSON.parse(exchange.request.body) as { documentId: string; limit?: number; before?: number; includeContent?: true };
-  return { documentId: body.documentId, limit: body.limit ?? 20, ...(body.before === undefined ? {} : { before: body.before }), ...(body.includeContent ? { includeContent: true } : {}) };
+  const { input } = JSON.parse(exchange.request.body) as { input: { documentId: string; limit?: number; before?: number; includeContent?: true } };
+  return { documentId: input.documentId, limit: input.limit ?? 20, ...(input.before === undefined ? {} : { before: input.before }), ...(input.includeContent ? { includeContent: true } : {}) };
 }
 
-/** The exchange's answer, through the real fetch carrier under the history bound. */
+/** The run exchange's answer, through the real fetch carrier under the history bound. */
 async function historyAnswer(name: string): Promise<HostedAnswer> {
-  const exchange = fixture(name);
-  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    assert.equal(new URL(String(input)).pathname, HISTORY_ROUTE);
-    assert.deepEqual(JSON.parse(String(init?.body)), JSON.parse(exchange.request.body));
-    return new Response(exchange.response.body, { status: exchange.response.status, headers: exchange.response.headers });
-  }) as typeof fetch;
-  const carrier = createFetchCarrier({ baseUrl: "https://hosted.example", fetch, credentials: async () => ({ Authorization: "Bearer token" }) });
-  return carrier.json(HISTORY_ROUTE, JSON.parse(exchange.request.body), new AbortController().signal, { maximum: HOSTED_READ_BOUNDS.historyBytes });
+  assert.equal(fixture(name).route, HISTORY_ROUTE);
+  return exchangeAnswer(name, HOSTED_READ_BOUNDS.historyBytes);
 }
 
-test("history 200 ok: documents.history.v1 decodes newest first, with each agent label and the first page's total", async () => {
-  const answer = await historyAnswer("history-200-ok");
+test("history (run 200 ok): documents.history.v1 decodes newest first, with each agent label and the first page's total", async () => {
+  const answer = await historyAnswer("run-200-ok");
   assert.equal(answer.status, 200);
-  const decoded = decodeHistoryAnswer(historyRequestOf(fixture("history-200-ok")), answer.body, HISTORY_ROUTE);
+  const decoded = decodeHistoryAnswer(historyRequestOf(fixture("run-200-ok")), answer.body, HISTORY_ROUTE);
   assert.ok(decoded.ok);
-  const expected = JSON.parse(fixture("history-200-ok").response.body) as { data: { versions: { seq: number; version: string; actor: string; timestamp: string; agent?: string }[]; total: number } };
+  const expected = JSON.parse(fixture("run-200-ok").response.body) as { data: { versions: { seq: number; version: string; actor: string; timestamp: string; agent?: string }[]; total: number } };
   assert.deepEqual(decoded.page.versions, expected.data.versions);
   assert.deepEqual(decoded.page.versions.map((row) => row.seq), [2, 1]);
   assert.equal(decoded.page.versions[1]!.agent, "sync/credential:cli;via=claude-code");
@@ -429,9 +446,12 @@ test("history 200 ok: documents.history.v1 decodes newest first, with each agent
   assert.equal(decoded.page.total, 2);
 });
 
-test("history 200 content: a page back carries the version's bytes, which hash to its version, and no total", async () => {
-  const exchange = fixture("history-200-content");
-  const decoded = decodeHistoryAnswer(historyRequestOf(exchange), (await historyAnswer("history-200-content")).body, HISTORY_ROUTE);
+test("run 200 history content: a page back carries the version's bytes, which hash to its version, and no total", async () => {
+  const exchange = fixture("run-200-history-content");
+  // The client's run body for this page is the golden request.
+  const { input } = JSON.parse(exchange.request.body) as { input: { documentId: string; limit: number; before: number; includeContent: true } };
+  assert.equal(JSON.stringify(operationRunBody(BUNDLE, "documents.history.v1", { documentId: input.documentId, limit: input.limit, before: input.before, includeContent: input.includeContent })), exchange.request.body);
+  const decoded = decodeHistoryAnswer(historyRequestOf(exchange), (await historyAnswer("run-200-history-content")).body, HISTORY_ROUTE);
   assert.ok(decoded.ok);
   const [version] = decoded.page.versions;
   assert.equal(version!.seq, 1);
@@ -443,19 +463,19 @@ test("history 200 content: a page back carries the version's bytes, which hash t
   assert.throws(() => decodeDocumentHistory(historyRequestOf(exchange), tampered, HISTORY_ROUTE), (error: unknown) => error instanceof MalformedAnswer && error.route === HISTORY_ROUTE);
 });
 
-test("history 200 document_not_found is the operation's refusal, not a malformed answer", async () => {
-  const decoded = decodeHistoryAnswer(historyRequestOf(fixture("history-200-document-not-found")), (await historyAnswer("history-200-document-not-found")).body, HISTORY_ROUTE);
+test("history (run 200 document_not_found) is the operation's refusal, not a malformed answer", async () => {
+  const decoded = decodeHistoryAnswer(historyRequestOf(fixture("run-200-document-not-found")), (await historyAnswer("run-200-document-not-found")).body, HISTORY_ROUTE);
   assert.deepEqual(decoded, { ok: false, refusal: { code: "document_not_found", message: "The document was not found.", retryable: false } });
 });
 
-test("history 400 invalid_input refuses with the host's status", async () => {
-  const answer = await historyAnswer("history-400-invalid-input");
+test("history (run 400 invalid_input) refuses with the host's status", async () => {
+  const answer = await historyAnswer("run-400-invalid-input");
   const error = readRefusal(answer);
   assert.ok(error instanceof RemoteError && error.status === 400 && error.code === "invalid_input");
 });
 
 test("history: an answer that breaks the page asked for is malformed, naming the route", () => {
-  const ok = fixture("history-200-ok");
+  const ok = fixture("run-200-ok");
   const request = historyRequestOf(ok);
   const body = () => JSON.parse(ok.response.body) as { operationId: string; data: Record<string, unknown> & { versions: Record<string, unknown>[] } };
   const refuses = (mutate: (value: ReturnType<typeof body>) => void, asked: HostedHistoryRequest = request) => {
@@ -482,10 +502,10 @@ test("history: an answer that breaks the page asked for is malformed, naming the
 });
 
 test("operationRefusal: one reading of every operation's refusal, strict about whose it is", () => {
-  const body = JSON.parse(fixture("history-200-document-not-found").response.body);
-  assert.equal(operationRefusal(JSON.parse(fixture("history-200-ok").response.body), "documents.history.v1"), undefined);
+  const body = JSON.parse(fixture("run-200-document-not-found").response.body);
+  assert.equal(operationRefusal(JSON.parse(fixture("run-200-ok").response.body), "documents.history.v1"), undefined);
   assert.deepEqual(operationRefusal(body, "documents.history.v1"), { code: "document_not_found", message: "The document was not found.", retryable: false });
-  assert.deepEqual(operationRefusal(JSON.parse(fixture("read-200-document-not-found").response.body), "documents.read.v1")?.code, "document_not_found");
+  assert.deepEqual(operationRefusal(JSON.parse(fixture("run-200-read-document-not-found").response.body), "documents.read.v1")?.code, "document_not_found");
   for (const bad of [{ ...body, operationId: "documents.read.v1" }, { ...body, error: { code: "" } }, { ok: false, operationId: "documents.history.v1" }]) {
     assert.throws(() => operationRefusal(bad, "documents.history.v1", HISTORY_ROUTE), (error: unknown) => error instanceof MalformedAnswer && error.route === HISTORY_ROUTE);
   }
@@ -505,25 +525,25 @@ async function exchangeAnswer(name: string, maximum: number): Promise<HostedAnsw
   return carrier.json(exchange.route, JSON.parse(exchange.request.body), new AbortController().signal, { maximum });
 }
 
-const OPERATIONS_ROUTE = "/sync/v1/operations";
-const RUN_ROUTE = "/sync/v1/run";
 const HISTORY_RUN_INPUT = { documentId: "notes/via" };
 
-test("operations 200: the listing decodes to its one pinned descriptor, host text intact, schemas carried as data", async () => {
+test("operations 200: the listing decodes to its pinned descriptors, read and history, host text intact, schemas carried as data", async () => {
   const answer = await exchangeAnswer("operations-200", HOSTED_READ_BOUNDS.operationsBytes);
   assert.equal(answer.status, 200);
   const listing = decodeOperationListing(answer.body, OPERATIONS_ROUTE);
-  const [raw] = (JSON.parse(fixture("operations-200").response.body) as { operations: Record<string, unknown>[] }).operations;
+  const raws = (JSON.parse(fixture("operations-200").response.body) as { operations: Record<string, unknown>[] }).operations;
   assert.deepEqual(listing.notes, []);
-  assert.equal(listing.operations.length, 1);
-  const [operation] = listing.operations;
-  assert.equal(operation!.operationId, "documents.history.v1");
-  assert.equal(operation!.title, raw!.title);
-  assert.equal(operation!.description, raw!.description);
-  assert.equal(operation!.maximumOutputBytes, 1048576);
-  assert.deepEqual(operation!.inputJsonSchema, raw!.inputJsonSchema);
-  assert.deepEqual(operation!.resultJsonSchema, raw!.resultJsonSchema);
-  assert.deepEqual(operation!.annotations, raw!.annotations);
+  assert.deepEqual(listing.operations.map((operation) => operation.operationId), ["documents.read.v1", "documents.history.v1"]);
+  for (const [n, operation] of listing.operations.entries()) {
+    const raw = raws[n]!;
+    assert.equal(operation.operationId, raw.operationId);
+    assert.equal(operation.title, raw.title);
+    assert.equal(operation.description, raw.description);
+    assert.equal(operation.maximumOutputBytes, 1048576);
+    assert.deepEqual(operation.inputJsonSchema, raw.inputJsonSchema);
+    assert.deepEqual(operation.resultJsonSchema, raw.resultJsonSchema);
+    assert.deepEqual(operation.annotations, raw.annotations);
+  }
 });
 
 test("refusal 404 bundle_not_found on operations is the capabilities refusal, with the host's status", async () => {
@@ -532,24 +552,29 @@ test("refusal 404 bundle_not_found on operations is the capabilities refusal, wi
   assert.equal(fixture("operations-404-bundle-not-found").response.body, fixture("export-404-bundle-not-found").response.body);
 });
 
-test("run 200 ok: the client's run body is the golden request, and the answer is history-200-ok's data", async () => {
+test("run 200 ok: the client's run body is the golden request, and the answer decodes to the history page", async () => {
   assert.equal(JSON.stringify(operationRunBody("notes.a", "documents.history.v1", HISTORY_RUN_INPUT)), fixture("run-200-ok").request.body);
   // An input already naming the same bundle sends the same bytes.
   assert.equal(JSON.stringify(operationRunBody("notes.a", "documents.history.v1", { documentId: "notes/via", bundleId: "notes.a" })), fixture("run-200-ok").request.body);
   const answer = await exchangeAnswer("run-200-ok", HOSTED_READ_BOUNDS.runBytes);
-  assert.equal(fixture("run-200-ok").response.body, fixture("history-200-ok").response.body);
   const run = decodeOperationRun("documents.history.v1", answer.body, RUN_ROUTE);
   assert.ok(run.ok);
-  assert.deepEqual(run.data, (JSON.parse(fixture("history-200-ok").response.body) as { data: unknown }).data);
+  assert.deepEqual(run.data, (JSON.parse(fixture("run-200-ok").response.body) as { data: unknown }).data);
+  // A read runs by id the same way.
+  const read = fixture("run-200-read-ok");
+  assert.equal(JSON.stringify(operationRunBody("notes.a", "documents.read.v1", { documentId: "notes/one" })), read.request.body);
+  const decoded = decodeOperationRun("documents.read.v1", (await exchangeAnswer("run-200-read-ok", HOSTED_READ_BOUNDS.runBytes)).body, RUN_ROUTE);
+  assert.ok(decoded.ok);
 });
 
-test("run 200 document_not_found and bundle_not_found are the operation's refusals, as the read routes answer them", async () => {
+test("run 200 document_not_found and bundle_not_found are the operation's refusals", async () => {
   const absent = decodeOperationRun("documents.history.v1", (await exchangeAnswer("run-200-document-not-found", HOSTED_READ_BOUNDS.runBytes)).body, RUN_ROUTE);
   assert.deepEqual(absent, { ok: false, refusal: { code: "document_not_found", message: "The document was not found.", retryable: false } });
   const gone = decodeOperationRun("documents.history.v1", (await exchangeAnswer("run-200-bundle-not-found", HOSTED_READ_BOUNDS.runBytes)).body, RUN_ROUTE);
   assert.equal(gone.ok, false);
   assert.equal(!gone.ok && gone.refusal.code, "bundle_not_found");
-  assert.equal(JSON.parse(fixture("run-200-bundle-not-found").response.body).error.message, JSON.parse(fixture("read-200-bundle-not-found").response.body).error.message);
+  const unread = decodeOperationRun("documents.read.v1", (await exchangeAnswer("run-200-read-document-not-found", HOSTED_READ_BOUNDS.runBytes)).body, RUN_ROUTE);
+  assert.deepEqual(unread, { ok: false, refusal: { code: "document_not_found", message: "The document was not found.", retryable: false } });
 });
 
 test("run 400 unknown_operation and invalid_input refuse with the host's status and code; an old gateway's unknown route is its own body", async () => {
@@ -589,8 +614,8 @@ test("run: an answer that is not the operation's result is malformed, naming the
   }
 });
 
-/** The golden descriptor, as a fresh object to vary. */
-const goldenDescriptor = () => (JSON.parse(fixture("operations-200").response.body) as { operations: Record<string, unknown>[] }).operations[0]!;
+/** The golden history descriptor, as a fresh object to vary. */
+const goldenDescriptor = () => (JSON.parse(fixture("operations-200").response.body) as { operations: Record<string, unknown>[] }).operations.find((operation) => operation.operationId === "documents.history.v1")!;
 
 /** An object nested `levels` deep (the object itself is level 1). */
 function nested(levels: number): Record<string, unknown> {
