@@ -54,5 +54,9 @@ safe only if it also does these:
   through and does not know the viewer. Enforce the query and edges row ceilings there too: the
   host declares them in `hello` but answers whatever `execute` returns, up to its reply size cap.
 
+Install one `@superbee/core`. The package takes a Core range so a page's own Core satisfies it;
+`prepareViewDocumentAction` passes Core's typed errors through, and callers classify them by
+class, which needs a single copy.
+
 This package is published by hand from a reviewed tarball, as `packages/browser-local/RELEASING.md`
 describes; its workspace `prepublishOnly` refuses a direct publish.

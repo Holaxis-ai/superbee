@@ -36,7 +36,9 @@ test('a coherent future pair and independent renderer and cli versions need no v
     }
     d['packages/browser-local/package.json'].dependencies['@superbee/core'] = d['packages/core/package.json'].version;
     d['package-lock.json'].packages['packages/browser-local'].dependencies = d['packages/browser-local/package.json'].dependencies;
-    // The View host keeps its Core range: a Core release needs no edit of it.
+    // A new Core minor or major moves the View host's range with it.
+    d['packages/view-host/package.json'].dependencies['@superbee/core'] = `^${d['packages/core/package.json'].version}`;
+    d['package-lock.json'].packages['packages/view-host'].dependencies = d['packages/view-host/package.json'].dependencies;
     d['packages/server/package.json'].dependencies['@superbee/core'] = d['packages/core/package.json'].version;
     d['package-lock.json'].packages['packages/server'].dependencies = d['packages/server/package.json'].dependencies;
     d['packages/markdown-renderer/package.json'].peerDependencies['@superbee/core'] = d['packages/core/package.json'].version;
@@ -58,7 +60,11 @@ for (const [label, mutate, expected] of [
   ['view-host pins Core exactly', d => {
     d['packages/view-host/package.json'].dependencies['@superbee/core'] = '0.0.0';
     d['package-lock.json'].packages['packages/view-host'].dependencies['@superbee/core'] = '0.0.0';
-  }, /view-host\/package.json dependencies.@superbee\/core:.*caret range from a Core version/],
+  }, /view-host\/package.json dependencies.@superbee\/core:.*caret range that admits/],
+  ['view-host range leaves out the source Core', d => {
+    d['packages/view-host/package.json'].dependencies['@superbee/core'] = '^0.1.0';
+    d['package-lock.json'].packages['packages/view-host'].dependencies['@superbee/core'] = '^0.1.0';
+  }, /view-host\/package.json dependencies.@superbee\/core:.*caret range that admits/],
   ['view-host published privately', d => { d['packages/view-host/package.json'].publishConfig.access = 'restricted'; }, /view-host\/package.json publishConfig.access:.*expected "public"/],
   ['stale browser-local lock dependency', d => { d['package-lock.json'].packages['packages/browser-local'].dependencies['@superbee/core'] = '0.0.0'; }, /packages\/browser-local.dependencies.@superbee\/core:.*from packages\/browser-local\/package.json/],
   ['stale exact dependency', d => { d['packages/server/package.json'].dependencies['@superbee/core'] = '*'; }, /dependencies.@superbee\/core:.*exact synchronized dependency/],

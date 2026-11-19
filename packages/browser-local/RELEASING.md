@@ -57,7 +57,7 @@ published by hand from approved literal tarballs. `@superbee/view-host` follows 
 same process: public access, stable versions on `latest` and prereleases on `next`
 (its first publication is the stable `0.1.0`, because npm points `latest` at whatever
 a new package name publishes first), a Core range in place of browser-local's exact
-Core dependency (it exchanges no Core objects with another package), and
+Core dependency (so a consumer's own Core satisfies it and one copy is installed), and
 its own external packed consumer proof in `npm run test:scripts`. Its first
 publication creates the package name on npm, which only a maintainer with npm
 publish rights for the `@superbee` scope can do. Repository access is not npm
