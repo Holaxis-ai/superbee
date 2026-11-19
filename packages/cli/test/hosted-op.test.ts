@@ -16,6 +16,7 @@ import { CliError } from "../src/errors.js";
 import { checkout } from "../src/commands/checkout.js";
 import { init } from "../src/commands/init.js";
 import { op } from "../src/commands/op.js";
+import { recipe } from "../src/commands/recipe.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { BUNDLE, FakeHost, HOST, syncFixture, TOKEN, type OperationDescriptor } from "./support/fake-hosted-sync.js";
 
@@ -62,6 +63,51 @@ async function rejects(action: () => Promise<unknown>): Promise<CliError> {
 }
 
 const paths = (host: FakeHost) => host.requests.map((request) => request.path);
+
+test("recipe install previews first and reuses the exact apply identity after a lost reply", async () => {
+  const h = await harness();
+  const planToken = "sha256:" + "a".repeat(64);
+  const preparedAt = "2026-11-19T12:00:00.000Z";
+  const calls: Record<string, unknown>[] = [];
+  let drop = true;
+  const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+    const route = new URL(String(input)).pathname;
+    if (route === "/sync/v1/recipe-preview") {
+      calls.push(JSON.parse(String(init?.body)));
+      return Response.json({ ok: true, data: { status: "ready", applyAllowed: true, planToken, preparedAt } });
+    }
+    if (route === "/sync/v1/recipe-apply") {
+      const body = JSON.parse(String(init?.body));
+      calls.push(body);
+      if (drop) {
+        drop = false;
+        throw new Error("request interrupted after commit");
+      }
+      return Response.json({ ok: true, data: { status: "committed", requestId: body.requestId, documents: [] } });
+    }
+    return h.host.fetch(input, init);
+  }) as typeof fetch;
+  const install = async (args: string[]) => {
+    const output: string[] = [];
+    await recipe(["install", "holaxis-decision", ...args, "--dir", h.folder, "--json"], {
+      stdout: (value) => output.push(value), hosted: { auth: h.auth, fetch: fetcher },
+    });
+    return JSON.parse(output.join("")) as { apply_command?: string; result: { status: string } };
+  };
+  const preview = await install([]);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], { bundleId: BUNDLE, recipe: "holaxis-decision" });
+  const requestId = preview.apply_command!.match(/ --request-id ([\w-]+)/)?.[1];
+  assert.ok(requestId);
+  const flags = ["--apply", planToken, "--prepared-at", preparedAt, "--request-id", requestId];
+  const interrupted = await rejects(() => install(flags));
+  assert.equal(interrupted.code, "TRANSIENT");
+  assert.ok(interrupted.help?.includes(requestId));
+  assert.equal((await install([...flags, "--lookup"])).result.status, "committed");
+  assert.equal((await install(flags)).result.status, "committed");
+  assert.deepEqual(calls[1], calls[3]);
+  assert.deepEqual(calls[2], { ...calls[1], mode: "lookup" });
+});
 
 /** The golden listing's one descriptor (documents.history.v1), as a fresh object to vary. */
 const historyDescriptor = (): OperationDescriptor => (JSON.parse(syncFixture("operations-200").response.body) as { operations: OperationDescriptor[] }).operations.find((operation) => operation.operationId === "documents.history.v1")!;

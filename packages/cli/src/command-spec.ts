@@ -520,6 +520,12 @@ export const CLI_COMMAND_GROUPS = [
         summary: "Apply a recipe's content-free definitions — Kinds plus optional declared References and Views — idempotently",
       },
       {
+        id: "recipeInstall",
+        leaves: [publicLeaf("recipeInstall", "recipe install", one, undefined, DIR_SURFACE)],
+        usage: "recipe install <catalog-id> [--apply <plan-token> --prepared-at <time> --request-id <uuid> [--lookup]] [--dir <path>] [--json]",
+        summary: "Preview or apply one verified recipe to the Hosted bundle for this checkout",
+      },
+      {
         id: "recipeQualify",
         leaves: [publicLeaf("recipeQualify", "recipe qualify", one, undefined, { flags: pathFlags({ flag: "dir", role: "bundle-root" }), positionals: [{ index: 0, role: "ingress" as const }] })],
         usage: "recipe qualify <file> [--dir <existing-bundle>] [--json]",
