@@ -126,10 +126,18 @@ const NOT_A_BUNDLE_LOCATION: Readonly<Record<string, string>> = {
 
 const LOCATION_CONSTANT = /_(PREFIX|DOC_ID|TYPE)$/;
 
+/**
+ * A constant that may name a place in a bundle: a location or marker name, any value that ends in
+ * `/` (a folder, whatever the constant is called), or an `*_ID` whose value is a path.
+ */
+function namesALocation(name: string, value: string): boolean {
+  return LOCATION_CONSTANT.test(name) || value.endsWith("/") || (name.endsWith("_ID") && value.includes("/"));
+}
+
 /** Names of location or marker constants no entry covers and no exclusion explains. */
 function unclassifiedConstants(constants: Constants, entries: readonly OwnedLocation[], excluded: Readonly<Record<string, string>>): string[] {
   return Object.entries(constants)
-    .filter(([name]) => LOCATION_CONSTANT.test(name) && !Object.hasOwn(excluded, name))
+    .filter(([name, value]) => namesALocation(name, value) && !Object.hasOwn(excluded, name))
     .filter(([name, value]) => name.endsWith("_TYPE")
       ? !entries.some((owned) => owned.type === value)
       : !entries.some((owned) => owned.id === value || [owned.prefix, owned.blobPrefix].some((prefix) => prefix !== undefined && value.startsWith(prefix))))
@@ -155,6 +163,15 @@ const GRANDFATHERED: Readonly<Record<string, string>> = {
   "bundle-dependencies": "docs/dependencies",
   "attested-computation": "", // type-only
 };
+
+/** Only a View or retired Page type claims its section anywhere; nothing new may claim a type everywhere. */
+const SECTION_REACH = ["legacy-page", "view"];
+
+function entriesReachingSection(entries: readonly OwnedLocation[]): string[] {
+  return entries.filter((owned) => owned.typeReach === "section").map((owned) => owned.name).sort();
+}
+
+const underReservedRoot = (owned: OwnedLocation): boolean => (owned.prefix ?? owned.id ?? "").startsWith(SUPERBEE_RESERVED_ROOT_PREFIX);
 
 /** Entries that are neither under the reserved root nor a grandfathered location. */
 function entriesOutsideReservedRoot(entries: readonly OwnedLocation[]): string[] {
@@ -188,9 +205,34 @@ test("CI check: every exported location and marker constant is covered by an ent
   for (const name of Object.keys(NOT_A_BUNDLE_LOCATION)) assert.ok(Object.hasOwn(constants, name), `stale exclusion ${name}`);
 });
 
+/** The grandfathered set matches the entries outside the reserved root exactly: none removed, none added. */
+function grandfatheredDrift(entries: readonly OwnedLocation[]): { missing: string[]; extra: string[] } {
+  const outside = new Set(entries.filter((owned) => !underReservedRoot(owned)).map((owned) => owned.name));
+  return {
+    missing: Object.keys(GRANDFATHERED).filter((name) => !outside.has(name)).sort(),
+    extra: [...outside].filter((name) => !Object.hasOwn(GRANDFATHERED, name)).sort(),
+  };
+}
+
 test("CI check: the grandfathered set is closed; anything new lives under the reserved root", () => {
   assert.deepEqual(entriesOutsideReservedRoot(OWNED_LOCATIONS), []);
-  assert.deepEqual(Object.keys(GRANDFATHERED).sort(), OWNED_LOCATIONS.map((owned) => owned.name).filter((name) => name !== "reserved-root").sort());
+  assert.deepEqual(grandfatheredDrift(OWNED_LOCATIONS), { missing: [], extra: [] });
+  assert.deepEqual(entriesReachingSection(OWNED_LOCATIONS), SECTION_REACH);
+
+  // A new entry under the reserved root passes every check without touching GRANDFATHERED...
+  const underRoot = [...OWNED_LOCATIONS, { name: "agent-notes", section: "superbee", prefix: `${SUPERBEE_RESERVED_ROOT_PREFIX}agent-notes/`, type: "Agent Note" } as const];
+  assert.deepEqual(entriesOutsideReservedRoot(underRoot), []);
+  assert.deepEqual(grandfatheredDrift(underRoot), { missing: [], extra: [] });
+  assert.deepEqual(entriesReachingSection(underRoot), SECTION_REACH);
+  // ...but it may not claim its type everywhere.
+  const claimsEverywhere = [...OWNED_LOCATIONS, { name: "agent-notes", section: "superbee", prefix: `${SUPERBEE_RESERVED_ROOT_PREFIX}agent-notes/`, type: "Agent Note", typeReach: "section" } as const];
+  assert.notDeepEqual(entriesReachingSection(claimsEverywhere), SECTION_REACH);
+  // One outside it fails.
+  const outsideRoot = [...OWNED_LOCATIONS, { name: "agent-notes", section: "superbee", prefix: "agent-notes/" } as const];
+  assert.deepEqual(grandfatheredDrift(outsideRoot), { missing: [], extra: ["agent-notes"] });
+
+  // A folder constant is caught whatever it is called, and so is a path id.
+  assert.deepEqual(unclassifiedConstants({ AGENT_NOTES_FOLDER: "agent-notes/", AGENT_INDEX_ID: "agent-notes/index", DELETE_OPERATION_ID: "documents.delete.v1" }, OWNED_LOCATIONS, NOT_A_BUNDLE_LOCATION), ["AGENT_INDEX_ID", "AGENT_NOTES_FOLDER"]);
 
   // A new owned folder outside the reserved root fails both ways: unclassified without an entry, refused with one.
   const withNewConstant = { CONVENTIONS_PREFIX: "conventions/", AGENT_NOTES_PREFIX: "agent-notes/" };

@@ -558,19 +558,24 @@ function normalizePrefix(prefix: string | undefined): string | undefined {
 
 /** Every planned id must be safe, absent, unique and distinct under `foldPath`. */
 const PROTECTED_TARGET_FOLDS = new Set([...SOURCE_SELF_DOCS].map(foldPath));
-/** Superbee's own folders, folded; an import never creates a document in one. */
+const folderFold = (prefix: string): string => `${foldPath(prefix.replace(/\/$/, ""))}/`;
+/**
+ * Folders that hold only Superbee's own files whatever their type (entries with no marker type),
+ * folded. Elsewhere a document is Superbee's only under its marker, which the source and target
+ * section checks decide, so a person's document in, say, `references/` still copies.
+ */
 const OWNED_TARGET_FOLDS: ReadonlyMap<string, string> = new Map(OWNED_LOCATIONS.flatMap((owned) =>
-  owned.prefix === undefined ? [] : [[`${foldPath(owned.prefix.replace(/\/$/, ""))}/`, owned.prefix] as const]));
-const CONVENTIONS_FOLD = [...OWNED_TARGET_FOLDS].find(([, prefix]) => prefix === CONVENTIONS_PREFIX)![0];
+  owned.prefix === undefined || owned.type !== undefined ? [] : [[folderFold(owned.prefix), owned.prefix] as const]));
+const CONVENTIONS_FOLD = folderFold(CONVENTIONS_PREFIX);
 
 /**
  * Throw {@link InvalidInputError} unless an import may create `id`: a safe, unreserved concept id
  * that is not the target's own identity or dependency declaration, not a Kind convention
- * (installing Kinds is not part of v1) and not under another of Superbee's own folders. The
- * transfer's own record may sit in its folder. Compared under `foldPath`, so a case or
- * normalization variant of a protected id is refused too.
+ * (installing Kinds is not part of v1) and not under a folder that holds only Superbee's own
+ * files. Compared under `foldPath`, so a case or normalization variant of a protected id is
+ * refused too.
  */
-function assertImportableTargetId(id: ConceptId, newTarget?: { exists: (candidate: ConceptId) => boolean }, record = false): void {
+function assertImportableTargetId(id: ConceptId, newTarget?: { exists: (candidate: ConceptId) => boolean }): void {
   assertSafeConceptId(id);
   // Only a planned target is a create; a stored record's targets may predate the canonical-id rule,
   // and any create its resume still performs meets the rule in mutateDocument.
@@ -580,7 +585,6 @@ function assertImportableTargetId(id: ConceptId, newTarget?: { exists: (candidat
   if (PROTECTED_TARGET_FOLDS.has(fold)) throw new InvalidInputError("it is the bundle's own identity or dependency declaration");
   if (fold.startsWith(CONVENTIONS_FOLD)) throw new InvalidInputError("an import never installs a Kind convention");
   for (const [ownedFold, prefix] of OWNED_TARGET_FOLDS) {
-    if (record && prefix === PROMOTIONS_PREFIX) continue;
     if (fold.startsWith(ownedFold)) throw new InvalidInputError(`it is under Superbee's own '${prefix}' folder`);
   }
 }
@@ -605,7 +609,7 @@ function checkTargetIds(
   for (const row of planned) {
     const where = { ...(row.source === undefined ? {} : { source: row.source }), target: row.target };
     try {
-      assertImportableTargetId(row.target, { exists: (candidate) => existing.has(candidate) }, row.record === true);
+      assertImportableTargetId(row.target, { exists: (candidate) => existing.has(candidate) });
     } catch (error) {
       if (!(error instanceof InvalidInputError)) throw error;
       conflicts.push({ code: "unsafe_target_id", ...where, detail: `'${row.target}' is not a usable document id: ${error.message}` });
@@ -862,6 +866,12 @@ async function computeTransfer(request: TransferRequest): Promise<Computed> {
     target.ids,
     conflicts,
   );
+  // A document copied under a new prefix must stay a document there: its type at the target id
+  // must not turn it into one of Superbee's own records (a Connector copied under connectors/).
+  for (const [sourceId, targetId] of mapping) {
+    if (sectionOf({ id: targetId, frontmatter: source.docs.get(sourceId)!.doc.frontmatter }) === "documents") continue;
+    conflicts.push({ code: "unsafe_target_id", source: sourceId, target: targetId, detail: `'${targetId}' is not a usable document id: at that id its type makes it Superbee's own record` });
+  }
   for (const conflict of conflicts) {
     if (conflict.code !== "target_exists" || conflict.target === undefined) continue;
     const promotedBy = await promotingRecord(request.target, conflict.target, request.from.alias);

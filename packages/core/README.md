@@ -83,7 +83,9 @@ from fresh reads, and throws `TransferPlanChanged` if it differs. `TransferConfl
 `TransferInterrupted` and `TransferResumeConflict` are the other typed refusals. A transfer's writes
 are create-only; a refresh replaces a copy only at the version its plan saw. Only people's documents
 transfer (`sectionOf` answers `documents`): a selected record of Superbee's own stays behind and is
-counted in `left_behind`, and a target id under one of Superbee's own folders is refused.
+counted in `left_behind`. A target is refused under `conventions/` or a folder that holds only
+Superbee's own files (`recipes/`, `_superbee/`), and when the copy's type would make it Superbee's
+own record at its new id; a person's document in, say, `references/` still copies.
 
 ## Bundle sections
 
@@ -96,7 +98,14 @@ exact id or a folder prefix, the marker type the record must carry there and its
 is Superbee's only at its location and under its marker (`docs/bundle` of another type, or a
 non-Convention under `conventions/`, is a person's document); a View type claims the `views` section
 anywhere. Anything no entry claims is a document. Another runtime can render the entries, for
-example as a database filter, and test that it agrees with `sectionOf`.
+example as a database filter, and test that it agrees with `sectionOf`. Two comparison rules must
+be reproduced exactly:
+
+- `sectionOf` compares ids and types exactly and case-sensitively: an id equals an entry's `id` or
+  starts with its `prefix`, and `type` equals the marker with no trimming.
+- Document transfer targets and blob roots (`OWNED_BLOB_ROOTS`, `isOrdinaryBlobKey`) compare under
+  `foldPath`, as a case-insensitive or normalizing file system would, so `Sites/logo.png` is
+  refused like `sites/logo.png`.
 
 **Reserved root.** The locations listed today are grandfathered and stay where they are. Any new kind
 of Superbee-owned data lives under `_superbee/` (`SUPERBEE_RESERVED_ROOT_PREFIX`), which one entry
