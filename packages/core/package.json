@@ -274,6 +274,10 @@
     "./site-manifest": {
       "types": "./dist/site-manifest.d.ts",
       "default": "./dist/site-manifest.js"
+    },
+    "./system-documents": {
+      "types": "./dist/system-documents.d.ts",
+      "default": "./dist/system-documents.js"
     }
   },
   "files": [

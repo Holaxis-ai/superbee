@@ -5,8 +5,9 @@
 // stamps alone, without the recipe source; References have separate evolution rows. Storage-neutral: no Node globals or builtins.
 import { CONNECTOR_TYPE, CONNECTORS_PREFIX } from "../connectors.js";
 import { normalizeDocumentBodyForStorage } from "../frontmatter.js";
-import { CONVENTION_TYPE, CONVENTIONS_PREFIX } from "../kinds.js";
+import { CONVENTION_TYPE } from "../kinds.js";
 import type { LoadedRecipe } from "../recipes.js";
+import { ownedLocationOf } from "../system-documents.js";
 import type { ConceptId, OkfDocument } from "../types.js";
 import { sha256Hex } from "../versioning.js";
 
@@ -292,6 +293,9 @@ export interface RecipeOrphanedDefinition {
  * rules and locally changed documents retain their recorded recipe id. An unreadable stamp does
  * not prove ownership. The caller must supply the recipe whose declarations are being compared.
  */
+/** The owned entries a recipe installs, by the definition type an orphan is reported as. */
+const DEFINITION_TYPES: Readonly<Record<string, RecipeOrphanedDefinition["type"]>> = { convention: "Convention", connector: "Connector", reference: "Reference" };
+
 export function recipeOrphanedDefinitions(
   docs: Iterable<OkfDocument>,
   recipe: LoadedRecipe,
@@ -303,11 +307,8 @@ export function recipeOrphanedDefinitions(
   ]);
   const orphans: RecipeOrphanedDefinition[] = [];
   for (const doc of docs) {
-    let definitionType: RecipeOrphanedDefinition["type"];
-    if (doc.frontmatter.type === CONVENTION_TYPE && doc.id.startsWith(CONVENTIONS_PREFIX)) definitionType = "Convention";
-    else if (isConnectorDoc(doc)) definitionType = "Connector";
-    else if (doc.frontmatter.type === "Reference" && doc.id.startsWith("references/")) definitionType = "Reference";
-    else continue;
+    const definitionType = DEFINITION_TYPES[ownedLocationOf(doc)?.name ?? ""];
+    if (definitionType === undefined) continue;
     if (readRecipeStamp(doc)?.id !== recipe.id) continue;
     if (!declared.get(definitionType)!.has(doc.id)) orphans.push({ id: doc.id, type: definitionType });
   }

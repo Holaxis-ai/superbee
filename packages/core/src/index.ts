@@ -512,7 +512,11 @@ export { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 export { kindCoverage } from "./kind-coverage.js";
 export { KIND_FIELD_UNDECLARED, KIND_TYPE_UNDECLARED, isKindEnvelopeField, kindDeclaredFieldNames, kindDeclaredStorageFields, kindFieldsUndeclaredFinding, undeclaredFrontmatterKeys, undeclaredFieldWarnings, undeclaredTypeFinding, unknownKindFieldNames } from "./kind-undeclared-fields.js";
 export type { KindFieldUndeclaredDetails, KindFieldUndeclaredFinding, KindTypeUndeclaredDetails, KindTypeUndeclaredFinding } from "./kind-undeclared-fields.js";
-export { isGraphDefinitionDocument, isSystemDocument } from "./system-documents.js";
+export {
+  BUNDLE_SECTIONS, OWNED_BLOB_ROOTS, OWNED_LOCATIONS, RECIPES_PREFIX, REFERENCE_TYPE, REFERENCES_PREFIX, SUPERBEE_RESERVED_ROOT_PREFIX,
+  isGraphDefinitionDocument, isSystemDocument, ownedLocationOf, sectionOf,
+} from "./system-documents.js";
+export type { BundleSection, OwnedLocation, TypeReach } from "./system-documents.js";
 
 export { bodyPage, PAGE_DEFAULT_BYTES, PAGE_MAX_BYTES, PAGE_MIN_BYTES, type BodyPage } from "./body-pages.js";
 

@@ -81,7 +81,37 @@ entry on each and one Promotion record. `planDocumentRefresh` and `applyDocument
 copies from their sources. A plan only reads. Applying takes the plan's token, recomputes the plan
 from fresh reads, and throws `TransferPlanChanged` if it differs. `TransferConflictError`,
 `TransferInterrupted` and `TransferResumeConflict` are the other typed refusals. A transfer's writes
-are create-only; a refresh replaces a copy only at the version its plan saw.
+are create-only; a refresh replaces a copy only at the version its plan saw. Only people's documents
+transfer (`sectionOf` answers `documents`): a selected record of Superbee's own stays behind and is
+counted in `left_behind`. A target is refused under `conventions/` or a folder that holds only
+Superbee's own files (`recipes/`, `_superbee/`), and when the copy's type would make it Superbee's
+own record at its new id; a person's document in, say, `references/` still copies.
+
+## Bundle sections
+
+A bundle holds people's documents and Superbee's own records side by side. `sectionOf({ id,
+frontmatter })` puts every document in exactly one section: `documents`, `conventions` (Kind
+declarations and the authoring references recipes install), `views` (View registrations) or
+`superbee` (Superbee's other records). `OWNED_LOCATIONS`, exported from `@superbee/core` and
+`@superbee/core/system-documents`, is the one list behind it, as plain data: each entry names an
+exact id or a folder prefix, the marker type the record must carry there and its section. A record
+is Superbee's only at its location and under its marker (`docs/bundle` of another type, or a
+non-Convention under `conventions/`, is a person's document); a View type claims the `views` section
+anywhere. Anything no entry claims is a document. Another runtime can render the entries, for
+example as a database filter, and test that it agrees with `sectionOf`. Two comparison rules must
+be reproduced exactly:
+
+- `sectionOf` compares ids and types exactly and case-sensitively: an id equals an entry's `id` or
+  starts with its `prefix`, and `type` equals the marker with no trimming.
+- Document transfer targets and blob roots (`OWNED_BLOB_ROOTS`, `isOrdinaryBlobKey`) compare under
+  `foldPath`, as a case-insensitive or normalizing file system would, so `Sites/logo.png` is
+  refused like `sites/logo.png`.
+
+**Reserved root.** The locations listed today are grandfathered and stay where they are. Any new kind
+of Superbee-owned data lives under `_superbee/` (`SUPERBEE_RESERVED_ROOT_PREFIX`), which one entry
+already covers; nothing lives there yet. People should not keep their own documents there. A core
+test fails when an exported location or marker constant is not covered by an entry, and when an
+entry outside `_superbee/` is not one of the grandfathered locations.
 
 ## Document presentation values
 
@@ -900,9 +930,10 @@ content type, verifies length, digest and type, and answers null when the key is
 
 **Keys.** `isOrdinaryBlobKey` is the one key policy every blob writer uses, this client and the
 CLI's checkout sync alike: a safe key that is not a reserved file (`index.md`, `log.md`) and does not
-sit under Superbee's own record folders (`views/`, `pages/`, their registries, `conventions/`,
-`recipes/`, `references/`, compared case-insensitively). Any other key is refused `invalid_input`
-before any request.
+sit under one of Superbee's own folders (`OWNED_BLOB_ROOTS`, derived from the bundle sections below:
+`views/`, `pages/`, their registries, `conventions/`, `recipes/`, `references/`, `connectors/`,
+`sites/`, `promotions/` and `_superbee/`, compared case-insensitively). Any other key is refused
+`invalid_input` before any request.
 
 **Aborts.** A `signal` aborted before the write is admitted throws its reason and journals nothing;
 that includes an abort while the capabilities are still being read, so a hung credential provider

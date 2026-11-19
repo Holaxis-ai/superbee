@@ -468,6 +468,9 @@ Across both editions:
 - `index.md` and `log.md` are reserved; only a directory's `index.md` may carry reserved-file
   frontmatter. Concept documents require a non-empty `type`, and unknown frontmatter keys survive
   round trips.
+- Superbee's own records keep their current locations; any new kind of Superbee-owned data lives
+  under the reserved root `_superbee/`. Core's `OWNED_LOCATIONS` is the one list; see
+  [Bundle sections](packages/core/README.md#bundle-sections).
 - Writes normalize only the selected edition's document shape. v0.1 retains or creates its legacy
   `timestamp`; raw v0.2 transport does not invent optional `generated`, legacy clocks, or legacy
   actor fields. Engine-mediated v0.2 creates seed one standard `generated` clock when the document

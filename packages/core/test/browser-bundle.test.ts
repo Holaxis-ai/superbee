@@ -78,6 +78,7 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "recipe-lifecycle/index.js", symbol: "planRecipeEvolution" },
   { module: "record-overlay/index.js", symbol: "planRecordOverlay" },
   { module: "connectors.js", symbol: "parseConnectorDoc" },
+  { module: "system-documents.js", symbol: "sectionOf" },
   { module: "source-engine/index.js", symbol: "observeSource" },
   { module: "source-harness/index.js", symbol: "runTransportConformance" },
   { module: "source-profiles/index.js", symbol: "rest-json" },

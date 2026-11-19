@@ -56,7 +56,7 @@ export function DocumentBrowser() {
   }
 
   const groups = browseGroups(heads, collapsedKinds);
-  const total = groups.reduce((n, g) => n + g.rows.length, 0);
+  const total = groups.reduce((n, g) => n + (g.own ? 0 : g.rows.length), 0);
   const unreadable = skipped.length > 0 ? <UnreadableDocs skipped={skipped} /> : null;
   if (total === 0) {
     return (
@@ -123,7 +123,7 @@ function KindGroup({ group }: { group: BrowseGroup }) {
         <>
           <ul className="browse-rows">
             {shown.map((row) => (
-              <DocRow key={row.id} row={row} />
+              <DocRow key={row.id} row={row} showKind={group.own === true} />
             ))}
           </ul>
           {group.rows.length > GROUP_CAP && !showAll && (
