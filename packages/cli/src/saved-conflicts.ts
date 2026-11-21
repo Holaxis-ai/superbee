@@ -8,10 +8,10 @@
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { assertSafeConceptId, conceptIdFromPath, isReservedFile, parseMarkdown } from "@superbee/core";
-import { boardRefOf, isConceptDocPath, listSavedCopies, readDocBytesAtRef, runGitBytes, type SavedCopy } from "@superbee/board-git";
+import { boardRefOf, isConceptDocPath, readDocBytesAtRef, runGitBytes, type SavedCopy } from "@superbee/board-git";
 import { commandFragment, commandToken, type CommandPrefix, type CommandText } from "./command-text.js";
 import { ENGINE_STAMPED_FIELDS, loadClaimPolicy, recordedOwner, type ClaimPolicy } from "./commands/sync/claim-conflict.js";
-import { defaultSyncStore } from "./cursor.js";
+import { defaultSyncStore, readBoardConflictCopies } from "./cursor.js";
 
 /** Different invalid bytes decode to the same text, so only a lossless decode can be compared as text. */
 export function decodesLosslessly(bytes: Buffer): boolean {
@@ -156,7 +156,7 @@ async function classify(boardPath: string, key: string): Promise<{ unsettled: Un
   // The upstream ref and versions are read once, for every copy, when the first copy needs them.
   let upstreamRef: string | undefined;
   let upstreamRead: Map<string, Buffer | null> | undefined;
-  const copies = listSavedCopies(defaultSyncStore.exportsDir(key));
+  const copies = readBoardConflictCopies(defaultSyncStore.exportsDir(key), boardPath);
   for (const copy of copies) {
     let discardWith: UnsettledConflict["discardWith"] = "remove";
     let unreadable = false;

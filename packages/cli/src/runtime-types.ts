@@ -171,6 +171,8 @@ export interface PrivateStateHost {
  */
 export interface CliRuntimeOptions {
   readonly distribution: CliDistribution;
+  /** Private, durable directory selected by the trusted launcher for Git board state. */
+  readonly boardStateDir?: string;
   readonly host: HostCommands;
   readonly privateState: PrivateStateHost;
   readonly filesystemHost: FilesystemHostPolicy;

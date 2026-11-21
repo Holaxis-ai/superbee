@@ -160,6 +160,21 @@ your normal commit/push/pull, `sync --pull-only` fetches the branch's upstream a
 incoming board changes (session start shows the same awareness), and a full `sync` refuses
 with guidance — `sync --establish` is the explicit conversion to a dedicated board branch.
 
+For a Git board in a sandbox with a read-only home, set `SUPERBEE_BOARD_STATE_DIR` in the
+trusted launcher to an absolute, private, persistent directory outside Git checkouts and
+account state. Give the agent write access to that directory and the checkout. Keep using the
+same directory when inspecting or resolving conflicts after a restart. Reusing the directory
+across clones keeps each clone's state and conflict copies separate. On macOS and Linux, use
+owner-only permissions (`0700`) for an existing directory. With no override, board state
+uses the host's normal private state location (`~/.superbee-state/sync` on macOS and Linux).
+Hosted checkout sync and account credentials follow their own storage policies.
+
+The pending marker helps session start recognize a board. The cursor and awareness cache feed
+change summaries and automatic-pull freshness checks. These records support reporting, so a
+safe explicit pull can finish if the sandbox denies their writes. Its receipt reports the Git
+changes it can verify. Saved conflict copies are required for recovery. If they cannot be saved,
+a sync that needs them leaves the local work in the checkout and reports how to restore access.
+
 A clone can hold its own pushes to a check: `git config superbee.syncGate '<command>'` makes
 `sync` run that command on the rebased board (the exact commit it would push) before every push
 that sends commits. A failing gate pushes nothing, keeps your work committed locally, and exits 5

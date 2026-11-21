@@ -163,7 +163,6 @@ export function privateStateEntryIsSafe(
   kind: "directory" | "file",
   input?: UserStateInput,
 ): boolean {
-  const policy = resolveUserStatePolicy(input);
   if (status.isSymbolicLink() || (kind === "directory" ? !status.isDirectory() : !status.isFile())) return false;
   if (!currentPrivateStateHost().enforcePrivateMode) return true;
   const currentUid = currentPrivateStateHost().currentUid();
@@ -175,7 +174,6 @@ function privateStateEntryIsOwned(
   kind: "directory" | "file",
   input?: UserStateInput,
 ): boolean {
-  const policy = resolveUserStatePolicy(input);
   if (status.isSymbolicLink() || (kind === "directory" ? !status.isDirectory() : !status.isFile())) return false;
   if (!currentPrivateStateHost().enforcePrivateMode) return true;
   const currentUid = currentPrivateStateHost().currentUid();
@@ -211,9 +209,9 @@ export async function readPrivateStateFile(
   maxBytes: number,
   signal?: AbortSignal,
   input?: UserStateInput,
+  requirePrivateFile = false,
 ): Promise<string> {
   if (signal?.aborted) throw signal.reason;
-  const policy = resolveUserStatePolicy(input);
   const before = currentPrivateStateHost().privateRead.inspectBeforeOpen ? await lstat(file) : null;
   if (before !== null && !privateStateEntryIsSafe(before, "file", input)) {
     throw new Error("private user-state record is not a regular file");
@@ -222,7 +220,7 @@ export async function readPrivateStateFile(
   const handle = await open(file, flags);
   try {
     const status = await handle.stat();
-    if (!status.isFile() || status.size > maxBytes) throw new Error("private user-state record is not a bounded regular file");
+    if (!status.isFile() || (requirePrivateFile && !privateStateEntryIsSafe(status, "file", input)) || status.size > maxBytes) throw new Error("private user-state record is not a bounded regular file");
     if (before !== null && !sameFileIdentity(before, status)) throw new Error("private user-state record changed during open");
     const bytes = Buffer.alloc(status.size + 1);
     let offset = 0;
@@ -441,8 +439,8 @@ const WRITE_REFUSED_ERRNOS: ReadonlySet<string> = new Set(["EPERM", "EACCES", "E
 /**
  * A refused write to the private state root (or the home directory it is created in) as a CliError
  * naming the cause and the fix, else null. The usual cause is an agent sandbox that permits writes
- * only inside the workspace; Superbee has no state-directory override, so the fix is to allow the
- * write.
+ * only inside the workspace. Account state follows the host policy, so the fix is to allow
+ * the write to the account state location.
  */
 export function userStateWriteRefusal(error: unknown, input?: UserStateInput): CliError | null {
   const code = errno(error);

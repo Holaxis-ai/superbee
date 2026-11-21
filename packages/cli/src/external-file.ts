@@ -10,10 +10,9 @@
 // for `--out` writes stays with `assertPathOutsidePrivateState` directly: a write has no bytes to
 // acquire, and nothing may be written INTO private state through a caller-supplied path.
 import { promises as fs } from "node:fs";
-import { homedir } from "node:os";
 import path from "node:path";
 
-import { syncExportsRoot } from "./cursor.js";
+import { privateBoardExportsRoot } from "./cursor.js";
 import { readRegularFileNoFollowSync } from "./nofollow-read.js";
 import { assertPathOutsidePrivateState, relateToPrivateState } from "./private-state-bundle-boundary.js";
 
@@ -24,17 +23,18 @@ import { assertPathOutsidePrivateState, relateToPrivateState } from "./private-s
  * character-for-character by `sync-conflict.test.ts`). Those bytes came OUT of the bundle; refusing
  * to read them back would refuse the product's own documented exit node. The exemption is
  * containment-decided by the same inode relation every other guard answers to — never a
- * prefix-string match — and an absent exports root exempts nothing.
+ * prefix-string match. If exports have never been created, the read still reports a missing file.
  */
-function isExportedBundleContent(resolved: string, home: string): boolean {
-  return relateToPrivateState(resolved, syncExportsRoot(home)) === "bundle-inside-state";
+function isExportedBundleContent(resolved: string, home?: string): boolean {
+  const root = privateBoardExportsRoot(home);
+  return root !== undefined && relateToPrivateState(resolved, root) === "bundle-inside-state";
 }
 
 /**
  * Refusals are `CliError`s, so a caller that wraps its read in a bespoke "could not read" catch must
  * re-throw `CliError` unchanged — a boundary refusal is not an I/O failure and must keep its code.
  */
-function guardExternalRead(file: string, home: string = homedir()): void {
+function guardExternalRead(file: string, home?: string): void {
   const resolved = path.resolve(file);
   if (isExportedBundleContent(resolved, home)) return;
   assertPathOutsidePrivateState(resolved, home);

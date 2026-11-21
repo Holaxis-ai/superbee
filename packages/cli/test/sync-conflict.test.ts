@@ -488,6 +488,40 @@ test("U3b fix 1: a NON-ASCII doc id (tasks/café) converges — no quotepath cor
 
 // ── review fix 2 + note 3: deletion conflicts, BOTH directions ──────────────────
 
+test("a deletion at the local tip does not surface copies from earlier conflicting edits", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes: [home], cleanup } = await tempHomes(1);
+  const id = "tasks/seed-one";
+  const file = `${id}.md`;
+  try {
+    await modifyBoardDoc(topo.a, id, { body: "# Seed one\n\nUpstream paragraph\n" });
+    const upstreamTip = commitBoard(topo.a, "Update the shared paragraph");
+    pushBoard(topo.a);
+    for (const body of ["First local paragraph", "Second local paragraph"]) {
+      await modifyBoardDoc(topo.b, id, { body: `# Seed one\n\n${body}\n` });
+      commitBoard(topo.b, body, BOB);
+    }
+    await deleteBoardDoc(topo.b, id);
+    commitBoard(topo.b, "Delete the document after revising it", BOB);
+
+    const converged = await runSync(home!, ["--dir", topo.b.root]);
+    assert.equal(converged.err?.code, "CONFLICT", converged.err?.message);
+    assert.equal(conflictRows(converged.err!)[0]?.yours, "deleted locally — nothing to save");
+    const inspected = await runSync(home!, ["--dir", topo.b.root, "--inspect", id]);
+    assert.equal(inspected.err?.code, "NOT_FOUND", inspected.out);
+    const dir = bExportsDir(topo, home!);
+    assert.equal(existsSync(path.join(dir, file)), false);
+    assert.equal(existsSync(path.join(`${dir}.repeat`, "2", file)), false);
+    assert.equal(boardHead(topo.b), upstreamTip);
+    assert.equal(originBoardHead(topo), upstreamTip);
+    assertPristine(topo.b, "B after convergence");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+
 test("U3b deletion conflict (upstream deleted, local edited): deletion kept, yours exported, help points at --resolve keep, re-create clears", async () => {
   const topo = await makeTwoCloneTopology();
   const { homes, cleanup } = await tempHomes(2);
