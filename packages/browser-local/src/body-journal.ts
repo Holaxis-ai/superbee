@@ -318,17 +318,24 @@ function journalByteCounter(): (value: unknown) => number {
   const encoder = new TextEncoder();
   return value => {
     let omitted = 0;
-    const json = JSON.stringify(value, (_key, item: unknown) => {
-      // Leave small strings such as labels out of the lookup table.
-      if (typeof item !== "string" || item.length < 4 * 1024) return item;
-      let cost = stringCosts.get(item);
-      if (cost === undefined) {
-        cost = jsonBytes(item) - 2; // The empty replacement keeps both JSON quotes.
-        stringCosts.set(item, cost);
-      }
-      omitted += cost;
-      return "";
-    });
+    let json: string | undefined;
+    try {
+      json = JSON.stringify(value, (_key, item: unknown) => {
+        // Leave small strings such as labels out of the lookup table.
+        if (typeof item !== "string" || item.length < 4 * 1024) return item;
+        let cost = stringCosts.get(item);
+        if (cost === undefined) {
+          cost = jsonBytes(item) - 2; // The empty replacement keeps both JSON quotes.
+          stringCosts.set(item, cost);
+        }
+        omitted += cost;
+        return "";
+      });
+    } catch (error) {
+      // Some engines can serialize deeper metadata without a replacer.
+      if (!(error instanceof RangeError)) throw error;
+      return jsonBytes(value);
+    }
     return encoder.encode(json).length + omitted;
   };
 }

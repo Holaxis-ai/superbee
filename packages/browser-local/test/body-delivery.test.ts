@@ -750,6 +750,19 @@ test("capacity uses native escaped UTF-8 byte counts for repeated nested content
   assert.throws(() => assertBodyCapacity(guard), { name: "BodyCapacityError" });
 });
 
+test("capacity accepts deeply nested metadata within native JSON depth limits", (t) => {
+  let nested: unknown = null;
+  for (let depth = 0; depth < 2500; depth++) nested = [nested];
+  const guard: JournalGuard = { target: "notes/example", document: null, intents: [],
+    meta: [{ key: "retained", expected: { present: true, value: nested } }] };
+  try { jsonBytes(guard); } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    t.skip("This runtime's native JSON serialization cannot reach the test depth.");
+    return;
+  }
+  assert.doesNotThrow(() => assertBodyCapacity(guard));
+});
+
 test("explicit body namespace leaves the exact store untouched and refuses incompatible admission", async () => {
   const factory = new IDBFactory();
   const exactLocal = openLocalBundle("partition-test", { indexedDB: factory });
