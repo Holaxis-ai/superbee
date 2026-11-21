@@ -23,10 +23,10 @@ import { constants as fsConstants, existsSync, promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { assertSafeConceptId, blobVersion, conceptIdFromPath, FilesystemBackend, replaceFilesystemFile, VersionConflict, isReservedFile, MalformedDocumentError, parseMarkdown, pathFromConceptId, versionOfBytes } from "@superbee/core";
-import { boardRefOf, bundleDirNameForProject, isConceptDocPath, listSavedCopies, readDocBytesAtRef, repoTopLevel, resolveBundleKey, retargetBoardInterior, runGit, saveCopyWithBody } from "@superbee/board-git";
+import { boardRefOf, bundleDirNameForProject, isConceptDocPath, readDocBytesAtRef, repoTopLevel, resolveBundleKey, retargetBoardInterior, runGit, saveCopyWithBody } from "@superbee/board-git";
 import { resolveLocalBundleRoute } from "../../bundle.js";
 import { commandFragment, commandToken, type CommandText } from "../../command-text.js";
-import { defaultSyncStore } from "../../cursor.js";
+import { defaultSyncStore, readBoardConflictCopies, saveBoardConflictCopy } from "../../cursor.js";
 import { CliError } from "../../errors.js";
 import { cliInvocation } from "../../invocation.js";
 import { render, resolveMode } from "../../output.js";
@@ -229,11 +229,12 @@ async function locateBoard(args: ConflictArgs, cwd: string): Promise<Board> {
   const key = route.kind === "bound-board" ? route.owner.stateKey : resolveBundleKey(root);
   const relPath = pathFromConceptId(args.id);
   const exportDir = defaultSyncStore.exportsDir(key);
-  const copies = listSavedCopies(exportDir).filter((copy) => copy.relPath === relPath);
+  const saved = readBoardConflictCopies(exportDir, root, true);
+  const copies = saved.filter((copy) => copy.relPath === relPath);
   const oldest = copies[0];
   if (oldest === undefined) {
     // A file that is not a document is saved under its own path, which a document id does not map to.
-    const raw = listSavedCopies(exportDir).filter((copy) => copy.relPath === args.id);
+    const raw = saved.filter((copy) => copy.relPath === args.id);
     if (raw[0] !== undefined) {
       return {
         kind: "file",
@@ -674,7 +675,8 @@ async function runResolve(args: ConflictArgs, choice: Choice, board: Board, cwd:
     // unless a later copy is still to come: this take then only sets the older copy aside.
     // Words that are not upstream are saved first, since Git history does not hold them.
     if (present !== null && takeWouldErase(board, local, remote, present)) {
-      unsentSavedAt = saveCopyWithBody(board.exportDir, board.relPath, present, isConceptDocPath(board.relPath)).exportPath;
+      unsentSavedAt = saveBoardConflictCopy(board.exportDir, board.root, () =>
+        saveCopyWithBody(board.exportDir, board.relPath, present, isConceptDocPath(board.relPath))).exportPath;
     }
     if (board.laterCopies.length > 0) {
       fileState = "unchanged";

@@ -1,4 +1,4 @@
-import { currentPrivateStateHost } from "./runtime-context.js";
+import { BOARD_STATE_DIR_ENV, currentBoardStateLocation, currentPrivateStateHost } from "./runtime-context.js";
 // One invariant between Superbee's two local filesystem domains: private operational state and
 // Knowledge Bundle content are PHYSICALLY DISJOINT. Neither directory may equal or contain the
 // other, and no path the CLI reads from or writes to may cross the boundary.
@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { foldPath } from "@superbee/core";
+import { hasEnclosingGitMarker } from "@superbee/board-git";
 
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
@@ -284,7 +285,39 @@ function relateCoordinates(bundle: PhysicalCoordinate, state: PhysicalCoordinate
  * a migration source.
  */
 export function guardedStateRoots(input: UserStateInput = homedir()): string[] {
-  return [...resolveUserStatePolicy(input).guardedRoots];
+  const roots = [...resolveUserStatePolicy(input).guardedRoots];
+  const location = currentBoardStateLocation();
+  if (location && "dir" in location) roots.push(location.dir);
+  return roots;
+}
+
+/** Validate the launcher's board location before a Git-board operation. */
+export function assertBoardStatePlacement(checkout?: string): void {
+  const location = currentBoardStateLocation();
+  if (location === undefined) return;
+  const help = `Set ${BOARD_STATE_DIR_ENV} to an absolute, private, persistent directory outside account state and the Git checkout, then rerun the command.`;
+  if ("invalid" in location) {
+    throw new CliError("USAGE", `${BOARD_STATE_DIR_ENV} must be an absolute path (got ${JSON.stringify(location.invalid)})`, { help });
+  }
+  const roots = [...resolveUserStatePolicy().guardedRoots, ...(checkout ? [checkout] : [])];
+  let overlap: string | undefined;
+  try {
+    const anchor = physicalCoordinate(location.dir, new Set(), true).anchorPath;
+    overlap = hasEnclosingGitMarker(anchor)
+      ? "a Git checkout"
+      : roots.find((root) => relateToPrivateState(location.dir, root) !== "unrelated");
+  } catch {
+    throw new CliError("RUNTIME", `cannot verify the placement of Git board state at ${location.dir}`, {
+      details: { reason: "board_state_location_unverifiable", path: location.dir },
+      help,
+    });
+  }
+  if (overlap !== undefined) {
+    throw new CliError("CONFLICT", `Git board state at ${location.dir} overlaps ${overlap}`, {
+      details: { reason: "board_state_overlap", path: location.dir },
+      help,
+    });
+  }
 }
 
 /** Classify a target against every guarded root, returning the first collision in root order. */

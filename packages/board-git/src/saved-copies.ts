@@ -8,7 +8,10 @@
 // is an exclusive link of a complete temporary file, so two racing syncs each keep their own copy
 // and a reader never sees a partial one.
 import { randomUUID } from "node:crypto";
-import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync,
+  openSync, readFileSync, readdirSync, rmSync, writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { parseMarkdown } from "@superbee/core";
 
@@ -23,24 +26,64 @@ function slotDir(exportDir: string, slot: number): string {
   return slot === 1 ? exportDir : path.join(`${exportDir}.repeat`, String(slot));
 }
 
+function checkPrivateDirectory(directory: string): boolean {
+  try {
+    const entry = lstatSync(directory);
+    if (!entry.isDirectory()) {
+      throw new Error(`unsafe conflict-copy directory ${directory}`);
+    }
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function checkCopyParents(root: string, file: string, create: boolean): boolean {
+  const directory = path.dirname(file);
+  const relative = path.relative(root, directory);
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error("conflict copy escapes its private directory");
+  }
+  let current = root;
+  for (const component of ["", ...relative.split(path.sep).filter(Boolean)]) {
+    current = path.join(current, component);
+    // A raw saved file can occupy this slot's desired directory pathname.
+    if (current !== root && lstatSync(current, { throwIfNoEntry: false })?.isFile()) {
+      if (!create) return false;
+      throw Object.assign(new Error("conflict-copy slot already contains a file"), { code: "ENOTDIR" });
+    }
+    if (!checkPrivateDirectory(current)) {
+      if (!create) return false;
+      mkdirSync(current, { recursive: true, mode: 0o700 });
+      if (!checkPrivateDirectory(current)) throw new Error(`missing conflict-copy directory ${current}`);
+    }
+  }
+  return true;
+}
+
 /** The slots that exist on disk, in ascending order: oldest copy first for any one file. */
 function existingSlots(exportDir: string): number[] {
-  const slots = existsSync(exportDir) ? [1] : [];
-  let names: string[] = [];
-  try {
-    names = readdirSync(`${exportDir}.repeat`);
-  } catch {
-    // No repeat conflict has happened on this board.
-  }
+  const slots = checkPrivateDirectory(exportDir) ? [1] : [];
+  const repeats = `${exportDir}.repeat`;
+  const names = checkPrivateDirectory(repeats) ? readdirSync(repeats) : [];
   for (const name of names) if (/^[1-9][0-9]*$/.test(name) && name !== "1") slots.push(Number(name));
   return slots.sort((a, b) => a - b);
 }
 
 function readIfFile(file: string): Buffer | null {
+  let descriptor: number | undefined;
   try {
-    return readFileSync(file);
+    const before = lstatSync(file);
+    if (!before.isFile()) return null;
+    descriptor = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
+    const opened = fstatSync(descriptor);
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.nlink !== 1) return null;
+    return readFileSync(descriptor);
   } catch {
     return null;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
   }
 }
 
@@ -57,29 +100,33 @@ function slotTaken(file: string): boolean {
  * Save `bytes` as a new copy of `relPath` and return where it landed. An identical copy already
  * saved is that copy: a retried conflict adds no file.
  */
-export function saveConflictCopy(exportDir: string, relPath: string, bytes: Buffer): string {
+export function saveConflictCopy(exportDir: string, relPath: string, bytes: Buffer, onCreate?: (file: string) => void): string {
   let highest = 0;
   for (const slot of existingSlots(exportDir)) {
-    const existing = readIfFile(path.join(slotDir(exportDir, slot), relPath));
+    const root = slotDir(exportDir, slot);
+    const file = path.join(root, relPath);
+    const existing = checkCopyParents(root, file, false) ? readIfFile(file) : null;
     if (existing === null) continue;
     if (existing.equals(bytes)) return path.join(slotDir(exportDir, slot), relPath);
     highest = slot;
   }
   for (let slot = highest + 1; ; slot++) {
-    const file = path.join(slotDir(exportDir, slot), relPath);
+    const root = slotDir(exportDir, slot);
+    const file = path.join(root, relPath);
     if (slotTaken(file)) continue;
     // A raw file's copy can sit where this path needs a folder: this slot is taken, the next is not.
     try {
-      mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+      checkCopyParents(root, file, true);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "EEXIST" || code === "ENOTDIR") continue;
       throw error;
     }
     const temp = path.join(path.dirname(file), `${TEMP_PREFIX}${process.pid}-${randomUUID()}`);
-    writeFileSync(temp, bytes, { mode: 0o600, flag: "wx" });
     try {
+      writeFileSync(temp, bytes, { mode: 0o600, flag: "wx", flush: true });
       linkSync(temp, file);
+      onCreate?.(file);
       return file;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -94,10 +141,11 @@ export function saveConflictCopy(exportDir: string, relPath: string, bytes: Buff
  * something else. A copy reused for matching bytes already has its companion; the path can also
  * hold another document's copy from before repeat conflicts were kept apart, and that stays.
  */
-export function saveBodyCompanion(copyPath: string, body: string): string | null {
+export function saveBodyCompanion(copyPath: string, body: string, onCreate?: (file: string) => void): string | null {
   const companion = bodyCompanionPath(copyPath);
   try {
     writeFileSync(companion, body, { mode: 0o600, flag: "wx" });
+    onCreate?.(companion);
     return companion;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -110,13 +158,15 @@ export function saveBodyCompanion(copyPath: string, body: string): string | null
  * companion: the literally executable `doc update --body-file` input. A lossy decode would apply a
  * corrupted body, so such a copy has none, and a parse failure only means no runnable chain.
  */
-export function saveCopyWithBody(exportDir: string, relPath: string, bytes: Buffer, isDoc: boolean): { exportPath: string; bodyExportPath: string | null } {
-  const exportPath = saveConflictCopy(exportDir, relPath, bytes);
+export function saveCopyWithBody(
+  exportDir: string, relPath: string, bytes: Buffer, isDoc: boolean, onCreate?: (file: string) => void,
+): { exportPath: string; bodyExportPath: string | null } {
+  const exportPath = saveConflictCopy(exportDir, relPath, bytes, onCreate);
   if (!isDoc) return { exportPath, bodyExportPath: null };
   try {
     const decoded = bytes.toString("utf8");
     if (!Buffer.from(decoded, "utf8").equals(bytes)) return { exportPath, bodyExportPath: null };
-    return { exportPath, bodyExportPath: saveBodyCompanion(exportPath, parseMarkdown(decoded, relPath).body) };
+    return { exportPath, bodyExportPath: saveBodyCompanion(exportPath, parseMarkdown(decoded, relPath).body, onCreate) };
   } catch {
     return { exportPath, bodyExportPath: null };
   }
@@ -151,7 +201,7 @@ function walk(root: string, dir: string, out: string[]): void {
   }
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) walk(root, full, out);
+    if (entry.isDirectory() && checkPrivateDirectory(full)) walk(root, full, out);
     else if (entry.isFile() && !entry.name.startsWith(TEMP_PREFIX)) out.push(path.relative(root, full));
   }
 }
@@ -162,7 +212,7 @@ export function listSavedCopies(exportDir: string): SavedCopy[] {
   for (const slot of existingSlots(exportDir)) {
     const root = slotDir(exportDir, slot);
     const files: string[] = [];
-    walk(root, root, files);
+    if (checkPrivateDirectory(root)) walk(root, root, files);
     const present = new Set(files);
     const paired = (rel: string): boolean => {
       const companion = bodyCompanionPath(rel);

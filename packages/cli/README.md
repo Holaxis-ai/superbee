@@ -104,6 +104,12 @@ internal slots (such as Map/Date state), and methods pre-bound to a mutable rece
 structural contract. Callback closures can observe external OS facts; they must not use mutable
 external configuration to change a captured lock namespace or other selected policy.
 
+A trusted host may pass the optional `boardStateDir` when constructing the runtime. Otherwise
+both runtime factories read `SUPERBEE_BOARD_STATE_DIR` at construction. Supply an absolute
+path to a private, persistent directory outside Git checkouts and account state. The same
+runtime location serves Git sync, automatic pull, session start, home and conflict resolution.
+If the launcher omits the setting, the host's usual private-state policy supplies the directory.
+
 Contexts with the same distribution may select different policies. Deferred workspace and
 approval callbacks retain their construction context. The process still has one immutable full
 distribution and executable identity. Runtime construction requires a resolvable executable and
