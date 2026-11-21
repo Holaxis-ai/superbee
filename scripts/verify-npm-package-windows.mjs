@@ -10,17 +10,28 @@ import { assertArtifact, assertIdentity } from "../packages/package-verification
 import { isMainModule } from "./is-main-module.mjs";
 
 const exec = promisify(execFile);
+const retainedTarball = new URL("../out/windows-proof/superbee.tgz", import.meta.url);
 const fixture = fileURLToPath(new URL("../examples/sample-bundle", import.meta.url));
 const docId = "concepts/okf-alignment";
 const docPath = `${docId}.md`;
 const boardRef = "refs/heads/board";
 const trackingRef = "refs/remotes/origin/board";
 
-async function run(file, args, { cwd, env, expected = 0, windowsVerbatimArguments = false }) {
+const executables = Object.freeze({
+  node: process.execPath,
+  cmd: "cmd.exe",
+  git: "git.exe",
+  whoami: "whoami.exe",
+  icacls: "icacls.exe",
+});
+
+async function run(tool, args, { cwd, env, expected = 0 }) {
+  assert.ok(Object.hasOwn(executables, tool));
+  const file = executables[tool];
   let result;
   try {
     result = await exec(file, args, {
-      cwd, env, windowsVerbatimArguments, windowsHide: true, timeout: 45_000, maxBuffer: 2 * 1024 * 1024,
+      cwd, env, windowsHide: true, timeout: 45_000, maxBuffer: 2 * 1024 * 1024,
     });
   } catch (error) {
     if (error.code === expected && !error.signal && !error.killed) {
@@ -41,17 +52,19 @@ function windowsProfile(root) {
   return { HOME: root, USERPROFILE: root, LOCALAPPDATA: local, APPDATA: path.join(root, "AppData", "Roaming") };
 }
 
-async function assertFileIdentity(file, label) {
-  const named = await lstat(file, { bigint: true });
+async function readFixtureFile(file, label) {
   const handle = await open(file, "r");
   try {
-    const opened = await handle.stat({ bigint: true });
-    console.log(
-      `WINDOWS_PROOF_FILE_ID ${label} Node ${process.version} libuv ${process.versions.uv}: ` +
-      `path dev=${named.dev} ino=${named.ino}, handle dev=${opened.dev} ino=${opened.ino}`,
-    );
+    const [opened, named] = await Promise.all([handle.stat({ bigint: true }), lstat(file, { bigint: true })]);
+    if (label) {
+      console.log(
+        `WINDOWS_PROOF_FILE_ID ${label} Node ${process.version} libuv ${process.versions.uv}: ` +
+        `path dev=${named.dev} ino=${named.ino}, handle dev=${opened.dev} ino=${opened.ino}`,
+      );
+    }
     assert.ok(named.isFile() && opened.isFile());
-    assert.deepEqual([opened.dev, opened.ino], [named.dev, named.ino], `${label}: filesystem identity changed on open`);
+    assert.deepEqual([opened.dev, opened.ino], [named.dev, named.ino], "filesystem identity changed on open");
+    return await handle.readFile();
   } finally {
     await handle.close();
   }
@@ -65,8 +78,11 @@ export function assertBoardConflictReceipt(stdout, id) {
   assert.ok(lines.some((line) => line.startsWith(`        ${id},`) && line.endsWith(",kept")), stdout);
 }
 
-async function prove({ tarball, expectedDigest, expectedSource, scratch }) {
-  assert.equal(createHash("sha256").update(await readFile(tarball)).digest("hex"), expectedDigest, "retained tarball digest changed");
+async function prove({ expectedDigest, expectedSource, scratch }) {
+  const tarballBytes = await readFixtureFile(retainedTarball);
+  assert.equal(createHash("sha256").update(tarballBytes).digest("hex"), expectedDigest, "retained tarball digest changed");
+  const tarball = path.join(scratch, "superbee.tgz");
+  await writeFile(tarball, tarballBytes, { flag: "wx" });
   const prefix = path.join(scratch, "npm install");
   const home = windowsProfile(path.join(scratch, "profile"));
   const privateRoot = path.join(home.LOCALAPPDATA, "Superbee");
@@ -90,36 +106,25 @@ async function prove({ tarball, expectedDigest, expectedSource, scratch }) {
   await mkdir(home.LOCALAPPDATA, { recursive: true });
 
   const npm = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
-  await run(process.execPath, [
+  await run("node", [
     npm, "install", "--global", "--prefix", prefix, "--offline", "--ignore-scripts", "--no-audit", "--no-fund", tarball,
   ], { cwd: scratch, env });
 
-  const system32 = path.join(process.env.SystemRoot, "System32");
   const pathKey = Object.keys(env).find((name) => /^path$/i.test(name));
   assert.ok(pathKey, "Windows needs an existing PATH with Node and Git");
   env[pathKey] = `${prefix}${path.delimiter}${env[pathKey]}`;
-  async function installed(args, options = {}) {
-    // Use npm's normal Windows shim. All arguments come from this fixed fixture and its paths.
-    const tokens = ["superbee.cmd", ...args];
-    for (const token of tokens) assert.doesNotMatch(token, /["%\r\n]/, "unsafe cmd fixture argument");
-    const command = tokens.map((token) => `"${token}"`).join(" ");
-    return run(path.join(system32, "cmd.exe"), ["/d", "/s", "/v:off", "/c", `"${command}"`], {
-      cwd: scratch, env, ...options, windowsVerbatimArguments: true,
-    });
-  }
-  async function cli(args, options) {
-    const { stdout } = await installed([...args, "--json"], options);
-    return JSON.parse(stdout);
-  }
-  const { identity } = await cli(["version"]);
+  const { stdout: versionOutput } = await run("cmd", ["/d", "/s", "/c", "superbee.cmd version --json"], { cwd: scratch, env });
+  const { identity } = JSON.parse(versionOutput);
+  const entrypoint = await realpath(path.join(prefix, "node_modules", "superbee", "dist", "superbee.mjs"));
+  const installed = (args, options = {}) => run("node", [entrypoint, ...args], { cwd: scratch, env, ...options });
+  const cli = async (args, options) => JSON.parse((await installed([...args, "--json"], options)).stdout);
   assertIdentity(identity, {
     package: { name: "superbee" },
     source: { commit: expectedSource, dirty: false },
     artifact: { channel: "npm-package" },
     runtime: { invocation: "superbee", launch_mode: "path", launch_confidence: "certain" },
   });
-  const entrypoint = await realpath(path.join(prefix, "node_modules", "superbee", "dist", "superbee.mjs"));
-  assert.equal(await realpath(identity.runtime.executable_path), entrypoint);
+  assert.equal(path.normalize(identity.runtime.executable_path).toLowerCase(), entrypoint.toLowerCase());
   await assertArtifact(entrypoint, identity.artifact.sha256);
   console.log(`WINDOWS_PROOF_INSTALLED superbee@${identity.package.version} ${expectedSource} sha256:${expectedDigest}`);
   const unsupported = await installed(["ui"], { expected: 1 });
@@ -128,7 +133,7 @@ async function prove({ tarball, expectedDigest, expectedSource, scratch }) {
 
   const probe = path.join(home.LOCALAPPDATA, "file identity probe");
   await writeFile(probe, "native path and handle identity");
-  await assertFileIdentity(probe, "bootstrap probe");
+  await readFixtureFile(probe, "bootstrap probe");
   await unlink(probe);
 
   const origin = path.join(scratch, "origin.git");
@@ -157,15 +162,14 @@ async function prove({ tarball, expectedDigest, expectedSource, scratch }) {
   const { sync: defaultState } = await cli(["sync", "--dir", cloneB, "--pull-only"], { cwd: cloneB });
   assert.equal(defaultState, "already up to date");
   const marker = path.join(privateRoot, "state.json");
-  assert.equal(await readFile(marker, "utf8"), '{"product":"superbee","schema_version":1}\n');
-  await assertFileIdentity(marker, "default state marker");
+  assert.equal((await readFixtureFile(marker, "default state marker")).toString("utf8"), '{"product":"superbee","schema_version":1}\n');
 
   await mkdir(boardState);
-  const { stdout: identityCsv } = await run(path.join(system32, "whoami.exe"), ["/user", "/fo", "csv", "/nh"], { cwd: scratch, env });
+  const { stdout: identityCsv } = await run("whoami", ["/user", "/fo", "csv", "/nh"], { cwd: scratch, env });
   const sid = identityCsv.match(/"(S-1-(?:\d+-)+\d+)"/i)?.[1];
   assert.ok(sid, "whoami must report the runner account SID");
   const account = `*${sid}`;
-  const acl = (...args) => run(path.join(system32, "icacls.exe"), [privateRoot, ...args], { cwd: scratch, env });
+  const acl = (...args) => run("icacls", [privateRoot, ...args], { cwd: scratch, env });
   const denied = (error) => ["EACCES", "EPERM"].includes(error.code);
   const boardEnv = { ...env, SUPERBEE_BOARD_STATE_DIR: boardState };
   const sync = (repo, ...args) => cli(["sync", "--dir", repo, ...args], { cwd: repo, env: boardEnv });
@@ -215,7 +219,7 @@ async function prove({ tarball, expectedDigest, expectedSource, scratch }) {
     await git(cloneA, ["reset", "--hard", firstTip]);
 
     const recovered = new Map();
-    const exportRoot = await realpath(boardState);
+    const exportRoot = path.join(await realpath(boardState), "exports");
     for (const repo of [cloneA, cloneB]) {
       await appendFile(document(repo), `\nUnpublished words from ${path.basename(repo)}.\n`);
       const localBytes = await readFile(document(repo));
@@ -223,19 +227,23 @@ async function prove({ tarball, expectedDigest, expectedSource, scratch }) {
       const { stdout } = await installed(["sync", "--dir", repo, "--json"], { cwd: repo, env: boardEnv, expected: 5 });
       assertBoardConflictReceipt(stdout, docId);
 
-      // Every shim invocation starts a fresh CLI process.
+      // A new installed CLI process must reopen the durable copy.
       const inspected = await sync(repo, "--inspect", "--doc", docId);
       assert.equal(inspected.conflict, docId);
-      const saved = await realpath(inspected.local.saved_at);
-      assert.ok(path.relative(exportRoot, saved).startsWith(`exports${path.sep}`), `copy escaped board state: ${saved}`);
-      assert.ok(!recovered.has(saved.toLowerCase()), `clones reused recovery path: ${saved}`);
-      assert.deepEqual(await readFile(saved), localBytes);
-      recovered.set(saved.toLowerCase(), { saved, localBytes });
+      const keys = (await readdir(exportRoot)).filter((key) => !recovered.has(key));
+      assert.equal(keys.length, 1, "each clone must create a distinct recovery directory");
+      const [key] = keys;
+      assert.match(key, /^[a-f0-9]{32}$/);
+      const saved = path.join(exportRoot, key, docPath);
+      assert.equal((await realpath(saved)).toLowerCase(), saved.toLowerCase(), "saved copy must stay in the fixture export directory");
+      assert.equal(path.normalize(inspected.local.saved_at).toLowerCase(), saved.toLowerCase());
+      assert.deepEqual(await readFixtureFile(saved), localBytes);
+      recovered.set(key, { saved, localBytes });
       await assertCheckout(repo, upstreamTip, upstreamBytes);
       await assertRemote(upstreamTip, upstreamBytes);
     }
     for (const { saved, localBytes } of recovered.values()) {
-      assert.deepEqual(await readFile(saved), localBytes);
+      assert.deepEqual(await readFixtureFile(saved), localBytes);
     }
   } finally {
     await acl("/remove:d", account);
@@ -245,19 +253,16 @@ async function prove({ tarball, expectedDigest, expectedSource, scratch }) {
 
 if (isMainModule(import.meta.url)) {
   assert.equal(process.platform, "win32", "this proof requires native Windows");
-  assert.ok(process.env.SystemRoot, "native Windows must provide SystemRoot");
-  const [, , tarball] = process.argv;
   const expectedDigest = process.env.SUPERBEE_TARBALL_SHA256;
   const expectedSource = process.env.GITHUB_SHA;
-  assert.ok(tarball && process.argv.length === 3, "usage: verify-npm-package-windows.mjs <retained-tarball>");
+  assert.equal(process.argv.length, 2, "usage: verify-npm-package-windows.mjs");
   assert.match(expectedDigest ?? "", /^[a-f0-9]{64}$/);
   assert.match(expectedSource ?? "", /^[a-f0-9]{40}$/);
   const scratch = await mkdtemp(path.join(process.env.RUNNER_TEMP ?? tmpdir(), "superbee-native-"));
   const started = Date.now();
   try {
-    const version = await prove({ tarball: path.resolve(tarball), expectedDigest, expectedSource, scratch });
+    const version = await prove({ expectedDigest, expectedSource, scratch });
     const outcome = `Native Windows board push, pull and conflict recovery with superbee@${version} succeeded in ${Date.now() - started} ms. Source ${expectedSource}, tarball sha256:${expectedDigest}.\n`;
-    if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, outcome);
     console.log(outcome.trim());
   } finally {
     await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });

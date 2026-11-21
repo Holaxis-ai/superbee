@@ -333,7 +333,7 @@ jobs:
           SUPERBEE_TARBALL_SHA256: ${{ needs.smoke-node-22.outputs.windows_tarball_sha256 }}
         run: |
           if ((node --version) -ne "v22.17.0") { throw "Node 22.17.0 is required" }
-          node scripts/verify-npm-package-windows.mjs out/windows-proof/superbee.tgz
+          node scripts/verify-npm-package-windows.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   required:

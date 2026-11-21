@@ -281,7 +281,7 @@ function assertNativeWindowsJob(floor, windows, candidate) {
     env: { SUPERBEE_TARBALL_SHA256: "${{ needs.smoke-node-22.outputs.windows_tarball_sha256 }}" },
     run: [
       `if ((node --version) -ne "v${nativeNode}") { throw "Node ${nativeNode} is required" }`,
-      "node scripts/verify-npm-package-windows.mjs out/windows-proof/superbee.tgz",
+      "node scripts/verify-npm-package-windows.mjs",
       "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
       "",
     ].join("\n"),
