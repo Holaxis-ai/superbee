@@ -196,8 +196,9 @@ function walk(root: string, dir: string, out: string[]): void {
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
   }
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
