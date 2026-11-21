@@ -289,11 +289,11 @@
       "cli_tarball": "out/node-floor/superbee-cli.tgz"
     },
     "windows-installed": {
-      "display_name": "installed-package board sync (windows, node 22.14.0)",
+      "display_name": "installed-package board sync (windows, node 22.17.0)",
       "workflow_only": true,
       "components": [],
       "nodes": [
-        "22.14.0"
+        "22.17.0"
       ],
       "runs_on": "windows-latest"
     }

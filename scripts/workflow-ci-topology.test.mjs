@@ -267,7 +267,8 @@ function assertNativeWindowsJob(floor, windows, candidate) {
   assert.equal(windows.steps.length, 4, "Windows must not rebuild or repack the tarball");
   const [checkout, setupNode, download, proof] = windows.steps;
   assert.deepEqual(checkout.with, { "fetch-depth": 1, ref: candidate.merge_queue.checkout_ref, "persist-credentials": false }, "Windows checkout must use the event candidate SHA and leave credentials unpersisted");
-  assert.deepEqual(setupNode.with, { "node-version": candidate.node_policy.compatibility_floor });
+  const nativeNode = candidate.lanes["windows-installed"].nodes[0];
+  assert.deepEqual(setupNode.with, { "node-version": nativeNode });
   assert.equal(actionIdentity(download.uses), "actions/download-artifact");
   assert.deepEqual(download.with, {
     "artifact-ids": "${{ needs.smoke-node-22.outputs.windows_tarball_artifact }}",
@@ -279,7 +280,7 @@ function assertNativeWindowsJob(floor, windows, candidate) {
     shell: "pwsh",
     env: { SUPERBEE_TARBALL_SHA256: "${{ needs.smoke-node-22.outputs.windows_tarball_sha256 }}" },
     run: [
-      'if ((node --version) -ne "v22.14.0") { throw "Node 22.14.0 is required" }',
+      `if ((node --version) -ne "v${nativeNode}") { throw "Node ${nativeNode} is required" }`,
       "node scripts/verify-npm-package-windows.mjs out/windows-proof/superbee.tgz",
       "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
       "",
@@ -601,6 +602,7 @@ test("native Windows cannot substitute a rebuilt artifact or mask a skipped or f
     ["artifact-ids: ${{ needs.smoke-node-22.outputs.windows_tarball_artifact }}", "name: substitute"],
     ["needs: [source-decision, smoke-node-22]", "needs: source-decision"],
     [nativeWindowsCondition, normalLaneCondition],
+    ["node-version: 22.17.0", "node-version: 22.14.0"],
     ["if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", "if ($LASTEXITCODE -ne 0) { exit 0 }"],
   ]) {
     assert.ok(workflow.includes(from));

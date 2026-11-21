@@ -308,7 +308,7 @@ jobs:
           retention-days: 7
 
   windows-installed:
-    name: installed-package board sync (windows, node 22.14.0)
+    name: installed-package board sync (windows, node 22.17.0)
     needs: [source-decision, smoke-node-22]
     if: ${{ always() && needs.smoke-node-22.result == 'success' && !(needs.source-decision.result == 'success' && needs.source-decision.outputs.reuse == 'true') }}
     runs-on: windows-latest
@@ -321,7 +321,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22.14.0
+          node-version: 22.17.0
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.smoke-node-22.outputs.windows_tarball_artifact }}
@@ -332,7 +332,7 @@ jobs:
         env:
           SUPERBEE_TARBALL_SHA256: ${{ needs.smoke-node-22.outputs.windows_tarball_sha256 }}
         run: |
-          if ((node --version) -ne "v22.14.0") { throw "Node 22.14.0 is required" }
+          if ((node --version) -ne "v22.17.0") { throw "Node 22.17.0 is required" }
           node scripts/verify-npm-package-windows.mjs out/windows-proof/superbee.tgz
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFile, cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, unlink, writeFile } from "node:fs/promises";
+import { appendFile, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -39,6 +39,22 @@ async function run(file, args, { cwd, env, expected = 0, windowsVerbatimArgument
 function windowsProfile(root) {
   const local = path.join(root, "AppData", "Local");
   return { HOME: root, USERPROFILE: root, LOCALAPPDATA: local, APPDATA: path.join(root, "AppData", "Roaming") };
+}
+
+async function assertFileIdentity(file, label) {
+  const named = await lstat(file, { bigint: true });
+  const handle = await open(file, "r");
+  try {
+    const opened = await handle.stat({ bigint: true });
+    console.log(
+      `WINDOWS_PROOF_FILE_ID ${label} Node ${process.version} libuv ${process.versions.uv}: ` +
+      `path dev=${named.dev} ino=${named.ino}, handle dev=${opened.dev} ino=${opened.ino}`,
+    );
+    assert.ok(named.isFile() && opened.isFile());
+    assert.deepEqual([opened.dev, opened.ino], [named.dev, named.ino], `${label}: filesystem identity changed on open`);
+  } finally {
+    await handle.close();
+  }
 }
 
 export function assertBoardConflictReceipt(stdout, id) {
@@ -110,6 +126,11 @@ async function prove({ tarball, expectedDigest, expectedSource, scratch }) {
   assert.match(unsupported.stdout, /code: RUNTIME[\s\S]*Use WSL2 for the full CLI/);
   assert.deepEqual(await readdir(home.LOCALAPPDATA), [], "unsupported UI must not start a worker or create private state");
 
+  const probe = path.join(home.LOCALAPPDATA, "file identity probe");
+  await writeFile(probe, "native path and handle identity");
+  await assertFileIdentity(probe, "bootstrap probe");
+  await unlink(probe);
+
   const origin = path.join(scratch, "origin.git");
   const seed = path.join(scratch, "seed");
   const cloneA = path.join(scratch, "standalone A");
@@ -135,8 +156,11 @@ async function prove({ tarball, expectedDigest, expectedSource, scratch }) {
 
   const { sync: defaultState } = await cli(["sync", "--dir", cloneB, "--pull-only"], { cwd: cloneB });
   assert.equal(defaultState, "already up to date");
+  const marker = path.join(privateRoot, "state.json");
+  assert.equal(await readFile(marker, "utf8"), '{"product":"superbee","schema_version":1}\n');
+  await assertFileIdentity(marker, "default state marker");
 
-  await Promise.all([mkdir(privateRoot, { recursive: true }), mkdir(boardState)]);
+  await mkdir(boardState);
   const { stdout: identityCsv } = await run(path.join(system32, "whoami.exe"), ["/user", "/fo", "csv", "/nh"], { cwd: scratch, env });
   const sid = identityCsv.match(/"(S-1-(?:\d+-)+\d+)"/i)?.[1];
   assert.ok(sid, "whoami must report the runner account SID");

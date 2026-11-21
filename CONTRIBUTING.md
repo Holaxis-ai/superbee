@@ -156,7 +156,7 @@ it uploads findings to GitHub code scanning and has a schedule independent of th
 | browser | `npm run ci:browser` | `browser` | 24.22.1 |
 | scripts | `npm run ci:scripts` | `scripts` | 24.22.1 |
 | smoke-node-22 | workflow only | `smoke-node-22` | 22.14.0 |
-| windows-installed | workflow only | `windows-installed` | 22.14.0 |
+| windows-installed | workflow only | `windows-installed` | 22.17.0 |
 <!-- contributing-ci-lanes:end -->
 
 The `runtime` job runs four CLI shards per Node version. Each shard builds, then assigns the
@@ -281,7 +281,8 @@ branch needs a case-aliasing filesystem execute and fail closed on a mismatched 
 scope is a constraint, not a list: `scripts/aliasing-host-coverage.test.mjs` fails when a
 host-sensitive workspace test is not executed by the lane's script chain. The `windows-installed`
 lane installs the candidate `superbee` tarball and checks Git board sync on a native Windows
-runner at the same Node floor as the Linux package smoke.
+runner on Node 22.17.0, the first Node 22 release with the libuv fix for Windows file identity.
+The Linux installed-package smoke continues to use the package engines floor.
 
 ### Running checks
 

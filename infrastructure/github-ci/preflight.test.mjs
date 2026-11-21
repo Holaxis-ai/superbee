@@ -165,7 +165,7 @@ test("readiness inventory retains all maintained shards, lanes and security anal
       "common runtime contracts (node 22)", "common runtime contracts (node 26)",
       "host-class proofs on an aliasing host (macos, node 24.22.1)",
       "installed-package smoke on the engines floor (node 22.14.0)",
-      "installed-package board sync (windows, node 22.14.0)",
+      "installed-package board sync (windows, node 22.17.0)",
       "distribution package and installed behavior", "browser and UI", "repository scripts and CI topology",
       "CI required lanes", "gate (node 22)", "gate (node 26)",
     ],
