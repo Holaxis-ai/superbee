@@ -35,9 +35,9 @@ import { attachBodyPreview, BODY_PREVIEW_RESERVED_KEYS, DOC_READ_PREVIEW_BYTES }
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 import { assertSafeNonDocumentOutTarget, inBundlePollutionWarning } from "../egress.js";
 import { bodyPage, PAGE_DEFAULT_BYTES, PAGE_MAX_BYTES, PAGE_MIN_BYTES } from "../../body-pages.js";
-import { commandLiteral, commandToken, type CommandText } from "../../command-text.js";
+import { commandFragment, commandLiteral, commandToken, type CommandText } from "../../command-text.js";
 
-const BOARD_READ_USAGE = "doc read <id> --dir <standalone-board> --json [--offset <n>] [--max-bytes <n>] [--expected-version <v>]";
+const BOARD_READ_USAGE = commandLiteral("doc read <id> --dir <standalone-board> --json [--offset <n>] [--max-bytes <n>] [--expected-version <v>]");
 const BOARD_READ_HELP = `Read from an existing standalone Git board checkout after an explicit sync. This read uses your local files.
 
 Usage: superbee ${BOARD_READ_USAGE}
@@ -128,7 +128,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>, boardOnly
     });
   }
 
-  const dirOption = boardDir ? ` --dir ${commandToken(boardDir)}` : "";
+  const dirOption = boardDir === undefined ? commandFragment`` : commandFragment` --dir ${commandToken(boardDir)}`;
 
   // Each channel reserves stdout for a single payload, so combining any two is ambiguous (which one
   // wins?), not a silent pick-one. PRESENCE selects a channel whatever its value: `--out "$VAR"`

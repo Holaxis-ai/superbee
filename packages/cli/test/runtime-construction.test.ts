@@ -175,6 +175,11 @@ test("scoped doc read stays at the explicit standalone checkout and never reques
       process.chdir(topo.dir);
       try {
         await read(relativeBoard);
+        await assert.rejects(read(relativeBoard, "--offset", "999999"), (error) => {
+          assert.equal(error.code, "USAGE");
+          assert.ok(error.help.endsWith(" doc read tasks/seed-one --offset 0 --dir ' standalone reader' --json"), error.help);
+          return true;
+        });
       } finally {
         process.chdir(cwd);
       }
