@@ -1212,6 +1212,14 @@ test("sync: two-clone founder e2e with optional board state and a read-only home
     assert.equal(await readFile(saved, "utf8"), localBytes);
     copies.set(saved, localBytes);
     if (repo === a) {
+      await chmod(exports, 0o755);
+      try {
+        const refused = run(repo, state, "--inspect", docId);
+        assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+        assert.match(refused.stdout + refused.stderr, /board_conflict_storage_unavailable/);
+      } finally {
+        await chmod(exports, 0o700);
+      }
       const containing = path.dirname(saved);
       await chmod(containing, 0o100);
       try {

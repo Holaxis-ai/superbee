@@ -74,9 +74,10 @@ export function withStrictBoardState<T>(body: () => T): T {
   return optionalWrites.run(undefined, body);
 }
 
-function privateBoardDirectory(dir: string, create: boolean): void {
+function privateBoardDirectory(dir: string, create: boolean, requirePrivate = true): void {
   if (create) mkdirSync(dir, { recursive: true, mode: 0o700 });
-  if (!privateStateEntryIsSafe(lstatSync(dir), "directory")) {
+  const status = lstatSync(dir);
+  if (requirePrivate ? !privateStateEntryIsSafe(status, "directory") : !status.isDirectory()) {
     throw new CliError("CONFLICT", `Expected a private Git board directory at ${dir}`, {
       details: { reason: "unsafe_board_state_directory", path: dir },
       help: `Set ${BOARD_STATE_DIR_ENV} to a private directory with owner-only access outside the Git checkout.`,
@@ -144,15 +145,28 @@ export function syncExportsRoot(home?: string): string {
   return join(syncStateDir(home), SYNC_EXPORTS_DIR_NAME);
 }
 
+function verifyBoardExportDirectories(home?: string, create = false, checkout?: string): boolean {
+  const configured = home === undefined && currentBoardStateLocation() !== undefined;
+  if (configured) {
+    assertBoardStatePlacement(checkout);
+  } else {
+    // The private account root protects legacy export trees whose child modes came from the umask.
+    privateBoardDirectory(canonicalUserStateDir(home), false);
+    if (create && inspectUserStateRootSync() !== "ready") {
+      throw new Error("the Superbee account state root is not recognized");
+    }
+  }
+  privateBoardDirectory(syncStateDir(home), create && configured, configured);
+  privateBoardDirectory(syncExportsRoot(home), create, configured);
+  return configured;
+}
+
 /** Guard the export-only exception to the private-state content ingress boundary. */
 export function privateBoardExportsRoot(home?: string): string | undefined {
   let root: string | undefined;
   try {
     root = syncExportsRoot(home);
-    const location = home === undefined ? currentBoardStateLocation() : undefined;
-    if (location) assertBoardStatePlacement();
-    privateBoardDirectory(syncStateDir(home), false);
-    privateBoardDirectory(root, false);
+    verifyBoardExportDirectories(home);
     return root;
   } catch (error) {
     // A missing export should follow the ordinary missing-file path, as on an empty install.
@@ -160,21 +174,11 @@ export function privateBoardExportsRoot(home?: string): string | undefined {
   }
 }
 
-function verifyBoardConflictStorage(checkout: string, create: boolean): void {
-  assertBoardStatePlacement(checkout);
-  const location = currentBoardStateLocation();
-  privateBoardDirectory(syncStateDir(), create && location !== undefined);
-  if (create && location === undefined && inspectUserStateRootSync() !== "ready") {
-    throw new Error("the Superbee account state root is not recognized");
-  }
-  privateBoardDirectory(syncExportsRoot(), create);
-}
-
 /** Recovery bytes must be saved successfully before Git can discard local work. */
 export function saveBoardConflictCopy<T>(dir: string, checkout: string, save: () => T): T {
   try {
-    verifyBoardConflictStorage(checkout, true);
-    privateBoardDirectory(dir, true);
+    const configured = verifyBoardExportDirectories(undefined, true, checkout);
+    privateBoardDirectory(dir, true, configured);
     accessSync(dir, constants.W_OK);
     return save();
   } catch (error) {
@@ -184,7 +188,7 @@ export function saveBoardConflictCopy<T>(dir: string, checkout: string, save: ()
 
 export function readBoardConflictCopies(dir: string, checkout: string, required = false): ReturnType<typeof listSavedCopies> {
   try {
-    verifyBoardConflictStorage(checkout, false);
+    verifyBoardExportDirectories(undefined, false, checkout);
     return listSavedCopies(dir);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];

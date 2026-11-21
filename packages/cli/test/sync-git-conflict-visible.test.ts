@@ -3,7 +3,7 @@
 // a person runs; sync-git-conflict-verbs.test.ts pins the verbs themselves.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -426,8 +426,10 @@ test("an old export settles with the one printed discard command, and an unsent 
     try {
       assert.equal((await runSync(f.homeB, ["--dir", f.topo.b.root])).err, undefined);
       // A copy from before this release: a file on disk with nothing else recorded about it.
-      const saved = path.join(exportsOf(f.topo, f.homeB), `${ID}.md`);
+      const exportDir = exportsOf(f.topo, f.homeB);
+      const saved = path.join(exportDir, `${ID}.md`);
       await mkdir(path.dirname(saved), { recursive: true });
+      if (process.platform !== "win32") await chmod(path.dirname(exportDir), 0o755);
       await writeFile(saved, "---\ntype: Task\ntitle: Seed one\n---\nOld words.\n");
       if (edited) await modifyBoardDoc(f.topo.b, ID, { body: "# Seed one\n\nUnsent edit.\n" });
 
