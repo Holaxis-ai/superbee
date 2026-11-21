@@ -79,6 +79,8 @@ import {
   fetchRebase,
   push,
   ffPull,
+  ffPullWithHeads,
+  checkoutDocsBetween,
   changesSince,
   diffDocsBetween,
   unpushedCount,
@@ -335,9 +337,20 @@ test("ffPull: fast-forwards when origin/board is ahead", async () => {
     await modifyBoardDoc(topo.a, "tasks/seed-two", { body: "# Seed two\n\nfrom A\n" });
     commitBoard(topo.a, "board: A edits seed-two");
     pushBoard(topo.a);
-    assert.deepEqual(ffPull(topo.b.board), { updated: true });
+    const before = boardHead(topo.b);
+    const { updated, heads } = ffPullWithHeads(topo.b.board);
+    assert.equal(updated, true);
+    assert.deepEqual(heads, { before, after: boardHead(topo.a) });
+    assert.deepEqual(checkoutDocsBetween(topo.b.board, heads)?.map((row) => row.docId), ["tasks/seed-two"]);
     assert.match(await readBoardFile(topo.b, "tasks/seed-two.md"), /from A/);
     assert.deepEqual(ffPull(topo.b.board), { updated: false }, "second pull is a clean no-op");
+
+    await modifyBoardDoc(topo.b, "tasks/seed-one", { body: "# Local only\n" });
+    commitBoard(topo.b, "author a local task edit");
+    const local = boardHead(topo.b);
+    const unchanged = ffPullWithHeads(topo.b.board);
+    assert.deepEqual(unchanged, { updated: false, heads: { before: local, after: local } });
+    assert.deepEqual(checkoutDocsBetween(topo.b.board, unchanged.heads), [], "local commits are never incoming");
   } finally {
     await topo.cleanup();
   }
@@ -1697,6 +1710,8 @@ test("diffDocsBetween: a failed diff throws classified by default; tolerateDiffF
     const err = capture(() => diffDocsBetween(topo.a.board, bogus, head));
     assert.ok(isBoardGitError(err), "default posture: classified throw, mirroring changesSince's mustGit");
     assert.deepEqual(diffDocsBetween(topo.a.board, bogus, head, { tolerateDiffFailure: true }), []);
+    assert.equal(checkoutDocsBetween(topo.a.board, { before: bogus, after: head }), null);
+    assert.equal(checkoutDocsBetween(topo.a.board), null);
   } finally {
     await topo.cleanup();
   }

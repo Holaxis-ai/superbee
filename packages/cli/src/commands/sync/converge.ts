@@ -496,14 +496,14 @@ export function toIncomingRows(changes: DocChange[]): Record<string, unknown>[] 
 
 /** The `{committed, pushed, pulled, actor?, incoming}` block both receipt shapes share. */
 function assignCounts(
-  rec: Record<string, unknown>, commitDocs: CommitResult["docs"], pushed: number, originDelta: DocChange[], limit: number,
+  rec: Record<string, unknown>, commitDocs: CommitResult["docs"], pushed: number, receiptDocs: DocChange[] | null, limit: number,
 ): void {
   rec.committed = commitDocs.length;
   rec.pushed = pushed;
-  rec.pulled = originDelta.length;
+  if (receiptDocs !== null) rec.pulled = receiptDocs.length;
   const actor = singleActor(commitDocs);
   if (actor) rec.actor = actor;
-  rec.incoming = cap(toIncomingRows(originDelta), limit);
+  if (receiptDocs !== null) rec.incoming = cap(toIncomingRows(receiptDocs), limit);
 }
 
 /**
@@ -526,29 +526,30 @@ export function buildPushFailurePartial(
 
 export interface SyncReceiptInput {
   outcome: ProvisionOutcome; commitDocs: CommitResult["docs"]; pushedCount: number;
-  originDelta: DocChange[]; limit: number;
+  receiptDocs: DocChange[] | null; limit: number;
   establishAlreadyNote?: string; reanchorNote?: string; hookHint?: string;
 }
 
 /**
- * The sync success receipt. Nothing committed/pulled-from-origin/pushed and no re-anchor is the
+ * The sync success receipt. Nothing committed/pulled/pushed and no re-anchor is the
  * definitive empty state ("already up to date"); a FRESH provision/repair must still not read as
  * a silent no-op — the announcement rides alongside that line, never replacing it. `conflicts` is
  * OMITTED rather than rendered empty: a conflicted run always THROWS (the CONFLICT(5) envelope
  * carries the rows), so it would always be empty — against omit-when-empty and AXI §7.
  */
 export function buildSyncReceipt(input: SyncReceiptInput): Record<string, unknown> {
-  const { outcome, commitDocs, pushedCount, originDelta, limit, establishAlreadyNote, reanchorNote, hookHint } = input;
+  const { outcome, commitDocs, pushedCount, receiptDocs, limit, establishAlreadyNote, reanchorNote, hookHint } = input;
   const rec: Record<string, unknown> = {};
   if (establishAlreadyNote) rec.establish = establishAlreadyNote;
   const announcement = provisionAnnouncement(outcome);
   if (announcement) Object.assign(rec, announcement);
-  if (commitDocs.length === 0 && originDelta.length === 0 && pushedCount === 0 && !reanchorNote) {
+  if (commitDocs.length === 0 && receiptDocs?.length === 0 && pushedCount === 0 && !reanchorNote) {
     rec.sync = "already up to date";
     if (hookHint) rec.hint = hookHint;
     return rec;
   }
-  assignCounts(rec, commitDocs, pushedCount, originDelta, limit);
+  assignCounts(rec, commitDocs, pushedCount, receiptDocs, limit);
+  if (receiptDocs === null) rec.pull = "completed, but the incoming document count could not be determined";
   if (reanchorNote) rec.note = reanchorNote;
   if (hookHint) rec.hint = hookHint;
   return rec;

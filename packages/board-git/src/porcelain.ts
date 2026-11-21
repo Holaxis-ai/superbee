@@ -2697,6 +2697,11 @@ export interface FfPullResult {
   swallowed?: string;
 }
 
+export interface FfPullHeads {
+  before: string;
+  after: string;
+}
+
 /** Map a classified BoardGitError code to the ff-pull swallow-reason vocabulary. */
 function swallowReason(err: BoardGitError): string {
   switch (err.code) {
@@ -2725,6 +2730,14 @@ function swallowReason(err: BoardGitError): string {
  * primitive: it must never throw and never block a render on repo state.
  */
 export function ffPull(boardPath: string, budget: NetworkBudgetOptions = {}): FfPullResult {
+  const { heads: _heads, ...result } = ffPullWithHeads(boardPath, budget);
+  return result;
+}
+
+/** The explicit pull receipt needs the checkout commits observed by the merge operation. */
+export function ffPullWithHeads(
+  boardPath: string, budget: NetworkBudgetOptions = {},
+): FfPullResult & { heads?: FfPullHeads } {
   try {
     if (!repoTopLevel(boardPath)) return { updated: false, swallowed: "not-a-repo" };
     // Detached HEAD: an ff merge would move the detached HEAD, not the board branch — skip.
@@ -2756,7 +2769,7 @@ export function ffPull(boardPath: string, budget: NetworkBudgetOptions = {}): Ff
     }
 
     const after = mustGit(boardPath, ["rev-parse", "HEAD"]).trim();
-    const result: FfPullResult = { updated: after !== before };
+    const result: FfPullResult & { heads: FfPullHeads } = { updated: after !== before, heads: { before, after } };
     if (fetchReason !== undefined) result.swallowed = fetchReason;
     return result;
   } catch (err) {

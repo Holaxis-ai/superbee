@@ -4,6 +4,7 @@
 // named projections. Do not reintroduce a per-caller copy of the name-status parse or the
 // enrichment — porcelain.ts's `stageAndCommit`/`snapshotBundleCommit` share the same vocabulary
 // (`nameStatusRows`/`verbOf`/`enrichDocChange`), which is why it lives there and is imported here.
+import { isBoardGitError } from "./errors.js";
 import {
   enrichDocChange,
   isConceptDocPath,
@@ -12,6 +13,7 @@ import {
   runGit,
   verbOf,
   type DocChange,
+  type FfPullHeads,
 } from "./porcelain.js";
 
 // ── the ONE ref-to-ref doc diff (changes-since + the receipt's origin delta) ──
@@ -116,4 +118,20 @@ export function changesSince(boardPath: string, token: string): ChangesSinceOutc
 export function originDocsBetween(boardPath: string, fromRef: string | null, toRef: string | null): DocChange[] {
   if (!fromRef || !toRef || fromRef === toRef) return [];
   return diffDocsBetween(boardPath, fromRef, toRef, { tolerateDiffFailure: true });
+}
+
+/**
+ * Documents delivered by a successful ff-only pull. Equal observed HEADs prove an empty
+ * receipt, including when the checkout already contains local commits. A missing comparison
+ * is unknown, regardless of where the tracking ref points.
+ */
+export function checkoutDocsBetween(boardPath: string, heads?: FfPullHeads): DocChange[] | null {
+  if (!heads) return null;
+  if (heads.before === heads.after) return [];
+  try {
+    return diffDocsBetween(boardPath, heads.before, heads.after);
+  } catch (error) {
+    if (isBoardGitError(error)) return null;
+    throw error;
+  }
 }
