@@ -47,7 +47,7 @@ Skill, an instruction file your agent loads, that teaches it how to use the tool
 
 ## Install
 
-Requires a supported Node.js 22, 24, or 26 release (22.14.0 minimum) on macOS or Linux. Native Windows is not supported by this package.
+Requires a supported Node.js 22, 24, or 26 release (22.14.0 minimum). Use macOS, Linux, or WSL2 for the full CLI.
 
 ```sh
 npm install -g superbee
@@ -59,24 +59,22 @@ Stable releases publish on npm's `latest` tag and prereleases on `next`. To try 
 npm install -g superbee@next
 ```
 
-Windows adapters and the `superbee-windows` executable live in a separate repository and are
-not included in `superbee`. Most Windows users should run Superbee in WSL2, where npm sees a
-Linux platform and the normal installation applies. An experimental, unsupported native Windows
-build is available as open source, with build-from-source instructions: https://github.com/Holaxis-ai/superbee-windows-cli
+### Native Windows Git boards
 
-### Upgrading an existing Windows installation
+The `superbee` package from this source also installs on native Windows. To try it before a
+release with this feature, install the packed `superbee` tarball from the build with
+`npm install -g`, passing the path to the tarball. Install Git for Windows and make `git.exe`
+available on PATH. Run `superbee version` to identify the installed build, and
+`superbee sync --dir "C:\path to\board"` to synchronize an existing standalone Git board.
+Use `--pull-only` to pull without pushing or `--inspect --doc <id>` to read a saved conflict.
 
-The first release containing the Windows extraction removes native Windows support from this
-package. Its npm `os` metadata permits only `darwin` and `linux`, so a Windows upgrade to an affected
-version is rejected with `EBADPLATFORM`. This applies to existing prerelease users too. Forcing the
-installation does not restore support: the executable refuses commands on unsupported hosts
-before running them (the bare `--version` flag can still identify the installed build).
-
-There is no supported Windows replacement on npm. The alternatives are WSL2 or the experimental
-build from source at https://github.com/Holaxis-ai/superbee-windows-cli; neither carries a
-first-party support promise for native Windows. An older installed version is not converted or
-removed by this source change, and existing bundle files are not migrated by it. Review the affected release's notes before changing an existing
-Windows installation. macOS/Linux users can continue using the normal installation and setup flow.
+Native Windows mode is experimental. Use WSL2 for setup, hosted checkouts, board establishment,
+or boards with a configured pre-push sync gate. If such a gate would run, native sync keeps the
+commit locally and refuses the push. The Windows install uses `%LOCALAPPDATA%\Superbee` by
+default. A launcher can set `SUPERBEE_BOARD_STATE_DIR` to an absolute, writable directory
+outside the board to keep Git board state across restarts when that default is unavailable.
+This setting applies to Git board state only. Existing credentials and a separately installed
+`superbee-windows` executable stay in their existing locations.
 
 Run `superbee version` to see which build you have. `superbee version --check` is not available on published builds yet: it exits 1 with `policy_disabled` and makes no network request. Check the npm page or `npm view superbee version` for the current release.
 

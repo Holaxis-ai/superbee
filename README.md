@@ -15,7 +15,8 @@ under test. The honest breakdown is below — read it before depending on anythi
 
 ## Install
 
-**Requirements: macOS or Linux, and a supported Node.js 22, 24, or 26 release (22.14.0 minimum).**
+**Requirements for the full CLI: macOS or Linux (including WSL2), and a supported Node.js 22, 24, or 26 release (22.14.0 minimum).**
+The package also has an [experimental native Windows Git board mode](packages/superbee/README.md#native-windows-git-boards).
 
 The current test release is on npm's `next` prerelease channel; `latest` provides the stable
 release. Install the prerelease with:
@@ -351,13 +352,9 @@ bundles remain supported without rewriting their declared edition.
 ## What's early or experimental
 
 - **Everything is pre-1.0.** The npm package is a prerelease and breaking changes are likely.
-- **Native Windows support is separate.** The `superbee` executable supports macOS and Linux.
-  Most Windows users should run Superbee in WSL2. Windows adapters and the `superbee-windows`
-  executable are developed in a separate repository, https://github.com/Holaxis-ai/superbee-windows-cli,
-  which is open source with build-from-source instructions; it is experimental, unsupported, and
-  not published to npm.
-  See the [CLI upgrade guidance](packages/superbee/README.md#upgrading-an-existing-windows-installation)
-  and [core filesystem migration](packages/core/README.md#filesystem-platform-migration) before upgrading.
+- **Native Windows Git board sync is experimental.** Install the same `superbee` package and use
+  Git for Windows to pull, push, and inspect saved conflicts for an existing board. Use WSL2 for
+  the full CLI. [Native Windows instructions](packages/superbee/README.md#native-windows-git-boards)
 - **Recipe composition** supports finite explicit local preparation and existing indexed cookbooks.
   Automatic dependency solving, migrations, namespace authentication and marketplace discovery
   remain future work. Preparation does not change ordinary installation or hosted admission limits.

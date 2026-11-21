@@ -31,6 +31,7 @@ export interface CliDistribution {
   readonly assetRoot: string;
   readonly ownedSkillPackages: readonly string[];
   readonly updatesEnabled: boolean;
+  readonly syncExistingGitBoardsOnly?: boolean;
 }
 export interface HostCommandEnvironment {
   readonly cwd: string;
@@ -61,6 +62,7 @@ export interface LexicalHookToken {
 export interface HostCommands {
   readonly id: string;
   readonly paths: typeof path.posix;
+  readonly supportsSyncGateProcessGroups?: boolean;
   resolveCommand(
     name: string,
     input: HostCommandEnvironment,
