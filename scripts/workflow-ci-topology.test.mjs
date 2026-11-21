@@ -239,6 +239,54 @@ function assertSmokeJob(job, lane) {
   assert.doesNotMatch(job.slice(floorAt), /npm run build|npm pack|pack:npm-package/, "the floor runtime must consume retained artifacts without rebuilding or repacking");
 }
 
+const fullProofCondition = "!(needs.source-decision.result == 'success' && needs.source-decision.outputs.reuse == 'true')";
+const normalLaneCondition = `\${{ always() && ${fullProofCondition} }}`;
+const nativeWindowsCondition = `\${{ always() && needs.smoke-node-22.result == 'success' && ${fullProofCondition} }}`;
+
+function assertNativeWindowsJob(floor, windows, candidate) {
+  assert.deepEqual(floor.outputs, {
+    windows_tarball_sha256: "${{ steps.pack.outputs.superbee_sha256 }}",
+    windows_tarball_artifact: "${{ steps.retain.outputs.artifact-id }}",
+  }, "Windows must receive the floor job's artifact ID and tarball digest");
+  const pack = floor.steps.find((step) => step.id === "pack");
+  assert.match(pack?.run, /read -r SUPERBEE_SHA256 _ < out\/node-floor\/before\.sha256\n/);
+  assert.ok(pack?.run.includes(`printf 'superbee_sha256=%s\\n' "$SUPERBEE_SHA256" >> "$GITHUB_OUTPUT"`));
+  const upload = floor.steps.at(-1);
+  assert.equal(actionIdentity(upload?.uses), "actions/upload-artifact");
+  assert.equal(upload.id, "retain");
+  assert.deepEqual(upload.with, {
+    name: "superbee-installed-windows-input",
+    path: candidate.lanes["smoke-node-22"].superbee_tarball,
+    "if-no-files-found": "error",
+    overwrite: true,
+    "retention-days": 7,
+  }, "Windows must consume the same tarball after the Linux engines-floor proof");
+
+  assert.equal(windows["runs-on"], candidate.lanes["windows-installed"].runs_on);
+  assert.equal(windows["timeout-minutes"], 10);
+  assert.equal(windows.steps.length, 4, "Windows must not rebuild or repack the tarball");
+  const [checkout, setupNode, download, proof] = windows.steps;
+  assert.deepEqual(checkout.with, { "fetch-depth": 1, ref: candidate.merge_queue.checkout_ref, "persist-credentials": false }, "Windows checkout must use the event candidate SHA and leave credentials unpersisted");
+  assert.deepEqual(setupNode.with, { "node-version": candidate.node_policy.compatibility_floor });
+  assert.equal(actionIdentity(download.uses), "actions/download-artifact");
+  assert.deepEqual(download.with, {
+    "artifact-ids": "${{ needs.smoke-node-22.outputs.windows_tarball_artifact }}",
+    path: "out/windows-proof",
+    "merge-multiple": true,
+  });
+  assert.deepEqual(proof, {
+    name: "Install and prove the retained first-party tarball",
+    shell: "pwsh",
+    env: { SUPERBEE_TARBALL_SHA256: "${{ needs.smoke-node-22.outputs.windows_tarball_sha256 }}" },
+    run: [
+      'if ((node --version) -ne "v22.14.0") { throw "Node 22.14.0 is required" }',
+      "node scripts/verify-npm-package-windows.mjs out/windows-proof/superbee.tgz",
+      "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
+      "",
+    ].join("\n"),
+  }, "Windows must execute the exact retained tarball proof and propagate failure");
+}
+
 // Every lane that declares a host-class expectation must run on the pinned runner, export the
 // expectation to the tests, and self-check the filesystem before any test can observe it.
 function assertHostExpectations(jobs, candidate) {
@@ -443,16 +491,23 @@ function validateCiTopology(
   for (const required of candidate.required_jobs) {
     assert.ok(jobs[required], `missing required job ${required}`);
     assert.equal(displayNameOf(jobs[required]), candidate.lanes[required].display_name, `${required} display name drifted`);
-    const selected = required !== 'smoke-node-22';
-    assert.equal(parsed.jobs[required].if, selected ? "${{ always() && !(needs.source-decision.result == 'success' && needs.source-decision.outputs.reuse == 'true') }}" : undefined, `${required} must preserve full fallback`);
-    assert.equal(parsed.jobs[required].needs, selected ? 'source-decision' : undefined);
+    const job = parsed.jobs[required];
+    if (required === "windows-installed") {
+      for (const step of job.steps) assert.equal(step.if, undefined, "Windows proof steps must remain unconditional");
+      assert.equal(job.if, nativeWindowsCondition, "Windows must run for full proof with a successful producer");
+      assert.deepEqual(job.needs, ["source-decision", "smoke-node-22"]);
+      continue;
+    }
+    const selected = required !== "smoke-node-22";
+    assert.equal(job.if, selected ? normalLaneCondition : undefined, `${required} must preserve full fallback`);
+    assert.equal(job.needs, selected ? "source-decision" : undefined);
     const steps = stepsOf(jobs[required]);
     const preflight = requiredUnconditionalStep(steps, {
       name: 'Check package version sources before installation',
       run: candidate.source_preflight,
       label: `${required} package source preflight`,
     });
-    for (const step of parsed.jobs[required].steps) {
+    for (const step of job.steps) {
       assert.equal(step.if, undefined, `${required} proof steps must remain unconditional`);
     }
     const install = steps.find(step => step.fields.run === 'npm ci');
@@ -520,6 +575,7 @@ function validateCiTopology(
   assert.equal(rootPackage.scripts["verify:action-upstreams"], "node scripts/verify-action-upstreams.mjs");
   validateBrowserJob(jobs.browser, browserPackages);
   assertSmokeJob(jobs["smoke-node-22"], candidate.lanes["smoke-node-22"]);
+  assertNativeWindowsJob(parsed.jobs["smoke-node-22"], parsed.jobs["windows-installed"], candidate);
   assert.doesNotMatch(text, /^\s*paths(?:-ignore)?:/m, "required workflow cannot skip based on paths");
   assert.equal(candidate.merge_queue.supported, true, "workflow capability must support merge groups");
   assert.equal(Object.hasOwn(candidate.merge_queue, "enabled"), false, "live activation is not committed capability");
@@ -538,7 +594,18 @@ test('package source preflight cannot be removed, skipped or moved after install
 
 test("CI runs every maintained lane or verifies identical-source queue proof", () => {
   validateCiTopology(workflow);
-  assert.equal(extractJobs(workflow).windows, undefined, "Windows proof belongs to the independent Windows distribution");
+});
+
+test("native Windows cannot substitute a rebuilt artifact or mask a skipped or failed proof", () => {
+  for (const [from, to] of [
+    ["artifact-ids: ${{ needs.smoke-node-22.outputs.windows_tarball_artifact }}", "name: substitute"],
+    ["needs: [source-decision, smoke-node-22]", "needs: source-decision"],
+    [nativeWindowsCondition, normalLaneCondition],
+    ["if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", "if ($LASTEXITCODE -ne 0) { exit 0 }"],
+  ]) {
+    assert.ok(workflow.includes(from));
+    assert.throws(() => validateCiTopology(workflow.replace(from, to)));
+  }
 });
 
 test("browser CI pins a complete no-download Playwright environment", () => {
@@ -696,7 +763,7 @@ function validateProofCheckouts(text) {
     const checkouts = job.steps.filter(step => step.uses?.startsWith("actions/checkout@"));
     assert.equal(checkouts.length, 1, `${name} must check out the event commit once`);
     assert.equal(checkouts[0].with?.ref, "${{ github.sha }}", "checkout must use the event candidate SHA");
-    assert.deepEqual(checkouts[0].with, { "fetch-depth": 1, ref: "${{ github.sha }}", ...(name === 'source-decision' ? { 'persist-credentials': false } : {}) },
+    assert.deepEqual(checkouts[0].with, { "fetch-depth": 1, ref: "${{ github.sha }}", ...(['source-decision', 'windows-installed'].includes(name) ? { 'persist-credentials': false } : {}) },
       `${name} must test the event commit in the current repository and root directory`);
   }
 }

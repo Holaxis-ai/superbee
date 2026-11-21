@@ -3,9 +3,9 @@ name: CI tests
 # Runtime-sensitive suites run identically on Node 22 and 26 (four CLI shards each), then once more on
 # Node 24.22.1/macOS so that tests whose native branch only executes on a case-aliasing filesystem run.
 # Distribution, browser/UI, local release policy, and exhaustive target proofs are
-# platform-independent lanes on one supported runtime. Windows adapters and their native
-# installed-package proof live in the separate Windows distribution repository. Required lanes
-# run in full except on a first-attempt main push with verified identical-source queue evidence.
+# platform-independent lanes on one supported runtime. Native Windows board sync consumes the
+# same first-party tarball as the engines-floor proof. Required lanes run in full except on a
+# first-attempt main push with verified identical-source queue evidence.
 # The independently required engines-floor smoke always executes.
 #
 # Branch-protection migration is additive. Observe `CI required lanes` on an exact SHA, add its
@@ -255,6 +255,9 @@ jobs:
 
   smoke-node-22:
     name: installed-package smoke on the engines floor (node 22.14.0)
+    outputs:
+      windows_tarball_sha256: ${{ steps.pack.outputs.superbee_sha256 }}
+      windows_tarball_artifact: ${{ steps.retain.outputs.artifact-id }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -271,6 +274,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Pack both public artifacts once on the default runtime
+        id: pack
         run: |
           set -euo pipefail
           npm run build:npm-package -w superbee
@@ -282,6 +286,8 @@ jobs:
           CLI_PACKED="$(node -p 'require("./out/node-floor/cli-pack.json")[0].filename')"
           mv -- "out/node-floor/$CLI_PACKED" out/node-floor/superbee-cli.tgz
           sha256sum out/node-floor/superbee.tgz out/node-floor/superbee-cli.tgz > out/node-floor/before.sha256
+          read -r SUPERBEE_SHA256 _ < out/node-floor/before.sha256
+          printf 'superbee_sha256=%s\n' "$SUPERBEE_SHA256" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22.14.0
@@ -292,10 +298,47 @@ jobs:
           npm run verify:npm-package:tarball -- out/node-floor/superbee.tgz --json
           npm run verify:cli-tarball -- out/node-floor/superbee-cli.tgz
           sha256sum --check out/node-floor/before.sha256
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: retain
+        with:
+          name: superbee-installed-windows-input
+          path: out/node-floor/superbee.tgz
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  windows-installed:
+    name: installed-package board sync (windows, node 22.14.0)
+    needs: [source-decision, smoke-node-22]
+    if: ${{ always() && needs.smoke-node-22.result == 'success' && !(needs.source-decision.result == 'success' && needs.source-decision.outputs.reuse == 'true') }}
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.14.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.smoke-node-22.outputs.windows_tarball_artifact }}
+          path: out/windows-proof
+          merge-multiple: true
+      - name: Install and prove the retained first-party tarball
+        shell: pwsh
+        env:
+          SUPERBEE_TARBALL_SHA256: ${{ needs.smoke-node-22.outputs.windows_tarball_sha256 }}
+        run: |
+          if ((node --version) -ne "v22.14.0") { throw "Node 22.14.0 is required" }
+          node scripts/verify-npm-package-windows.mjs out/windows-proof/superbee.tgz
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   required:
     name: CI required lanes
-    needs: [source-decision, runtime, runtime-common, aliasing-host, smoke-node-22, distribution, browser, scripts]
+    needs: [source-decision, runtime, runtime-common, aliasing-host, smoke-node-22, windows-installed, distribution, browser, scripts]
     if: ${{ always() }}
     permissions:
       contents: read
@@ -319,7 +362,7 @@ jobs:
 
   compatibility-gate-node-22:
     name: gate (node 22)
-    needs: [source-decision, runtime, runtime-common, aliasing-host, smoke-node-22, distribution, browser, scripts]
+    needs: [source-decision, runtime, runtime-common, aliasing-host, smoke-node-22, windows-installed, distribution, browser, scripts]
     if: ${{ always() }}
     permissions:
       contents: read
@@ -343,7 +386,7 @@ jobs:
 
   compatibility-gate-node-26:
     name: gate (node 26)
-    needs: [source-decision, runtime, runtime-common, aliasing-host, smoke-node-22, distribution, browser, scripts]
+    needs: [source-decision, runtime, runtime-common, aliasing-host, smoke-node-22, windows-installed, distribution, browser, scripts]
     if: ${{ always() }}
     permissions:
       contents: read

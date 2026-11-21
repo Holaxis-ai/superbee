@@ -126,7 +126,7 @@ function validateNodePolicyAgreement({
   const ci = read(".github/workflows/ci-tests.yml");
   assert.match(ci, new RegExp(`node-version: \\[${candidate.runtime_nodes.join(", ")}\\]`));
   assert.equal(count(ci, new RegExp(`node-version: ${policy.default_runtime.replaceAll(".", "\\.")}`, "g")), 9);
-  assert.equal(count(ci, new RegExp(`node-version: ${policy.compatibility_floor.replaceAll(".", "\\.")}`, "g")), 1);
+  assert.equal(count(ci, new RegExp(`node-version: ${policy.compatibility_floor.replaceAll(".", "\\.")}`, "g")), 2);
   assert.equal(count(read(".github/workflows/mutation-tests.yml"), new RegExp(`node-version: ${policy.default_runtime.replaceAll(".", "\\.")}`, "g")), 2);
   assert.equal(count(read(".github/workflows/okf-upstream-watch.yml"), new RegExp(`node-version: ${policy.default_runtime.replaceAll(".", "\\.")}`, "g")), 2);
 
@@ -656,10 +656,11 @@ test("runtime-sensitive suites are identical on Node 22 and 26 and platform lane
   assert.equal(cliPkg.scripts.pretest, "node build.mjs local-dev", "ordinary npm test must keep its build prerequisite");
   assert.doesNotMatch(cliPkg.scripts.test, /build\.mjs/, "the CI runtime lane must be able to skip the pretest rebuild");
   for (const [name, lane] of Object.entries(manifest.lanes)) {
-    if (name === "runtime" || name === "runtime-common" || name === "smoke-node-22") continue;
+    if (name === "runtime" || name === "runtime-common" || lane.workflow_only) continue;
     assert.deepEqual(lane.nodes, [manifest.singleton_node], `${name} must not amplify across runtime versions`);
   }
-  assert.deepEqual(cliPkg.os, ["darwin", "linux"], "the maintained executable admits only its supported hosts");
+  assert.deepEqual(manifest.lanes["windows-installed"].nodes, [manifest.node_policy.compatibility_floor]);
+  assert.deepEqual(cliPkg.os, ["darwin", "linux", "win32"], "the maintained executable admits only its supported hosts");
 });
 
 test("the runtime shard variable partitions the CLI suite by file and rejects malformed shards", async () => {

@@ -32,7 +32,7 @@ const receipt = {
 };
 const manifest = {
   name: "superbee",
-  os: ["darwin", "linux"],
+  os: ["darwin", "linux", "win32"],
   files: ["dist", "SKILL.md", "references", "NOTICE"],
   bin: {
     superbee: "dist/superbee.mjs",
@@ -230,11 +230,12 @@ test("root README teaches the literal create-only quickstart; npm README teaches
   );
   assert.match(
     npmReadme,
-    /supported Node\.js 22, 24, or 26 release \(22\.14\.0 minimum\) on macOS or Linux/,
-    "npm README must advertise every supported native platform",
+    /supported Node\.js 22, 24, or 26 release \(22\.14\.0 minimum\)/,
+    "npm README must advertise the full Node runtime policy",
   );
-  assert.match(npmReadme, /Native Windows is not supported by this package/);
-  assert.doesNotMatch(npmReadme, /Native Windows is supported|do not\s+need WSL/i);
+  assert.match(npmReadme, /^### Native Windows Git boards$/m);
+  assert.match(npmReadme, /Native Windows mode is experimental/);
+  assert.match(npmReadme, /Use macOS, Linux, or WSL2 for the full CLI/);
 
 });
 
@@ -314,7 +315,7 @@ test("the expected tarball set is the fixed base plus the references tree", () =
   ]);
 });
 
-test("the package proof projects supported private-state roots and refuses Windows", () => {
+test("the full POSIX proof projects its private-state roots", () => {
   assert.equal(expectedPrivateStateRoot("/tmp/home", "linux"), "/tmp/home/.superbee-state");
   assert.throws(() => expectedPrivateStateRoot("/tmp/home", "win32"), /only macOS and Linux/);
 });
@@ -453,7 +454,7 @@ test("command resolution cannot fall through to a same-named host binary", async
   }
 });
 
-test("the maintained package verifier refuses Windows command resolution", async () => {
+test("the POSIX proof uses a separate command resolver from Windows", async () => {
   await assert.rejects(() => resolveCommandOnPath("superbee", {}, "win32"), /only macOS and Linux/);
 });
 

@@ -402,7 +402,7 @@ test("finalize accepts staged and direct-publish README metadata while retaining
     "Run `superbee setup` and follow its instructions.",
     "",
   ].join("\n");
-  const platform = { engines: { node: "^22.14.0 || ^24.0.0 || ^26.0.0" }, os: ["darwin", "linux"] };
+  const platform = { engines: { node: "^22.14.0 || ^24.0.0 || ^26.0.0" }, os: ["darwin", "linux", "win32"] };
   writeFileSync(path.join(out, "registry-package.json"), JSON.stringify({ version: "0.1.5-pre.1", readmeFilename: "README.md", readme: "", ...platform }));
   writeFileSync(path.join(out, "registry-tags.json"), JSON.stringify({ latest: "0.1.3", next: "0.1.5-pre.1" }));
   writeFileSync(path.join(out, "tarball-package.json"), JSON.stringify({ version: "0.1.5-pre.1", readmeFilename: "README.md", readme, ...platform }));
