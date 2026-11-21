@@ -121,8 +121,8 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>, boardOnly
   const renderedOutPresent = renderedOutValue !== undefined;
   const outPresent = values.out !== undefined;
   const fieldPresent = values.field !== undefined;
-  const boardDir = boardOnly ? values.dir?.trim() : undefined;
-  if (boardOnly && (!boardDir || !values.json || outPresent || bodyOutPresent || renderedOutPresent || fieldPresent)) {
+  const boardDir = boardOnly ? values.dir : undefined;
+  if (boardOnly && (!boardDir?.trim() || !values.json || outPresent || bodyOutPresent || renderedOutPresent || fieldPresent)) {
     throw new CliError("USAGE", "This build reads a standalone Git board using an explicit --dir and --json.", {
       help: `${cliInvocation()} ${BOARD_READ_USAGE}`,
     });

@@ -147,7 +147,8 @@ test("scoped doc read stays at the explicit standalone checkout and never reques
 
   const topo = await makeTwoCloneTopology();
   try {
-    const reader = join(topo.dir, "standalone reader");
+    const relativeBoard = " standalone reader";
+    const reader = join(topo.dir, relativeBoard);
     git(topo.dir, ["clone", "--branch", "board", topo.origin, reader]);
     const id = "tasks/seed-one";
     const config = options();
@@ -170,7 +171,13 @@ test("scoped doc read stays at the explicit standalone checkout and never reques
       await assert.rejects(docRead([id, "--dir", reader], deps), { code: "USAGE" });
       await assert.rejects(readFile(target), { code: "ENOENT" });
       assert.equal(stdout, "");
-      await read(reader);
+      const cwd = process.cwd();
+      process.chdir(topo.dir);
+      try {
+        await read(relativeBoard);
+      } finally {
+        process.chdir(cwd);
+      }
       const result = JSON.parse(stdout);
       assert.equal(result.id, id);
       stdout = "";
