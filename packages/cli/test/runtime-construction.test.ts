@@ -100,3 +100,39 @@ test("established source identity rejects inconsistent distribution without regi
   createPosixCliRuntime(descriptor);
   assert.equal(currentExecutableRealPath(), entry);
 `));
+
+test("sync respects composed board scope and process-group capability", () => isolated(`
+  import { mkdtemp, rm } from "node:fs/promises";
+  import { tmpdir } from "node:os";
+  import { join } from "node:path";
+  import { runWithRuntime, snapshotRuntimeOptions } from ${JSON.stringify(url("runtime-context"))};
+  import { runHostedSyncGate } from ${JSON.stringify(url("commands/sync/gate"))};
+  import { hookInstallHintOnce } from ${JSON.stringify(url("sync-cli"))};
+
+  const config = options();
+  config.distribution = { ...descriptor, syncExistingGitBoardsOnly: true };
+  config.host = { ...config.host, supportsSyncGateProcessGroups: false };
+  const folder = await mkdtemp(join(tmpdir(), "superbee-process-group-"));
+  try {
+    await runWithRuntime(snapshotRuntimeOptions(config), async () => {
+      const gate = await runHostedSyncGate(
+        { folder, origin: "https://example.invalid", bundleId: "fixture" },
+        { command: "exit 0", timeoutSeconds: 1 },
+      );
+      assert.equal(gate.passed, false);
+      assert.match(gate.reason, /POSIX process groups/);
+      let checkedHook = false;
+      assert.equal(await hookInstallHintOnce("fixture", "fixture", () => {
+        checkedHook = true;
+        return true;
+      }), undefined);
+      assert.equal(checkedHook, false);
+    });
+    const runtime = createCliRuntime(config);
+    await runtime.run(["sync", "--establish"]);
+    assert.equal(process.exitCode, 1);
+    process.exitCode = 0;
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+`));

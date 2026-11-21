@@ -17,6 +17,7 @@ import { provisionBoardWorktree } from "../../board-runtime.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { currentDistribution } from "../../runtime-context.js";
 import {
   BOARD_BRANCH,
   BOARD_REMOTE,
@@ -566,6 +567,9 @@ export function parseSyncArgs(argv: string[]) {
 async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<SyncDispatch> {
   const { values } = parseSyncArgs(argv);
   if (values.help) return { kind: "help" };
+  if (values.establish && currentDistribution()?.syncExistingGitBoardsOnly) {
+    throw new CliError("RUNTIME", "Use WSL2 to establish a Git board. Native Windows can sync an existing board.");
+  }
   if (values.inspect !== undefined || values.resolve !== undefined || values.doc !== undefined || values["accept-deletes"] !== undefined || values["restore-deletes"] !== undefined || values["take-host-deletions"] !== undefined || values["replace-links"] !== undefined) {
     // `superbee sync` routes the conflict verbs (both homes) and the hosted-only verbs before the
     // Git sync runs; only a caller that invokes the Git sync directly reaches this.

@@ -5,6 +5,7 @@
 // A0 discipline). Deliberately CLI-side: `SyncCliDeps` is an output-channel seam and
 // `hookInstallHintOnce` composes the hook probe with invocation-aware hint copy — neither is
 // git/channel orchestration, so neither belongs in `@superbee/board-git`.
+import { currentDistribution } from "./runtime-context.js";
 import { defaultSyncStore, withStrictBoardState } from "./cursor.js";
 import { hookInstalled } from "./commands/hook.js";
 import type { CommandPrefix } from "./command-text.js";
@@ -42,6 +43,7 @@ export async function hookInstallHintOnce(
   inv: CommandPrefix,
   installed: () => boolean = hookInstalled,
 ): Promise<string | undefined> {
+  if (currentDistribution()?.syncExistingGitBoardsOnly) return undefined;
   try {
     if (installed()) return undefined;
     if ((await defaultSyncStore.readHookHintedAt(key)) !== null) return undefined;

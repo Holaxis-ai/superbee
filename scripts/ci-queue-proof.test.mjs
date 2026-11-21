@@ -34,10 +34,11 @@ function current(reuse = false, proof) {
 
 test('native exact-source complete queue proof admits reuse and all current aggregate paths agree', async () => {
   const f = fixture();
-  assert.equal(expectedQueueJobs().length, 19);
+  assert.equal(expectedQueueJobs().length, 20);
+  assert.ok(expectedQueueJobs().includes(manifest.lanes["windows-installed"].display_name));
   const proof = await verifyQueueProof(f.api, context);
   assert.deepEqual(proof, { run: 10, attempt: 1, suite: 20, created_at: f.run.created_at, sha: context.sha, policy: policyDigest });
-  assert.equal(f.calls.filter(route => route.includes('/check-runs/')).length, 19);
+  assert.equal(f.calls.filter(route => route.includes('/check-runs/')).length, 20);
   assert.deepEqual(await decide(f.api, context), { reuse: true, proof });
   await evaluateQueueResults(current(true, proof), context, f.api);
   await evaluateQueueResults(current(), context, async () => { throw new Error('full execution needs no provider lookup'); });
@@ -116,7 +117,7 @@ test('API faults, incomplete/changing pagination and malformed objects all selec
   }
   assert.deepEqual(await decide(async () => { throw new Error('403/429/network/JSON failure'); }, context), { reuse: false });
   const f = fixture(); const api = f.api;
-  for (const body of [{ total_count: 20, jobs: f.jobs }, { total_count: 19, jobs: [] }]) {
+  for (const body of [{ total_count: 21, jobs: f.jobs }, { total_count: 20, jobs: [] }]) {
     assert.deepEqual(await decide(route => route.includes('/jobs?') ? body : api(route), context), { reuse: false });
   }
 });

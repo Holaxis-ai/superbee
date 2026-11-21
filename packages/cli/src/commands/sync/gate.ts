@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { currentHost } from "../../runtime-context.js";
 import { countUncommitted, isBoardGitError, currentHead, resolveOriginRef, runGit } from "@superbee/board-git";
 
 /** The Git configuration key that declares the gate command (any scope; `""` declares none). */
@@ -182,14 +183,18 @@ interface GateCommandRun {
 }
 
 async function runGateCommand(gate: SyncGate, cwd: string, base: Record<string, unknown>, env: NodeJS.ProcessEnv): Promise<GateCommandRun> {
-  const result = await runInOwnGroup(gate.command, cwd, gate.timeoutSeconds * 1000, { ...gateBaseEnv(), ...env });
-  const tail = outputTail(result.output);
+  // The gate must guarantee process-group cleanup before the send can proceed.
+  const result = currentHost().supportsSyncGateProcessGroups === false
+    ? undefined
+    : await runInOwnGroup(gate.command, cwd, gate.timeoutSeconds * 1000, { ...gateBaseEnv(), ...env });
+  const tail = result ? outputTail(result.output) : "";
   const failed = (reason: string, extra: Record<string, unknown>): SyncGateRun => ({
     passed: false,
     reason,
     details: { ...base, ...extra, ...(tail ? { output_tail: tail } : {}) },
   });
   const classified = (): SyncGateRun => {
+    if (!result) return failed("requires a host with POSIX process groups (use WSL2 on Windows)", {});
     if (result.timedOut) {
       return failed(`timed out after ${gate.timeoutSeconds}s`, { timed_out: true, timeout_seconds: gate.timeoutSeconds });
     }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -9,32 +9,26 @@ import { buildCliBundle } from "../packages/superbee/scripts/build-bundle.mjs";
 const root = path.resolve(import.meta.dirname, "..");
 const windowsPackage =
   /(?:^|\/)@superbee\/windows-cli(?:\/|$)|(?:^|\/)superbee-windows-cli(?:\/|$)/;
-const windowsImplementationFile =
-  /(?:^|\/)windows-(?:host|filesystem|board|private-state|cli)(?:\.|\/)/;
+const windowsAdapter = "packages/superbee/src/windows/";
 
-function assertMaintainedGraph(meta) {
-  assert.ok(
-    Object.keys(meta.inputs).length > 10,
-    "proof requires a complete bundled dependency graph",
-  );
+function fromGraph(owner, input) {
+  return path.relative(root, path.resolve(root, "packages", owner, input)).split(path.sep).join("/");
+}
+
+function assertMaintainedGraph(meta, owner) {
+  assert.ok(Object.keys(meta.inputs).length > 10, "proof requires a complete bundled dependency graph");
+  const adapters = [];
   for (const [input, details] of Object.entries(meta.inputs)) {
-    assert.doesNotMatch(
-      input,
-      windowsPackage,
-      "Windows package must not enter maintained graph",
-    );
-    assert.doesNotMatch(
-      input,
-      windowsImplementationFile,
-      "Windows implementation must not enter maintained graph",
-    );
+    assert.doesNotMatch(input, windowsPackage, "separate Windows package must not enter maintained graph");
+    if (fromGraph(owner, input).startsWith(windowsAdapter)) adapters.push(input);
     for (const edge of details.imports) {
-      assert.doesNotMatch(
-        edge.path,
-        windowsPackage,
-        "Windows dependency must not enter maintained graph",
-      );
+      assert.doesNotMatch(edge.path, windowsPackage, "separate Windows dependency must not enter maintained graph");
     }
+  }
+  if (owner === "superbee") {
+    assert.ok(adapters.length > 0, "first-party executable must bundle its native Windows adapter");
+  } else {
+    assert.deepEqual(adapters, [], "shared CLI must not bundle first-party host policy");
   }
 }
 
@@ -79,7 +73,7 @@ function assertNoWindowsHostImplementation(source, filename) {
   visit(tree);
 }
 
-test("maintained executable and shared CLI dependency graphs exclude the Windows implementation", async () => {
+test("only the first-party executable graph owns the Windows adapter", async () => {
   const scratch = await mkdtemp(path.join(tmpdir(), "superbee-host-graph-"));
   try {
     const result = await buildCliBundle(path.join(scratch, "superbee.mjs"), {
@@ -91,26 +85,25 @@ test("maintained executable and shared CLI dependency graphs exclude the Windows
     const reusable = JSON.parse(
       await readFile(path.join(root, "out/cli-runtime-metafile.json"), "utf8"),
     );
-    for (const meta of [result.metafile, reusable]) {
-      assertMaintainedGraph(meta);
+    for (const [owner, meta] of [["superbee", result.metafile], ["cli", reusable]]) {
+      assertMaintainedGraph(meta, owner);
       const poisoned = structuredClone(meta);
       poisoned.inputs[
         "node_modules/@superbee/windows-cli/dist/filesystem.mjs"
       ] = { bytes: 1, imports: [] };
-      assert.throws(() => assertMaintainedGraph(poisoned), /Windows package/);
+      assert.throws(() => assertMaintainedGraph(poisoned, owner), /Windows package/);
     }
-    for (const input of Object.keys(result.metafile.inputs)) {
-      const absolute = path.resolve(root, "packages/superbee", input);
-      const relative = path.relative(root, absolute).split(path.sep).join("/");
-      if (
-        !/^packages\/(core|board-git|cli)\/src\//.test(relative) ||
-        relative.includes("/generated/")
-      )
-        continue;
-      assertNoWindowsHostImplementation(
-        await readFile(absolute, "utf8"),
-        relative,
-      );
+    const leaked = structuredClone(reusable);
+    leaked.inputs["../superbee/src/windows/host.ts"] = { bytes: 1, imports: [] };
+    assert.throws(() => assertMaintainedGraph(leaked, "cli"), /must not bundle/);
+
+    const sources = new Set(
+      [["superbee", result.metafile], ["cli", reusable]].flatMap(([owner, meta]) =>
+        Object.keys(meta.inputs).map((input) => fromGraph(owner, input))),
+    );
+    for (const relative of sources) {
+      if (!/^packages\/(core|board-git|cli)\/src\//.test(relative) || relative.includes("/generated/")) continue;
+      assertNoWindowsHostImplementation(await readFile(path.join(root, relative), "utf8"), relative);
     }
   } finally {
     await rm(scratch, { recursive: true, force: true });
@@ -142,23 +135,14 @@ test("host-boundary proof rejects renamed files retaining Windows primitives", (
   );
 });
 
-test("Windows installation and CI responsibility are absent from maintained distribution", async () => {
-  const pkg = JSON.parse(
-    await readFile(path.join(root, "packages/superbee/package.json"), "utf8"),
-  );
-  assert.deepEqual(pkg.os, ["darwin", "linux"]);
-  const workflows = await readdir(path.join(root, ".github/workflows"));
-  assert.ok(!workflows.includes("windows-installed-package.yml"));
-  assert.ok(!workflows.includes("windows-support-probe.yml"));
-  for (const file of workflows.filter((name) => /\.ya?ml$/.test(name))) {
-    const workflow = await readFile(
-      path.join(root, ".github/workflows", file),
-      "utf8",
-    );
-    assert.doesNotMatch(
-      workflow,
-      /^\s*runs-on:\s*windows-/m,
-      `${file}: Windows native CI belongs to its distribution`,
-    );
+test("native Windows installs the sole first-party package and bin", async () => {
+  const pkg = JSON.parse(await readFile(path.join(root, "packages/superbee/package.json"), "utf8"));
+  assert.equal(pkg.name, "superbee");
+  assert.deepEqual(pkg.os, ["darwin", "linux", "win32"]);
+  assert.deepEqual(pkg.bin, { superbee: "dist/superbee.mjs" });
+  const lock = JSON.parse(await readFile(path.join(root, "package-lock.json"), "utf8"));
+  assert.deepEqual(lock.packages["packages/superbee"].os, pkg.os);
+  for (const dependency of Object.keys(lock.packages)) {
+    assert.doesNotMatch(dependency, windowsPackage, "the lock must not carry a separate Windows distribution");
   }
 });

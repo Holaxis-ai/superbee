@@ -18,9 +18,9 @@ answer.
 4. Build from the repository root. Use the root `./superbee` shim when exercising the freshly built
    CLI.
 5. Develop with Node.js 24.22.1 by default on macOS or Linux. Published packages run on supported
-   Node.js 22, 24, or 26 releases, with 22.14.0 as the minimum. Windows-specific adapters, installation,
-   and native runtime checks belong to the separate Windows distribution repository. Shared
-   engine and CLI protocols remain here; changing them does not promise Windows compatibility.
+   Node.js 22, 24, or 26 releases, with 22.14.0 as the minimum. The first-party executable
+   includes an experimental native Windows mode for existing Git boards. The build and full
+   CLI contributor workflow use macOS, Linux, or WSL2.
 
 A fresh clone does not need an installed Agent Skill or a project bundle to build, test, or submit
 code. It does need the maintainer-supplied bundle or an exact scoped handoff to claim project
@@ -156,6 +156,7 @@ it uploads findings to GitHub code scanning and has a schedule independent of th
 | browser | `npm run ci:browser` | `browser` | 24.22.1 |
 | scripts | `npm run ci:scripts` | `scripts` | 24.22.1 |
 | smoke-node-22 | workflow only | `smoke-node-22` | 22.14.0 |
+| windows-installed | workflow only | `windows-installed` | 22.17.0 |
 <!-- contributing-ci-lanes:end -->
 
 The `runtime` job runs four CLI shards per Node version. Each shard builds, then assigns the
@@ -278,8 +279,10 @@ plus the `aliasing-host` lane, which runs `npm run ci:aliasing-host` on macOS wi
 `SUPERBEE_TEST_EXPECT_ALIASING_HOST=1` (the Linux runtime jobs set `0`) so tests whose native
 branch needs a case-aliasing filesystem execute and fail closed on a mismatched host. The lane's
 scope is a constraint, not a list: `scripts/aliasing-host-coverage.test.mjs` fails when a
-host-sensitive workspace test is not executed by the lane's script chain. Windows adapter tests and native installed-package
-proof run in the Windows repository against explicitly pinned core and CLI artifacts.
+host-sensitive workspace test is not executed by the lane's script chain. The `windows-installed`
+lane installs the candidate `superbee` tarball and checks Git board sync on a native Windows
+runner on Node 22.17.0, the first Node 22 release with the libuv fix for Windows file identity.
+The Linux installed-package smoke continues to use the package engines floor.
 
 ### Running checks
 

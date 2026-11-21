@@ -72,13 +72,13 @@ const baseExpectedFiles = [
   "dist/THIRD-PARTY-NOTICES.txt",
 ];
 
-function assertSupportedPlatform(platform) {
-  assert.ok(["darwin", "linux"].includes(platform), "the superbee package proof supports only macOS and Linux");
+function assertPosixProofPlatform(platform) {
+  assert.ok(["darwin", "linux"].includes(platform), "the full package proof runs only macOS and Linux scenarios");
 }
 
 /** Independently project the always-quoted POSIX shell argument the installed CLI advertises. */
 export function expectedQuotedShellArgument(value, platform = process.platform) {
-  assertSupportedPlatform(platform);
+  assertPosixProofPlatform(platform);
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
@@ -96,7 +96,7 @@ const runtimeDependencyFields = [
 
 /** Independently project the canonical private-state root used by the installed CLI. */
 export function expectedPrivateStateRoot(home, platform = process.platform) {
-  assertSupportedPlatform(platform);
+  assertPosixProofPlatform(platform);
   return path.join(home, ".superbee-state");
 }
 
@@ -326,7 +326,7 @@ export function assertPackageContract(receipt, manifest, referenceFiles, target 
     "the tarball must carry the declared executable and declared public subpath bundles",
   );
   assert.equal(manifest.name, target.package.name);
-  assert.deepEqual(manifest.os, ["darwin", "linux"], "the executable must declare its supported hosts");
+  assert.deepEqual(manifest.os, ["darwin", "linux", "win32"], "the executable must declare its supported hosts");
   // NOTICE must be listed explicitly: npm ships LICENSE regardless of files[], but NOTICE only
   // when named, and Apache-2.0 section 4(d) requires the notice to travel with the distribution.
   assert.deepEqual(manifest.files, ["dist", "SKILL.md", "references", "NOTICE"]);
@@ -428,7 +428,7 @@ function parseJson(stdout, label) {
 }
 
 export async function resolveCommandOnPath(command, env, platform = process.platform) {
-  assertSupportedPlatform(platform);
+  assertPosixProofPlatform(platform);
   const directories = (env.PATH ?? "").split(":").filter(Boolean);
   for (const directory of directories) {
     const candidate = path.join(directory, command);
@@ -487,7 +487,7 @@ async function writeOfflineRecipe(root, version, withDetail = false) {
  * the bytes we prove are the bytes that ship.
  */
 async function runInstalledProof(spec) {
-  assertSupportedPlatform(process.platform);
+  assertPosixProofPlatform(process.platform);
   const target = spec.target ?? SUCCESSOR_TARGET;
   const workspace = await createWorkspace();
   const scratch = workspace.root;
@@ -1197,8 +1197,10 @@ async function runInstalledProof(spec) {
     assert.match(normalizedInstalledReadme, /You rarely type Superbee commands yourself/);
     assert.match(normalizedInstalledReadme, /translates the\s+request into CLI calls/i);
     assert.match(normalizedInstalledReadme, /^## Install$/m);
-    assert.match(normalizedInstalledReadme, /supported Node\.js 22, 24, or 26 release \(22\.14\.0 minimum\) on macOS or Linux/);
-    assert.match(normalizedInstalledReadme, /Native Windows is not supported by this package/);
+    assert.match(normalizedInstalledReadme, /supported Node\.js 22, 24, or 26 release \(22\.14\.0 minimum\)/);
+    assert.match(normalizedInstalledReadme, /^### Native Windows Git boards$/m);
+    assert.match(normalizedInstalledReadme, /Native Windows mode is experimental/);
+    assert.match(normalizedInstalledReadme, /Use macOS, Linux, or WSL2 for the full CLI/);
     assert.match(normalizedInstalledReadme, /`latest`[\s\S]+`next`|`next`[\s\S]+`latest`/);
     assertPackageReadmeReleaseChannel(manifest.version, normalizedInstalledReadme);
 

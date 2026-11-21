@@ -185,7 +185,7 @@ test("configured initialization and direct locks retain the supplied core policy
   }
 });
 test("unsupported default selection refuses without evaluating a host operation", () => {
-  assert.throws(() => assertSupportedCliHost("win32"), /macOS and Linux/);
+  assert.throws(() => assertSupportedCliHost("win32"), /POSIX CLI runtime requires macOS or Linux.*host adapter/);
 });
 
 test("distribution disabled updates veto explicit policy before network access", async () => {
