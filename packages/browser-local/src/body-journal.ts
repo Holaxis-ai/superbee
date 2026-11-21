@@ -312,34 +312,64 @@ export async function bodySnapshot(backend: JournaledBackend, target: string, mo
   throw new JournalGuardConflict(target);
 }
 
+/** Count repeated document strings once per check while JSON still owns all escaping. */
+function journalByteCounter(): (value: unknown) => number {
+  const stringCosts = new Map<string, number>();
+  const encoder = new TextEncoder();
+  return value => {
+    let omitted = 0;
+    let json: string | undefined;
+    try {
+      json = JSON.stringify(value, (_key, item: unknown) => {
+        // Leave small strings such as labels out of the lookup table.
+        if (typeof item !== "string" || item.length < 4 * 1024) return item;
+        let cost = stringCosts.get(item);
+        if (cost === undefined) {
+          cost = jsonBytes(item) - 2; // The empty replacement keeps both JSON quotes.
+          stringCosts.set(item, cost);
+        }
+        omitted += cost;
+        return "";
+      });
+    } catch (error) {
+      // Some engines can serialize deeper metadata without a replacer.
+      if (!(error instanceof RangeError)) throw error;
+      return jsonBytes(value);
+    }
+    return encoder.encode(json).length + omitted;
+  };
+}
+
 /** Full JSON cost plus independent future evidence reservations, including escaped wrappers. */
 export function assertBodyCapacity(guard: JournalGuard): void {
   const unsettled = guard.intents.filter(row => row.state !== "acknowledged");
   if (unsettled.length > BODY_RUNTIME_LIMITS.unsettled) throw new BodyCapacityError();
+  const bytes = journalByteCounter();
   const metas = new Map(guard.meta.filter(row => row.expected.present).map(row => [row.key, (row.expected as { present: true; value: unknown }).value]));
   const base = metas.get(`base:${guard.target}`) as { version: Version | null; content: string | null } | undefined;
-  const documentCost = jsonBytes(guard.document), sharedCost = jsonBytes(base ?? null);
+  const documentCost = bytes(guard.document), sharedCost = bytes(base ?? null);
   if (documentCost > E || sharedCost > E) throw new BodyCapacityError();
   const originalJournal = guard.intents.map(({ remote: _remote, refusal: _refusal, finding: _finding, ...row }) => row);
-  if (jsonBytes(originalJournal) > BODY_RUNTIME_LIMITS.journalBytes) throw new BodyCapacityError();
-  const controlCost = jsonBytes(metas.get(BODY_MODE_KEY) ?? null);
+  if (bytes(originalJournal) > BODY_RUNTIME_LIMITS.journalBytes) throw new BodyCapacityError();
+  const controlCost = bytes(metas.get(BODY_MODE_KEY) ?? null);
   if (controlCost > BODY_RUNTIME_LIMITS.controlBytes) throw new BodyCapacityError();
-  let reserve = Math.max(0, E - documentCost) + Math.max(0, E - sharedCost) + BODY_RUNTIME_LIMITS.transitionBytes + Math.max(0, BODY_RUNTIME_LIMITS.controlBytes - controlCost);
+  const sharedReserve = E - sharedCost;
+  let reserve = (E - documentCost) + sharedReserve + BODY_RUNTIME_LIMITS.transitionBytes + (BODY_RUNTIME_LIMITS.controlBytes - controlCost);
   let remoteReserve = 0;
   for (const row of unsettled) {
     const record = metas.get(bodyRecordKey(row.requestId)) as BodyRecord | undefined;
     for (const field of ["prepared", "receipt"] as const) {
-      const cost = record?.[field] === undefined ? 0 : jsonBytes(record[field]);
+      const cost = record?.[field] === undefined ? 0 : bytes(record[field]);
       if (cost > E) throw new BodyCapacityError();
       // Field-name/comma wrappers are covered independently of the envelope's own bytes.
       reserve += record?.[field] === undefined ? E + 32 : 0;
     }
-    const cost = row.remote === undefined ? 0 : jsonBytes(row.remote);
+    const cost = row.remote === undefined ? 0 : bytes(row.remote);
     if (cost > E) throw new BodyCapacityError();
-    remoteReserve += Math.max(0, E - cost) + 32;
+    remoteReserve += E - cost + 32;
   }
   const pure = { version: guard.document?.version ?? null, intents: guard.intents, shared: base?.version ? base : null };
-  if (jsonBytes(pure) + remoteReserve + Math.max(0, E - sharedCost) + BODY_RUNTIME_LIMITS.transitionBytes > BODY_RECONCILIATION_BYTES || jsonBytes(guard) + reserve + remoteReserve > BODY_RUNTIME_LIMITS.guardedBytes) throw new BodyCapacityError();
+  if (bytes(pure) + remoteReserve + sharedReserve + BODY_RUNTIME_LIMITS.transitionBytes > BODY_RECONCILIATION_BYTES || bytes(guard) + reserve + remoteReserve > BODY_RUNTIME_LIMITS.guardedBytes) throw new BodyCapacityError();
 }
 
 /**

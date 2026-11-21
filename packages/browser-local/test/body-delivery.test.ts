@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { BODY_DELIVERY_LIMITS } from "@superbee/core/governed-body-write";
+import type { JournalGuard } from "@superbee/core/journaled-backend";
 import { IDBFactory } from "fake-indexeddb";
 import { openLocalBundle, bootstrap, commitBodyLocal, commitLocal, push, pull, reclaimInFlight, resume, syncStatus, settleIntent, inspectConflict, resolveConflict, conflictResolutionKey, type ConflictChoice } from "../src/local-bundle.ts";
 import { admitBodyMode, bodyRecordKey, BODY_MODE_KEY, bodySnapshot, assertBodyCapacity, projectBodyGuard, jsonBytes, BODY_RUNTIME_LIMITS, writeBodyControl, validateBodyRecord, validateBodyResolutionReceipt, captureBodyRefresh } from "../src/body-journal.ts";
@@ -729,6 +730,37 @@ test("capacity measures exact UTF-8 serialized boundaries and consumes reserved 
   assert.doesNotThrow(() => assertBodyCapacity(guard));
   guard.meta[0]!.expected.value += "\\";
   assert.throws(() => assertBodyCapacity(guard), /capacity/);
+});
+
+test("capacity uses native escaped UTF-8 byte counts for repeated nested content", () => {
+  const content = "\u0000\t\n\r\uD800🙂中文\uDC00\"\\".repeat(10_000);
+  const prepared = { operation: { body: content }, content, padding: "" };
+  const guard: JournalGuard = {
+    target: "notes/example", document: { version: "local", raw: content },
+    intents: [{ requestId: "request", target: "notes/example", kind: "document.body.update", state: "pending",
+      attempts: 0, sequence: 0, base: "base", baseContent: content, local: "local", content, createdAt: "", updatedAt: "" }],
+    meta: [{ key: bodyRecordKey("request"), expected: { present: true, value: { prepared } } }],
+  };
+  const limit = BODY_DELIVERY_LIMITS.envelopeBytes;
+  prepared.padding = "x".repeat(limit - jsonBytes(prepared));
+  assert.equal(jsonBytes(prepared), limit);
+  assert.doesNotThrow(() => assertBodyCapacity(guard));
+  prepared.padding += "x";
+  assert.equal(jsonBytes(prepared), limit + 1);
+  assert.throws(() => assertBodyCapacity(guard), { name: "BodyCapacityError" });
+});
+
+test("capacity accepts deeply nested metadata within native JSON depth limits", (t) => {
+  let nested: unknown = null;
+  for (let depth = 0; depth < 2500; depth++) nested = [nested];
+  const guard: JournalGuard = { target: "notes/example", document: null, intents: [],
+    meta: [{ key: "retained", expected: { present: true, value: nested } }] };
+  try { jsonBytes(guard); } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    t.skip("This runtime's native JSON serialization cannot reach the test depth.");
+    return;
+  }
+  assert.doesNotThrow(() => assertBodyCapacity(guard));
 });
 
 test("explicit body namespace leaves the exact store untouched and refuses incompatible admission", async () => {
