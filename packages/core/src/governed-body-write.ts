@@ -57,6 +57,9 @@ export interface BodyDeliveryResult {
   readonly diagnostic?: string;
 }
 
+// Only envelopes emitted by this module can skip preparing the same immutable fields again.
+const capturedPreparedDeliveries = new WeakSet<PreparedBodyDelivery>();
+
 type RecordValue = Record<string, unknown>;
 function fail(message: string): never { throw new Error(`Invalid body delivery: ${message}`); }
 function record(value: unknown, keys: readonly string[], optional: readonly string[] = []): RecordValue {
@@ -92,23 +95,28 @@ function bodyContent(content: unknown, body: string, id: string, okfVersion: "0.
 /** Capture a serialized envelope without changing its request identity or original history. */
 export function validatePreparedBodyDelivery(value: unknown): PreparedBodyDelivery {
   const raw = record(value, ["schema", "scope", "requestId", "target", "okfVersion", "operation", "expectedVersion", "local", "content", "createdAt"], ["predecessor"]);
-  if (raw.schema !== 1 || raw.okfVersion !== "0.1" && raw.okfVersion !== "0.2") fail("unsupported schema or edition");
+  const okfVersion = raw.okfVersion;
+  if (raw.schema !== 1 || okfVersion !== "0.1" && okfVersion !== "0.2") fail("unsupported schema or edition");
   const op = record(raw.operation, ["kind", "body"]);
   if (op.kind !== "document.body.update") fail("unsupported operation");
   const operation = Object.freeze({ kind: "document.body.update" as const, body: string(op.body, BODY_DELIVERY_LIMITS.bodyBytes, false) });
   const id = target(raw.target);
-  const content = bodyContent(raw.content, operation.body, id, raw.okfVersion);
+  const content = bodyContent(raw.content, operation.body, id, okfVersion);
   const local = version(raw.local);
   if (versionOfBytes(content) !== local) fail("local content hash mismatch");
+  const requestId = raw.requestId;
+  const expectedVersion = raw.expectedVersion;
   let predecessor: PreparedBodyDelivery["predecessor"];
   if (Object.hasOwn(raw, "predecessor")) {
     const p = record(raw.predecessor, ["requestId", "acknowledgedVersion"]);
     predecessor = Object.freeze({ requestId: request(p.requestId), acknowledgedVersion: version(p.acknowledgedVersion) });
-    if (predecessor.requestId === raw.requestId || predecessor.acknowledgedVersion !== raw.expectedVersion) fail("invalid predecessor");
+    if (predecessor.requestId === requestId || predecessor.acknowledgedVersion !== expectedVersion) fail("invalid predecessor");
   }
-  return Object.freeze(bounded<PreparedBodyDelivery>({ schema: 1, scope: string(raw.scope), requestId: request(raw.requestId), target: id,
-    okfVersion: raw.okfVersion, operation, expectedVersion: version(raw.expectedVersion), local, content,
+  const prepared = Object.freeze(bounded<PreparedBodyDelivery>({ schema: 1, scope: string(raw.scope), requestId: request(requestId), target: id,
+    okfVersion, operation, expectedVersion: version(expectedVersion), local, content,
     createdAt: timestamp(raw.createdAt), ...(predecessor ? { predecessor } : {}) }));
+  capturedPreparedDeliveries.add(prepared);
+  return prepared;
 }
 
 export type BodyDeliveryInput = Omit<PreparedBodyDelivery, "schema" | "expectedVersion" | "predecessor">;
@@ -134,7 +142,7 @@ export function assertSameBodyDelivery(recorded: unknown, candidate: unknown): v
 
 /** Content/version association is asserted by the trusted authority, not inferred from a later head. */
 export function validateBodyReceipt(prepared: PreparedBodyDelivery, value: unknown): CommittedBodyReceipt {
-  const p = validatePreparedBodyDelivery(prepared);
+  const p = capturedPreparedDeliveries.has(prepared) ? prepared : validatePreparedBodyDelivery(prepared);
   const raw = record(value, ["scope", "requestId", "target", "expectedVersion", "body", "version", "content"]);
   if (raw.scope !== p.scope || raw.requestId !== p.requestId || raw.target !== p.target ||
       raw.expectedVersion !== p.expectedVersion || raw.body !== p.operation.body) fail("receipt binding mismatch");
