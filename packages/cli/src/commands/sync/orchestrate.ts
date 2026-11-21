@@ -26,6 +26,7 @@ import {
   bundleDirNameForProject,
   committedBundleAtHead,
   changesSince,
+  checkoutDocsBetween,
   countUncommitted,
   currentHead,
   abortStaleRebase,
@@ -33,6 +34,7 @@ import {
   fetchBoard,
   rebaseResolving,
   ffPull,
+  ffPullWithHeads,
   hasLocalOnlyBundle,
   syncStartedRebase,
   wedgedBoardRebase,
@@ -419,7 +421,7 @@ function markerOnOrigin(boardPath: string): "on_origin" | "moved_back" | "unpush
 /** Pre-pull baselines: the stored cursor and the refs captured BEFORE this run's commit/fetch. */
 interface SyncBaseline { storedCursor: SyncCursor | null; startHead: string; preFetchOriginRef: string | null }
 
-/** The pull's two feeds: the receipt's origin-only delta and the cache's cursor-based delta. */
+/** The full-sync origin delta and the separate cursor-based awareness delta. */
 interface SyncDelta { originDelta: DocChange[]; changes: DocChange[]; reanchorNote?: string }
 
 /**
@@ -775,15 +777,13 @@ async function provisionPhase(run: SyncRun): Promise<SyncBoard | null> {
  * of this run. Then the diff baselines: origin/board's OWN ref as this run understood it BEFORE
  * its own fetch — captured before the commit and pull phases, so it can never include anything local.
  */
-async function baselinePhase(board: SyncBoard, entryOriginRef?: string | null): Promise<SyncBaseline> {
+async function baselinePhase(board: SyncBoard, entryOriginRef: string | null): Promise<SyncBaseline> {
   await defaultSyncStore.refreshMarker(board.key);
   const storedCursor = await defaultSyncStore.readCursor(board.key);
   const startHead = currentHead(board.boardPath);
   const preFetchOriginRef = board.outcome.kind === "already" && board.outcome.originBaseline
     ? board.outcome.originBaseline
-    : entryOriginRef !== undefined
-      ? entryOriginRef
-      : resolveOriginRef(board.boardPath);
+    : entryOriginRef;
   return { storedCursor, startHead, preFetchOriginRef };
 }
 
@@ -817,16 +817,19 @@ async function commitLocal(run: SyncRun, board: SyncBoard): Promise<CommitResult
  * composes the "work is saved" framing and the honest cache write via
  * {@link throwPostCommitFailure}.
  */
-async function pullPhase(run: SyncRun, board: SyncBoard, commitResult: CommitResult): Promise<void> {
+async function pullPhase(
+  run: SyncRun, board: SyncBoard, commitResult: CommitResult,
+): Promise<DocChange[] | null | undefined> {
   const { boardPath, outcome } = board;
   if (run.pullOnly) {
-    const ff = await withSyncRootLock(boardPath, () => ffPull(boardPath));
-    if (ff.swallowed) {
-      throw withProvisionAnnouncement(ffSwallowToError(ff.swallowed, run.inv, boardPath), outcome);
+    const result = await withSyncRootLock(boardPath, () => ffPullWithHeads(boardPath));
+    if (result.swallowed) {
+      throw withProvisionAnnouncement(ffSwallowToError(result.swallowed, run.inv, boardPath), outcome);
     }
-    return;
+    return checkoutDocsBetween(boardPath, result.heads);
   }
   await convergingRebase(run, board, commitResult);
+  return undefined;
 }
 
 /**
@@ -872,19 +875,21 @@ async function convergingRebase(run: SyncRun, board: SyncBoard, commitResult: Co
 }
 
 /**
- * The delta phase, after a successful pull. The RECEIPT's pulled/incoming is ONLY what
- * origin/board itself gained this run (see `originDocsBetween`'s header for why a HEAD-anchored
- * diff can't express this); the CACHE's enriched "since I last read" delta is deliberately
- * SEPARATE and self-inclusive — the human-facing render filters self-authored rows.
+ * The receipt follows the checkout for pull-only and the origin ref for full sync, whose
+ * rebase also moves local commits. The cache follows the awareness cursor and includes
+ * self-authored rows, which the human-facing render can filter.
  * Prefer the STORED cursor; an absent or foreign-tier cursor falls back to the board's OWN
  * pre-sync HEAD, so a teammate's very first sync still reports everything that just arrived. A
  * stored cursor whose object no longer exists (history rewritten under it) re-anchors: the honest
  * note, an empty delta (unknowable across a rewrite), the cursor advanced to now — never fatal.
  */
-async function deltaPhase(board: SyncBoard, baseline: SyncBaseline): Promise<SyncDelta> {
+async function deltaPhase(
+  board: SyncBoard, baseline: SyncBaseline, trackOrigin = true,
+): Promise<SyncDelta> {
   const { boardPath, key } = board;
-  const postFetchOriginRef = resolveOriginRef(boardPath);
-  const originDelta = originDocsBetween(boardPath, baseline.preFetchOriginRef, postFetchOriginRef);
+  const originDelta = trackOrigin
+    ? originDocsBetween(boardPath, baseline.preFetchOriginRef, resolveOriginRef(boardPath))
+    : [];
 
   const { storedCursor } = baseline;
   const cursorToken =
@@ -1034,25 +1039,27 @@ async function failGate(
 
 /**
  * The receipt phase: the awareness cache is refreshed with FINAL (post-push-attempt) backstop
- * counts, so a successful push is reflected — deliberately still the cursor-based `changes` (see
- * {@link deltaPhase}), NOT `originDelta`. The onboarding last-mile hint rides BOTH success
+ * counts, so a successful push is reflected — using the cursor-based `changes` from
+ * {@link deltaPhase}. The onboarding last-mile hint rides BOTH success
  * surfaces — a founder's very first sync is often an empty one right after provisioning.
  */
 async function receiptPhase(
   run: SyncRun, board: SyncBoard, commitResult: CommitResult, delta: SyncDelta,
   pushed: { commits: number; documents: number; gate?: Record<string, unknown> }, establishAlreadyNote: string | undefined,
+  checkoutDelta?: DocChange[] | null,
 ): Promise<void> {
   await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
   const hookHint = await hookInstallHintOnce(board.key, run.inv, run.deps.hookInstalled);
+  const receiptDocs = checkoutDelta === undefined ? delta.originDelta : checkoutDelta;
   const receipt = buildSyncReceipt({
     outcome: board.outcome, commitDocs: commitResult.docs, pushedCount: pushed.commits,
-    originDelta: delta.originDelta, limit: run.limit,
+    receiptDocs, limit: run.limit,
     establishAlreadyNote, reanchorNote: delta.reanchorNote, hookHint,
   });
   if (pushed.gate) receipt.gate = `passed: ${String(pushed.gate.command)} (attempt ${String(pushed.gate.attempt)})`;
   if (run.settledClaims?.length) receipt.lost_claims_settled = cap(run.settledClaims.map((claim) => ({ ...claim })), run.limit);
   const unsettled = await unsettledConflicts(board.boardPath, board.key);
-  const counts = { sent: pushed.documents, received: delta.originDelta.length };
+  const counts = { sent: pushed.documents, received: receiptDocs?.length ?? 0 };
   // A copy from an earlier run is listed and does not fail this one: the exit reports what this run
   // did, and a saved copy can wait as long as the person likes. Exit 5 is for a new conflict.
   if (unsettled.length > 0) {
@@ -1085,7 +1092,7 @@ function reportHeld(
 ): never {
   const receipt = buildSyncReceipt({
     outcome: board.outcome, commitDocs: [], pushedCount: 0,
-    originDelta: delta.originDelta, limit: run.limit, reanchorNote: delta.reanchorNote,
+    receiptDocs: delta.originDelta, limit: run.limit, reanchorNote: delta.reanchorNote,
   });
   receipt.sync = where === "in the worktree"
     ? "held: nothing was committed or pushed"
@@ -1216,7 +1223,7 @@ async function syncLocked(run: SyncRun, dispatch: Extract<SyncDispatch, { kind: 
   // never pushes, so it still pulls: that is how a board moved back (its marker reverted) returns.
   // Origin as it stood before the entry check's fetch, so the receipt's incoming counts what that
   // fetch brought (a moved-back board's revert, say).
-  const entryOriginRef = resolveOriginRef(board.boardPath);
+  const entryOriginRef = run.pullOnly ? null : resolveOriginRef(board.boardPath);
   if (!run.pullOnly) refuseMovedBoard(board.boardPath, true);
 
   const baseline = await baselinePhase(board, entryOriginRef);
@@ -1236,8 +1243,9 @@ async function syncLocked(run: SyncRun, dispatch: Extract<SyncDispatch, { kind: 
     await heldRun(run, board, baseline, commitResult.held);
     return;
   }
+  let checkoutDelta: DocChange[] | null | undefined;
   try {
-    await pullPhase(run, board, commitResult);
+    checkoutDelta = await pullPhase(run, board, commitResult);
   } catch (error) {
     // A new conflict in this run ends it here, so its envelope carries the one report of these.
     if (!(error instanceof CliError) || !run.settledClaims?.length) throw error;
@@ -1249,8 +1257,8 @@ async function syncLocked(run: SyncRun, dispatch: Extract<SyncDispatch, { kind: 
   }
   // The marker can arrive with this pull: then nothing is pushed, and this run's commit stays local.
   if (!run.pullOnly) refuseMovedBoard(board.boardPath);
-  const delta = await deltaPhase(board, baseline);
+  const delta = await deltaPhase(board, baseline, !run.pullOnly);
   if (!run.pullOnly) holdMalformedCommitted(run, board, delta);
   const pushed = await pushPhase(run, board, commitResult, delta, baseline);
-  await receiptPhase(run, board, commitResult, pushed.delta, pushed, establishAlreadyNote);
+  await receiptPhase(run, board, commitResult, pushed.delta, pushed, establishAlreadyNote, checkoutDelta);
 }

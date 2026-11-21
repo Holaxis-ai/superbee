@@ -2714,6 +2714,12 @@ export interface FfPullResult {
   swallowed?: string;
 }
 
+export interface FfPullHeads {
+  before: string;
+  target: string;
+  after: string;
+}
+
 /** Map a classified BoardGitError code to the ff-pull swallow-reason vocabulary. */
 function swallowReason(err: BoardGitError): string {
   switch (err.code) {
@@ -2742,13 +2748,26 @@ function swallowReason(err: BoardGitError): string {
  * primitive: it must never throw and never block a render on repo state.
  */
 export function ffPull(boardPath: string, budget: NetworkBudgetOptions = {}): FfPullResult {
+  return pullFastForward(boardPath, budget, false);
+}
+
+/** The explicit pull receipt needs the checkout commits observed by the merge operation. */
+export function ffPullWithHeads(
+  boardPath: string, budget: NetworkBudgetOptions = {},
+): FfPullResult & { heads?: FfPullHeads } {
+  return pullFastForward(boardPath, budget, true);
+}
+
+function pullFastForward(
+  boardPath: string, budget: NetworkBudgetOptions, captureHeads: boolean,
+): FfPullResult & { heads?: FfPullHeads } {
   try {
     if (!repoTopLevel(boardPath)) return { updated: false, swallowed: "not-a-repo" };
     // Detached HEAD: an ff merge would move the detached HEAD, not the board branch — skip.
     if (runGit(boardPath, ["symbolic-ref", "-q", "HEAD"]).status !== 0) {
       return { updated: false, swallowed: "detached-head" };
     }
-    const before = mustGit(boardPath, ["rev-parse", "HEAD"]).trim();
+    const preFetchHead = captureHeads ? undefined : mustGit(boardPath, ["rev-parse", "HEAD"]).trim();
 
     let fetchReason: string | undefined;
     const fetched = runGit(boardPath, ["fetch", "--prune", BOARD_REMOTE], {
@@ -2760,7 +2779,14 @@ export function ffPull(boardPath: string, budget: NetworkBudgetOptions = {}): Ff
       fetchReason = swallowReason(classifyGitError(failureOf(["fetch", "--prune"], fetched)));
     }
 
-    const merged = runGit(boardPath, ["merge", "--ff-only", boardRefOf(boardPath)]);
+    const ref = boardRefOf(boardPath);
+    // Pin the receipt target before the merge. Hooks can move HEAD or the tracking ref.
+    const resolved = captureHeads
+      ? runGit(boardPath, ["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`])
+      : undefined;
+    const target = resolved?.status === 0 ? resolved.stdout.trim() : undefined;
+    const before = preFetchHead ?? mustGit(boardPath, ["rev-parse", "HEAD"]).trim();
+    const merged = runGit(boardPath, ["merge", "--ff-only", target ?? ref]);
     if (merged.status !== 0) {
       const text = `${merged.stderr}\n${merged.stdout}`;
       if (/Not possible to fast-forward/i.test(text) || /have diverged/i.test(text)) {
@@ -2773,7 +2799,8 @@ export function ffPull(boardPath: string, budget: NetworkBudgetOptions = {}): Ff
     }
 
     const after = mustGit(boardPath, ["rev-parse", "HEAD"]).trim();
-    const result: FfPullResult = { updated: after !== before };
+    const result: FfPullResult & { heads?: FfPullHeads } = { updated: after !== before };
+    if (target !== undefined) result.heads = { before, target, after };
     if (fetchReason !== undefined) result.swallowed = fetchReason;
     return result;
   } catch (err) {
