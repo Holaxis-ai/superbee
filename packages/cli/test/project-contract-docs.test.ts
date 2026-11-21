@@ -280,14 +280,21 @@ test("mandatory agent entrypoints stay compact, routed, and safe in degraded sta
     "A dispatched agent receives the exact bundle root and actor in its packet. It may perform the packet's necessary reads, but it must never:",
     "- run `superbee sync`; - initialize or publish a bundle; - guess a bundle from a catalog entry; or - pass the repository root to `--dir` as though it were a bundle.",
     "If selection is missing or cannot be verified, do not initialize a replacement. Continue only with committed repository authorities and stop any work that depends on current project state. If a previously verified bundle is merely stale because sync or the network is unavailable, label the information as last-known and stop only where freshness is required. Missing authority and stale authority are different states.",
-    "The orchestrator verifies commit scope and provenance, integrates builders, pushes the feature branch once, and ensures CI is running on that exact SHA. Open a named PR promptly when explicitly delegated; dispatch `CI tests` only when no PR will exist promptly. A branch dispatch is not a serial prerequisite to PR CI. Do not rerun valid builder evidence merely to duplicate it. If evidence is missing, stale, or from a changed tree, rerun the smallest relevant smoke.",
-    "CI on the pushed SHA is the shipping verdict. A local lane or `npm run check` is never reported as that verdict. The human opens and merges the PR unless that authority is explicitly delegated.",
+    "The orchestrator or solo agent verifies commit scope and provenance, integrates builder commits, pushes the feature branch once, and promptly opens an in-scope PR for authorized implementation. Ensure CI is running on that exact SHA. Dispatch `CI tests` only when no PR will exist promptly. Do not rerun valid builder evidence merely to duplicate it. If evidence is missing, stale, or from a changed tree, rerun the smallest relevant smoke.",
+    "CI on the pushed SHA is the shipping verdict. A local lane or `npm run check` is never reported as that verdict. After applicable independent review, QA, and required PR checks pass, enqueue the PR and monitor the protected merge queue through merge. Respect any human hold or explicitly narrower authorization.",
     "- Trivial documentation or test-only work follows the proportional tier in `CONTRIBUTING.md`. - Routine code receives independent review of the exact SHA. - Security, concurrency, destructive writes, migrations, deployments, remote selection, reconnect/replay, releases, and other high-risk mechanics require Builder -> independent exact-SHA Review -> adversarial QA. - QA cannot be scheduled before its required Review, and neither precedes the builder commit. - Reviewers audit existing evidence, reproduce only load-bearing proof, and add one meaningful red probe for the named risk. Current exact-SHA CI evidence is reused.",
     "Never place secrets, exploit mechanisms, reachability conditions, or working reproductions in a public channel or any synchronized bundle by default, regardless of its observed visibility. An externally exploitable defect present on `main` goes through a private GitHub Security Advisory: fix privately, merge, then disclose. Stop before writing sensitive detail and follow [SECURITY.md](SECURITY.md).",
     "Agents may prepare a version-bump PR and push a release tag only when explicitly asked by a human with release authority. Agents never run `npm publish`, `npm stage approve`, `npm dist-tag`, or any other authenticated npm mutation by hand unless specifically authorized by Mike, Brian, or another human user with release authority; the release workflows are the only publishers. Prereleases publish on `next`, stable versions on `latest`, chosen at build time.",
     "The frozen and coupled decisions in bundle `docs/core` require an explicit human decision to reopen. Code adjacency is not authorization. In particular, do not introduce hosted deployment, authentication, administration/collaboration UI, or multi-bundle authorization piecemeal.",
   ]) {
     assert.ok(normalizedParagraphs.has(safetyKernel), `mandatory safety kernel changed: ${safetyKernel}`);
+  }
+
+  for (const policy of [claude, readProjectFile("CONTRIBUTING.md")]) {
+    assert.match(
+      policy.replace(/\s+/g, " "),
+      /Implementation approval authorizes the orchestrator or solo agent to push the feature branch, open an in-scope PR, and take it through the protected merge queue without separate permission\./,
+    );
   }
 
   assert.match(agents, /read and follow \[CLAUDE\.md\]\(CLAUDE\.md\) in full/);
