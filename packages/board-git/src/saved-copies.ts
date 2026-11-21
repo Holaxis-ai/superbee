@@ -74,11 +74,13 @@ function existingSlots(exportDir: string): number[] {
 function readIfFile(file: string): Buffer | null {
   let descriptor: number | undefined;
   try {
-    const before = lstatSync(file);
-    if (!before.isFile()) return null;
-    descriptor = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
+    descriptor = openSync(file, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0));
     const opened = fstatSync(descriptor);
-    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.nlink !== 1) return null;
+    if (!opened.isFile() || opened.nlink !== 1) return null;
+    // On hosts without O_NOFOLLOW, only consume the descriptor when the current name is
+    // itself a regular file and names the same object.
+    const named = lstatSync(file);
+    if (!named.isFile() || named.dev !== opened.dev || named.ino !== opened.ino || named.nlink !== 1) return null;
     return readFileSync(descriptor);
   } catch {
     return null;
