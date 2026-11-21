@@ -352,8 +352,9 @@ bundles remain supported without rewriting their declared edition.
 ## What's early or experimental
 
 - **Everything is pre-1.0.** The npm package is a prerelease and breaking changes are likely.
-- **Native Windows Git board sync is experimental.** Install the same `superbee` package and use
-  Git for Windows to pull, push, and inspect saved conflicts for an existing board. Use WSL2 for
+- **Native Windows Git board sync and structured reads are experimental.** Install the same
+  `superbee` package and use Git for Windows to sync an existing board, read its documents, and
+  inspect saved conflicts. Use WSL2 for
   the full CLI. [Native Windows instructions](packages/superbee/README.md#native-windows-git-boards)
 - **Recipe composition** supports finite explicit local preparation and existing indexed cookbooks.
   Automatic dependency solving, migrations, namespace authentication and marketplace discovery

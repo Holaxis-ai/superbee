@@ -73,10 +73,10 @@ export function createWindowsHostCommands(): HostCommands {
     isStableRuntimePair: () => false,
     hasAdditionalStdinInput:(stats) => !stats.isCharacterDevice() && !stats.isDirectory(),
     resolveCommand() {
-      throw new HostCommandError('unreadable', 'Native Windows supports Git board sync and version reporting.');
+      throw new HostCommandError('unreadable', 'This host command is unavailable on native Windows. Use WSL2 to run it.');
     },
     runCommand() {
-      throw new HostCommandError('unreadable', 'Native Windows supports Git board sync and version reporting.');
+      throw new HostCommandError('unreadable', 'This host command is unavailable on native Windows. Use WSL2 to run it.');
     },
     openBrowser() {},
     spawnChild() {

@@ -61,7 +61,7 @@ npm install -g superbee@next
 
 ### Native Windows Git boards
 
-Native Git board sync requires Node.js 22.17.0 or later in the 22 line, 24.2.0 or later in the 24
+Native Git board sync and document reads require Node.js 22.17.0 or later in the 22 line, 24.2.0 or later in the 24
 line, or Node.js 26. These releases use libuv 1.51.0 or newer, which fixes a Windows file identity
 check needed when reading board state. [libuv changelog](https://github.com/libuv/libuv/blob/v1.51.0/ChangeLog)
 
@@ -71,6 +71,10 @@ release with this feature, install the packed `superbee` tarball from the build 
 available on PATH. Run `superbee version` to identify the installed build, and
 `superbee sync --dir "C:\path to\board"` to synchronize an existing standalone Git board.
 Use `--pull-only` to pull without pushing or `--inspect --doc <id>` to read a saved conflict.
+After syncing, read a local document with
+`superbee doc read concepts/example --dir "C:\path to\board" --json`. The read uses the
+explicit standalone board root, does no automatic fetch, and reports the local `head_version`.
+To read a long body in pieces, use the JSON paging options in `superbee doc read --help`.
 
 Native Windows mode is experimental. Use WSL2 for setup, hosted checkouts, board establishment,
 or boards with a configured pre-push sync gate. If such a gate would run, native sync keeps the

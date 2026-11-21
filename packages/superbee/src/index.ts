@@ -26,8 +26,9 @@ const argv = process.argv.slice(2);
 const command = argv[0];
 const windows = process.platform === "win32";
 const posix = process.platform === "darwin" || process.platform === "linux";
-const windowsUsage = "Native Windows supports Git board sync and version reporting. Run superbee sync --help for the sync options. Use WSL2 for the full CLI.";
-const windowsRuntimeRequirement = "Native Windows Git board sync requires Node.js 22.17.0 or later in the 22 line, 24.2.0 or later in the 24 line, or Node.js 26.";
+const windowsDocRead = command === "doc" && argv[1] === "read";
+const windowsUsage = "Native Windows supports Git board sync, doc read, and version reporting. Run superbee sync --help or superbee doc read --help. Use WSL2 for the full CLI.";
+const windowsRuntimeRequirement = "Native Windows Git board sync and document reads require Node.js 22.17.0 or later in the 22 line, 24.2.0 or later in the 24 line, or Node.js 26.";
 
 // libuv 1.51.0 made Windows path and handle stats agree on the volume serial used for file identity.
 // https://github.com/libuv/libuv/blob/v1.51.0/ChangeLog
@@ -39,14 +40,14 @@ function hasWindowsFileIdentitySupport(): boolean {
 if (isBareVersionFlag(command)) {
   process.stdout.write(`${cliVersion()}\n`);
 } else if (!windows && !posix) {
-  process.stdout.write("error:\n  code: RUNTIME\n  message: Superbee runs on macOS, Linux, and native Windows (Git board sync only).\n");
+  process.stdout.write("error:\n  code: RUNTIME\n  message: Superbee runs on macOS, Linux, and native Windows (Git board sync and document reads).\n");
   process.exitCode = 1;
 } else if (windows && (command === undefined || command === "--help" || command === "-h" || command === "help")) {
   process.stdout.write(`${windowsUsage}\n${windowsRuntimeRequirement}\n`);
-} else if (windows && command !== "sync" && command !== "version") {
+} else if (windows && command !== "sync" && command !== "version" && !windowsDocRead) {
   process.stdout.write(`error:\n  code: RUNTIME\n  message: ${windowsUsage}\n`);
   process.exitCode = 1;
-} else if (windows && command === "sync" && !hasWindowsFileIdentitySupport()) {
+} else if (windows && (command === "sync" || windowsDocRead) && !hasWindowsFileIdentitySupport()) {
   process.stdout.write(`error:\n  code: RUNTIME\n  message: ${windowsRuntimeRequirement} Found Node.js ${process.versions.node}.\n`);
   process.exitCode = 1;
 } else {
@@ -58,7 +59,7 @@ if (isBareVersionFlag(command)) {
     install: { packageName: "superbee", entryRelativePath: "dist/superbee.mjs", bins: ["superbee"] },
     ownedSkillPackages: ["superbee", "aslite", "@holaxis/aslite"],
     updatesEnabled: posix,
-    ...(windows ? { syncExistingGitBoardsOnly: true } : {}),
+    ...(windows ? { syncExistingGitBoardsOnly: true, docReadExistingGitBoardsOnly: true } : {}),
   };
   const runtime = windows
     ? createCliRuntime({

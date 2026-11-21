@@ -32,6 +32,7 @@ export interface CliDistribution {
   readonly ownedSkillPackages: readonly string[];
   readonly updatesEnabled: boolean;
   readonly syncExistingGitBoardsOnly?: boolean;
+  readonly docReadExistingGitBoardsOnly?: boolean;
 }
 export interface HostCommandEnvironment {
   readonly cwd: string;
