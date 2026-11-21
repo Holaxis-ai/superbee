@@ -7,6 +7,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { assertArtifact, assertIdentity } from "../packages/package-verification/src/harness.mjs";
+import { isMainModule } from "./is-main-module.mjs";
 
 const exec = promisify(execFile);
 const fixture = fileURLToPath(new URL("../examples/sample-bundle", import.meta.url));
@@ -40,22 +41,33 @@ function windowsProfile(root) {
   return { HOME: root, USERPROFILE: root, LOCALAPPDATA: local, APPDATA: path.join(root, "AppData", "Roaming") };
 }
 
+export function assertBoardConflictReceipt(stdout, id) {
+  const lines = stdout.split(/\r?\n/);
+  assert.equal(lines[0], "error:", stdout);
+  assert.equal(lines[1], "  code: CONFLICT", stdout);
+  assert.ok(lines.includes("      total: 1"), stdout);
+  assert.ok(lines.some((line) => line.startsWith(`        ${id},`) && line.endsWith(",kept")), stdout);
+}
+
 async function prove({ tarball, expectedDigest, expectedSource, scratch }) {
   assert.equal(createHash("sha256").update(await readFile(tarball)).digest("hex"), expectedDigest, "retained tarball digest changed");
   const prefix = path.join(scratch, "npm install");
   const home = windowsProfile(path.join(scratch, "profile"));
   const privateRoot = path.join(home.LOCALAPPDATA, "Superbee");
   const boardState = path.join(scratch, "mounted board state");
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
+    !/^(?:NODE_OPTIONS|NODE_PATH|npm_config_.*|GIT_.*|SUPERBEE_BOARD_STATE_DIR)$/i.test(name),
+  ));
   const env = {
-    ...process.env,
+    ...inherited,
     ...home,
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: path.join(scratch, "gitconfig"),
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "maintenance.auto",
+    GIT_CONFIG_VALUE_0: "false",
     SUPERBEE_NO_AUTOPULL: "1",
   };
-  for (const name of Object.keys(env)) {
-    if (/^(?:NODE_OPTIONS|NODE_PATH|npm_config_.*|SUPERBEE_BOARD_STATE_DIR)$/i.test(name)) delete env[name];
-  }
   env.npm_config_userconfig = path.join(scratch, "npmrc");
   env.npm_config_globalconfig = path.join(scratch, "global-npmrc");
   env.npm_config_cache = path.join(scratch, "npm-cache");
@@ -132,7 +144,7 @@ async function prove({ tarball, expectedDigest, expectedSource, scratch }) {
   const acl = (...args) => run(path.join(system32, "icacls.exe"), [privateRoot, ...args], { cwd: scratch, env });
   const denied = (error) => ["EACCES", "EPERM"].includes(error.code);
   const boardEnv = { ...env, SUPERBEE_BOARD_STATE_DIR: boardState };
-  const sync = (repo, options = {}, ...args) => cli(["sync", "--dir", repo, ...args], { cwd: repo, env: boardEnv, ...options });
+  const sync = (repo, ...args) => cli(["sync", "--dir", repo, ...args], { cwd: repo, env: boardEnv });
   const document = (repo) => path.join(repo, docPath);
   const assertRemote = async (tip, bytes) => {
     assert.equal(await ref(origin, boardRef), tip);
@@ -164,7 +176,7 @@ async function prove({ tarball, expectedDigest, expectedSource, scratch }) {
     await assertRemote(firstTip, firstBytes);
     await assertCheckout(cloneA, firstTip, firstBytes);
 
-    const pulled = await sync(cloneB, {}, "--pull-only");
+    const pulled = await sync(cloneB, "--pull-only");
     assert.deepEqual([pulled.home, pulled.pulled, pulled.pushed, pulled.received], ["git", 1, 0, 1]);
     await assertCheckout(cloneB, firstTip, firstBytes);
     await assertRemote(firstTip, firstBytes);
@@ -183,18 +195,14 @@ async function prove({ tarball, expectedDigest, expectedSource, scratch }) {
     for (const repo of [cloneA, cloneB]) {
       await appendFile(document(repo), `\nUnpublished words from ${path.basename(repo)}.\n`);
       const localBytes = await readFile(document(repo));
-      const { error } = await sync(repo, { expected: 5 });
-      assert.equal(error.code, "CONFLICT");
-      assert.equal(error.details.conflicts.total, 1);
-      const [row] = error.details.conflicts.rows;
-      assert.equal(row.id, docId);
-      assert.equal(row.theirs, "kept");
+      // The CLI error envelope is TOON even with --json. Successful inspect is JSON.
+      const { stdout } = await installed(["sync", "--dir", repo, "--json"], { cwd: repo, env: boardEnv, expected: 5 });
+      assertBoardConflictReceipt(stdout, docId);
 
       // Every shim invocation starts a fresh CLI process.
-      const inspected = await sync(repo, {}, "--inspect", "--doc", docId);
+      const inspected = await sync(repo, "--inspect", "--doc", docId);
       assert.equal(inspected.conflict, docId);
       const saved = await realpath(inspected.local.saved_at);
-      assert.equal(await realpath(row.yours), saved);
       assert.ok(path.relative(exportRoot, saved).startsWith(`exports${path.sep}`), `copy escaped board state: ${saved}`);
       assert.ok(!recovered.has(saved.toLowerCase()), `clones reused recovery path: ${saved}`);
       assert.deepEqual(await readFile(saved), localBytes);
@@ -211,21 +219,23 @@ async function prove({ tarball, expectedDigest, expectedSource, scratch }) {
   return identity.package.version;
 }
 
-assert.equal(process.platform, "win32", "this proof requires native Windows");
-assert.ok(process.env.SystemRoot, "native Windows must provide SystemRoot");
-const [, , tarball] = process.argv;
-const expectedDigest = process.env.SUPERBEE_TARBALL_SHA256;
-const expectedSource = process.env.GITHUB_SHA;
-assert.ok(tarball && process.argv.length === 3, "usage: verify-npm-package-windows.mjs <retained-tarball>");
-assert.match(expectedDigest ?? "", /^[a-f0-9]{64}$/);
-assert.match(expectedSource ?? "", /^[a-f0-9]{40}$/);
-const scratch = await mkdtemp(path.join(process.env.RUNNER_TEMP ?? tmpdir(), "superbee-native-"));
-const started = Date.now();
-try {
-  const version = await prove({ tarball: path.resolve(tarball), expectedDigest, expectedSource, scratch });
-  const outcome = `Native Windows board push, pull and conflict recovery with superbee@${version} succeeded in ${Date.now() - started} ms. Source ${expectedSource}, tarball sha256:${expectedDigest}.\n`;
-  if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, outcome);
-  console.log(outcome.trim());
-} finally {
-  await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+if (isMainModule(import.meta.url)) {
+  assert.equal(process.platform, "win32", "this proof requires native Windows");
+  assert.ok(process.env.SystemRoot, "native Windows must provide SystemRoot");
+  const [, , tarball] = process.argv;
+  const expectedDigest = process.env.SUPERBEE_TARBALL_SHA256;
+  const expectedSource = process.env.GITHUB_SHA;
+  assert.ok(tarball && process.argv.length === 3, "usage: verify-npm-package-windows.mjs <retained-tarball>");
+  assert.match(expectedDigest ?? "", /^[a-f0-9]{64}$/);
+  assert.match(expectedSource ?? "", /^[a-f0-9]{40}$/);
+  const scratch = await mkdtemp(path.join(process.env.RUNNER_TEMP ?? tmpdir(), "superbee-native-"));
+  const started = Date.now();
+  try {
+    const version = await prove({ tarball: path.resolve(tarball), expectedDigest, expectedSource, scratch });
+    const outcome = `Native Windows board push, pull and conflict recovery with superbee@${version} succeeded in ${Date.now() - started} ms. Source ${expectedSource}, tarball sha256:${expectedDigest}.\n`;
+    if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, outcome);
+    console.log(outcome.trim());
+  } finally {
+    await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+  }
 }

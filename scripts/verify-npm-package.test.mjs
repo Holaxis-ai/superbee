@@ -21,6 +21,7 @@ import {
   verificationPolicy,
 } from "./verify-npm-package.mjs";
 import { publishedManifest } from "./pack-npm-package.mjs";
+import { assertBoardConflictReceipt } from "./verify-npm-package-windows.mjs";
 import { npmInvocation as uiBuildNpmInvocation } from "../packages/cli/scripts/embed-ui-assets.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -64,6 +65,24 @@ test("installed-package expectations quote POSIX paths and refuse unsupported ho
   assert.equal(expectedQuotedShellArgument(".superbee", "linux"), "'.superbee'");
   assert.equal(expectedQuotedShellArgument("a'b", "darwin"), "'a'\\''b'");
   assert.throws(() => expectedQuotedShellArgument(".superbee", "win32"), /only macOS and Linux/);
+});
+
+test("the Windows proof reads the installed sync conflict's TOON receipt with --json", () => {
+  const stdout = [
+    "error:",
+    "  code: CONFLICT",
+    "  message: Committed to the board locally. Your work is saved.",
+    "  details:",
+    "    conflicts:",
+    "      shown: 1",
+    "      total: 1",
+    "      rows[1]{id,kind,title,yours,yours_body,theirs}:",
+    "        concepts/okf-alignment,Concept,OKF Alignment,C:/mounted board state/local.md,C:/mounted board state/local.body.md,kept",
+    "",
+  ].join("\r\n");
+  assert.doesNotThrow(() => assertBoardConflictReceipt(stdout, "concepts/okf-alignment"));
+  assert.throws(() => assertBoardConflictReceipt(stdout, "concepts/different"));
+  assert.throws(() => assertBoardConflictReceipt(stdout.replace("total: 1", "total: 2"), "concepts/okf-alignment"));
 });
 
 test("the retained tarball manifest carries the exact npm page bytes", () => {

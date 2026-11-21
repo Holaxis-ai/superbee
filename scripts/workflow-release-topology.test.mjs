@@ -386,43 +386,33 @@ test("finalize accepts staged and direct-publish README metadata while retaining
   const dir = mkdtempSync(path.join(os.tmpdir(), "release-finalize-metadata-"));
   const out = path.join(dir, "out");
   mkdirSync(out);
-  const readme = [
-    "# superbee",
-    "",
-    "## Install",
-    "",
-    "Requires a supported Node.js 22, 24, or 26 release (22.14.0 minimum) on macOS or Linux.",
-    "",
-    "`latest` and `next`",
-    "",
-    "npm install -g superbee@next",
-    "",
-    "The integrations are installed by your agent, not by hand.",
-    "",
-    "Run `superbee setup` and follow its instructions.",
-    "",
-  ].join("\n");
+  const packageRoot = path.join(root, "packages/superbee");
+  const readme = readFileSync(path.join(packageRoot, "README.md"), "utf8");
+  const { version } = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8"));
+  const tag = version.includes("-") ? "next" : "latest";
   const platform = { engines: { node: "^22.14.0 || ^24.0.0 || ^26.0.0" }, os: ["darwin", "linux", "win32"] };
-  writeFileSync(path.join(out, "registry-package.json"), JSON.stringify({ version: "0.1.5-pre.1", readmeFilename: "README.md", readme: "", ...platform }));
-  writeFileSync(path.join(out, "registry-tags.json"), JSON.stringify({ latest: "0.1.3", next: "0.1.5-pre.1" }));
-  writeFileSync(path.join(out, "tarball-package.json"), JSON.stringify({ version: "0.1.5-pre.1", readmeFilename: "README.md", readme, ...platform }));
+  writeFileSync(path.join(out, "registry-package.json"), JSON.stringify({ version, readmeFilename: "README.md", readme: "", ...platform }));
+  writeFileSync(path.join(out, "registry-tags.json"), JSON.stringify({ [tag]: version }));
+  writeFileSync(path.join(out, "tarball-package.json"), JSON.stringify({ version, readmeFilename: "README.md", readme, ...platform }));
   writeFileSync(path.join(out, "tarball-readme.md"), readme);
 
   const result = spawnSync(process.execPath, ["--input-type=module"], {
     cwd: dir,
-    env: { ...process.env, V: "0.1.5-pre.1", T: "next" },
+    env: { ...process.env, V: version, T: tag },
     input: script,
     encoding: "utf8",
   });
   assert.equal(result.status, 0, `metadata proof rejected supported staged-publish state: ${result.stderr}`);
-  const prove = (registryPatch = {}, manifestPatch = {}) => {
-    writeFileSync(path.join(out, "registry-package.json"), JSON.stringify({ version: "0.1.5-pre.1", readmeFilename: "", readme: "", ...platform, ...registryPatch }));
-    writeFileSync(path.join(out, "tarball-package.json"), JSON.stringify({ version: "0.1.5-pre.1", readmeFilename: "README.md", readme, ...platform, ...manifestPatch }));
+  const prove = (registryPatch = {}, manifestPatch = {}, publishedReadme = readme) => {
+    writeFileSync(path.join(out, "tarball-readme.md"), publishedReadme);
+    writeFileSync(path.join(out, "registry-package.json"), JSON.stringify({ version, readmeFilename: "", readme: "", ...platform, ...registryPatch }));
+    writeFileSync(path.join(out, "tarball-package.json"), JSON.stringify({ version, readmeFilename: "README.md", readme: publishedReadme, ...platform, ...manifestPatch }));
     return spawnSync(process.execPath, ["--input-type=module"], {
-      cwd: dir, env: { ...process.env, V: "0.1.5-pre.1", T: "next" }, input: script, encoding: "utf8",
+      cwd: dir, env: { ...process.env, V: version, T: tag }, input: script, encoding: "utf8",
     });
   };
   assert.equal(prove().status, 0, "empty registry README filename must defer to the attested tarball");
+  assert.notEqual(prove({}, {}, readme.replace("### Native Windows Git boards", "### Missing platform guidance")).status, 0);
   assert.equal(prove({ readmeFilename: undefined }).status, 0, "the registry moves README metadata to the document level for the latest version");
   assert.equal(prove({ readmeFilename: "README.md", readme: "document-level README of another version" }).status, 0, "direct-publish README metadata is accepted without comparing the document-level readme");
   for (const [registryPatch, manifestPatch] of [
