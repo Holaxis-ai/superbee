@@ -49,6 +49,46 @@ Domain-neutral operations, typed results, and injected stores/adapters:
   pull-and-record step, with the store and the bundle-root discovery INJECTED (`AutoPullDeps`);
   the trigger's call sites and the wiring of those seams stay in the CLI.
 
+## Focused board-state checks
+
+Board-git owns the [store](src/cursor.ts) and [saved conflict copies](src/saved-copies.ts). The CLI
+owns [store placement](../cli/src/cursor.ts), the [launcher override](../cli/src/runtime-context.ts),
+and the [POSIX private-state adapter](../cli/src/posix-host.ts).
+
+Run from the repository root with Git, Node.js 24.22.1 or a later Node 24 patch, and a writable
+temporary directory on macOS or Linux. The fixtures use local Git repos.
+
+```sh
+npm ci
+npm run build -w @superbee/core
+node --test --import ./packages/board-git/test/ts-loader.mjs \
+  ./packages/board-git/test/saved-copies.test.ts ./packages/board-git/test/host-policy.test.ts
+npm run build -w @superbee/board-git
+node packages/cli/scripts/run-test-command.mjs node --test \
+  --import ./packages/cli/test/ts-loader.mjs ./packages/cli/test/cursor.test.ts
+node packages/cli/scripts/run-test-command.mjs node --test \
+  --import ./packages/cli/test/ts-loader.mjs \
+  --test-name-pattern='runtime board state directory|deferred board attribution' \
+  ./packages/cli/test/runtime-policy.test.ts
+```
+
+The loaders run workspace source. Rebuild Core after Core edits and `@superbee/board-git` after
+board-git edits before rerunning the CLI checks. The filter avoids the unrelated MCP build.
+
+To exercise real permission failures through the built CLI, run this from the root as a non-root
+user on macOS or Linux. The fixture skips on Windows and under root.
+
+```sh
+npm run build
+node packages/cli/scripts/run-test-command.mjs node --test \
+  --import ./packages/cli/test/ts-loader.mjs \
+  --test-name-pattern='two-clone founder e2e' ./packages/cli/test/sync.test.ts
+```
+
+Follow the [pre-commit checks](../../CONTRIBUTING.md#running-checks) for code changes. CI runs
+board-git files in `runtime-common`, CLI files in `runtime`, and the first-party tarball's native
+Windows board-sync check in `windows-installed`.
+
 ## What the package must NEVER export or import
 
 - CLI invocations, help/usage text, rendering (TOON/JSON), environment resolution, exit
