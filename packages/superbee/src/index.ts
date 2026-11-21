@@ -27,6 +27,14 @@ const command = argv[0];
 const windows = process.platform === "win32";
 const posix = process.platform === "darwin" || process.platform === "linux";
 const windowsUsage = "Native Windows supports Git board sync and version reporting. Run superbee sync --help for the sync options. Use WSL2 for the full CLI.";
+const windowsRuntimeRequirement = "Native Windows Git board sync requires Node.js 22.17.0 or later in the 22 line, 24.2.0 or later in the 24 line, or Node.js 26.";
+
+// libuv 1.51.0 made Windows path and handle stats agree on the volume serial used for file identity.
+// https://github.com/libuv/libuv/blob/v1.51.0/ChangeLog
+function hasWindowsFileIdentitySupport(): boolean {
+  const [major, minor] = process.versions.uv.split(".");
+  return Number(major) > 1 || (major === "1" && Number(minor) >= 51);
+}
 
 if (isBareVersionFlag(command)) {
   process.stdout.write(`${cliVersion()}\n`);
@@ -34,9 +42,12 @@ if (isBareVersionFlag(command)) {
   process.stdout.write("error:\n  code: RUNTIME\n  message: Superbee runs on macOS, Linux, and native Windows (Git board sync only).\n");
   process.exitCode = 1;
 } else if (windows && (command === undefined || command === "--help" || command === "-h" || command === "help")) {
-  process.stdout.write(`${windowsUsage}\n`);
+  process.stdout.write(`${windowsUsage}\n${windowsRuntimeRequirement}\n`);
 } else if (windows && command !== "sync" && command !== "version") {
   process.stdout.write(`error:\n  code: RUNTIME\n  message: ${windowsUsage}\n`);
+  process.exitCode = 1;
+} else if (windows && command === "sync" && !hasWindowsFileIdentitySupport()) {
+  process.stdout.write(`error:\n  code: RUNTIME\n  message: ${windowsRuntimeRequirement} Found Node.js ${process.versions.node}.\n`);
   process.exitCode = 1;
 } else {
   const executablePath = fileURLToPath(import.meta.url);

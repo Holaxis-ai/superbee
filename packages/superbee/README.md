@@ -47,7 +47,7 @@ Skill, an instruction file your agent loads, that teaches it how to use the tool
 
 ## Install
 
-Requires a supported Node.js 22, 24, or 26 release (22.14.0 minimum). Use macOS, Linux, or WSL2 for the full CLI.
+Use macOS, Linux, or WSL2 for the full CLI. It requires a supported Node.js 22, 24, or 26 release (22.14.0 minimum).
 
 ```sh
 npm install -g superbee
@@ -60,6 +60,10 @@ npm install -g superbee@next
 ```
 
 ### Native Windows Git boards
+
+Native Git board sync requires Node.js 22.17.0 or later in the 22 line, 24.2.0 or later in the 24
+line, or Node.js 26. These releases use libuv 1.51.0 or newer, which fixes a Windows file identity
+check needed when reading board state. [libuv changelog](https://github.com/libuv/libuv/blob/v1.51.0/ChangeLog)
 
 The `superbee` package from this source also installs on native Windows. To try it before a
 release with this feature, install the packed `superbee` tarball from the build with
