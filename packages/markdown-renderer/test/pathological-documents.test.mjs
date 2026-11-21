@@ -117,7 +117,7 @@ const justInside = {
   "a mix of list items, tables and brackets": "- a\n\n".repeat(MAX_LINE_MARKERS / 2) + "a|b\n-|-\nc\n\n".repeat(MAX_TABLES / 2) + "]".repeat(3_000),
 };
 for (const [name, body] of Object.entries(justInside)) {
-  justInside[`${name} with CRLF line ends`] = body.replace(/\n/g, "\r\n");
+  if (body.includes("\n")) justInside[`${name} with CRLF line ends`] = body.replace(/\n/g, "\r\n");
 }
 
 for (const [name, body] of Object.entries(justInside)) {
