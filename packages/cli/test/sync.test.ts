@@ -19,7 +19,7 @@
 //      though the keying alone would now keep the files apart.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, rename, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, rename, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -37,6 +37,7 @@ import {
   pushFailureMessage,
   PUSH_FAIL_ACCESS_MESSAGE,
   buildPushFailurePartial,
+  buildSyncReceipt,
   sync,
   toIncomingRows,
   PUSH_FAIL_SAFETY_MESSAGE,
@@ -81,6 +82,7 @@ import {
 } from "../../board-git/test/git-harness.js";
 import { testInvocation } from "./support/command-prefix.js";
 import { rendered } from "./support/rendered-command.js";
+import { runCli } from "./support/private-state-fixtures.js";
 
 /** The one sync envelope (S4) as TOON appends it to a receipt that moved nothing. */
 const envelopeToon = (home: "local" | "git") => `schema_version: 2\nhome: ${home}\nsent: 0\nreceived: 0\nconflicts: 0\nheld: 0\nnext: []\n`;
@@ -735,6 +737,107 @@ test("sync: standalone board-branch root checkout commits, pushes, pulls, and st
 
     const again = await runSync(homes[1]!, ["--dir", directB, "--pull-only"]);
     assert.equal(again.out, `sync: already up to date\n${envelopeToon("git")}`);
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("sync: a pull receipt with an unavailable comparison explains the unknown count", () => {
+  const receipt = buildSyncReceipt({
+    outcome: { kind: "already", boardPath: "/board" },
+    commitDocs: [], pushedCount: 0, receiptDocs: null, limit: 20,
+  });
+  assert.deepEqual(receipt, {
+    committed: 0, pushed: 0, pull: "completed, but the incoming document count could not be determined",
+  });
+  assert.match(render(receipt, "default"), /the incoming document count could not be determined/);
+  assert.match(render(receipt, "json"), /the incoming document count could not be determined/);
+});
+
+test("sync: a standalone pull-only retry reports documents after the tracking ref already advanced", {
+  skip: process.platform === "win32" || process.getuid?.() === 0,
+}, async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes: [home], cleanup } = await tempHomes(1);
+  const reader = path.join(topo.dir, "retry-reader");
+  const docId = "tasks/seed-one";
+  const docPath = path.join(reader, `${docId}.md`);
+  const head = () => git(reader, ["rev-parse", "HEAD"]).trim();
+  const tracking = () => git(reader, ["rev-parse", `refs/remotes/origin/${BOARD_BRANCH}`]).trim();
+  const pull = () => runCli(["sync", "--pull-only", "--dir", reader, "--json"], { cwd: reader, home: home! });
+  try {
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, reader]);
+    const before = head();
+    assert.equal(tracking(), before);
+    const previous = await readFile(docPath, "utf8");
+    await modifyBoardDoc(topo.a, docId, { body: "# Delivered on retry\n" });
+    commitBoard(topo.a, "edit one task upstream");
+    pushBoard(topo.a);
+    const upstream = originBoardHead(topo);
+    assert.notEqual(upstream, before);
+
+    await chmod(home!, 0o500);
+    try {
+      await assert.rejects(writeFile(path.join(home!, "denial-probe"), ""), { code: "EACCES" });
+      const refused = pull();
+      assert.equal(refused.status, 1, refused.stderr || refused.stdout);
+      assert.match(refused.stdout + refused.stderr, /reason: state_dir_not_writable/);
+      assert.equal(tracking(), upstream, "the refused pull fetched the tracking ref");
+      assert.equal(head(), before, "the refused pull did not fast-forward the checkout");
+      assert.equal(await readFile(docPath, "utf8"), previous);
+    } finally {
+      await chmod(home!, 0o700);
+    }
+
+    const retried = pull();
+    assert.equal(retried.status, 0, retried.stderr || retried.stdout);
+    assert.equal(head(), upstream);
+    assert.equal(tracking(), upstream);
+    assert.equal(originBoardHead(topo), upstream);
+    assert.match(await readFile(docPath, "utf8"), /# Delivered on retry/);
+    const receipt = JSON.parse(retried.stdout);
+    assert.equal(receipt.schema_version, 2);
+    assert.equal(receipt.received, 1);
+    assert.equal(receipt.pulled, 1);
+    assert.equal(receipt.committed, 0);
+    assert.equal(receipt.pushed, 0);
+    assert.equal(receipt.sent, 0);
+    assert.equal(receipt.incoming.total, 1);
+    assert.deepEqual(receipt.incoming.rows.map(({ id, verb }: { id: string; verb: string }) => ({ id, verb })), [
+      { id: docId, verb: "updated" },
+    ]);
+
+    const unchanged = pull();
+    assert.equal(unchanged.status, 0, unchanged.stderr || unchanged.stdout);
+    const unchangedReceipt = JSON.parse(unchanged.stdout);
+    assert.equal(unchangedReceipt.received, 0);
+    assert.equal(unchangedReceipt.sync, "already up to date");
+    assert.equal(head(), upstream);
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("sync: pull-only preserves a fetch error even when the cached ref fast-forwards HEAD", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(1);
+  try {
+    const before = boardHead(topo.b);
+    await modifyBoardDoc(topo.a, "tasks/seed-one", { body: "# Fetched earlier\n" });
+    commitBoard(topo.a, "edit one task upstream");
+    pushBoard(topo.a);
+    const cached = originBoardHead(topo);
+    git(topo.b.board, ["fetch", "origin", BOARD_BRANCH]);
+    git(topo.b.board, ["remote", "set-url", "origin", path.join(topo.dir, "missing-origin.git")]);
+    assert.notEqual(cached, before);
+    assert.equal(boardHead(topo.b), before);
+
+    const failed = await runSync(homes[0]!, ["--dir", topo.b.root, "--pull-only"]);
+    assert.equal(failed.err?.code, "AUTH_REQUIRED");
+    assert.equal(failed.out, "");
+    assert.equal(boardHead(topo.b), cached);
   } finally {
     await cleanup();
     await topo.cleanup();

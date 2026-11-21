@@ -4,6 +4,7 @@
 // named projections. Do not reintroduce a per-caller copy of the name-status parse or the
 // enrichment — porcelain.ts's `stageAndCommit`/`snapshotBundleCommit` share the same vocabulary
 // (`nameStatusRows`/`verbOf`/`enrichDocChange`), which is why it lives there and is imported here.
+import { isBoardGitError } from "./errors.js";
 import {
   enrichDocChange,
   isConceptDocPath,
@@ -12,6 +13,7 @@ import {
   runGit,
   verbOf,
   type DocChange,
+  type FfPullHeads,
 } from "./porcelain.js";
 
 // ── the ONE ref-to-ref doc diff (changes-since + the receipt's origin delta) ──
@@ -116,4 +118,29 @@ export function changesSince(boardPath: string, token: string): ChangesSinceOutc
 export function originDocsBetween(boardPath: string, fromRef: string | null, toRef: string | null): DocChange[] {
   if (!fromRef || !toRef || fromRef === toRef) return [];
   return diffDocsBetween(boardPath, fromRef, toRef, { tolerateDiffFailure: true });
+}
+
+/**
+ * Documents delivered by a successful ff-only pull of a pinned target. A post-merge hook can
+ * append local commits before Git returns, so only the history through the target is incoming.
+ */
+export function checkoutDocsBetween(boardPath: string, heads?: FfPullHeads): DocChange[] | null {
+  if (!heads) return null;
+  const { before, target, after } = heads;
+  try {
+    if (before === after) {
+      if (before === target) return [];
+      // An already-ahead checkout stays put. A hook can also reset HEAD to its old value.
+      return runGit(boardPath, ["merge-base", "--is-ancestor", target, before]).status === 0 ? [] : null;
+    }
+    if (target !== after) {
+      if (before === target) return null;
+      if (runGit(boardPath, ["merge-base", "--is-ancestor", before, target]).status !== 0) return null;
+      if (runGit(boardPath, ["merge-base", "--is-ancestor", target, after]).status !== 0) return null;
+    }
+    return diffDocsBetween(boardPath, before, target);
+  } catch (error) {
+    if (isBoardGitError(error)) return null;
+    throw error;
+  }
 }
