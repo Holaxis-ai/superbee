@@ -14,6 +14,8 @@ const retainedTarball = new URL("../out/windows-proof/superbee.tgz", import.meta
 const fixture = fileURLToPath(new URL("../examples/sample-bundle", import.meta.url));
 const docId = "concepts/okf-alignment";
 const docPath = `${docId}.md`;
+const docTitle = "OKF Alignment";
+const upstreamTitle = "OKF Alignment (upstream replacement)";
 const boardRef = "refs/heads/board";
 const trackingRef = "refs/remotes/origin/board";
 
@@ -210,34 +212,51 @@ async function prove({ expectedDigest, expectedSource, scratch }) {
     await assertRemote(firstTip, firstBytes);
     assert.equal((await readdir(boardState)).filter((name) => name.endsWith(".json")).length, 2);
 
-    await appendFile(document(cloneA), "\nPublished replacement.\n");
+    const firstText = firstBytes.toString("utf8");
+    assert.ok(firstText.includes(`title: ${docTitle}`), "sample document must have the expected title");
+    await writeFile(document(cloneA),
+      firstText.replace(`title: ${docTitle}`, `title: ${upstreamTitle}`) + "\nPublished replacement.\n");
     const upstreamBytes = await readFile(document(cloneA));
     const advanced = await sync(cloneA);
     assert.deepEqual([advanced.committed, advanced.pushed], [1, 1]);
     const upstreamTip = await ref(cloneA, "HEAD");
     assert.notEqual(upstreamTip, firstTip);
-    // Read from the explicitly pulled checkout while origin is ahead. A fresh board-state
-    // directory leaves no freshness cursor to suppress an accidental opportunistic pull.
-    const readState = path.join(scratch, "unused document read state");
+    await assertRemote(upstreamTip, upstreamBytes);
+    // A fresh board-state path leaves no cursor to suppress an accidental opportunistic pull.
+    const readState = path.join(scratch, "unused board reader state");
     const readEnv = { ...boardEnv, SUPERBEE_BOARD_STATE_DIR: readState };
     delete readEnv.SUPERBEE_NO_AUTOPULL;
     const readOptions = { cwd: scratch, env: readEnv };
+    const fetchHead = path.join(cloneB, ".git", "FETCH_HEAD");
+    const pulledFetchHead = await readFile(fetchHead);
+    const assertReadOnlyState = async () => {
+      await assert.rejects(lstat(readState), { code: "ENOENT" });
+      assert.deepEqual(await readFile(fetchHead), pulledFetchHead);
+      await assertCheckout(cloneB, firstTip, firstBytes);
+      await assertRemote(upstreamTip, upstreamBytes);
+    };
+    const listStarted = performance.now();
+    const listed = await cli(["list", "--dir", cloneB], readOptions);
+    console.log(`WINDOWS_PROOF_LIST_MS ${Math.round(performance.now() - listStarted)}`);
+    assert.ok(Array.isArray(listed.docs), "list must emit structured rows");
+    const selected = listed.docs.find(({ id }) => id === docId);
+    assert.ok(selected, "list must include the fixture document");
+    assert.equal(selected.title, docTitle, "list must show the explicitly pulled title while origin is ahead");
+    await assertReadOnlyState();
+
     const readStarted = performance.now();
-    const documentResult = await cli(["doc", "read", docId, "--dir", cloneB], readOptions);
+    const documentResult = await cli(["doc", "read", selected.id, "--dir", cloneB], readOptions);
     const missing = await installed(["doc", "read", "concepts/missing", "--dir", cloneB, "--json"],
       { ...readOptions, expected: 6 });
     console.log(`WINDOWS_PROOF_DOC_READ_PAIR_MS ${Math.round(performance.now() - readStarted)}`);
-    const text = firstBytes.toString("utf8");
-    const header = text.match(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---\r?\n/);
+    const header = firstText.match(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---\r?\n/);
     assert.ok(header, "the known sample fixture has YAML frontmatter");
     assert.deepEqual(
       [documentResult.id, documentResult.body, documentResult.head_version],
-      [docId, text.slice(header[0].length), `sha256:${createHash("sha256").update(firstBytes).digest("hex")}`],
+      [docId, firstText.slice(header[0].length), `sha256:${createHash("sha256").update(firstBytes).digest("hex")}`],
     );
     assert.match(missing.stdout, /^error:\r?\n  code: NOT_FOUND\r?\n/);
-    await assert.rejects(lstat(readState), { code: "ENOENT" });
-    await assertCheckout(cloneB, firstTip, firstBytes);
-    await assertRemote(upstreamTip, upstreamBytes);
+    await assertReadOnlyState();
     await git(cloneA, ["reset", "--hard", firstTip]);
 
     const recovered = new Map();
@@ -284,7 +303,7 @@ if (isMainModule(import.meta.url)) {
   const started = Date.now();
   try {
     const version = await prove({ expectedDigest, expectedSource, scratch });
-    const outcome = `Native Windows board push, pull, document read and conflict recovery with superbee@${version} succeeded in ${Date.now() - started} ms. Source ${expectedSource}, tarball sha256:${expectedDigest}.\n`;
+    const outcome = `Native Windows board push, pull, list, document read and conflict recovery with superbee@${version} succeeded in ${Date.now() - started} ms. Source ${expectedSource}, tarball sha256:${expectedDigest}.\n`;
     console.log(outcome.trim());
   } finally {
     await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
