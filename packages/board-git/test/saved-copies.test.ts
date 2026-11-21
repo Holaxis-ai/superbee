@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { link, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,27 @@ test("a repeat copy lands beside the first, an identical one adds nothing, and t
     assert.equal(await readFile(first, "utf8"), "one");
     assert.equal(await readFile(second, "utf8"), "two");
     assert.deepEqual(listSavedCopies(exportDir).map((copy) => copy.file), [first, second]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("an aliased saved file is not reused as a recovery copy", async () => {
+  const { exportDir, cleanup } = await scratch();
+  try {
+    const bytes = Buffer.from("local words");
+    const original = saveConflictCopy(exportDir, "original.md", bytes);
+    for (const [name, alias] of [
+      ["hard-link.md", link],
+      ...(process.platform === "win32" ? [] : [["symlink.md", symlink]] as const),
+    ] as const) {
+      const occupied = path.join(exportDir, name);
+      await alias(original, occupied);
+      const saved = saveConflictCopy(exportDir, name, bytes);
+      assert.notEqual(saved, occupied);
+      assert.deepEqual(await readFile(saved), bytes);
+      assert.deepEqual(await readFile(occupied), bytes);
+    }
   } finally {
     await cleanup();
   }

@@ -17,6 +17,7 @@ import { provisionBoardWorktree } from "../../board-runtime.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { currentDistribution } from "../../runtime-context.js";
 import {
   BOARD_BRANCH,
   BOARD_REMOTE,
@@ -63,7 +64,7 @@ import {
   NETWORK_TIMEOUT_MS,
   PUSH_TIMEOUT_MS,
 } from "@superbee/board-git";
-import { REANCHOR_NOTE, defaultSyncStore } from "../../cursor.js";
+import { REANCHOR_NOTE, defaultSyncStore, saveBoardConflictCopy, withOptionalBoardState } from "../../cursor.js";
 import { hookInstallHintOnce, type SyncCliDeps } from "../../sync-cli.js";
 import { ESTABLISH_ALREADY, establishBoard } from "./establish.js";
 import {
@@ -90,6 +91,7 @@ import { CLI_LEAVES } from "../../command-spec.js";
 import { render, renderErrorEnvelope, resolveMode, type OutputMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import {
+  assertBoardStatePlacement,
   assertBundleOutsidePrivateState,
   assertSearchDirOutsidePrivateState,
 } from "../../private-state-bundle-boundary.js";
@@ -475,9 +477,17 @@ async function syncInTree(run: SyncRun): Promise<void> {
  * wrapper, tests) always observe `CliError` with the exact envelope/exit the tier produced.
  */
 export async function sync(argv: string[], deps: Partial<SyncCliDeps> = {}): Promise<void> {
+  const stderr = deps.stderr ?? ((s: string) => void process.stderr.write(s));
+  let warned = false;
   const run = async (): Promise<void> => {
     try {
-      await syncCommand(argv, deps);
+      await withOptionalBoardState(() => syncCommand(argv, deps), (error) => {
+        if (warned) return;
+        warned = true;
+        const message = error instanceof Error ? error.message : String(error);
+        const help = error instanceof CliError && error.help ? ` ${error.help}` : "";
+        stderr(`superbee: warning: Git board state was unavailable. ${message}.${help}\n`);
+      });
     } catch (err) {
       throw isBoardGitError(err) ? cliErrorFromBoardGit(err) : err;
     }
@@ -490,7 +500,6 @@ export async function sync(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
   // Reserve stdout from RAW argv, before parsing, bundle resolution, or Git. Otherwise an early
   // usage failure can put an error envelope where the caller expects only document/body bytes.
   // Deeper show-incoming errors already carry `handled`; honoring it here prevents double emission.
-  const stderr = deps.stderr ?? ((s: string) => void process.stderr.write(s));
   try {
     await run();
   } catch (err) {
@@ -560,6 +569,9 @@ export function parseSyncArgs(argv: string[]) {
 async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<SyncDispatch> {
   const { values } = parseSyncArgs(argv);
   if (values.help) return { kind: "help" };
+  if (values.establish && currentDistribution()?.syncExistingGitBoardsOnly) {
+    throw new CliError("RUNTIME", "Use WSL2 to establish a Git board. Native Windows can sync an existing board.");
+  }
   if (values.inspect !== undefined || values.resolve !== undefined || values.doc !== undefined || values["accept-deletes"] !== undefined || values["restore-deletes"] !== undefined || values["take-host-deletions"] !== undefined || values["replace-links"] !== undefined) {
     // `superbee sync` routes the conflict verbs (both homes) and the hosted-only verbs before the
     // Git sync runs; only a caller that invokes the Git sync directly reaches this.
@@ -845,7 +857,8 @@ async function convergingRebase(run: SyncRun, board: SyncBoard, commitResult: Co
         commitResult.docs = [...commitResult.docs.filter((doc) => !lateIds.has(doc.docId)), ...late.docs];
         commitResult.sha = late.sha;
       }
-      return rebaseResolving(boardPath, defaultSyncStore.exportsDir(key));
+      const dir = defaultSyncStore.exportsDir(key);
+      return rebaseResolving(boardPath, dir, (save) => saveBoardConflictCopy(dir, boardPath, save));
     });
   } catch (rawErr) {
     throw await fail(withUpstreamHelp(toCliError(rawErr, "rebase"), run.inv));
@@ -1168,6 +1181,7 @@ async function syncLocked(run: SyncRun, dispatch: Extract<SyncDispatch, { kind: 
   // Refuse the private-state identity before provisioning, fetching, committing, or publishing.
   // Later phase-local checks retain the invariant across any path re-resolution.
   const initialTop = repoTopLevel(run.dir);
+  assertBoardStatePlacement(initialTop ?? run.owner?.bundleRoot);
   if (initialTop) {
     const initialBundleDir = committedBundleAtHead(initialTop)?.bundleDir ?? bundleDirNameForProject(initialTop);
     assertBundleOutsidePrivateState(path.join(initialTop, initialBundleDir));
@@ -1203,6 +1217,7 @@ async function syncLocked(run: SyncRun, dispatch: Extract<SyncDispatch, { kind: 
 
   const board = await provisionPhase(run);
   if (board === null) return;
+  assertBoardStatePlacement(board.boardPath);
   assertBundleOutsidePrivateState(board.boardPath);
   // A board moved to hosted (its marker already here) takes nothing from this run. A pull-only run
   // never pushes, so it still pulls: that is how a board moved back (its marker reverted) returns.

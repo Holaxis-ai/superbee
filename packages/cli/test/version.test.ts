@@ -87,8 +87,8 @@ test("the executable entry decides bare version aliases before loading the CLI c
   const runtime = readFileSync(path.resolve(here, "../src/runtime.ts"), "utf8");
   assert.doesNotMatch(runtime, /^import .*from ["']\.\/cli\.js["'];/m);
   assert.match(runtime, /await import\("\.\/cli\.js"\)/);
-  const versionDecision = source.indexOf("isBareVersionFlag(argv[0])");
-  const runtimeConstruction = source.search(/const\s+runtime\s*=\s*createPosixCliRuntime\(/);
+  const versionDecision = source.search(/if\s*\(isBareVersionFlag\(/);
+  const runtimeConstruction = source.search(/\b(?:createCliRuntime|createPosixCliRuntime)\(/);
   const commandDispatch = source.indexOf("runtime.run(argv)");
   assert.ok(versionDecision >= 0 && runtimeConstruction > versionDecision && commandDispatch > runtimeConstruction,
     "the version decision must precede runtime construction and command dispatch");

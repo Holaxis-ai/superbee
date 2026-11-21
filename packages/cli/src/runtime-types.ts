@@ -31,6 +31,7 @@ export interface CliDistribution {
   readonly assetRoot: string;
   readonly ownedSkillPackages: readonly string[];
   readonly updatesEnabled: boolean;
+  readonly syncExistingGitBoardsOnly?: boolean;
 }
 export interface HostCommandEnvironment {
   readonly cwd: string;
@@ -61,6 +62,7 @@ export interface LexicalHookToken {
 export interface HostCommands {
   readonly id: string;
   readonly paths: typeof path.posix;
+  readonly supportsSyncGateProcessGroups?: boolean;
   resolveCommand(
     name: string,
     input: HostCommandEnvironment,
@@ -171,6 +173,8 @@ export interface PrivateStateHost {
  */
 export interface CliRuntimeOptions {
   readonly distribution: CliDistribution;
+  /** Private, durable directory selected by the trusted launcher for Git board state. */
+  readonly boardStateDir?: string;
   readonly host: HostCommands;
   readonly privateState: PrivateStateHost;
   readonly filesystemHost: FilesystemHostPolicy;

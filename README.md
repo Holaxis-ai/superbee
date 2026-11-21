@@ -15,7 +15,8 @@ under test. The honest breakdown is below — read it before depending on anythi
 
 ## Install
 
-**Requirements: macOS or Linux, and a supported Node.js 22, 24, or 26 release (22.14.0 minimum).**
+**Requirements for the full CLI: macOS or Linux (including WSL2), and a supported Node.js 22, 24, or 26 release (22.14.0 minimum).**
+The package also has an [experimental native Windows Git board mode](packages/superbee/README.md#native-windows-git-boards).
 
 The current test release is on npm's `next` prerelease channel; `latest` provides the stable
 release. Install the prerelease with:
@@ -159,6 +160,21 @@ directly to a code branch are also supported as the IN-TREE mode: board docs tra
 your normal commit/push/pull, `sync --pull-only` fetches the branch's upstream and reports
 incoming board changes (session start shows the same awareness), and a full `sync` refuses
 with guidance — `sync --establish` is the explicit conversion to a dedicated board branch.
+
+For a Git board in a sandbox with a read-only home, set `SUPERBEE_BOARD_STATE_DIR` in the
+trusted launcher to an absolute, private, persistent directory outside Git checkouts and
+account state. Give the agent write access to that directory and the checkout. Keep using the
+same directory when inspecting or resolving conflicts after a restart. Reusing the directory
+across clones keeps each clone's state and conflict copies separate. On macOS and Linux, use
+owner-only permissions (`0700`) for an existing directory. With no override, board state
+uses the host's normal private state location (`~/.superbee-state/sync` on macOS and Linux).
+Hosted checkout sync and account credentials follow their own storage policies.
+
+The pending marker helps session start recognize a board. The cursor and awareness cache feed
+change summaries and automatic-pull freshness checks. These records support reporting, so a
+safe explicit pull can finish if the sandbox denies their writes. Its receipt reports the Git
+changes it can verify. Saved conflict copies are required for recovery. If they cannot be saved,
+a sync that needs them leaves the local work in the checkout and reports how to restore access.
 
 A clone can hold its own pushes to a check: `git config superbee.syncGate '<command>'` makes
 `sync` run that command on the rebased board (the exact commit it would push) before every push
@@ -336,13 +352,9 @@ bundles remain supported without rewriting their declared edition.
 ## What's early or experimental
 
 - **Everything is pre-1.0.** The npm package is a prerelease and breaking changes are likely.
-- **Native Windows support is separate.** The `superbee` executable supports macOS and Linux.
-  Most Windows users should run Superbee in WSL2. Windows adapters and the `superbee-windows`
-  executable are developed in a separate repository, https://github.com/Holaxis-ai/superbee-windows-cli,
-  which is open source with build-from-source instructions; it is experimental, unsupported, and
-  not published to npm.
-  See the [CLI upgrade guidance](packages/superbee/README.md#upgrading-an-existing-windows-installation)
-  and [core filesystem migration](packages/core/README.md#filesystem-platform-migration) before upgrading.
+- **Native Windows Git board sync is experimental.** Install the same `superbee` package and use
+  Git for Windows to pull, push, and inspect saved conflicts for an existing board. Use WSL2 for
+  the full CLI. [Native Windows instructions](packages/superbee/README.md#native-windows-git-boards)
 - **Recipe composition** supports finite explicit local preparation and existing indexed cookbooks.
   Automatic dependency solving, migrations, namespace authentication and marketplace discovery
   remain future work. Preparation does not change ordinary installation or hosted admission limits.

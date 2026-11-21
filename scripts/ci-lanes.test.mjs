@@ -656,10 +656,11 @@ test("runtime-sensitive suites are identical on Node 22 and 26 and platform lane
   assert.equal(cliPkg.scripts.pretest, "node build.mjs local-dev", "ordinary npm test must keep its build prerequisite");
   assert.doesNotMatch(cliPkg.scripts.test, /build\.mjs/, "the CI runtime lane must be able to skip the pretest rebuild");
   for (const [name, lane] of Object.entries(manifest.lanes)) {
-    if (name === "runtime" || name === "runtime-common" || name === "smoke-node-22") continue;
+    if (name === "runtime" || name === "runtime-common" || lane.workflow_only) continue;
     assert.deepEqual(lane.nodes, [manifest.singleton_node], `${name} must not amplify across runtime versions`);
   }
-  assert.deepEqual(cliPkg.os, ["darwin", "linux"], "the maintained executable admits only its supported hosts");
+  assert.deepEqual(manifest.lanes["windows-installed"].nodes, ["22.17.0"]);
+  assert.deepEqual(cliPkg.os, ["darwin", "linux", "win32"], "the maintained executable admits only its supported hosts");
 });
 
 test("the runtime shard variable partitions the CLI suite by file and rejects malformed shards", async () => {

@@ -68,7 +68,7 @@ import {
   type ChannelDetection,
   type ProvisionOutcome,
 } from "@superbee/board-git";
-import { defaultSyncStore } from "../cursor.js";
+import { defaultSyncStore, withOptionalBoardState } from "../cursor.js";
 import { pullBoardAndRecord } from "../autopull.js";
 import { defaultSummarizeBundle, discoverSummarizeBundle, home, HOME_WORKSPACES_LIMIT, type BoardPullOutcome, type HomeWorkspace } from "./home.js";
 import { loadCatalog } from "../catalog.js";
@@ -79,7 +79,7 @@ import { commandFragment, commandLiteral, commandQuoted } from "../command-text.
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { syncOutcomeLine } from "../sync-outcomes.js";
-import { assertSearchDirOutsidePrivateState } from "../private-state-bundle-boundary.js";
+import { assertBoardStatePlacement, assertSearchDirOutsidePrivateState } from "../private-state-bundle-boundary.js";
 import { resolveLocalBundleRoute, resolveProjectBinding, type ResolvedLocalRoute } from "../bundle.js";
 import { hostedAutoPullOptedOut, hostedCheckoutAt } from "../autopull.js";
 import { CliError } from "../errors.js";
@@ -324,6 +324,7 @@ export async function sessionStartPull(
     // it can only report while `boardPath` stays undefined. The throw lands in this function's
     // fail-soft catch (its documented posture for every "could not verify the board" outcome).
     assertSearchDirOutsidePrivateState(path.resolve(dir ?? process.cwd()));
+    assertBoardStatePlacement();
     const route: ResolvedLocalRoute | undefined = dir === undefined && await resolveProjectBinding(process.cwd())
       ? await resolveLocalBundleRoute(undefined)
       : undefined;
@@ -566,7 +567,7 @@ export async function sessionStart(argv: string[], deps: Partial<SessionStartDep
   try {
     const raced = await Promise.race<BoardPullOutcome | undefined | "timeout">([
       Promise.resolve()
-        .then(() => pull(values.dir, budgetMs))
+        .then(() => withOptionalBoardState(() => pull(values.dir, budgetMs), () => {}))
         .catch((): BoardPullOutcome => ({ offline: true })),
       new Promise<"timeout">((resolve) => {
         timer = setTimeout(() => resolve("timeout"), budgetMs);

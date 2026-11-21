@@ -16,8 +16,29 @@ import {
   createPosixPrivateStateHost,
 } from "./posix-host.js";
 
-type RuntimeContext = Omit<CliRuntimeOptions, "filesystemHost" | "boardHost"> &
+type RuntimeOptions = Omit<CliRuntimeOptions, "filesystemHost" | "boardHost"> &
   Partial<Pick<CliRuntimeOptions, "filesystemHost" | "boardHost">>;
+type BoardStateLocation = { readonly dir: string } | { readonly invalid: string };
+type RuntimeContext = Omit<RuntimeOptions, "boardStateDir"> & {
+  readonly boardStateLocation?: BoardStateLocation | undefined;
+};
+
+export const BOARD_STATE_DIR_ENV = "SUPERBEE_BOARD_STATE_DIR";
+
+function boardStateLocation(host: HostCommands, value: string | undefined): BoardStateLocation | undefined {
+  if (value === undefined) return undefined;
+  const { paths } = host;
+  const normalized = paths.normalize(value);
+  const native = paths.sep === "\\" ? normalized.replaceAll("\\", "/") : normalized;
+  const root = paths.parse(native).root;
+  const fullyQualified = paths.sep !== "\\" || /^[a-z]:\/$/i.test(root)
+    || /^\/\/[^/]+\/[^/]+\/$/.test(root) && !/^\/\/[?.]\//.test(native);
+  return Object.freeze(
+    paths.isAbsolute(value) && fullyQualified && !value.includes("\0") && host.isCanonicalAbsolutePath(native)
+      ? { dir: normalized }
+      : { invalid: value },
+  );
+}
 const contexts = new AsyncLocalStorage<Readonly<RuntimeContext> | undefined>();
 let defaultHost: HostCommands | undefined;
 let defaultPrivateState: PrivateStateHost | undefined;
@@ -55,15 +76,17 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 export function snapshotRuntimeOptions(
-  input: RuntimeContext,
+  input: RuntimeOptions,
 ): Readonly<RuntimeContext> {
   const copy = deepFreeze(
     JSON.parse(JSON.stringify(input.distribution)) as CliDistribution,
   );
   const key = JSON.stringify(copy);
+  const host = snapshot(input.host);
   const context = Object.freeze({
     distribution: copy,
-    host: snapshot(input.host),
+    host,
+    boardStateLocation: boardStateLocation(host, input.boardStateDir ?? process.env[BOARD_STATE_DIR_ENV]),
     privateState: snapshot(input.privateState),
     filesystemHost: input.filesystemHost
       ? snapshot(input.filesystemHost)
@@ -148,4 +171,8 @@ export function distributionLayouts(): readonly DistributionInstallLayout[] {
 }
 export function installCommand(): string {
   return `npm install -g ${distributionPackageName()}`;
+}
+
+export function currentBoardStateLocation(): BoardStateLocation | undefined {
+  return contexts.getStore()?.boardStateLocation;
 }

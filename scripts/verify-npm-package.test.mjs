@@ -21,6 +21,7 @@ import {
   verificationPolicy,
 } from "./verify-npm-package.mjs";
 import { publishedManifest } from "./pack-npm-package.mjs";
+import { assertBoardConflictReceipt } from "./verify-npm-package-windows.mjs";
 import { npmInvocation as uiBuildNpmInvocation } from "../packages/cli/scripts/embed-ui-assets.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -32,7 +33,7 @@ const receipt = {
 };
 const manifest = {
   name: "superbee",
-  os: ["darwin", "linux"],
+  os: ["darwin", "linux", "win32"],
   files: ["dist", "SKILL.md", "references", "NOTICE"],
   bin: {
     superbee: "dist/superbee.mjs",
@@ -64,6 +65,24 @@ test("installed-package expectations quote POSIX paths and refuse unsupported ho
   assert.equal(expectedQuotedShellArgument(".superbee", "linux"), "'.superbee'");
   assert.equal(expectedQuotedShellArgument("a'b", "darwin"), "'a'\\''b'");
   assert.throws(() => expectedQuotedShellArgument(".superbee", "win32"), /only macOS and Linux/);
+});
+
+test("the Windows proof reads the installed sync conflict's TOON receipt with --json", () => {
+  const stdout = [
+    "error:",
+    "  code: CONFLICT",
+    "  message: Committed to the board locally. Your work is saved.",
+    "  details:",
+    "    conflicts:",
+    "      shown: 1",
+    "      total: 1",
+    "      rows[1]{id,kind,title,yours,yours_body,theirs}:",
+    "        concepts/okf-alignment,Concept,OKF Alignment,C:/mounted board state/local.md,C:/mounted board state/local.body.md,kept",
+    "",
+  ].join("\r\n");
+  assert.doesNotThrow(() => assertBoardConflictReceipt(stdout, "concepts/okf-alignment"));
+  assert.throws(() => assertBoardConflictReceipt(stdout, "concepts/different"));
+  assert.throws(() => assertBoardConflictReceipt(stdout.replace("total: 1", "total: 2"), "concepts/okf-alignment"));
 });
 
 test("the retained tarball manifest carries the exact npm page bytes", () => {
@@ -230,11 +249,13 @@ test("root README teaches the literal create-only quickstart; npm README teaches
   );
   assert.match(
     npmReadme,
-    /supported Node\.js 22, 24, or 26 release \(22\.14\.0 minimum\) on macOS or Linux/,
-    "npm README must advertise every supported native platform",
+    /supported Node\.js 22, 24, or 26 release \(22\.14\.0 minimum\)/,
+    "npm README must advertise the full Node runtime policy",
   );
-  assert.match(npmReadme, /Native Windows is not supported by this package/);
-  assert.doesNotMatch(npmReadme, /Native Windows is supported|do not\s+need WSL/i);
+  assert.match(npmReadme, /^### Native Windows Git boards$/m);
+  assert.match(npmReadme, /Native Windows mode is experimental/);
+  assert.match(npmReadme, /Use macOS, Linux, or WSL2 for the full CLI/);
+  assert.match(npmReadme, /Native Git board sync requires Node\.js 22\.17\.0[\s\S]+24\.2\.0[\s\S]+Node\.js 26/);
 
 });
 
@@ -314,7 +335,7 @@ test("the expected tarball set is the fixed base plus the references tree", () =
   ]);
 });
 
-test("the package proof projects supported private-state roots and refuses Windows", () => {
+test("the full POSIX proof projects its private-state roots", () => {
   assert.equal(expectedPrivateStateRoot("/tmp/home", "linux"), "/tmp/home/.superbee-state");
   assert.throws(() => expectedPrivateStateRoot("/tmp/home", "win32"), /only macOS and Linux/);
 });
@@ -453,7 +474,7 @@ test("command resolution cannot fall through to a same-named host binary", async
   }
 });
 
-test("the maintained package verifier refuses Windows command resolution", async () => {
+test("the POSIX proof uses a separate command resolver from Windows", async () => {
   await assert.rejects(() => resolveCommandOnPath("superbee", {}, "win32"), /only macOS and Linux/);
 });
 

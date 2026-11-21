@@ -516,7 +516,7 @@ export type RepoTopLevelProbe =
   | { kind: "not_repo" }
   | { kind: "unavailable"; reason: string };
 
-function hasEnclosingGitMarker(dir: string): boolean {
+export function hasEnclosingGitMarker(dir: string): boolean {
   let current = path.resolve(dir);
   for (;;) {
     if (existsSync(path.join(current, ".git"))) return true;
@@ -2267,38 +2267,57 @@ export function fetchBoard(boardPath: string, fetchTimeoutMs: number = NETWORK_T
  *
  * Export files land at `<exportDir>/<relPath>` with the blob's exact bytes and a
  * `<relPath minus .md>.body.md` body-only companion for parseable concept docs; a repeat conflict
- * on a path with a saved copy lands beside it without replacing it (`saved-copies.ts`). Each
- * conflicted path gets one copy per run: the pre-rebase local tip's version when the tip has the
- * path, else the last stop's `:3:` version. The companion is the `doc update --body-file` input. Created 0700/0600; the caller passes a
- * per-bundle dir OUTSIDE the worktree (see cursor.ts `syncExportsDir`).
+ * on a path with a saved copy lands beside it without replacing it (`saved-copies.ts`).
+ * A conflict saves the pre-rebase local tip's bytes when it has the path. Otherwise it saves the
+ * bytes at the replay stop before advancing, then retains the last stop's outcome. The caller passes a per-clone directory outside the
+ * worktree and can guard access with its private filesystem policy.
  *
  * It refuses a rebase already in progress rather than driving one it did not start, and marks the
  * rebase as sync's own while it runs, so a later sync can tell a killed sync's rebase (healed)
  * from one a person started (refused).
  */
-export function rebaseResolving(boardPath: string, exportDir: string): FetchRebaseResolvingOutcome {
+export function rebaseResolving(
+  boardPath: string,
+  exportDir: string,
+  protectCopy?: <T>(save: () => T) => T,
+): FetchRebaseResolvingOutcome {
   if (detectStaleRebase(boardPath)) {
     throw new BoardGitError("CONFLICT", "a git rebase is already in progress in the board checkout; sync did not start another", {
       details: { reason: "rebase_in_progress" },
     });
   }
+  const saveCopy = (relPath: string, bytes: Buffer, isDoc: boolean, onCreate?: (file: string) => void) => {
+    const save = () => saveCopyWithBody(exportDir, relPath, bytes, isDoc, onCreate);
+    return protectCopy ? protectCopy(save) : save();
+  };
   const marker = worktreeGitPath(boardPath, SYNC_REBASE_MARKER);
   writeFileSync(marker, `${process.pid}\n`);
   try {
-    return rebaseResolvingMarked(boardPath, exportDir);
+    return rebaseResolvingMarked(boardPath, saveCopy, protectCopy);
   } finally {
     // A rebase still in progress here is one a later sync heals; it keeps the marker that says so.
     if (!detectStaleRebase(boardPath)) rmSync(marker, { force: true });
   }
 }
 
-function rebaseResolvingMarked(boardPath: string, exportDir: string): FetchRebaseResolvingOutcome {
+function rebaseResolvingMarked(
+  boardPath: string,
+  saveCopy: (relPath: string, bytes: Buffer, isDoc: boolean, onCreate?: (file: string) => void) => {
+    exportPath: string; bodyExportPath: string | null;
+  },
+  protectCopy?: <T>(save: () => T) => T,
+): FetchRebaseResolvingOutcome {
   const boardRef = boardRefOf(boardPath);
   // The fetch above is a LIVE view of origin, but there is no `origin/board` to rebase onto —
   // checked structurally (not by parsing rebase's failure prose) so this never collides with the
   // conflict-detection loop below.
   if (runGit(boardPath, ["rev-parse", "--verify", "--quiet", `refs/remotes/${boardRef}`]).status !== 0) {
     return { status: "no_upstream" };
+  }
+  if (protectCopy) {
+    const [ahead = 0, behind = 0] = mustGit(boardPath, ["rev-list", "--left-right", "--count", `HEAD...${boardRef}`])
+      .trim().split(/\s+/).map(Number);
+    if (ahead > 0 && behind > 0) protectCopy(() => {});
   }
   // Computed ONCE and reused for every rebase invocation in this function (never `--abort`, which
   // commits nothing): a replayed commit needs COMMITTER identity too, the same failure class as a
@@ -2315,7 +2334,7 @@ function rebaseResolvingMarked(boardPath: string, exportDir: string): FetchRebas
   // so it must be robust even against names the tab/newline-split parsers can't express — NUL
   // output is raw and unquoted BY DEFINITION, independent of any quotepath setting.
   const byPath = new Map<string, ResolvedConflict>();
-  const lastStopBytes = new Map<string, Buffer | null>();
+  const historicalCopies = new Set<string>();
   try {
     let stops = 0;
     while (detectStaleRebase(boardPath)) {
@@ -2334,25 +2353,15 @@ function rebaseResolvingMarked(boardPath: string, exportDir: string): FetchRebas
         continue;
       }
       for (const relPath of conflicted) {
-        // 1. EXPORT yours FIRST. The pre-rebase local tip's version, when it has the path, is
-        // your final version: a later local commit may have replayed cleanly over the kept
-        // upstream version, and neither the stop's `:3:` (theirs-in-rebase = the LOCAL version,
-        // the inversion) nor HEAD carries both. Saving the same bytes again at a later stop adds
-        // no file. Without it, the last stop's `:3:` version is saved once the loop ends.
-        // Bytes, not a utf8 string: the export must round-trip the blob
-        // byte-identically — a binary/invalid-UTF-8 blob routed through a string is corrupted
-        // (invalid sequences become U+FFFD).
+        // Export before changing the index or continuing. Prefer the pre-rebase tip's
+        // final bytes. If the tip deleted the path, preserve bytes from the current stop
+        // before the replay can drop them.
         const isDoc = isConceptDocPath(relPath);
-        let exportPath: string | null = null;
-        let bodyExportPath: string | null = null;
         const final = localTip === null ? null : runGitBytes(boardPath, ["show", `${localTip}:${relPath}`]);
-        if (final !== null && final.status === 0) {
-          ({ exportPath, bodyExportPath } = saveCopyWithBody(exportDir, relPath, final.stdout, isDoc));
-          lastStopBytes.delete(relPath);
-        } else {
-          const local = runGitBytes(boardPath, ["show", `:3:${relPath}`]);
-          lastStopBytes.set(relPath, local.status === 0 ? local.stdout : null);
-        }
+        const local = final?.status === 0 ? final : runGitBytes(boardPath, ["show", `:3:${relPath}`]);
+        const { exportPath, bodyExportPath } = local.status === 0
+          ? saveCopy(relPath, local.stdout, isDoc, final?.status === 0 ? undefined : (file) => historicalCopies.add(file))
+          : { exportPath: null, bodyExportPath: null };
         // 2+3. Keep the UPSTREAM (teammate's) version — explicit ref, never --ours/--theirs. An
         // upstream-side DELETION keeps upstream's state by removing the path instead.
         if (runGit(boardPath, ["cat-file", "-e", `refs/remotes/${boardRef}:${relPath}`]).status === 0) {
@@ -2386,13 +2395,21 @@ function rebaseResolvingMarked(boardPath: string, exportDir: string): FetchRebas
     }
     throw err;
   }
-  for (const [relPath, bytes] of lastStopBytes) {
-    const conflict = byPath.get(relPath)!;
-    if (bytes === null) continue;
-    const { exportPath, bodyExportPath } = saveCopyWithBody(exportDir, relPath, bytes, conflict.isDoc);
-    byPath.set(relPath, { ...conflict, exportPath, bodyExportPath });
+  // Earlier replay stops were saved before discarding them. Keep the final stop as the
+  // user-facing copy and never remove a copy that was already there before this rebase.
+  const conflicts = [...byPath.values()];
+  for (const { exportPath, bodyExportPath } of conflicts) {
+    if (exportPath) historicalCopies.delete(exportPath);
+    if (bodyExportPath) historicalCopies.delete(bodyExportPath);
   }
-  return { status: "resolved", conflicts: [...byPath.values()] };
+  for (const file of historicalCopies) {
+    try {
+      rmSync(file, { force: true });
+    } catch {
+      // A retained historical copy is safer than failing after a completed rebase.
+    }
+  }
+  return { status: "resolved", conflicts };
 }
 
 // ── private state: the publication backstop (specification F8) ───────────────
