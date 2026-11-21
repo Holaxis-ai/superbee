@@ -1211,6 +1211,26 @@ test("sync: two-clone founder e2e with optional board state and a read-only home
     assert.ok(!copies.has(saved), "clones shared a recovery file");
     assert.equal(await readFile(saved, "utf8"), localBytes);
     copies.set(saved, localBytes);
+    if (repo === a) {
+      const containing = path.dirname(saved);
+      await chmod(containing, 0o100);
+      try {
+        await assert.rejects(readdir(containing), { code: "EACCES" });
+        for (const args of [["--inspect", docId], ["--resolve", "take", "--doc", docId]]) {
+          const refused = run(repo, state, ...args);
+          const failure = refused.stdout + refused.stderr;
+          assert.equal(refused.status, 1, failure);
+          assert.match(failure, /board_conflict_storage_unavailable/);
+          assert.ok(failure.includes(containing), failure);
+          assert.match(failure, /help:.*SUPERBEE_BOARD_STATE_DIR/);
+        }
+        success(run(repo, state, "--pull-only"));
+        assert.equal(await readFile(saved, "utf8"), localBytes);
+      } finally {
+        await chmod(containing, 0o700);
+      }
+      assert.equal(success(run(repo, state, "--inspect", docId)).local.saved_at, saved);
+    }
     await assertBoardAt(repo, sharedTip, upstreamBytes);
     assert.equal(originBoardHead(topo), sharedTip);
   }

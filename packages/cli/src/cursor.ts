@@ -84,9 +84,9 @@ function privateBoardDirectory(dir: string, create: boolean): void {
   }
 }
 
-function boardStateError(dir: string, error: unknown, conflict = false): CliError {
+function boardStateError(dir: string, error: unknown, conflict?: "read" | "save"): CliError {
   const cause = error instanceof Error ? error.message : String(error);
-  return new CliError("RUNTIME", `cannot ${conflict ? "save Git board conflict copies" : "write Git board bookkeeping"} at ${dir}: ${cause}`, {
+  return new CliError("RUNTIME", `cannot ${conflict ? `${conflict} Git board conflict copies` : "write Git board bookkeeping"} at ${dir}: ${cause}`, {
     details: { reason: conflict ? "board_conflict_storage_unavailable" : "board_state_unavailable", path: dir },
     help: `Make the location writable and private or set ${BOARD_STATE_DIR_ENV} to a private, persistent directory outside the Git checkout, then rerun sync.`,
   });
@@ -178,7 +178,7 @@ export function saveBoardConflictCopy<T>(dir: string, checkout: string, save: ()
     accessSync(dir, constants.W_OK);
     return save();
   } catch (error) {
-    throw boardStateError(dir, error, true);
+    throw boardStateError(dir, error, "save");
   }
 }
 
@@ -188,7 +188,7 @@ export function readBoardConflictCopies(dir: string, checkout: string, required 
     return listSavedCopies(dir);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    const failure = boardStateError(dir, error, true);
+    const failure = boardStateError(dir, error, "read");
     if (required) throw failure;
     optionalWrites.getStore()?.(failure);
     return [];
