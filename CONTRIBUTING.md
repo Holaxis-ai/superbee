@@ -292,6 +292,8 @@ use their relevant targeted checks under the Assurance tier below. Full reposito
 suites are not the default local smoke; broader coverage follows the named-risk rule above. For
 exact CI lanes and reproduction components, use the table above and `scripts/ci-lanes.json`.
 
+For changes to Git board state, see the [focused board-state checks](packages/board-git/README.md#focused-board-state-checks).
+
 Redirect potentially large output to a temporary log and read the command's own exit code. A pipe
 to `tail` or `grep` reports the last process's status and can turn a failing check into a false
 green. On success, inspect nothing further; on failure, inspect matching failures and a bounded
