@@ -23,6 +23,12 @@ import {
   withCliFilesystemMutationLock,
 } from "../src/filesystem-runtime.js";
 import { createWorkspacesLoader } from "../src/ui/sharing.js";
+import {
+  assertBoardStatePlacement,
+  assertBundleOutsidePrivateState,
+  assertPathOutsidePrivateState,
+} from "../src/private-state-bundle-boundary.js";
+import { canonicalUserStateDir } from "../src/user-state.js";
 import { commandToken, commandQuoted } from "../src/command-text.js";
 import type { CliRuntimeOptions } from "../src/runtime-types.js";
 
@@ -101,6 +107,30 @@ test("immutable execution snapshots isolate host methods across overlapping awai
     /conflicting configuration/,
   );
 });
+test("a runtime board state directory cannot overlap a checkout or account state", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "superbee-board-state-placement-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const checkout = join(root, "checkout");
+  const configured = (boardStateDir: string) =>
+    snapshotRuntimeOptions({ ...options("board-state", []), boardStateDir });
+  runWithRuntime(configured(join(checkout, "board state")), () => {
+    assert.throws(() => assertBoardStatePlacement(checkout), /overlaps/);
+    assert.throws(() => assertBundleOutsidePrivateState(checkout), /enclose/);
+  });
+  runWithRuntime(configured(root), () => {
+    assert.throws(() => assertBoardStatePlacement(checkout), /overlaps/);
+  });
+  runWithRuntime(configured(join(canonicalUserStateDir(), "board state")), () => {
+    assert.throws(() => assertBoardStatePlacement(checkout), /overlaps/);
+  });
+  const sibling = join(root, "board state");
+  runWithRuntime(configured(sibling), () => {
+    assert.doesNotThrow(() => assertBoardStatePlacement(checkout));
+    assert.throws(() => assertPathOutsidePrivateState(join(sibling, "record.json")), /private/);
+  });
+});
+
 test("refused values use the shared quoted placeholder without losing command brands", () => {
   const a = options("A", []);
   a.host.renderShellToken = (value) =>

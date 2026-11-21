@@ -19,10 +19,12 @@
 //      though the keying alone would now keep the files apart.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, rename, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, rename, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { BUILT_COMMAND, commandEnv } from "./support/command-batch.js";
 import { withIsolatedUserEnv } from "./support/user-env.js";
 import { initBundle } from "@superbee/core";
 
@@ -1089,57 +1091,132 @@ test("sync: a run that pushes commits left from an earlier run counts their docu
   }
 });
 
-test("sync: two-clone founder e2e — A writes+syncs (full), B --pull-only sees the attributed delta, both idempotent", async () => {
+test("sync: two-clone founder e2e with optional board state and a read-only home", {
+  skip: process.getuid?.() === 0 || process.platform === "win32",
+}, async (t) => {
   const topo = await makeTwoCloneTopology();
-  const { homes, cleanup } = await tempHomes(2);
-  const [homeA, homeB] = homes;
-  try {
-    // The REAL authoring path (was harness hand-seeded actor frontmatter, which masked the
-    // attribution gap this suite now pins — see the dedicated actor-attribution e2e below).
-    await cliDocWrite(topo.a.board, "notes/founder", ["--type", "Note", "--title", "Founder note", "--body", "# hi\n", "--actor", "human:mike"]);
+  const { a, b } = topo;
+  const home = path.join(topo.dir, "home");
+  const state = path.join(topo.dir, "mounted board state");
+  const exports = path.join(state, "exports");
+  const alternateState = path.join(topo.dir, "separate mount", "board state");
+  const original = originBoardHead(topo);
+  const docId = "notes/founder";
+  const docPath = `${docId}.md`;
+  const remoteBytes = () => git(topo.origin, ["show", `refs/heads/${BOARD_BRANCH}:${docPath}`]);
+  const assertBoardAt = async (repo: BoardRepo, tip: string, bytes: string) => {
+    assert.equal(boardHead(repo), tip);
+    assert.equal(await readBoardFile(repo, docPath), bytes);
+    assert.equal(git(repo.board, ["status", "--porcelain"]), "");
+  };
+  const launch = (repo: BoardRepo, stateDir: string | undefined, argv: string[]) => {
+    const result = spawnSync(process.execPath, [BUILT_COMMAND, ...argv], {
+      cwd: repo.root,
+      env: commandEnv(home, { SUPERBEE_BOARD_STATE_DIR: stateDir }),
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.signal, null, result.stderr);
+    return result;
+  };
+  const run = (repo: BoardRepo, stateDir: string | undefined, ...args: string[]) =>
+    launch(repo, stateDir, ["sync", "--dir", repo.root, "--json", ...args]);
+  const success = (result: ReturnType<typeof launch>) => {
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    return JSON.parse(result.stdout);
+  };
 
-    const first = await runSync(homeA!, ["--dir", topo.a.root]);
-    assert.equal(first.err, undefined, first.err?.message);
-    assert.match(first.out, /committed: 1/);
-    assert.match(first.out, /pushed: 1/);
-    assert.match(first.out, /actor: "human:mike"/);
-    // The one sync envelope, appended: the document sent, nothing received.
-    assert.match(first.out, /\nhome: git\nsent: 1\nreceived: 0\nconflicts: 0\nheld: 0\n/);
-    // Finding 2: A is the AUTHOR of notes/founder, not a recipient of it — A's own receipt must
-    // report pulled:0 and must NOT list its own just-committed doc as "incoming" (nothing arrived
-    // FROM ORIGIN this run; see the dedicated finding-2 regression test below for the isolated case).
-    assert.match(first.out, /pulled: 0/);
-    assert.ok(!first.out.includes("notes/founder"), "A's own authored doc must not appear as its own incoming");
-
-    // Idempotent re-run on A: nothing new, definitive "already up to date".
-    const again = await runSync(homeA!, ["--dir", topo.a.root]);
-    assert.equal(again.out, `sync: already up to date\n${envelopeToon("git")}`);
-
-    // B's FIRST-EVER sync (no stored cursor yet) — must still see the attributed delta, not an
-    // empty one, since the diff baseline falls back to B's own pre-sync HEAD.
-    const bFirst = await runSync(homeB!, ["--dir", topo.b.root, "--pull-only"]);
-    assert.equal(bFirst.err, undefined, bFirst.err?.message);
-    assert.match(bFirst.out, /committed: 0/);
-    assert.match(bFirst.out, /pushed: 0/);
-    assert.match(bFirst.out, /pulled: 1/);
-    assert.match(bFirst.out, /\nhome: git\nsent: 0\nreceived: 1\n/);
-    assert.match(bFirst.out, /notes\/founder/);
-    assert.match(bFirst.out, /human:mike/);
-
-    // Idempotent re-run on B: nothing new.
-    const bAgain = await runSync(homeB!, ["--dir", topo.b.root, "--pull-only"]);
-    assert.equal(bAgain.out, `sync: already up to date\n${envelopeToon("git")}`);
-
-    // The awareness cache/cursor really landed under B's own home (U4's future read path).
-    const key = bundleKey({ remoteUrl: topo.origin, subpath: "", checkoutRoot: topo.b.board });
-    const state = await readSyncState(key, homeB!);
-    assert.ok(state.cursor, "B's cursor was written");
-    assert.equal(state.cursor!.token, boardHead(topo.b));
-    assert.equal(state.cache?.unpushedCount, 0);
-  } finally {
-    await cleanup();
+  await mkdir(home, { mode: 0o500 });
+  t.after(async () => {
+    await chmod(home, 0o700);
     await topo.cleanup();
+  });
+  await mkdir(state, { mode: 0o700 });
+  await mkdir(alternateState, { mode: 0o700, recursive: true });
+  await assert.rejects(writeFile(path.join(home, "denial-probe"), ""), { code: "EACCES" });
+
+  success(launch(a, state, ["doc", "write", docId, "--type", "Note", "--title", "Founder note",
+    "--body", "# hi\n", "--actor", "human:mike", "--dir", a.board, "--json"]));
+  const firstBytes = await readBoardFile(a, docPath);
+  const sent = success(run(a, state));
+  assert.equal(sent.actor, "human:mike");
+  assert.deepEqual([sent.committed, sent.pushed, sent.pulled], [1, 1, 0]);
+  assert.deepEqual([sent.home, sent.sent, sent.received, sent.conflicts, sent.held], ["git", 1, 0, 0, 0]);
+  assert.deepEqual(sent.incoming.rows, []);
+  const firstTip = boardHead(a);
+  assert.notEqual(firstTip, original);
+  assert.equal(originBoardHead(topo), firstTip);
+  assert.equal(remoteBytes(), firstBytes);
+  await assertBoardAt(a, firstTip, firstBytes);
+
+  assert.equal(boardHead(b), original);
+  const pulled = success(run(b, alternateState, "--pull-only"));
+  assert.deepEqual([pulled.committed, pulled.pushed, pulled.pulled], [0, 0, 1]);
+  assert.deepEqual([pulled.home, pulled.sent, pulled.received], ["git", 0, 1]);
+  assert.equal(pulled.incoming.rows[0].id, docId);
+  assert.equal(pulled.incoming.rows[0].actor, "human:mike");
+  assert.equal(git(b.board, ["rev-parse", "origin/board"]).trim(), firstTip);
+  assert.equal(originBoardHead(topo), firstTip);
+  await assertBoardAt(b, firstTip, firstBytes);
+  for (const [repo, root] of [[a, state], [b, alternateState]] as const) {
+    const { hint: _hint, ...receipt } = success(run(repo, root, ...(repo === b ? ["--pull-only"] : [])));
+    assert.deepEqual(receipt, { sync: "already up to date", schema_version: 2, home: "git",
+      sent: 0, received: 0, conflicts: 0, held: 0, next: [] });
   }
+  const [record] = (await readdir(alternateState)).filter((name) => name.endsWith(".json"));
+  assert.ok(record);
+  const awareness = JSON.parse(await readFile(path.join(alternateState, record), "utf8"));
+  assert.equal(awareness.cursor.token, firstTip);
+  assert.equal(awareness.cache.unpushedCount, 0);
+
+  // A safe fast-forward can report the Git delta when HOME-backed awareness is unavailable.
+  await modifyBoardDoc(a, docId, { body: "Second edit on origin.\n" });
+  const upstreamBytes = await readBoardFile(a, docPath);
+  const sharedTip = commitBoard(a, "Advance origin without CLI bookkeeping");
+  pushBoard(a);
+  const degraded = run(b, undefined, "--pull-only");
+  const received = success(degraded);
+  assert.deepEqual([received.pulled, received.pushed], [1, 0]);
+  assert.match(degraded.stderr, /state|awareness/i);
+  await assertBoardAt(b, sharedTip, upstreamBytes);
+  assert.equal(originBoardHead(topo), sharedTip);
+
+  const copies = new Map<string, string>();
+  for (const repo of [a, b]) {
+    git(repo.board, ["reset", "--hard", firstTip]);
+    await modifyBoardDoc(repo, docId, { body: `Private edit from clone ${repo.name}.\n` });
+    const localBytes = await readBoardFile(repo, docPath);
+    const localTip = commitBoard(repo, "Save the local edit before sync");
+    if (repo === a) {
+      // The per-clone record remains writable. An invalid export root must still block convergence.
+      await rm(exports, { recursive: true, force: true });
+      await writeFile(exports, "not an export directory");
+      const refused = run(repo, state);
+      const failure = refused.stdout + refused.stderr;
+      assert.equal(refused.status, 1, failure);
+      assert.match(failure, /board_conflict_storage_unavailable/);
+      assert.ok(failure.includes(exports), failure);
+      assert.match(failure, /help:.*SUPERBEE_BOARD_STATE_DIR/);
+      await assertBoardAt(repo, localTip, localBytes);
+      assert.equal(originBoardHead(topo), sharedTip);
+      assert.equal(isMidRebase(repo), false);
+      await rm(exports);
+    }
+    const conflicted = run(repo, state);
+    assert.equal(conflicted.status, 5, conflicted.stdout + conflicted.stderr);
+    const inspected = success(run(repo, state, "--inspect", docId));
+    const saved: string = inspected.local.saved_at;
+    assert.ok(saved.startsWith(exports + path.sep), saved);
+    assert.ok(!copies.has(saved), "clones shared a recovery file");
+    assert.equal(await readFile(saved, "utf8"), localBytes);
+    copies.set(saved, localBytes);
+    await assertBoardAt(repo, sharedTip, upstreamBytes);
+    assert.equal(originBoardHead(topo), sharedTip);
+  }
+  for (const [saved, bytes] of copies) assert.equal(await readFile(saved, "utf8"), bytes);
+  assert.equal(remoteBytes(), upstreamBytes);
+  assert.deepEqual(await readdir(home), []);
 });
 
 test("sync: actor attribution e2e carries a conforming human actor through the receipt, commit, and incoming rows", async () => {
