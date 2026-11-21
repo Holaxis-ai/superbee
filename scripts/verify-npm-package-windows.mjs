@@ -88,7 +88,7 @@ async function prove({ expectedDigest, expectedSource, scratch }) {
   const privateRoot = path.join(home.LOCALAPPDATA, "Superbee");
   const boardState = path.join(scratch, "mounted board state");
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
-    !/^(?:NODE_OPTIONS|NODE_PATH|npm_config_.*|GIT_.*|SUPERBEE_BOARD_STATE_DIR)$/i.test(name),
+    !/^(?:NODE_OPTIONS|NODE_PATH|npm_config_.*|GIT_.*|SUPERBEE_NO_AUTOPULL|SUPERBEE_BOARD_STATE_DIR)$/i.test(name),
   ));
   const env = {
     ...inherited,
@@ -216,6 +216,28 @@ async function prove({ expectedDigest, expectedSource, scratch }) {
     assert.deepEqual([advanced.committed, advanced.pushed], [1, 1]);
     const upstreamTip = await ref(cloneA, "HEAD");
     assert.notEqual(upstreamTip, firstTip);
+    // Read from the explicitly pulled checkout while origin is ahead. A fresh board-state
+    // directory leaves no freshness cursor to suppress an accidental opportunistic pull.
+    const readState = path.join(scratch, "unused document read state");
+    const readEnv = { ...boardEnv, SUPERBEE_BOARD_STATE_DIR: readState };
+    delete readEnv.SUPERBEE_NO_AUTOPULL;
+    const readOptions = { cwd: scratch, env: readEnv };
+    const readStarted = performance.now();
+    const documentResult = await cli(["doc", "read", docId, "--dir", cloneB], readOptions);
+    const missing = await installed(["doc", "read", "concepts/missing", "--dir", cloneB, "--json"],
+      { ...readOptions, expected: 6 });
+    console.log(`WINDOWS_PROOF_DOC_READ_PAIR_MS ${Math.round(performance.now() - readStarted)}`);
+    const text = firstBytes.toString("utf8");
+    const header = text.match(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---\r?\n/);
+    assert.ok(header, "the known sample fixture has YAML frontmatter");
+    assert.deepEqual(
+      [documentResult.id, documentResult.body, documentResult.head_version],
+      [docId, text.slice(header[0].length), `sha256:${createHash("sha256").update(firstBytes).digest("hex")}`],
+    );
+    assert.match(missing.stdout, /^error:\r?\n  code: NOT_FOUND\r?\n/);
+    await assert.rejects(lstat(readState), { code: "ENOENT" });
+    await assertCheckout(cloneB, firstTip, firstBytes);
+    await assertRemote(upstreamTip, upstreamBytes);
     await git(cloneA, ["reset", "--hard", firstTip]);
 
     const recovered = new Map();
@@ -262,7 +284,7 @@ if (isMainModule(import.meta.url)) {
   const started = Date.now();
   try {
     const version = await prove({ expectedDigest, expectedSource, scratch });
-    const outcome = `Native Windows board push, pull and conflict recovery with superbee@${version} succeeded in ${Date.now() - started} ms. Source ${expectedSource}, tarball sha256:${expectedDigest}.\n`;
+    const outcome = `Native Windows board push, pull, document read and conflict recovery with superbee@${version} succeeded in ${Date.now() - started} ms. Source ${expectedSource}, tarball sha256:${expectedDigest}.\n`;
     console.log(outcome.trim());
   } finally {
     await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });

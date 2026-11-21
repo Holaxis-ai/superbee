@@ -136,3 +136,60 @@ test("sync respects composed board scope and process-group capability", () => is
     await rm(folder, { recursive: true, force: true });
   }
 `));
+
+test("scoped doc read stays at the explicit standalone checkout and never requests freshness", () => isolated(`
+  import { readFile } from "node:fs/promises";
+  import { join } from "node:path";
+  import { docRead } from ${JSON.stringify(url("commands/doc/read"))};
+  import { runWithRuntime, snapshotRuntimeOptions } from ${JSON.stringify(url("runtime-context"))};
+  import { makeTwoCloneTopology, git } from
+    ${JSON.stringify(new URL("../../board-git/test/git-harness.ts", import.meta.url).href)};
+
+  const topo = await makeTwoCloneTopology();
+  try {
+    const relativeBoard = " standalone reader";
+    const reader = join(topo.dir, relativeBoard);
+    git(topo.dir, ["clone", "--branch", "board", topo.origin, reader]);
+    const id = "tasks/seed-one";
+    const config = options();
+    config.distribution = { ...descriptor, docReadExistingGitBoardsOnly: true };
+    await runWithRuntime(snapshotRuntimeOptions(config), async () => {
+      let stdout = "";
+      const deps = {
+        stdout: value => { stdout += value; },
+        autoPull: async () => { throw new Error("scoped read must not autopull"); },
+      };
+      const read = (dir, ...args) => docRead([id, "--dir", dir, "--json", ...args], deps);
+      const target = join(topo.dir, "prohibited-output");
+      for (const channel of [["--out", target], ["--body-out", "-"], ["--rendered-out", target], ["--field", "title"]]) {
+        await assert.rejects(read(reader, ...channel), { code: "USAGE" });
+      }
+      await assert.rejects(read(topo.a.root), /root of an existing standalone/);
+      await assert.rejects(read(topo.a.board), /root of an existing standalone/);
+      await assert.rejects(read(join(reader, "tasks")), /root of an existing standalone/);
+      await assert.rejects(docRead([id, "--json"], deps), { code: "USAGE" });
+      await assert.rejects(docRead([id, "--dir", reader], deps), { code: "USAGE" });
+      await assert.rejects(readFile(target), { code: "ENOENT" });
+      assert.equal(stdout, "");
+      const cwd = process.cwd();
+      process.chdir(topo.dir);
+      try {
+        await read(relativeBoard);
+        await assert.rejects(read(relativeBoard, "--offset", "999999"), (error) => {
+          assert.equal(error.code, "USAGE");
+          assert.ok(error.help.endsWith(" doc read tasks/seed-one --offset 0 --dir ' standalone reader' --json"), error.help);
+          return true;
+        });
+      } finally {
+        process.chdir(cwd);
+      }
+      const result = JSON.parse(stdout);
+      assert.equal(result.id, id);
+      stdout = "";
+      await read(reader, "--offset", "0", "--expected-version", result.head_version);
+      assert.equal(JSON.parse(stdout).body, result.body);
+    });
+  } finally {
+    await topo.cleanup();
+  }
+`));
