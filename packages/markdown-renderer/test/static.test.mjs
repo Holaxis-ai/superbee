@@ -165,7 +165,7 @@ test("interactive rendering and the bridge document adapter do not gain image lo
     const rendered = renderMarkdown(body, { fromId: "slides/example", onNavigateDoc: () => {}, profile, imageAssets });
     assert.equal(new JSDOM(renderToStaticMarkup(rendered.element)).window.document.querySelector("img"), null);
   }
-  const rendered = renderDocumentToStaticHtml({ id: "slides/example", body }, { imageAssets });
+  const rendered = renderDocumentToStaticHtml({ id: "slides/example", body, imageAssets });
   assert.equal(new JSDOM(rendered.html).window.document.querySelector("img"), null);
 });
 
