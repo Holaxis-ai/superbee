@@ -122,6 +122,21 @@ const rows: Array<{ name: string; run: () => unknown | Promise<unknown> }> = [
       assert.equal(result.outcome.kind, "unknown"); assert.ok(result.diagnostic);
     }
   } },
+  { name: "receipt validation preserves capture and binding checks for decoded prepared deliveries", run() {
+    const p = prepared(), r = receipt(p);
+    const next = prepareBodyDelivery(input("next", "edit-2"), { prepared: p, receipt: r });
+    assert.ok(Object.isFrozen(next));
+    assert.ok(Object.isFrozen(next.operation));
+    assert.ok(next.predecessor && Object.isFrozen(next.predecessor));
+
+    const decoded = JSON.parse(JSON.stringify(p)) as PreparedBodyDelivery;
+    const lookalike = Object.freeze({ ...decoded, local: token });
+    assert.throws(() => validateBodyReceipt(lookalike, null), /local content hash mismatch/);
+    for (const prior of [p, decoded]) {
+      assert.deepEqual(validateBodyReceipt(prior, r), r);
+      assert.throws(() => validateBodyReceipt(prior, { ...r, requestId: "other" }), /receipt binding mismatch/);
+    }
+  } },
   { name: "strict inputs reject extra operations fields identities and oversized bytes before calls", async run() {
     const p = prepared(); let calls = 0;
     const t: BodyDeliveryTransport = { submit: async () => { calls++; return { kind: "unknown" }; }, lookup: async () => { calls++; return null; } };
