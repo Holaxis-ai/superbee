@@ -5,8 +5,9 @@ import { appendFile, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpat
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { assertArtifact, assertIdentity } from "../packages/package-verification/src/harness.mjs";
+import { installedLockBoundaryPreloadSource, waitForJsonFile } from "./installed-lock-boundary.mjs";
 import { isMainModule } from "./is-main-module.mjs";
 
 const exec = promisify(execFile);
@@ -80,6 +81,78 @@ export function assertBoardConflictReceipt(stdout, id) {
   assert.ok(lines.includes(`        - id: ${id}`), stdout);
   assert.ok(lines.includes("          frontmatter_differs[1]: title"), stdout);
   assert.ok(lines.includes("          theirs: kept"), stdout);
+}
+
+async function proveGuardedUpdate({ scratch, entrypoint, options, board, id, snapshot, originalBytes }) {
+  const barrier = path.join(scratch, "guarded update barrier");
+  const preload = path.join(barrier, "installed-lock-boundary-preload.mjs");
+  const writerStates = {
+    holder: path.join(scratch, "unused holder board state"),
+    contender: path.join(scratch, "unused contender board state"),
+  };
+  const winnerTitle = "Installed guarded update winner";
+  await mkdir(barrier);
+  await writeFile(preload, installedLockBoundaryPreloadSource());
+  const start = (role, title, expected) => run("node", [
+    "--import", pathToFileURL(preload).href, entrypoint,
+    "doc", "update", id, "--dir", board, "--expected-version", snapshot.head_version,
+    "--title", title, "--actor", "openai/codex", "--json",
+  ], {
+    ...options,
+    expected,
+    env: {
+      ...options.env,
+      SUPERBEE_BOARD_STATE_DIR: writerStates[role],
+      ASLITE_INSTALLED_LOCK_BARRIER_DIR: barrier,
+      ASLITE_INSTALLED_LOCK_BARRIER_ROLE: role,
+    },
+  });
+  const docFile = path.join(board, `${id}.md`);
+  const marker = (name) => waitForJsonFile(path.join(barrier, name));
+  const started = performance.now();
+  const writers = Promise.allSettled([
+    start("holder", winnerTitle, 0),
+    start("contender", "Installed guarded update contender", 5),
+  ]);
+  let barrierFailure;
+  let lockPath;
+  try {
+    const [holder, contender] = await Promise.all([
+      marker("holder.acquired.json"),
+      marker("contender.contended.json"),
+    ]);
+    lockPath = holder.lock_path;
+    assert.equal(contender.lock_path, lockPath);
+    assert.equal(contender.fs_code, "EEXIST");
+    assert.ok((await lstat(lockPath)).isDirectory(), "holder must still own the production lock");
+    await assert.rejects(lstat(path.join(barrier, "contender.unexpected-acquire.json")), { code: "ENOENT" });
+    assert.deepEqual(await readFile(docFile), originalBytes, "both writers must wait for the production lock");
+  } catch (error) {
+    barrierFailure = error;
+  } finally {
+    await writeFile(path.join(barrier, "holder.release"), "release\n");
+  }
+  const [winner, loser] = await writers;
+  console.log(`WINDOWS_PROOF_DOC_UPDATE_RACE_MS ${Math.round(performance.now() - started)}`);
+  for (const result of [winner, loser]) {
+    if (result.status === "rejected") throw result.reason;
+  }
+  if (barrierFailure) throw barrierFailure;
+  const receipt = JSON.parse(winner.value.stdout);
+  assert.deepEqual([receipt.doc, receipt.id, receipt.changed], ["updated", id, true]);
+  const bytes = await readFile(docFile);
+  const actual = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  assert.notEqual(actual, snapshot.head_version);
+  assert.equal(receipt.version, actual);
+  const errorLines = loser.value.stdout.split(/\r?\n/);
+  assert.deepEqual(errorLines.slice(0, 2), ["error:", "  code: STALE_HEAD"]);
+  assert.ok(errorLines.includes(`    expected: "${snapshot.head_version}"`), loser.value.stdout);
+  assert.ok(errorLines.includes(`    actual: "${actual}"`), loser.value.stdout);
+  await assert.rejects(lstat(lockPath), { code: "ENOENT" });
+  for (const state of Object.values(writerStates)) {
+    await assert.rejects(lstat(state), { code: "ENOENT" });
+  }
+  return { actual, winnerTitle };
 }
 
 async function prove({ expectedDigest, expectedSource, scratch }) {
@@ -213,6 +286,9 @@ async function prove({ expectedDigest, expectedSource, scratch }) {
     await assertCheckout(cloneB, firstTip, firstBytes);
     await assertRemote(firstTip, firstBytes);
     assert.equal((await readdir(boardState)).filter((name) => name.endsWith(".json")).length, 2);
+    const cloneC = path.join(scratch, "standalone guarded update");
+    await git(scratch, ["clone", "--no-local", "--branch", "board", "--config", "core.autocrlf=false", origin, cloneC]);
+    await assertCheckout(cloneC, firstTip, firstBytes);
 
     const firstText = firstBytes.toString("utf8");
     assert.ok(firstText.includes(`title: ${docTitle}`), "sample document must have the expected title");
@@ -259,6 +335,7 @@ async function prove({ expectedDigest, expectedSource, scratch }) {
     );
     assert.match(missing.stdout, /^error:\r?\n  code: NOT_FOUND\r?\n/);
     await assertReadOnlyState();
+
     await git(cloneA, ["reset", "--hard", firstTip]);
 
     const recovered = new Map();
@@ -288,6 +365,26 @@ async function prove({ expectedDigest, expectedSource, scratch }) {
     for (const { saved, localBytes } of recovered.values()) {
       assert.deepEqual(await readFixtureFile(saved), localBytes);
     }
+
+    const writeState = path.join(scratch, "unused guarded update read state");
+    const writeOptions = { cwd: scratch, env: { ...readEnv, SUPERBEE_BOARD_STATE_DIR: writeState } };
+    const snapshot = await cli(["doc", "read", docId, "--dir", cloneC], writeOptions);
+    const { actual, winnerTitle } = await proveGuardedUpdate({
+      scratch, entrypoint, options: writeOptions, board: cloneC, id: docId,
+      snapshot, originalBytes: firstBytes,
+    });
+    const updated = await cli(["doc", "read", docId, "--dir", cloneC], writeOptions);
+    assert.deepEqual(
+      [updated.id, updated.title, updated.body, updated.head_version],
+      [docId, winnerTitle, snapshot.body, actual],
+    );
+    assert.equal(await ref(cloneC, "HEAD"), firstTip);
+    assert.equal(await ref(cloneC, trackingRef), firstTip);
+    await assert.rejects(lstat(path.join(cloneC, ".git", "FETCH_HEAD")), { code: "ENOENT" });
+    assert.equal((await git(cloneC, ["status", "--porcelain"])).trimEnd(), ` M ${docPath}`);
+    await assertRemote(upstreamTip, upstreamBytes);
+    await assert.rejects(lstat(writeState), { code: "ENOENT" });
+    await assert.rejects(readdir(privateRoot), denied);
   } finally {
     await acl("/remove:d", account);
   }
@@ -305,7 +402,7 @@ if (isMainModule(import.meta.url)) {
   const started = Date.now();
   try {
     const version = await prove({ expectedDigest, expectedSource, scratch });
-    const outcome = `Native Windows board push, pull, list, document read and conflict recovery with superbee@${version} succeeded in ${Date.now() - started} ms. Source ${expectedSource}, tarball sha256:${expectedDigest}.\n`;
+    const outcome = `Native Windows board push, pull, list, document read, guarded update and conflict recovery with superbee@${version} succeeded in ${Date.now() - started} ms. Source ${expectedSource}, tarball sha256:${expectedDigest}.\n`;
     console.log(outcome.trim());
   } finally {
     await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });

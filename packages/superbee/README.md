@@ -61,8 +61,9 @@ npm install -g superbee@next
 
 ### Native Windows Git boards
 
-Native Git board sync, listing, and document reads require Node.js 22.17.0 or later in the 22
-line, 24.2.0 or later in the 24 line, or Node.js 26. These releases use libuv 1.51.0 or newer, which fixes a Windows file identity
+Native Git board operations require Node.js 22.17.0 or later in the 22
+line, 24.2.0 or later in the 24 line, or Node.js 26. The same requirement applies to guarded
+document updates. These releases use libuv 1.51.0 or newer, which fixes a Windows file identity
 check needed when reading board state. [libuv changelog](https://github.com/libuv/libuv/blob/v1.51.0/ChangeLog)
 
 The `superbee` package from this source also installs on native Windows. To try it before a
@@ -80,7 +81,25 @@ superbee doc read concepts/example --dir "C:\path to\board" --json
 
 Use an ID from the list in place of `concepts/example`. Both commands read the local checkout
 without fetching. `doc read` reports the local `head_version`. Use the JSON paging options in
-`superbee doc read --help` to read a long body in pieces.
+`superbee doc read --help` to read a long body in pieces. Pass that version to a local update:
+
+```powershell
+superbee doc update concepts/example --dir "C:\path to\board" --expected-version "<head_version>" --title "Updated title" --json
+```
+
+A stale version returns `STALE_HEAD` (exit 5) and leaves the newer document intact.
+Use `superbee sync` with the same board root to share the update.
+
+To edit an existing document, pass its `head_version` from `doc read` as `--expected-version`
+to `doc update`. Use the same explicit standalone board root and `--json`.
+
+```powershell
+superbee doc update concepts/example --dir "C:\path to\board" --expected-version "<head_version>" --title "Revised title" --json
+```
+
+If the document has changed, the update exits 5 with `STALE_HEAD`. Read the current document
+and review your intended change before retrying. A successful update edits the local checkout.
+Use `superbee sync` when you are ready to share the edit.
 
 Native Windows mode is experimental. Use WSL2 for the full CLI, including setup, hosted
 checkouts, board establishment, and boards with a configured pre-push sync gate. If such a gate
