@@ -225,3 +225,86 @@ test("scoped list and doc read stay at the explicit standalone checkout and neve
     await topo.cleanup();
   }
 `));
+
+test("scoped doc update validates its board and version before reading input, then uses the ordinary CAS", () => isolated(`
+  import { mkdir, readFile, rename } from "node:fs/promises";
+  import { join } from "node:path";
+  import { doc } from ${JSON.stringify(url("commands/doc"))};
+  import { runWithRuntime, snapshotRuntimeOptions } from ${JSON.stringify(url("runtime-context"))};
+  import { makeTwoCloneTopology, git } from
+    ${JSON.stringify(new URL("../../board-git/test/git-harness.ts", import.meta.url).href)};
+
+  const topo = await makeTwoCloneTopology();
+  try {
+    const board = join(topo.dir, "standalone writer");
+    git(topo.dir, ["clone", "--branch", "board", topo.origin, board]);
+    const id = "tasks/seed-one";
+    const file = join(board, id + ".md");
+    const before = await readFile(file, "utf8");
+    const tip = git(board, ["rev-parse", "HEAD"]);
+    const config = options();
+    config.existingGitBoard = { usage: "Select an existing Git board." };
+    await runWithRuntime(snapshotRuntimeOptions(config), async () => {
+      let stdout = "";
+      const deps = {
+        stdout: value => { stdout += value; },
+        readStdin: async () => { assert.fail("this command must not read stdin"); },
+      };
+      const update = (...args) => doc(["update", id, "--json", ...args], deps);
+      const read = async () => {
+        stdout = "";
+        await doc(["read", id, "--dir", board, "--json"], deps);
+        const result = JSON.parse(stdout);
+        stdout = "";
+        return result;
+      };
+      const { head_version: originalVersion, body } = await read();
+      await assert.rejects(update("--dir", board), /requires --expected-version/);
+      await assert.rejects(update("--dir", board, "--expected-version", " "), /given an empty value/);
+      await assert.rejects(update("--expected-version", originalVersion), /root of an existing standalone/);
+      for (const invalid of [topo.a.root, topo.a.board, join(board, "tasks")]) {
+        await assert.rejects(update("--dir", invalid, "--expected-version", originalVersion), /root of an existing standalone/);
+      }
+      assert.equal(await readFile(file, "utf8"), before);
+
+      await update("--dir", board, "--expected-version", originalVersion, "--title", "Guarded update", "--actor", "openai/codex");
+      const receipt = JSON.parse(stdout);
+      const winner = await readFile(file, "utf8");
+      assert.equal(receipt.doc, "updated");
+      assert.equal(receipt.changed, true);
+      assert.notEqual(receipt.version, originalVersion);
+      assert.match(winner, /openai\\/codex/);
+      const latest = await read();
+      assert.equal(latest.head_version, receipt.version);
+      assert.equal(latest.body, body);
+      await assert.rejects(
+        update("--dir", board, "--expected-version", originalVersion, "--body-file", join(topo.dir, "absent body")),
+        error => {
+          assert.equal(error.code, "STALE_HEAD");
+          assert.equal(error.exitCode, 5);
+          assert.deepEqual(error.details, { expected: originalVersion, actual: receipt.version });
+          assert.match(error.help, /--dir .*standalone writer.* --json$/);
+          return true;
+        },
+      );
+      assert.equal(await readFile(file, "utf8"), winner);
+      assert.equal(git(board, ["rev-parse", "HEAD"]), tip);
+
+      const movedBoard = join(topo.dir, "moved standalone writer");
+      await assert.rejects(
+        doc(["update", id, "--dir", board, "--expected-version", receipt.version], {
+          readStdin: async () => {
+            await rename(board, movedBoard);
+            await mkdir(board);
+            return body;
+          },
+        }),
+        { code: "CONFLICT", message: /selected target identity changed after classification/ },
+      );
+      assert.equal(await readFile(join(movedBoard, id + ".md"), "utf8"), winner);
+      await assert.rejects(readFile(file), { code: "ENOENT" });
+    });
+  } finally {
+    await topo.cleanup();
+  }
+`));

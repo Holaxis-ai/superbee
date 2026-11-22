@@ -273,7 +273,7 @@ export async function main(argv: string[]): Promise<void> {
     if (command === undefined || command === "--help" || command === "-h" || command === "help") {
       const inv = cliInvocation();
       process.stdout.write(`${board.usage}\n${board.requirements ? `${board.requirements}\n` : ""}`
-        + `Board command help includes ${inv} sync --help, ${inv} list --help, and ${inv} doc read --help.\n`);
+        + `Board command help includes ${inv} sync --help, ${inv} list --help, ${inv} doc read --help, and ${inv} doc update --help.\n`);
       return;
     }
     const refusal = !Object.hasOwn(BOARD_HANDLERS, command)

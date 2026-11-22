@@ -13,7 +13,12 @@ import {
   unknownKindFieldNames,
   type OkfDocument,
 } from "@superbee/core";
-import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, resolveLocalBundleRoute } from "../../bundle.js";
+import {
+  assertResolvedLocalRouteIdentity,
+  boardAttributionForRoute,
+  resolveExistingGitBoardRoute,
+  resolveLocalBundleRoute,
+} from "../../bundle.js";
 import { parseDocUpdateTokensOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
 import { assertLeafArity } from "../../positional-arity.js";
@@ -28,13 +33,15 @@ import { resolveActor } from "../../actor.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
 import { readExternalTextFile } from "../../external-file.js";
 import {
-  DOC_UPDATE_USAGE,
+  BOARD_UPDATE_USAGE,
+  docUpdateUsage,
   type DocCliDeps,
   defaultReadStdin,
   STDIN_SILENT_NOTE,
   STDIN_SILENT_TIMEOUT,
 } from "./common.js";
 import { commandToken } from "../../command-text.js";
+import { currentExistingGitBoard } from "../../runtime-context.js";
 import { assertStaleAfterEdition, parseStaleAfter } from "../../stale-after.js";
 
 /** The `doc update` STANDARD patch fields; excludes control flags (--keep-timestamp/--strict/--dir/…). */
@@ -232,8 +239,9 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   const readStdin = deps.readStdin ?? defaultReadStdin;
 
   const p = parseDocUpdateArgs(argv);
+  const boardOnly = currentExistingGitBoard() !== undefined;
   if (p.help) {
-    stdout(renderUsage(DOC_UPDATE_USAGE));
+    stdout(renderUsage(docUpdateUsage(boardOnly)));
     return;
   }
   assertLeafArity(CLI_LEAVES.docUpdate, p.positionals);
@@ -255,8 +263,18 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
       { help: `${cliInvocation()} doc update ${commandToken(id)} --expected-version <v>` },
     );
   }
+  if (boardOnly && p.expectedVersion === undefined) {
+    throw new CliError("USAGE", "An existing standalone Git board update requires --expected-version from a local doc read.", {
+      help: `${cliInvocation()} ${BOARD_UPDATE_USAGE}`,
+    });
+  }
   const actor = resolveActor(p.actor, { help: `${cliInvocation()} doc update ${commandToken(id)} --actor <name>` });
   const staleAfter = parseStaleAfter(p.staleAfter);
+
+  // A scoped command must validate its target before opening any optional input channel.
+  const boardRoute = boardOnly ? await resolveExistingGitBoardRoute(p.dir, BOARD_UPDATE_USAGE) : undefined;
+  const readOptions = boardRoute ? ` --dir ${commandToken(boardRoute.bundle.root)} --json` : "";
+  const readHelp = (docId: string) => `${cliInvocation()} doc read ${commandToken(docId)}${readOptions}`;
 
   // A patchable field OTHER than body, given via a flag — title/description/type/kind fields.
   // Computed BEFORE the stdin read below: a FIELD-ONLY patch (one of these given, no --body/
@@ -308,7 +326,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     );
   }
 
-  const route = await resolveLocalBundleRoute(p.dir);
+  const route = boardRoute ?? await resolveLocalBundleRoute(p.dir);
   const bundle = route.bundle;
   await assertResolvedLocalRouteIdentity(route);
   id = await resolveConceptIdCliArgument(bundle, rawId);
@@ -331,7 +349,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   // doc, so `existing` below is guaranteed defined.
   // The version this patch replaced (the winning attempt's): findings are those it introduced.
   let prior: OkfDocument | undefined;
-  if (route) await assertResolvedLocalRouteIdentity(route);
+  await assertResolvedLocalRouteIdentity(route);
   const result = await mutateDoc({
     bundle,
     id,
@@ -349,7 +367,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     bodyReplace: { acceptTruncatedBody: p.acceptTruncatedBody, replaceLinks: p.replaceLinks },
     // Board self-attribution (PR C): a `changed: false` no-op never records (mutate.ts's
     // post-persist contract), so ambient attribution cannot manufacture a "self" actor.
-    onPersisted: boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor),
+    onPersisted: boardPostPersistHook(boardAttributionForRoute(route), actor),
     input: async (existingDoc, context) => {
       assertStaleAfterEdition(staleAfter, context.okfVersion);
       const existing = existingDoc!;
@@ -369,7 +387,10 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
 
       let nextBody = existing.body;
       if (p.body !== undefined) nextBody = p.body;
-      else if (p.bodyFile) nextBody = await readExternalTextFile(p.bodyFile);
+      else if (p.bodyFile) {
+        nextBody = await readExternalTextFile(p.bodyFile);
+        if (boardRoute) await assertResolvedLocalRouteIdentity(boardRoute);
+      }
       else if (stdinBody !== undefined) nextBody = stdinBody;
 
       // Dynamic kind-field patch (Facet 2): only accepted when a kind governs the RESULT type and
@@ -449,13 +470,13 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     },
     errors: {
       notFound: () =>
-        new CliError("NOT_FOUND", `no concept document at id '${id}'`, { help: `${cliInvocation()} list` }),
+        new CliError("NOT_FOUND", `no concept document at id '${id}'`, { help: `${cliInvocation()} list${readOptions}` }),
       staleHead: (err) =>
         new CliError(
           "STALE_HEAD",
           `'${id}' has moved since --expected-version ${commandToken(String(err.expected))} was read (current: ` +
             `${err.actual ?? "absent"}) — re-read and retry with the current version.`,
-          { help: `${cliInvocation()} doc read ${commandToken(id)}`, details: { expected: err.expected, actual: err.actual } },
+          { help: readHelp(id), details: { expected: err.expected, actual: err.actual } },
         ),
     },
   });
@@ -478,6 +499,6 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   // Legacy-naming nudge (legacy-page.ts): fires on the RESULT doc's type at an authoring moment
   // only — never blocks, never on reads.
   if (isLegacyPageDoc(result.doc.frontmatter)) receipt.hint = LEGACY_PAGE_TYPE_HINT;
-  receipt.help = [`${cliInvocation()} doc read ${commandToken(result.doc.id)}`, ...writeFindingsHelp(findings)];
+  receipt.help = [readHelp(result.doc.id), ...writeFindingsHelp(findings)];
   stdout(render(receipt, mode));
 }

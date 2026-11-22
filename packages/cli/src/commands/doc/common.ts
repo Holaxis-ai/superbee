@@ -6,6 +6,7 @@ import { currentHost } from "../../runtime-context.js";
 import { fstatSync } from "node:fs";
 import { CliError, classifyBundleError } from "../../errors.js";
 import { cliInvocation } from "../../invocation.js";
+import { commandLiteral } from "../../command-text.js";
 import type { HostedAccountDeps } from "../../hosted/account.js";
 
 /** The common flags every `doc` verb accepts — appended to each verb's focused help (§10). */
@@ -146,12 +147,27 @@ Examples:
   echo "# Notes" | superbee doc write notes/x --type Note --title "Scratch"
 `;
 
-export const DOC_UPDATE_USAGE = `superbee doc update — patch given fields of an EXISTING concept document
+export const BOARD_UPDATE_USAGE = commandLiteral("doc update <id> --dir <standalone-board> --expected-version <v> [options]");
+
+export function docUpdateUsage(boardOnly: boolean): string {
+  const usage = boardOnly ? BOARD_UPDATE_USAGE : "doc update <id> [--<field> <value> ...] [--body <s> | --body-file <p>] [options]";
+  const casHelp = boardOnly ? "Use head_version from a local doc read." : "Omit for a normal (auto-retrying) update.";
+  const previewHelp = boardOnly
+    ? "Use the JSON paging options of 'doc read' to read the complete body."
+    : "Read the complete one with 'doc read <id> --body-out <path>'.";
+  const commonOptions = boardOnly ? `Common options:
+  --dir <path>          Root of the existing standalone Git board (required)
+  --json                Emit compact JSON instead of TOON
+  -h, --help            Show this help` : COMMON_OPTIONS;
+  const examples = boardOnly
+    ? 'superbee doc update tasks/42 --progress_status done --dir "<standalone-board>" --expected-version sha256:...'
+    : 'superbee doc update tasks/42 --progress_status done\n  superbee doc update concepts/auth --title "Auth v2" --expected-version sha256:...';
+  return `superbee doc update — patch given fields of an EXISTING concept document
 
 Usage:
-  superbee doc update <id> [--<field> <value> ...] [--body <s> | --body-file <p>] [options]
+  superbee ${usage}
 
-Only the fields you pass change; everything else — including the body when no body source is given —
+${boardOnly ? "Updates modify the local checkout. Use sync to share changes.\n\n" : ""}Only the fields you pass change; everything else — including the body when no body source is given —
 is preserved verbatim. Idempotent: a patch that changes NOTHING (ignoring the auto-refreshed
 timestamp) converges to changed:false (no write, no timestamp refresh).
 
@@ -186,8 +202,7 @@ Options:
                          'doc read' body preview — one still carrying the truncated-preview marker,
                          or one that is exactly the preview slice of this doc's own longer stored
                          body. Without it such a replace is refused (exit 2) and nothing is written.
-                         A preview is not a body: read the complete one with 'doc read <id>
-                         --body-out <path>', edit that file, then pass it back with --body-file.
+                         ${previewHelp} Pass the edited body with --body-file.
   --keep-timestamp       Preserve an existing legacy compatibility timestamp. Current bundles use
                          their standard generated.at clock automatically.
   --strict               If a kind convention governs the resulting type, reject (exit 2) instead of
@@ -205,8 +220,8 @@ Options:
                          a not-yet-declared value.
   --expected-version <v> Optimistic compare-and-swap: patch ONLY if the doc still matches this token
                          (from a prior read/write/history receipt) — a conflict is STALE_HEAD (exit
-                         5), NOT retried. Omit for a normal (auto-retrying) update. A present-but-
-                         blank value is a USAGE error (exit 2), not "no CAS".
+                         5), NOT retried. ${casHelp}
+                         A present-but-blank value is a USAGE error (exit 2).
   --actor <name>         Attribute a substantive patch using the bundle's compatible advisory field
                          and thread it to version history (see 'doc history'). On an OKF v0.2 bundle
                          the value must be an OKF actor (human:<id>, process:<id>, or
@@ -222,12 +237,14 @@ add/remove/replace-all for tags or sources; replace-all requires an observed --e
 Nested lists require deliberate full-document pull/edit/promote.
 
 Passing NO patchable field at all is a USAGE error (exit 2) — there is nothing to do.
-${COMMON_OPTIONS}
+${commonOptions}
 
 Examples:
-  superbee doc update tasks/42 --progress_status done
-  superbee doc update concepts/auth --title "Auth v2" --expected-version sha256:...
+  ${examples}
 `;
+}
+
+export const DOC_UPDATE_USAGE = docUpdateUsage(false);
 
 export const DOC_READ_USAGE = `superbee doc read — read a concept document (or pull its raw markdown bytes)
 
