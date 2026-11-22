@@ -38,6 +38,7 @@ import { docHistory } from "./doc/history.js";
 import { docDelete } from "./doc/delete.js";
 import { docOpen } from "./doc/open.js";
 import { docImport } from "./doc/import.js";
+import { currentExistingGitBoard } from "../runtime-context.js";
 
 export { DOC_USAGE, type DocCliDeps, readErrorToCliError } from "./doc/common.js";
 export { inBundlePollutionWarning } from "./egress.js";
@@ -47,11 +48,14 @@ export async function doc(argv: string[], deps: Partial<DocCliDeps & UiCliDeps> 
   const sub = argv[0];
   const rest = argv.slice(1);
 
+  if (sub === "read") return docRead(rest, deps);
+  const board = currentExistingGitBoard();
+  if (board) throw new CliError("RUNTIME", board.usage);
+
   if (sub === "write") return docWrite(rest, deps);
   if (sub === "update") return docUpdate(rest, deps);
   if (sub === "field") return docField(rest, deps);
   if (sub === "verify") return docVerify(rest, deps);
-  if (sub === "read") return docRead(rest, deps);
   if (sub === "open") return docOpen(rest, deps);
   if (sub === "history") return docHistory(rest, deps);
   if (sub === "delete") return docDelete(rest, deps);

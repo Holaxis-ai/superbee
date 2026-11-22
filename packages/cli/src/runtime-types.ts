@@ -32,7 +32,6 @@ export interface CliDistribution {
   readonly ownedSkillPackages: readonly string[];
   readonly updatesEnabled: boolean;
   readonly syncExistingGitBoardsOnly?: boolean;
-  readonly docReadExistingGitBoardsOnly?: boolean;
 }
 export interface HostCommandEnvironment {
   readonly cwd: string;
@@ -174,6 +173,12 @@ export interface PrivateStateHost {
  */
 export interface CliRuntimeOptions {
   readonly distribution: CliDistribution;
+  /** Limits dispatch to existing Git board operations and local reads of an explicit checkout. */
+  readonly existingGitBoard?: {
+    readonly usage: string;
+    readonly requirements?: string;
+    readonly unavailableReason?: string;
+  };
   /** Private, durable directory selected by the trusted launcher for Git board state. */
   readonly boardStateDir?: string;
   readonly host: HostCommands;

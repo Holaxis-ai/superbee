@@ -51,20 +51,21 @@ import {
   type QueryFilter,
   isPermissionDeniedSkip,
 } from "@superbee/core";
-import { openBundle } from "../bundle.js";
-import { maybeAutoPull } from "../autopull.js";
+import { openReadBundle } from "../read-bundle.js";
+import { currentExistingGitBoard } from "../runtime-context.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { compareByMeaningfulChange, meaningfulChangeOrderKey } from "@superbee/core/query-order";
-import { commandToken } from "../command-text.js";
+import { commandFragment, commandLiteral, commandToken } from "../command-text.js";
 
-export const LIST_USAGE = `superbee list — query concepts over their frontmatter (alias: query)
+function listUsage(boardOnly: boolean): string {
+  return `superbee list — query concepts over their frontmatter (alias: query)
 
 Usage:
-  superbee list [--type <t>] [--tag <t>] [--field <k=v>] [--prefix <p>] [--fields <a,b>] [--open] [--limit <n>] [--dir <path>]
+  superbee list [--type <t>] [--tag <t>] [--field <k=v>] [--prefix <p>] [--fields <a,b>] [--open] [--limit <n>] ${boardOnly ? "--dir <standalone-board>" : "[--dir <path>]"}
 
 Options:
   --type <t>           Restrict to concepts whose frontmatter type equals this
@@ -83,9 +84,9 @@ Options:
                        is truncated to 80 chars — long content lives in \`doc read <id>\`.
                        'trust' is a DERIVED column: the OKF v0.2 trust tier (unverified /
                        machine-confirmed / human-reviewed) computed from each doc's 'verified'
-                       events, not a stored field. See 'doc verify'.
+                       events, not a stored field.${boardOnly ? "" : " See 'doc verify'."}
   --open               Exclude concepts whose OWN kind declares a terminal set of field values
-                       (see 'kinds --help') and whose frontmatter currently matches it (e.g. a Task
+                       ${boardOnly ? "" : "(see 'kinds --help') "}and whose frontmatter currently matches it (e.g. a Task
                        whose progress_status is 'done'/'canceled', if the Task kind declares that terminal
                        set). Purely declaration-driven: an ungoverned type, a governed type with no
                        terminal declaration, or a doc missing the field are all INCLUDED. On a
@@ -94,7 +95,9 @@ Options:
                        --type/--field/--prefix.
   --limit <n>          Cap the newest-first rows returned (default: 100; 0 = unlimited). A truncated
                        result reports \`shown\` alongside the total \`count\`.
-  --dir <path>         Bundle directory (default: discovered from the cwd)
+${boardOnly
+    ? "  --dir <standalone-board>  Root of an existing standalone Git board checkout (required)"
+    : "  --dir <path>         Bundle directory (default: discovered from the cwd)"}
   --json               Emit compact JSON instead of TOON
   -h, --help           Show this help
 
@@ -105,11 +108,16 @@ Results are ordered by each document's meaningful change time, newest first (v0.
 when present, otherwise \`timestamp\`); invalid or missing times sort last, with canonical ID ties.
 Use the logical field name progress_status when querying workflow state. Superbee resolves the
 bundle's compatible storage coordinate through each document's declared Kind.
-`;
+${boardOnly ? "\nList reads local files. Run superbee sync to refresh the checkout.\n" : ""}`;
+}
+
+export const LIST_USAGE = listUsage(false);
+
+const BOARD_LIST_USAGE = commandLiteral("list --dir <standalone-board> [--json]");
 
 export interface ListCliDeps {
   stdout: (s: string) => void;
-  /** The opportunistic board-freshness trigger (default {@link maybeAutoPull} — autopull.ts). */
+  /** The opportunistic board-freshness trigger (default: maybeAutoPull in autopull.ts). */
   autoPull: (dir?: string) => Promise<unknown>;
 }
 
@@ -139,8 +147,9 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     CLI_LEAVES.list,
     { optionNames: Object.keys(LIST_OPTIONS) },
   );
+  const boardOnly = currentExistingGitBoard() !== undefined;
   if (values.help) {
-    stdout(renderUsage(LIST_USAGE));
+    stdout(renderUsage(listUsage(boardOnly)));
     return;
   }
 
@@ -232,11 +241,11 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     .map((f) => f.trim())
     .filter((f) => f && !DEFAULT_KEYS.has(f));
 
-  // Opportunistic board freshness (autopull.ts): a LOCAL read of a provisioned board checkout
-  // whose awareness cache has gone stale runs the time-boxed ff-only pull FIRST, so this very
-  // read serves fresh state. Silent, fail-soft, detection-gated (never provisions).
-  await (deps.autoPull ?? maybeAutoPull)(values.dir);
-  const bundle = await openBundle(values.dir);
+  const bundle = await openReadBundle(values.dir, BOARD_LIST_USAGE, deps.autoPull);
+  const boardDirOption = boardOnly && values.dir !== undefined
+    ? commandFragment` --dir ${commandToken(values.dir)}`
+    : commandFragment``;
+  const docReadOptions = boardOnly ? commandFragment`${boardDirOption} --json` : commandFragment``;
   // A corrupt document (unparseable YAML frontmatter) is skipped and reported, never allowed to
   // fail the whole scan — one bad file must not blind the agent to every other doc (AXI §5/§6).
   // Head projections, not full docs: every row below reads only id + frontmatter.
@@ -425,12 +434,12 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     const candidates = kindTitleCandidates(await getRegistry(), filter.type);
     if (candidates) {
       out.kind_candidates = candidates;
-      help.push(`--type ${commandToken(filter.type)} matched only that exact type; the matching titled Kinds were not searched. Choose an exact governs value from '${cliInvocation()} kinds'.`);
+      help.push(`--type ${commandToken(filter.type)} matched only that exact type; the matching titled Kinds were not searched. Choose an exact governs value from ${boardOnly ? "the board's Kind declarations" : `'${cliInvocation()} kinds'`}.`);
     }
   }
   if (truncated) {
     help.push(
-      `showing ${shownRows.length} of ${total} — run \`${cliInvocation()} list --limit 0\` (or a higher --limit) for all`,
+      `showing ${shownRows.length} of ${total} — run \`${cliInvocation()} list --limit 0${boardDirOption}\` (or a higher --limit) for all`,
     );
   }
   if (skipped.length > 0) {
@@ -438,7 +447,7 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     const denied = skipped.filter(isPermissionDeniedSkip).length;
     if (skipped.length > denied) {
       help.push(
-        `${skipped.length - denied} document(s) skipped (unparseable frontmatter) — run \`${cliInvocation()} doc read <id>\` for the full error, then fix the YAML`,
+        `${skipped.length - denied} document(s) skipped (unparseable frontmatter) — run \`${cliInvocation()} doc read <id>${docReadOptions}\` for the full error, then fix the YAML`,
       );
     }
     if (denied > 0) help.push(`${denied} document(s) skipped (could not be read: permission denied); make those files readable by your user`);
@@ -467,14 +476,15 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
         );
         if (cols.length > 0) {
           help.push(
-            `all ${total} rows are '${first}' — \`${cliInvocation()} list --type ${commandToken(first)}\` projects its ${cols.join("/")} columns`,
+            `all ${total} rows are '${first}' — \`${cliInvocation()} list --type ${commandToken(first)}${boardDirOption}\` projects its ${cols.join("/")} columns`,
           );
         }
       }
     }
   }
   if (total > 0) {
-    help.push(`${cliInvocation()} doc read <id>`, `${cliInvocation()} link show <id>`);
+    help.push(`${cliInvocation()} doc read <id>${docReadOptions}`);
+    if (!boardOnly) help.push(`${cliInvocation()} link show <id>`);
   }
   if (help.length > 0) out.help = help;
   stdout(render(out, resolveMode(values)));

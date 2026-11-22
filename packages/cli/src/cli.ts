@@ -67,6 +67,7 @@ import { PUBLIC_COMMAND_NAMES, type PublicCommandName } from "./command-spec.js"
 import { parseArgs } from "node:util";
 import { commandWords } from "./command-text.js";
 import { openDeprecationNotices, refuseLeadingRetiredFlag, refuseRetiredEnv, refuseRetiredInput } from "./deprecation-notices.js";
+import { currentExistingGitBoard } from "./runtime-context.js";
 export { cliVersion } from "./build-identity.js";
 
 export const KNOWN_COMMANDS = PUBLIC_COMMAND_NAMES;
@@ -108,20 +109,22 @@ const wrap =
 export type PublicHandler = (args: string[]) => Promise<void>;
 export type PublicHandlerMap = { readonly [Command in PublicCommandName]: PublicHandler };
 
+// These routes run on both the full CLI and the existing-board runtime. The doc dispatcher
+// selects its shared read handler before considering document operations that need the full CLI.
+const BOARD_HANDLERS = Object.freeze({ sync, version: versionCommand, list, query: list, doc });
+
 /** Exact public handler ownership: catalog additions and removals are compile-time obligations. */
-export const PUBLIC_HANDLERS = Object.freeze({
+const publicHandlers = {
+  ...BOARD_HANDLERS,
   init,
   bundle: bundleCommand,
   catalog,
   index: indexCommand,
-  doc,
   promote,
   pull,
   blobs,
   delete: deleteCommand,
   link,
-  list,
-  query: list,
   new: newCommand,
   artifact,
   kinds,
@@ -131,11 +134,9 @@ export const PUBLIC_HANDLERS = Object.freeze({
   status,
   ui,
   mcp,
-  sync,
   hook,
   skill,
   "session-start": sessionStart,
-  version: versionCommand,
   view,
   setup,
   login,
@@ -153,7 +154,11 @@ export const PUBLIC_HANDLERS = Object.freeze({
   search,
   source,
   workload,
-} satisfies PublicHandlerMap);
+} satisfies PublicHandlerMap;
+
+export const PUBLIC_HANDLERS = Object.freeze(Object.fromEntries(
+  PUBLIC_COMMAND_NAMES.map((name) => [name, publicHandlers[name]]),
+)) as PublicHandlerMap;
 
 type RuntimeHandler = (args: string[]) => Promise<string>;
 
@@ -164,7 +169,8 @@ type RuntimeHandler = (args: string[]) => Promise<string>;
 const guarded =
   (name: PublicCommandName, fn: PublicHandler): PublicHandler =>
   async (args: string[]) => {
-    await assertAllowedInHostedCheckout(name, args);
+    // Scoped document dispatch refuses unsupported operations before a hosted target lookup.
+    if (name !== "doc" || !currentExistingGitBoard()) await assertAllowedInHostedCheckout(name, args);
     await fn(args);
   };
 
@@ -262,6 +268,23 @@ export function hoistLeadingGlobalFlags(argv: string[]): string[] | null {
 
 export async function main(argv: string[]): Promise<void> {
   const command = argv[0];
+  const board = currentExistingGitBoard();
+  if (board && !isBareVersionFlag(command)) {
+    if (command === undefined || command === "--help" || command === "-h" || command === "help") {
+      const inv = cliInvocation();
+      process.stdout.write(`${board.usage}\n${board.requirements ? `${board.requirements}\n` : ""}`
+        + `Board command help includes ${inv} sync --help, ${inv} list --help, and ${inv} doc read --help.\n`);
+      return;
+    }
+    const refusal = !Object.hasOwn(BOARD_HANDLERS, command)
+      ? board.usage
+      : command === "version" ? undefined : board.unavailableReason;
+    if (refusal !== undefined) {
+      process.stdout.write(renderErrorEnvelope(toEnvelope(new CliError("RUNTIME", refusal))));
+      process.exitCode = 1;
+      return;
+    }
+  }
 
   // Bare `axi` (no args): the offline-safe home view — identity header, live local state, and the
   // command reference. Always exits 0.
