@@ -1,0 +1,102 @@
+name: Published Superbee Windows proof
+
+on:
+  push:
+    branches: [proof/superbee-0.4.7-pre.4-windows]
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/published-windows-proof.yml]
+
+permissions:
+  contents: read
+  attestations: read
+
+jobs:
+  published-windows:
+    if: >-
+      github.repository == 'Holaxis-ai/superbee' &&
+      (github.ref == 'refs/heads/proof/superbee-0.4.7-pre.4-windows' ||
+       (github.event.pull_request.head.repo.full_name == github.repository &&
+        github.head_ref == 'proof/superbee-0.4.7-pre.4-windows'))
+    name: npm superbee@0.4.7-pre.4 on native Windows
+    runs-on: windows-latest
+    timeout-minutes: 12
+    env:
+      RELEASE_VERSION: 0.4.7-pre.4
+      RELEASE_SOURCE: 7c976f1ff607d9b50b17d81f5a7b292a684faa66
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/v0.4.7-pre.4
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.17.0
+      - name: Verify tag and download the published npm bytes
+        shell: pwsh
+        run: |
+          if ((node --version) -ne "v22.17.0") { throw "Node 22.17.0 is required" }
+          if ($env:RELEASE_SOURCE -cnotmatch '^[a-f0-9]{40}$') { throw "Expected the reviewed release commit" }
+          $source = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $source -cne $env:RELEASE_SOURCE) { throw "Unexpected release tag commit: $source" }
+          @'
+          import assert from "node:assert/strict";
+          import { createHash } from "node:crypto";
+          import { mkdir, writeFile } from "node:fs/promises";
+
+          const version = process.env.RELEASE_VERSION;
+          const registry = "https://registry.npmjs.org";
+          async function download(url, accept) {
+            const response = await fetch(url, {
+              redirect: "error",
+              headers: { accept, "cache-control": "no-cache" },
+              signal: AbortSignal.timeout(30_000),
+            });
+            assert.ok(response.ok, `HTTP ${response.status} for ${url}`);
+            return response;
+          }
+
+          const metadata = await (await download(`${registry}/superbee`, "application/vnd.npm.install-v1+json")).json();
+          assert.equal(metadata["dist-tags"]?.next, version, "npm next must resolve to the release under test");
+          const published = metadata.versions?.[version];
+          assert.equal(published?.name, "superbee");
+          assert.equal(published?.version, version);
+          const url = `${registry}/superbee/-/superbee-${version}.tgz`;
+          assert.equal(published.dist.tarball, url);
+          const bytes = Buffer.from(await (await download(url, "application/octet-stream")).arrayBuffer());
+          const hash = (algorithm, encoding) => createHash(algorithm).update(bytes).digest(encoding);
+          assert.equal(`sha512-${hash("sha512", "base64")}`, published.dist.integrity);
+          assert.equal(hash("sha1", "hex"), published.dist.shasum);
+          await mkdir("out/windows-proof", { recursive: true });
+          await writeFile("out/windows-proof/superbee.tgz", bytes, { flag: "wx" });
+          console.log(`npm next=${version}, public tarball ${url}, sha256:${hash("sha256", "hex")}`);
+          '@ | node --input-type=module
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Bind npm bytes to the official release workflow
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify out/windows-proof/superbee.tgz --repo $env:GITHUB_REPOSITORY `
+            --signer-workflow "$env:GITHUB_REPOSITORY/.github/workflows/release.yml" `
+            --source-ref "refs/tags/v$env:RELEASE_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install and exercise the attested npm package
+        shell: pwsh
+        run: |
+          $manifestJson = tar.exe -xOf out/windows-proof/superbee.tgz package/package.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $manifest = $manifestJson | ConvertFrom-Json
+          if ($manifest.name -cne "superbee" -or $manifest.version -cne $env:RELEASE_VERSION) { throw "Unexpected tarball manifest" }
+          $env:SUPERBEE_TARBALL_SHA256 = (Get-FileHash out/windows-proof/superbee.tgz -Algorithm SHA256).Hash.ToLowerInvariant()
+          # The proof expects GITHUB_SHA to name the package source. This job's event SHA names its proof branch.
+          $env:GITHUB_SHA = $env:RELEASE_SOURCE
+          $result = node scripts/verify-npm-package-windows.mjs
+          $code = $LASTEXITCODE
+          $result | Write-Output
+          if ($code -ne 0) { exit $code }
+          $versionPattern = [regex]::Escape($env:RELEASE_VERSION)
+          $pass = $result | Where-Object { $_ -cmatch "with superbee@$versionPattern succeeded in " }
+          if (@($pass).Count -ne 1) { throw "Missing native Windows success receipt for the expected version" }
+          $pass | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
