@@ -5,7 +5,7 @@
  * be reported for a fresh single read. ADV-3 to ADV-5 run the production clock against a real
  * volume; point TMPDIR at a mounted HFS+ or FAT32 image to exercise coarse timestamps.
  */
-import test from "node:test";
+import test, { describe } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rename, rm, writeFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -106,106 +106,109 @@ async function fixture(): Promise<string> {
   return root;
 }
 
-test("ADV-3 (production clock): same-tick case rename after the listing settles is refused like a single read", async () => {
-  const root = await fixture();
-  try {
-    await sleep(3_300);
-    const port = createNodeFilesystemIdentityPort();
-    const pass = openObservationPass(port, root); // Date.now, as production
-    let entries = 0;
-    const counted: FilesystemIdentityPort = { ...port, entries: async (d) => (entries++, port.entries(d)) };
-    const p2 = openObservationPass(counted, root);
-    for (let i = 0; i < 20; i++) {
-      const rel = `m/item-${String(i).padStart(2, "0")}.md`;
-      if (i === 5) {
-        // Many changes inside one coarse tick: away, back, away.
-        await rename(path.join(root, "m/item-12.md"), path.join(root, "m/ITEM-12.md"));
-        await rename(path.join(root, "m/ITEM-12.md"), path.join(root, "m/item-12.md"));
-        await rename(path.join(root, "m/item-12.md"), path.join(root, "m/Item-12.md"));
+// Each case has its own fixture, so their real-clock settle waits can overlap.
+describe("Real-volume filesystem identity", { concurrency: 4 }, () => {
+  test("ADV-3 (production clock): same-tick case rename after the listing settles is refused like a single read", async () => {
+    const root = await fixture();
+    try {
+      await sleep(3_300);
+      const port = createNodeFilesystemIdentityPort();
+      const pass = openObservationPass(port, root); // Date.now, as production
+      let entries = 0;
+      const counted: FilesystemIdentityPort = { ...port, entries: async (d) => (entries++, port.entries(d)) };
+      const p2 = openObservationPass(counted, root);
+      for (let i = 0; i < 20; i++) {
+        const rel = `m/item-${String(i).padStart(2, "0")}.md`;
+        if (i === 5) {
+          // Many changes inside one coarse tick: away, back, away.
+          await rename(path.join(root, "m/item-12.md"), path.join(root, "m/ITEM-12.md"));
+          await rename(path.join(root, "m/ITEM-12.md"), path.join(root, "m/item-12.md"));
+          await rename(path.join(root, "m/item-12.md"), path.join(root, "m/Item-12.md"));
+        }
+        const a = await outcome(pass.observe(rel, (h) => port.readAll(h)));
+        const b = await outcome(p2.observe(rel, (h) => counted.readAll(h)));
+        const s = await outcome(observeExact(port, root, rel, (h) => port.readAll(h)));
+        assert.deepEqual(a, s, rel);
+        assert.deepEqual(b, s, rel);
       }
-      const a = await outcome(pass.observe(rel, (h) => port.readAll(h)));
-      const b = await outcome(p2.observe(rel, (h) => counted.readAll(h)));
-      const s = await outcome(observeExact(port, root, rel, (h) => port.readAll(h)));
-      assert.deepEqual(a, s, rel);
-      assert.deepEqual(b, s, rel);
+      assert.deepEqual(await pass.finish(), []);
+      assert.deepEqual(await p2.finish(), []);
+      // After the change at i=5 the directory is unsettled for 3 s: listings fall back to per-use.
+      console.log(`# entries() calls for 20 docs after a mid-pass change: ${entries}`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
-    assert.deepEqual(await pass.finish(), []);
-    assert.deepEqual(await p2.finish(), []);
-    // After the change at i=5 the directory is unsettled for 3 s: listings fall back to per-use.
-    console.log(`# entries() calls for 20 docs after a mid-pass change: ${entries}`);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
+  });
 
-test("ADV-4 (production clock): delete-and-recreate the parent directory mid-pass (dev/ino reuse) is not reused", async () => {
-  const root = await fixture();
-  try {
-    await sleep(3_300);
-    const port = createNodeFilesystemIdentityPort();
-    const pass = openObservationPass(port, root);
-    assert.equal((await outcome(pass.observe("m/item-00.md", (h) => port.readAll(h)))).hasOwnProperty("state"), true);
-    await rm(path.join(root, "m"), { recursive: true });
-    await mkdir(path.join(root, "m"));
-    await writeFile(path.join(root, "m", "ITEM-01.md"), "foreign");
-    const a = await outcome(pass.observe("m/item-01.md", (h) => port.readAll(h)));
-    const s = await outcome(observeExact(port, root, "m/item-01.md", (h) => port.readAll(h)));
-    assert.deepEqual(a, s);
-    // item-00 was read before its directory was replaced, so finish() hands it back for a fresh read.
-    assert.deepEqual(await pass.finish(), ["m/item-00.md"]);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("ADV-5: readMany through the backend with a mid-batch alias created in-tick (production clock)", async () => {
-  const root = await fixture();
-  try {
-    await writeFile(path.join(root, "index.md"), "---\nokf_version: '0.2'\n---\n# x\n");
-    await sleep(3_300);
-    const backend = new FilesystemBackend(root);
-    const ids = Array.from({ length: 20 }, (_, i) => `m/item-${String(i).padStart(2, "0")}`);
-    // The backend's typed absence: the ENOENT-shaped rejection `notFound` builds, naming the exact
-    // requested path. `readManyExisting` keys its per-document fallback on this code. `notFound`
-    // sets no `errno`, which a raw `fs.open` rejection always carries, so a raw error escaping
-    // the observation fails this predicate.
-    const isNotFound = (rel: string) => (e: NodeJS.ErrnoException): boolean =>
-      e.code === "ENOENT" && e.errno === undefined && e.syscall === "open" && e.path === path.join(root, rel);
-    // Respell before the batch. A case-insensitive host still reaches the file through the other
-    // spelling, which is an alias; a case-sensitive host (ext4) has no `item-09.md` at all, which is
-    // absence. Either way the batch rejects exactly as a per-document read of the same state does.
-    await rename(path.join(root, "m/item-09.md"), path.join(root, "m/ITEM-09.md"));
-    const caseAliasing = (await detectHostAliasing()).case;
-    const respelled = caseAliasing
-      ? (e: Error): boolean => e.name === "FilesystemIdentityAliasError"
-      : isNotFound("m/item-09.md");
-    await assert.rejects(backend.readMany(ids), respelled);
-    await assert.rejects(backend.read("m/item-09"), respelled);
-    await unlink(path.join(root, "m/ITEM-09.md"));
-    // Gone under every spelling: typed absence on every host.
-    await assert.rejects(backend.readMany(ids), isNotFound("m/item-09.md"));
-    await assert.rejects(backend.read("m/item-09"), isNotFound("m/item-09.md"));
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("ADV-5b (every host): a document deleted mid-pass after the listing was reused is a typed absence, never a thrown fs error", async () => {
-  const root = await fixture();
-  try {
-    await sleep(3_300);
-    const port = createNodeFilesystemIdentityPort();
-    const pass = openObservationPass(port, root);
-    const read = (h: PortHandle) => port.readAll(h);
-    for (let i = 0; i < 5; i++) {
-      assert.deepEqual(await outcome(pass.observe(`m/item-${String(i).padStart(2, "0")}.md`, read)), { state: "exact", text: `body ${i}` });
+  test("ADV-4 (production clock): delete-and-recreate the parent directory mid-pass (dev/ino reuse) is not reused", async () => {
+    const root = await fixture();
+    try {
+      await sleep(3_300);
+      const port = createNodeFilesystemIdentityPort();
+      const pass = openObservationPass(port, root);
+      assert.equal((await outcome(pass.observe("m/item-00.md", (h) => port.readAll(h)))).hasOwnProperty("state"), true);
+      await rm(path.join(root, "m"), { recursive: true });
+      await mkdir(path.join(root, "m"));
+      await writeFile(path.join(root, "m", "ITEM-01.md"), "foreign");
+      const a = await outcome(pass.observe("m/item-01.md", (h) => port.readAll(h)));
+      const s = await outcome(observeExact(port, root, "m/item-01.md", (h) => port.readAll(h)));
+      assert.deepEqual(a, s);
+      // item-00 was read before its directory was replaced, so finish() hands it back for a fresh read.
+      assert.deepEqual(await pass.finish(), ["m/item-00.md"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
-    await unlink(path.join(root, "m/item-12.md"));
-    await unlink(path.join(root, "m/item-03.md")); // already read: handed back by finish()
-    assert.deepEqual(await outcome(pass.observe("m/item-12.md", read)), { state: "absent" });
-    assert.deepEqual(await pass.finish(), ["m/item-03.md"]);
-    assert.deepEqual(await outcome(observeExact(port, root, "m/item-03.md", read)), { state: "absent" });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  });
+
+  test("ADV-5: readMany through the backend with a mid-batch alias created in-tick (production clock)", async () => {
+    const root = await fixture();
+    try {
+      await writeFile(path.join(root, "index.md"), "---\nokf_version: '0.2'\n---\n# x\n");
+      await sleep(3_300);
+      const backend = new FilesystemBackend(root);
+      const ids = Array.from({ length: 20 }, (_, i) => `m/item-${String(i).padStart(2, "0")}`);
+      // The backend's typed absence: the ENOENT-shaped rejection `notFound` builds, naming the exact
+      // requested path. `readManyExisting` keys its per-document fallback on this code. `notFound`
+      // sets no `errno`, which a raw `fs.open` rejection always carries, so a raw error escaping
+      // the observation fails this predicate.
+      const isNotFound = (rel: string) => (e: NodeJS.ErrnoException): boolean =>
+        e.code === "ENOENT" && e.errno === undefined && e.syscall === "open" && e.path === path.join(root, rel);
+      // Respell before the batch. A case-insensitive host still reaches the file through the other
+      // spelling, which is an alias; a case-sensitive host (ext4) has no `item-09.md` at all, which is
+      // absence. Either way the batch rejects exactly as a per-document read of the same state does.
+      await rename(path.join(root, "m/item-09.md"), path.join(root, "m/ITEM-09.md"));
+      const caseAliasing = (await detectHostAliasing()).case;
+      const respelled = caseAliasing
+        ? (e: Error): boolean => e.name === "FilesystemIdentityAliasError"
+        : isNotFound("m/item-09.md");
+      await assert.rejects(backend.readMany(ids), respelled);
+      await assert.rejects(backend.read("m/item-09"), respelled);
+      await unlink(path.join(root, "m/ITEM-09.md"));
+      // Gone under every spelling: typed absence on every host.
+      await assert.rejects(backend.readMany(ids), isNotFound("m/item-09.md"));
+      await assert.rejects(backend.read("m/item-09"), isNotFound("m/item-09.md"));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("ADV-5b (every host): a document deleted mid-pass after the listing was reused is a typed absence, never a thrown fs error", async () => {
+    const root = await fixture();
+    try {
+      await sleep(3_300);
+      const port = createNodeFilesystemIdentityPort();
+      const pass = openObservationPass(port, root);
+      const read = (h: PortHandle) => port.readAll(h);
+      for (let i = 0; i < 5; i++) {
+        assert.deepEqual(await outcome(pass.observe(`m/item-${String(i).padStart(2, "0")}.md`, read)), { state: "exact", text: `body ${i}` });
+      }
+      await unlink(path.join(root, "m/item-12.md"));
+      await unlink(path.join(root, "m/item-03.md")); // already read: handed back by finish()
+      assert.deepEqual(await outcome(pass.observe("m/item-12.md", read)), { state: "absent" });
+      assert.deepEqual(await pass.finish(), ["m/item-03.md"]);
+      assert.deepEqual(await outcome(observeExact(port, root, "m/item-03.md", read)), { state: "absent" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
