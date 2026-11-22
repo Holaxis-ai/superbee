@@ -6,7 +6,6 @@ import { currentHost } from "../../runtime-context.js";
 import { fstatSync } from "node:fs";
 import { CliError, classifyBundleError } from "../../errors.js";
 import { cliInvocation } from "../../invocation.js";
-import { commandLiteral } from "../../command-text.js";
 import type { HostedAccountDeps } from "../../hosted/account.js";
 
 /** The common flags every `doc` verb accepts — appended to each verb's focused help (§10). */
@@ -147,61 +146,39 @@ Examples:
   echo "# Notes" | superbee doc write notes/x --type Note --title "Scratch"
 `;
 
-const BOARD_UPDATE_USAGE = commandLiteral("doc update <id> --dir <standalone-board> --expected-version <v> [options]");
+const UPDATE_FIELD_OPTIONS = `  --title <t>            Replace the title
+  --description <d>      Replace the description
+  --type <t>             Replace the type
+  --stale-after <iso>    Set the expiration instant (OKF v0.2 only); requires a valid date, time,
+                         and zone, e.g. 2026-09-07T12:00:00Z. Omit to preserve the existing value.
+  --body <s>             Replace the body inline`;
 
-export function docUpdateUsage(boardOnly: boolean): string {
-  const usage = boardOnly ? BOARD_UPDATE_USAGE : "doc update <id> [--<field> <value> ...] [--body <s> | --body-file <p>] [options]";
-  const casHelp = boardOnly
-    ? "This flag is required. Use head_version from a local doc read."
-    : "Omit for a normal (auto-retrying) update.";
-  const updateInputExample = boardOnly
-    ? "doc update <id> --dir <standalone-board> --expected-version <v>"
-    : "doc update <id>";
-  const kindLookup = boardOnly ? "." : " — run 'superbee\n                         kinds' to see them.";
-  const kindRecovery = boardOnly
-    ? "                         string-list or https-url-list field is refused."
-    : `                         string-list or https-url-list field is refused (set it with 'new', or
-                         replace the document). Use 'doc write' to rewrite the whole doc if you must set
-                         a not-yet-declared value.`;
-  const collectionRecovery = boardOnly ? "" : ` Use doc field
-add/remove/replace-all for tags or sources; replace-all requires an observed --expected-version.
-Nested lists require deliberate full-document pull/edit/promote.`;
-  const previewHelp = boardOnly
-    ? "Use the JSON paging options of 'doc read' to read the complete body."
-    : "Read the complete one with 'doc read <id> --body-out <path>'.";
-  const commonOptions = boardOnly ? `Common options:
-  --dir <path>          Root of the existing standalone Git board (required)
-  --json                Emit compact JSON instead of TOON
-  -h, --help            Show this help` : COMMON_OPTIONS;
-  const examples = boardOnly
-    ? 'superbee doc update tasks/42 --progress_status done --dir "<standalone-board>" --expected-version sha256:...'
-    : 'superbee doc update tasks/42 --progress_status done\n  superbee doc update concepts/auth --title "Auth v2" --expected-version sha256:...';
-  return `superbee doc update — patch given fields of an EXISTING concept document
+const UPDATE_VALIDATION_OPTIONS = `  --keep-timestamp       Preserve an existing legacy compatibility timestamp. Current bundles use
+                         their standard generated.at clock automatically.
+  --strict               If a kind convention governs the resulting type, reject (exit 2) instead of
+                         writing with warnings (default: warn-and-write, exit 0)
+                         A new or changed key the kind does not declare is only a warning unless
+                         the kind sets undeclared_fields: error`;
+
+export const DOC_UPDATE_USAGE = `superbee doc update — patch given fields of an EXISTING concept document
 
 Usage:
-  superbee ${usage}
+  superbee doc update <id> [--<field> <value> ...] [--body <s> | --body-file <p>] [options]
 
-${boardOnly ? "Updates modify the local checkout. Use sync to share changes.\n\n" : ""}Only the fields you pass change; everything else — including the body when no body source is given —
+Only the fields you pass change; everything else — including the body when no body source is given —
 is preserved verbatim. Idempotent: a patch that changes NOTHING (ignoring the auto-refreshed
 timestamp) converges to changed:false (no write, no timestamp refresh).
 
 Standard-field patches use advisory Kind validation by default, returning warnings even on no-ops;
 --strict rejects violations without writing. Dynamic declared fields are always strict: passing a
 --<field> flag requires the whole resulting document to satisfy its Kind, even for a same-value patch.
-${boardOnly
-  ? "A changed body or type can also produce link and type warnings."
-  : "A changed body or type also gets the post-write link and type warnings 'doc write' describes."}
+A changed body or type also gets the post-write link and type warnings 'doc write' describes.
 
 Options:
-  --title <t>            Replace the title
-  --description <d>      Replace the description
-  --type <t>             Replace the type
-  --stale-after <iso>    Set the expiration instant (OKF v0.2 only); requires a valid date, time,
-                         and zone, e.g. 2026-09-07T12:00:00Z. Omit to preserve the existing value.
-  --body <s>             Replace the body inline
+${UPDATE_FIELD_OPTIONS}
   --body-file <path>     Replace the body, read from a file. If NEITHER --body nor --body-file is
                          given AND no other field flag is given either (e.g. 'cat body.md | ...
-                         ${updateInputExample}' with nothing else), piped stdin is used as the body — same
+                         doc update <id>' with nothing else), piped stdin is used as the body — same
                          non-empty rule doc write's F1 guard uses (an empty pipe does not count). A
                          patch that DOES pass another field flag (--title/--description/--type/
                          a kind field) never reads stdin, even without --body/--body-file: it patches
@@ -212,31 +189,30 @@ Options:
                          bundle; web links are not cross-links. Without it, such a replace is refused (exit 2, naming the dropped link(s));
                          a new body that still contains the same link(s), the ordinary read-edit-
                          update cycle, never needs this flag; naming a target in prose does not keep
-                         its link.${boardOnly ? "" : " SHORT-TERM guard: see 'link add'/'link show' to manage links."}
+                         its link. SHORT-TERM guard: see 'link add'/'link show' to manage links.
   --accept-truncated-body
                          Required when a --body/--body-file/stdin replace would write a TRUNCATED
                          'doc read' body preview — one still carrying the truncated-preview marker,
                          or one that is exactly the preview slice of this doc's own longer stored
                          body. Without it such a replace is refused (exit 2) and nothing is written.
-                         ${previewHelp} Pass the edited body with --body-file.
-  --keep-timestamp       Preserve an existing legacy compatibility timestamp. Current bundles use
-                         their standard generated.at clock automatically.
-  --strict               If a kind convention governs the resulting type, reject (exit 2) instead of
-                         writing with warnings (default: warn-and-write, exit 0)
-                         A new or changed key the kind does not declare is only a warning unless
-                         the kind sets undeclared_fields: error
+                         A preview is not a body: read the complete one with 'doc read <id>
+                         --body-out <path>', edit that file, then pass it back with --body-file.
+${UPDATE_VALIDATION_OPTIONS}
   --<field> <value>      Set a kind-declared field of the doc's type (e.g. --progress_status done).
                          The field
-                         MUST be declared by the kind governing the doc's type${kindLookup} An unknown field, an out-of-enum value, or a value
+                         MUST be declared by the kind governing the doc's type — run 'superbee
+                         kinds' to see them. An unknown field, an out-of-enum value, or a value
                          that does not match the field's declared type is rejected (exit 2, no
                          write); a typed numeric or boolean field is stored as that YAML type, and a
-${kindRecovery}
+                         string-list or https-url-list field is refused (set it with 'new', or
+                         replace the document). Use 'doc write' to rewrite the whole doc if you must set
+                         a not-yet-declared value.
   --expected-version <v> Optimistic compare-and-swap: patch ONLY if the doc still matches this token
-                         (from a prior ${boardOnly ? "local read" : "read/write/history"} receipt) — a conflict is STALE_HEAD (exit
-                         5), NOT retried. ${casHelp}
-                         A present-but-blank value is a USAGE error (exit 2).
+                         (from a prior read/write/history receipt) — a conflict is STALE_HEAD (exit
+                         5), NOT retried. Omit for a normal (auto-retrying) update. A present-but-
+                         blank value is a USAGE error (exit 2), not "no CAS".
   --actor <name>         Attribute a substantive patch using the bundle's compatible advisory field
-                         ${boardOnly ? "on the document." : "and thread it to version history (see 'doc history')."} On an OKF v0.2 bundle
+                         and thread it to version history (see 'doc history'). On an OKF v0.2 bundle
                          the value must be an OKF actor (human:<id>, process:<id>, or
                          <producer>/<version> such as openai/codex). Precedence: --actor >
                          SUPERBEE_ACTOR > absent. Without a source,
@@ -245,17 +221,55 @@ ${kindRecovery}
                          not a patch by itself and cannot turn an identical patch into a write. A
                          present-but-blank flag or environment value is a USAGE error (exit 2).
 
-Collection assignments (including the former --tag flag) are refused.${collectionRecovery}
+Collection assignments (including the former --tag flag) are refused. Use doc field
+add/remove/replace-all for tags or sources; replace-all requires an observed --expected-version.
+Nested lists require deliberate full-document pull/edit/promote.
 
 Passing NO patchable field at all is a USAGE error (exit 2) — there is nothing to do.
-${commonOptions}
+${COMMON_OPTIONS}
 
 Examples:
-  ${examples}
+  superbee doc update tasks/42 --progress_status done
+  superbee doc update concepts/auth --title "Auth v2" --expected-version sha256:...
 `;
-}
 
-export const DOC_UPDATE_USAGE = docUpdateUsage(false);
+const BOARD_UPDATE_USAGE = `superbee doc update — patch an existing document on a standalone Git board
+
+Usage:
+  superbee doc update <id> --dir <standalone-board> --expected-version <v> [options]
+
+Supply at least one field or a body. A patch with no substantive change returns changed:false.
+Read and update use the local checkout. Sync shares changes.
+
+Options:
+  --dir <standalone-board>  Root of an existing standalone Git board (required)
+  --expected-version <v>    Use head_version from a local doc read (required).
+                            A stale version returns STALE_HEAD (exit 5).
+${UPDATE_FIELD_OPTIONS}
+  --body-file <path>     Replace the body from a file. Piped stdin supplies the body when no
+                         other field or body is supplied. An empty pipe does not supply a body.
+  --replace-links       Allow a body replacement to remove existing outbound links.
+  --accept-truncated-body
+                         Allow a body replacement with a truncated preview. Use the JSON paging
+                         options of doc read to get the full body before editing it.
+${UPDATE_VALIDATION_OPTIONS}
+  --<field> <value>      Set a scalar field declared by the document's Kind. A patch to a declared
+                         field must satisfy the Kind. Collection assignments are refused.
+  --actor <name>         Attribute a substantive change. The flag takes precedence over SUPERBEE_ACTOR.
+                         OKF v0.2 accepts human:<id>, process:<id>, or <producer>/<version>.
+  --json                Emit compact JSON instead of TOON.
+  -h, --help            Show this help.
+
+Examples using the same checkout. Replace <head_version> with the token from the first command.
+
+  superbee doc read concepts/auth --dir "shared board" --json
+  superbee doc update concepts/auth --dir "shared board" --expected-version "<head_version>" --title "Auth v2" --json
+  superbee sync --dir "shared board"
+`;
+
+export function docUpdateUsage(boardOnly: boolean): string {
+  return boardOnly ? BOARD_UPDATE_USAGE : DOC_UPDATE_USAGE;
+}
 
 export const DOC_READ_USAGE = `superbee doc read — read a concept document (or pull its raw markdown bytes)
 
