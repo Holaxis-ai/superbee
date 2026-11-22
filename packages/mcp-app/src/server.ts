@@ -18,12 +18,12 @@ import {
   BRIDGE_SERVICE_CAPABILITIES,
   BRIDGE_SERVICE_LIMITS,
   BridgeService,
-  PageActionLaunchAuthority,
+  createPageActionService,
   PageBridgeLaunchAuthority,
   PageLaunchRegistry,
   SessionViewAuthorizationStore,
   TransientViewSaveError,
-  TrustedActionService,
+  type TrustedActionService,
   ViewNotFoundError,
   launchIsCurrent,
   listViewCatalogPage,
@@ -607,16 +607,8 @@ function createMcpBundleRuntime(
   const durableAuthorizations =
     context.viewAuthorization ?? new SessionViewAuthorizationStore();
   const transientAuthorizations = new SessionViewAuthorizationStore();
-  const activeActionAuthority = new PageActionLaunchAuthority(
-    context.bundle,
-    launches,
-    durableAuthorizations,
-    transientAuthorizations,
-  );
-  const actions = new TrustedActionService(
-    context.bundle,
-    activeActionAuthority,
-    context.actor,
+  const actions = createPageActionService(
+    context.bundle, launches, durableAuthorizations, context.actor, transientAuthorizations,
   );
   const bridge = new BridgeService({
     bundle: context.bundle,

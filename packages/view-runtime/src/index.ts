@@ -736,6 +736,17 @@ class ActionBundleEditionChanged extends Error {}
 const DEFAULT_APPROVAL_TTL_MS = 120_000;
 const DEFAULT_MAX_APPROVALS = 128;
 
+/** Bind the action service to the same live launches and approvals as its host. */
+export function createPageActionService(
+  bundle: Bundle,
+  launches: PageLaunchRegistry,
+  registered: ViewAuthorizationStore,
+  actor: string | undefined,
+  transient?: ViewAuthorizationStore,
+): TrustedActionService {
+  return new TrustedActionService(bundle, new PageActionLaunchAuthority(bundle, launches, registered, transient), actor);
+}
+
 export class TrustedActionService {
   private readonly pending = new Map<string, PendingApproval>();
   private readonly bundle: Bundle;

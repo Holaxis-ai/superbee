@@ -43,6 +43,17 @@ test("the workspace reader bundles independently of MCP and View packages", asyn
   ), []);
 });
 
+test("the governed action entry uses the shared View runtime without loading MCP", async () => {
+  const graph = await readJson(path.join(root, "out/cli-runtime-metafile.json"));
+  const actions = graph.outputs["dist/view-actions.mjs"];
+  assert.ok(actions, "missing governed View actions entry");
+  assert.ok(Object.hasOwn(actions.inputs, "../view-runtime/src/index.ts"));
+  assert.ok(actions.imports.every(edge => edge.external && isBuiltin(edge.path)));
+  assert.deepEqual(Object.keys(actions.inputs).filter(input =>
+    /(?:^|\/)(?:@modelcontextprotocol|mcp-app)\//.test(input)
+  ), []);
+});
+
 test("packed reusable CLI is closed, inert on import, and binds commands to its executable", async () => {
   const scratch = await mkdtemp(path.join(tmpdir(), "superbee-cli-pack-"));
   try {

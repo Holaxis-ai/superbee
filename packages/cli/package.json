@@ -24,6 +24,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.mjs"
     },
+    "./view-actions/v1": {
+      "types": "./dist/view-actions.d.ts",
+      "default": "./dist/view-actions.mjs"
+    },
     "./workspace-reader/v1": {
       "types": "./dist/workspace-reader.d.ts",
       "default": "./dist/workspace-reader.mjs"
@@ -53,6 +57,7 @@
     "@superbee/publication": "*",
     "@superbee/server": "*",
     "@superbee/ui-server": "*",
+    "@superbee/view-runtime": "*",
     "@superbee/workspace-access": "*",
     "@toon-format/toon": "2.3.1",
     "@types/node": "^22.0.0",

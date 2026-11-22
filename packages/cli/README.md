@@ -42,7 +42,7 @@ The supported API is what the package exports:
 - the adapter contract types exported beside them (`CliRuntimeOptions`, `CliDistribution`,
   `HostCommands`, `PrivateStateHost`, `FilesystemHostPolicy`, `BoardHostPolicy` and the types
   they reference);
-- the `@superbee/cli/workspace-reader/v1` and `@superbee/cli/resources` subpaths;
+- the `@superbee/cli/workspace-reader/v1`, `@superbee/cli/view-actions/v1` and `@superbee/cli/resources` subpaths;
 - the `@superbee/cli/embedded-engine.json` data file.
 
 `runManagedUiWorker` and `runUpdateRefreshWorker` are exported for first-party distributions
@@ -78,6 +78,42 @@ the working copy independently. A document can change or disappear between calls
 checkouts use the CLI's existing freshness policy and include pending local edits.
 Importing the versioned subpath loads only the reader's dependencies. The package still
 ships its CLI runtime as a separate entry point.
+
+## Confirm a registered View edit
+
+Trusted local hosts on macOS and Linux can import `openRegisteredViewActions` from
+`@superbee/cli/view-actions/v1`. Open a catalog workspace or directory with a registered
+View ID and an explicit actor. The View must declare `bundle-propose` and already have
+local approval for its current content. The session returns the admitted HTML, title
+and content version so the host can present the same View that proposes the edit.
+
+```js
+import { openRegisteredViewActions } from '@superbee/cli/view-actions/v1';
+
+const session = await openRegisteredViewActions('catalog', 'planning', {
+  viewId: 'views-registry/task-editor', actor: 'human:editor',
+});
+try {
+  const result = await session.prepare({
+    kind: 'document.set-field', docId, field: 'status', value: 'done', expectedVersion,
+  });
+  if (result.status === 'prepared') {
+    // The host displays the source, target, actor and exact before/after values.
+    const confirmed = await askUserToConfirm(result.confirmation);
+    const receipt = await session.finish(result.approvalToken, confirmed === true ? 'commit' : 'cancel');
+    displayResult(receipt);
+  } else {
+    displayResult(result);
+  }
+} finally {
+  session.close();
+}
+```
+
+Keep the session and its one-use approval tokens in the trusted host. The embedded View
+can propose a change. The host collects the person's decision. A conflicting document
+version requires a new proposal and confirmation. Changed View content requires a new
+launch with approval for those bytes.
 
 ## Embedded engine record
 

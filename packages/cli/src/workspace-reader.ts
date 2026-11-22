@@ -1,7 +1,5 @@
 import { queryHeads, readDocVersioned } from "@superbee/core";
-import { openBundle } from "./bundle.js";
-import { assertSupportedCliHost } from "./posix-host.js";
-import { createCatalogWorkspaceResolver, serveWorkspace } from "./workspace-resolver.js";
+import { openPluginWorkspace } from "./workspace-resolver.js";
 
 export interface WorkspaceDocumentHead {
   readonly id: string;
@@ -24,16 +22,7 @@ export async function openWorkspaceReader(
   source: "catalog" | "directory",
   selector: string,
 ): Promise<WorkspaceReader> {
-  assertSupportedCliHost();
-  if (source !== "catalog" && source !== "directory") {
-    throw new TypeError("workspace source must be catalog or directory");
-  }
-  if (typeof selector !== "string" || !selector.trim()) {
-    throw new TypeError("a workspace selector is required");
-  }
-  const { bundle, name } = source === "catalog"
-    ? await createCatalogWorkspaceResolver().open(selector)
-    : await serveWorkspace(await openBundle(selector));
+  const { bundle, name } = await openPluginWorkspace(source, selector);
   return Object.freeze({
     name,
     queryHeads: () => queryHeads(bundle),
