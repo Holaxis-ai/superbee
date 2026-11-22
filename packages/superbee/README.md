@@ -53,11 +53,7 @@ Use macOS, Linux, or WSL2 for the full CLI. It requires a supported Node.js 22, 
 npm install -g superbee
 ```
 
-Stable releases publish on npm's `latest` tag and prereleases on `next`. To try the prerelease:
-
-```sh
-npm install -g superbee@next
-```
+Stable releases publish on npm's `latest` tag and prereleases on `next`.
 
 ### Native Windows Git boards
 
@@ -65,10 +61,10 @@ Native Git board operations require Node.js 22.17.0 or later in the 22 line, 24.
 the 24 line, or Node.js 26. These releases use libuv 1.51.0 or newer, which fixes a Windows file
 identity check needed for board operations. [libuv changelog](https://github.com/libuv/libuv/blob/v1.51.0/ChangeLog)
 
-For native Windows Git boards, install Superbee from npm's `next` channel in PowerShell:
+For native Windows Git boards, install the stable release in PowerShell:
 
 ```powershell
-npm install -g superbee@next
+npm install -g superbee
 ```
 
 Install Git for Windows and make `git.exe` available on PATH. Run `superbee version` to identify
