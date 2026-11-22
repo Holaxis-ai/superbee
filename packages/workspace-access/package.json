@@ -1,0 +1,21 @@
+{
+  "name": "@superbee/workspace-access",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Workspace discovery and selection contract for Superbee clients.",
+  "license": "Apache-2.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@superbee/core": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

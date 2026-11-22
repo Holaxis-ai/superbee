@@ -29,7 +29,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { decode } from "@toon-format/toon";
 
 import { CliError } from "../src/errors.js";
-import { createCatalogMcpWorkspaceResolver } from "../src/mcp-workspace-resolver.js";
+import { createCatalogWorkspaceResolver } from "../src/workspace-resolver.js";
 import { ensureUserStateRoot, userStateDir } from "../src/user-state.js";
 import { startFakeHostBridge, type FakeHostBridge } from "./support/fake-host-bridge.js";
 import { BUNDLE, FakeHost } from "./support/fake-hosted-sync.js";
@@ -320,7 +320,7 @@ async function viewSetTitle(label: string, dir: string, id: string, title: strin
   if ((await readFile(file, "utf8")) !== before) return { invariant: "a failed View action left the file unchanged", detail: `${outcome?.status}: ${outcome?.message}` };
   if (outcome?.status !== "failed") return { invariant: "finish_view_action", detail: outcome ? `${outcome.status}: ${outcome.message ?? ""}` : JSON.stringify(finished.content) };
   try {
-    const context = await createCatalogMcpWorkspaceResolver({ home: r.home }).open(label);
+    const context = await createCatalogWorkspaceResolver({ home: r.home }).open(label);
     await writeDoc(context.bundle, { id, frontmatter: { ...target.doc.frontmatter, title }, body: target.doc.body });
     return { invariant: "finish_view_action", detail: "failed, but the same write in process succeeds" };
   } catch (error) {
@@ -757,7 +757,7 @@ test("in the same session, a copied checkout and an edit of verified are refused
 
   // An edit that changes only verified (a managed field sync never sends) is refused before the
   // file changes. No View action can make it; the served bundle is the one path every write takes.
-  const context = await createCatalogMcpWorkspaceResolver({ home: r.home }).open(r.labels.hosted);
+  const context = await createCatalogWorkspaceResolver({ home: r.home }).open(r.labels.hosted);
   const gammaFile = path.join(folder("hosted"), "notes", "gamma.md");
   const before = await readFile(gammaFile, "utf8");
   const gamma = await readDocVersioned({ root: folder("hosted") }, "notes/gamma");

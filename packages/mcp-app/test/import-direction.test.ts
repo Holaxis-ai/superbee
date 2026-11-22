@@ -17,6 +17,7 @@ const allowedPackageRoots = [
   "@superbee/core",
   "@superbee/markdown-renderer",
   "@superbee/view-runtime",
+  "@superbee/workspace-access",
 ] as const;
 
 async function sourceFiles(dir: string): Promise<string[]> {

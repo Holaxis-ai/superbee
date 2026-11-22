@@ -1,3 +1,4 @@
+import { MAX_WORKSPACE_CATALOG_PAGE } from "@superbee/workspace-access";
 import {
   MemoryBackend,
   readDocVersioned,
@@ -120,7 +121,6 @@ function mintClaimId(): string {
 }
 export const MAX_VIEW_CATALOG_PAGE = 20;
 export const MAX_VIEW_CATALOG_SCAN = 40;
-export const MAX_WORKSPACE_CATALOG_PAGE = 50;
 const WORKSPACE_ID_PATTERN = /^bnd_[0-9a-f]{32}$/;
 const WORKSPACE_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 

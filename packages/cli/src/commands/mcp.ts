@@ -14,15 +14,12 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { resolveActor } from "../actor.js";
 import { openBundle } from "../bundle.js";
-import { deriveBundleDisplayName } from "../bundle-name.js";
 import { asHandled, CliError, toExit } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, renderErrorEnvelope, resolveMode } from "../output.js";
-import { LocalViewAuthorizationStore } from "../ui/view-authorizations.js";
 import { cliVersion } from "../build-identity.js";
 import { stableMcpLaunchGuidance } from "../integration-guidance.js";
-import { createCatalogMcpWorkspaceResolver } from "../mcp-workspace-resolver.js";
-import { servedBundle } from "../hosted/served-bundle.js";
+import { createCatalogWorkspaceResolver, serveWorkspace } from "../workspace-resolver.js";
 import {
   inspectMcpHosts,
   MCP_INSTALL_TARGETS,
@@ -309,7 +306,7 @@ async function mcpInner(argv: string[], deps: Partial<McpCliDeps>): Promise<void
   if (values.dir === undefined) {
     const workspaceResolver = (
       deps.createWorkspaceResolver ??
-      ((resolvedActor?: string) => createCatalogMcpWorkspaceResolver({ actor: resolvedActor }))
+      ((resolvedActor?: string) => createCatalogWorkspaceResolver({ actor: resolvedActor }))
     )(actor);
     await start({
       workspaceResolver,
@@ -318,15 +315,12 @@ async function mcpInner(argv: string[], deps: Partial<McpCliDeps>): Promise<void
     return;
   }
   const opened = await open(values.dir);
-  // A hosted checkout is served through its folder, refusing up front what sync cannot send.
-  const bundle = await servedBundle(opened);
-  // Named from the folder as opened, so starting never waits on an automatic pull.
-  const bundleName = (await deriveBundleDisplayName(opened)).name;
+  const context = await serveWorkspace(opened, actor);
   await start({
-    bundle,
+    bundle: context.bundle,
     version: cliVersion(),
-    actor,
-    bundleName,
-    viewAuthorization: new LocalViewAuthorizationStore(opened.root),
+    actor: context.actor,
+    bundleName: context.name,
+    viewAuthorization: context.viewAuthorization,
   });
 }

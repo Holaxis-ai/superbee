@@ -1,15 +1,27 @@
 import assert from "node:assert/strict";
 import { mkdtemp, realpath, rename, rm, symlink } from "node:fs/promises";
+import { registerHooks } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
 import { initBundle, type Bundle } from "@superbee/core";
-import { MAX_WORKSPACE_CATALOG_PAGE } from "@superbee/mcp-app";
+import { MAX_WORKSPACE_CATALOG_PAGE } from "@superbee/workspace-access";
 
-import { createCatalogMcpWorkspaceResolver } from "../src/mcp-workspace-resolver.js";
 import { openBundle } from "../src/bundle.js";
 import { addCatalogEntry } from "../src/catalog.js";
+
+// Exercise the actual module graph with the optional adapter unavailable.
+const guard = registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === "@superbee/mcp-app" || specifier.startsWith("@modelcontextprotocol/")) {
+      throw new Error(`Workspace resolution must run independently of ${specifier}`);
+    }
+    return nextResolve(specifier, context);
+  },
+});
+const { createCatalogWorkspaceResolver } = await import("../src/workspace-resolver.js");
+test.after(() => guard.deregister());
 
 const availableEntry = {
   id: "bnd_00000000000000000000000000000000",
@@ -19,10 +31,10 @@ const availableEntry = {
   home: "local" as const,
 };
 
-test("catalog MCP resolver exposes only path-free summaries and derives display names", async () => {
+test("catalog workspace resolver exposes only path-free summaries and derives display names", async () => {
   const bundle = { root: "/private/catalog/planning" } as Bundle;
   const opened: Array<string | undefined> = [];
-  const resolver = createCatalogMcpWorkspaceResolver({
+  const resolver = createCatalogWorkspaceResolver({
     listEntries: async () => [
       availableEntry,
       {
@@ -59,10 +71,10 @@ test("catalog MCP resolver exposes only path-free summaries and derives display 
   assert.doesNotMatch(JSON.stringify(listed), /private|locator|path/);
 });
 
-test("catalog MCP resolver re-resolves selection and returns one immutable bundle context", async () => {
+test("catalog workspace resolver re-resolves selection and returns one immutable bundle context", async () => {
   const bundle = { root: availableEntry.locator.path } as Bundle;
   let selected: string | undefined;
-  const resolver = createCatalogMcpWorkspaceResolver({
+  const resolver = createCatalogWorkspaceResolver({
     actor: "human:mike",
     resolveEntry: async (selector) => {
       selected = selector;
@@ -89,8 +101,8 @@ test("catalog MCP resolver re-resolves selection and returns one immutable bundl
   assert.ok(Object.isFrozen(context));
 });
 
-test("catalog MCP resolver downgrades display-name drift to unavailable without leaking paths", async () => {
-  const resolver = createCatalogMcpWorkspaceResolver({
+test("catalog workspace resolver downgrades display-name drift to unavailable without leaking paths", async () => {
+  const resolver = createCatalogWorkspaceResolver({
     listEntries: async () => [availableEntry],
     open: async () => {
       throw new Error(`could not read ${availableEntry.locator.path}`);
@@ -106,9 +118,9 @@ test("catalog MCP resolver downgrades display-name drift to unavailable without 
   assert.doesNotMatch(JSON.stringify(listed), /private|catalog/);
 });
 
-test("catalog MCP resolver bounds display-name bundle reads to the visible page", async () => {
+test("catalog workspace resolver bounds display-name bundle reads to the visible page", async () => {
   let opens = 0;
-  const resolver = createCatalogMcpWorkspaceResolver({
+  const resolver = createCatalogWorkspaceResolver({
     listEntries: async () => Array.from(
       { length: MAX_WORKSPACE_CATALOG_PAGE + 3 },
       (_, index) => ({
@@ -132,8 +144,8 @@ test("catalog MCP resolver bounds display-name bundle reads to the visible page"
   assert.equal(listed[MAX_WORKSPACE_CATALOG_PAGE]?.displayName, undefined);
 });
 
-test("catalog MCP resolver refuses canonical-root drift between resolution and open", async () => {
-  const resolver = createCatalogMcpWorkspaceResolver({
+test("catalog workspace resolver refuses canonical-root drift between resolution and open", async () => {
+  const resolver = createCatalogWorkspaceResolver({
     resolveEntry: async () => availableEntry,
     open: async () => ({ root: availableEntry.locator.path }) as Bundle,
     resolveTarget: async () => ({
@@ -152,7 +164,7 @@ test("catalog MCP resolver refuses canonical-root drift between resolution and o
   await assert.rejects(resolver.runOperation!("planning", "documents.history.v1", {}), /workspace catalog target changed during selection/);
 });
 
-test("catalog MCP resolver refuses a real rename-and-symlink retarget during selection", async (t) => {
+test("catalog workspace resolver refuses a real rename-and-symlink retarget during selection", async (t) => {
   const requestedBase = await mkdtemp(path.join(os.tmpdir(), "superbee-mcp-retarget-"));
   const base = await realpath(requestedBase);
   const home = path.join(base, "home");
@@ -167,7 +179,7 @@ test("catalog MCP resolver refuses a real rename-and-symlink retarget during sel
   });
 
   let swapped = false;
-  const resolver = createCatalogMcpWorkspaceResolver({
+  const resolver = createCatalogWorkspaceResolver({
     home,
     open: async (dir) => {
       if (!swapped) {

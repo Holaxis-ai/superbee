@@ -1,12 +1,13 @@
+import type { Bundle } from "@superbee/core";
 import { homedir } from "node:os";
 
 import { captureRuntimeCallback } from "./runtime-context.js";
 import {
   MAX_WORKSPACE_CATALOG_PAGE,
-  createMcpBundleContext,
-  type McpOperationsStop,
-  type McpWorkspaceResolver,
-} from "@superbee/mcp-app";
+  type ReachableListing as WorkspaceReachableListing,
+  type OperationsStop,
+  type WorkspaceResolver,
+} from "@superbee/workspace-access";
 import { namesOtherBundle, type HostedOperationListingAnswer, type HostedOperationRun, type JsonObject } from "@superbee/core/hosted-transport";
 
 import { openBundle, resolveLocalBundleTarget, samePhysicalPath } from "./bundle.js";
@@ -19,7 +20,6 @@ import {
 import { LocalViewAuthorizationStore } from "./ui/view-authorizations.js";
 import { servedBundle } from "./hosted/served-bundle.js";
 import { reachableHostedBundles, type ReachableListing } from "./hosted/reachable.js";
-import type { McpReachableListing } from "@superbee/mcp-app";
 import { bundleHomeAt } from "./bundle-home.js";
 import { commandFragment, commandToken } from "./command-text.js";
 import { CliError } from "./errors.js";
@@ -30,11 +30,11 @@ import { openCheckoutConnection, type CheckoutConnection } from "./hosted/checko
 import { isFolderAnswered } from "./hosted/folder-answered.js";
 import { bindingHostArgument } from "./hosted/marker.js";
 
-/** How long `list_workspaces` waits for the hosted bundles, and how long an answer is reused. */
-export const MCP_HOSTED_BUDGET_MS = 1_500;
-export const MCP_HOSTED_CACHE_MS = 60_000;
+/** Hosted discovery time budget and lifetime of a cached answer. */
+export const WORKSPACE_HOSTED_BUDGET_MS = 1_500;
+export const WORKSPACE_HOSTED_CACHE_MS = 60_000;
 
-export interface CatalogMcpWorkspaceResolverOptions {
+export interface CatalogWorkspaceResolverOptions {
   actor?: string;
   home?: string;
   listEntries?: (home?: string) => Promise<CatalogEntryView[]>;
@@ -42,23 +42,23 @@ export interface CatalogMcpWorkspaceResolverOptions {
   open?: typeof openBundle;
   resolveTarget?: typeof resolveLocalBundleTarget;
   deriveName?: typeof deriveBundleDisplayName;
-  /** The reachable hosted bundles (default: {@link reachableHostedBundles} within {@link MCP_HOSTED_BUDGET_MS}). */
+  /** The reachable hosted bundles (default: {@link reachableHostedBundles} within {@link WORKSPACE_HOSTED_BUDGET_MS}). */
   reachable?: () => Promise<ReachableListing | null>;
   now?: () => number;
   /** The person and fetch a hosted checkout's operations are reached with (default: this home's session). */
   hosted?: HostedAccountDeps;
 }
 
-/** Adapt the private CLI catalog to the host-neutral MCP workspace boundary. */
-export function createCatalogMcpWorkspaceResolver(
-  options: CatalogMcpWorkspaceResolverOptions = {},
-): McpWorkspaceResolver {
+/** Adapt the private CLI catalog to the shared workspace boundary. */
+export function createCatalogWorkspaceResolver(
+  options: CatalogWorkspaceResolverOptions = {},
+): WorkspaceResolver<Awaited<ReturnType<typeof serveWorkspace>>> {
   const listEntries = options.listEntries ?? listCatalogEntries;
   const resolveEntry = options.resolveEntry ?? resolveCatalogEntry;
   const open = options.open ?? openBundle;
   const resolveTarget = options.resolveTarget ?? resolveLocalBundleTarget;
   const deriveName = options.deriveName ?? deriveBundleDisplayName;
-  const reachable = options.reachable ?? (() => reachableHostedBundles({ budgetMs: MCP_HOSTED_BUDGET_MS, ...(options.home !== undefined ? { home: options.home } : {}) }));
+  const reachable = options.reachable ?? (() => reachableHostedBundles({ budgetMs: WORKSPACE_HOSTED_BUDGET_MS, ...(options.home !== undefined ? { home: options.home } : {}) }));
   const now = options.now ?? Date.now;
   // The private state bindings and sessions are read from: one home, as `op` derives it.
   const home = options.hosted?.auth?.home ?? options.home ?? homedir();
@@ -81,7 +81,7 @@ export function createCatalogMcpWorkspaceResolver(
    * The checkout a workspace is, decided on this machine with no request: its binding read fresh
    * (never from the catalog). A local or Git folder stops here.
    */
-  const checkoutOf = async (selector: string): Promise<CheckoutBinding | McpOperationsStop> => {
+  const checkoutOf = async (selector: string): Promise<CheckoutBinding | OperationsStop> => {
     const { target } = await select(selector, async () => undefined);
     const facts = await bundleHomeAt(target.canonicalRoot, { home });
     return facts.home === "hosted" ? facts.binding : { stop: "no_host_operations", home: facts.home };
@@ -91,7 +91,7 @@ export function createCatalogMcpWorkspaceResolver(
    * The one checkout connection `op` uses, as the checkout's own person. A missing session stops
    * with the one sign-in link, never a prompt; its resume names the host only, never the folder.
    */
-  const connect = async (binding: CheckoutBinding): Promise<CheckoutConnection | McpOperationsStop> => {
+  const connect = async (binding: CheckoutBinding): Promise<CheckoutConnection | OperationsStop> => {
     const resume = commandFragment`${cliInvocation()} login --host ${commandToken(bindingHostArgument(binding))}`;
     try {
       return await openCheckoutConnection(binding, options.hosted, resume, home);
@@ -104,15 +104,15 @@ export function createCatalogMcpWorkspaceResolver(
     }
   };
   // One answer per minute per process, in memory only.
-  let cached: { at: number; value: Promise<McpReachableListing> } | undefined;
+  let cached: { at: number; value: Promise<WorkspaceReachableListing> } | undefined;
 
   return {
     reachable: captureRuntimeCallback(async () => {
-      if (!cached || now() - cached.at >= MCP_HOSTED_CACHE_MS) {
+      if (!cached || now() - cached.at >= WORKSPACE_HOSTED_CACHE_MS) {
         cached = {
           at: now(),
           value: reachable().then(
-            (listing): McpReachableListing => ({
+            (listing): WorkspaceReachableListing => ({
               workspaces: (listing?.hosts ?? []).flatMap((host) =>
                 host.bundles.map((bundle) => ({ id: bundle.reference, name: bundle.name || bundle.reference, home: "hosted" as const, location: host.host, command: bundle.checkout ?? host.ask })),
               ),
@@ -168,19 +168,9 @@ export function createCatalogMcpWorkspaceResolver(
       if (!samePhysicalPath(bundle.root, entry.locator.path)) {
         throw new Error("workspace catalog target changed during selection");
       }
-      // A hosted checkout is served through its folder, with the guard that refuses up front what
-      // sync cannot send (hosted/served-bundle.ts). Its binding is read fresh, never taken from the catalog.
-      const served = await servedBundle(bundle, options.home !== undefined ? { home: options.home } : {});
-      // Named from the folder as opened, so naming it never waits on an automatic pull.
-      const bundleName = (await deriveName(bundle)).name;
-      return createMcpBundleContext({
-        bundle: served,
-        bundleName,
-        ...(options.actor !== undefined ? { actor: options.actor } : {}),
-        viewAuthorization: new LocalViewAuthorizationStore(bundle.root, options.home),
-      });
+      return serveWorkspace(bundle, options.actor, options.home, deriveName);
     }),
-    listOperations: captureRuntimeCallback(async (selector: string): Promise<HostedOperationListingAnswer | McpOperationsStop> => {
+    listOperations: captureRuntimeCallback(async (selector: string): Promise<HostedOperationListingAnswer | OperationsStop> => {
       const binding = await checkoutOf(selector);
       if ("stop" in binding) return binding;
       const connection = await connect(binding);
@@ -200,7 +190,7 @@ export function createCatalogMcpWorkspaceResolver(
         },
       };
     }),
-    runOperation: captureRuntimeCallback(async (selector: string, operationId: string, input: JsonObject): Promise<HostedOperationRun | McpOperationsStop> => {
+    runOperation: captureRuntimeCallback(async (selector: string, operationId: string, input: JsonObject): Promise<HostedOperationRun | OperationsStop> => {
       const binding = await checkoutOf(selector);
       if ("stop" in binding) return binding;
       // Decided here before any request, as `op run` decides them.
@@ -213,4 +203,21 @@ export function createCatalogMcpWorkspaceResolver(
       return connection.client.runOperation(binding.bundle_id, operationId, input);
     }),
   };
+}
+
+/** Keep checkout policy, folder naming and local View approvals together for both open modes. */
+export async function serveWorkspace(
+  opened: Bundle,
+  actor?: string,
+  home?: string,
+  deriveName = deriveBundleDisplayName,
+) {
+  const bundle = await servedBundle(opened, { home });
+  const { name } = await deriveName(opened);
+  return Object.freeze({
+    bundle,
+    name,
+    ...(actor !== undefined ? { actor } : {}),
+    viewAuthorization: new LocalViewAuthorizationStore(opened.root, home),
+  });
 }

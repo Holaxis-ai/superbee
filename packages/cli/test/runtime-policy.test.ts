@@ -242,7 +242,7 @@ test("all CLI policy projections compose through captured public receivers", () 
 });
 
 test("MCP list/open and retained backend/authorization callbacks keep construction context outside A and under B", async (t) => {
-  const { createCatalogMcpWorkspaceResolver } = await import("../src/mcp-workspace-resolver.js");
+  const { createCatalogWorkspaceResolver } = await import("../src/workspace-resolver.js");
   const { addCatalogEntry } = await import("../src/catalog.js");
   const home = await realpath(await mkdtemp(join(tmpdir(), "superbee-mcp-capture-")));
   t.after(() => rm(home, { recursive: true, force: true }));
@@ -262,7 +262,7 @@ test("MCP list/open and retained backend/authorization callbacks keep constructi
     await configuredInitBundle(join(home, "bundle-B"));
     await addCatalogEntry("selected-b", join(home, "bundle-B"), { home });
   });
-  const resolver = runWithRuntime(a, () => createCatalogMcpWorkspaceResolver({ home }));
+  const resolver = runWithRuntime(a, () => createCatalogWorkspaceResolver({ home }));
   const subject = {
     sourceKind: "registered" as const, registryId: "views/test", contentVersion: "sha256:test",
     contentType: "text/html; charset=utf-8" as const, capability: "bundle-read" as const,
@@ -289,7 +289,7 @@ test("MCP list/open and retained backend/authorization callbacks keep constructi
     assert.ok(seen.includes("A"), "authorization reads use A's private-state policy");
     assert.equal(seen.some((value) => value.startsWith("B")), false);
   }
-  const selectedB = await runWithRuntime(b, () => createCatalogMcpWorkspaceResolver({ home }).open("selected-b"));
+  const selectedB = await runWithRuntime(b, () => createCatalogWorkspaceResolver({ home }).open("selected-b"));
   assert.equal(await selectedB.viewAuthorization!.isAuthorized(subject), false);
 });
 
