@@ -240,8 +240,8 @@ function assertSmokeJob(job, lane) {
 }
 
 const fullProofCondition = "!(needs.source-decision.result == 'success' && needs.source-decision.outputs.reuse == 'true')";
-const normalLaneCondition = `\${{ always() && ${fullProofCondition} }}`;
-const nativeWindowsCondition = `\${{ always() && needs.smoke-node-22.result == 'success' && ${fullProofCondition} }}`;
+const normalLaneCondition = `\${{ !cancelled() && ${fullProofCondition} }}`;
+const nativeWindowsCondition = `\${{ !cancelled() && needs.smoke-node-22.result == 'success' && ${fullProofCondition} }}`;
 
 function assertNativeWindowsJob(floor, windows, candidate) {
   assert.deepEqual(floor.outputs, {
@@ -495,12 +495,12 @@ function validateCiTopology(
     const job = parsed.jobs[required];
     if (required === "windows-installed") {
       for (const step of job.steps) assert.equal(step.if, undefined, "Windows proof steps must remain unconditional");
-      assert.equal(job.if, nativeWindowsCondition, "Windows must run for full proof with a successful producer");
+      assert.equal(job.if, nativeWindowsCondition, "Windows must honor cancellation and run for full proof with a successful producer");
       assert.deepEqual(job.needs, ["source-decision", "smoke-node-22"]);
       continue;
     }
     const selected = required !== "smoke-node-22";
-    assert.equal(job.if, selected ? normalLaneCondition : undefined, `${required} must preserve full fallback`);
+    assert.equal(job.if, selected ? normalLaneCondition : undefined, `${required} must honor cancellation and preserve full fallback`);
     assert.equal(job.needs, selected ? "source-decision" : undefined);
     const steps = stepsOf(jobs[required]);
     const preflight = requiredUnconditionalStep(steps, {
@@ -595,6 +595,16 @@ test('package source preflight cannot be removed, skipped or moved after install
 
 test("CI runs every maintained lane or verifies identical-source queue proof", () => {
   validateCiTopology(workflow);
+});
+
+test("dependent proof lanes must stop on cancellation and still run after a failed source decision", () => {
+  for (const condition of [normalLaneCondition, nativeWindowsCondition]) {
+    for (const statusCheck of ["always()", "success()"]) {
+      assert.ok(workflow.includes(condition));
+      const changed = workflow.replace(condition, condition.replace("!cancelled()", statusCheck));
+      assert.throws(() => validateCiTopology(changed), /must honor cancellation/, statusCheck);
+    }
+  }
 });
 
 test("native Windows cannot substitute a rebuilt artifact or mask a skipped or failed proof", () => {
