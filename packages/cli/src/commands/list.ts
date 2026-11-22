@@ -59,7 +59,7 @@ import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { compareByMeaningfulChange, meaningfulChangeOrderKey } from "@superbee/core/query-order";
-import { commandFragment, commandLiteral, commandToken } from "../command-text.js";
+import { commandFragment, commandLiteral, commandToken, type CommandText } from "../command-text.js";
 
 function listUsage(boardOnly: boolean): string {
   return `superbee list — query concepts over their frontmatter (alias: query)
@@ -108,7 +108,7 @@ Results are ordered by each document's meaningful change time, newest first (v0.
 when present, otherwise \`timestamp\`); invalid or missing times sort last, with canonical ID ties.
 Use the logical field name progress_status when querying workflow state. Superbee resolves the
 bundle's compatible storage coordinate through each document's declared Kind.
-${boardOnly ? "\nList reads local files. Run superbee sync to refresh the checkout.\n" : ""}`;
+`;
 }
 
 export const LIST_USAGE = listUsage(false);
@@ -148,10 +148,20 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     { optionNames: Object.keys(LIST_OPTIONS) },
   );
   const boardOnly = currentExistingGitBoard() !== undefined;
+  const selectedBoardDir = boardOnly && values.dir?.trim() ? commandFragment` --dir ${commandToken(values.dir)}` : undefined;
   if (values.help) {
-    stdout(renderUsage(listUsage(boardOnly)));
+    const refreshDir = selectedBoardDir ?? commandLiteral(" --dir <standalone-board>");
+    const refresh = boardOnly
+      ? `\nList reads local files. Refresh the checkout with this command.\n  ${cliInvocation()} sync --pull-only${refreshDir}\n`
+      : "";
+    stdout(renderUsage(listUsage(boardOnly)) + refresh);
     return;
   }
+
+  const boardDirOption = selectedBoardDir ?? commandFragment``;
+  const remedy = (options: CommandText) => boardOnly && selectedBoardDir === undefined
+    ? `${cliInvocation()} list --help`
+    : `${cliInvocation()} list ${options}${boardDirOption}`;
 
   const filter: QueryFilter = {};
   if (values.type?.trim()) filter.type = values.type.trim();
@@ -178,7 +188,7 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
       const key = eq >= 0 ? entry.slice(0, eq).trim() : "";
       if (eq < 0 || key === "") {
         throw new CliError("USAGE", `--field expects key=value (got '${entry}')`, {
-          help: `${cliInvocation()} list --field progress_status=done`,
+          help: remedy(commandLiteral("--field progress_status=done")),
         });
       }
       const rawValue = entry.slice(eq + 1);
@@ -193,13 +203,13 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
           throw new CliError(
             "USAGE",
             `--field ${commandToken(key)} has an empty value — expected --field ${commandToken(key)}=<value>, or comma-separated set membership --field ${commandToken(key)}=a,b`,
-            { help: `${cliInvocation()} list --field progress_status=done` },
+            { help: remedy(commandLiteral("--field progress_status=done")) },
           );
         }
         throw new CliError(
           "USAGE",
           `--field ${commandToken(key)} has an empty member in '${rawValue}' (comma is the set-membership separator — use 'a,b', not 'a,,b' or a leading/trailing comma)`,
-          { help: `${cliInvocation()} list --field progress_status=todo,in_progress` },
+          { help: remedy(commandLiteral("--field progress_status=todo,in_progress")) },
         );
       }
       if (key === PROGRESS_STATUS_FIELD) {
@@ -228,7 +238,7 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     const raw = values.limit.trim();
     if (!/^\d+$/.test(raw)) {
       throw new CliError("USAGE", "--limit must be a non-negative integer (0 = unlimited)", {
-        help: `${cliInvocation()} list --limit 100`,
+        help: remedy(commandLiteral("--limit 100")),
       });
     }
     limit = Number(raw);
@@ -242,9 +252,6 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     .filter((f) => f && !DEFAULT_KEYS.has(f));
 
   const bundle = await openReadBundle(values.dir, BOARD_LIST_USAGE, deps.autoPull);
-  const boardDirOption = boardOnly && values.dir !== undefined
-    ? commandFragment` --dir ${commandToken(values.dir)}`
-    : commandFragment``;
   const docReadOptions = boardOnly ? commandFragment`${boardDirOption} --json` : commandFragment``;
   // A corrupt document (unparseable YAML frontmatter) is skipped and reported, never allowed to
   // fail the whole scan — one bad file must not blind the agent to every other doc (AXI §5/§6).

@@ -175,6 +175,29 @@ test("scoped list and doc read stay at the explicit standalone checkout and neve
       await assert.rejects(docRead([id, "--dir", reader], deps), { code: "USAGE" });
       await assert.rejects(readFile(target), { code: "ENOENT" });
       assert.equal(stdout, "");
+      await list(["--help"], deps);
+      assert.match(stdout, /sync --pull-only --dir <standalone-board>/);
+      stdout = "";
+      await list(["--help", "--dir", relativeBoard], deps);
+      assert.match(stdout, /sync --pull-only --dir ' standalone reader'/);
+      stdout = "";
+      for (const [bad, remedy] of [
+        [["--field", "malformed"], "--field progress_status=done"],
+        [["--field", "progress_status="], "--field progress_status=done"],
+        [["--field", "progress_status=todo,,done"], "--field progress_status=todo,in_progress"],
+        [["--limit=-1"], "--limit 100"],
+      ]) {
+        await assert.rejects(list([...bad, "--dir", relativeBoard], deps), (error) => {
+          assert.equal(error.code, "USAGE");
+          assert.ok(error.help.endsWith(" list " + remedy + " --dir ' standalone reader'"), error.help);
+          return true;
+        });
+        await assert.rejects(list(bad, deps), (error) => {
+          assert.equal(error.code, "USAGE");
+          assert.ok(error.help.endsWith(" list --help"), error.help);
+          return true;
+        });
+      }
       const cwd = process.cwd();
       process.chdir(topo.dir);
       try {
