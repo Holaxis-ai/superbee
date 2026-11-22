@@ -1,7 +1,7 @@
 import { readRegularFileNoFollowSync } from "./nofollow-read.js";
 import { configuredBundle } from "./filesystem-runtime.js";
 import { withCliFilesystemMutationLock as withFilesystemMutationLock } from "./filesystem-runtime.js";
-import { currentBoardHost, currentHost, currentDistribution, distributionPackageName, distributionBinName } from "./runtime-context.js";
+import { currentBoardHost, currentHost } from "./runtime-context.js";
 // Bundle discovery for the Superbee CLI.
 //
 // Every OKF command operates on ONE Knowledge Bundle. Locally that's a directory tree; this module
