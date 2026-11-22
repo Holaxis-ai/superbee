@@ -9,24 +9,23 @@ what they know invisible to the humans they work for. Superbee gives them
 shared, versioned, conflict-safe memory in plain text — offline-first, standards-based,
 owned by you.
 
-**Status: early and experimental.** A public npm prerelease is available for testing; formats and
-commands will change without ceremony, and some of the project's biggest ideas are still bets
-under test. The honest breakdown is below — read it before depending on anything.
+**Status: early and experimental.** Formats and commands can change before 1.0. See
+[what's early or experimental](#whats-early-or-experimental) for current limitations.
 
 ## Install
 
 **Requirements for the full CLI: macOS or Linux (including WSL2), and a supported Node.js 22, 24, or 26 release (22.14.0 minimum).**
 The package also has an [experimental native Windows Git board mode](packages/superbee/README.md#native-windows-git-boards).
 
-The current test release is on npm's `next` prerelease channel; `latest` provides the stable
-release. Install the prerelease with:
+Stable releases publish on npm's `latest` channel and prereleases on `next`. Install the
+stable release with:
 
 ```sh
-npm install -g superbee@next
+npm install -g superbee
 superbee setup
 ```
 
-`npm install -g superbee` installs the stable channel. The package's optional Agent Skill teaches Claude Code, Codex, and OpenCode
+The package's optional Agent Skill teaches Claude Code, Codex, and OpenCode
 how to use the installed command without carrying another copy of the executable. OpenCode uses
 its documented Claude-compatible Skill discovery, so it shares Claude Code's Skill bytes unless a
 custom Claude config root requires separate documented host paths.
@@ -351,7 +350,7 @@ bundles remain supported without rewriting their declared edition.
 
 ## What's early or experimental
 
-- **Everything is pre-1.0.** The npm package is a prerelease and breaking changes are likely.
+- **Everything is pre-1.0.** Breaking changes are likely.
 - **Native Windows Git board support is experimental.** Install the same `superbee` package and
   use Git for Windows to sync an existing standalone board, list and read its documents, update
   an existing document with an expected version, and inspect saved conflicts. Use WSL2 for the full CLI. [Native Windows instructions](packages/superbee/README.md#native-windows-git-boards)
