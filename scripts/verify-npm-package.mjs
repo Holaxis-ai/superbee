@@ -769,8 +769,8 @@ async function runInstalledProof(spec) {
 
     // Node's ESM --import preload is common to the supported Node 22/24/26 lines. Instrument the
     // installed process externally (never through a product test hook) at its actual atomic
-    // production-lock mkdir: the holder owns the real lock directory while the contender proves
-    // EEXIST on the exact same path, and neither command may publish before the verifier releases it.
+    // production lock: the holder has written its owner record while the contender proves mkdir
+    // EEXIST on the same lock path. Neither command may publish before the verifier releases it.
     const installedRaceRoot = path.join(scratch, "create-only-production-lock");
     const installedRaceParent = path.join(installedRaceRoot, "parent");
     const installedRaceChild = path.join(installedRaceParent, "deep", "child");
@@ -820,6 +820,8 @@ async function runInstalledProof(spec) {
       assert.equal(holderAcquired.lock_path, holderAttempt.lock_path);
       assert.equal(contenderContended.lock_path, holderAttempt.lock_path);
       assert.equal(contenderContended.fs_code, "EEXIST");
+      const owner = JSON.parse(await readFile(path.join(holderAcquired.lock_path, "owner.json"), "utf8"));
+      assert.equal(owner.pid, holderAcquired.owner_pid, "the holder's production owner record must be installed");
       assert.equal(
         await access(path.join(installedBarrierDir, "contender.unexpected-acquire.json")).then(
           () => true,

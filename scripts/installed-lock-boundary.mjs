@@ -25,9 +25,11 @@ if (!barrierDir || (role !== "holder" && role !== "contender")) {
 }
 
 const originalMkdir = fs.mkdir.bind(fs);
+const originalWriteFile = fs.writeFile.bind(fs);
 const releaseFile = path.join(barrierDir, "holder.release");
 const holderAcquiredFile = path.join(barrierDir, "holder.acquired.json");
 let boundaryObserved = false;
+let holderLockPath;
 
 async function waitFor(file) {
   const deadline = Date.now() + 10000;
@@ -44,7 +46,7 @@ async function waitFor(file) {
 }
 
 async function mark(name, details) {
-  await fs.writeFile(
+  await originalWriteFile(
     path.join(barrierDir, name),
     JSON.stringify({ ...details, node: process.versions.node }) + "\\n",
     "utf8",
@@ -65,8 +67,7 @@ fs.mkdir = async function instrumentedMkdir(requested, options) {
   await mark(role + ".attempt.json", { lock_path: lockPath });
   if (role === "holder") {
     const result = await originalMkdir(requested, options);
-    await mark("holder.acquired.json", { lock_path: lockPath });
-    await waitFor(releaseFile);
+    holderLockPath = lockPath;
     return result;
   }
 
@@ -79,6 +80,17 @@ fs.mkdir = async function instrumentedMkdir(requested, options) {
     await mark("contender.contended.json", { lock_path: lockPath, fs_code: error?.code });
     throw error;
   }
+};
+
+// Let core finish its exclusive owner record write before stopping the holder.
+// Until then core can recover the directory as an abandoned, ownerless claim.
+fs.writeFile = async function instrumentedWriteFile(file, data, options) {
+  const result = await originalWriteFile(file, data, options);
+  if (holderLockPath && file === path.join(holderLockPath, "owner.json") && options?.flag === "wx") {
+    await mark("holder.acquired.json", { lock_path: holderLockPath, owner_pid: process.pid });
+    await waitFor(releaseFile);
+  }
+  return result;
 };
 `;
 }

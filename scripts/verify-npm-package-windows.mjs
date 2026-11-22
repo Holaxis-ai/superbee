@@ -124,7 +124,8 @@ async function proveGuardedUpdate({ scratch, entrypoint, options, board, id, sna
     lockPath = holder.lock_path;
     assert.equal(contender.lock_path, lockPath);
     assert.equal(contender.fs_code, "EEXIST");
-    assert.ok((await lstat(lockPath)).isDirectory(), "holder must still own the production lock");
+    const owner = JSON.parse(await readFile(path.join(lockPath, "owner.json"), "utf8"));
+    assert.equal(owner.pid, holder.owner_pid, "the holder's production owner record must be installed");
     await assert.rejects(lstat(path.join(barrier, "contender.unexpected-acquire.json")), { code: "ENOENT" });
     assert.deepEqual(await readFile(docFile), originalBytes, "both writers must wait for the production lock");
   } catch (error) {
