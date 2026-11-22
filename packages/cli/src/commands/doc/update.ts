@@ -40,7 +40,7 @@ import {
   STDIN_SILENT_NOTE,
   STDIN_SILENT_TIMEOUT,
 } from "./common.js";
-import { commandToken } from "../../command-text.js";
+import { commandFragment, commandLiteral, commandToken } from "../../command-text.js";
 import { currentExistingGitBoard } from "../../runtime-context.js";
 import { assertStaleAfterEdition, parseStaleAfter } from "../../stale-after.js";
 
@@ -273,7 +273,9 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
 
   // A scoped command must validate its target before opening any optional input channel.
   const boardRoute = boardOnly ? await resolveExistingGitBoardRoute(p.dir, BOARD_UPDATE_USAGE) : undefined;
-  const readOptions = boardRoute ? ` --dir ${commandToken(boardRoute.bundle.root)} --json` : "";
+  const readOptions = boardRoute
+    ? commandFragment` --dir ${commandToken(boardRoute.bundle.root)} --json`
+    : commandLiteral("");
   const readHelp = (docId: string) => `${cliInvocation()} doc read ${commandToken(docId)}${readOptions}`;
 
   // A patchable field OTHER than body, given via a flag — title/description/type/kind fields.
