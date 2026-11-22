@@ -59,6 +59,7 @@ import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { compareByMeaningfulChange, meaningfulChangeOrderKey } from "@superbee/core/query-order";
+import { docReadCommand } from "../doc-read-command.js";
 import { commandFragment, commandLiteral, commandToken, type CommandText } from "../command-text.js";
 
 function listUsage(boardOnly: boolean): string {
@@ -252,7 +253,7 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     .filter((f) => f && !DEFAULT_KEYS.has(f));
 
   const bundle = await openReadBundle(values.dir, BOARD_LIST_USAGE, deps.autoPull);
-  const docReadOptions = boardOnly ? commandFragment`${boardDirOption} --json` : commandFragment``;
+  const readHelp = () => docReadCommand(cliInvocation(), undefined, boardOnly ? values.dir : undefined);
   // A corrupt document (unparseable YAML frontmatter) is skipped and reported, never allowed to
   // fail the whole scan — one bad file must not blind the agent to every other doc (AXI §5/§6).
   // Head projections, not full docs: every row below reads only id + frontmatter.
@@ -454,7 +455,7 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     const denied = skipped.filter(isPermissionDeniedSkip).length;
     if (skipped.length > denied) {
       help.push(
-        `${skipped.length - denied} document(s) skipped (unparseable frontmatter) — run \`${cliInvocation()} doc read <id>${docReadOptions}\` for the full error, then fix the YAML`,
+        `${skipped.length - denied} document(s) skipped (unparseable frontmatter) — run \`${readHelp()}\` for the full error, then fix the YAML`,
       );
     }
     if (denied > 0) help.push(`${denied} document(s) skipped (could not be read: permission denied); make those files readable by your user`);
@@ -490,7 +491,7 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     }
   }
   if (total > 0) {
-    help.push(`${cliInvocation()} doc read <id>${docReadOptions}`);
+    help.push(readHelp());
     if (!boardOnly) help.push(`${cliInvocation()} link show <id>`);
   }
   if (help.length > 0) out.help = help;

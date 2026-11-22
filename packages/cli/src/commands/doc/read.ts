@@ -33,7 +33,8 @@ import { attachBodyPreview, BODY_PREVIEW_RESERVED_KEYS, DOC_READ_PREVIEW_BYTES }
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 import { assertSafeNonDocumentOutTarget, inBundlePollutionWarning } from "../egress.js";
 import { bodyPage, PAGE_DEFAULT_BYTES, PAGE_MAX_BYTES, PAGE_MIN_BYTES } from "../../body-pages.js";
-import { commandFragment, commandLiteral, commandToken, type CommandText } from "../../command-text.js";
+import { docReadCommand } from "../../doc-read-command.js";
+import { commandLiteral, commandToken, type CommandText } from "../../command-text.js";
 
 const BOARD_READ_USAGE = commandLiteral("doc read <id> --dir <standalone-board> --json [--offset <n>] [--max-bytes <n>] [--expected-version <v>]");
 const BOARD_READ_HELP = `Read from an existing standalone Git board checkout after an explicit sync. This read uses your local files.
@@ -110,7 +111,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>, boardOnly
     });
   }
 
-  const dirOption = boardDir === undefined ? commandFragment`` : commandFragment` --dir ${commandToken(boardDir)}`;
+  const restartRead = (docId: string) => docReadCommand(cliInvocation(), docId, boardDir, { offset: 0 });
 
   // Each channel reserves stdout for a single payload, so combining any two is ambiguous (which one
   // wins?), not a silent pick-one. PRESENCE selects a channel whatever its value: `--out "$VAR"`
@@ -135,14 +136,14 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>, boardOnly
   const paging = values.offset !== undefined || values["max-bytes"] !== undefined || values["expected-version"] !== undefined;
   if (paging && selected.length > 0) {
     throw new CliError("USAGE", `--offset, --max-bytes and --expected-version page the record's body; they cannot be combined with ${selected[0]!.flag}`, {
-      help: `${cliInvocation()} doc read ${commandToken(id)} --offset 0${dirOption} --json`,
+      help: restartRead(id),
     });
   }
   const integer = (flag: string, value: string | undefined, min: number, max: number, fallback: number): number => {
     if (value === undefined) return fallback;
     const n = /^\d+$/.test(value.trim()) ? Number(value.trim()) : NaN;
     if (!Number.isSafeInteger(n) || n < min || n > max) {
-      throw new CliError("USAGE", `${flag} takes a whole number from ${min} to ${max}`, { help: `${cliInvocation()} doc read ${commandToken(id)} --offset 0${dirOption} --json` });
+      throw new CliError("USAGE", `${flag} takes a whole number from ${min} to ${max}`, { help: restartRead(id) });
     }
     return n;
   };
@@ -352,19 +353,19 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>, boardOnly
       const expected = values["expected-version"]?.trim();
       if (expected === "") {
         throw new CliError("USAGE", "--expected-version was given an empty value — pass the head_version of the first page.", {
-          help: `${cliInvocation()} doc read ${commandToken(parsed.id)} --offset 0${dirOption} --json`,
+          help: restartRead(parsed.id),
         });
       }
       if (expected !== undefined && expected !== version) {
         throw new CliError("CONFLICT", `'${parsed.id}' changed while you were reading it; it is now ${version}. Read it again from --offset 0.`, {
           details: { reason: "version_conflict", id: parsed.id, head_version: version },
-          help: `${cliInvocation()} doc read ${commandToken(parsed.id)} --offset 0${dirOption} --json`,
+          help: restartRead(parsed.id),
         });
       }
       const page = bodyPage(parsed.body, pageOffset, pageBytes);
       if (page === null) {
         throw new CliError("USAGE", `--offset ${pageOffset} is not a page start in a body of ${parsed.body.length} characters`, {
-          help: `${cliInvocation()} doc read ${commandToken(parsed.id)} --offset 0${dirOption} --json`,
+          help: restartRead(parsed.id),
         });
       }
       rec.body = page.body;
@@ -372,7 +373,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>, boardOnly
       if (!page.range.complete) {
         rec.help = [
           ...(page.range.next_offset !== undefined
-            ? [`${cliInvocation()} doc read ${commandToken(parsed.id)} --offset ${page.range.next_offset} --expected-version ${commandToken(version)}${dirOption} --json`]
+            ? [docReadCommand(cliInvocation(), parsed.id, boardDir, { offset: page.range.next_offset, expectedVersion: version })]
             : []),
           ...(boardDir ? [] : ["a page is not the document: never write it back as the body; edit with doc update --body-file after --body-out, or a passage edit"]),
         ];
@@ -386,7 +387,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>, boardOnly
     // complete-body channel an edit needs, then the next page.
     attachBodyPreview(rec, parsed.body, (cut) => [
       ...(boardDir ? [] : [`${cliInvocation()} doc read ${commandToken(parsed.id)} --body-out <path-outside-bundle>`]),
-      `${cliInvocation()} doc read ${commandToken(parsed.id)} --offset ${cut.nextOffset} --expected-version ${commandToken(version)}${dirOption} --json`,
+      docReadCommand(cliInvocation(), parsed.id, boardDir, { offset: cut.nextOffset, expectedVersion: version }),
     ], { pageBytes: DOC_READ_PREVIEW_BYTES });
     stdout(render(rec, resolveMode(values)));
     return;
