@@ -138,7 +138,7 @@ test("sync respects composed board scope and process-group capability", () => is
 `));
 
 test("scoped list and doc read stay at the explicit standalone checkout and never request freshness", () => isolated(`
-  import { readFile } from "node:fs/promises";
+  import { appendFile, readFile } from "node:fs/promises";
   import { join } from "node:path";
   import { list } from ${JSON.stringify(url("commands/list"))};
   import { docRead } from ${JSON.stringify(url("commands/doc/read"))};
@@ -152,6 +152,7 @@ test("scoped list and doc read stay at the explicit standalone checkout and neve
     const reader = join(topo.dir, relativeBoard);
     git(topo.dir, ["clone", "--branch", "board", topo.origin, reader]);
     const id = "tasks/seed-one";
+    await appendFile(join(reader, id + ".md"), "\\nA line in the reader checkout.\\n".repeat(1500));
     const config = options();
     config.existingGitBoard = { usage: "Select an existing Git board." };
     await runWithRuntime(snapshotRuntimeOptions(config), async () => {
@@ -204,7 +205,20 @@ test("scoped list and doc read stay at the explicit standalone checkout and neve
         await scan(relativeBoard);
         const listing = JSON.parse(stdout);
         assert.ok(listing.docs.some(row => row.id === id));
-        assert.ok(listing.help.some(line => line.endsWith(" --dir ' standalone reader' --json")));
+        assert.ok(listing.help.some(line => line.endsWith(" doc read <id> --dir ' standalone reader' --json")));
+        stdout = "";
+        await read(relativeBoard, "--offset", "0");
+        const firstPage = JSON.parse(stdout);
+        const offset = firstPage.range.next_offset;
+        assert.ok(offset > 0);
+        const suffix = " doc read " + id + " --offset " + offset + " --expected-version " + firstPage.head_version +
+          " --dir ' standalone reader' --json";
+        assert.ok(firstPage.help[0].endsWith(suffix), firstPage.help[0]);
+        stdout = "";
+        await read(relativeBoard, "--offset", String(offset), "--expected-version", firstPage.head_version);
+        const nextPage = JSON.parse(stdout);
+        assert.equal(nextPage.range.offset, offset);
+        assert.match(nextPage.body, /A line in the reader checkout/);
         stdout = "";
         await read(relativeBoard);
         await assert.rejects(read(relativeBoard, "--offset", "999999"), (error) => {
@@ -217,9 +231,12 @@ test("scoped list and doc read stay at the explicit standalone checkout and neve
       }
       const result = JSON.parse(stdout);
       assert.equal(result.id, id);
+      const previewRead = " doc read " + id + " --offset " + result.next_offset + " --expected-version " + result.head_version +
+        " --dir ' standalone reader' --json";
+      assert.ok(result.help.some(line => line.endsWith(previewRead)));
       stdout = "";
       await read(reader, "--offset", "0", "--expected-version", result.head_version);
-      assert.equal(JSON.parse(stdout).body, result.body);
+      assert.match(JSON.parse(stdout).body, /A line in the reader checkout/);
     });
   } finally {
     await topo.cleanup();
@@ -227,7 +244,7 @@ test("scoped list and doc read stay at the explicit standalone checkout and neve
 `));
 
 test("scoped doc update validates its board and version before reading input, then uses the ordinary CAS", () => isolated(`
-  import { mkdir, readFile, rename } from "node:fs/promises";
+  import { mkdir, readFile, realpath, rename } from "node:fs/promises";
   import { join } from "node:path";
   import { doc } from ${JSON.stringify(url("commands/doc"))};
   import { runWithRuntime, snapshotRuntimeOptions } from ${JSON.stringify(url("runtime-context"))};
@@ -238,6 +255,8 @@ test("scoped doc update validates its board and version before reading input, th
   try {
     const board = join(topo.dir, "standalone writer");
     git(topo.dir, ["clone", "--branch", "board", topo.origin, board]);
+    const supplied = topo.dir + "/./standalone writer";
+    const verified = await realpath(board);
     const id = "tasks/seed-one";
     const file = join(board, id + ".md");
     const before = await readFile(file, "utf8");
@@ -259,12 +278,18 @@ test("scoped doc update validates its board and version before reading input, th
         return result;
       };
       const { head_version: originalVersion, body } = await read();
-      const readCommand = / doc read tasks\\/seed-one --dir '.*standalone writer' --json$/;
-      await assert.rejects(update("--dir", board), { message: /requires --expected-version/, help: readCommand });
-      await assert.rejects(update("--dir", board, "--expected-version", " "), error => {
+      const suppliedRead = " doc read " + id + " --dir '" + supplied + "' --json";
+      const verifiedRead = " doc read " + id + " --dir '" + verified + "' --json";
+      await assert.rejects(update("--dir", supplied), error => {
+        assert.match(error.message, /requires --expected-version/);
+        assert.ok(error.help.endsWith(suppliedRead), error.help);
+        return true;
+      });
+      await assert.rejects(update("--dir", " "), { message: /requires --expected-version/, help: / doc update --help$/ });
+      await assert.rejects(update("--dir", supplied, "--expected-version", " "), error => {
         assert.match(error.message, /given an empty value.*head_version/);
         assert.doesNotMatch(error.message, /omit/);
-        assert.match(error.help, readCommand);
+        assert.ok(error.help.endsWith(suppliedRead), error.help);
         return true;
       });
       await assert.rejects(
@@ -281,23 +306,24 @@ test("scoped doc update validates its board and version before reading input, th
       }
       assert.equal(await readFile(file, "utf8"), before);
 
-      await update("--dir", board, "--expected-version", originalVersion, "--title", "Guarded update", "--actor", "openai/codex");
+      await update("--dir", supplied, "--expected-version", originalVersion, "--title", "Guarded update", "--actor", "openai/codex");
       const receipt = JSON.parse(stdout);
       const winner = await readFile(file, "utf8");
       assert.equal(receipt.doc, "updated");
       assert.equal(receipt.changed, true);
+      assert.ok(receipt.help[0].endsWith(verifiedRead), receipt.help[0]);
       assert.notEqual(receipt.version, originalVersion);
       assert.match(winner, /openai\\/codex/);
       const latest = await read();
       assert.equal(latest.head_version, receipt.version);
       assert.equal(latest.body, body);
       await assert.rejects(
-        update("--dir", board, "--expected-version", originalVersion, "--body-file", join(topo.dir, "absent body")),
+        update("--dir", supplied, "--expected-version", originalVersion, "--body-file", join(topo.dir, "absent body")),
         error => {
           assert.equal(error.code, "STALE_HEAD");
           assert.equal(error.exitCode, 5);
           assert.deepEqual(error.details, { expected: originalVersion, actual: receipt.version });
-          assert.match(error.help, /--dir .*standalone writer.* --json$/);
+          assert.ok(error.help.endsWith(verifiedRead), error.help);
           return true;
         },
       );

@@ -39,7 +39,8 @@ import {
   STDIN_SILENT_NOTE,
   STDIN_SILENT_TIMEOUT,
 } from "./common.js";
-import { commandFragment, commandLiteral, commandToken, type CommandText } from "../../command-text.js";
+import { docReadCommand } from "../../doc-read-command.js";
+import { commandLiteral, commandToken } from "../../command-text.js";
 import { currentExistingGitBoard } from "../../runtime-context.js";
 import { assertStaleAfterEdition, parseStaleAfter } from "../../stale-after.js";
 
@@ -47,16 +48,15 @@ const UPDATE_HELP = commandLiteral("doc update --help");
 
 function updateRecovery(boardOnly: boolean) {
   const updateHelp = `${cliInvocation()} ${UPDATE_HELP}`;
-  const readOptions = (dir: string | undefined): CommandText => boardOnly && dir?.trim()
-    ? commandFragment` --dir ${commandToken(dir)} --json`
-    : commandLiteral("");
   return {
     updateHelp,
     use: (ordinaryHelp: string) => boardOnly ? updateHelp : ordinaryHelp,
     read: (id: string, dir: string | undefined) => boardOnly && !dir?.trim()
       ? updateHelp
-      : `${cliInvocation()} doc read ${commandToken(id)}${readOptions(dir)}`,
-    list: (dir: string) => `${cliInvocation()} list${readOptions(dir)}`,
+      : docReadCommand(cliInvocation(), id, boardOnly ? dir : undefined),
+    list: (dir: string) => boardOnly && dir.trim()
+      ? `${cliInvocation()} list --dir ${commandToken(dir)} --json`
+      : `${cliInvocation()} list`,
   };
 }
 

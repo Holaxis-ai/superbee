@@ -1203,6 +1203,7 @@ test("doc update: patches ONE field, preserving the body and every other field v
     const result = await runDoc(["update", "concepts/a", "--title", "New Title", "--dir", dir]);
     assert.equal(result.doc, "updated");
     assert.equal(result.type, "Concept");
+    assert.equal((result.help as string[])[0], `${cliInvocation()} doc read concepts/a`);
 
     const after = await readDoc({ root: dir }, "concepts/a");
     assert.equal(after.frontmatter.title, "New Title");
@@ -2674,18 +2675,22 @@ test("doc read: a document's own `warning` and `next_offset` frontmatter stays v
 test("doc read --offset: pages chain to the exact body, a moved version is a conflict, and a page start must be one", async () => {
   const { dir, cleanup } = await makeBundle();
   try {
+    const id = "docs/long meeting";
     const body = `${"A line of a long meeting transcript, with é and 😀.\n".repeat(2_000)}The end.\n`;
-    await runDoc(["write", "docs/long", "--type", "Note", "--title", "Long", "--body", body, "--dir", dir]);
+    await runDoc(["write", id, "--type", "Note", "--title", "Long", "--body", body, "--dir", dir]);
     let joined = "";
     let offset: number | undefined = 0;
     let version: string | undefined;
     while (offset !== undefined) {
-      const page = await runDoc(["read", "docs/long", "--offset", String(offset), ...(version ? ["--expected-version", version] : []), "--dir", dir]);
+      const page = await runDoc(["read", id, "--offset", String(offset), ...(version ? ["--expected-version", version] : []), "--dir", dir]);
       assert.ok(Buffer.byteLength(page.body as string) <= 32_768, "a page stays within the default bound");
       joined += page.body as string;
       version = page.head_version as string;
       const range = page.range as { complete: boolean; next_offset?: number; end: number };
       offset = range.next_offset;
+      if (offset !== undefined) {
+        assert.equal((page.help as string[])[0], `${cliInvocation()} doc read 'docs/long meeting' --offset ${offset} --expected-version ${version} --json`);
+      }
       // The last page has no next_offset and complete false: complete means one page held the
       // whole body, so the help and the skill tell agents to page on next_offset (dogfood 2026-10-02).
       if (offset === undefined) assert.deepEqual([range.complete, range.end], [false, body.length]);
@@ -2696,10 +2701,10 @@ test("doc read --offset: pages chain to the exact body, a moved version is a con
     const single = await runDoc(["read", "docs/short", "--offset", "0", "--dir", dir]);
     assert.equal((single.range as { complete: boolean }).complete, true, "one page holding the whole body is complete");
     assert.equal((single.range as { next_offset?: number }).next_offset, undefined);
-    await assert.rejects(runDoc(["read", "docs/long", "--offset", "0", "--expected-version", `sha256:${"0".repeat(64)}`, "--dir", dir]), (error: unknown) => (error as CliError).code === "CONFLICT");
-    await assert.rejects(runDoc(["read", "docs/long", "--offset", String(body.length), "--dir", dir]), (error: unknown) => (error as CliError).code === "USAGE");
-    await assert.rejects(runDoc(["read", "docs/long", "--max-bytes", "10", "--dir", dir]), (error: unknown) => (error as CliError).code === "USAGE");
-    await assert.rejects(runDoc(["read", "docs/long", "--offset", "0", "--out", "-", "--dir", dir]), (error: unknown) => (error as CliError).code === "USAGE");
+    await assert.rejects(runDoc(["read", id, "--offset", "0", "--expected-version", `sha256:${"0".repeat(64)}`, "--dir", dir]), (error: unknown) => (error as CliError).code === "CONFLICT");
+    await assert.rejects(runDoc(["read", id, "--offset", String(body.length), "--dir", dir]), (error: unknown) => (error as CliError).code === "USAGE");
+    await assert.rejects(runDoc(["read", id, "--max-bytes", "10", "--dir", dir]), (error: unknown) => (error as CliError).code === "USAGE");
+    await assert.rejects(runDoc(["read", id, "--offset", "0", "--out", "-", "--dir", dir]), (error: unknown) => (error as CliError).code === "USAGE");
   } finally {
     await cleanup();
   }
