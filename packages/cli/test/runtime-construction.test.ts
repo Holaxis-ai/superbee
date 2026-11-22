@@ -137,9 +137,10 @@ test("sync respects composed board scope and process-group capability", () => is
   }
 `));
 
-test("scoped doc read stays at the explicit standalone checkout and never requests freshness", () => isolated(`
+test("scoped list and doc read stay at the explicit standalone checkout and never request freshness", () => isolated(`
   import { readFile } from "node:fs/promises";
   import { join } from "node:path";
+  import { list } from ${JSON.stringify(url("commands/list"))};
   import { docRead } from ${JSON.stringify(url("commands/doc/read"))};
   import { runWithRuntime, snapshotRuntimeOptions } from ${JSON.stringify(url("runtime-context"))};
   import { makeTwoCloneTopology, git } from
@@ -152,7 +153,7 @@ test("scoped doc read stays at the explicit standalone checkout and never reques
     git(topo.dir, ["clone", "--branch", "board", topo.origin, reader]);
     const id = "tasks/seed-one";
     const config = options();
-    config.distribution = { ...descriptor, docReadExistingGitBoardsOnly: true };
+    config.existingGitBoard = { usage: "Select an existing Git board." };
     await runWithRuntime(snapshotRuntimeOptions(config), async () => {
       let stdout = "";
       const deps = {
@@ -160,20 +161,51 @@ test("scoped doc read stays at the explicit standalone checkout and never reques
         autoPull: async () => { throw new Error("scoped read must not autopull"); },
       };
       const read = (dir, ...args) => docRead([id, "--dir", dir, "--json", ...args], deps);
+      const scan = dir => list(["--dir", dir, "--json", "--prefix", "tasks/"], deps);
       const target = join(topo.dir, "prohibited-output");
       for (const channel of [["--out", target], ["--body-out", "-"], ["--rendered-out", target], ["--field", "title"]]) {
         await assert.rejects(read(reader, ...channel), { code: "USAGE" });
       }
-      await assert.rejects(read(topo.a.root), /root of an existing standalone/);
-      await assert.rejects(read(topo.a.board), /root of an existing standalone/);
-      await assert.rejects(read(join(reader, "tasks")), /root of an existing standalone/);
+      for (const invalid of [topo.a.root, topo.a.board, join(reader, "tasks"), ""]) {
+        await assert.rejects(read(invalid), /root of an existing standalone/);
+        await assert.rejects(scan(invalid), /root of an existing standalone/);
+      }
+      await assert.rejects(list(["--json"], deps), { code: "USAGE" });
       await assert.rejects(docRead([id, "--json"], deps), { code: "USAGE" });
       await assert.rejects(docRead([id, "--dir", reader], deps), { code: "USAGE" });
       await assert.rejects(readFile(target), { code: "ENOENT" });
       assert.equal(stdout, "");
+      await list(["--help"], deps);
+      assert.match(stdout, /sync --pull-only --dir <standalone-board>/);
+      stdout = "";
+      await list(["--help", "--dir", relativeBoard], deps);
+      assert.match(stdout, /sync --pull-only --dir ' standalone reader'/);
+      stdout = "";
+      for (const [bad, remedy] of [
+        [["--field", "malformed"], "--field progress_status=done"],
+        [["--field", "progress_status="], "--field progress_status=done"],
+        [["--field", "progress_status=todo,,done"], "--field progress_status=todo,in_progress"],
+        [["--limit=-1"], "--limit 100"],
+      ]) {
+        await assert.rejects(list([...bad, "--dir", relativeBoard], deps), (error) => {
+          assert.equal(error.code, "USAGE");
+          assert.ok(error.help.endsWith(" list " + remedy + " --dir ' standalone reader'"), error.help);
+          return true;
+        });
+        await assert.rejects(list(bad, deps), (error) => {
+          assert.equal(error.code, "USAGE");
+          assert.ok(error.help.endsWith(" list --help"), error.help);
+          return true;
+        });
+      }
       const cwd = process.cwd();
       process.chdir(topo.dir);
       try {
+        await scan(relativeBoard);
+        const listing = JSON.parse(stdout);
+        assert.ok(listing.docs.some(row => row.id === id));
+        assert.ok(listing.help.some(line => line.endsWith(" --dir ' standalone reader' --json")));
+        stdout = "";
         await read(relativeBoard);
         await assert.rejects(read(relativeBoard, "--offset", "999999"), (error) => {
           assert.equal(error.code, "USAGE");

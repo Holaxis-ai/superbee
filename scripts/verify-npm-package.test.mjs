@@ -76,13 +76,20 @@ test("the Windows proof reads the installed sync conflict's TOON receipt with --
     "    conflicts:",
     "      shown: 1",
     "      total: 1",
-    "      rows[1]{id,kind,title,yours,yours_body,theirs}:",
-    "        concepts/okf-alignment,Concept,OKF Alignment,C:/mounted board state/local.md,C:/mounted board state/local.body.md,kept",
+    "      rows[1]:",
+    "        - id: concepts/okf-alignment",
+    "          kind: Concept",
+    "          title: OKF Alignment (upstream replacement)",
+    "          yours: C:/mounted board state/local.md",
+    "          yours_body: C:/mounted board state/local.body.md",
+    "          frontmatter_differs[1]: title",
+    "          theirs: kept",
     "",
   ].join("\r\n");
   assert.doesNotThrow(() => assertBoardConflictReceipt(stdout, "concepts/okf-alignment"));
   assert.throws(() => assertBoardConflictReceipt(stdout, "concepts/different"));
   assert.throws(() => assertBoardConflictReceipt(stdout.replace("total: 1", "total: 2"), "concepts/okf-alignment"));
+  assert.throws(() => assertBoardConflictReceipt(stdout.replace("theirs: kept", "theirs: lost"), "concepts/okf-alignment"));
 });
 
 test("the retained tarball manifest carries the exact npm page bytes", () => {
@@ -255,7 +262,7 @@ test("root README teaches the literal create-only quickstart; npm README teaches
   assert.match(npmReadme, /^### Native Windows Git boards$/m);
   assert.match(npmReadme, /Native Windows mode is experimental/);
   assert.match(npmReadme, /Use macOS, Linux, or WSL2 for the full CLI/);
-  assert.match(npmReadme, /Native Git board sync and document reads require Node\.js 22\.17\.0[\s\S]+24\.2\.0[\s\S]+Node\.js 26/);
+  assert.match(npmReadme, /Native Git board sync, listing, and document reads require Node\.js 22\.17\.0[\s\S]+24\.2\.0[\s\S]+Node\.js 26/);
 
 });
 

@@ -85,6 +85,7 @@ export function snapshotRuntimeOptions(
   const host = snapshot(input.host);
   const context = Object.freeze({
     distribution: copy,
+    existingGitBoard: input.existingGitBoard && Object.freeze({ ...input.existingGitBoard }),
     host,
     boardStateLocation: boardStateLocation(host, input.boardStateDir ?? process.env[BOARD_STATE_DIR_ENV]),
     privateState: snapshot(input.privateState),
@@ -175,4 +176,13 @@ export function installCommand(): string {
 
 export function currentBoardStateLocation(): BoardStateLocation | undefined {
   return contexts.getStore()?.boardStateLocation;
+}
+
+export function currentExistingGitBoard(): CliRuntimeOptions["existingGitBoard"] {
+  return contexts.getStore()?.existingGitBoard;
+}
+
+/** The distribution switch remains supported for embedders that only restrict sync. */
+export function syncExistingGitBoardsOnly(): boolean {
+  return currentExistingGitBoard() !== undefined || currentDistribution()?.syncExistingGitBoardsOnly === true;
 }

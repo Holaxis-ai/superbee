@@ -61,8 +61,8 @@ npm install -g superbee@next
 
 ### Native Windows Git boards
 
-Native Git board sync and document reads require Node.js 22.17.0 or later in the 22 line, 24.2.0 or later in the 24
-line, or Node.js 26. These releases use libuv 1.51.0 or newer, which fixes a Windows file identity
+Native Git board sync, listing, and document reads require Node.js 22.17.0 or later in the 22
+line, 24.2.0 or later in the 24 line, or Node.js 26. These releases use libuv 1.51.0 or newer, which fixes a Windows file identity
 check needed when reading board state. [libuv changelog](https://github.com/libuv/libuv/blob/v1.51.0/ChangeLog)
 
 The `superbee` package from this source also installs on native Windows. To try it before a
@@ -71,13 +71,20 @@ release with this feature, install the packed `superbee` tarball from the build 
 available on PATH. Run `superbee version` to identify the installed build, and
 `superbee sync --dir "C:\path to\board"` to synchronize an existing standalone Git board.
 Use `--pull-only` to pull without pushing or `--inspect --doc <id>` to read a saved conflict.
-After syncing, read a local document with
-`superbee doc read concepts/example --dir "C:\path to\board" --json`. The read uses the
-explicit standalone board root, does no automatic fetch, and reports the local `head_version`.
-To read a long body in pieces, use the JSON paging options in `superbee doc read --help`.
+After syncing, use the same explicit standalone board root and `--json` for both reads.
 
-Native Windows mode is experimental. Use WSL2 for setup, hosted checkouts, board establishment,
-or boards with a configured pre-push sync gate. If such a gate would run, native sync keeps the
+```powershell
+superbee list --dir "C:\path to\board" --json
+superbee doc read concepts/example --dir "C:\path to\board" --json
+```
+
+Use an ID from the list in place of `concepts/example`. Both commands read the local checkout
+without fetching. `doc read` reports the local `head_version`. Use the JSON paging options in
+`superbee doc read --help` to read a long body in pieces.
+
+Native Windows mode is experimental. Use WSL2 for the full CLI, including setup, hosted
+checkouts, board establishment, and boards with a configured pre-push sync gate. If such a gate
+would run, native sync keeps the
 commit locally and refuses the push. The Windows install uses `%LOCALAPPDATA%\Superbee` by
 default. A launcher can set `SUPERBEE_BOARD_STATE_DIR` to an absolute, writable directory
 outside the board to keep Git board state across restarts when that default is unavailable.

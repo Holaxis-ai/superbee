@@ -43,11 +43,19 @@ test("the installed entry guards Windows board sync by the libuv file identity f
   }
 });
 
-test("the native Windows launcher admits only doc read and applies the file identity floor", () => {
+test("the native Windows runtime dispatches local reads and refuses other operations", () => {
   for (const [args, uv, status, output] of [
+    [["list", "--help"], "1.51.0", 0, /--dir <standalone-board>/],
+    [["query", "--help"], "1.51.0", 0, /--dir <standalone-board>/],
+    [["list", "--help"], "1.50.0", 1, /document reads require Node\.js 22\.17\.0/],
     [["doc", "read", "--help"], "1.51.0", 0, /--dir <standalone-board> --json/],
     [["doc", "read", "--help"], "1.50.0", 1, /document reads require Node\.js 22\.17\.0/],
     [["doc", "write"], "1.51.0", 1, /Use WSL2 for the full CLI/],
+    [["search", "--help"], "1.51.0", 1, /Use WSL2 for the full CLI/],
+    [["__managed-ui-v1"], "1.51.0", 1, /Use WSL2 for the full CLI/],
+    [["__update-refresh-v1", "token"], "1.51.0", 1, /Use WSL2 for the full CLI/],
+    [["version", "--json"], "1.50.0", 0, /"identity"/],
+    [[], "1.50.0", 0, /superbee list --help/],
   ]) {
     const result = runAsWindows(args, uv);
     assert.equal(result.status, status, result.stderr);

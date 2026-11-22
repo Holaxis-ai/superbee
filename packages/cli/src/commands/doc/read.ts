@@ -1,4 +1,4 @@
-import { configuredBundle, isFilesystemBundle } from "../../filesystem-runtime.js";
+import { isFilesystemBundle } from "../../filesystem-runtime.js";
 import { renderUsage } from "../../output.js";
 // `doc read <id>` — see `../doc.ts`'s header comment for the full F3 (P2, bundle pollution)
 // rationale for the `--out` byte channel and `inBundlePollutionWarning` below.
@@ -15,17 +15,15 @@ import {
   type OkfDocument,
   type Version,
 } from "@superbee/core";
-import { linkedWorktree, resolveStandaloneBoardCheckout } from "@superbee/board-git";
-import { currentBoardHost, currentDistribution, currentHost } from "../../runtime-context.js";
-import { openBundle } from "../../bundle.js";
-import { maybeAutoPull } from "../../autopull.js";
+import { currentExistingGitBoard } from "../../runtime-context.js";
+import { openReadBundle } from "../../read-bundle.js";
 import { CliError, toExit, asHandled } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
 import { render, resolveMode, renderErrorEnvelope } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
-import { assertBundleOutsidePrivateState, assertPathOutsidePrivateState } from "../../private-state-bundle-boundary.js";
+import { assertPathOutsidePrivateState } from "../../private-state-bundle-boundary.js";
 import {
   DOC_READ_USAGE,
   type DocCliDeps,
@@ -43,25 +41,9 @@ const BOARD_READ_HELP = `Read from an existing standalone Git board checkout aft
 Usage: superbee ${BOARD_READ_USAGE}
 `;
 
-async function openStandaloneBoard(dir: string) {
-  const requested = path.resolve(dir);
-  assertBundleOutsidePrivateState(requested);
-  const found = resolveStandaloneBoardCheckout(requested);
-  if (found !== null) {
-    const [root, checkout] = await Promise.all([fs.realpath(requested), fs.realpath(found)]);
-    if (currentHost().sameResolvedPath(root, checkout) && !linkedWorktree(checkout, currentBoardHost())) {
-      assertBundleOutsidePrivateState(checkout);
-      return configuredBundle(checkout);
-    }
-  }
-  throw new CliError("USAGE", "--dir must point to the root of an existing standalone Git board checkout.", {
-    help: `${cliInvocation()} ${BOARD_READ_USAGE}`,
-  });
-}
-
 export async function docRead(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
   const stderr = deps.stderr ?? ((s: string) => void process.stderr.write(s));
-  const boardOnly = currentDistribution()?.docReadExistingGitBoardsOnly === true;
+  const boardOnly = currentExistingGitBoard() !== undefined;
   if (boardOnly || !requestsStdoutByteChannel(argv)) return docReadInner(argv, deps, boardOnly);
 
   // Detect the raw-stdout contract from argv BEFORE parseArgs, bundle discovery, or any I/O. That
@@ -122,7 +104,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>, boardOnly
   const outPresent = values.out !== undefined;
   const fieldPresent = values.field !== undefined;
   const boardDir = boardOnly ? values.dir : undefined;
-  if (boardOnly && (!boardDir?.trim() || !values.json || outPresent || bodyOutPresent || renderedOutPresent || fieldPresent)) {
+  if (boardOnly && (!values.json || outPresent || bodyOutPresent || renderedOutPresent || fieldPresent)) {
     throw new CliError("USAGE", "This build reads a standalone Git board using an explicit --dir and --json.", {
       help: `${cliInvocation()} ${BOARD_READ_USAGE}`,
     });
@@ -195,10 +177,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>, boardOnly
   }
   const field = values.field?.trim();
 
-  // Opportunistic board freshness (autopull.ts): silent, fail-soft, detection-gated — see list.ts.
-  // Runs on the READ verb only (never doc write/update/delete — the trigger is for reads).
-  if (!boardDir) await (deps.autoPull ?? maybeAutoPull)(values.dir);
-  const bundle = boardDir ? await openStandaloneBoard(boardDir) : await openBundle(values.dir);
+  const bundle = await openReadBundle(values.dir, BOARD_READ_USAGE, deps.autoPull);
   id = await resolveConceptIdCliArgument(bundle, rawId);
 
   // Body-only byte channel: one versioned read owns BOTH the semantic parsed body and the CAS token
