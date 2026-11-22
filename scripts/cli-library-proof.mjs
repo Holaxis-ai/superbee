@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { gunzipSync } from "node:zlib";
-import { mkdtemp, mkdir, readFile, writeFile, appendFile, readdir, lstat, realpath, open, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, readFile, writeFile, appendFile, readdir, lstat, realpath, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -464,6 +466,41 @@ export function validateCliTarEntries(entries) {
   }
 }
 
+// Approve the synthetic View using an existing host, then run the independent installed
+// consumer. The consumer never manufactures an approval or imports a private workspace.
+async function provePackedViewActions({ scratch, cwd, bundle, entry, env, run }) {
+  const fixtures = {
+    "conventions/ticket.md": "---\ntype: Convention\ntitle: Ticket\ngoverns: Ticket\npath: tickets/\nfields:\n  required: [title, state]\n  values:\n    state: [todo, done]\n---\n",
+    "tickets/one.md": "---\ntype: Ticket\ntitle: One\nstate: todo\n---\nPending.\n",
+    "views-registry/editor.md": "---\ntype: View\ntitle: Fixture editor\nentry: views/editor.html\naccess: bundle-propose\n---\n",
+    "views/editor.html": "<!doctype html><title>Fixture editor</title>",
+  };
+  for (const [file, contents] of Object.entries(fixtures)) {
+    const target = path.join(bundle, file);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, contents);
+  }
+  const consumer = path.join(scratch, "view-actions.mjs");
+  await copyFile(path.join(root, "scripts/fixtures/packed-view-actions.mjs"), consumer);
+  await run([consumer, bundle, "unapproved"], cwd, env);
+
+  const client = new Client({ name: "fixture-approval", version: "1" });
+  try {
+    await client.connect(new StdioClientTransport({
+      command: process.execPath, args: [entry, "mcp", "--dir", bundle], cwd, env, stderr: "pipe",
+    }));
+    const shown = await client.callTool({ name: "show_view", arguments: { viewId: "views-registry/editor" } });
+    assert.ok(!shown.isError, JSON.stringify(shown.content));
+    const approved = await client.callTool({
+      name: "authorize_durable_view", arguments: { launchId: shown.structuredContent.launch.launchId },
+    });
+    assert.ok(!approved.isError, JSON.stringify(approved.content));
+  } finally {
+    await client.close();
+  }
+  await run([consumer, bundle, "approved"], cwd, env);
+}
+
 // Development tests own build/pack setup; this proof consumes the retained CLI and
 // auxiliary workspace inventory evidence without rebuilding or repacking that CLI.
 export async function proveCliTarball(tarball, { checkSource, execute = exec } = {}) {
@@ -496,10 +533,11 @@ export async function proveCliTarball(tarball, { checkSource, execute = exec } =
       assert.deepEqual(embeddedEngineErrors(record, await embeddedInventory(path.join(library, "dist/index.mjs")), await workspaceManifests(), treeFacts()), []);
       // Compare actual installed bytes; the workspace cannot stand in for the retained artifact.
       assert.equal(createHash("sha256").update(await readFile(path.join(library, "dist/index.mjs"))).digest("hex"), createHash("sha256").update(await readFile(path.join(root, "packages/cli/dist/index.mjs"))).digest("hex"), "packed runtime differs from the proved build");
-      const readerFile = "dist/workspace-reader.mjs";
-      const packedReader = await readFile(path.join(library, readerFile));
-      const builtReader = await readFile(path.join(root, "packages/cli", readerFile));
-      assert.ok(packedReader.equals(builtReader), "packed workspace reader differs from the proved build");
+      for (const file of ["dist/workspace-reader.mjs", "dist/view-actions.mjs"]) {
+        const packed = await readFile(path.join(library, file));
+        const built = await readFile(path.join(root, "packages/cli", file));
+        assert.ok(packed.equals(built), `packed ${file} differs from the proved build`);
+      }
       if (checkSource) checkSource(record, await workspaceManifests());
       await assertClosedCliImports(await readFile(path.join(library, "dist/index.mjs"), "utf8"));
       await writeFile(path.join(scratch, "consumer.ts"), `import { main, configureSourceIdentity, registerExecutableEntry, buildIdentityEnvelope, type BuildIdentityEnvelope } from '@superbee/cli';\nconfigureSourceIdentity({ name: 'superbee', version: '1.2.3' });\nregisterExecutableEntry('fixture.mjs');\nconst identity: BuildIdentityEnvelope = buildIdentityEnvelope();\nvoid main(['help']); void identity;\n`);
@@ -507,6 +545,10 @@ export async function proveCliTarball(tarball, { checkSource, execute = exec } =
   import { createCliRuntime, createPosixCliRuntime, type CliRuntimeOptions, type CliDistribution } from '@superbee/cli';
   import { getDistributionResources } from '@superbee/cli/resources';
   import { openWorkspaceReader } from '@superbee/cli/workspace-reader/v1';
+  import { openRegisteredViewActions } from '@superbee/cli/view-actions/v1';
+  const session = await openRegisteredViewActions('catalog', 'planning', {viewId:'views-registry/example', actor:'human:editor'});
+  const result = await session.prepare({kind:'document.set-field', docId:'tickets/one', field:'state', value:'done', expectedVersion:'v1'});
+  if (result.status === 'prepared') await session.finish(result.approvalToken, 'cancel');
   const reader = await openWorkspaceReader('catalog', 'planning');
   const heads = await reader.queryHeads();
   const document = await reader.read(heads[0].id);
@@ -533,6 +575,7 @@ export async function proveCliTarball(tarball, { checkSource, execute = exec } =
   process.exit = () => { throw new Error('import exited process'); };
   const cli = await import('@superbee/cli');
   await import('@superbee/cli/workspace-reader/v1');
+  await import('@superbee/cli/view-actions/v1');
   const resources = await import('@superbee/cli/resources');
   const rendered = resources.getDistributionResources({packageName:'@fixture/cli',binName:'fixture'});
   assert.ok(rendered.skill.includes('fixture setup'));
@@ -611,6 +654,7 @@ await assert.rejects(openWorkspaceReader('directory', ''));
 await assert.rejects(openWorkspaceReader('catalog', 'missing-workspace'));
 `);
       await run([readerProbe, bundle], cwd, env);
+      await provePackedViewActions({ scratch, cwd, bundle, entry, env, run });
       // Exercise the serialized child from the installed tarball, outside the checkout and
       // without tools or package imports in the accepted self-contained operation entry.
       if (process.platform === "darwin" || process.platform === "linux") {

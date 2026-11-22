@@ -1,6 +1,7 @@
 import type { Bundle } from "@superbee/core";
 import { homedir } from "node:os";
 
+import { assertSupportedCliHost } from "./posix-host.js";
 import { captureRuntimeCallback } from "./runtime-context.js";
 import {
   MAX_WORKSPACE_CATALOG_PAGE,
@@ -220,4 +221,17 @@ export async function serveWorkspace(
     ...(actor !== undefined ? { actor } : {}),
     viewAuthorization: new LocalViewAuthorizationStore(opened.root, home),
   });
+}
+
+export async function openPluginWorkspace(source: "catalog" | "directory", selector: string) {
+  assertSupportedCliHost();
+  if (source !== "catalog" && source !== "directory") {
+    throw new TypeError("workspace source must be catalog or directory");
+  }
+  if (typeof selector !== "string" || !selector.trim()) {
+    throw new TypeError("a workspace selector is required");
+  }
+  return source === "catalog"
+    ? await createCatalogWorkspaceResolver().open(selector)
+    : await serveWorkspace(await openBundle(selector));
 }
