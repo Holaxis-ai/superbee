@@ -147,11 +147,25 @@ Examples:
   echo "# Notes" | superbee doc write notes/x --type Note --title "Scratch"
 `;
 
-export const BOARD_UPDATE_USAGE = commandLiteral("doc update <id> --dir <standalone-board> --expected-version <v> [options]");
+const BOARD_UPDATE_USAGE = commandLiteral("doc update <id> --dir <standalone-board> --expected-version <v> [options]");
 
 export function docUpdateUsage(boardOnly: boolean): string {
   const usage = boardOnly ? BOARD_UPDATE_USAGE : "doc update <id> [--<field> <value> ...] [--body <s> | --body-file <p>] [options]";
-  const casHelp = boardOnly ? "Use head_version from a local doc read." : "Omit for a normal (auto-retrying) update.";
+  const casHelp = boardOnly
+    ? "This flag is required. Use head_version from a local doc read."
+    : "Omit for a normal (auto-retrying) update.";
+  const updateInputExample = boardOnly
+    ? "doc update <id> --dir <standalone-board> --expected-version <v>"
+    : "doc update <id>";
+  const kindLookup = boardOnly ? "." : " — run 'superbee\n                         kinds' to see them.";
+  const kindRecovery = boardOnly
+    ? "                         string-list or https-url-list field is refused."
+    : `                         string-list or https-url-list field is refused (set it with 'new', or
+                         replace the document). Use 'doc write' to rewrite the whole doc if you must set
+                         a not-yet-declared value.`;
+  const collectionRecovery = boardOnly ? "" : ` Use doc field
+add/remove/replace-all for tags or sources; replace-all requires an observed --expected-version.
+Nested lists require deliberate full-document pull/edit/promote.`;
   const previewHelp = boardOnly
     ? "Use the JSON paging options of 'doc read' to read the complete body."
     : "Read the complete one with 'doc read <id> --body-out <path>'.";
@@ -174,7 +188,9 @@ timestamp) converges to changed:false (no write, no timestamp refresh).
 Standard-field patches use advisory Kind validation by default, returning warnings even on no-ops;
 --strict rejects violations without writing. Dynamic declared fields are always strict: passing a
 --<field> flag requires the whole resulting document to satisfy its Kind, even for a same-value patch.
-A changed body or type also gets the post-write link and type warnings 'doc write' describes.
+${boardOnly
+  ? "A changed body or type can also produce link and type warnings."
+  : "A changed body or type also gets the post-write link and type warnings 'doc write' describes."}
 
 Options:
   --title <t>            Replace the title
@@ -185,7 +201,7 @@ Options:
   --body <s>             Replace the body inline
   --body-file <path>     Replace the body, read from a file. If NEITHER --body nor --body-file is
                          given AND no other field flag is given either (e.g. 'cat body.md | ...
-                         doc update <id>' with nothing else), piped stdin is used as the body — same
+                         ${updateInputExample}' with nothing else), piped stdin is used as the body — same
                          non-empty rule doc write's F1 guard uses (an empty pipe does not count). A
                          patch that DOES pass another field flag (--title/--description/--type/
                          a kind field) never reads stdin, even without --body/--body-file: it patches
@@ -196,7 +212,7 @@ Options:
                          bundle; web links are not cross-links. Without it, such a replace is refused (exit 2, naming the dropped link(s));
                          a new body that still contains the same link(s), the ordinary read-edit-
                          update cycle, never needs this flag; naming a target in prose does not keep
-                         its link. SHORT-TERM guard: see 'link add'/'link show' to manage links.
+                         its link.${boardOnly ? "" : " SHORT-TERM guard: see 'link add'/'link show' to manage links."}
   --accept-truncated-body
                          Required when a --body/--body-file/stdin replace would write a TRUNCATED
                          'doc read' body preview — one still carrying the truncated-preview marker,
@@ -211,19 +227,16 @@ Options:
                          the kind sets undeclared_fields: error
   --<field> <value>      Set a kind-declared field of the doc's type (e.g. --progress_status done).
                          The field
-                         MUST be declared by the kind governing the doc's type — run 'superbee
-                         kinds' to see them. An unknown field, an out-of-enum value, or a value
+                         MUST be declared by the kind governing the doc's type${kindLookup} An unknown field, an out-of-enum value, or a value
                          that does not match the field's declared type is rejected (exit 2, no
                          write); a typed numeric or boolean field is stored as that YAML type, and a
-                         string-list or https-url-list field is refused (set it with 'new', or
-                         replace the document). Use 'doc write' to rewrite the whole doc if you must set
-                         a not-yet-declared value.
+${kindRecovery}
   --expected-version <v> Optimistic compare-and-swap: patch ONLY if the doc still matches this token
-                         (from a prior read/write/history receipt) — a conflict is STALE_HEAD (exit
+                         (from a prior ${boardOnly ? "local read" : "read/write/history"} receipt) — a conflict is STALE_HEAD (exit
                          5), NOT retried. ${casHelp}
                          A present-but-blank value is a USAGE error (exit 2).
   --actor <name>         Attribute a substantive patch using the bundle's compatible advisory field
-                         and thread it to version history (see 'doc history'). On an OKF v0.2 bundle
+                         ${boardOnly ? "on the document." : "and thread it to version history (see 'doc history')."} On an OKF v0.2 bundle
                          the value must be an OKF actor (human:<id>, process:<id>, or
                          <producer>/<version> such as openai/codex). Precedence: --actor >
                          SUPERBEE_ACTOR > absent. Without a source,
@@ -232,9 +245,7 @@ Options:
                          not a patch by itself and cannot turn an identical patch into a write. A
                          present-but-blank flag or environment value is a USAGE error (exit 2).
 
-Collection assignments (including the former --tag flag) are refused. Use doc field
-add/remove/replace-all for tags or sources; replace-all requires an observed --expected-version.
-Nested lists require deliberate full-document pull/edit/promote.
+Collection assignments (including the former --tag flag) are refused.${collectionRecovery}
 
 Passing NO patchable field at all is a USAGE error (exit 2) — there is nothing to do.
 ${commonOptions}

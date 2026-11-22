@@ -12,7 +12,10 @@ import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
 import { commandToken } from "./command-text.js";
 
-export function bodyReplaceCliError(error: BodyReplaceError): CliError {
+export function bodyReplaceCliError(
+  error: BodyReplaceError,
+  scopedRecovery?: { updateHelp: string; readHelp: (id: string) => string },
+): CliError {
   const existing = { id: error.id };
   if (error.finding.reason === "dropped_links") {
     const dropped = error.finding.dropped_links;
@@ -22,22 +25,25 @@ export function bodyReplaceCliError(error: BodyReplaceError): CliError {
       `this body replace would silently drop ${dropped.length} outbound link(s) from '${existing.id}': ${named}. ` +
         `OKF cross-links live in the document body, so a full-body replace removes any link the new body ` +
         `doesn't repeat. Pass --replace-links to drop them deliberately, or keep them by including the same ` +
-        `markdown link(s) in the new body, or re-add them afterward with ` +
-        `'${cliInvocation()} link add ${commandToken(existing.id)} <to>'` +
-        `${dropped.some((l) => l.bundle !== undefined) ? " (with --bundle <alias> for a link into another bundle)" : ""}.`,
+        `markdown link(s) in the new body` + (scopedRecovery ? "." :
+          `, or re-add them afterward with '${cliInvocation()} link add ${commandToken(existing.id)} <to>'` +
+          `${dropped.some((l) => l.bundle !== undefined) ? " (with --bundle <alias> for a link into another bundle)" : ""}.`),
       {
-        help: `${cliInvocation()} link add ${commandToken(existing.id)} <to>`,
+        help: scopedRecovery?.updateHelp ?? `${cliInvocation()} link add ${commandToken(existing.id)} <to>`,
         details: { dropped_links: dropped.map((l) => ({ to: l.to, text: l.text, ...(l.bundle === undefined ? {} : { bundle: l.bundle }) })) },
       },
     );
   }
   const inv = cliInvocation();
-  const help = `${inv} doc read ${commandToken(existing.id)} --body-out <path-outside-bundle>`;
+  const byteReadHelp = `${inv} doc read ${commandToken(existing.id)} --body-out <path-outside-bundle>`;
+  const help = scopedRecovery?.readHelp(existing.id) ?? byteReadHelp;
   const storedCarriesNotice = error.storedCarriesNotice;
   const recovery =
-    `Read the COMPLETE body first — '${help} --json' (its receipt carries the version), edit that ` +
-    `file, then '${inv} doc update ${commandToken(existing.id)} --body-file <path-outside-bundle> ` +
-    `--expected-version <version>'. Pass --accept-truncated-body to write this body deliberately.` +
+    (scopedRecovery
+      ? "Read the complete body using JSON paging, then pass the edited body with --body-file and the observed head_version with --expected-version."
+      : `Read the COMPLETE body first — '${byteReadHelp} --json' (its receipt carries the version), edit that ` +
+        `file, then '${inv} doc update ${commandToken(existing.id)} --body-file <path-outside-bundle> --expected-version <version>'.`) +
+    ` Pass --accept-truncated-body to write this body deliberately.` +
     (storedCarriesNotice
       ? ` This document's stored body already carries the generated sentence, so a rewrite that keeps ` +
         `that sentence but not the whole stored body is refused every time: append to it instead, ` +

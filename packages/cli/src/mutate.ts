@@ -59,6 +59,8 @@ export interface MutateDocOptions {
   strict: boolean;
   /** Fallback `help` for a kind rejection whose violations name no completable field (see `kindConformanceCliError`). */
   helpOnKindReject: string;
+  /** Recovery actions available in the explicit standalone board scope. */
+  scopedRecovery?: { updateHelp: string; readHelp: (id: ConceptId) => string };
   buildCandidate?: (
     existing: OkfDocument | undefined,
     context: DocumentMutationContext,
@@ -149,11 +151,11 @@ async function docExistsForMode(bundle: Bundle, id: ConceptId, mode: MutateMode)
 }
 
 async function translateMutationError(error: unknown, opts: MutateDocOptions): Promise<never> {
-  if (error instanceof BodyReplaceError) throw bodyReplaceCliError(error);
-  if (error instanceof KindFieldMutationConflict) throw new CliError("STALE_HEAD", error.message, { help: opts.helpOnKindReject });
+  if (error instanceof BodyReplaceError) throw bodyReplaceCliError(error, opts.scopedRecovery);
+  if (error instanceof KindFieldMutationConflict) throw new CliError("STALE_HEAD", error.message, { help: opts.scopedRecovery?.updateHelp ?? opts.helpOnKindReject });
   if (error instanceof KindConformanceError) {
     const docExists = await docExistsForMode(opts.bundle, opts.id, opts.mode);
-    throw kindConformanceCliError(error, opts.registry, opts.helpOnKindReject, docExists);
+    throw kindConformanceCliError(error, opts.registry, opts.helpOnKindReject, docExists, opts.scopedRecovery?.updateHelp);
   }
   if (error instanceof DocumentNotFoundError) {
     throw opts.errors.notFound?.() ?? new CliError("NOT_FOUND", error.message);

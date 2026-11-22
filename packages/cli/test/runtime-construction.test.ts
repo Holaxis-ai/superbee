@@ -259,8 +259,22 @@ test("scoped doc update validates its board and version before reading input, th
         return result;
       };
       const { head_version: originalVersion, body } = await read();
-      await assert.rejects(update("--dir", board), /requires --expected-version/);
-      await assert.rejects(update("--dir", board, "--expected-version", " "), /given an empty value/);
+      const readCommand = / doc read tasks\\/seed-one --dir '.*standalone writer' --json$/;
+      await assert.rejects(update("--dir", board), { message: /requires --expected-version/, help: readCommand });
+      await assert.rejects(update("--dir", board, "--expected-version", " "), error => {
+        assert.match(error.message, /given an empty value.*head_version/);
+        assert.doesNotMatch(error.message, /omit/);
+        assert.match(error.help, readCommand);
+        return true;
+      });
+      await assert.rejects(
+        update("--dir", board, "--expected-version", originalVersion, "--actor", " "),
+        { message: /--actor was given an empty value/, help: / doc update --help$/ },
+      );
+      await assert.rejects(
+        update("--dir", board, "--expected-version", originalVersion, "--nonesuch", "value"),
+        { message: /kind/, help: / doc update --help$/ },
+      );
       await assert.rejects(update("--expected-version", originalVersion), /root of an existing standalone/);
       for (const invalid of [topo.a.root, topo.a.board, join(board, "tasks")]) {
         await assert.rejects(update("--dir", invalid, "--expected-version", originalVersion), /root of an existing standalone/);
@@ -290,9 +304,20 @@ test("scoped doc update validates its board and version before reading input, th
       assert.equal(await readFile(file, "utf8"), winner);
       assert.equal(git(board, ["rev-parse", "HEAD"]), tip);
 
+      await update("--dir", board, "--expected-version", receipt.version, "--body", body + "\\n[Missing](/tasks/missing.md)\\n");
+      const linked = JSON.parse(stdout);
+      const linkedBytes = await readFile(file, "utf8");
+      const warning = linked.warnings.find(warning => warning.code === "LINK_TARGET_ABSENT");
+      assert.match(warning.message, /forward declaration/);
+      assert.doesNotMatch(warning.message, /doc write/);
+      await assert.rejects(
+        update("--dir", board, "--expected-version", linked.version, "--body", body),
+        { message: /would silently drop/, help: / doc update --help$/ },
+      );
+
       const movedBoard = join(topo.dir, "moved standalone writer");
       await assert.rejects(
-        doc(["update", id, "--dir", board, "--expected-version", receipt.version], {
+        doc(["update", id, "--dir", board, "--expected-version", linked.version], {
           readStdin: async () => {
             await rename(board, movedBoard);
             await mkdir(board);
@@ -301,9 +326,67 @@ test("scoped doc update validates its board and version before reading input, th
         }),
         { code: "CONFLICT", message: /selected target identity changed after classification/ },
       );
-      assert.equal(await readFile(join(movedBoard, id + ".md"), "utf8"), winner);
+      assert.equal(await readFile(join(movedBoard, id + ".md"), "utf8"), linkedBytes);
       await assert.rejects(readFile(file), { code: "ENOENT" });
     });
+  } finally {
+    await topo.cleanup();
+  }
+`));
+
+test("eligible standalone updates record only the winning actor in each declared board-state directory", () => isolated(`
+  import { mkdir, readFile } from "node:fs/promises";
+  import { dirname, join } from "node:path";
+  import { resolveBundleKey } from "@superbee/board-git";
+  import { doc } from ${JSON.stringify(url("commands/doc"))};
+  import { defaultSyncStore, readSyncState } from ${JSON.stringify(url("cursor"))};
+  import { runWithRuntime, snapshotRuntimeOptions } from ${JSON.stringify(url("runtime-context"))};
+  import { makeTwoCloneTopology, git } from
+    ${JSON.stringify(new URL("../../board-git/test/git-harness.ts", import.meta.url).href)};
+
+  const topo = await makeTwoCloneTopology();
+  try {
+    const parent = join(topo.dir, "standalone");
+    await mkdir(parent);
+    const board = join(parent, ".superbee");
+    git(topo.dir, ["clone", "--branch", "board", topo.origin, board]);
+    const id = "tasks/seed-one";
+    const key = resolveBundleKey(board);
+    const session = (name) => snapshotRuntimeOptions({
+      ...options(), existingGitBoard: { usage: "Select an existing Git board." },
+      boardStateDir: join(topo.dir, name),
+    });
+    const first = session("board state A");
+    const second = session("board state B");
+    const call = (session, subcommand, ...argv) => runWithRuntime(session, async () => {
+      let stdout = "";
+      await doc([subcommand, id, "--dir", board, "--json", ...argv], {
+        stdout: value => { stdout += value; },
+      });
+      return JSON.parse(stdout);
+    });
+    const actors = (session) => runWithRuntime(session, async () => (await readSyncState(key)).selfActors ?? []);
+
+    const [one, two] = await Promise.all([call(first, "read"), call(second, "read")]);
+    assert.equal(one.head_version, two.head_version);
+    const write = (session, version, actor, title) =>
+      call(session, "update", "--expected-version", version, "--actor", actor, "--title", title);
+    const winner = await write(first, one.head_version, "human:one", "First update");
+    assert.equal(winner.changed, true);
+    await assert.rejects(write(second, two.head_version, "human:two", "Second update"), { code: "STALE_HEAD" });
+    assert.deepEqual(await actors(first), ["human:one"]);
+    assert.deepEqual(await actors(second), []);
+
+    const next = await write(second, winner.version, "human:two", "Second update");
+    assert.equal(next.changed, true);
+    assert.deepEqual(await actors(first), ["human:one"]);
+    assert.deepEqual(await actors(second), ["human:two"]);
+    for (const [session, location, actor] of [[first, "board state A", "human:one"], [second, "board state B", "human:two"]]) {
+      const cursorPath = runWithRuntime(session, () => defaultSyncStore.statePath(key));
+      assert.equal(dirname(cursorPath), join(topo.dir, location));
+      const cursor = JSON.parse(await readFile(cursorPath, "utf8"));
+      assert.deepEqual(cursor.selfActors, [actor]);
+    }
   } finally {
     await topo.cleanup();
   }

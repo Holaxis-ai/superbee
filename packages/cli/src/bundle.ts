@@ -1740,6 +1740,8 @@ export function boardAttributionForRoute(route: ResolvedLocalRoute | StandaloneB
     return route.readiness === "ready" ? { kind: "board", stateKey: route.owner.stateKey } : { kind: "none" };
   }
   if (route.kind === "bound-local") return { kind: "none" };
+  // Standalone board scope grants access to the checkout. Use the same conventional-root
+  // criterion as ordinary explicit updates for optional self-attribution.
   if (!BUNDLE_DIRS.includes(path.basename(route.bundle.root) as (typeof BUNDLE_DIRS)[number])) return { kind: "none" };
   try {
     return { kind: "board", stateKey: resolveBundleKey(route.bundle.root) };
