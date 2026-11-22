@@ -27,7 +27,7 @@ const command = argv[0];
 const windows = process.platform === "win32";
 const posix = process.platform === "darwin" || process.platform === "linux";
 const windowsUsage = "Native Windows works with existing Git boards. Use WSL2 for the full CLI.";
-const windowsRuntimeRequirement = "Native Windows Git board sync and document reads require Node.js 22.17.0 or later in the 22 line, 24.2.0 or later in the 24 line, or Node.js 26.";
+const windowsRuntimeRequirement = "Native Windows Git board operations require Node.js 22.17.0 or later in the 22 line, 24.2.0 or later in the 24 line, or Node.js 26.";
 
 // libuv 1.51.0 made Windows path and handle stats agree on the volume serial used for file identity.
 // https://github.com/libuv/libuv/blob/v1.51.0/ChangeLog

@@ -13,7 +13,12 @@ import {
   unknownKindFieldNames,
   type OkfDocument,
 } from "@superbee/core";
-import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, resolveLocalBundleRoute } from "../../bundle.js";
+import {
+  assertResolvedLocalRouteIdentity,
+  boardAttributionForRoute,
+  resolveExistingGitBoardRoute,
+  resolveLocalBundleRoute,
+} from "../../bundle.js";
 import { parseDocUpdateTokensOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
 import { assertLeafArity } from "../../positional-arity.js";
@@ -28,14 +33,32 @@ import { resolveActor } from "../../actor.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
 import { readExternalTextFile } from "../../external-file.js";
 import {
-  DOC_UPDATE_USAGE,
+  docUpdateUsage,
   type DocCliDeps,
   defaultReadStdin,
   STDIN_SILENT_NOTE,
   STDIN_SILENT_TIMEOUT,
 } from "./common.js";
-import { commandToken } from "../../command-text.js";
+import { commandFragment, commandLiteral, commandToken, type CommandText } from "../../command-text.js";
+import { currentExistingGitBoard } from "../../runtime-context.js";
 import { assertStaleAfterEdition, parseStaleAfter } from "../../stale-after.js";
+
+const UPDATE_HELP = commandLiteral("doc update --help");
+
+function updateRecovery(boardOnly: boolean) {
+  const updateHelp = `${cliInvocation()} ${UPDATE_HELP}`;
+  const readOptions = (dir: string | undefined): CommandText => boardOnly && dir?.trim()
+    ? commandFragment` --dir ${commandToken(dir)} --json`
+    : commandLiteral("");
+  return {
+    updateHelp,
+    use: (ordinaryHelp: string) => boardOnly ? updateHelp : ordinaryHelp,
+    read: (id: string, dir: string | undefined) => boardOnly && !dir?.trim()
+      ? updateHelp
+      : `${cliInvocation()} doc read ${commandToken(id)}${readOptions(dir)}`,
+    list: (dir: string) => `${cliInvocation()} list${readOptions(dir)}`,
+  };
+}
 
 /** The `doc update` STANDARD patch fields; excludes control flags (--keep-timestamp/--strict/--dir/…). */
 const DOC_UPDATE_FIELD_FLAGS = ["title", "description", "type", "stale-after", "body", "body-file"] as const;
@@ -107,7 +130,7 @@ interface ParsedDocUpdateArgs {
  * positional is known before parsing, licensing a strict kind-aware config — pre-reading this doc's
  * type for a strict config would be an extra read AND unsound under concurrency.
  */
-function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
+function parseDocUpdateArgs(argv: string[], boardOnly: boolean, recovery: ReturnType<typeof updateRecovery>): ParsedDocUpdateArgs {
   const { values: rawValues, tokens } = parseDocUpdateTokensOrUsage(
     () =>
       parseArgs({
@@ -179,7 +202,10 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
       continue;
     }
     if (name === "tag") {
-      throw new CliError("USAGE", "--tag no longer replaces tags. Use doc field add/remove/replace-all <id> tags; replace-all requires --expected-version.", { help: `${cliInvocation()} doc field --help` });
+      const message = boardOnly
+        ? "--tag no longer replaces tags. A scoped update cannot replace collections."
+        : "--tag no longer replaces tags. Use doc field add/remove/replace-all <id> tags; replace-all requires --expected-version.";
+      throw new CliError("USAGE", message, { help: recovery.use(`${cliInvocation()} doc field --help`) });
     }
 
     // Not a standard flag: a candidate kind-declared field. Validated once the registry is loaded
@@ -231,9 +257,11 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
   const readStdin = deps.readStdin ?? defaultReadStdin;
 
-  const p = parseDocUpdateArgs(argv);
+  const boardOnly = currentExistingGitBoard() !== undefined;
+  const recovery = updateRecovery(boardOnly);
+  const p = parseDocUpdateArgs(argv, boardOnly, recovery);
   if (p.help) {
-    stdout(renderUsage(DOC_UPDATE_USAGE));
+    stdout(renderUsage(docUpdateUsage(boardOnly)));
     return;
   }
   assertLeafArity(CLI_LEAVES.docUpdate, p.positionals);
@@ -241,7 +269,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   const rawId = p.positionals[0]?.trim();
   if (!rawId) {
     throw new CliError("USAGE", "doc update requires a concept <id> positional", {
-      help: `${cliInvocation()} doc update <id> --title <t>`,
+      help: recovery.use(`${cliInvocation()} doc update <id> --title <t>`),
     });
   }
   let id = conceptIdFromCliArgument(rawId);
@@ -251,12 +279,23 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   if (p.expectedVersion !== undefined && p.expectedVersion.trim() === "") {
     throw new CliError(
       "USAGE",
-      "--expected-version was given an empty value — pass a real version token (from a prior read/write receipt) or omit the flag for a normal (retrying) update.",
-      { help: `${cliInvocation()} doc update ${commandToken(id)} --expected-version <v>` },
+      boardOnly
+        ? "--expected-version was given an empty value. Pass the head_version from a local doc read."
+        : "--expected-version was given an empty value — pass a real version token (from a prior read/write receipt) or omit the flag for a normal (retrying) update.",
+      { help: boardOnly ? recovery.read(id, p.dir) : `${cliInvocation()} doc update ${commandToken(id)} --expected-version <v>` },
     );
   }
-  const actor = resolveActor(p.actor, { help: `${cliInvocation()} doc update ${commandToken(id)} --actor <name>` });
+  if (boardOnly && p.expectedVersion === undefined) {
+    throw new CliError("USAGE", "An existing standalone Git board update requires --expected-version from a local doc read.", {
+      help: recovery.read(id, p.dir),
+    });
+  }
+  const actor = resolveActor(p.actor, { help: recovery.use(`${cliInvocation()} doc update ${commandToken(id)} --actor <name>`) });
   const staleAfter = parseStaleAfter(p.staleAfter);
+
+  // A scoped command must validate its target before opening any optional input channel.
+  const boardRoute = boardOnly ? await resolveExistingGitBoardRoute(p.dir, UPDATE_HELP) : undefined;
+  const readHelp = (docId: string) => recovery.read(docId, boardRoute?.bundle.root);
 
   // A patchable field OTHER than body, given via a flag — title/description/type/kind fields.
   // Computed BEFORE the stdin read below: a FIELD-ONLY patch (one of these given, no --body/
@@ -304,11 +343,11 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
         // The same silent-stdin signal doc write's receipt carries (see write.ts): when the probe
         // timed out, "nothing to patch" may really mean "your piped body arrived too late".
         (stdinSilentTimeout ? `. Note: ${STDIN_SILENT_NOTE}.` : ""),
-      { help: `${cliInvocation()} doc update ${commandToken(id)} --title <t>` },
+      { help: recovery.use(`${cliInvocation()} doc update ${commandToken(id)} --title <t>`) },
     );
   }
 
-  const route = await resolveLocalBundleRoute(p.dir);
+  const route = boardRoute ?? await resolveLocalBundleRoute(p.dir);
   const bundle = route.bundle;
   await assertResolvedLocalRouteIdentity(route);
   id = await resolveConceptIdCliArgument(bundle, rawId);
@@ -331,7 +370,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   // doc, so `existing` below is guaranteed defined.
   // The version this patch replaced (the winning attempt's): findings are those it introduced.
   let prior: OkfDocument | undefined;
-  if (route) await assertResolvedLocalRouteIdentity(route);
+  await assertResolvedLocalRouteIdentity(route);
   const result = await mutateDoc({
     bundle,
     id,
@@ -340,6 +379,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     registry,
     strict,
     helpOnKindReject: `${cliInvocation()} kinds`,
+    ...(boardOnly && { scopedRecovery: { updateHelp: recovery.updateHelp, readHelp } }),
     actor,
     persistActor: true,
     expectedVersion: p.expectedVersion?.trim(),
@@ -349,7 +389,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     bodyReplace: { acceptTruncatedBody: p.acceptTruncatedBody, replaceLinks: p.replaceLinks },
     // Board self-attribution (PR C): a `changed: false` no-op never records (mutate.ts's
     // post-persist contract), so ambient attribution cannot manufacture a "self" actor.
-    onPersisted: boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor),
+    onPersisted: boardPostPersistHook(boardAttributionForRoute(route), actor),
     input: async (existingDoc, context) => {
       assertStaleAfterEdition(staleAfter, context.okfVersion);
       const existing = existingDoc!;
@@ -369,7 +409,10 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
 
       let nextBody = existing.body;
       if (p.body !== undefined) nextBody = p.body;
-      else if (p.bodyFile) nextBody = await readExternalTextFile(p.bodyFile);
+      else if (p.bodyFile) {
+        nextBody = await readExternalTextFile(p.bodyFile);
+        if (boardRoute) await assertResolvedLocalRouteIdentity(boardRoute);
+      }
       else if (stdinBody !== undefined) nextBody = stdinBody;
 
       // Dynamic kind-field patch (Facet 2): only accepted when a kind governs the RESULT type and
@@ -388,7 +431,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
               ? existing.frontmatter.governs
               : "<Kind>";
           const schemaHint =
-            resultType === "Convention"
+            resultType === "Convention" && !boardOnly
               ? ` To change a kind's SCHEMA (add/remove a declared field or enum value), use ` +
                 `\`${cliInvocation()} kind field ${commandToken(governedKind)} add/remove <name>\` (or edit the convention frontmatter directly).`
               : "";
@@ -398,7 +441,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
               `cannot be patched here — only the standard fields (--title/--description/--type/--body/--body-file) ` +
               `are patchable on an ungoverned doc.` +
               schemaHint,
-            { help: `${cliInvocation()} kinds` },
+            { help: recovery.use(`${cliInvocation()} kinds`) },
           );
         }
         const progressCoordinate = progressStatusCoordinate(context.okfVersion, kind);
@@ -415,9 +458,9 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
             `unknown field(s) for kind '${governs}': ${unknown.join(", ")} ` +
               `(declared: ${declared.length > 0 ? declared.join(", ") : "none"}; standard patch flags: ` +
               `title, description, type, body, body-file)` +
-              ` — to ADD a field to the '${governs}' kind: \`${cliInvocation()} kind field ${commandToken(governs)} add <name>\`.` +
+              (boardOnly ? "." : ` — to ADD a field to the '${governs}' kind: \`${cliInvocation()} kind field ${commandToken(governs)} add <name>\`.`) +
               ` Flags address declared fields only; an undeclared key written in frontmatter follows the kind's undeclared_fields setting (warn by default).`,
-            { help: `${cliInvocation()} kinds` },
+            { help: recovery.use(`${cliInvocation()} kinds`) },
           );
         }
         const resolvedFields = new Map<string, NonNullable<ReturnType<typeof resolveKindFieldCoordinate>>>();
@@ -436,11 +479,11 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
             throw new CliError(
               "USAGE",
               `'${logicalField}' was supplied more than once; pass it once`,
-              { help: `${cliInvocation()} doc update ${commandToken(id)} --${commandToken(logicalField)} <value>` },
+              { help: recovery.use(`${cliInvocation()} doc update ${commandToken(id)} --${commandToken(logicalField)} <value>`) },
             );
           }
           suppliedByStorageField.set(coordinate.storageField, field);
-          refuseTypedListPatch(kind, coordinate.storageField, field, "doc update");
+          refuseTypedListPatch(kind, coordinate.storageField, field, "doc update", boardOnly ? recovery.updateHelp : undefined);
           nextFrontmatter[coordinate.storageField] = kindFieldInputValue(kind, coordinate.storageField, [value]);
         }
       }
@@ -449,13 +492,13 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     },
     errors: {
       notFound: () =>
-        new CliError("NOT_FOUND", `no concept document at id '${id}'`, { help: `${cliInvocation()} list` }),
+        new CliError("NOT_FOUND", `no concept document at id '${id}'`, { help: recovery.list(bundle.root) }),
       staleHead: (err) =>
         new CliError(
           "STALE_HEAD",
           `'${id}' has moved since --expected-version ${commandToken(String(err.expected))} was read (current: ` +
             `${err.actual ?? "absent"}) — re-read and retry with the current version.`,
-          { help: `${cliInvocation()} doc read ${commandToken(id)}`, details: { expected: err.expected, actual: err.actual } },
+          { help: readHelp(id), details: { expected: err.expected, actual: err.actual } },
         ),
     },
   });
@@ -471,13 +514,13 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     version: result.version,
   };
   // Post-write findings on a changed write only (see `write-findings.ts`); never fail the write.
-  const findings = result.changed ? await writeFindings(bundle, result.doc, registry, prior) : [];
+  const findings = result.changed ? await writeFindings(bundle, result.doc, registry, prior, boardOnly) : [];
   const warnings = [...result.warnings, ...findings];
   if (warnings.length > 0) receipt.warnings = warnings;
   if (result.guidance.length > 0) receipt.guidance = result.guidance;
   // Legacy-naming nudge (legacy-page.ts): fires on the RESULT doc's type at an authoring moment
   // only — never blocks, never on reads.
   if (isLegacyPageDoc(result.doc.frontmatter)) receipt.hint = LEGACY_PAGE_TYPE_HINT;
-  receipt.help = [`${cliInvocation()} doc read ${commandToken(result.doc.id)}`, ...writeFindingsHelp(findings)];
+  receipt.help = [readHelp(result.doc.id), ...writeFindingsHelp(findings, boardOnly ? recovery.updateHelp : undefined)];
   stdout(render(receipt, mode));
 }

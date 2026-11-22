@@ -262,7 +262,7 @@ test("root README teaches the literal create-only quickstart; npm README teaches
   assert.match(npmReadme, /^### Native Windows Git boards$/m);
   assert.match(npmReadme, /Native Windows mode is experimental/);
   assert.match(npmReadme, /Use macOS, Linux, or WSL2 for the full CLI/);
-  assert.match(npmReadme, /Native Git board sync, listing, and document reads require Node\.js 22\.17\.0[\s\S]+24\.2\.0[\s\S]+Node\.js 26/);
+  assert.match(npmReadme, /Native Git board operations require Node\.js 22\.17\.0[\s\S]+24\.2\.0[\s\S]+Node\.js 26/);
 
 });
 

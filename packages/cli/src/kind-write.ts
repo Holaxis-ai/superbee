@@ -74,6 +74,7 @@ export function kindConformanceCliError(
   registry: KindRegistry,
   fallbackHelp: string,
   docExists: boolean,
+  scopedHelp?: string,
 ): CliError {
   const kind = registry.kinds.get(error.governs);
   const authoringKind = kind ? projectKindForAuthoring(error.okfVersion, kind) : undefined;
@@ -95,7 +96,7 @@ export function kindConformanceCliError(
       : ".")
     : `Rename the key to a declared field, or declare it: ${cliInvocation()} kind field ${commandToken(error.governs)} add ${commandToken(undeclared.field!)}`;
   return new CliError("USAGE", message, {
-    help: completing ?? declareHelp ?? fallbackHelp,
+    help: scopedHelp ?? completing ?? declareHelp ?? fallbackHelp,
     details: { violations: authoringViolations },
   });
 }
@@ -148,16 +149,18 @@ export function defaultTimestampAndValidateKind(
  * `doc field set` never replaces a list, so a typed list is authored whole: at creation with
  * `new` (repeat the flag) or by replacing the complete document.
  */
-export function refuseTypedListPatch(kind: KindConvention, storageField: string, authoringField: string, command: string): void {
+export function refuseTypedListPatch(
+  kind: KindConvention, storageField: string, authoringField: string, command: string, scopedHelp?: string,
+): void {
   let type: string;
   try { assertTypedListPatch(kind, storageField); return; }
   catch (error) { if (!(error instanceof TypedListPatchError)) throw error; type = error.fieldType; }
-  throw new CliError(
-    "USAGE",
-    `'${authoringField}' is a ${type} field, and '${command}' does not replace lists. Replace the whole list ` +
-      `with 'doc field replace-all <id> ${authoringField} --from-file <list> --expected-version <v>', set it when ` +
-      `creating the document with 'new' (repeat the flag once per item), or replace the complete document: pull ` +
-      `--doc-key <id>.md --out <file>, edit that file, then promote it ('doc write' cannot carry Kind fields).`,
-    { help: `${cliInvocation()} new ${commandToken(kind.governs)} --help` },
-  );
+  const message = `'${authoringField}' is a ${type} field, and '${command}' does not replace lists.`;
+  const ordinaryRecovery =
+    ` Replace the whole list with 'doc field replace-all <id> ${authoringField} --from-file <list> --expected-version <v>', set it when ` +
+    `creating the document with 'new' (repeat the flag once per item), or replace the complete document: pull ` +
+    `--doc-key <id>.md --out <file>, edit that file, then promote it ('doc write' cannot carry Kind fields).`;
+  throw new CliError("USAGE", scopedHelp ? message : message + ordinaryRecovery, {
+    help: scopedHelp ?? `${cliInvocation()} new ${commandToken(kind.governs)} --help`,
+  });
 }

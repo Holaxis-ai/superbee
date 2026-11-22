@@ -146,6 +146,20 @@ Examples:
   echo "# Notes" | superbee doc write notes/x --type Note --title "Scratch"
 `;
 
+const UPDATE_FIELD_OPTIONS = `  --title <t>            Replace the title
+  --description <d>      Replace the description
+  --type <t>             Replace the type
+  --stale-after <iso>    Set the expiration instant (OKF v0.2 only); requires a valid date, time,
+                         and zone, e.g. 2026-09-07T12:00:00Z. Omit to preserve the existing value.
+  --body <s>             Replace the body inline`;
+
+const UPDATE_VALIDATION_OPTIONS = `  --keep-timestamp       Preserve an existing legacy compatibility timestamp. Current bundles use
+                         their standard generated.at clock automatically.
+  --strict               If a kind convention governs the resulting type, reject (exit 2) instead of
+                         writing with warnings (default: warn-and-write, exit 0)
+                         A new or changed key the kind does not declare is only a warning unless
+                         the kind sets undeclared_fields: error`;
+
 export const DOC_UPDATE_USAGE = `superbee doc update — patch given fields of an EXISTING concept document
 
 Usage:
@@ -161,12 +175,7 @@ Standard-field patches use advisory Kind validation by default, returning warnin
 A changed body or type also gets the post-write link and type warnings 'doc write' describes.
 
 Options:
-  --title <t>            Replace the title
-  --description <d>      Replace the description
-  --type <t>             Replace the type
-  --stale-after <iso>    Set the expiration instant (OKF v0.2 only); requires a valid date, time,
-                         and zone, e.g. 2026-09-07T12:00:00Z. Omit to preserve the existing value.
-  --body <s>             Replace the body inline
+${UPDATE_FIELD_OPTIONS}
   --body-file <path>     Replace the body, read from a file. If NEITHER --body nor --body-file is
                          given AND no other field flag is given either (e.g. 'cat body.md | ...
                          doc update <id>' with nothing else), piped stdin is used as the body — same
@@ -188,12 +197,7 @@ Options:
                          body. Without it such a replace is refused (exit 2) and nothing is written.
                          A preview is not a body: read the complete one with 'doc read <id>
                          --body-out <path>', edit that file, then pass it back with --body-file.
-  --keep-timestamp       Preserve an existing legacy compatibility timestamp. Current bundles use
-                         their standard generated.at clock automatically.
-  --strict               If a kind convention governs the resulting type, reject (exit 2) instead of
-                         writing with warnings (default: warn-and-write, exit 0)
-                         A new or changed key the kind does not declare is only a warning unless
-                         the kind sets undeclared_fields: error
+${UPDATE_VALIDATION_OPTIONS}
   --<field> <value>      Set a kind-declared field of the doc's type (e.g. --progress_status done).
                          The field
                          MUST be declared by the kind governing the doc's type — run 'superbee
@@ -228,6 +232,44 @@ Examples:
   superbee doc update tasks/42 --progress_status done
   superbee doc update concepts/auth --title "Auth v2" --expected-version sha256:...
 `;
+
+const BOARD_UPDATE_USAGE = `superbee doc update — patch an existing document on a standalone Git board
+
+Usage:
+  superbee doc update <id> --dir <standalone-board> --expected-version <v> [options]
+
+Supply at least one field or a body. A patch with no substantive change returns changed:false.
+Read and update use the local checkout. Sync shares changes.
+
+Options:
+  --dir <standalone-board>  Root of an existing standalone Git board (required)
+  --expected-version <v>    Use head_version from a local doc read (required).
+                            A stale version returns STALE_HEAD (exit 5).
+${UPDATE_FIELD_OPTIONS}
+  --body-file <path>     Replace the body from a file. Piped stdin supplies the body when no
+                         other field or body is supplied. An empty pipe does not supply a body.
+  --replace-links       Allow a body replacement to remove existing outbound links.
+  --accept-truncated-body
+                         Allow a body replacement with a truncated preview. Use the JSON paging
+                         options of doc read to get the full body before editing it.
+${UPDATE_VALIDATION_OPTIONS}
+  --<field> <value>      Set a scalar field declared by the document's Kind. A patch to a declared
+                         field must satisfy the Kind. Collection assignments are refused.
+  --actor <name>         Attribute a substantive change. The flag takes precedence over SUPERBEE_ACTOR.
+                         OKF v0.2 accepts human:<id>, process:<id>, or <producer>/<version>.
+  --json                Emit compact JSON instead of TOON.
+  -h, --help            Show this help.
+
+Examples using the same checkout. Replace <head_version> with the token from the first command.
+
+  superbee doc read concepts/auth --dir "shared board" --json
+  superbee doc update concepts/auth --dir "shared board" --expected-version "<head_version>" --title "Auth v2" --json
+  superbee sync --dir "shared board"
+`;
+
+export function docUpdateUsage(boardOnly: boolean): string {
+  return boardOnly ? BOARD_UPDATE_USAGE : DOC_UPDATE_USAGE;
+}
 
 export const DOC_READ_USAGE = `superbee doc read — read a concept document (or pull its raw markdown bytes)
 

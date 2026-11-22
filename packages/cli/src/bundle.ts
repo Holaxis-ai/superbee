@@ -1,7 +1,7 @@
 import { readRegularFileNoFollowSync } from "./nofollow-read.js";
 import { configuredBundle } from "./filesystem-runtime.js";
 import { withCliFilesystemMutationLock as withFilesystemMutationLock } from "./filesystem-runtime.js";
-import { currentHost, currentDistribution, distributionPackageName, distributionBinName } from "./runtime-context.js";
+import { currentBoardHost, currentHost } from "./runtime-context.js";
 // Bundle discovery for the Superbee CLI.
 //
 // Every OKF command operates on ONE Knowledge Bundle. Locally that's a directory tree; this module
@@ -45,6 +45,7 @@ import {
   trackedPlaceholderGuidance,
   repoTopLevel,
   resolveBundleKey,
+  resolveStandaloneBoardCheckout,
   runGit,
 } from "@superbee/board-git";
 import { closeSync, constants, fstatSync, openSync, promises as fs, readSync, type Dir, type Stats } from "node:fs";
@@ -64,7 +65,7 @@ import {
   assertSearchDirOutsidePrivateState,
 } from "./private-state-bundle-boundary.js";
 import { type BoundBoardOwner, validateBoundBoardOwner } from "./bound-board-owner.js";
-import { commandToken } from "./command-text.js";
+import { commandToken, type CommandText } from "./command-text.js";
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -285,6 +286,13 @@ export type ResolvedLocalRoute =
       readonly bundle: Bundle;
       readonly owner: BoundBoardOwner;
     };
+
+interface StandaloneBoardRoute {
+  readonly kind: "standalone-board";
+  readonly target: LocalBundleTarget;
+  readonly bundle: Bundle;
+  readonly identity: DirectoryIdentity;
+}
 
 /** The post-persist board decision is total and computed before a mutation persists. */
 export type BoardAttribution =
@@ -1608,25 +1616,40 @@ async function bindingRouteTraversesSymlink(target: LocalBundleTarget): Promise<
   return traversesBindingSymlink;
 }
 
-async function captureDirectoryIdentity(target: LocalBundleTarget): Promise<DirectoryIdentity> {
+function routePathConflict(target: LocalBundleTarget, message: string): CliError {
+  if (target.selectedBy === "project-binding") return bindingPathConflict(target, message);
+  return new CliError("CONFLICT", `standalone Git board checkout cannot be used: ${message}`, {
+    details: { board_path: target.root, validation_stage: "lexical-path" },
+  });
+}
+
+async function captureDirectoryIdentity(
+  target: LocalBundleTarget,
+  previous?: DirectoryIdentity,
+): Promise<DirectoryIdentity> {
   let canonicalRoot: string;
   try {
     canonicalRoot = await fs.realpath(target.root);
   } catch {
-    throw bindingPathConflict(target, "the selected target is unavailable");
+    throw routePathConflict(target, "the selected target is unavailable");
   }
   assertBundleOutsidePrivateState(path.resolve(target.root));
   assertBundleOutsidePrivateState(canonicalRoot);
-  if (!samePhysicalPath(canonicalRoot, target.canonicalRoot)) {
-    throw bindingPathConflict(target, "the selected target changed while its lexical path was validated");
+  if (!samePhysicalPath(canonicalRoot, previous?.canonicalRoot ?? target.canonicalRoot)) {
+    throw routePathConflict(target, previous
+      ? "the selected target changed after classification"
+      : "the selected target changed while its lexical path was validated");
   }
   let stat: Stats;
   try {
     stat = await fs.stat(canonicalRoot);
   } catch {
-    throw bindingPathConflict(target, "the selected target is unavailable");
+    throw routePathConflict(target, "the selected target is unavailable");
   }
-  if (!stat.isDirectory()) throw bindingPathConflict(target, "the selected target is not a directory");
+  if (previous && (stat.dev !== previous.dev || stat.ino !== previous.ino)) {
+    throw routePathConflict(target, "the selected target identity changed after classification");
+  }
+  if (!stat.isDirectory()) throw routePathConflict(target, "the selected target is not a directory");
   return { canonicalRoot, dev: stat.dev, ino: stat.ino };
 }
 
@@ -1653,29 +1676,10 @@ async function assertSymlinkedTargetIsNotBoardShaped(
   }
 }
 
-/** Revalidate the frozen physical target immediately before a bound-local engine operation. */
-export async function assertResolvedLocalRouteIdentity(route: ResolvedLocalRoute): Promise<void> {
-  if (route.kind !== "bound-local") return;
-  let canonicalRoot: string;
-  try {
-    canonicalRoot = await fs.realpath(route.target.root);
-  } catch {
-    throw bindingPathConflict(route.target, "the selected target is unavailable");
-  }
-  assertBundleOutsidePrivateState(path.resolve(route.target.root));
-  assertBundleOutsidePrivateState(canonicalRoot);
-  if (!samePhysicalPath(canonicalRoot, route.identity.canonicalRoot)) {
-    throw bindingPathConflict(route.target, "the selected target changed after classification");
-  }
-  let stat: Stats;
-  try {
-    stat = await fs.stat(canonicalRoot);
-  } catch {
-    throw bindingPathConflict(route.target, "the selected target is unavailable");
-  }
-  if (stat.dev !== route.identity.dev || stat.ino !== route.identity.ino) {
-    throw bindingPathConflict(route.target, "the selected target identity changed after classification");
-  }
+/** Revalidate a frozen physical target immediately before an engine operation. */
+export async function assertResolvedLocalRouteIdentity(route: ResolvedLocalRoute | StandaloneBoardRoute): Promise<void> {
+  if (route.kind !== "bound-local" && route.kind !== "standalone-board") return;
+  await captureDirectoryIdentity(route.target, route.identity);
 }
 
 /** Resolve one selected local bundle and, for bindings only, its possible frozen board capability. */
@@ -1707,12 +1711,37 @@ export async function resolveLocalBundleRoute(
   return route;
 }
 
+/** Select one explicit checkout for a scoped board operation without pulling or provisioning. */
+export async function resolveExistingGitBoardRoute(
+  dir: string | undefined,
+  usage: CommandText,
+): Promise<StandaloneBoardRoute> {
+  if (dir?.trim()) {
+    const requested = path.resolve(dir);
+    assertBundleOutsidePrivateState(requested);
+    const found = resolveStandaloneBoardCheckout(requested);
+    if (found !== null) {
+      const [root, checkout] = await Promise.all([fs.realpath(requested), fs.realpath(found)]);
+      if (currentHost().sameResolvedPath(root, checkout) && !linkedWorktree(checkout, currentBoardHost())) {
+        const target: LocalBundleTarget = { root: requested, canonicalRoot: checkout, selectedBy: "explicit-dir" };
+        const identity = await captureDirectoryIdentity(target);
+        return { kind: "standalone-board", target, bundle: configuredBundle(checkout), identity };
+      }
+    }
+  }
+  throw new CliError("USAGE", "--dir must point to the root of an existing standalone Git board checkout.", {
+    help: `${cliInvocation()} ${usage}`,
+  });
+}
+
 /** Compute mutation attribution before persistence; post-persist code receives only this value. */
-export function boardAttributionForRoute(route: ResolvedLocalRoute): BoardAttribution {
+export function boardAttributionForRoute(route: ResolvedLocalRoute | StandaloneBoardRoute): BoardAttribution {
   if (route.kind === "bound-board") {
     return route.readiness === "ready" ? { kind: "board", stateKey: route.owner.stateKey } : { kind: "none" };
   }
   if (route.kind === "bound-local") return { kind: "none" };
+  // Standalone board scope grants access to the checkout. Use the same conventional-root
+  // criterion as ordinary explicit updates for optional self-attribution.
   if (!BUNDLE_DIRS.includes(path.basename(route.bundle.root) as (typeof BUNDLE_DIRS)[number])) return { kind: "none" };
   try {
     return { kind: "board", stateKey: resolveBundleKey(route.bundle.root) };

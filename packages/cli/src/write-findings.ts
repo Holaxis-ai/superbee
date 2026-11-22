@@ -49,10 +49,12 @@ function facts(details: Readonly<Record<string, unknown>>): Record<string, unkno
 }
 
 /** The one wording of a link whose target has no document, for a local write and a hosted one. */
-function absentTargetMessage(to: string, suggestedHref?: string, suggestedTo?: string): string {
+function absentTargetMessage(to: string, suggestedHref?: string, suggestedTo?: string, suggestCreate = true): string {
   const fix = suggestedHref !== undefined
     ? `; did you mean ${suggestedHref} ('${suggestedTo}' exists)?`
-    : ` (kept as a forward declaration); create it with \`${cliInvocation()} doc write ${commandToken(to)} --type <t>\`.`;
+    : suggestCreate
+      ? ` (kept as a forward declaration); create it with \`${cliInvocation()} doc write ${commandToken(to)} --type <t>\`.`
+      : " (kept as a forward declaration).";
   return `target '${to}' has no document yet${fix}`;
 }
 
@@ -63,7 +65,7 @@ const REASONS: Record<string, string> = {
   "invalid-target": "its target is not a valid document id",
 };
 
-function linkWarning(finding: LinkFinding, body: string): ValidationWarning | undefined {
+function linkWarning(finding: LinkFinding, body: string, suggestCreate: boolean): ValidationWarning | undefined {
   if (finding.code === "LINK_NOT_RECOGNIZED") {
     const d = finding.details;
     // Quoted exactly as the body has it (an aliased wikilink keeps its alias).
@@ -79,7 +81,7 @@ function linkWarning(finding: LinkFinding, body: string): ValidationWarning | un
   }
   if (finding.code === "LINK_TARGET_ABSENT") {
     const d = finding.details;
-    return { code: finding.code, message: absentTargetMessage(d.to, d.suggestedHref, d.suggestedTo), field: "body", severity: finding.severity, details: facts(d) };
+    return { code: finding.code, message: absentTargetMessage(d.to, d.suggestedHref, d.suggestedTo, suggestCreate), field: "body", severity: finding.severity, details: facts(d) };
   }
   // Link type lint is `link add`'s; a body write passes no registry, so core reports none here.
   return undefined;
@@ -115,7 +117,7 @@ function cachedReader(bundle: Bundle, failures: Map<ConceptId, string>): LinkTar
 }
 
 /** The link findings `doc`'s stored body has that `prior`'s did not, and the newly linked targets that could not be read. */
-async function linkFindings(bundle: Bundle, doc: OkfDocument, prior: OkfDocument | undefined): Promise<ValidationWarning[]> {
+async function linkFindings(bundle: Bundle, doc: OkfDocument, prior: OkfDocument | undefined, suggestCreate: boolean): Promise<ValidationWarning[]> {
   const failures = new Map<ConceptId, string>();
   const readTarget = cachedReader(bundle, failures);
   let findings: LinkFinding[];
@@ -148,7 +150,7 @@ async function linkFindings(bundle: Bundle, doc: OkfDocument, prior: OkfDocument
       before.set(key, seen - 1);
       return [];
     }
-    const warning = linkWarning(finding, doc.body);
+    const warning = linkWarning(finding, doc.body, suggestCreate);
     return warning ? [warning] : [];
   });
   const out = links.slice(0, LINK_FINDINGS_SHOWN);
@@ -180,8 +182,9 @@ export async function writeFindings(
   doc: OkfDocument,
   registry: KindRegistry,
   prior: OkfDocument | undefined,
+  existingBoardOnly = false,
 ): Promise<ValidationWarning[]> {
-  const out = prior === undefined || prior.body !== doc.body ? await linkFindings(bundle, doc, prior) : [];
+  const out = prior === undefined || prior.body !== doc.body ? await linkFindings(bundle, doc, prior, !existingBoardOnly) : [];
   const type = prior === undefined || prior.frontmatter.type !== doc.frontmatter.type ? undeclaredTypeFinding(registry, doc) : undefined;
   if (type?.details.suggestedType !== undefined) {
     const { type: written, suggestedType } = type.details;
@@ -197,10 +200,10 @@ export async function writeFindings(
 }
 
 /** The receipt's fix lines for these findings: the link form that registers, and where the declared types are listed. */
-export function writeFindingsHelp(findings: readonly ValidationWarning[]): string[] {
+export function writeFindingsHelp(findings: readonly ValidationWarning[], scopedHelp?: string): string[] {
   const help: string[] = [];
   if (findings.some((f) => f.code === "LINK_NOT_RECOGNIZED")) help.push(LINK_FORM_HELP);
-  if (findings.some((f) => f.code === "KIND_TYPE_UNDECLARED")) help.push(`${cliInvocation()} kinds`);
+  if (findings.some((f) => f.code === "KIND_TYPE_UNDECLARED")) help.push(scopedHelp ?? `${cliInvocation()} kinds`);
   return help;
 }
 
