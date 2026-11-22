@@ -65,11 +65,15 @@ Native Git board operations require Node.js 22.17.0 or later in the 22 line, 24.
 the 24 line, or Node.js 26. These releases use libuv 1.51.0 or newer, which fixes a Windows file
 identity check needed for board operations. [libuv changelog](https://github.com/libuv/libuv/blob/v1.51.0/ChangeLog)
 
-The `superbee` package from this source also installs on native Windows. To try it before a
-release with this feature, install the packed `superbee` tarball from the build with
-`npm install -g`, passing the path to the tarball. Install Git for Windows and make `git.exe`
-available on PATH. Run `superbee version` to identify the installed build, and
-`superbee sync --dir "C:\path to\board"` to synchronize an existing standalone Git board.
+For native Windows Git boards, install Superbee from npm's `next` channel in PowerShell:
+
+```powershell
+npm install -g superbee@next
+```
+
+Install Git for Windows and make `git.exe` available on PATH. Run `superbee version` to identify
+the installed build, and `superbee sync --dir "C:\path to\board"` to synchronize an existing
+standalone Git board.
 Use `--pull-only` to pull without pushing or `--inspect --doc <id>` to read a saved conflict.
 After syncing, use the same explicit standalone board root and `--json` for both reads.
 
