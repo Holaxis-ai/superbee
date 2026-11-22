@@ -34,6 +34,8 @@ import { recordPulled } from "../src/hosted/freshness.js";
 import { assertAllowedInHostedCheckout } from "../src/hosted/refusals.js";
 import { servedBundle } from "../src/hosted/served-bundle.js";
 import { createCatalogWorkspaceResolver } from "../src/workspace-resolver.js";
+import { openWorkspaceReader } from "../src/workspace-reader.js";
+import { withIsolatedUserEnv } from "./support/user-env.js";
 import { BUNDLE, FakeHost, HOST, syncFixture, TOKEN, type OperationDescriptor } from "./support/fake-hosted-sync.js";
 import { FakeIssuer } from "./support/fake-issuer.js";
 import { seedHostedSession } from "./support/hosted-session.js";
@@ -128,6 +130,12 @@ test("local MCP over a cataloged hosted checkout: reads served, a sendable docum
   assert.equal((await syncState(c)).unsent, 1);
   assert.equal((await readDoc(context.bundle, "notes/alpha")).frontmatter.title, "Alpha through MCP");
   assert.notEqual(c.host.docs.get("notes/alpha")?.frontmatter.title, "Alpha through MCP");
+  await withIsolatedUserEnv(c.home, async () => {
+    const reader = await openWorkspaceReader("catalog", BUNDLE);
+    const pending = await reader.read("notes/alpha");
+    assert.equal(pending.frontmatter.title, "Alpha through MCP");
+    assert.equal((await reader.queryHeads()).find(row => row.id === pending.id)?.version, pending.version);
+  });
   await runSync(c);
   assert.equal(c.host.docs.get("notes/alpha")?.frontmatter.title, "Alpha through MCP");
   assert.deepEqual(c.host.applied, ["notes/alpha"]);

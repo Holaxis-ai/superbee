@@ -42,7 +42,7 @@ The supported API is what the package exports:
 - the adapter contract types exported beside them (`CliRuntimeOptions`, `CliDistribution`,
   `HostCommands`, `PrivateStateHost`, `FilesystemHostPolicy`, `BoardHostPolicy` and the types
   they reference);
-- the `@superbee/cli/resources` subpath;
+- the `@superbee/cli/workspace-reader/v1` and `@superbee/cli/resources` subpaths;
 - the `@superbee/cli/embedded-engine.json` data file.
 
 `runManagedUiWorker` and `runUpdateRefreshWorker` are exported for first-party distributions
@@ -56,6 +56,28 @@ release notes before moving it.
 The package has no runtime dependencies. Third-party dependencies are bundled at the versions the
 repository lockfile resolved when the artifact was built, not at the ranges `@superbee/core` or
 any other Superbee package declares.
+
+## Read a workspace from a plugin
+
+On macOS or Linux, an exporter can open a catalog label or ID and read the selected working copy.
+
+```js
+import { openWorkspaceReader } from '@superbee/cli/workspace-reader/v1';
+
+const reader = await openWorkspaceReader('catalog', 'planning');
+for (const head of await reader.queryHeads()) {
+  const document = await reader.read(head.id);
+  console.log(document.id, document.version, document.body);
+}
+```
+
+Use `openWorkspaceReader('directory', directory)` for the same explicit directory selection as
+`superbee mcp --dir`. The session exposes its display name, document heads in ID order, and
+document reads with parsed frontmatter, Markdown body and an opaque version. Calls observe
+the working copy independently. A document can change or disappear between calls. Hosted
+checkouts use the CLI's existing freshness policy and include pending local edits.
+Importing the versioned subpath loads only the reader's dependencies. The package still
+ships its CLI runtime as a separate entry point.
 
 ## Embedded engine record
 
