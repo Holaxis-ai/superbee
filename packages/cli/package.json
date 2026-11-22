@@ -49,6 +49,7 @@
     "@superbee/publication": "*",
     "@superbee/server": "*",
     "@superbee/ui-server": "*",
+    "@superbee/workspace-access": "*",
     "@toon-format/toon": "2.3.1",
     "@types/node": "^22.0.0",
     "axi-sdk-js": "0.1.8",

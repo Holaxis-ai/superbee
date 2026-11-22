@@ -59,6 +59,7 @@ export const workspaceAliases = {
       "@superbee/core/source-profiles": r("../core/src/source-profiles/index.ts"),
       "@superbee/core/search": r("../core/src/search/index.ts"),
       "@superbee/core": r("../core/src/index.ts"),
+      "@superbee/workspace-access": r("../workspace-access/src/index.ts"),
       "@superbee/browser-local": r("../browser-local/src/index.ts"),
       // The git tier lives in its own workspace package (board-git A1); alias to source so the
       // npm artifact stays ONE self-contained file with no dist pre-build.

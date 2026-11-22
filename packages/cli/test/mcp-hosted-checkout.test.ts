@@ -33,7 +33,7 @@ import { IN_PLACE_JOURNAL, IN_PLACE_STAGING } from "../src/hosted/export-archive
 import { recordPulled } from "../src/hosted/freshness.js";
 import { assertAllowedInHostedCheckout } from "../src/hosted/refusals.js";
 import { servedBundle } from "../src/hosted/served-bundle.js";
-import { createCatalogMcpWorkspaceResolver } from "../src/mcp-workspace-resolver.js";
+import { createCatalogWorkspaceResolver } from "../src/workspace-resolver.js";
 import { BUNDLE, FakeHost, HOST, syncFixture, TOKEN, type OperationDescriptor } from "./support/fake-hosted-sync.js";
 import { FakeIssuer } from "./support/fake-issuer.js";
 import { seedHostedSession } from "./support/hosted-session.js";
@@ -98,7 +98,7 @@ async function syncState(c: Checkout): Promise<{ state: string; held_files: numb
 test("local MCP over a cataloged hosted checkout: reads served, a sendable document write synced, held writes refused before the file changes", async () => {
   const c = await hostedCheckout();
   assert.deepEqual({ ...(c.receipt.catalog as Record<string, unknown>), id: undefined }, { registered: true, label: BUNDLE, id: undefined, home: "hosted" });
-  const context = await createCatalogMcpWorkspaceResolver({ home: c.home }).open(BUNDLE);
+  const context = await createCatalogWorkspaceResolver({ home: c.home }).open(BUNDLE);
 
   // Reads work exactly as before.
   const heads = await queryHeads(context.bundle);
@@ -126,6 +126,8 @@ test("local MCP over a cataloged hosted checkout: reads served, a sendable docum
   await writeDoc(context.bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha through MCP" }, body: alpha.body });
   assert.match(await readFile(alphaFile, "utf8"), /Alpha through MCP/);
   assert.equal((await syncState(c)).unsent, 1);
+  assert.equal((await readDoc(context.bundle, "notes/alpha")).frontmatter.title, "Alpha through MCP");
+  assert.notEqual(c.host.docs.get("notes/alpha")?.frontmatter.title, "Alpha through MCP");
   await runSync(c);
   assert.equal(c.host.docs.get("notes/alpha")?.frontmatter.title, "Alpha through MCP");
   assert.deepEqual(c.host.applied, ["notes/alpha"]);
@@ -134,7 +136,7 @@ test("local MCP over a cataloged hosted checkout: reads served, a sendable docum
 
 test("an MCP write while sync holds the checkout does not wait, keeps the file, and the next sync sends it", async () => {
   const c = await hostedCheckout();
-  const context = await createCatalogMcpWorkspaceResolver({ home: c.home }).open(BUNDLE);
+  const context = await createCatalogWorkspaceResolver({ home: c.home }).open(BUNDLE);
   const beta = await readDoc(context.bundle, "notes/beta");
   c.host.put("notes/alpha", { type: "Note", title: "Alpha from the app" }, "Changed on the host.\n");
   let wrote = false;
@@ -158,7 +160,7 @@ test("an MCP write while sync holds the checkout does not wait, keeps the file, 
 
 test("an MCP write landing while sync places the host's change to the same document is kept, as a conflict, never overwritten", async () => {
   const c = await hostedCheckout();
-  const context = await createCatalogMcpWorkspaceResolver({ home: c.home }).open(BUNDLE);
+  const context = await createCatalogWorkspaceResolver({ home: c.home }).open(BUNDLE);
   const alpha = await readDoc(context.bundle, "notes/alpha");
   c.host.put("notes/alpha", { type: "Note", title: "Alpha from the app" }, "Changed on the host.\n");
   let wrote = false;
@@ -182,7 +184,7 @@ test("an MCP write landing while sync places the host's change to the same docum
 
 test("the guard: an unknown storage method is refused, an unsafe id is unsafe_path, a document delete is admitted and synced", async () => {
   const c = await hostedCheckout();
-  const context = await createCatalogMcpWorkspaceResolver({ home: c.home }).open(BUNDLE);
+  const context = await createCatalogWorkspaceResolver({ home: c.home }).open(BUNDLE);
   const backend = context.bundle.backend as unknown as Record<string, unknown>;
   // A method the guard's table does not name is refused, whatever it would do.
   const unguarded = (await openBundle(c.folder)).backend as unknown as Record<string, unknown>;
@@ -205,7 +207,7 @@ test("an MCP write that changes verified is refused before the file changes; an 
   const reviewed = { by: "human:reviewer", at: "2026-09-26T12:00:00Z" };
   c.host.put("notes/alpha", { type: "Note", title: "Alpha", verified: [reviewed] }, "Alpha body.\n");
   await runSync(c);
-  const context = await createCatalogMcpWorkspaceResolver({ home: c.home }).open(BUNDLE);
+  const context = await createCatalogWorkspaceResolver({ home: c.home }).open(BUNDLE);
   const alpha = await readDoc(context.bundle, "notes/alpha");
   assert.deepEqual(alpha.frontmatter.verified, [reviewed], "the host's verification is in the folder");
   const alphaFile = path.join(c.folder, "notes", "alpha.md");
@@ -272,7 +274,7 @@ test("an unbound copy of a checkout is served for reading, and every MCP write i
   const before = await readFile(alphaFile, "utf8");
 
   // Both open paths: the catalog resolver and `mcp --dir`.
-  const cataloged = (await createCatalogMcpWorkspaceResolver({ home: c.home }).open("copy")).bundle;
+  const cataloged = (await createCatalogWorkspaceResolver({ home: c.home }).open("copy")).bundle;
   let direct: Bundle | undefined;
   const { withIsolatedUserEnv } = await import("./support/user-env.js");
   await withIsolatedUserEnv(c.home, () =>
@@ -293,7 +295,7 @@ test("an unbound copy of a checkout is served for reading, and every MCP write i
   assert.equal(await exists(path.join(copy, "notes", "beta.md")), true);
   assert.equal(c.host.requests.length, 0, "nothing reaches the host");
   // The original checkout is still served through its own guard, and still writable.
-  const original = (await createCatalogMcpWorkspaceResolver({ home: c.home }).open(BUNDLE)).bundle;
+  const original = (await createCatalogWorkspaceResolver({ home: c.home }).open(BUNDLE)).bundle;
   const alpha = await readDoc(original, "notes/alpha");
   await writeDoc(original, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha in the checkout" }, body: alpha.body });
 
@@ -405,7 +407,7 @@ test("a local bundle in the catalog stays writable through local MCP", async () 
   const { initBundle } = await import("@superbee/core");
   await initBundle(root);
   await addCatalogEntry("local", root, { home });
-  const context = await createCatalogMcpWorkspaceResolver({ home }).open("local");
+  const context = await createCatalogWorkspaceResolver({ home }).open("local");
   await writeDoc(context.bundle, { id: "notes/ok", frontmatter: { type: "Note", title: "OK" }, body: "" });
   assert.equal((await readDoc(context.bundle, "notes/ok")).frontmatter.title, "OK");
 });
@@ -520,7 +522,7 @@ test("list_workspaces names the reachable hosted bundles with no folder here, fr
   const c = await hostedCheckout();
   let asked = 0;
   let clock = 0;
-  const resolver = createCatalogMcpWorkspaceResolver({
+  const resolver = createCatalogWorkspaceResolver({
     home: c.home,
     now: () => clock,
     reachable: async () => {
@@ -589,7 +591,7 @@ test("list_operations and run_operation reach a hosted checkout's host reads by 
   const c = await hostedCheckout();
   const id = [...c.host.docs.keys()][0]!;
   c.host.put(id, { type: "Note" }, "edited on the host");
-  const mcp = await mcpClient(createCatalogMcpWorkspaceResolver({ home: c.home, hosted: { auth: c.auth, fetch: c.host.fetch } }));
+  const mcp = await mcpClient(createCatalogWorkspaceResolver({ home: c.home, hosted: { auth: c.auth, fetch: c.host.fetch } }));
   try {
     const listed = await mcp.call("list_operations", { workspace: BUNDLE });
     assert.equal(listed.isError, undefined, listed.content[0]?.text);
@@ -627,7 +629,7 @@ test("list_operations and run_operation reach a hosted checkout's host reads by 
 test("a hosted checkout's reads the folder answers are neither listed nor run, and an input naming another bundle is refused, with no request at all", async () => {
   const c = await hostedCheckout();
   c.host.operationsListing = [{ ...historyDescriptor(), operationId: "documents.read.v1" }, { ...historyDescriptor(), operationId: "documents.query.v1" }, historyDescriptor()];
-  const mcp = await mcpClient(createCatalogMcpWorkspaceResolver({ home: c.home, hosted: { auth: c.auth, fetch: c.host.fetch } }));
+  const mcp = await mcpClient(createCatalogWorkspaceResolver({ home: c.home, hosted: { auth: c.auth, fetch: c.host.fetch } }));
   try {
     const listed = await mcp.call("list_operations", { workspace: BUNDLE });
     assert.deepEqual((listed.structuredContent!.operations as { operationId: string }[]).map((row) => row.operationId), ["documents.history.v1"]);
@@ -655,7 +657,7 @@ test("a hosted checkout's reads the folder answers are neither listed nor run, a
 test("a gateway from before the operations routes is the tool error saying the host does not offer them yet", async () => {
   const host = new FakeHost({ operations: false });
   const c = await hostedCheckout();
-  const mcp = await mcpClient(createCatalogMcpWorkspaceResolver({ home: c.home, hosted: { auth: c.auth, fetch: host.fetch } }));
+  const mcp = await mcpClient(createCatalogWorkspaceResolver({ home: c.home, hosted: { auth: c.auth, fetch: host.fetch } }));
   try {
     for (const [name, args] of [["list_operations", { workspace: BUNDLE }], ["run_operation", { workspace: BUNDLE, operationId: "documents.history.v1", input: { documentId: "notes/alpha" } }]] as const) {
       const answer = await mcp.call(name, args);
@@ -673,7 +675,7 @@ test("a local workspace has no host operations: an empty listing naming the type
   const { initBundle } = await import("@superbee/core");
   await initBundle(root);
   await addCatalogEntry("local", root, { home });
-  const mcp = await mcpClient(createCatalogMcpWorkspaceResolver({ home, hosted: { auth: defaultHostedAuthDeps(home), fetch: async () => assert.fail("a local workspace makes no request") } }));
+  const mcp = await mcpClient(createCatalogWorkspaceResolver({ home, hosted: { auth: defaultHostedAuthDeps(home), fetch: async () => assert.fail("a local workspace makes no request") } }));
   try {
     const listed = await mcp.call("list_operations", { workspace: "local" });
     assert.equal(listed.isError, undefined);
@@ -700,7 +702,7 @@ test("a hosted workspace with no session answers the one sign-in link to relay, 
     await checkout([BUNDLE, "--host", issuer.base, "--dir", "team"], { stdout: () => {}, auth: signedIn, cwd, fetch: host.fetch });
     host.requests.length = 0;
     const signedOut = defaultHostedAuthDeps(home, { env: { [CREDENTIAL_STORE_ENV]: "file" } });
-    const mcp = await mcpClient(createCatalogMcpWorkspaceResolver({ home, hosted: { auth: signedOut, fetch: host.fetch } }));
+    const mcp = await mcpClient(createCatalogWorkspaceResolver({ home, hosted: { auth: signedOut, fetch: host.fetch } }));
     try {
       for (const [name, args] of [["list_operations", { workspace: BUNDLE }], ["run_operation", { workspace: BUNDLE, operationId: "documents.history.v1", input: { documentId: "notes/alpha" } }]] as const) {
         const answer = await mcp.call(name, args);
