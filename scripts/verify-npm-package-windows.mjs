@@ -77,7 +77,9 @@ export function assertBoardConflictReceipt(stdout, id) {
   assert.equal(lines[0], "error:", stdout);
   assert.equal(lines[1], "  code: CONFLICT", stdout);
   assert.ok(lines.includes("      total: 1"), stdout);
-  assert.ok(lines.some((line) => line.startsWith(`        ${id},`) && line.endsWith(",kept")), stdout);
+  assert.ok(lines.includes(`        - id: ${id}`), stdout);
+  assert.ok(lines.includes("          frontmatter_differs[1]: title"), stdout);
+  assert.ok(lines.includes("          theirs: kept"), stdout);
 }
 
 async function prove({ expectedDigest, expectedSource, scratch }) {
