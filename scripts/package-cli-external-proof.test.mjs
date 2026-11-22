@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { mkdtemp, readFile, writeFile, mkdir, symlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { isBuiltin } from "node:module";
 import path from "node:path";
 import { promisify } from "node:util";
 import test, { before } from "node:test";
@@ -28,6 +29,18 @@ test("workspace directories and lock links follow package identities", async () 
     assert.equal(lock.packages[`node_modules/${name}`].resolved, packagePath);
     assert.equal(lock.packages[`node_modules/${name}`].link, true);
   }
+});
+
+test("the workspace reader bundles independently of MCP and View packages", async () => {
+  const graph = await readJson(path.join(root, "out/cli-runtime-metafile.json"));
+  const reader = graph.outputs["dist/workspace-reader.mjs"];
+  assert.ok(reader, "missing workspace reader bundle");
+  const inputs = Object.keys(reader.inputs);
+  assert.ok(inputs.includes("src/workspace-resolver.ts"));
+  assert.ok(reader.imports.every(edge => edge.external && isBuiltin(edge.path)), "reader must load without sibling bundles or installed packages");
+  assert.deepEqual(inputs.filter(input =>
+    /(?:^|\/)(?:@modelcontextprotocol|mcp-app|view-host|view-runtime|ui-server|markdown-renderer)\//.test(input)
+  ), []);
 });
 
 test("packed reusable CLI is closed, inert on import, and binds commands to its executable", async () => {

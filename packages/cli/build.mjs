@@ -14,7 +14,18 @@ export async function buildCliRuntime({ preparedInputs, source = currentSourceFa
   // Source facts describe the tree the bundler reads, so capture them before this build writes.
   await rm(resolve(root, "dist"), { recursive: true, force: true });
   const assets = preparedInputs ?? await prepareCliBundleInputs();
-  const runtimeBuild = await build({ metafile:true, absWorkingDir: root, entryPoints: [resolve(root, "src/index.ts")], outfile: resolve(root, "dist/index.mjs"), bundle: true, platform: "node", format: "esm", target: "node22", alias: workspaceAliases, banner: runtimeBanner,
+  const runtimeBuild = await build({
+    metafile: true,
+    absWorkingDir: root,
+    entryPoints: [resolve(root, "src/index.ts"), resolve(root, "src/workspace-reader.ts")],
+    outdir: resolve(root, "dist"),
+    outExtension: { ".js": ".mjs" },
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node22",
+    alias: workspaceAliases,
+    banner: runtimeBanner,
     // A reusable library has no baked distribution policy or identity. Fold their absence into the
     // artifact so a host's same-named globals cannot override its explicit source identity.
     define: {
@@ -26,7 +37,7 @@ export async function buildCliRuntime({ preparedInputs, source = currentSourceFa
   // The facade has explicit closed signatures. Generate declarations from these signatures instead
   // of publishing declarations for internal engine, transport, and command implementations.
   await mkdir(resolve(root, "dist"), { recursive: true });
-  for (const name of ["index", "public-types", "runtime-types", "host-command-error", "resources"]) {
+  for (const name of ["index", "public-types", "runtime-types", "host-command-error", "resources", "workspace-reader"]) {
     let source = await readFile(resolve(root, `src/${name}.ts`), "utf8");
     if(name==="index")source=source.replace('export { createCliRuntime, createPosixCliRuntime } from \'./runtime.js\';', 'import type { CliRuntime, CliRuntimeOptions, CliDistribution } from "./runtime-types.js";\nexport declare function createCliRuntime(options:CliRuntimeOptions):CliRuntime;\nexport declare function createPosixCliRuntime(distribution:CliDistribution):CliRuntime;');
     const result = ts.transpileDeclaration(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.NodeNext }, fileName: `${name}.ts` });

@@ -496,12 +496,22 @@ export async function proveCliTarball(tarball, { checkSource, execute = exec } =
       assert.deepEqual(embeddedEngineErrors(record, await embeddedInventory(path.join(library, "dist/index.mjs")), await workspaceManifests(), treeFacts()), []);
       // Compare actual installed bytes; the workspace cannot stand in for the retained artifact.
       assert.equal(createHash("sha256").update(await readFile(path.join(library, "dist/index.mjs"))).digest("hex"), createHash("sha256").update(await readFile(path.join(root, "packages/cli/dist/index.mjs"))).digest("hex"), "packed runtime differs from the proved build");
+      const readerFile = "dist/workspace-reader.mjs";
+      const packedReader = await readFile(path.join(library, readerFile));
+      const builtReader = await readFile(path.join(root, "packages/cli", readerFile));
+      assert.ok(packedReader.equals(builtReader), "packed workspace reader differs from the proved build");
       if (checkSource) checkSource(record, await workspaceManifests());
       await assertClosedCliImports(await readFile(path.join(library, "dist/index.mjs"), "utf8"));
       await writeFile(path.join(scratch, "consumer.ts"), `import { main, configureSourceIdentity, registerExecutableEntry, buildIdentityEnvelope, type BuildIdentityEnvelope } from '@superbee/cli';\nconfigureSourceIdentity({ name: 'superbee', version: '1.2.3' });\nregisterExecutableEntry('fixture.mjs');\nconst identity: BuildIdentityEnvelope = buildIdentityEnvelope();\nvoid main(['help']); void identity;\n`);
       await appendFile(path.join(scratch, "consumer.ts"), `
   import { createCliRuntime, createPosixCliRuntime, type CliRuntimeOptions, type CliDistribution } from '@superbee/cli';
   import { getDistributionResources } from '@superbee/cli/resources';
+  import { openWorkspaceReader } from '@superbee/cli/workspace-reader/v1';
+  const reader = await openWorkspaceReader('catalog', 'planning');
+  const heads = await reader.queryHeads();
+  const document = await reader.read(heads[0].id);
+  const body: string = document.body;
+  void body;
   declare const options: CliRuntimeOptions;
   declare const distribution: CliDistribution;
   void createCliRuntime(options).run(['help']);
@@ -522,6 +532,7 @@ export async function proveCliTarball(tarball, { checkSource, execute = exec } =
   const env = JSON.stringify(process.env); process.exitCode = 37;
   process.exit = () => { throw new Error('import exited process'); };
   const cli = await import('@superbee/cli');
+  await import('@superbee/cli/workspace-reader/v1');
   const resources = await import('@superbee/cli/resources');
   const rendered = resources.getDistributionResources({packageName:'@fixture/cli',binName:'fixture'});
   assert.ok(rendered.skill.includes('fixture setup'));
@@ -581,6 +592,25 @@ export async function proveCliTarball(tarball, { checkSource, execute = exec } =
       await run([entry, "init", "--create-only", "--dir", bundle, "--recipe", "none"], cwd, env);
       await run([entry, "doc", "write", "notes/proof", "--type", "Note", "--body", "portable proof", "--actor", "process:external-proof", "--dir", bundle], cwd, env);
       assert.match((await run([entry, "doc", "read", "notes/proof", "--dir", bundle], cwd, env)).stdout, /portable proof/);
+      await run([entry, "catalog", "add", "proof-reader", "--dir", bundle], cwd, env);
+      const readerProbe = path.join(scratch, "reader.mjs");
+      await writeFile(readerProbe, `import assert from 'node:assert/strict';
+import { openWorkspaceReader } from '@superbee/cli/workspace-reader/v1';
+for (const [source, selector] of [['directory', process.argv[2]], ['catalog', 'proof-reader']]) {
+  const reader = await openWorkspaceReader(source, selector);
+  assert.deepEqual(Object.keys(reader).sort(), ['name', 'queryHeads', 'read']);
+  const head = (await reader.queryHeads()).find(row => row.id === 'notes/proof');
+  assert.ok(head);
+  const doc = await reader.read(head.id);
+  assert.deepEqual(doc.frontmatter, head.frontmatter);
+  assert.equal(doc.version, head.version);
+  assert.equal(doc.body.trim(), 'portable proof');
+  assert.equal(doc.id, head.id);
+}
+await assert.rejects(openWorkspaceReader('directory', ''));
+await assert.rejects(openWorkspaceReader('catalog', 'missing-workspace'));
+`);
+      await run([readerProbe, bundle], cwd, env);
       // Exercise the serialized child from the installed tarball, outside the checkout and
       // without tools or package imports in the accepted self-contained operation entry.
       if (process.platform === "darwin" || process.platform === "linux") {
