@@ -176,6 +176,16 @@ export function pageLaunchAuthorizationSubject(launch: PageLaunch): ViewAuthoriz
     : { ...common, sourceKind: "transient", bundleIdentity: launch.bundleIdentity };
 }
 
+/** A suspended launch retains its old approval while its replacement undergoes fresh admission. */
+export async function mayResumePageLaunch(
+  launches: PageLaunchRegistry,
+  previous: PageLaunch,
+  store: ViewAuthorizationStore,
+): Promise<boolean> {
+  const trusted = previous.capability === "none" || await store.isAuthorized(pageLaunchAuthorizationSubject(previous));
+  return trusted && launches.resolveLaunch(previous.launchId) === previous;
+}
+
 /** Read or record the trusted host's decision against the exact live launch. */
 export async function resolvePageLaunchAuthorization(
   bundle: Bundle,

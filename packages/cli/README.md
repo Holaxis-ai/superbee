@@ -144,6 +144,20 @@ Each render checks the launch, applies the View bridge’s read limits and retur
 document version with inert rendered HTML. A bounded result means the renderer limited its
 output. A refused read rejects with the bridge error code. Denying or closing the session ends its grant.
 
+## Host interactive Views in a selected workspace
+
+The experimental `@superbee/cli/view-workspace/v1` entry supports a trusted local host that
+presents documents and runs registered or temporary Views. Call
+`openViewWorkspace("directory", path, { actor })` or select a catalog ID or label with
+`"catalog"`. Each workspace pins its working copy for the host's lifetime.
+
+The host can search, request inert document HTML, list registered Views and open a launch.
+Present the exact source and requested access in trusted UI to collect approval. Send
+frame reads through `request(launchId, message)`. Show the confirmation returned by
+`prepare` and pass the human decision to `finish`. Keep the workspace, approval method
+and tokens inside the trusted host. Close each retired frame's launch. When a suspended
+registered View changes, `resume` mints a replacement with its own approval state.
+
 ## Embedded engine record
 
 The bundle embeds the workspace source of Superbee's engine packages rather than their published

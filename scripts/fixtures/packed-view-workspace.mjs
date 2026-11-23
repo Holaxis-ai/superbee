@@ -1,3 +1,5 @@
+import { appendFile } from "node:fs/promises";
+import path from "node:path";
 import assert from "node:assert/strict";
 import { openViewWorkspace } from "@superbee/cli/view-workspace/v1";
 
@@ -44,3 +46,19 @@ assert.equal(
 workspace.close(launch.id);
 assert.equal((await workspace.request(launch.id, request)).reply.type, "error");
 workspace.close(other.id);
+
+const registered = await workspace.open({ viewId: "views-registry/editor" });
+await workspace.approve(registered.id);
+await appendFile(
+  path.join(process.argv[2], "views/editor.html"),
+  "<!-- new source -->",
+);
+const resumed = await workspace.resume(registered.id);
+assert.notEqual(resumed.contentVersion, registered.contentVersion);
+assert.equal(resumed.authorized, false);
+assert.equal(
+  (await workspace.request(resumed.id, request)).reply.type,
+  "error",
+);
+workspace.close(resumed.id);
+workspace.close(registered.id);

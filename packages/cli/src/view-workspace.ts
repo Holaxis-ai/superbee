@@ -12,6 +12,7 @@ import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 import {
   createWorkspaceViewServices,
   listViewCatalogPage,
+  mayResumePageLaunch,
   mintActiveViewLaunch,
   mintTransientViewLaunch,
   resolvePageLaunchAuthorization,
@@ -39,9 +40,7 @@ export interface ActiveView {
 }
 export interface ViewWorkspace {
   name: string;
-  document(
-    id: string,
-  ): Promise<{
+  document(id: string): Promise<{
     id: string;
     version: string;
     frontmatter: Record<string, unknown>;
@@ -253,17 +252,30 @@ export async function openViewWorkspace(
       return describe(launch, true);
     },
     async resume(id) {
-      const old = await inspect(id);
-      if (!old?.authorized)
+      const old = launches.resolveLaunch(id);
+      const store =
+        old?.sourceKind === "transient" ? transient : viewAuthorization;
+      if (!old || !(await mayResumePageLaunch(launches, old, store))) {
         throw new Error(
           "The suspended View is unknown, expired or no longer authorized.",
         );
+      }
       const fresh = await open(
-        old.registration ? { viewId: old.registration.id } : old,
+        old.sourceKind === "registered"
+          ? { viewId: old.registryId }
+          : {
+              title: old.title,
+              html: new TextDecoder("utf-8", {
+                fatal: true,
+                ignoreBOM: true,
+              }).decode(old.bytes),
+              access: old.capability,
+            },
       );
       try {
-        if (!(await inspect(id))?.authorized)
+        if (!(await mayResumePageLaunch(launches, old, store))) {
           throw new Error("The suspended View changed while resuming.");
+        }
         return fresh;
       } catch (error) {
         bridge.revoke(fresh.id);

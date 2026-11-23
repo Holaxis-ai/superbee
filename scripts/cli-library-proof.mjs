@@ -668,7 +668,7 @@ await assert.rejects(openWorkspaceReader('catalog', 'missing-workspace'));
       await provePackedViewActions({ scratch, cwd, bundle, entry, env, run });
       const viewHost = path.join(scratch, "view-workspace.mjs");
       await copyFile(path.join(root, "scripts/fixtures/packed-view-workspace.mjs"), viewHost);
-      await run([viewHost], cwd, env);
+      await run([viewHost, bundle], cwd, env);
       // Exercise the serialized child from the installed tarball, outside the checkout and
       // without tools or package imports in the accepted self-contained operation entry.
       if (process.platform === "darwin" || process.platform === "linux") {

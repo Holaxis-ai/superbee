@@ -22,6 +22,7 @@ import {
   type TrustedActionService,
   ViewNotFoundError,
   listViewCatalogPage,
+  mayResumePageLaunch,
   mintActiveViewLaunch,
   mintTransientViewLaunch,
   pageLaunchAuthorizationSubject,
@@ -1302,13 +1303,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       const authorizationStore = previous?.sourceKind === "transient"
         ? runtime.transientAuthorizations
         : runtime.durableAuthorizations;
-      if (
-        !previous ||
-        (previous.capability !== "none" &&
-          !(await authorizationStore.isAuthorized(
-            pageLaunchAuthorizationSubject(previous),
-          )))
-      ) {
+      if (!previous || !(await mayResumePageLaunch(runtime.launches, previous, authorizationStore))) {
         return {
           isError: true,
           content: [
@@ -1338,14 +1333,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
               runtime.launches,
               runtime.transientAuthorizations,
             );
-        const stillCurrent = runtime.launches.resolveLaunch(launchId);
-        if (
-          stillCurrent !== previous ||
-          (previous.capability !== "none" &&
-            !(await authorizationStore.isAuthorized(
-              pageLaunchAuthorizationSubject(previous),
-            )))
-        ) {
+        if (!(await mayResumePageLaunch(runtime.launches, previous, authorizationStore))) {
           runtime.bridge.revoke(view.launch.launchId);
           return {
             isError: true,
