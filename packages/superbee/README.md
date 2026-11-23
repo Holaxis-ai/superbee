@@ -57,12 +57,15 @@ Stable releases publish on npm's `latest` tag and prereleases on `next`.
 
 ### Native Windows local projects
 
-Install the standard package in PowerShell. Native file operations require Node.js 22.17.0 or
+Stable `superbee@0.4.7` supports existing standalone Git boards on Windows. The local project
+walkthrough below requires a build of this source tree or a `next` prerelease whose release notes
+include native Windows local setup.
+
+Local project and Git board operations on native Windows require Node.js 22.17.0 or
 later in the 22 line, 24.2.0 or later in the 24 line, or Node.js 26. These versions include
 libuv's Windows file identity fix. [libuv changelog](https://github.com/libuv/libuv/blob/v1.51.0/ChangeLog)
 
 ```powershell
-npm install -g superbee
 cd "C:\path to\your project"
 superbee setup
 ```

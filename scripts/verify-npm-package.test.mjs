@@ -262,7 +262,16 @@ test("root README teaches the literal create-only quickstart; npm README teaches
   assert.match(npmReadme, /^### Native Windows Git boards$/m);
   assert.match(npmReadme, /Native Windows mode is experimental/);
   assert.match(npmReadme, /Use macOS, Linux, or WSL2 for the full CLI/);
-  assert.match(npmReadme, /Native Git board operations require Node\.js 22\.17\.0[\s\S]+24\.2\.0[\s\S]+Node\.js 26/);
+  const windowsLocal = npmReadme.match(/^### Native Windows local projects\n([\s\S]*?)(?=^#{1,3} )/m)?.[1] ?? "";
+  const windowsBoard = npmReadme.match(/^### Native Windows Git boards\n([\s\S]*?)(?=^#{1,3} )/m)?.[1] ?? "";
+  for (const floor of ["22.17.0", "24.2.0", "Node.js 26"]) {
+    assert.ok(windowsLocal.includes(floor), `native Windows runtime guidance must include ${floor}`);
+  }
+  assert.match(windowsLocal, /^superbee setup$/m);
+  assert.match(windowsLocal, /superbee setup --project \./);
+  assert.match(windowsBoard, /superbee sync --dir /);
+  assert.match(windowsBoard, /superbee doc read [^\n]+ --dir [^\n]+ --json/);
+  assert.match(windowsBoard, /superbee doc update [^\n]+ --expected-version /);
 
 });
 
