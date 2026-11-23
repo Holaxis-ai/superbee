@@ -140,12 +140,11 @@ inspect an explicit `superbee sync` receipt to verify publication of edits.
 On macOS, Linux, or WSL2, use `superbee mcp install --host <id>` to register the bundled server.
 Run `superbee mcp --help` to see the supported clients.
 
-To try the experimental MCP App on macOS or Linux with Node 24, install the matching offline
-tarballs from the guide. Keep your existing registration while you try the preview. In Claude
-Desktop on macOS, both the extension and the bundled server can return the document title but
-fail to display its body. With the CLI installed, run `superbee doc open <id> --dir "<bundle-folder>"`
-using the same local bundle folder you selected in Desktop to read the document in your browser.
-[Experimental MCP App installation guide](https://github.com/Holaxis-ai/superbee-plugins/blob/40e327bc4f1f5a39e4159bba655026a11b12b967/apps/mcp/README.md)
+In Claude Desktop on macOS, the experimental extension can display a document or a registered
+View inside a chat. Select the local bundle folder. For a View, review its access and approve it
+in the panel. The guide includes the extension and an offline installer for other clients on
+macOS and Linux with Node 24. You can keep your existing server while trying it.
+[Experimental MCP App installation guide](https://github.com/Holaxis-ai/superbee-plugins/blob/ebf1dcc931560282de75f44ef21ab5167d327e96/apps/mcp/README.md)
 
 ## Everyday use
 
