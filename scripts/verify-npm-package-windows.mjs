@@ -247,8 +247,16 @@ async function proveWorkspaceProvider({ scratch, npm, env, prefix, install, boar
   const listed = JSON.parse((await install(["catalog", "list", "--json"])).stdout);
   assert.equal(listed.entries.length, 4);
 
+  await mkdir(path.join(checkouts, checkoutId, "store"));
+  const authKey = createHash("sha256").update(`${hostedOrigin} ${hostedOrigin}/mcp`).digest("hex").slice(0, 32);
+  const sessionDir = path.join(env.LOCALAPPDATA, "Superbee", "hosted-auth", authKey);
+  await mkdir(sessionDir, { recursive: true });
+  const sessionFile = path.join(sessionDir, "session.json");
+  const operationFixture = JSON.parse(await readFile(new URL("../packages/core/test/fixtures/hosted-sync-v1/operations-200.json", import.meta.url), "utf8"));
+
   const program = `
     import assert from "node:assert/strict";
+    import { writeFile } from "node:fs/promises";
     import { createViewWorkspaceCatalog, openViewWorkspace } from "@superbee/cli/view-workspace/v1";
     import { openWorkspaceReader } from "@superbee/cli/workspace-reader/v1";
     const actor = "openai/codex";
@@ -259,13 +267,63 @@ async function proveWorkspaceProvider({ scratch, npm, env, prefix, install, boar
     assert.ok(entries.find(item => item.label === "window-hosted" && item.home === "hosted"));
     assert.ok(entries.find(item => item.label === "window-copy" && item.home === "local"));
     assert.equal((await catalog.listOperations("window-copy")).stop, "no_host_operations");
+    const requests = [];
+    const fixture = "fixture-hosted-token";
+    let principal = "fixture-person";
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input);
+      requests.push(url.pathname);
+      assert.equal(url.origin, "https://checkout.example.invalid");
+      const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+      assert.equal(headers.get("authorization"), "Bearer " + fixture);
+      if (url.pathname === "/sync/v1/whoami") return Response.json({
+        principalId: principal, credentialId: "fixture-credential", tenantIds: ["fixture"], surface: "sync",
+      });
+      if (url.pathname === "/sync/v1/operations") return new Response(process.argv[3], {
+        headers: { "Content-Type": "application/json" },
+      });
+      assert.fail("Unexpected Hosted request: " + url.pathname);
+    };
+
     await assert.rejects(catalog.listOperations("window-hosted"), { code: "AUTH_REQUIRED" });
+    assert.deepEqual(requests, []);
+    const sessionFile = process.argv[2];
+    const config = {
+      schema: 1, host: "https://checkout.example.invalid", audience: "https://checkout.example.invalid/mcp",
+      issuer: "https://checkout.example.invalid/", token_endpoint: "https://checkout.example.invalid/oauth/token",
+      client_id: "fixture", credential_store: "file", has_refresh_token: false,
+      access_token: fixture, access_token_expires_at_ms: Date.now() + 600_000, subject: {}, signed_in_at_ms: 0,
+    };
+    await writeFile(sessionFile, JSON.stringify(config));
+    const available = await catalog.listOperations("window-hosted");
+    assert.ok(available.ok);
+    assert.ok(available.listing.operations.some((row) => row.operationId === "documents.history.v1"));
+    assert.deepEqual(requests.splice(0), ["/sync/v1/whoami", "/sync/v1/operations"]);
+
+    principal = "someone-else";
+    await assert.rejects(catalog.listOperations("window-hosted"), { code: "FORBIDDEN" });
+    assert.deepEqual(requests.splice(0), ["/sync/v1/whoami"]);
+
+    config.access_token_expires_at_ms = 0;
+    await writeFile(sessionFile, JSON.stringify(config));
+    await assert.rejects(catalog.listOperations("window-hosted"), { code: "AUTH_REQUIRED" });
+    assert.deepEqual(requests, []);
     const host = await catalog.open("window-hosted");
     assert.match((await host.document("tasks/one")).html, /A native Windows task/);
 
     const copy = await openWorkspaceReader("catalog", "window-board");
     assert.match((await copy.read("concepts/okf-alignment")).body, /\\S/);
     const workspace = await catalog.open("window-local");
+    const boundDoc = await host.document("tasks/one");
+    const boundView = await host.open({ viewId: "views-registry/editor" });
+    await host.approve(boundView.id);
+    const boundEdit = await host.prepare(boundView.id, {
+      kind: "document.set-field", docId: "tasks/one", field: "status",
+      expectedVersion: boundDoc.version, value: "done",
+    });
+    assert.equal(boundEdit.status, "prepared");
+    assert.equal((await host.finish(boundView.id, boundEdit.approvalToken, "commit")).status, "committed");
+    assert.equal((await host.document("tasks/one")).frontmatter.status, "done");
     const original = await workspace.document("tasks/one");
     assert.match(original.html, /A native Windows task/);
     const view = await workspace.open({ viewId: "views-registry/editor" });
@@ -299,7 +357,7 @@ async function proveWorkspaceProvider({ scratch, npm, env, prefix, install, boar
     assert.equal((await reopened.document("tasks/one")).frontmatter.status, "done");
     assert.equal((await reopened.open({ viewId: "views-registry/editor" })).authorized, true);
   `;
-  await run("node", ["--input-type=module", "-e", program, bundle], {
+  await run("node", ["--input-type=module", "-e", program, bundle, sessionFile, operationFixture.response.body], {
     cwd: prefix, env: { ...env, SUPERBEE_ACCESS_TOKEN: "" },
   });
   console.log("WINDOWS_PROOF_WORKSPACE_PROVIDER opened local, Git and Hosted working copies, confirmed a versioned edit, and refused a signed-out Hosted call and an edit in an unbound copy.");
