@@ -70,7 +70,7 @@ workspace.close(registered.id);
 const catalog = createViewWorkspaceCatalog({ actor: "process:host-proof" });
 const entries = await catalog.list();
 const local = entries.find(({ label }) => label === "proof-reader");
-const hosted = entries.find(({ label }) => label === "team.knowledge");
+const hosted = entries.find(({ label }) => label === "notes.a");
 assert.equal(local.home, "local");
 assert.equal(hosted.home, "hosted");
 assert.deepEqual(Object.keys(local).sort(), [

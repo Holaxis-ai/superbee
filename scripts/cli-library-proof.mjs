@@ -682,10 +682,12 @@ await assert.rejects(openWorkspaceReader('catalog', 'missing-workspace'));
       const viewHost = path.join(scratch, "view-workspace.mjs");
       await copyFile(path.join(root, "scripts/fixtures/packed-view-workspace.mjs"), viewHost);
       const fixtureHost = path.join(root, "scripts/fixtures/packed-view-fake-host.mjs");
-      const loader = path.join(root, "packages/cli/test/ts-loader.mjs");
       const checkoutEntry = path.join(scratch, "checkout.mjs");
       await writeFile(checkoutEntry, "import { main } from '@superbee/cli'; await main(process.argv.slice(2));\n");
-      await run(["--import", loader, "--import", fixtureHost, checkoutEntry, "checkout", "team.knowledge", "--host", "https://hosted.example", "--dir", path.join(scratch, "hosted")], cwd, env);
+      const checkout = await run(["--import", fixtureHost, checkoutEntry, "checkout", "notes.a", "--host", "https://hosted.example", "--dir", path.join(scratch, "hosted"), "--json"], cwd, env);
+      const receipt = JSON.parse(checkout.stdout);
+      assert.equal(receipt.catalog.home, "hosted");
+      assert.equal(receipt.warning, undefined);
       await run([viewHost, bundle], cwd, env);
       // Exercise the serialized child from the installed tarball, outside the checkout and
       // without tools or package imports in the accepted self-contained operation entry.
