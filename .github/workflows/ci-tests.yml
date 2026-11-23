@@ -258,6 +258,7 @@ jobs:
     name: installed-package smoke on the engines floor (node 22.14.0)
     outputs:
       windows_tarball_sha256: ${{ steps.pack.outputs.superbee_sha256 }}
+      windows_cli_sha256: ${{ steps.pack.outputs.cli_sha256 }}
       windows_tarball_artifact: ${{ steps.retain.outputs.artifact-id }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -288,7 +289,9 @@ jobs:
           mv -- "out/node-floor/$CLI_PACKED" out/node-floor/superbee-cli.tgz
           sha256sum out/node-floor/superbee.tgz out/node-floor/superbee-cli.tgz > out/node-floor/before.sha256
           read -r SUPERBEE_SHA256 _ < out/node-floor/before.sha256
+          CLI_SHA256="$(sha256sum out/node-floor/superbee-cli.tgz | cut -d ' ' -f 1)"
           printf 'superbee_sha256=%s\n' "$SUPERBEE_SHA256" >> "$GITHUB_OUTPUT"
+          printf 'cli_sha256=%s\n' "$CLI_SHA256" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22.14.0
@@ -303,7 +306,9 @@ jobs:
         id: retain
         with:
           name: superbee-installed-windows-input
-          path: out/node-floor/superbee.tgz
+          path: |
+            out/node-floor/superbee.tgz
+            out/node-floor/superbee-cli.tgz
           if-no-files-found: error
           overwrite: true
           retention-days: 7
@@ -332,6 +337,7 @@ jobs:
         shell: pwsh
         env:
           SUPERBEE_TARBALL_SHA256: ${{ needs.smoke-node-22.outputs.windows_tarball_sha256 }}
+          SUPERBEE_CLI_TARBALL_SHA256: ${{ needs.smoke-node-22.outputs.windows_cli_sha256 }}
         run: |
           if ((node --version) -ne "v22.17.0") { throw "Node 22.17.0 is required" }
           node scripts/verify-npm-package-windows.mjs

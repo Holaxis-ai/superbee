@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { win32 as paths } from 'node:path';
-import type { PrivateStateHost, UserStateEnvironment, UserStatePolicy } from '@superbee/cli';
+import type { PrivateStateHost, UserStateEnvironment, UserStatePolicy } from '../runtime-types.js';
 
 const SUPERSEDED = [['.superbee-state'], ['.config', 'superbee']] as const;
 function absolute(value: string): string {

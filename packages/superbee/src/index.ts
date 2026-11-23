@@ -7,15 +7,10 @@ import {
   isBareVersionFlag,
   configureSourceIdentity,
   staticBuildIdentity,
-  createCliRuntime,
+  createWindowsCliRuntime,
   createPosixCliRuntime,
   type CliDistribution,
 } from "@superbee/cli";
-import { windowsBoardHostPolicy } from "./windows/board.js";
-import { windowsFilesystemHostPolicy } from "./windows/filesystem.js";
-import { createWindowsHostCommands } from "./windows/host.js";
-import { windowsPrivateStateHost } from "./windows/private-state.js";
-
 declare const __SUPERBEE_BUILD_IDENTITY__: unknown;
 if (typeof __SUPERBEE_BUILD_IDENTITY__ === "undefined") {
   const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
@@ -26,16 +21,6 @@ const argv = process.argv.slice(2);
 const command = argv[0];
 const windows = process.platform === "win32";
 const posix = process.platform === "darwin" || process.platform === "linux";
-const windowsUsage = "Native Windows supports local project setup and existing standalone Git boards. Use WSL2 for the full CLI.";
-const windowsRuntimeRequirement = "Native Windows file operations require Node.js 22.17.0 or later in the 22 line, 24.2.0 or later in the 24 line, or Node.js 26.";
-
-// libuv 1.51.0 made Windows path and handle stats agree on the volume serial used for file identity.
-// https://github.com/libuv/libuv/blob/v1.51.0/ChangeLog
-function hasWindowsFileIdentitySupport(): boolean {
-  const [major, minor] = process.versions.uv.split(".");
-  return Number(major) > 1 || (major === "1" && Number(minor) >= 51);
-}
-
 if (isBareVersionFlag(command)) {
   process.stdout.write(`${cliVersion()}\n`);
 } else if (!windows && !posix) {
@@ -52,21 +37,7 @@ if (isBareVersionFlag(command)) {
     updatesEnabled: posix,
   };
   const runtime = windows
-    ? createCliRuntime({
-        distribution,
-        existingGitBoard: {
-          usage: windowsUsage,
-          localOnboarding: true,
-          requirements: windowsRuntimeRequirement,
-          ...(!hasWindowsFileIdentitySupport() && {
-            unavailableReason: `${windowsRuntimeRequirement} Found Node.js ${process.versions.node}.`,
-          }),
-        },
-        host: createWindowsHostCommands(),
-        privateState: windowsPrivateStateHost,
-        filesystemHost: windowsFilesystemHostPolicy,
-        boardHost: windowsBoardHostPolicy,
-      })
+    ? createWindowsCliRuntime(distribution)
     : createPosixCliRuntime(distribution);
   if (posix && command === "__managed-ui-v1") {
     if (argv.length === 1) await runtime.runManagedUiWorker();

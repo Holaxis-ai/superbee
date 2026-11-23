@@ -1,5 +1,5 @@
 import { win32 as paths } from 'node:path';
-import type { BoardHostPolicy } from '@superbee/cli';
+import type { BoardHostPolicy } from '../runtime-types.js';
 
 /** Call only after the owning code has obtained physical path evidence. */
 export function sameResolvedPath(left: string, right: string): boolean {

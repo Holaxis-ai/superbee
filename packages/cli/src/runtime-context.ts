@@ -15,6 +15,7 @@ import {
   createPosixHostCommands,
   createPosixPrivateStateHost,
 } from "./posix-host.js";
+import { windowsHostOptions } from "./windows/runtime-options.js";
 
 type RuntimeOptions = Omit<CliRuntimeOptions, "filesystemHost" | "boardHost"> &
   Partial<Pick<CliRuntimeOptions, "filesystemHost" | "boardHost">>;
@@ -143,20 +144,26 @@ export function captureRuntimeCallback<T extends (...args: any[]) => any>(
 }
 export function currentHost(): HostCommands {
   return (
-    contexts.getStore()?.host ?? (defaultHost ??= createPosixHostCommands())
+    contexts.getStore()?.host ?? (defaultHost ??= process.platform === "win32"
+      ? windowsHostOptions().host
+      : createPosixHostCommands())
   );
 }
 export function currentPrivateStateHost(): PrivateStateHost {
   return (
     contexts.getStore()?.privateState ??
-    (defaultPrivateState ??= createPosixPrivateStateHost())
+    (defaultPrivateState ??= process.platform === "win32"
+      ? windowsHostOptions().privateState
+      : createPosixPrivateStateHost())
   );
 }
 export function currentFilesystemHost(): FilesystemHostPolicy | undefined {
-  return contexts.getStore()?.filesystemHost;
+  const runtime = contexts.getStore();
+  return runtime ? runtime.filesystemHost : process.platform === "win32" ? windowsHostOptions().filesystemHost : undefined;
 }
 export function currentBoardHost(): BoardHostPolicy | undefined {
-  return contexts.getStore()?.boardHost;
+  const runtime = contexts.getStore();
+  return runtime ? runtime.boardHost : process.platform === "win32" ? windowsHostOptions().boardHost : undefined;
 }
 export function currentDistribution(): Readonly<CliDistribution> | undefined {
   return distribution;

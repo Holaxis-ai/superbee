@@ -12,6 +12,7 @@ import { isMainModule } from "./is-main-module.mjs";
 
 const exec = promisify(execFile);
 const retainedTarball = new URL("../out/windows-proof/superbee.tgz", import.meta.url);
+const retainedProvider = new URL("../out/windows-proof/superbee-cli.tgz", import.meta.url);
 const fixture = fileURLToPath(new URL("../examples/sample-bundle", import.meta.url));
 const docId = "concepts/okf-alignment";
 const docPath = `${docId}.md`;
@@ -189,6 +190,62 @@ async function proveLocalOnboarding(installed, project, env) {
   assert.equal(resumed.example.read.mutates, false);
   const read = JSON.parse((await execute(resumed.example.read)).stdout);
   assert.deepEqual([read.id, read.body.trimEnd(), read.head_version], [written.id, body, written.version]);
+}
+
+async function proveWorkspaceProvider({ scratch, npm, env, prefix, install, board }) {
+  const expected = process.env.SUPERBEE_CLI_TARBALL_SHA256;
+  assert.match(expected ?? "", /^[a-f0-9]{64}$/);
+  const archive = fileURLToPath(retainedProvider);
+  assert.equal(createHash("sha256").update(await readFixtureFile(archive)).digest("hex"), expected);
+  await run("node", [
+    npm, "install", "--global", "--prefix", prefix, "--offline", "--ignore-scripts", "--no-audit", "--no-fund", archive,
+  ], { cwd: scratch, env });
+  const bundle = path.join(scratch, "MCP project with spaces");
+  await mkdir(bundle);
+  await writeFile(path.join(bundle, "index.md"), "---\nokf_version: '0.1'\n---\n# Native Windows workspace\n");
+  for (const dir of ["tasks", "conventions", "views", "views-registry"]) await mkdir(path.join(bundle, dir), { recursive: true });
+  await writeFile(path.join(bundle, "conventions/task.md"), "---\ntype: Convention\ntitle: Task\ngoverns: Task\npath: tasks/\nfields:\n  required: [title, status]\n  values:\n    status: [todo, done]\n---\n");
+  await writeFile(path.join(bundle, "tasks/one.md"), "---\ntype: Task\ntitle: One\nstatus: todo\n---\nA native Windows task.\n");
+  await writeFile(path.join(bundle, "views/editor.html"), "<!doctype html><p>Native Windows View</p>");
+  await writeFile(path.join(bundle, "views-registry/editor.md"), "---\ntype: View\ntitle: Editor\nentry: views/editor.html\naccess: bundle-propose\n---\n");
+  await install(["catalog", "add", "window-local", "--dir", bundle, "--json"]);
+  await install(["catalog", "add", "window-board", "--dir", board, "--json"]);
+
+  const program = `
+    import assert from "node:assert/strict";
+    import { createViewWorkspaceCatalog, openViewWorkspace } from "@superbee/cli/view-workspace/v1";
+    import { openWorkspaceReader } from "@superbee/cli/workspace-reader/v1";
+    const actor = "openai/codex";
+    const catalog = createViewWorkspaceCatalog({ actor });
+    const entries = await catalog.list();
+    assert.ok(entries.find(item => item.label === "window-local" && item.home === "local"));
+    assert.ok(entries.find(item => item.label === "window-board" && item.home === "git"));
+    const copy = await openWorkspaceReader("catalog", "window-board");
+    assert.match((await copy.read("concepts/okf-alignment")).body, /\\S/);
+    const workspace = await catalog.open("window-local");
+    const original = await workspace.document("tasks/one");
+    assert.match(original.html, /A native Windows task/);
+    const view = await workspace.open({ viewId: "views-registry/editor" });
+    assert.match(view.html, /Native Windows View/);
+    assert.equal(view.authorized, false);
+    const read = { bridge: "v0", type: "render-document", id: "read", docId: "tasks/one" };
+    assert.equal((await workspace.request(view.id, read)).reply.type, "error");
+    assert.equal((await workspace.approve(view.id)).authorized, true);
+    assert.match((await workspace.request(view.id, read)).reply.result.html, /A native Windows task/);
+
+    const pending = await workspace.prepare(view.id, {
+      kind: "document.set-field", docId: "tasks/one", field: "status",
+      expectedVersion: original.version, value: "done",
+    });
+    assert.equal(pending.status, "prepared");
+    assert.equal((await workspace.document("tasks/one")).frontmatter.status, "todo");
+    assert.equal((await workspace.finish(view.id, pending.approvalToken, "commit")).status, "committed");
+    const reopened = await openViewWorkspace("directory", process.argv[1], { actor });
+    assert.equal((await reopened.document("tasks/one")).frontmatter.status, "done");
+    assert.equal((await reopened.open({ viewId: "views-registry/editor" })).authorized, true);
+  `;
+  await run("node", ["--input-type=module", "-e", program, bundle], { cwd: prefix, env });
+  console.log("WINDOWS_PROOF_WORKSPACE_PROVIDER opened a local bundle and Git board from the catalog, approved a View, and confirmed a versioned edit.");
 }
 
 async function prove({ expectedDigest, expectedSource, scratch }) {
@@ -438,6 +495,7 @@ async function prove({ expectedDigest, expectedSource, scratch }) {
   } finally {
     await acl("/remove:d", account);
   }
+  await proveWorkspaceProvider({ scratch, npm, env, prefix, install: installed, board: cloneB });
   return identity.package.version;
 }
 
@@ -452,7 +510,7 @@ if (isMainModule(import.meta.url)) {
   const started = Date.now();
   try {
     const version = await prove({ expectedDigest, expectedSource, scratch });
-    const outcome = `Native Windows local project setup, document creation and read-back, board push, pull, list, document read, guarded update and conflict recovery with superbee@${version} succeeded in ${Date.now() - started} ms. Source ${expectedSource}, tarball sha256:${expectedDigest}.\n`;
+    const outcome = `Native Windows local project setup, document creation and read-back, board push, pull, list, document read, guarded update and conflict recovery, and the installed workspace provider with superbee@${version} succeeded in ${Date.now() - started} ms. Source ${expectedSource}, tarball sha256:${expectedDigest}.\n`;
     console.log(outcome.trim());
   } finally {
     await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });

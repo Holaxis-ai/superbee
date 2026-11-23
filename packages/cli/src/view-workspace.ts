@@ -27,7 +27,7 @@ import {
   MAX_WORKSPACE_CATALOG_PAGE as catalogLimit,
   WORKSPACE_HOMES as workspaceHomes,
 } from "@superbee/workspace-access";
-import { assertSupportedCliHost } from "./posix-host.js";
+import { assertWorkspaceProviderHost } from "./workspace-host.js";
 import {
   createCatalogWorkspaceResolver,
   openPluginWorkspace,
@@ -428,7 +428,7 @@ export interface ViewWorkspaceCatalog {
 export function createViewWorkspaceCatalog(
   options: { actor?: string } = {},
 ): ViewWorkspaceCatalog {
-  assertSupportedCliHost();
+  assertWorkspaceProviderHost();
   const actor = resolveActor(options.actor);
   const { list, reachable, open, listOperations, runOperation } =
     createCatalogWorkspaceResolver({ actor });

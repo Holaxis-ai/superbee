@@ -1,6 +1,7 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { win32 as paths } from 'node:path';
-import { HostCommandError, type DistributionInstallLayout, type HostCommands } from '@superbee/cli';
+import { HostCommandError } from '../host-command-error.js';
+import type { DistributionInstallLayout, HostCommands } from '../runtime-types.js';
 import { sameResolvedPath } from './board.js';
 import { renderWindowsToken } from './quoting.js';
 

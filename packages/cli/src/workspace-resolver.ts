@@ -1,7 +1,7 @@
 import type { Bundle } from "@superbee/core";
 import { homedir } from "node:os";
 
-import { assertSupportedCliHost } from "./posix-host.js";
+import { assertWorkspaceProviderHost } from "./workspace-host.js";
 import { captureRuntimeCallback } from "./runtime-context.js";
 import {
   MAX_WORKSPACE_CATALOG_PAGE,
@@ -224,7 +224,7 @@ export async function serveWorkspace(
 }
 
 export async function openPluginWorkspace(source: "catalog" | "directory", selector: string) {
-  assertSupportedCliHost();
+  assertWorkspaceProviderHost();
   if (source !== "catalog" && source !== "directory") {
     throw new TypeError("workspace source must be catalog or directory");
   }
