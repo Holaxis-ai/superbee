@@ -64,9 +64,10 @@ for (const adapter of ADAPTERS) {
         const status = await s.runtime.sync();
         s.prune();
         assert.equal(status.pending, 0, `save ${save} settled`);
-        const snap = await journal(s);
-        assert.deepEqual(snap.read.intents.map(row => row.state), ["acknowledged"], `save ${save} keeps one acknowledged row`);
-        seen.push(snap.read.intents[0]!.requestId);
+        // The runtime read below validates the journal for provenance.
+        const { intents } = await s.backend.readWithJournal(ID);
+        assert.deepEqual(intents.map(row => row.state), ["acknowledged"], `save ${save} keeps one acknowledged row`);
+        seen.push(intents[0]!.requestId);
         assert.equal((await s.runtime.read(ID)).provenance.state, "shared-confirmed");
       }
       assert.equal(s.authority.counts.applied, 21);
