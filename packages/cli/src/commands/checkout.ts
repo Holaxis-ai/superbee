@@ -11,6 +11,7 @@
 // refused there up front (`hosted/refusals.ts`).
 //
 // `superbee sync` in the folder sends local edits and brings in the host's (`hosted/sync.ts`).
+import { cliPushRoleLocks, openCliJournaledBackend } from "../filesystem-runtime.js";
 import { homedir } from "node:os";
 import { lstat, mkdir, readFile, readdir, realpath, rmdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
@@ -18,8 +19,8 @@ import { parseArgs } from "node:util";
 
 import { bootstrap, openLocalBundle, UNSETTLED_STATES } from "@superbee/browser-local";
 import { FilesystemMutationLockError, RemoteError } from "@superbee/core";
-import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
-import { filesystemPushRoleLocks, PushRoleStaleOwnerError } from "@superbee/core/filesystem-push-role";
+import type { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
+import { PushRoleStaleOwnerError } from "@superbee/core/filesystem-push-role";
 import type { HostedCapabilities } from "@superbee/core/hosted-transport";
 
 import { parseLeafOrUsage } from "../args.js";
@@ -312,7 +313,7 @@ async function assertReclaimable(home: string, binding: CheckoutBinding, canonic
       help: `restore the files, or forget the checkout first: ${cliInvocation()} checkout --release ${commandToken(canonical)}`,
     });
   }
-  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(home, binding.checkout_id) });
+  const store = await openCliJournaledBackend({ directory: checkoutStoreDir(home, binding.checkout_id) });
   let unsent: number;
   try {
     unsent = (await store.listIntents(UNSETTLED_STATES)).length;
@@ -364,7 +365,7 @@ async function release(folderArg: string, deps: CheckoutDeps, mode: ReturnType<t
     deps.stdout(render({ released: false, folder: canonical, reason: "not a hosted checkout" }, mode));
     return;
   }
-  const markerRemoved = await filesystemPushRoleLocks()
+  const markerRemoved = await cliPushRoleLocks()
     .request(checkoutLockName(canonical), { ifAvailable: true }, async (lock) => {
       if (!lock) {
         throw new CliError("CONFLICT", `another command holds the checkout lock for ${canonical}`, {
@@ -518,7 +519,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
   let replaced: CheckoutBinding | null = null;
   let blobSeedError: unknown;
   let blobSeedFailed = false;
-  const result = await filesystemPushRoleLocks()
+  const result = await cliPushRoleLocks()
     .request(checkoutLockName(canonical), { ifAvailable: true }, async (lock) => {
       if (!lock) {
         throw new CliError("CONFLICT", `another command holds the checkout lock for ${canonical}`, {
@@ -564,7 +565,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
       await writeBinding(deps.auth.home, binding);
       let store: FileJournaledBackend | undefined;
       try {
-        store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id) });
+        store = await openCliJournaledBackend({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id) });
         const local = openLocalBundle(binding.checkout_id, { backend: store });
         let marker;
         try {

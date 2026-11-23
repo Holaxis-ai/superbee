@@ -19,13 +19,13 @@
 //   person's workspaces gained, is bound again in place with `--workspace` (and `--host`): its old
 //   binding and store are released, and the folder is reconciled as for a copy, the bundle now
 //   named `<slug>/<bundle-id>`. Nothing in the folder is overwritten.
+import { cliPushRoleLocks, openCliJournaledBackend } from "../filesystem-runtime.js";
 import path from "node:path";
 import { lstat, realpath } from "node:fs/promises";
 
 import { bootstrap, openLocalBundle, UNSETTLED_STATES, type UnstorableDocument } from "@superbee/browser-local";
 import { conceptIdFromPath, isReservedFile, pathFromConceptId } from "@superbee/core";
-import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
-import { filesystemPushRoleLocks } from "@superbee/core/filesystem-push-role";
+import type { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
@@ -102,7 +102,7 @@ function listed(ids: readonly string[]): { ids: string[]; total: number } {
 }
 
 async function withCheckoutLock<T>(folder: string, body: () => Promise<T>): Promise<T> {
-  return filesystemPushRoleLocks()
+  return cliPushRoleLocks()
     .request(checkoutLockName(folder), { ifAvailable: true }, async (lock) => {
       if (!lock) {
         throw new CliError("CONFLICT", `another command holds the checkout lock for ${folder}`, {
@@ -345,7 +345,7 @@ async function rebindToWorkspace(canonical: string, bound: CheckoutBinding, opti
     });
   // Under the checkout lock, so no sync lands between the check and the release.
   const unsent = await withCheckoutLock(canonical, async () => {
-    const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(home, bound.checkout_id) });
+    const store = await openCliJournaledBackend({ directory: checkoutStoreDir(home, bound.checkout_id) });
     let pending: number;
     let recorded: Set<string>;
     try {
@@ -469,7 +469,7 @@ export async function bindFolderInPlace(input: {
     await writeBinding(home, binding);
     let store: FileJournaledBackend | undefined;
     try {
-      store = await FileJournaledBackend.open({ directory: checkoutStoreDir(home, binding.checkout_id) });
+      store = await openCliJournaledBackend({ directory: checkoutStoreDir(home, binding.checkout_id) });
       const local = openLocalBundle(binding.checkout_id, { backend: store });
       let unstorable: UnstorableDocument[] | undefined;
       try {

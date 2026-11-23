@@ -13,6 +13,7 @@
 // 2026-09-22): a remote change to one document and a local change to another both land. Any
 // concurrent change to one document comes back as a `conflict` row, whatever fields it touched,
 // and is resolved explicitly with `--inspect` and `--resolve keep|take|revise`.
+import { cliPushRoleLocks, openCliJournaledBackend } from "../filesystem-runtime.js";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { promises as fs } from "node:fs";
@@ -42,8 +43,8 @@ import { queryHeads, listBlobs, assertSafeConceptId, conceptIdFromPath, foldPath
 import { decodePreparedBlobIntent, isOrdinaryBlobKey, type BlobIntentRecord, type BlobTargetScope } from "@superbee/core/storage";
 import { performHostedBlobDelivery } from "@superbee/core/hosted-client";
 import { createHostedBlobReadAdapter, createHostedBlobWriteAdapter } from "@superbee/core/hosted-transport";
-import { FileJournaledBackend, FileJournalUnavailableError } from "@superbee/core/file-journaled-backend";
-import { filesystemPushRoleLocks, PushRoleStaleOwnerError } from "@superbee/core/filesystem-push-role";
+import { type FileJournaledBackend, FileJournalUnavailableError } from "@superbee/core/file-journaled-backend";
+import { PushRoleStaleOwnerError } from "@superbee/core/filesystem-push-role";
 import {
   createWholeDocumentTransport,
   sendRootWrite,
@@ -512,7 +513,7 @@ async function withSession<T>(
 ): Promise<T> {
   const target = resolveHostedTarget(binding.audience);
   if (target.origin !== binding.origin) throw new CliError("RUNTIME", `the checkout binding for ${binding.path} is inconsistent`, { help: `${cliInvocation()} checkout --release ${commandToken(binding.path)}` });
-  const locks = filesystemPushRoleLocks(deps.lockWaitMs !== undefined ? { waitMs: deps.lockWaitMs } : {});
+  const locks = cliPushRoleLocks(deps.lockWaitMs !== undefined ? { waitMs: deps.lockWaitMs } : {});
   return locks
     .request(checkoutLockName(binding.path), {}, async () => {
       const currentBinding = await bindingForPath(deps.auth.home, binding.path);
@@ -520,7 +521,7 @@ async function withSession<T>(
       // Sign-in first: AUTH_REQUIRED passes through unchanged with its one link, before any request.
       const { client } = await connectCheckout(binding, { resume: resumeCommand, ...(options.signIn === false ? { signIn: false } : {}) }, deps);
       const unsafeIds = new Map<string, string>();
-      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id) }).catch((error: unknown) => {
+      const store = await openCliJournaledBackend({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id) }).catch((error: unknown) => {
         throw storeOpenFailure(error, binding);
       });
       const reader = withoutUnsafeIds(client.reader(binding.bundle_id), unsafeIds, store, deps.idRule);
@@ -2489,9 +2490,9 @@ function bindingBlobScope(binding: CheckoutBinding): BlobTargetScope {
 }
 /** The private store under the checkout lock (waited for, as sync waits), with no sign-in and no request. */
 function withLocalStore<T>(binding: CheckoutBinding, deps: HostedSyncDeps, body: (store: FileJournaledBackend) => Promise<T>, readOnly = true): Promise<T> {
-  return filesystemPushRoleLocks(deps.lockWaitMs !== undefined ? { waitMs: deps.lockWaitMs } : {})
+  return cliPushRoleLocks(deps.lockWaitMs !== undefined ? { waitMs: deps.lockWaitMs } : {})
     .request(checkoutLockName(binding.path), {}, async () => {
-      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id), readOnly }).catch((error: unknown) => { throw storeOpenFailure(error, binding); });
+      const store = await openCliJournaledBackend({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id), readOnly }).catch((error: unknown) => { throw storeOpenFailure(error, binding); });
       try { return await body(store); } finally { await store.close(); }
     })
     .catch((error: unknown) => { throw lockFailure(error, binding.path); });

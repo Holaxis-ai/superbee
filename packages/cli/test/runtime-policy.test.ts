@@ -21,6 +21,8 @@ import {
   configuredInitBundle,
   configuredBundle,
   withCliFilesystemMutationLock,
+  cliPushRoleLocks,
+  openCliJournaledBackend,
 } from "../src/filesystem-runtime.js";
 import { createWorkspacesLoader } from "../src/ui/sharing.js";
 import {
@@ -239,6 +241,24 @@ test("all CLI policy projections compose through captured public receivers", () 
   for (const policy of [host, privateState, filesystemHost, input.boardHost, host.data, privateState.data]) {
     assert.equal(Object.isFrozen(policy), false);
   }
+});
+
+test("Hosted checkout roles and journals use the running host's lock namespace", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "superbee-hosted-lock-policy-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const seen: string[] = [];
+  await runWithRuntime(snapshotRuntimeOptions(options("checkout-host", seen)), async () => {
+    await cliPushRoleLocks().request(root, {}, async (lock) => {
+      assert.equal(lock?.name, root);
+      assert.ok(seen.splice(0).includes("checkout-host:lock"));
+      const store = await openCliJournaledBackend({ directory: join(root, "journal") });
+      try {
+        assert.ok(seen.includes("checkout-host:lock"));
+      } finally {
+        await store.close();
+      }
+    });
+  });
 });
 
 test("MCP list/open and retained backend/authorization callbacks keep construction context outside A and under B", async (t) => {
