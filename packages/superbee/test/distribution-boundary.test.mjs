@@ -36,7 +36,7 @@ test("the installed entry guards Windows board sync by the libuv file identity f
     if (supported) assert.match(result.stdout, /--pull-only/);
     else {
       assert.match(result.stdout, /code: RUNTIME/);
-      assert.match(result.stdout, /Native Windows Git board operations require Node\.js 22\.17\.0/);
+      assert.match(result.stdout, /Native Windows file operations require Node\.js 22\.17\.0/);
       assert.ok(result.stdout.includes(`Found Node.js ${node}.`));
     }
     assert.equal(result.stderr, "");
@@ -47,12 +47,20 @@ test("the native Windows runtime dispatches local reads and guarded updates and 
   for (const [args, uv, status, output] of [
     [["list", "--help"], "1.51.0", 0, /--dir <standalone-board>/],
     [["query", "--help"], "1.51.0", 0, /--dir <standalone-board>/],
-    [["list", "--help"], "1.50.0", 1, /board operations require Node\.js 22\.17\.0/],
-    [["doc", "read", "--help"], "1.51.0", 0, /--dir <standalone-board> --json/],
-    [["doc", "read", "--help"], "1.50.0", 1, /board operations require Node\.js 22\.17\.0/],
+    [["list", "--help"], "1.50.0", 1, /file operations require Node\.js 22\.17\.0/],
+    [["doc", "read", "--help"], "1.51.0", 0, /--dir <local-bundle-or-standalone-board> --json/],
+    [["doc", "read", "--help"], "1.50.0", 1, /file operations require Node\.js 22\.17\.0/],
     [["doc", "update", "--help"], "1.51.0", 0, /--dir <standalone-board> --expected-version <v>/],
     [["doc", "update", "concepts/example", "--title", "Example"], "1.51.0", 2, /requires --expected-version/],
-    [["doc", "write"], "1.51.0", 1, /Use WSL2 for the full CLI/],
+    [["doc", "write", "--help"], "1.51.0", 0, /--create-only --dir <local-bundle>/],
+    [["setup", "--help"], "1.51.0", 0, /--project <folder>/],
+    [["setup", "--help"], "1.50.0", 1, /file operations require/],
+    [["init", "--help"], "1.50.0", 1, /file operations require/],
+    [["doc", "write", "--help"], "1.50.0", 1, /file operations require/],
+    [["setup", "hosted"], "1.51.0", 2, /local project setup/],
+    [["setup", "--host", "codex"], "1.51.0", 2, /local project setup/],
+    [["setup", "quarantine-state"], "1.51.0", 2, /local project setup/],
+    [["mcp", "--help"], "1.51.0", 1, /Use WSL2 for the full CLI/],
     [["search", "--help"], "1.51.0", 1, /Use WSL2 for the full CLI/],
     [["__managed-ui-v1"], "1.51.0", 1, /Use WSL2 for the full CLI/],
     [["__update-refresh-v1", "token"], "1.51.0", 1, /Use WSL2 for the full CLI/],

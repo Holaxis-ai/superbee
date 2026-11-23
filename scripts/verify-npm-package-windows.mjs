@@ -156,6 +156,41 @@ async function proveGuardedUpdate({ scratch, entrypoint, options, board, id, sna
   return { actual, winnerTitle };
 }
 
+// Execute the installed CLI's structured continuation, including its literal cwd and arguments.
+async function proveLocalOnboarding(installed, project, env) {
+  await mkdir(project);
+  const inspect = async (args = ["setup", "--json"]) =>
+    JSON.parse((await installed(args, { cwd: project, env })).stdout).setup;
+  const execute = async (action, expected = 0) => {
+    assert.equal(action.command[0], "superbee");
+    assert.equal(action.cwd, project);
+    return installed(action.command.slice(1), { cwd: action.cwd, env, expected });
+  };
+  const first = await inspect();
+  assert.equal(first.next.action, "choose_value");
+  const choice = first.next.choices.find(row => row.command.includes("--project"));
+  const chosen = JSON.parse((await execute(choice)).stdout).setup;
+  assert.equal(chosen.next.approval.required, true);
+  assert.equal(chosen.next.command[1], "init");
+  await execute(chosen.next);
+  const { setup: selected } = JSON.parse((await execute(chosen.verify)).stdout);
+  assert.equal(selected.status, "ready");
+  const create = selected.example.create;
+  assert.deepEqual(create.command.slice(1, 3), ["doc", "write"]);
+  assert.equal(create.approval.required, true);
+  const body = "Remember this local project.";
+  create.command[create.command.indexOf("--body") + 1] = body;
+  const written = JSON.parse((await execute(create)).stdout);
+  assert.equal(written.doc, "written");
+  assert.match((await execute(create, 5)).stdout, /ALREADY_EXISTS/);
+  const resumed = await inspect();
+  assert.equal(resumed.status, "ready");
+  assert.equal(resumed.next, undefined);
+  assert.equal(resumed.example.read.mutates, false);
+  const read = JSON.parse((await execute(resumed.example.read)).stdout);
+  assert.deepEqual([read.id, read.body.trimEnd(), read.head_version], [written.id, body, written.version]);
+}
+
 async function prove({ expectedDigest, expectedSource, scratch }) {
   const tarballBytes = await readFixtureFile(retainedTarball);
   assert.equal(createHash("sha256").update(tarballBytes).digest("hex"), expectedDigest, "retained tarball digest changed");
@@ -214,6 +249,11 @@ async function prove({ expectedDigest, expectedSource, scratch }) {
   await readFixtureFile(probe, "bootstrap probe");
   await unlink(probe);
 
+  const localEnv = { ...env, [pathKey]: [prefix, path.dirname(process.execPath)].join(path.delimiter) };
+  const project = path.join(scratch, "local project with spaces");
+  await proveLocalOnboarding(installed, project, localEnv);
+  console.log("WINDOWS_PROOF_LOCAL_SETUP selected, created and read back a local document without Git on PATH");
+
   const origin = path.join(scratch, "origin.git");
   const seed = path.join(scratch, "seed");
   const cloneA = path.join(scratch, "standalone A");
@@ -236,6 +276,15 @@ async function prove({ expectedDigest, expectedSource, scratch }) {
     await git(scratch, ["clone", "--no-local", "--branch", "board", "--config", "core.autocrlf=false", origin, destination]);
     await configure(destination);
   }));
+
+  const { setup: boardSetup } = await cli(["setup"], { cwd: cloneB });
+  assert.equal(boardSetup.status, "ready");
+  assert.deepEqual(boardSetup.next.command.slice(0, 2), ["superbee", "list"]);
+  assert.equal(boardSetup.next.mutates, false);
+  const boardList = JSON.parse((await installed(boardSetup.next.command.slice(1), { cwd: boardSetup.next.cwd })).stdout);
+  assert.ok(boardList.docs.some(row => row.id === docId));
+  const prohibited = await installed(["doc", "write", "notes/new", "--type", "Note", "--create-only", "--body", "Board", "--dir", cloneB], { expected: 2 });
+  assert.match(prohibited.stdout, /ordinary local bundle/);
 
   const { sync: defaultState } = await cli(["sync", "--dir", cloneB, "--pull-only"], { cwd: cloneB });
   assert.equal(defaultState, "already up to date");
@@ -403,7 +452,7 @@ if (isMainModule(import.meta.url)) {
   const started = Date.now();
   try {
     const version = await prove({ expectedDigest, expectedSource, scratch });
-    const outcome = `Native Windows board push, pull, list, document read, guarded update and conflict recovery with superbee@${version} succeeded in ${Date.now() - started} ms. Source ${expectedSource}, tarball sha256:${expectedDigest}.\n`;
+    const outcome = `Native Windows local project setup, document creation and read-back, board push, pull, list, document read, guarded update and conflict recovery with superbee@${version} succeeded in ${Date.now() - started} ms. Source ${expectedSource}, tarball sha256:${expectedDigest}.\n`;
     console.log(outcome.trim());
   } finally {
     await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });

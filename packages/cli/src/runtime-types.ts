@@ -176,6 +176,8 @@ export interface CliRuntimeOptions {
   /** Limits dispatch to existing Git board operations and local reads of an explicit checkout. */
   readonly existingGitBoard?: {
     readonly usage: string;
+    /** Also allow setup and create-only operations in ordinary local project folders. */
+    readonly localOnboarding?: boolean;
     readonly requirements?: string;
     readonly unavailableReason?: string;
   };

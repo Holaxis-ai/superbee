@@ -51,6 +51,7 @@ export async function doc(argv: string[], deps: Partial<DocCliDeps & UiCliDeps> 
   if (sub === "read") return docRead(rest, deps);
   if (sub === "update") return docUpdate(rest, deps);
   const board = currentExistingGitBoard();
+  if (board?.localOnboarding && sub === "write") return docWrite(rest, deps);
   if (board) throw new CliError("RUNTIME", board.usage);
 
   if (sub === "write") return docWrite(rest, deps);

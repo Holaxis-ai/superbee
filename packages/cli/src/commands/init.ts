@@ -21,6 +21,10 @@ import { cliInvocation } from "../invocation.js";
 import { installRecipe } from "@superbee/core/recipe-lifecycle";
 import { resolveRecipe, DEFAULT_RECIPE_REF } from "../recipe-source.js";
 import { commandFragment, commandLiteral, commandQuoted, commandToken, type CommandText } from "../command-text.js";
+import { currentExistingGitBoard } from "../runtime-context.js";
+import { assertLocalCreationProject } from "../local-onboarding.js";
+
+const LOCAL_INIT_USAGE = "superbee init --create-only --recipe none --dir .superbee [--json]";
 
 export const INIT_USAGE = `superbee init — create (or open) an OKF knowledge bundle
 
@@ -127,9 +131,16 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
       }),
     CLI_LEAVES.init,
   );
+  const scoped = currentExistingGitBoard()?.localOnboarding;
   if (values.help) {
-    stdout(renderUsage(INIT_USAGE));
+    stdout(renderUsage(scoped ? LOCAL_INIT_USAGE : INIT_USAGE));
     return;
+  }
+  if (scoped) {
+    if (!values["create-only"] || values.dir !== BUNDLE_DIR || values.recipe !== "none" || values["okf-version"] !== undefined) {
+      throw new CliError("USAGE", "Create a new local bundle from the selected project folder.", { help: LOCAL_INIT_USAGE });
+    }
+    await assertLocalCreationProject(process.cwd());
   }
   // `init` is write-first. A plain binding names its selected bundle, while only a proven private
   // board refuses bare init before a write can reach the invoking public checkout.
@@ -216,6 +227,11 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
 
   const receipt: Record<string, unknown> = { init: "ok", root: bundle.root, recipe: recipeApplied };
   if (warnings.length > 0) receipt.warnings = warnings;
+  if (scoped) {
+    receipt.help = [`${cliInvocation()} setup --project .`];
+    stdout(render(receipt, resolveMode(values)));
+    return;
+  }
   // `init` always creates a local bundle. Inside a Git repo, an advisory fs-only hint distinguishes
   // joining an existing shared board from explicitly sharing this new one.
   const top = gitWorkTreeTop(root);
