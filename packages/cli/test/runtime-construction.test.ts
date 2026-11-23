@@ -419,7 +419,7 @@ test("eligible standalone updates record only the winning actor in each declared
 `));
 
 test("scoped setup reuses an ordinary Git project's local bundle and refuses hosted targets", () => isolated(`
-  import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+  import { appendFile, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
   import { tmpdir } from "node:os";
   import { join } from "node:path";
   import { git } from ${JSON.stringify(new URL("../../board-git/test/git-harness.ts", import.meta.url).href)};
@@ -451,6 +451,8 @@ test("scoped setup reuses an ordinary Git project's local bundle and refuses hos
       const plan = await inspect("--project", project);
       const args = plan.next.command.slice(2);
       await init(args, deps);
+      const navigation = "- [Previous notes](notes/previous.md)\\n".repeat(700);
+      await appendFile(join(project, ".superbee", "index.md"), navigation);
       const ready = await inspect();
       assert.equal(ready.ready, true);
       assert.equal(ready.next, undefined);

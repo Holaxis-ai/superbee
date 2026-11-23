@@ -52,6 +52,7 @@ import { closeSync, constants, fstatSync, openSync, promises as fs, readSync, ty
 import path from "node:path";
 import {
   parseMarkdown,
+  readBundleOkfVersion,
   FilesystemMutationLockError,
   VersionConflict,
   type Bundle,
@@ -1723,11 +1724,11 @@ export async function resolveLocalBundleRoute(
 /** Freeze an explicitly selected indexed local bundle across planning and engine access. */
 export async function scopedLocalRoute(target: LocalBundleTarget): Promise<ScopedLocalRoute> {
   const identity = await captureDirectoryIdentity(target);
-  const index = inspectBundleRootIndex(identity.canonicalRoot);
-  if (index.state !== "known" || !index.independent) {
+  const bundle = configuredBundle(identity.canonicalRoot);
+  if (await readBundleOkfVersion(bundle) === undefined) {
     throw new CliError("USAGE", "Select a local bundle with an OKF root index.md, or choose a new project folder.");
   }
-  const route = { kind: "scoped-local" as const, target, identity, bundle: configuredBundle(identity.canonicalRoot) };
+  const route = { kind: "scoped-local" as const, target, identity, bundle };
   await assertResolvedLocalRouteIdentity(route);
   return route;
 }
