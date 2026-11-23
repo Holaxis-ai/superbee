@@ -46,6 +46,7 @@ import {
   listViewCatalog,
   mintActiveViewLaunch,
   pageLaunchAuthorizationSubject,
+  resolvePageLaunchAuthorization,
   ViewNotFoundError,
   type ActionTerminalResult,
   type BridgeDocumentRenderer,
@@ -795,36 +796,12 @@ function launchIdFrom(payload: Record<string, unknown>): string | null {
   return launchId && launchId.length <= 256 ? launchId : null;
 }
 
-async function resolveViewAuthorization(
-  options: UiServerOptions,
-  runtime: UiRuntime,
-  launchId: string,
-  authorize: boolean,
-): Promise<{ required: boolean; authorized: boolean } | null> {
-  const launch = runtime.launches.resolveLaunch(launchId);
-  if (!launch || !(await launchIsCurrent(options.bundle, launch))) {
-    if (launch) runtime.launches.revoke(launch.launchId);
-    return null;
-  }
-  const subject = pageLaunchAuthorizationSubject(launch);
-  const required = launch.capability !== "none";
-  if (authorize && required) await runtime.authorizations.authorize(subject);
-  if (!(await launchIsCurrent(options.bundle, launch))) {
-    runtime.launches.revoke(launch.launchId);
-    return null;
-  }
-  return {
-    required,
-    authorized: !required || await runtime.authorizations.isAuthorized(subject),
-  };
-}
-
 async function authorizeView(req: Request, options: UiServerOptions, runtime: UiRuntime): Promise<Response> {
   const payload = await trustedPayload(req, ["launchId"], "View authorization");
   if (payload instanceof Response) return payload;
   const launchId = launchIdFrom(payload);
   if (!launchId) return jsonError(400, "USAGE", "launchId must be a non-empty string of at most 256 characters");
-  const status = await resolveViewAuthorization(options, runtime, launchId, true);
+  const status = await resolvePageLaunchAuthorization(options.bundle, runtime.launches, launchId, runtime.authorizations, true);
   return status
     ? actionJson(status)
     : jsonError(403, "FORBIDDEN", "the View launch is unknown, changed, or expired");
@@ -835,7 +812,7 @@ async function verifyView(req: Request, options: UiServerOptions, runtime: UiRun
   if (payload instanceof Response) return payload;
   const launchId = launchIdFrom(payload);
   if (!launchId) return jsonError(400, "USAGE", "launchId must be a non-empty string of at most 256 characters");
-  const status = await resolveViewAuthorization(options, runtime, launchId, false);
+  const status = await resolvePageLaunchAuthorization(options.bundle, runtime.launches, launchId, runtime.authorizations, false);
   return status
     ? actionJson(status)
     : jsonError(403, "FORBIDDEN", "the View launch is unknown, changed, or expired");

@@ -533,7 +533,7 @@ export async function proveCliTarball(tarball, { checkSource, execute = exec } =
       assert.deepEqual(embeddedEngineErrors(record, await embeddedInventory(path.join(library, "dist/index.mjs")), await workspaceManifests(), treeFacts()), []);
       // Compare actual installed bytes; the workspace cannot stand in for the retained artifact.
       assert.equal(createHash("sha256").update(await readFile(path.join(library, "dist/index.mjs"))).digest("hex"), createHash("sha256").update(await readFile(path.join(root, "packages/cli/dist/index.mjs"))).digest("hex"), "packed runtime differs from the proved build");
-      for (const file of ["dist/workspace-reader.mjs", "dist/view-actions.mjs"]) {
+      for (const file of ["dist/workspace-reader.mjs", "dist/view-actions.mjs", "dist/temporary-view-reader.mjs"]) {
         const packed = await readFile(path.join(library, file));
         const built = await readFile(path.join(root, "packages/cli", file));
         assert.ok(packed.equals(built), `packed ${file} differs from the proved build`);
@@ -545,6 +545,12 @@ export async function proveCliTarball(tarball, { checkSource, execute = exec } =
   import { createCliRuntime, createPosixCliRuntime, type CliRuntimeOptions, type CliDistribution } from '@superbee/cli';
   import { getDistributionResources } from '@superbee/cli/resources';
   import { openWorkspaceReader } from '@superbee/cli/workspace-reader/v1';
+  import { openTemporaryViewReader } from '@superbee/cli/temporary-view-reader/v1';
+  const temporary = await openTemporaryViewReader('directory', '/fixture', {title:'Reader', html:'<!doctype html>', access:'bundle-read'});
+  await temporary.decide('approve');
+  const rendered = await temporary.renderDocument('tickets/one');
+  void rendered.version;
+  temporary.close();
   import { openRegisteredViewActions } from '@superbee/cli/view-actions/v1';
   const session = await openRegisteredViewActions('catalog', 'planning', {viewId:'views-registry/example', actor:'human:editor'});
   const result = await session.prepare({kind:'document.set-field', docId:'tickets/one', field:'state', value:'done', expectedVersion:'v1'});
@@ -576,6 +582,7 @@ export async function proveCliTarball(tarball, { checkSource, execute = exec } =
   const cli = await import('@superbee/cli');
   await import('@superbee/cli/workspace-reader/v1');
   await import('@superbee/cli/view-actions/v1');
+  await import('@superbee/cli/temporary-view-reader/v1');
   const resources = await import('@superbee/cli/resources');
   const rendered = resources.getDistributionResources({packageName:'@fixture/cli',binName:'fixture'});
   assert.ok(rendered.skill.includes('fixture setup'));
@@ -654,6 +661,9 @@ await assert.rejects(openWorkspaceReader('directory', ''));
 await assert.rejects(openWorkspaceReader('catalog', 'missing-workspace'));
 `);
       await run([readerProbe, bundle], cwd, env);
+      const temporaryReader = path.join(scratch, "temporary-view-reader.mjs");
+      await copyFile(path.join(root, "scripts/fixtures/packed-temporary-view.mjs"), temporaryReader);
+      await run([temporaryReader, bundle], cwd, env);
       await provePackedViewActions({ scratch, cwd, bundle, entry, env, run });
       // Exercise the serialized child from the installed tarball, outside the checkout and
       // without tools or package imports in the accepted self-contained operation entry.
