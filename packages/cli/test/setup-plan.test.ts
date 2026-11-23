@@ -31,6 +31,7 @@ test("setup plan agreement: every supported host has a ready agent protocol", ()
     assert.match(plan.agent_instruction, /calling agent executes the returned action/, host);
     assert.equal(plan.ready, true, host);
     assert.equal(plan.complete, true, host);
+    assert.equal(plan.capabilities.find((row) => row.id === "mcp")?.bundled_registration, "superbee", host);
     assert.equal(plan.next, undefined, host);
     assert.deepEqual(plan.verify, {
       action: "run", command: ["superbee", "setup", "--host", host, "--scope", "user", "--json"],
@@ -38,6 +39,18 @@ test("setup plan agreement: every supported host has a ready agent protocol", ()
       approval: { required: false, reason: null },
     });
     assert.match(plan.verify.description, /^Check setup again\. This reads files on disk only\. Restart .+ to load Superbee\.$/, host);
+  }
+});
+
+test("the MCP preview guide is informational for each bundled registration state", () => {
+  for (const state of ["owned_current", "absent", "owned_stale", "foreign"] as const) {
+    const plan = buildSetupPlan(input({ mcp: { state, reason: state } }));
+    const previews = plan.capabilities.filter((row) => row.optional_preview);
+    assert.deepEqual(previews.map((row) => row.id), ["mcp"]);
+    assert.match(previews[0]!.optional_preview!.guide, /^https:\/\/github\.com\/Holaxis-ai\/superbee-plugins\/blob\/[a-f0-9]{40}\/apps\/mcp\/README\.md$/);
+    const expected = state === "owned_current" ? undefined
+      : ["superbee", "mcp", state === "foreign" ? "status" : "install", "--host", "codex"];
+    assert.deepEqual(plan.next?.command, expected);
   }
 });
 

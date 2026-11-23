@@ -3,7 +3,8 @@ import type { ChannelDetection } from "@superbee/board-git";
 // Pure AXI setup planning. Host/file inspection lives at the command boundary; this module owns
 // only the bounded capability matrix, deterministic ordering, and one-next-command projection.
 
-import { MCP_INSTALL_TARGETS, type McpInstallTargetId, type McpRegistrationState } from "./mcp-install-targets.js";
+import { OPTIONAL_MCP_PREVIEW } from "./integration-guidance.js";
+import { CURRENT_MCP_REGISTRATION, MCP_INSTALL_TARGETS, type McpInstallTargetId, type McpRegistrationState } from "./mcp-install-targets.js";
 import type {
   PersistentInstallAuthorityFailure,
   PersistentInstallAuthorityState,
@@ -49,6 +50,8 @@ export const SETUP_VERIFICATION = { configured_only: true, live_host_activation:
 
 export interface SetupCapability {
   readonly id: "distribution" | "state" | "skill" | "mcp" | "hook" | "bundle" | "catalog";
+  readonly bundled_registration?: typeof CURRENT_MCP_REGISTRATION;
+  readonly optional_preview?: typeof OPTIONAL_MCP_PREVIEW;
   readonly requirement: SetupRequirement;
   readonly state: SetupCapabilityState;
   readonly reason: string;
@@ -218,7 +221,7 @@ function approvalFor(capability: SetupCapability, mutates: boolean): SetupApprov
 function actionDescription(capability: SetupCapability): string {
   const command = capability.command ?? "";
   if (command.startsWith("superbee skill install")) return "Install Superbee's Agent Skill for the selected scope.";
-  if (command.startsWith("superbee mcp install")) return "Install Superbee's MCP registration for the selected host.";
+  if (command.startsWith("superbee mcp install")) return `Register the bundled '${CURRENT_MCP_REGISTRATION}' MCP server in the selected host.`;
   if (command.startsWith("superbee hook install")) return "Install Superbee's SessionStart hook for the selected scope.";
   if (command.startsWith("superbee setup migrate-state")) return "Migrate validated legacy private state into Superbee's canonical user-state directory.";
   if (command.startsWith("superbee setup harden-state")) return "Repair permissions on Superbee's recognized private-state directory.";
@@ -442,7 +445,7 @@ function mcpCapability(input: SetupPlanInput): SetupCapability {
       id: "mcp",
       requirement: "required",
       state: "ready",
-      reason: "the host registration matches this durable Superbee install",
+      reason: `the bundled '${CURRENT_MCP_REGISTRATION}' registration matches this durable Superbee install`,
     };
   }
   if (input.mcp.state === "absent" || input.mcp.state === "owned_stale") {
@@ -674,7 +677,7 @@ export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
     setupStateCapability(input.state),
     ...(needsProjectBeforeInstall ? [bundle] : []),
     skillCapability(input),
-    mcpCapability(input),
+    { ...mcpCapability(input), bundled_registration: CURRENT_MCP_REGISTRATION, optional_preview: OPTIONAL_MCP_PREVIEW },
     hookCapability(input),
     ...(!needsProjectBeforeInstall ? [bundle] : []),
     catalogCapability(input),

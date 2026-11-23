@@ -161,7 +161,7 @@ export function classifyMcpRegistration(
   entry: McpRegistrationEntry | undefined,
   authority: PersistentInstallAuthority,
 ): Pick<McpHostStatus, "state" | "reason"> {
-  if (!entry) return { state: "absent", reason: "no Superbee registration found" };
+  if (!entry) return { state: "absent", reason: `the bundled '${CURRENT_MCP_REGISTRATION}' registration is absent` };
   if (entry.name !== CURRENT_MCP_REGISTRATION) {
     return { state: "foreign", reason: `registration '${entry.name}' is not managed by Superbee` };
   }

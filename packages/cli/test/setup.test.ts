@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { decode } from "@toon-format/toon";
+import { inspectMcpHost } from "../src/mcp-install-targets.js";
+import type { SetupPlan } from "../src/setup-plan.js";
 import { CliError } from "../src/errors.js";
 import { setup, type SetupDeps } from "../src/commands/setup.js";
 
@@ -325,6 +328,28 @@ test("setup defaults to TOON rather than JSON", async () => {
   await setup(["--host", "claude-desktop"], deps((text) => { output += text; }));
   assert.match(output, /^setup:/);
   assert.doesNotMatch(output, /^\{/);
+});
+
+test("an OpenCode preview-only config reports the bundled registration separately in JSON and TOON", async () => {
+  const config = JSON.stringify({ mcp: { "superbee-experimental": { type: "local", command: ["superbee-mcp"], enabled: true } } });
+  for (const json of [false, true]) {
+    let output = "";
+    const injected = deps((text) => { output += text; });
+    injected.inspectMcp = (targets) => targets.map((target) => inspectMcpHost(target, {
+      environment: { home: "/fixture", platform: "linux", env: { OPENCODE_CONFIG: "/fixture/opencode.json" } },
+      authority: injected.inspectDistribution,
+      readFile: () => config,
+    }));
+    await setup(["--host", "opencode", ...(json ? ["--json"] : [])], injected);
+    const { setup: plan } = (json ? JSON.parse(output) : decode(output)) as { setup: SetupPlan };
+    const capability = plan.capabilities.find((row) => row.id === "mcp");
+    assert.equal(capability?.bundled_registration, "superbee");
+    assert.equal(capability.state, "needs_action");
+    assert.equal(capability.reason, "the bundled 'superbee' registration is absent");
+    assert.ok(capability.optional_preview!.description.includes('"$mcp" status --host <id>'));
+    assert.deepEqual(plan.next?.command, ["superbee", "mcp", "install", "--host", "opencode"]);
+    assert.equal(plan.next?.approval.required, true);
+  }
 });
 
 test("user-level integration actions require approval while diagnostic actions do not", async () => {

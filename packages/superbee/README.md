@@ -135,6 +135,17 @@ copied from a laptop does not install Superbee or provide a working container la
 hooks inside the environment and verify startup in a fresh session. Startup pulls are best-effort;
 inspect an explicit `superbee sync` receipt to verify publication of edits.
 
+### MCP Apps
+
+On macOS, Linux, or WSL2, use `superbee mcp install --host <id>` to register the bundled server.
+Run `superbee mcp --help` to see the supported clients.
+
+In Claude Desktop on macOS, the experimental extension can display a document or a registered
+View inside a chat. Select the local bundle folder. For a View, review its access and approve it
+in the panel. The guide includes the extension and an offline installer for other clients on
+macOS and Linux with Node 24. You can keep your existing server while trying it.
+[Experimental MCP App installation guide](https://github.com/Holaxis-ai/superbee-plugins/blob/ebf1dcc931560282de75f44ef21ab5167d327e96/apps/mcp/README.md)
+
 ## Everyday use
 
 You rarely type Superbee commands yourself. You ask your agent, and the Agent Skill translates the
