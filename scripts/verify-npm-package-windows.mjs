@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { appendFile, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, unlink, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { appendFile, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -211,6 +211,42 @@ async function proveWorkspaceProvider({ scratch, npm, env, prefix, install, boar
   await install(["catalog", "add", "window-local", "--dir", bundle, "--json"]);
   await install(["catalog", "add", "window-board", "--dir", board, "--json"]);
 
+  const hosted = await realpath(await mkdtemp(path.join(scratch, "Hosted working copy ")));
+  await cp(bundle, hosted, { recursive: true });
+  const hostedOrigin = "https://checkout.example.invalid";
+  const identity = await stat(hosted);
+  const checkoutId = randomUUID();
+  const checkouts = path.join(env.LOCALAPPDATA, "Superbee", "hosted-checkouts");
+  const pathKey = createHash("sha256").update(`superbee:hosted-checkout\0${hosted}`).digest("hex");
+  await mkdir(path.join(checkouts, checkoutId), { recursive: true });
+  await mkdir(path.join(checkouts, "paths"), { recursive: true });
+  await writeFile(path.join(checkouts, checkoutId, "binding.json"), JSON.stringify({
+    schema: 1,
+    checkout_id: checkoutId,
+    path: hosted,
+    origin: hostedOrigin,
+    audience: hostedOrigin + "/mcp",
+    routes: "sync/v1",
+    workspace: "fixture",
+    workspaces: ["fixture"],
+    bundle_id: "orchard",
+    principal_id: "fixture-person",
+    created_at: "2026-11-01T00:00:00Z",
+    state: "ready",
+    folder_identity: { dev: identity.dev, ino: identity.ino, birth: identity.birthtimeMs },
+  }));
+  await writeFile(path.join(checkouts, "paths", pathKey + ".json"), JSON.stringify({ path: hosted, checkout_id: checkoutId }));
+  await mkdir(path.join(hosted, ".superbee"));
+  await writeFile(path.join(hosted, ".superbee", "checkout.json"), JSON.stringify({
+    superbee_checkout: 1, home: "hosted", host: hostedOrigin, bundle_id: "orchard", workspace: "fixture",
+  }));
+  const copy = path.join(scratch, "Unbound checkout copy");
+  await cp(hosted, copy, { recursive: true });
+  await install(["catalog", "add", "window-hosted", "--dir", hosted, "--json"]);
+  await install(["catalog", "add", "window-copy", "--dir", copy, "--json"]);
+  const listed = JSON.parse((await install(["catalog", "list", "--json"])).stdout);
+  assert.equal(listed.entries.length, 4);
+
   const program = `
     import assert from "node:assert/strict";
     import { createViewWorkspaceCatalog, openViewWorkspace } from "@superbee/cli/view-workspace/v1";
@@ -220,6 +256,13 @@ async function proveWorkspaceProvider({ scratch, npm, env, prefix, install, boar
     const entries = await catalog.list();
     assert.ok(entries.find(item => item.label === "window-local" && item.home === "local"));
     assert.ok(entries.find(item => item.label === "window-board" && item.home === "git"));
+    assert.ok(entries.find(item => item.label === "window-hosted" && item.home === "hosted"));
+    assert.ok(entries.find(item => item.label === "window-copy" && item.home === "local"));
+    assert.equal((await catalog.listOperations("window-copy")).stop, "no_host_operations");
+    await assert.rejects(catalog.listOperations("window-hosted"), { code: "AUTH_REQUIRED" });
+    const host = await catalog.open("window-hosted");
+    assert.match((await host.document("tasks/one")).html, /A native Windows task/);
+
     const copy = await openWorkspaceReader("catalog", "window-board");
     assert.match((await copy.read("concepts/okf-alignment")).body, /\\S/);
     const workspace = await catalog.open("window-local");
@@ -240,12 +283,26 @@ async function proveWorkspaceProvider({ scratch, npm, env, prefix, install, boar
     assert.equal(pending.status, "prepared");
     assert.equal((await workspace.document("tasks/one")).frontmatter.status, "todo");
     assert.equal((await workspace.finish(view.id, pending.approvalToken, "commit")).status, "committed");
+    const unbound = await catalog.open("window-copy");
+    const copied = await unbound.document("tasks/one");
+    const copiedView = await unbound.open({ viewId: "views-registry/editor" });
+    await unbound.approve(copiedView.id);
+    const blocked = await unbound.prepare(copiedView.id, {
+      kind: "document.set-field", docId: "tasks/one", field: "status",
+      expectedVersion: copied.version, value: "done",
+    });
+    assert.equal(blocked.status, "prepared");
+    const refused = await unbound.finish(copiedView.id, blocked.approvalToken, "commit");
+    assert.equal(refused.status, "failed");
+    assert.equal((await unbound.document("tasks/one")).version, copied.version);
     const reopened = await openViewWorkspace("directory", process.argv[1], { actor });
     assert.equal((await reopened.document("tasks/one")).frontmatter.status, "done");
     assert.equal((await reopened.open({ viewId: "views-registry/editor" })).authorized, true);
   `;
-  await run("node", ["--input-type=module", "-e", program, bundle], { cwd: prefix, env });
-  console.log("WINDOWS_PROOF_WORKSPACE_PROVIDER opened a local bundle and Git board from the catalog, approved a View, and confirmed a versioned edit.");
+  await run("node", ["--input-type=module", "-e", program, bundle], {
+    cwd: prefix, env: { ...env, SUPERBEE_ACCESS_TOKEN: "" },
+  });
+  console.log("WINDOWS_PROOF_WORKSPACE_PROVIDER opened local, Git and Hosted working copies, confirmed a versioned edit, and refused a signed-out Hosted call and an edit in an unbound copy.");
 }
 
 async function prove({ expectedDigest, expectedSource, scratch }) {

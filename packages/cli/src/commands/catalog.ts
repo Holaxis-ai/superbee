@@ -18,6 +18,7 @@ import {
 import { resolveLocalBundleTarget } from "../bundle.js";
 import { asHandled, CliError, toExit } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
+import { currentExistingGitBoard } from "../runtime-context.js";
 import { render, renderErrorEnvelope, resolveMode } from "../output.js";
 import { commandFragment, commandToken } from "../command-text.js";
 import { defaultHostedAuthDeps, hostArgument, requireHostedBundleHost, type HostedAuthDeps } from "../hosted-auth/session.js";
@@ -245,18 +246,19 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
   }
 
   if (subcommand === "list") {
+    const scopedRuntime = currentExistingGitBoard() !== undefined;
     if (parsed.values.dir !== undefined) usage("--dir is only valid with catalog add");
     if (parsed.values.field !== undefined) usage("--field is only valid with catalog resolve");
     if (parsed.values.hosted) {
       if (parsed.values.local) usage("--local and --hosted are mutually exclusive");
-      await listHosted(parsed.values, deps, home(), stdout);
+      await listHosted(parsed.values, deps, home(), stdout, !scopedRuntime);
       return;
     }
     const entries = await listCatalogEntries(home());
     const unavailable = entries.filter((entry) => !entry.available);
     // With a live sign-in, the hosted bundles with no folder here are listed too; signed out (or
     // with --local) nothing is asked, and the listing is the folders alone.
-    const reachable = parsed.values.local
+    const reachable = parsed.values.local || scopedRuntime
       ? null
       : await reachableHostedBundles({ budgetMs: CATALOG_HOSTED_BUDGET_MS, ...(deps.auth ? { auth: deps.auth } : { home: home() }), ...(deps.fetch ? { fetch: deps.fetch } : {}) }).catch(() => null);
     const firstCheckout = reachable?.hosts.flatMap((host) => host.bundles)[0]?.checkout;
@@ -374,6 +376,7 @@ async function listHosted(
   deps: Partial<CatalogCliDeps>,
   home: string,
   stdout: (s: string) => void,
+  signIn: boolean,
 ): Promise<void> {
   const auth = deps.auth ?? defaultHostedAuthDeps(home);
   const { target } = await requireHostedBundleHost(values.host, auth);
@@ -381,7 +384,7 @@ async function listHosted(
   const resume = commandFragment`${cliInvocation()} catalog list --hosted --host ${commandToken(host)}${values.json ? commandFragment` --json` : commandFragment``}`;
   const { client, identity } = await connectHostedAccount(
     target,
-    { resume },
+    { resume, signIn },
     { auth, ...(deps.fetch ? { fetch: deps.fetch } : {}) },
   );
   const { rows: bundles, complete } = await hostedBundleRows(client, target, auth.home);

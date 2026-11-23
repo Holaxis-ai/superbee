@@ -2,7 +2,7 @@ import type { Bundle } from "@superbee/core";
 import { homedir } from "node:os";
 
 import { assertWorkspaceProviderHost } from "./workspace-host.js";
-import { captureRuntimeCallback } from "./runtime-context.js";
+import { captureRuntimeCallback, currentHost } from "./runtime-context.js";
 import {
   MAX_WORKSPACE_CATALOG_PAGE,
   type ReachableListing as WorkspaceReachableListing,
@@ -95,7 +95,7 @@ export function createCatalogWorkspaceResolver(
   const connect = async (binding: CheckoutBinding): Promise<CheckoutConnection | OperationsStop> => {
     const resume = commandFragment`${cliInvocation()} login --host ${commandToken(bindingHostArgument(binding))}`;
     try {
-      return await openCheckoutConnection(binding, options.hosted, resume, home);
+      return await openCheckoutConnection(binding, options.hosted, resume, home, { signIn: currentHost().id !== "win32" });
     } catch (error) {
       const details = error instanceof CliError && error.code === "AUTH_REQUIRED" ? (error.details as { sign_in_url?: unknown; user_code?: unknown } | undefined) : undefined;
       if (typeof details?.sign_in_url === "string" && typeof details.user_code === "string") {

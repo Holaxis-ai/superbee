@@ -22,8 +22,8 @@ export interface CheckoutConnection {
 }
 
 /** `home` is the directory whose private state holds the session when `hosted` is not given (default: the OS home). */
-export async function openCheckoutConnection(binding: CheckoutBinding, hosted: HostedAccountDeps | undefined, resume: CommandText, home: string = homedir()): Promise<CheckoutConnection> {
+export async function openCheckoutConnection(binding: CheckoutBinding, hosted: HostedAccountDeps | undefined, resume: CommandText, home: string = homedir(), options: { signIn?: boolean } = {}): Promise<CheckoutConnection> {
   const [{ connectCheckout }, { defaultHostedAuthDeps }] = await Promise.all([import("./account.js"), import("../hosted-auth/session.js")]);
-  const { client, target, identity } = await connectCheckout(binding, { resume }, hosted ?? { auth: defaultHostedAuthDeps(home) });
+  const { client, target, identity } = await connectCheckout(binding, { resume, ...options }, hosted ?? { auth: defaultHostedAuthDeps(home) });
   return { client, target, identity, resume };
 }
