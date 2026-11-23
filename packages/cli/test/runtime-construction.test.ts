@@ -417,3 +417,73 @@ test("eligible standalone updates record only the winning actor in each declared
     await topo.cleanup();
   }
 `));
+
+test("scoped setup reuses an ordinary Git project's local bundle and refuses hosted targets", () => isolated(`
+  import { appendFile, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+  import { tmpdir } from "node:os";
+  import { join } from "node:path";
+  import { git } from ${JSON.stringify(new URL("../../board-git/test/git-harness.ts", import.meta.url).href)};
+  import { setup } from ${JSON.stringify(url("commands/setup"))};
+  import { init } from ${JSON.stringify(url("commands/init"))};
+  import { doc } from ${JSON.stringify(url("commands/doc"))};
+  import { folderIdentity, indexCheckoutPath, newCheckoutId, writeBinding } from ${JSON.stringify(url("hosted/binding"))};
+  import { writeCheckoutMarker } from ${JSON.stringify(url("hosted/marker"))};
+  import { runWithRuntime, snapshotRuntimeOptions } from ${JSON.stringify(url("runtime-context"))};
+
+  const scratch = await realpath(await mkdtemp(join(tmpdir(), "sb-local-setup-")));
+  const project = join(scratch, "ordinary Git project");
+  const home = join(scratch, "private home");
+  const cwd = process.cwd();
+  try {
+    await Promise.all([mkdir(project), mkdir(home)]);
+    process.env.HOME = home;
+    process.chdir(project);
+    git(project, ["init", "-b", "main"]);
+    const config = options();
+    config.existingGitBoard = { usage: "scoped", localOnboarding: true };
+    await runWithRuntime(snapshotRuntimeOptions(config), async () => {
+      let output = "";
+      const deps = { stdout: text => { output = text; }, invocation: () => "superbee" };
+      const inspect = async (...args) => {
+        await setup(["--json", ...args], deps);
+        return JSON.parse(output).setup;
+      };
+      const plan = await inspect("--project", project);
+      const args = plan.next.command.slice(2);
+      await init(args, deps);
+      const navigation = "- [Previous notes](notes/previous.md)\\n".repeat(700);
+      await appendFile(join(project, ".superbee", "index.md"), navigation);
+      const ready = await inspect();
+      assert.equal(ready.ready, true);
+      assert.equal(ready.next, undefined);
+      assert.equal(ready.workspace.root, join(project, ".superbee"));
+      const { create, read } = ready.example;
+      await doc(create.command.slice(2), deps);
+      const written = JSON.parse(output);
+      await assert.rejects(doc(create.command.slice(2), deps), { code: "ALREADY_EXISTS" });
+      await doc(read.command.slice(2), deps);
+      assert.equal(JSON.parse(output).head_version, written.version);
+      const other = join(scratch, "hosted");
+      await mkdir(other);
+      const binding = {
+        schema: 1, checkout_id: newCheckoutId(), path: other, origin: "https://example.invalid",
+        audience: "https://example.invalid/mcp", routes: "/sync/v1", bundle_id: "example",
+        workspace: null, workspaces: [], principal_id: "test", state: "ready", folder_identity: await folderIdentity(other),
+      };
+      await writeBinding(home, binding);
+      await indexCheckoutPath(home, binding);
+      process.chdir(other);
+      await assert.rejects(inspect("--project", other), { code: "FORBIDDEN" });
+      await assert.rejects(init(args, deps), { code: "FORBIDDEN" });
+      await assert.rejects(readFile(join(other, ".superbee", "index.md")), { code: "ENOENT" });
+
+      process.chdir(project);
+      await writeCheckoutMarker(project, binding);
+      await assert.rejects(inspect(), { code: "FORBIDDEN" });
+      await assert.rejects(doc(create.command.slice(2), deps), { code: "FORBIDDEN" });
+    });
+  } finally {
+    process.chdir(cwd);
+    await rm(scratch, { recursive: true, force: true });
+  }
+`));

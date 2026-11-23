@@ -33,6 +33,11 @@ registry bytes; it creates no GitHub Release. See [the contribution guide](../..
 
 ## Supported surface
 
+The first-party executable supplies its Windows host policies. Its restricted runtime enables
+project setup, create-only initialization and document creation, and structured local reads.
+Standalone Git boards keep their separate sync and guarded update operations.
+[Native Windows instructions](../superbee/README.md#native-windows-local-projects)
+
 The supported API is what the package exports:
 
 - `configureSourceIdentity`, `registerExecutableEntry` and `main`;
