@@ -9,7 +9,7 @@ import { buildCliBundle } from "../packages/superbee/scripts/build-bundle.mjs";
 const root = path.resolve(import.meta.dirname, "..");
 const windowsPackage =
   /(?:^|\/)@superbee\/windows-cli(?:\/|$)|(?:^|\/)superbee-windows-cli(?:\/|$)/;
-const windowsAdapter = "packages/superbee/src/windows/";
+const windowsAdapter = "packages/cli/src/windows/";
 
 function fromGraph(owner, input) {
   return path.relative(root, path.resolve(root, "packages", owner, input)).split(path.sep).join("/");
@@ -25,10 +25,9 @@ function assertMaintainedGraph(meta, owner) {
       assert.doesNotMatch(edge.path, windowsPackage, "separate Windows dependency must not enter maintained graph");
     }
   }
-  if (owner === "superbee") {
-    assert.ok(adapters.length > 0, "first-party executable must bundle its native Windows adapter");
-  } else {
-    assert.deepEqual(adapters, [], "shared CLI must not bundle first-party host policy");
+  for (const file of ["host.ts", "filesystem.ts", "private-state.ts", "board.ts"]) {
+    assert.ok(adapters.some(input => fromGraph(owner, input) === windowsAdapter + file),
+      `${owner} must bundle the shared Windows ${file} adapter`);
   }
 }
 
@@ -73,7 +72,7 @@ function assertNoWindowsHostImplementation(source, filename) {
   visit(tree);
 }
 
-test("only the first-party executable graph owns the Windows adapter", async () => {
+test("the first-party executable and reusable provider share the Windows adapters", async () => {
   const scratch = await mkdtemp(path.join(tmpdir(), "superbee-host-graph-"));
   try {
     const result = await buildCliBundle(path.join(scratch, "superbee.mjs"), {
@@ -93,16 +92,12 @@ test("only the first-party executable graph owns the Windows adapter", async () 
       ] = { bytes: 1, imports: [] };
       assert.throws(() => assertMaintainedGraph(poisoned, owner), /Windows package/);
     }
-    const leaked = structuredClone(reusable);
-    leaked.inputs["../superbee/src/windows/host.ts"] = { bytes: 1, imports: [] };
-    assert.throws(() => assertMaintainedGraph(leaked, "cli"), /must not bundle/);
-
     const sources = new Set(
       [["superbee", result.metafile], ["cli", reusable]].flatMap(([owner, meta]) =>
         Object.keys(meta.inputs).map((input) => fromGraph(owner, input))),
     );
     for (const relative of sources) {
-      if (!/^packages\/(core|board-git|cli)\/src\//.test(relative) || relative.includes("/generated/")) continue;
+      if (!/^packages\/(core|board-git|cli)\/src\//.test(relative) || relative.includes("/generated/") || relative.startsWith(windowsAdapter)) continue;
       assertNoWindowsHostImplementation(await readFile(path.join(root, relative), "utf8"), relative);
     }
   } finally {

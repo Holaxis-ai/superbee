@@ -273,11 +273,11 @@ export async function main(argv: string[]): Promise<void> {
     if (command === undefined || command === "--help" || command === "-h" || command === "help") {
       const inv = cliInvocation();
       process.stdout.write(`${board.usage}\n${board.requirements ? `${board.requirements}\n` : ""}`
-        + (board.localOnboarding ? `Start in your project folder with ${inv} setup.\n` : "")
+        + (board.localOnboarding ? `Start in your project folder with ${inv} setup. Manage the MCP workspace catalog with ${inv} catalog.\n` : "")
         + `Board command help includes ${inv} sync --help, ${inv} list --help, ${inv} doc read --help, and ${inv} doc update --help.\n`);
       return;
     }
-    const refusal = !(Object.hasOwn(BOARD_HANDLERS, command) || (board.localOnboarding && (command === "setup" || command === "init")))
+    const refusal = !(Object.hasOwn(BOARD_HANDLERS, command) || (board.localOnboarding && (command === "setup" || command === "init" || command === "catalog")))
       ? board.usage
       : command === "version" ? undefined : board.unavailableReason;
     if (refusal !== undefined) {

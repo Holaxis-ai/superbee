@@ -246,6 +246,7 @@ const nativeWindowsCondition = `\${{ !cancelled() && needs.smoke-node-22.result 
 function assertNativeWindowsJob(floor, windows, candidate) {
   assert.deepEqual(floor.outputs, {
     windows_tarball_sha256: "${{ steps.pack.outputs.superbee_sha256 }}",
+    windows_cli_sha256: "${{ steps.pack.outputs.cli_sha256 }}",
     windows_tarball_artifact: "${{ steps.retain.outputs.artifact-id }}",
   }, "Windows must receive the floor job's artifact ID and tarball digest");
   const pack = floor.steps.find((step) => step.id === "pack");
@@ -256,7 +257,7 @@ function assertNativeWindowsJob(floor, windows, candidate) {
   assert.equal(upload.id, "retain");
   assert.deepEqual(upload.with, {
     name: "superbee-installed-windows-input",
-    path: candidate.lanes["smoke-node-22"].superbee_tarball,
+    path: [candidate.lanes["smoke-node-22"].superbee_tarball, candidate.lanes["smoke-node-22"].cli_tarball].join("\n") + "\n",
     "if-no-files-found": "error",
     overwrite: true,
     "retention-days": 7,
@@ -278,7 +279,10 @@ function assertNativeWindowsJob(floor, windows, candidate) {
   assert.deepEqual(proof, {
     name: "Install and prove the retained first-party tarball",
     shell: "pwsh",
-    env: { SUPERBEE_TARBALL_SHA256: "${{ needs.smoke-node-22.outputs.windows_tarball_sha256 }}" },
+    env: {
+      SUPERBEE_TARBALL_SHA256: "${{ needs.smoke-node-22.outputs.windows_tarball_sha256 }}",
+      SUPERBEE_CLI_TARBALL_SHA256: "${{ needs.smoke-node-22.outputs.windows_cli_sha256 }}",
+    },
     run: [
       `if ((node --version) -ne "v${nativeNode}") { throw "Node ${nativeNode} is required" }`,
       "node scripts/verify-npm-package-windows.mjs",

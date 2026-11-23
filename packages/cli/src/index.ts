@@ -2,6 +2,9 @@
  * module does not dispatch argv. Commands retain the host's cwd, environment and output streams. */
 import * as identity from "./build-identity.js";
 import * as invocation from "./invocation.js";
+import { createCliRuntime } from "./runtime.js";
+import { windowsRuntimeOptions } from "./windows/runtime-options.js";
+import type { CliDistribution, CliRuntime } from "./runtime-types.js";
 import type { SourcePackageIdentity, StaticBuildIdentity, BuildIdentityEnvelope } from "./public-types.js";
 export type { SourcePackageIdentity, StaticBuildIdentity, BuildIdentityEnvelope } from "./public-types.js";
 export function configureSourceIdentity(value: SourcePackageIdentity): void { identity.configureSourceIdentity(value); }
@@ -15,6 +18,11 @@ export async function main(argv: string[]): Promise<void> { (await import("./pos
 /** Private worker protocols are routed by the executable, never by an import side effect. */
 export async function runManagedUiWorker(): Promise<void> { await (await import("./ui/managed-worker.js")).runManagedUiWorker(); }
 export async function runUpdateRefreshWorker(token: string): Promise<void> { await (await import("./update-orientation.js")).runUpdateRefreshWorker(token); }
+
+/** Compose the supported native Windows CLI commands. Workspace consumers use the same host policies. */
+export function createWindowsCliRuntime(distribution: CliDistribution): CliRuntime {
+  return createCliRuntime({ ...windowsRuntimeOptions(), distribution });
+}
 
 export { createCliRuntime, createPosixCliRuntime } from './runtime.js';
 export { HostCommandError } from './host-command-error.js';
