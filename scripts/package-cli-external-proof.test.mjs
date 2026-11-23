@@ -54,6 +54,15 @@ test("the governed action entry uses the shared View runtime without loading MCP
   ), []);
 });
 
+test("the temporary View reader bundles the shared bridge and renderer independently of MCP", async () => {
+  const graph = await readJson(path.join(root, "out/cli-runtime-metafile.json"));
+  const entry = graph.outputs["dist/temporary-view-reader.mjs"];
+  assert.ok(Object.hasOwn(entry.inputs, "../view-runtime/src/bridge.ts"));
+  assert.ok(Object.hasOwn(entry.inputs, "../markdown-renderer/src/static.tsx"));
+  assert.ok(entry.imports.every(edge => edge.external && isBuiltin(edge.path)));
+  assert.ok(Object.keys(entry.inputs).every(input => !/(?:^|\/)(?:@modelcontextprotocol|mcp-app|ui-server)\//.test(input)));
+});
+
 test("packed reusable CLI is closed, inert on import, and binds commands to its executable", async () => {
   const scratch = await mkdtemp(path.join(tmpdir(), "superbee-cli-pack-"));
   try {

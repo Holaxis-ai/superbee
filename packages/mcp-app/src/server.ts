@@ -25,11 +25,11 @@ import {
   TransientViewSaveError,
   type TrustedActionService,
   ViewNotFoundError,
-  launchIsCurrent,
   listViewCatalogPage,
   mintActiveViewLaunch,
   mintTransientViewLaunch,
   pageLaunchAuthorizationSubject,
+  resolvePageLaunchAuthorization,
   saveTransientView,
   type ActionTerminalResult,
   parseDocumentSetFieldAction,
@@ -1170,27 +1170,19 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       const authorizationStore = launch?.sourceKind === "transient"
         ? runtime.transientAuthorizations
         : runtime.durableAuthorizations;
-      if (
-        !launch ||
-        (launch.capability !== "bundle-read" && launch.capability !== "bundle-propose") ||
-        !(await launchIsCurrent(runtime.context.bundle, launch))
-      ) {
-        if (launch) runtime.bridge.revoke(launch.launchId);
+      if (!launch || launch.capability === "none") {
+        if (launch) runtime.bridge.revoke(launchId);
         return {
           isError: true,
           content: [{ type: "text", text: "The active View changed or expired before approval." }],
         };
       }
-      const subject = pageLaunchAuthorizationSubject(launch);
-      await authorizationStore.authorize(subject);
-      if (
-        !(await launchIsCurrent(runtime.context.bundle, launch)) ||
-        !(await authorizationStore.isAuthorized(subject))
-      ) {
-        runtime.bridge.revoke(launch.launchId);
+      const status = await resolvePageLaunchAuthorization(runtime.context.bundle, runtime.launches, launchId, authorizationStore, true);
+      if (!status?.authorized) {
+        runtime.bridge.revoke(launchId);
         return {
           isError: true,
-          content: [{ type: "text", text: "The active View changed while approval was being recorded." }],
+          content: [{ type: "text", text: "The active View changed or expired before approval." }],
         };
       }
       const view = activePayload(launch, true);

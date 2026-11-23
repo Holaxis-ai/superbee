@@ -173,6 +173,30 @@ export function pageLaunchAuthorizationSubject(launch: PageLaunch): ViewAuthoriz
     : { ...common, sourceKind: "transient", bundleIdentity: launch.bundleIdentity };
 }
 
+/** Read or record the trusted host's decision against the exact live launch. */
+export async function resolvePageLaunchAuthorization(
+  bundle: Bundle,
+  launches: PageLaunchRegistry,
+  launchId: string,
+  store: ViewAuthorizationStore,
+  authorize: boolean,
+): Promise<{ required: boolean; authorized: boolean } | null> {
+  const launch = launches.resolveLaunch(launchId);
+  if (!launch || !(await launchIsCurrent(bundle, launch))) {
+    launches.revoke(launchId);
+    return null;
+  }
+  const required = launch.capability !== "none";
+  const subject = pageLaunchAuthorizationSubject(launch);
+  if (authorize && required) await store.authorize(subject);
+  const authorized = !required || await store.isAuthorized(subject);
+  if (!(await launchIsCurrent(bundle, launch)) || !launches.resolveLaunch(launchId)) {
+    launches.revoke(launchId);
+    return null;
+  }
+  return { required, authorized };
+}
+
 const DEFAULT_LAUNCH_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_NONCE_TTL_MS = 120_000;
 const DEFAULT_MAX_LAUNCHES = 256;

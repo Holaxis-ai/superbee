@@ -42,7 +42,7 @@ The supported API is what the package exports:
 - the adapter contract types exported beside them (`CliRuntimeOptions`, `CliDistribution`,
   `HostCommands`, `PrivateStateHost`, `FilesystemHostPolicy`, `BoardHostPolicy` and the types
   they reference);
-- the `@superbee/cli/workspace-reader/v1`, `@superbee/cli/view-actions/v1` and `@superbee/cli/resources` subpaths;
+- the `@superbee/cli/workspace-reader/v1`, `@superbee/cli/view-actions/v1`, `@superbee/cli/temporary-view-reader/v1` and `@superbee/cli/resources` subpaths;
 - the `@superbee/cli/embedded-engine.json` data file.
 
 `runManagedUiWorker` and `runUpdateRefreshWorker` are exported for first-party distributions
@@ -114,6 +114,35 @@ Keep the session and its one-use approval tokens in the trusted host. The embedd
 can propose a change. The host collects the person's decision. A conflicting document
 version requires a new proposal and confirmation. Changed View content requires a new
 launch with approval for those bytes.
+
+## Render a document from a temporary View
+
+A trusted local host can open an in-memory View with read access to a selected workspace.
+Keep the session in the host. Present its workspace name, title, exact HTML and requested
+access to the user before running the View in its sandbox. Only the trusted host collects
+the decision. A newly opened session needs its own decision, including for identical HTML.
+
+```js
+import { openTemporaryViewReader } from '@superbee/cli/temporary-view-reader/v1';
+
+const view = await openTemporaryViewReader('catalog', 'planning', {
+  title: 'Ticket reader', html, access: 'bundle-read',
+});
+try {
+  const approved = await askUserToTrust(view.workspaceName, view.title, view.html, view.access);
+  await view.decide(approved === true ? 'approve' : 'deny');
+  if (approved === true) {
+    const { id, version, html, bounded } = await view.renderDocument('tickets/one');
+    displayRenderedDocument({ id, version, html, bounded });
+  }
+} finally {
+  view.close();
+}
+```
+
+Each render checks the launch, applies the View bridge’s read limits and returns the
+document version with inert rendered HTML. A bounded result means the renderer limited its
+output. A refused read rejects with the bridge error code. Denying or closing the session ends its grant.
 
 ## Embedded engine record
 
