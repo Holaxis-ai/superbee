@@ -1174,7 +1174,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
         if (launch) runtime.bridge.revoke(launchId);
         return {
           isError: true,
-          content: [{ type: "text", text: "The active View cannot be approved." }],
+          content: [{ type: "text", text: "The active View changed or expired before approval." }],
         };
       }
       const status = await resolvePageLaunchAuthorization(runtime.context.bundle, runtime.launches, launchId, authorizationStore, true);
