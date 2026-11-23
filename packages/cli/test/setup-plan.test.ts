@@ -31,6 +31,7 @@ test("setup plan agreement: every supported host has a ready agent protocol", ()
     assert.match(plan.agent_instruction, /calling agent executes the returned action/, host);
     assert.equal(plan.ready, true, host);
     assert.equal(plan.complete, true, host);
+    assert.equal(plan.capabilities.find((row) => row.id === "mcp")?.bundled_registration, "superbee", host);
     assert.equal(plan.next, undefined, host);
     assert.deepEqual(plan.verify, {
       action: "run", command: ["superbee", "setup", "--host", host, "--scope", "user", "--json"],

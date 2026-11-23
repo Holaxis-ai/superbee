@@ -16,6 +16,6 @@ export function stableMcpLaunchGuidance(packageName='superbee',binName='superbee
 }
 
 export const OPTIONAL_MCP_PREVIEW = Object.freeze({
-  description: "Try the optional experimental MCP App with the macOS Claude Desktop extension or matching npm tarballs for macOS and Linux with Node 24. The guide covers building from source, verifying the preview in your client and switching back to the bundled server.",
+  description: "Try the optional experimental MCP App with the macOS Claude Desktop extension or matching npm tarballs for macOS and Linux with Node 24. Check the preview separately with the installed superbee-mcp status --host <id> command or in your client. The guide covers setup, source builds and switching back to the bundled server.",
   guide: "https://github.com/Holaxis-ai/superbee-plugins/blob/40e327bc4f1f5a39e4159bba655026a11b12b967/apps/mcp/README.md",
 });
