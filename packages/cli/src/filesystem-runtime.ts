@@ -6,6 +6,8 @@ import {
   type FilesystemMutationLockOptions,
   type Bundle,
 } from "@superbee/core";
+import { FileJournaledBackend, type FileJournaledBackendOptions } from "@superbee/core/file-journaled-backend";
+import { filesystemPushRoleLocks, type FilesystemPushRoleOptions } from "@superbee/core/filesystem-push-role";
 import { currentFilesystemHost } from "./runtime-context.js";
 const runtimes = new WeakMap<object, FilesystemRuntime>();
 let defaultRuntime: FilesystemRuntime | undefined;
@@ -39,4 +41,15 @@ export function withCliFilesystemMutationLock<T>(
 /** Local byte access and egress checks apply to implicit and explicitly configured filesystems. */
 export function isFilesystemBundle(bundle: Bundle): boolean {
   return !bundle.backend || bundle.backend instanceof FilesystemBackend;
+}
+
+/** Checkout readers, writers and synchronizers share the host's lock namespace. */
+export function cliPushRoleLocks(options: FilesystemPushRoleOptions = {}) {
+  const hostPolicy = currentFilesystemHost();
+  return filesystemPushRoleLocks({ ...options, ...(hostPolicy ? { hostPolicy } : {}) });
+}
+
+export function openCliJournaledBackend(options: FileJournaledBackendOptions) {
+  const hostPolicy = currentFilesystemHost();
+  return FileJournaledBackend.open({ ...options, ...(hostPolicy ? { hostPolicy } : {}) });
 }

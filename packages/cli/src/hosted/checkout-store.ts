@@ -3,10 +3,10 @@
 // A running `sync` holds the checkout lock (and the store) for its whole run. Readers that must not
 // wait on it (`status`, the end-of-turn hook's local check, the local MCP app's write guard) try
 // the lock without waiting and treat a held lock as "busy". One helper, so the three agree on how.
+import { cliPushRoleLocks, openCliJournaledBackend } from "../filesystem-runtime.js";
 import { storeOpenFailure } from "./sync-rows.js";
 import { readBundleOkfVersion, type JournaledBackend, type StorageBackend } from "@superbee/core";
-import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
-import { filesystemPushRoleLocks } from "@superbee/core/filesystem-push-role";
+import type { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 
 import { checkoutLockName, checkoutStoreDir, type CheckoutBinding } from "./binding.js";
 
@@ -20,9 +20,9 @@ export async function withIdleCheckoutStore<T>(
   read: (store: FileJournaledBackend) => Promise<T>,
   options: { readonly readOnly?: boolean } = {},
 ): Promise<T | null> {
-  return filesystemPushRoleLocks().request(checkoutLockName(binding.path), { ifAvailable: true }, async (lock) => {
+  return cliPushRoleLocks().request(checkoutLockName(binding.path), { ifAvailable: true }, async (lock) => {
     if (!lock) return null;
-    const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(home, binding.checkout_id), readOnly: options.readOnly ?? true }).catch((error: unknown) => {
+    const store = await openCliJournaledBackend({ directory: checkoutStoreDir(home, binding.checkout_id), readOnly: options.readOnly ?? true }).catch((error: unknown) => {
       throw storeOpenFailure(error, binding);
     });
     try {

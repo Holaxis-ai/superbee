@@ -12,9 +12,8 @@
 // and that order is what keeps the pair free of deadlock.
 import { realpathSync } from "node:fs";
 import { FilesystemMutationLockError } from "@superbee/core";
-import { filesystemPushRoleLocks, PushRoleStaleOwnerError } from "@superbee/core/filesystem-push-role";
-import { cliFilesystemRuntime } from "../../filesystem-runtime.js";
-import { currentFilesystemHost } from "../../runtime-context.js";
+import { PushRoleStaleOwnerError } from "@superbee/core/filesystem-push-role";
+import { cliPushRoleLocks, cliFilesystemRuntime } from "../../filesystem-runtime.js";
 import { syncLockOrphaned } from "../../sync-outcomes.js";
 import { CliError } from "../../errors.js";
 
@@ -45,8 +44,7 @@ export async function withSyncFolderLock<T>(gitCommonDir: string, waitMs: number
   if (rootLockDepth > 0) throw new Error("sync asked for the folder lock while holding the bundle root lock");
   const started = Date.now();
   let entered = false;
-  const host = currentFilesystemHost();
-  const locks = filesystemPushRoleLocks({ waitMs, ...(host ? { hostPolicy: host } : {}) });
+  const locks = cliPushRoleLocks({ waitMs });
   try {
     return await locks.request(syncFolderLockName(gitCommonDir), {}, async () => {
       entered = true;

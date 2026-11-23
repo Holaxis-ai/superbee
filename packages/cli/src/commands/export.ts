@@ -20,6 +20,7 @@
 //   finishes the conversion without the network.
 //
 // The hosted bundle is never changed. History is not exported: only the current revision travels.
+import { cliPushRoleLocks, openCliJournaledBackend } from "../filesystem-runtime.js";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { link, lstat, mkdir, open, readdir, realpath, rename, rm, unlink } from "node:fs/promises";
@@ -27,7 +28,6 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 
 import { RemoteError } from "@superbee/core";
-import { filesystemPushRoleLocks } from "@superbee/core/filesystem-push-role";
 import { BOARD_BRANCH, identityFlags, runGit } from "@superbee/board-git";
 
 import { parseLeafOrUsage } from "../args.js";
@@ -51,7 +51,7 @@ import { hostedBundleReferenceText, parseHostedBundleReference } from "../hosted
 import { hostedCheckoutFor } from "../hosted/sync.js";
 import { classifyCheckout, hostedStatus } from "../hosted/status.js";
 import { storeOpenFailure } from "../hosted/sync-rows.js";
-import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
+import type { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 import { bindingHostArgument, CHECKOUT_MARKER_DIR, readCheckoutMarker, removeCheckoutMarker } from "../hosted/marker.js";
 import {
   classifyEntryPath,
@@ -803,7 +803,7 @@ async function exportInPlace(dirArg: string | undefined, git: boolean, keepUnsen
   const source: Source = { target: resolveHostedTarget(binding.audience), bundleId: binding.bundle_id, slug: binding.workspace_slug ?? null, workspace: null, binding };
   const exported = await fetchExport(source, deps, resume);
 
-  const result = await filesystemPushRoleLocks()
+  const result = await cliPushRoleLocks()
     .request(checkoutLockName(folder), { ifAvailable: true }, async (lock) => {
       if (!lock) {
         throw new CliError("CONFLICT", `another command holds the checkout lock for ${folder}`, { details: { reason: "checkout_busy", folder }, help: "wait for it to finish, then retry the same command" });
@@ -813,7 +813,7 @@ async function exportInPlace(dirArg: string | undefined, git: boolean, keepUnsen
         throw new CliError("CONFLICT", `the checkout at ${folder} changed while it was exported`, { details: { reason: "checkout_changed", folder }, help: "retry the same command" });
       }
       // Under the lock no sync or edit through Superbee can move the folder's state: decide here.
-      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id), readOnly: true }).catch((error: unknown) => { throw storeOpenFailure(error, binding); });
+      const store = await openCliJournaledBackend({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id), readOnly: true }).catch((error: unknown) => { throw storeOpenFailure(error, binding); });
       let pending: Set<string>;
       let unstorable: Set<string>;
       try {
