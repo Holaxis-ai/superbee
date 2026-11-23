@@ -158,6 +158,18 @@ frame reads through `request(launchId, message)`. Show the confirmation returned
 and tokens inside the trusted host. Close each retired frame's launch. When a suspended
 registered View changes, `resume` mints a replacement with its own approval state.
 
+For a host that lets people choose a workspace, call `createViewWorkspaceCatalog({ actor })`.
+`list()` returns catalog IDs, labels and availability. `reachable()` includes checkout
+commands for workspaces without a folder here. `open(idOrLabel)` returns the same pinned
+View workspace. `listOperations(idOrLabel)` and `runOperation(idOrLabel, operationId, input)`
+use the CLI's checkout binding and session. Handle the resolver's `no_host_operations`,
+`folder_answers` and `sign_in_required` stops alongside the host's success or refusal.
+
+Use `createBundlelessViewHost()` to present temporary HTML before choosing a workspace.
+Open it with `{ title, html, access: "none" }`. Each host owns its launches and supports
+inspection, bridge requests, polling, resume and close. Opening a registered View, saving
+a View or granting data access requires a selected workspace.
+
 ## Embedded engine record
 
 The bundle embeds the workspace source of Superbee's engine packages rather than their published

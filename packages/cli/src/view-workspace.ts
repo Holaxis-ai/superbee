@@ -1,4 +1,4 @@
-import { readDocVersioned, versionOfBytes } from "@superbee/core";
+import { readDocVersioned, versionOfBytes, type Bundle } from "@superbee/core";
 import { backendFor } from "@superbee/core/bundle-ops";
 import {
   searchDocuments,
@@ -10,7 +10,9 @@ import {
 } from "@superbee/core/search";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 import {
+  createBundlelessViewContext,
   createWorkspaceViewServices,
+  type ViewAuthorizationStore,
   listViewCatalogPage,
   mayResumePageLaunch,
   mintActiveViewLaunch,
@@ -21,7 +23,15 @@ import {
   type PageLaunch,
 } from "@superbee/view-runtime";
 import { assertActorAcceptedByBundle, resolveActor } from "./actor.js";
-import { openPluginWorkspace } from "./workspace-resolver.js";
+import {
+  MAX_WORKSPACE_CATALOG_PAGE as catalogLimit,
+  WORKSPACE_HOMES as workspaceHomes,
+} from "@superbee/workspace-access";
+import { assertSupportedCliHost } from "./posix-host.js";
+import {
+  createCatalogWorkspaceResolver,
+  openPluginWorkspace,
+} from "./workspace-resolver.js";
 import type { PreparedViewEdit, ViewActionOutcome } from "./view-actions.js";
 
 type Access = "none" | "bundle-read" | "bundle-propose";
@@ -116,13 +126,30 @@ export async function openViewWorkspace(
   options: { actor?: string } = {},
 ): Promise<ViewWorkspace> {
   const actor = resolveActor(options.actor);
-  const { bundle, name, viewAuthorization } = await openPluginWorkspace(
-    source,
-    selector,
-  );
-  await assertActorAcceptedByBundle(bundle, actor);
+  return bindViewWorkspace(await openPluginWorkspace(source, selector), actor);
+}
+
+type WorkspaceContext = {
+  bundle: Bundle;
+  name: string;
+  viewAuthorization?: ViewAuthorizationStore;
+};
+
+async function bindViewWorkspace(
+  context: WorkspaceContext,
+  actor: string | undefined,
+): Promise<ViewWorkspace> {
+  await assertActorAcceptedByBundle(context.bundle, actor);
+  return createViewWorkspace(context, actor);
+}
+
+function createViewWorkspace(
+  { bundle, name, viewAuthorization }: WorkspaceContext,
+  actor?: string,
+): ViewWorkspace {
   const {
     launches,
+    durableAuthorizations: registeredAuthorizations,
     transientAuthorizations: transient,
     actions,
     bridge,
@@ -142,7 +169,7 @@ export async function openViewWorkspace(
       bundle,
       launches,
       launch.launchId,
-      registered ? viewAuthorization : transient,
+      registered ? registeredAuthorizations : transient,
       approve,
     );
     if (!status || (approve && !status.authorized))
@@ -254,7 +281,7 @@ export async function openViewWorkspace(
     async resume(id) {
       const old = launches.resolveLaunch(id);
       const store =
-        old?.sourceKind === "transient" ? transient : viewAuthorization;
+        old?.sourceKind === "transient" ? transient : registeredAuthorizations;
       if (!old || !(await mayResumePageLaunch(launches, old, store))) {
         throw new Error(
           "The suspended View is unknown, expired or no longer authorized.",
@@ -317,5 +344,136 @@ export async function openViewWorkspace(
       if (decision === "commit") return actions.commit(token, id);
       throw new TypeError("The decision must be commit or cancel");
     },
+  };
+}
+
+// Closed public signatures keep installed plugins independent of private workspace packages.
+export const MAX_WORKSPACE_CATALOG_PAGE: number = catalogLimit;
+export const WORKSPACE_HOMES: readonly ["local", "git", "hosted"] =
+  workspaceHomes;
+export type WorkspaceHome = (typeof WORKSPACE_HOMES)[number];
+export interface WorkspaceSummary {
+  readonly id: string;
+  readonly label: string;
+  readonly displayName?: string;
+  readonly available: boolean;
+  readonly home?: WorkspaceHome;
+}
+export interface ReachableWorkspace {
+  readonly id: string;
+  readonly name: string;
+  readonly home: WorkspaceHome;
+  readonly location: string;
+  readonly command: string;
+}
+export type OperationsStop =
+  | { readonly stop: "no_host_operations"; readonly home: "local" | "git" }
+  | { readonly stop: "folder_answers"; readonly operationId: string }
+  | {
+      readonly stop: "sign_in_required";
+      readonly signInUrl: string;
+      readonly userCode: string;
+    };
+
+type JsonObject = Readonly<Record<string, unknown>>;
+interface HostedOperation {
+  readonly operationId: string;
+  readonly title: string;
+  readonly description: string;
+  readonly maximumOutputBytes: number;
+  readonly inputJsonSchema: JsonObject;
+  readonly resultJsonSchema: JsonObject;
+  readonly annotations: Readonly<Record<string, boolean>>;
+}
+type RefusedOperation = {
+  readonly ok: false;
+  readonly refusal: {
+    readonly code: string;
+    readonly message: string;
+    readonly retryable: boolean;
+  };
+};
+export interface ViewWorkspaceCatalog {
+  list(): Promise<readonly WorkspaceSummary[]>;
+  reachable(): Promise<{
+    readonly workspaces: readonly ReachableWorkspace[];
+    readonly notes: readonly string[];
+  }>;
+  open(selector: string): Promise<ViewWorkspace>;
+  listOperations(
+    selector: string,
+  ): Promise<
+    | {
+        readonly ok: true;
+        readonly listing: {
+          readonly operations: readonly HostedOperation[];
+          readonly notes: readonly string[];
+        };
+      }
+    | RefusedOperation
+    | OperationsStop
+  >;
+  runOperation(
+    selector: string,
+    operationId: string,
+    input: JsonObject,
+  ): Promise<
+    | { readonly ok: true; readonly data: unknown }
+    | RefusedOperation
+    | OperationsStop
+  >;
+}
+
+/** The CLI owns catalog selection, checkout identity and hosted sessions. */
+export function createViewWorkspaceCatalog(
+  options: { actor?: string } = {},
+): ViewWorkspaceCatalog {
+  assertSupportedCliHost();
+  const actor = resolveActor(options.actor);
+  const { list, reachable, open, listOperations, runOperation } =
+    createCatalogWorkspaceResolver({ actor });
+  return {
+    list,
+    reachable,
+    listOperations,
+    runOperation,
+    async open(selector) {
+      return bindViewWorkspace(await open(selector), actor);
+    },
+  };
+}
+
+export interface BundlelessViewHost extends Pick<
+  ViewWorkspace,
+  "inspect" | "resume" | "close" | "request" | "poll"
+> {
+  open(input: {
+    title: string;
+    html: string;
+    access: "none";
+  }): Promise<ActiveView>;
+}
+
+/** Present ephemeral HTML without selecting a catalog entry or consulting a workspace. */
+export function createBundlelessViewHost(): BundlelessViewHost {
+  const host = createViewWorkspace(createBundlelessViewContext());
+  return {
+    async open(input) {
+      if (!input || "viewId" in input || input.access !== "none") {
+        throw new TypeError(
+          "A workspace-free View requires temporary HTML with access none.",
+        );
+      }
+      return host.open({
+        title: input.title,
+        html: input.html,
+        access: "none",
+      });
+    },
+    inspect: host.inspect,
+    resume: host.resume,
+    close: host.close,
+    request: host.request,
+    poll: host.poll,
   };
 }

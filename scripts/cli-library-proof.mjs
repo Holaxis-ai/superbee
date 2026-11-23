@@ -546,6 +546,19 @@ export async function proveCliTarball(tarball, { checkSource, execute = exec } =
   import { getDistributionResources } from '@superbee/cli/resources';
   import { openWorkspaceReader } from '@superbee/cli/workspace-reader/v1';
   import { openTemporaryViewReader } from '@superbee/cli/temporary-view-reader/v1';
+  import { createBundlelessViewHost, createViewWorkspaceCatalog, type WorkspaceSummary } from '@superbee/cli/view-workspace/v1';
+  const viewCatalog = createViewWorkspaceCatalog();
+  const workspaces: readonly WorkspaceSummary[] = await viewCatalog.list();
+  const selected = await viewCatalog.open(workspaces[0].id);
+  const hosted = await viewCatalog.listOperations(workspaces[0].id);
+  if (!('stop' in hosted) && hosted.ok) void hosted.listing.operations[0]?.operationId;
+  const standalone = createBundlelessViewHost();
+  void standalone.open({title:'Standalone',html:'<p>test</p>',access:'none'});
+  // @ts-expect-error Workspace-free Views cannot request bundle reads.
+  void standalone.open({title:'Standalone',html:'<p>test</p>',access:'bundle-read'});
+  // @ts-expect-error Saving a View requires a selected workspace.
+  void standalone.save;
+  void selected.name;
   const temporary = await openTemporaryViewReader('directory', '/fixture', {title:'Reader', html:'<!doctype html>', access:'bundle-read'});
   await temporary.decide('approve');
   const rendered = await temporary.renderDocument('tickets/one');
@@ -668,6 +681,13 @@ await assert.rejects(openWorkspaceReader('catalog', 'missing-workspace'));
       await provePackedViewActions({ scratch, cwd, bundle, entry, env, run });
       const viewHost = path.join(scratch, "view-workspace.mjs");
       await copyFile(path.join(root, "scripts/fixtures/packed-view-workspace.mjs"), viewHost);
+      const fixtureHost = path.join(root, "scripts/fixtures/packed-view-fake-host.mjs");
+      const checkoutEntry = path.join(scratch, "checkout.mjs");
+      await writeFile(checkoutEntry, "import { main } from '@superbee/cli'; await main(process.argv.slice(2));\n");
+      const checkout = await run(["--import", fixtureHost, checkoutEntry, "checkout", "notes.a", "--host", "https://hosted.example", "--dir", path.join(scratch, "hosted"), "--json"], cwd, env);
+      const receipt = JSON.parse(checkout.stdout);
+      assert.equal(receipt.catalog.home, "hosted");
+      assert.equal(receipt.warning, undefined);
       await run([viewHost, bundle], cwd, env);
       // Exercise the serialized child from the installed tarball, outside the checkout and
       // without tools or package imports in the accepted self-contained operation entry.

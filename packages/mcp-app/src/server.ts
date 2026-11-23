@@ -1,6 +1,5 @@
 import { MAX_WORKSPACE_CATALOG_PAGE } from "@superbee/workspace-access";
 import {
-  MemoryBackend,
   readDocVersioned,
   versionOfBytes,
   stripHostText,
@@ -34,6 +33,7 @@ import {
   type PageLaunch,
   type RegisteredPageLaunch,
   type TransientPageLaunch,
+  createBundlelessViewContext,
   type ViewAuthorizationStore,
 } from "@superbee/view-runtime";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
@@ -806,13 +806,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     : createMcpBundleRuntime(createMcpBundleContext(options));
   const bundlelessRuntime = workspaceResolver
     ? createMcpBundleRuntime(
-        createMcpBundleContext({
-          bundle: {
-            root: "mem://superbee-mcp-bundleless",
-            backend: new MemoryBackend(),
-          },
-          bundleName: "Bundleless transient View",
-        }),
+        createBundlelessViewContext(),
         { bundleless: true, onLaunch: bindLaunch },
       )
     : undefined;
