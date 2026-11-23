@@ -41,6 +41,18 @@ test("setup plan agreement: every supported host has a ready agent protocol", ()
   }
 });
 
+test("the MCP preview guide is informational for each bundled registration state", () => {
+  for (const state of ["owned_current", "absent", "owned_stale", "foreign"] as const) {
+    const plan = buildSetupPlan(input({ mcp: { state, reason: state } }));
+    const previews = plan.capabilities.filter((row) => row.optional_preview);
+    assert.deepEqual(previews.map((row) => row.id), ["mcp"]);
+    assert.match(previews[0]!.optional_preview!.guide, /^https:\/\/github\.com\/Holaxis-ai\/superbee-plugins\/blob\/[a-f0-9]{40}\/apps\/mcp\/README\.md$/);
+    const expected = state === "owned_current" ? undefined
+      : ["superbee", "mcp", state === "foreign" ? "status" : "install", "--host", "codex"];
+    assert.deepEqual(plan.next?.command, expected);
+  }
+});
+
 test("OpenCode treats the managed Claude-compatible Skill as a required host capability", () => {
   const current = buildSetupPlan(input({ host: "opencode" }));
   assert.deepEqual(

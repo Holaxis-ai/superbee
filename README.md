@@ -54,7 +54,7 @@ copied from a laptop does not install Superbee or provide a working container la
 the hook inside the environment and verify startup in a fresh session. Startup pulls are
 best-effort; inspect an explicit `superbee sync` receipt to verify publication of edits.
 
-The npm package is the sole executable distribution channel. The optional Agent Skill contains
+The Superbee CLI executable ships exclusively through npm. The optional Agent Skill contains
 guidance and references only; it invokes the npm-installed CLI rather than carrying another copy.
 The new package installs only `superbee`, so it can coexist with a global `@holaxis/aslite` long
 enough for `superbee setup` to inspect and migrate exact legacy integrations. Once setup is
@@ -63,6 +63,16 @@ keep the retired `aslite` or `agentstate-lite` commands on `PATH`.
 If upgrading from the retired marketplace plugin, remove or disable that plugin, then rerun
 `superbee setup` and follow its exact next command. The hook installer
 replaces exact historical AgentState marketplace hooks rather than leaving two SessionStart hooks.
+
+### MCP Apps
+
+Register the bundled server with `superbee mcp install --host <id>` to read documents and
+open interactive Views in your MCP client. Use `superbee mcp --help` for supported hosts.
+
+To try the optional experimental MCP App on macOS or Linux with Node 24, build the matching
+CLI library and app from source. The guide walks through installing both packages, registering
+the separate `superbee-experimental` entry, checking it in your client, and removing it.
+[Experimental MCP App installation guide](https://github.com/Holaxis-ai/superbee-plugins/blob/60d7d1123b9ae17c4a7e25370940e95c32c29a21/apps/mcp/README.md)
 
 ## Quickstart
 

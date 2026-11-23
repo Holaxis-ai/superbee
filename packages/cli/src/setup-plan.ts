@@ -3,6 +3,7 @@ import type { ChannelDetection } from "@superbee/board-git";
 // Pure AXI setup planning. Host/file inspection lives at the command boundary; this module owns
 // only the bounded capability matrix, deterministic ordering, and one-next-command projection.
 
+import { OPTIONAL_MCP_PREVIEW } from "./integration-guidance.js";
 import { MCP_INSTALL_TARGETS, type McpInstallTargetId, type McpRegistrationState } from "./mcp-install-targets.js";
 import type {
   PersistentInstallAuthorityFailure,
@@ -49,6 +50,7 @@ export const SETUP_VERIFICATION = { configured_only: true, live_host_activation:
 
 export interface SetupCapability {
   readonly id: "distribution" | "state" | "skill" | "mcp" | "hook" | "bundle" | "catalog";
+  readonly optional_preview?: typeof OPTIONAL_MCP_PREVIEW;
   readonly requirement: SetupRequirement;
   readonly state: SetupCapabilityState;
   readonly reason: string;
@@ -673,7 +675,7 @@ export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
     setupStateCapability(input.state),
     ...(needsProjectBeforeInstall ? [bundle] : []),
     skillCapability(input),
-    mcpCapability(input),
+    { ...mcpCapability(input), optional_preview: OPTIONAL_MCP_PREVIEW },
     hookCapability(input),
     ...(!needsProjectBeforeInstall ? [bundle] : []),
     catalogCapability(input),

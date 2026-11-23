@@ -11,6 +11,7 @@ import {
   MCP_USAGE,
   mcp,
 } from "../src/commands/mcp.js";
+import { OPTIONAL_MCP_PREVIEW } from "../src/integration-guidance.js";
 import { CliError } from "../src/errors.js";
 import { COMMAND_GROUPS } from "../src/reference.js";
 import { cliVersion } from "../src/build-identity.js";
@@ -39,6 +40,8 @@ test("mcp help is offline and does not open a bundle", async () => {
   assert.match(output, /npm install -g superbee/);
   assert.match(output, /durable npm runtime once at user scope/);
   assert.match(output, /mcp install --host <id>/);
+  assert.ok(output.includes(OPTIONAL_MCP_PREVIEW.description));
+  assert.ok(output.includes(OPTIONAL_MCP_PREVIEW.guide));
   assert.match(output, /show_document.*authoritative Markdown/s);
 });
 

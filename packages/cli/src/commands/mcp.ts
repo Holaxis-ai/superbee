@@ -18,7 +18,7 @@ import { asHandled, CliError, toExit } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, renderErrorEnvelope, resolveMode } from "../output.js";
 import { cliVersion } from "../build-identity.js";
-import { stableMcpLaunchGuidance } from "../integration-guidance.js";
+import { OPTIONAL_MCP_PREVIEW, stableMcpLaunchGuidance } from "../integration-guidance.js";
 import { createCatalogWorkspaceResolver, serveWorkspace } from "../workspace-resolver.js";
 import {
   inspectMcpHosts,
@@ -49,8 +49,8 @@ Options:
                         <producer>/<version> (e.g. openai/codex)
   -h, --help            Show this help
 
-Run \`superbee mcp install --host <id>\` once for each host you use. Installation is user-level,
-requires an explicit host, and never pins a bundle directory.
+Run \`superbee mcp install --host <id>\` once for each host to register the bundled server. The user-level
+registration requires an explicit host and never pins a bundle directory.
 
 The server uses stdio. Without --dir it lists the user's private workspace catalog. Pass one exact
 workspace label or ID to show_document, list_views, and show_view for a registered or
@@ -67,6 +67,9 @@ and the web UI. Every bundle-propose action requires explicit human confirmation
 document version. The server accepts no remote targets or arbitrary filesystem paths.
 
 ${stableMcpLaunchGuidance(distributionPackageName(),distributionBinName())}
+
+${OPTIONAL_MCP_PREVIEW.description}
+${OPTIONAL_MCP_PREVIEW.guide}
 `;
 
 export const MCP_STATUS_USAGE = `superbee mcp status — inspect user-level MCP registrations without changing them

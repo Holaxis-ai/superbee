@@ -55,6 +55,14 @@ npm install -g superbee
 
 Stable releases publish on npm's `latest` tag and prereleases on `next`.
 
+### MCP Apps
+
+Run `superbee mcp install --host <id>` to register the bundled server in your MCP client.
+For the optional experimental MCP App on macOS or Linux with Node 24, follow the source-build
+guide to install the compatible CLI library and app, register and verify the separate
+`superbee-experimental` entry, and remove it when finished.
+[Experimental MCP App installation guide](https://github.com/Holaxis-ai/superbee-plugins/blob/60d7d1123b9ae17c4a7e25370940e95c32c29a21/apps/mcp/README.md)
+
 ### Native Windows Git boards
 
 Native Git board operations require Node.js 22.17.0 or later in the 22 line, 24.2.0 or later in
