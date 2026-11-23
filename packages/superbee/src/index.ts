@@ -26,8 +26,8 @@ const argv = process.argv.slice(2);
 const command = argv[0];
 const windows = process.platform === "win32";
 const posix = process.platform === "darwin" || process.platform === "linux";
-const windowsUsage = "Native Windows works with existing Git boards. Use WSL2 for the full CLI.";
-const windowsRuntimeRequirement = "Native Windows Git board operations require Node.js 22.17.0 or later in the 22 line, 24.2.0 or later in the 24 line, or Node.js 26.";
+const windowsUsage = "Native Windows supports local project setup and existing standalone Git boards. Use WSL2 for the full CLI.";
+const windowsRuntimeRequirement = "Native Windows file operations require Node.js 22.17.0 or later in the 22 line, 24.2.0 or later in the 24 line, or Node.js 26.";
 
 // libuv 1.51.0 made Windows path and handle stats agree on the volume serial used for file identity.
 // https://github.com/libuv/libuv/blob/v1.51.0/ChangeLog
@@ -39,7 +39,7 @@ function hasWindowsFileIdentitySupport(): boolean {
 if (isBareVersionFlag(command)) {
   process.stdout.write(`${cliVersion()}\n`);
 } else if (!windows && !posix) {
-  process.stdout.write("error:\n  code: RUNTIME\n  message: Superbee runs on macOS, Linux, and native Windows (existing Git boards).\n");
+  process.stdout.write("error:\n  code: RUNTIME\n  message: Superbee runs on macOS, Linux, and native Windows (local projects and existing Git boards).\n");
   process.exitCode = 1;
 } else {
   const executablePath = fileURLToPath(import.meta.url);
@@ -56,6 +56,7 @@ if (isBareVersionFlag(command)) {
         distribution,
         existingGitBoard: {
           usage: windowsUsage,
+          localOnboarding: true,
           requirements: windowsRuntimeRequirement,
           ...(!hasWindowsFileIdentitySupport() && {
             unavailableReason: `${windowsRuntimeRequirement} Found Node.js ${process.versions.node}.`,

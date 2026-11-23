@@ -52,6 +52,7 @@ import { closeSync, constants, fstatSync, openSync, promises as fs, readSync, ty
 import path from "node:path";
 import {
   parseMarkdown,
+  readBundleOkfVersion,
   FilesystemMutationLockError,
   VersionConflict,
   type Bundle,
@@ -287,12 +288,21 @@ export type ResolvedLocalRoute =
       readonly owner: BoundBoardOwner;
     };
 
+interface ScopedLocalRoute {
+  readonly kind: "scoped-local";
+  readonly target: LocalBundleTarget;
+  readonly bundle: Bundle;
+  readonly identity: DirectoryIdentity;
+}
+
 interface StandaloneBoardRoute {
   readonly kind: "standalone-board";
   readonly target: LocalBundleTarget;
   readonly bundle: Bundle;
   readonly identity: DirectoryIdentity;
 }
+
+export type ScopedBundleRoute = ScopedLocalRoute | StandaloneBoardRoute;
 
 /** The post-persist board decision is total and computed before a mutation persists. */
 export type BoardAttribution =
@@ -1677,8 +1687,8 @@ async function assertSymlinkedTargetIsNotBoardShaped(
 }
 
 /** Revalidate a frozen physical target immediately before an engine operation. */
-export async function assertResolvedLocalRouteIdentity(route: ResolvedLocalRoute | StandaloneBoardRoute): Promise<void> {
-  if (route.kind !== "bound-local" && route.kind !== "standalone-board") return;
+export async function assertResolvedLocalRouteIdentity(route: ResolvedLocalRoute | ScopedBundleRoute): Promise<void> {
+  if (route.kind !== "bound-local" && route.kind !== "standalone-board" && route.kind !== "scoped-local") return;
   await captureDirectoryIdentity(route.target, route.identity);
 }
 
@@ -1711,11 +1721,20 @@ export async function resolveLocalBundleRoute(
   return route;
 }
 
+/** Freeze an explicitly selected indexed local bundle across planning and engine access. */
+export async function scopedLocalRoute(target: LocalBundleTarget): Promise<ScopedLocalRoute> {
+  const identity = await captureDirectoryIdentity(target);
+  const bundle = configuredBundle(identity.canonicalRoot);
+  if (await readBundleOkfVersion(bundle) === undefined) {
+    throw new CliError("USAGE", "Select a local bundle with an OKF root index.md, or choose a new project folder.");
+  }
+  const route = { kind: "scoped-local" as const, target, identity, bundle };
+  await assertResolvedLocalRouteIdentity(route);
+  return route;
+}
+
 /** Select one explicit checkout for a scoped board operation without pulling or provisioning. */
-export async function resolveExistingGitBoardRoute(
-  dir: string | undefined,
-  usage: CommandText,
-): Promise<StandaloneBoardRoute> {
+export async function existingGitBoardRoute(dir: string | undefined): Promise<StandaloneBoardRoute | null> {
   if (dir?.trim()) {
     const requested = path.resolve(dir);
     assertBundleOutsidePrivateState(requested);
@@ -1729,6 +1748,12 @@ export async function resolveExistingGitBoardRoute(
       }
     }
   }
+  return null;
+}
+
+export async function resolveExistingGitBoardRoute(dir: string | undefined, usage: CommandText): Promise<StandaloneBoardRoute> {
+  const route = await existingGitBoardRoute(dir);
+  if (route) return route;
   throw new CliError("USAGE", "--dir must point to the root of an existing standalone Git board checkout.", {
     help: `${cliInvocation()} ${usage}`,
   });

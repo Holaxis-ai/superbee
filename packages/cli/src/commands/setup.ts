@@ -1,6 +1,8 @@
 import { renderUsage } from "../output.js";
 // `superbee setup` — one read-only AXI conductor plus one explicit, bounded state-migration leaf.
 
+import { assertLocalCreationProject, resolveOnboardingRoute } from "../local-onboarding.js";
+import { currentExistingGitBoard } from "../runtime-context.js";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { unsafeProjectDir } from "../no-bundle-guidance.js";
@@ -23,6 +25,7 @@ import { cliInvocation } from "../invocation.js";
 import { render, resolveMode } from "../output.js";
 import {
   buildSetupPlan,
+  bundleCapability,
   AGENT_SETUP_INSTRUCTION,
   SETUP_VERIFICATION,
   setupVerifyDescription,
@@ -32,6 +35,7 @@ import {
   type SetupProjectSelection,
   type SetupHookHostState,
   type SetupPlan,
+  type SetupAction,
   type SetupSkillHostState,
   type SetupWorkspaceState,
 } from "../setup-plan.js";
@@ -232,10 +236,7 @@ export async function inspectSetupBoard(startDir: string): Promise<ChannelDetect
   return detectBoardChannel(boardRoot, { budget: { fetchTimeoutMs: 2000, connectTimeoutSeconds: 2 } });
 }
 
-async function inspectWorkspace(deps: SetupDeps, projectSelection: SetupProjectSelection): Promise<SetupWorkspaceState> {
-  if (projectSelection === "deferred") {
-    return { bundle: "not_checked", catalog: "not_checked", selected_registered: false };
-  }
+async function inspectProjectBundle(deps: SetupDeps) {
   let selected: LocalBundleTarget | undefined;
   let bundle: SetupWorkspaceState["bundle"] = "absent";
   let recovery: string | undefined;
@@ -251,6 +252,14 @@ async function inspectWorkspace(deps: SetupDeps, projectSelection: SetupProjectS
       if (error.help) recovery = error.help;
     }
   }
+  return { bundle, selected, recovery };
+}
+
+async function inspectWorkspace(deps: SetupDeps, projectSelection: SetupProjectSelection): Promise<SetupWorkspaceState> {
+  if (projectSelection === "deferred") {
+    return { bundle: "not_checked", catalog: "not_checked", selected_registered: false };
+  }
+  let { bundle, selected, recovery } = await inspectProjectBundle(deps);
   let board: ChannelDetection | undefined;
   if (bundle === "absent" && projectSelection === "confirmed") {
     try {
@@ -353,10 +362,60 @@ function emitSetupDeprecationNotices(inspection: SetupInspection): void {
   if (inspection.state.state === "migratable") emitDeprecationNotice("DEPRECATED_LEGACY_USER_STATE");
 }
 
+const LOCAL_SETUP_USAGE = "superbee setup [--project <folder> | --no-project] [--json]\nChoose a folder for a local bundle, then follow each action from its cwd. Existing standalone Git boards can be listed and read.";
+const FIRST_NOTE = "notes/first-note";
+
+async function inspectLocalSetup(deps: SetupDeps, selection: SetupProjectSelection, cwdOfferable: boolean) {
+  const cwd = deps.cwd();
+  const invocation = deps.invocation().split(/\s+/);
+  const verify: SetupAction = {
+    action: "run", command: [...invocation, "setup", ...setupProjectArgs(selection, cwd), "--json"],
+    cwd, description: "Inspect the selected project again.", mutates: false, approval: { required: false, reason: null },
+  };
+  const state = selection === "deferred" || !cwdOfferable
+    ? { bundle: "not_checked" as const, selected: undefined, recovery: undefined }
+    : await inspectProjectBundle(deps);
+  const capability = bundleCapability({
+    cwd, cwdOfferable, projectSelection: selection, scope: "user",
+    workspace: { bundle: state.bundle, recovery: state.recovery, catalog: "not_checked", selected_registered: false },
+  });
+  let next = setupNextForCapability(capability, invocation, cwd);
+  let example: { create: SetupAction; read: SetupAction } | undefined;
+  if (selection === "confirmed" && state.bundle === "absent") {
+    await assertLocalCreationProject(cwd);
+  }
+  if (state.selected) {
+    const root = state.selected.canonicalRoot;
+    const route = await resolveOnboardingRoute(root, undefined, cwd);
+    if (route.kind === "standalone-board") {
+      next = { ...verify, command: [...invocation, "list", "--dir", root, "--json"], description: "List the documents in the selected standalone Git board." };
+    } else {
+      example = {
+        create: {
+          action: "run", cwd, command: [...invocation, "doc", "write", FIRST_NOTE, "--create-only",
+            "--type", "Note", "--title", "First note", "--body", "My first Superbee note.", "--dir", root, "--json"],
+          description: "Optionally create a local note. Choose your own ID, title and body.",
+          mutates: true, approval: { required: true, reason: "This creates a document in the selected local bundle." },
+        },
+        read: { ...verify, command: [...invocation, "doc", "read", FIRST_NOTE, "--dir", root, "--json"], description: "Read the note using the ID you created." },
+      };
+    }
+  }
+  const ready = selection === "deferred" || state.bundle === "selected";
+  return {
+    schema_version: 2, protocol: "agent_setup_v1", mode: "local", ready, complete: ready,
+    status: ready ? "ready" : next?.action === "inspect" ? "blocked" : "action_required",
+    agent_instruction: "Choose the project with the user. Execute each action as argv from its cwd, with approval when required. Rerun verify after each change. Once ready, the optional example shows how to create and read a note.",
+    workspace: { current_project_bundle: state.bundle, root: state.selected?.canonicalRoot ?? null },
+    capabilities: [capability], verify, ...(next ? { next } : {}), ...(example ? { example } : {}),
+  };
+}
+
 export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): Promise<void> {
   const stdout = injected.stdout ?? ((text: string) => void process.stdout.write(text));
+  const local = currentExistingGitBoard()?.localOnboarding;
   // The one setup leaf that signs in: its own flags (a hosted URL, not an agent host id).
-  if (argv[0] === "hosted") {
+  if (!local && argv[0] === "hosted") {
     await setupHosted(argv.slice(1), { stdout });
     return;
   }
@@ -413,8 +472,11 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
   );
   const { values } = parsed;
   if (values.help) {
-    stdout(renderUsage(SETUP_USAGE));
+    stdout(renderUsage(local ? LOCAL_SETUP_USAGE : SETUP_USAGE));
     return;
+  }
+  if (local && (parsed.selection.kind !== "selected" || parsed.selection.payload.action !== "inspect" || values.host !== undefined || values.scope !== undefined)) {
+    throw new CliError("USAGE", "This install supports local project setup.", { help: LOCAL_SETUP_USAGE });
   }
   if (parsed.selection.kind === "unknown" || parsed.selection.kind === "navigation") {
     throw new CliError("USAGE", `unknown setup subcommand: ${parsed.selection.kind === "unknown" ? parsed.selection.token : ""}`, {
@@ -463,6 +525,10 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
     invocation: injected.invocation ?? cliInvocation,
     isDirectory: injected.isDirectory ?? isDirectory,
   };
+  if (local) {
+    stdout(render({ setup: await inspectLocalSetup(deps, projectSelection, cwdOfferable) }, resolveMode(values)));
+    return;
+  }
   if (parsed.selection.kind === "selected" && parsed.selection.payload.action !== "inspect") {
     if (values.host !== undefined || values.scope !== undefined || values.project !== undefined || values["no-project"] !== undefined) {
       throw new CliError("USAGE", `setup ${parsed.selection.payload.action}-state does not accept --host, --scope, --project or --no-project`, {

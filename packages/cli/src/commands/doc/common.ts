@@ -92,6 +92,7 @@ type only by case, spacing, hyphens or underscores (KIND_TYPE_UNDECLARED, naming
 one). They never refuse the write.
 
 Options:
+  --create-only        Create only when the document ID is absent (exit 5 if it exists).
   --type <t>           OKF concept type (non-empty)                          [required]
   --title <t>          Display title
   --description <d>    One-sentence summary
