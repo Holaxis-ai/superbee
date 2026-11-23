@@ -210,33 +210,39 @@ test("indexeddb: a page that dies at each await of a large save loses no edit an
     backend.retireAcknowledged = async () => { throw new DOMException("page closed", "AbortError"); };
     page = tab(backend);
     let unretired = 0;
+    let attemptedBody: string;
     for (;;) {
-      try { await page.runtime.commit(ID, { body: largeBody(`Unretired ${unretired + 1}`) }); }
+      attemptedBody = largeBody(`Unretired ${unretired + 1}`);
+      try { await page.runtime.commit(ID, { body: attemptedBody }); }
       catch (error) { assert.equal((error as Error).name, "BodyCapacityError"); break; }
       unretired++;
       // The settle is durable; the failed retirement leaves its history for a later save.
       assert.equal((await page.runtime.sync()).pending, 0);
       s.prune();
-      assert.equal((await s.authority.backend.read(ID)).doc.body, largeBody(`Unretired ${unretired}`));
+      assert.equal((await s.authority.backend.read(ID)).doc.body, attemptedBody);
       assert.ok(unretired < 20, "history without retirement reaches capacity");
     }
     page.local.close();
     page = tab(open());
     const backlog = (await bodySnapshot(page.backend, ID, (await admitBodyMode(page.backend))!)).read.intents;
     assert.ok(backlog.length >= 3 && backlog.every(row => row.state === "acknowledged"));
-    // The same save, refused at capacity a moment ago, fits because the commit retires first.
-    await page.runtime.commit(ID, { body: largeBody("After reload 0") });
+    // The same save fits after reopening because the commit retires the backlog first.
+    await page.runtime.commit(ID, { body: attemptedBody });
     assert.deepEqual((await bodySnapshot(page.backend, ID, (await admitBodyMode(page.backend))!)).read.intents.map(row => row.state), ["acknowledged", "pending"]);
-    await page.runtime.sync();
-    // 4. The next save after reload retires the whole backlog before reserving its own room.
-    for (let save = 1; save <= 3; save++) {
-      await page.runtime.commit(ID, { body: largeBody(`After reload ${save}`) });
-      await page.runtime.sync();
-      s.prune();
-    }
+    assert.equal((await page.runtime.sync()).pending, 0);
+    const { intents } = await page.backend.readWithJournal(ID);
+    assert.deepEqual(intents.map(row => row.state), ["acknowledged"]);
+    assert.equal((await s.authority.backend.read(ID)).doc.body, attemptedBody);
+    s.prune();
+
+    // Keep editing on the recovered connection after the formerly blocked save settles.
+    const nextBody = largeBody("After reload");
+    await page.runtime.commit(ID, { body: nextBody });
+    assert.equal((await page.runtime.sync()).pending, 0);
+    s.prune();
     const rows = (await bodySnapshot(page.backend, ID, (await admitBodyMode(page.backend))!)).read.intents;
     assert.deepEqual(rows.map(row => row.state), ["acknowledged"]);
-    assert.equal((await s.authority.backend.read(ID)).doc.body, largeBody("After reload 3"));
+    assert.equal((await s.authority.backend.read(ID)).doc.body, nextBody);
     page.local.close();
   } finally { s.close(); }
 });
