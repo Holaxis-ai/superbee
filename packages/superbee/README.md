@@ -55,14 +55,6 @@ npm install -g superbee
 
 Stable releases publish on npm's `latest` tag and prereleases on `next`.
 
-### MCP Apps
-
-Run `superbee mcp install --host <id>` to register the bundled server in your MCP client.
-For the optional experimental MCP App, download the macOS Claude Desktop extension or install
-the matching npm tarballs on macOS or Linux with Node 24. The guide includes source-build
-instructions, verification in your client, and rollback to an existing bundled registration.
-[Experimental MCP App installation guide](https://github.com/Holaxis-ai/superbee-plugins/blob/40e327bc4f1f5a39e4159bba655026a11b12b967/apps/mcp/README.md)
-
 ### Native Windows Git boards
 
 Native Git board operations require Node.js 22.17.0 or later in the 22 line, 24.2.0 or later in
@@ -129,6 +121,17 @@ use. Generated hooks bind absolute Node and CLI paths from their installation, s
 copied from a laptop does not install Superbee or provide a working container launcher. Configure
 hooks inside the environment and verify startup in a fresh session. Startup pulls are best-effort;
 inspect an explicit `superbee sync` receipt to verify publication of edits.
+
+### MCP Apps
+
+On macOS, Linux, or WSL2, use `superbee mcp install --host <id>` to register the bundled server.
+Run `superbee mcp --help` to see the supported clients.
+
+To try the experimental MCP App on macOS or Linux with Node 24, install the matching offline
+tarballs from the guide. Keep your existing registration while you try the preview. In Claude
+Desktop on macOS, both the extension and the bundled server can return the document title but
+fail to display its body. Use `superbee doc open <id>` to read that document in your browser.
+[Experimental MCP App installation guide](https://github.com/Holaxis-ai/superbee-plugins/blob/40e327bc4f1f5a39e4159bba655026a11b12b967/apps/mcp/README.md)
 
 ## Everyday use
 

@@ -346,7 +346,7 @@ test("an OpenCode preview-only config reports the bundled registration separatel
     assert.equal(capability?.bundled_registration, "superbee");
     assert.equal(capability.state, "needs_action");
     assert.equal(capability.reason, "the bundled 'superbee' registration is absent");
-    assert.match(capability.optional_preview!.description, /preview separately.*superbee-mcp status --host <id>.*in your client/);
+    assert.ok(capability.optional_preview!.description.includes('"$mcp" status --host <id>'));
     assert.deepEqual(plan.next?.command, ["superbee", "mcp", "install", "--host", "opencode"]);
     assert.equal(plan.next?.approval.required, true);
   }

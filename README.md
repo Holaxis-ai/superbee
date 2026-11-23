@@ -66,12 +66,13 @@ replaces exact historical AgentState marketplace hooks rather than leaving two S
 
 ### MCP Apps
 
-Register the bundled server with `superbee mcp install --host <id>` to read documents and
-open interactive Views in your MCP client. Use `superbee mcp --help` for supported hosts.
+On macOS, Linux, or WSL2, use `superbee mcp install --host <id>` to register the bundled server.
+Run `superbee mcp --help` to see the supported clients.
 
-To try the optional experimental MCP App, download the macOS Claude Desktop extension or
-the matching npm tarballs for macOS and Linux with Node 24. The guide also covers building
-from source, verifying the preview in your client, and switching back to the bundled server.
+To try the experimental MCP App on macOS or Linux with Node 24, install the matching offline
+tarballs from the guide. Keep your existing registration while you try the preview. In Claude
+Desktop on macOS, both the extension and the bundled server can return the document title but
+fail to display its body. Use `superbee doc open <id>` to read that document in your browser.
 [Experimental MCP App installation guide](https://github.com/Holaxis-ai/superbee-plugins/blob/40e327bc4f1f5a39e4159bba655026a11b12b967/apps/mcp/README.md)
 
 ## Quickstart
