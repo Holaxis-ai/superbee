@@ -142,7 +142,8 @@ Run `superbee mcp --help` to see the supported clients.
 To try the experimental MCP App on macOS or Linux with Node 24, install the matching offline
 tarballs from the guide. Keep your existing registration while you try the preview. In Claude
 Desktop on macOS, both the extension and the bundled server can return the document title but
-fail to display its body. Use `superbee doc open <id>` to read that document in your browser.
+fail to display its body. With the CLI installed, run `superbee doc open <id> --dir "<bundle-folder>"`
+using the same local bundle folder you selected in Desktop to read the document in your browser.
 [Experimental MCP App installation guide](https://github.com/Holaxis-ai/superbee-plugins/blob/40e327bc4f1f5a39e4159bba655026a11b12b967/apps/mcp/README.md)
 
 ## Everyday use
