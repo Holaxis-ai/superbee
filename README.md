@@ -15,17 +15,18 @@ owned by you.
 ## Install
 
 **Requirements for the full CLI: macOS or Linux (including WSL2), and a supported Node.js 22, 24, or 26 release (22.14.0 minimum).**
-Stable `superbee@0.4.7` supports existing standalone Git boards on native Windows. This source tree
-also supports local project setup. For an npm build with that feature, use a `next` prerelease whose
-release notes include native Windows local setup. [Windows instructions](packages/superbee/README.md#native-windows-local-projects)
+Prerelease `superbee@0.4.8-pre.1` adds local project setup on native Windows. Stable
+`superbee@0.4.7` supports existing standalone Git boards. [Windows instructions](packages/superbee/README.md#native-windows-local-projects)
 
-Stable releases publish on npm's `latest` channel and prereleases on `next`. To install and set
-up the stable CLI on macOS, Linux, or WSL2, run:
+Stable releases publish on npm's `latest` channel and prereleases on `next`. To try the prerelease,
+run these commands from your project folder:
 
 ```sh
-npm install -g superbee
+npm install -g superbee@next
 superbee setup
 ```
+
+Use `npm install -g superbee` for the stable release.
 
 The package's optional Agent Skill teaches Claude Code, Codex, and OpenCode
 how to use the installed command without carrying another copy of the executable. OpenCode uses
