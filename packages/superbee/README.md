@@ -55,17 +55,27 @@ npm install -g superbee
 
 Stable releases publish on npm's `latest` tag and prereleases on `next`.
 
-### Native Windows Git boards
+### Native Windows local projects
 
-Native Git board operations require Node.js 22.17.0 or later in the 22 line, 24.2.0 or later in
-the 24 line, or Node.js 26. These releases use libuv 1.51.0 or newer, which fixes a Windows file
-identity check needed for board operations. [libuv changelog](https://github.com/libuv/libuv/blob/v1.51.0/ChangeLog)
-
-For native Windows Git boards, install the stable release in PowerShell:
+Install the standard package in PowerShell. Native file operations require Node.js 22.17.0 or
+later in the 22 line, 24.2.0 or later in the 24 line, or Node.js 26. These versions include
+libuv's Windows file identity fix. [libuv changelog](https://github.com/libuv/libuv/blob/v1.51.0/ChangeLog)
 
 ```powershell
 npm install -g superbee
+cd "C:\path to\your project"
+superbee setup
 ```
+
+Choose your project folder with `superbee setup --project .` or pass another existing folder.
+Setup recognizes an existing indexed bundle. For a new project it offers to create a bare
+`.superbee` bundle. It then offers to write a first note and read it back. You can change the
+note's title and body before creating it. Run setup again to resume. Document creation is
+create-only, so replay preserves the original note. Plain project folders need neither Git nor
+an agent host. For automation, `--json` returns each action's argv, working directory and
+approval requirement.
+
+### Native Windows Git boards
 
 Install Git for Windows and make `git.exe` available on PATH. Run `superbee version` to identify
 the installed build, and `superbee sync --dir "C:\path to\board"` to synchronize an existing
@@ -93,20 +103,19 @@ If the document has changed, the update exits 5 with `STALE_HEAD`. Read the curr
 and review your intended change before retrying. A successful update edits the local checkout.
 Use `superbee sync` with the same board root when you are ready to share the edit.
 
-Native Windows mode is experimental. Use WSL2 for the full CLI, including setup, hosted
+Native Windows mode is experimental. Use WSL2 for the full CLI, including agent-host integrations, hosted
 checkouts, board establishment, and boards with a configured pre-push sync gate. If such a gate
 would run, native sync keeps the
 commit locally and refuses the push. The Windows install uses `%LOCALAPPDATA%\Superbee` by
 default. A launcher can set `SUPERBEE_BOARD_STATE_DIR` to an absolute, writable directory
 outside the board to keep Git board state across restarts when that default is unavailable.
-This setting applies to Git board state only. Existing credentials and a separately installed
-`superbee-windows` executable stay in their existing locations.
+This setting applies to Git board state only.
 
 Run `superbee version` to see which build you have. `superbee version --check` is not available on published builds yet: it exits 1 with `policy_disabled` and makes no network request. Check the npm page or `npm view superbee version` for the current release.
 
 ## First run: let your agent finish setup
 
-`npm install` gives you the CLI. The integrations (the Agent Skill, the `SessionStart` hook, and
+`npm install` gives you the CLI. On macOS and Linux, the integrations (the Agent Skill, the `SessionStart` hook, and
 MCP server registration, where MCP is the Model Context Protocol) are installed by your agent,
 not by hand. Ask it:
 

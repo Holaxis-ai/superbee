@@ -24,9 +24,14 @@ import {
   STDIN_SILENT_NOTE,
   STDIN_SILENT_TIMEOUT,
 } from "./common.js";
+import { currentExistingGitBoard } from "../../runtime-context.js";
+import { resolveOnboardingRoute } from "../../local-onboarding.js";
+import { docReadCommand } from "../../doc-read-command.js";
 import { assertAuthoredLegacyTimestamp } from "../../legacy-timestamp.js";
 import { commandToken } from "../../command-text.js";
 import { assertStaleAfterEdition, parseStaleAfter } from "../../stale-after.js";
+
+const LOCAL_WRITE_USAGE = "superbee doc write <id> --type <type> --create-only --dir <local-bundle> --body <markdown> [--title <title>] [--actor <actor>] [--json]";
 
 export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
@@ -49,6 +54,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
           "blank-body": { type: "boolean" },
           "replace-links": { type: "boolean" },
           "accept-truncated-body": { type: "boolean" },
+          "create-only": { type: "boolean" },
           strict: { type: "boolean" },
           actor: { type: "string" },
           dir: { type: "string" },
@@ -59,8 +65,9 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
       }),
     CLI_LEAVES.docWrite,
   );
+  const scoped = currentExistingGitBoard()?.localOnboarding;
   if (values.help) {
-    stdout(renderUsage(DOC_WRITE_USAGE));
+    stdout(renderUsage(scoped ? LOCAL_WRITE_USAGE : DOC_WRITE_USAGE));
     return;
   }
 
@@ -79,6 +86,16 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   }
   const actor = resolveActor(values.actor, { help: `${cliInvocation()} doc write ${commandToken(id)} --actor <name>` });
   const staleAfter = parseStaleAfter(values["stale-after"]);
+
+  let localRoute;
+  if (scoped) {
+    const supported = ["create-only", "dir", "body", "type", "title", "actor", "json"];
+    if (!values["create-only"] || values.body === undefined || Object.keys(values).some(key => !supported.includes(key))) {
+      throw new CliError("USAGE", "Local document creation requires --create-only and an inline --body.", { help: LOCAL_WRITE_USAGE });
+    }
+    localRoute = await resolveOnboardingRoute(values.dir);
+    if (localRoute.kind !== "scoped-local") throw new CliError("USAGE", "Create documents in an ordinary local bundle. Git board edits require a guarded update.");
+  }
 
   // Body source: --body wins, then --body-file, then piped stdin. `bodySourceGiven` tracks whether
   // the caller supplied a body source at all: --body (even --body "") and --body-file always count,
@@ -115,7 +132,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   if (values.tag && values.tag.length > 0) frontmatter.tags = values.tag;
   if (values.timestamp?.trim()) frontmatter.timestamp = values.timestamp.trim();
 
-  const route = await resolveLocalBundleRoute(values.dir);
+  const route = localRoute ?? await resolveLocalBundleRoute(values.dir);
   const bundle = route.bundle;
   await assertResolvedLocalRouteIdentity(route);
   id = await resolveConceptIdCliArgument(bundle, rawId);
@@ -153,11 +170,11 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   // write, or a competing writer filling/racing the body, could slip past a guard that decided from
   // stale bytes. `--replace-links` still means "I accept dropping MY OWN read's links" — it narrows
   // ONLY the link-drop guard, never the CAS coupling itself.
-  if (route) await assertResolvedLocalRouteIdentity(route);
+  await assertResolvedLocalRouteIdentity(route);
   const result = await mutateDoc({
     bundle,
     id,
-    mode: "overwrite",
+    mode: values["create-only"] ? "create-only" : "overwrite",
     registry,
     strict: Boolean(values.strict),
     helpOnKindReject: `${cliInvocation()} kinds`,
@@ -167,7 +184,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     bodyReplace: { acceptTruncatedBody, replaceLinks },
     // Board self-attribution (PR C): fires only after a substantive persisted write — never a
     // refused/failed one — and only for the conventional board bundle (see board-attribution.ts).
-    onPersisted: boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor),
+    onPersisted: route.kind === "scoped-local" ? undefined : boardPostPersistHook(boardAttributionForRoute(route), actor),
     buildCandidate: (fresh: OkfDocument | undefined, context) => {
       prior = fresh;
       assertStaleAfterEdition(staleAfter, context.okfVersion);
@@ -275,7 +292,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   // Post-write findings (links that will not register, absent targets, an undeclared type) on
   // a changed write only; advisory, so they never fail the write and print nothing when empty.
   // Title-selection guidance also explains unchanged writes: no matching titled schema was used.
-  const findings = result.changed ? await writeFindings(bundle, saved, registry, prior) : [];
+  const findings = result.changed ? await writeFindings(bundle, saved, registry, prior, scoped) : [];
   const candidates = typeof saved.frontmatter.type === "string" ? kindTitleCandidates(registry, saved.frontmatter.type) : undefined;
   const warnings = [...result.warnings, ...findings].filter((warning) => !candidates || warning.code !== "KIND_TYPE_UNDECLARED");
   if (candidates) warnings.push({
@@ -289,7 +306,10 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   if (result.guidance.length > 0) receipt.guidance = result.guidance;
   // Retired-kind hint: authoring-moment only, never blocks, never on reads.
   if (isLegacyPageDoc(saved.frontmatter)) receipt.hint = LEGACY_PAGE_TYPE_HINT;
-  receipt.help = [`${cliInvocation()} doc read ${commandToken(saved.id)}`, ...writeFindingsHelp(findings)];
+  const readHelp = scoped
+    ? docReadCommand(cliInvocation(), saved.id, bundle.root)
+    : `${cliInvocation()} doc read ${commandToken(saved.id)}`;
+  receipt.help = [readHelp, ...writeFindingsHelp(findings, scoped ? LOCAL_WRITE_USAGE : undefined)];
 
   stdout(render(receipt, resolveMode(values)));
 }

@@ -22,7 +22,7 @@ export function unsafeProjectDir(dir: string, home: string): boolean {
   const target = physical(dir);
   if (path.parse(target).root === target) return true;
   for (let cursor = physical(home); ; cursor = path.dirname(cursor)) {
-    if (cursor === target) return true;
+    if (path.relative(cursor, target) === "") return true;
     if (path.dirname(cursor) === cursor) return false;
   }
 }

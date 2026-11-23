@@ -42,6 +42,8 @@ const BOARD_READ_HELP = `Read from an existing standalone Git board checkout aft
 Usage: superbee ${BOARD_READ_USAGE}
 `;
 
+const LOCAL_READ_HELP = "superbee doc read <id> --dir <local-bundle-or-standalone-board> --json [--offset <n>] [--max-bytes <n>] [--expected-version <v>]";
+
 export async function docRead(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
   const stderr = deps.stderr ?? ((s: string) => void process.stderr.write(s));
   const boardOnly = currentExistingGitBoard() !== undefined;
@@ -86,7 +88,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>, boardOnly
     CLI_LEAVES.docRead,
   );
   if (values.help) {
-    stdout(renderUsage(boardOnly ? BOARD_READ_HELP : DOC_READ_USAGE));
+    stdout(renderUsage(currentExistingGitBoard()?.localOnboarding ? LOCAL_READ_HELP : boardOnly ? BOARD_READ_HELP : DOC_READ_USAGE));
     return;
   }
 
@@ -106,8 +108,8 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>, boardOnly
   const fieldPresent = values.field !== undefined;
   const boardDir = boardOnly ? values.dir : undefined;
   if (boardOnly && (!values.json || outPresent || bodyOutPresent || renderedOutPresent || fieldPresent)) {
-    throw new CliError("USAGE", "This build reads a standalone Git board using an explicit --dir and --json.", {
-      help: `${cliInvocation()} ${BOARD_READ_USAGE}`,
+    throw new CliError("USAGE", "This build reads local files using an explicit --dir and --json.", {
+      help: currentExistingGitBoard()?.localOnboarding ? LOCAL_READ_HELP : `${cliInvocation()} ${BOARD_READ_USAGE}`,
     });
   }
 
@@ -178,7 +180,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>, boardOnly
   }
   const field = values.field?.trim();
 
-  const bundle = await openReadBundle(values.dir, BOARD_READ_USAGE, deps.autoPull);
+  const bundle = await openReadBundle(values.dir, BOARD_READ_USAGE, deps.autoPull, currentExistingGitBoard()?.localOnboarding);
   id = await resolveConceptIdCliArgument(bundle, rawId);
 
   // Body-only byte channel: one versioned read owns BOTH the semantic parsed body and the CAS token

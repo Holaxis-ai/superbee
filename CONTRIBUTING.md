@@ -19,7 +19,7 @@ answer.
    CLI.
 5. Develop with Node.js 24.22.1 by default on macOS or Linux. Published packages run on supported
    Node.js 22, 24, or 26 releases, with 22.14.0 as the minimum. The first-party executable
-   includes an experimental native Windows mode for existing Git boards. The build and full
+   includes an experimental native Windows mode for local projects and existing Git boards. The build and full
    CLI contributor workflow use macOS, Linux, or WSL2.
 
 A fresh clone does not need an installed Agent Skill or a project bundle to build, test, or submit
@@ -278,7 +278,7 @@ plus the `aliasing-host` lane, which runs `npm run ci:aliasing-host` on macOS wi
 branch needs a case-aliasing filesystem execute and fail closed on a mismatched host. The lane's
 scope is a constraint, not a list: `scripts/aliasing-host-coverage.test.mjs` fails when a
 host-sensitive workspace test is not executed by the lane's script chain. The `windows-installed`
-lane installs the candidate `superbee` tarball and checks Git board sync on a native Windows
+lane installs the candidate `superbee` tarball and checks local project onboarding and Git board sync on a native Windows
 runner on Node 22.17.0, the first Node 22 release with the libuv fix for Windows file identity.
 The Linux installed-package smoke continues to use the package engines floor.
 

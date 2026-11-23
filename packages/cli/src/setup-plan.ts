@@ -308,7 +308,8 @@ export interface SetupPlan {
   readonly verification: { readonly configured_only: true; readonly live_host_activation: "not_observed" };
 }
 
-function selectedProject(input: SetupPlanInput): SetupProjectSelection | "existing_bundle" {
+type ProjectPlanInput = Pick<SetupPlanInput, "workspace" | "cwd" | "cwdOfferable" | "projectSelection" | "scope"> & { host?: McpInstallTargetId };
+function selectedProject(input: ProjectPlanInput): SetupProjectSelection | "existing_bundle" {
   if (input.projectSelection === "deferred") return "deferred";
   if (input.projectSelection === "confirmed") return "confirmed";
   return input.workspace.bundle === "selected" ? "existing_bundle" : "unselected";
@@ -319,11 +320,11 @@ export function setupProjectArgs(selection: SetupProjectSelection | undefined, d
   return selection === "deferred" ? ["--no-project"] : [];
 }
 
-function inspectAgainArgv(input: SetupPlanInput, project: readonly string[] = setupProjectArgs(input.projectSelection, input.cwd)): readonly string[] {
-  return ["superbee", "setup", "--host", input.host, "--scope", input.scope, ...project];
+function inspectAgainArgv(input: ProjectPlanInput, project: readonly string[] = setupProjectArgs(input.projectSelection, input.cwd)): readonly string[] {
+  return ["superbee", "setup", ...(input.host ? ["--host", input.host, "--scope", input.scope] : []), ...project];
 }
 
-function inspectAgain(input: SetupPlanInput): Pick<SetupCapability, "command" | "argv"> {
+function inspectAgain(input: ProjectPlanInput): Pick<SetupCapability, "command" | "argv"> {
   const argv = inspectAgainArgv(input);
   return { command: argv.join(" "), argv };
 }
@@ -564,7 +565,7 @@ function hookCapability(input: SetupPlanInput): SetupCapability {
   };
 }
 
-function bundleCapability(input: SetupPlanInput): SetupCapability {
+export function bundleCapability(input: ProjectPlanInput): SetupCapability {
   if (selectedProject(input) === "deferred") {
     return { id: "bundle", requirement: "not_applicable", state: "not_applicable", reason: "No project folder chosen yet (--no-project). Run setup with --project <dir> when you want notes." };
   }
@@ -579,7 +580,7 @@ function bundleCapability(input: SetupPlanInput): SetupCapability {
       reason: input.workspace.recovery
         ? `local bundle selection is blocked; recover with: ${input.workspace.recovery}`
         : "local bundle selection is unreadable or conflicting",
-      command: "superbee bundle locate",
+      ...(input.host ? { command: "superbee bundle locate" } : inspectAgain(input)),
     };
   }
   if (selectedProject(input) === "unselected") {
@@ -624,7 +625,7 @@ function bundleCapability(input: SetupPlanInput): SetupCapability {
     requirement: "recommended",
     state: "needs_action",
     reason: `No notes folder yet. This creates .superbee in ${input.cwd ?? "the project folder"}.`,
-    command: "superbee init --create-only --recipe work-tracking --dir .superbee",
+    command: `superbee init --create-only --recipe ${input.host ? "work-tracking" : "none"} --dir .superbee`,
   };
 }
 
