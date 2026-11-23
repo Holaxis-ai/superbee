@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import {
   DocumentNotFoundError,
   KindConformanceError,
+  MemoryBackend,
   VersionConflict,
   blobVersion,
   loadKinds,
@@ -707,6 +708,14 @@ export {
   type BridgeServiceOptions,
   type EdgeParams,
 } from "./bridge.js";
+
+/** A fresh process-local anchor for temporary Views opened without a workspace. */
+export function createBundlelessViewContext(): { bundle: Bundle; name: string } {
+  return {
+    bundle: { root: "mem://superbee-mcp-bundleless", backend: new MemoryBackend() },
+    name: "Bundleless transient View",
+  };
+}
 
 /** Shared launch, bridge and scalar-write authority for a workspace presented by a local MCP host. */
 export function createWorkspaceViewServices(options: {

@@ -53,7 +53,7 @@ export interface CatalogWorkspaceResolverOptions {
 /** Adapt the private CLI catalog to the shared workspace boundary. */
 export function createCatalogWorkspaceResolver(
   options: CatalogWorkspaceResolverOptions = {},
-): WorkspaceResolver<Awaited<ReturnType<typeof serveWorkspace>>> {
+): Required<WorkspaceResolver<Awaited<ReturnType<typeof serveWorkspace>>>> {
   const listEntries = options.listEntries ?? listCatalogEntries;
   const resolveEntry = options.resolveEntry ?? resolveCatalogEntry;
   const open = options.open ?? openBundle;
