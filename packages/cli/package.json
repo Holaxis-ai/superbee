@@ -24,6 +24,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.mjs"
     },
+    "./view-workspace/v1": {
+      "types": "./dist/view-workspace.d.ts",
+      "default": "./dist/view-workspace.mjs"
+    },
     "./temporary-view-reader/v1": {
       "types": "./dist/temporary-view-reader.d.ts",
       "default": "./dist/temporary-view-reader.mjs"

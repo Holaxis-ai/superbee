@@ -63,6 +63,14 @@ test("the temporary View reader bundles the shared bridge and renderer independe
   assert.ok(Object.keys(entry.inputs).every(input => !/(?:^|\/)(?:@modelcontextprotocol|mcp-app|ui-server)\//.test(input)));
 });
 
+test("the workspace for a trusted presentation host has no MCP adapter or transport", async () => {
+  const graph = await readJson(path.join(root, "out/cli-runtime-metafile.json"));
+  const entry = graph.outputs["dist/view-workspace.mjs"];
+  assert.ok(Object.hasOwn(entry.inputs, "../view-runtime/src/bridge.ts"));
+  assert.ok(entry.imports.every(edge => edge.external && isBuiltin(edge.path)));
+  assert.ok(Object.keys(entry.inputs).every(input => !/(?:^|\/)(?:@modelcontextprotocol|mcp-app|ui-server)\//.test(input)));
+});
+
 test("packed reusable CLI is closed, inert on import, and binds commands to its executable", async () => {
   const scratch = await mkdtemp(path.join(tmpdir(), "superbee-cli-pack-"));
   try {

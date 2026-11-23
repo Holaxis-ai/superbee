@@ -31,7 +31,10 @@ import {
   type ViewAuthorizationStore,
   type ViewAuthorizationSubject,
 } from "./authorization.js";
-import type { BridgeLaunch, BridgeLaunchAuthority } from "./bridge.js";
+import {
+  BRIDGE_HOST_CAPABILITIES, BRIDGE_SERVICE_CAPABILITIES, BRIDGE_SERVICE_LIMITS, BridgeService,
+  type BridgeDocumentRenderer, type BridgeLaunch, type BridgeLaunchAuthority,
+} from "./bridge.js";
 import {
   persistTransientView,
   TransientViewSaveError,
@@ -171,6 +174,16 @@ export function pageLaunchAuthorizationSubject(launch: PageLaunch): ViewAuthoriz
   return launch.sourceKind === "registered"
     ? { ...common, sourceKind: "registered", registryId: launch.registryId }
     : { ...common, sourceKind: "transient", bundleIdentity: launch.bundleIdentity };
+}
+
+/** A suspended launch retains its old approval while its replacement undergoes fresh admission. */
+export async function mayResumePageLaunch(
+  launches: PageLaunchRegistry,
+  previous: PageLaunch,
+  store: ViewAuthorizationStore,
+): Promise<boolean> {
+  const trusted = previous.capability === "none" || await store.isAuthorized(pageLaunchAuthorizationSubject(previous));
+  return trusted && launches.resolveLaunch(previous.launchId) === previous;
 }
 
 /** Read or record the trusted host's decision against the exact live launch. */
@@ -694,6 +707,52 @@ export {
   type BridgeServiceOptions,
   type EdgeParams,
 } from "./bridge.js";
+
+/** Shared launch, bridge and scalar-write authority for a workspace presented by a local MCP host. */
+export function createWorkspaceViewServices(options: {
+  bundle: Bundle;
+  name: string;
+  authorizations?: ViewAuthorizationStore;
+  actor?: string;
+  renderDocument: BridgeDocumentRenderer;
+}) {
+  const launches = new PageLaunchRegistry();
+  const durableAuthorizations =
+    options.authorizations ?? new SessionViewAuthorizationStore();
+  const transientAuthorizations = new SessionViewAuthorizationStore();
+  const actions = createPageActionService(
+    options.bundle, launches, durableAuthorizations, options.actor, transientAuthorizations,
+  );
+  const bridge = new BridgeService({
+    bundle: options.bundle,
+    launches: new PageBridgeLaunchAuthority(
+      options.bundle,
+      launches,
+      durableAuthorizations,
+      transientAuthorizations,
+    ),
+    config: async () => ({
+      root: null,
+      name: options.name,
+      mode: "local-mcp",
+    }),
+    renderDocument: options.renderDocument,
+    // The MCP frame navigates on open-page and delivers polled deltas as change events.
+    host: {
+      kind: "oss",
+      capabilities: [
+        ...BRIDGE_SERVICE_CAPABILITIES,
+        BRIDGE_HOST_CAPABILITIES.relationships,
+        BRIDGE_HOST_CAPABILITIES.openPage,
+        BRIDGE_HOST_CAPABILITIES.subscribeDeltas,
+      ],
+      limits: BRIDGE_SERVICE_LIMITS,
+    },
+    enablePolling: true,
+    consumeOpenPage: true,
+  });
+  return { launches, durableAuthorizations, transientAuthorizations, actions, bridge };
+}
 
 export interface ActionConfirmation {
   source: {

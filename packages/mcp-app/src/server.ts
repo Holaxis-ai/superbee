@@ -14,18 +14,15 @@ import {
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import type { CallToolResult, ReadResourceResult } from "@modelcontextprotocol/server";
 import {
-  BRIDGE_HOST_CAPABILITIES,
-  BRIDGE_SERVICE_CAPABILITIES,
-  BRIDGE_SERVICE_LIMITS,
   BridgeService,
-  createPageActionService,
-  PageBridgeLaunchAuthority,
+  createWorkspaceViewServices,
   PageLaunchRegistry,
   SessionViewAuthorizationStore,
   TransientViewSaveError,
   type TrustedActionService,
   ViewNotFoundError,
   listViewCatalogPage,
+  mayResumePageLaunch,
   mintActiveViewLaunch,
   mintTransientViewLaunch,
   pageLaunchAuthorizationSubject,
@@ -603,40 +600,9 @@ function createMcpBundleRuntime(
     onLaunch?: (launchId: string, runtime: McpBundleRuntime) => void;
   } = {},
 ): McpBundleRuntime {
-  const launches = new PageLaunchRegistry();
-  const durableAuthorizations =
-    context.viewAuthorization ?? new SessionViewAuthorizationStore();
-  const transientAuthorizations = new SessionViewAuthorizationStore();
-  const actions = createPageActionService(
-    context.bundle, launches, durableAuthorizations, context.actor, transientAuthorizations,
-  );
-  const bridge = new BridgeService({
-    bundle: context.bundle,
-    launches: new PageBridgeLaunchAuthority(
-      context.bundle,
-      launches,
-      durableAuthorizations,
-      transientAuthorizations,
-    ),
-    config: async () => ({
-      root: null,
-      name: context.name,
-      mode: "local-mcp",
-    }),
-    renderDocument: renderDocumentToStaticHtml,
-    // The MCP frame navigates on open-page and delivers polled deltas as change events.
-    host: {
-      kind: "oss",
-      capabilities: [
-        ...BRIDGE_SERVICE_CAPABILITIES,
-        BRIDGE_HOST_CAPABILITIES.relationships,
-        BRIDGE_HOST_CAPABILITIES.openPage,
-        BRIDGE_HOST_CAPABILITIES.subscribeDeltas,
-      ],
-      limits: BRIDGE_SERVICE_LIMITS,
-    },
-    enablePolling: true,
-    consumeOpenPage: true,
+  const { launches, durableAuthorizations, transientAuthorizations, actions, bridge } = createWorkspaceViewServices({
+    bundle: context.bundle, name: context.name, authorizations: context.viewAuthorization,
+    actor: context.actor, renderDocument: renderDocumentToStaticHtml,
   });
   // One source launch can select at most one target. Retaining the bounded promise lets duplicate
   // or concurrent bridge deliveries converge on the same fresh target launch instead of racing a
@@ -1337,13 +1303,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       const authorizationStore = previous?.sourceKind === "transient"
         ? runtime.transientAuthorizations
         : runtime.durableAuthorizations;
-      if (
-        !previous ||
-        (previous.capability !== "none" &&
-          !(await authorizationStore.isAuthorized(
-            pageLaunchAuthorizationSubject(previous),
-          )))
-      ) {
+      if (!previous || !(await mayResumePageLaunch(runtime.launches, previous, authorizationStore))) {
         return {
           isError: true,
           content: [
@@ -1373,14 +1333,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
               runtime.launches,
               runtime.transientAuthorizations,
             );
-        const stillCurrent = runtime.launches.resolveLaunch(launchId);
-        if (
-          stillCurrent !== previous ||
-          (previous.capability !== "none" &&
-            !(await authorizationStore.isAuthorized(
-              pageLaunchAuthorizationSubject(previous),
-            )))
-        ) {
+        if (!(await mayResumePageLaunch(runtime.launches, previous, authorizationStore))) {
           runtime.bridge.revoke(view.launch.launchId);
           return {
             isError: true,
