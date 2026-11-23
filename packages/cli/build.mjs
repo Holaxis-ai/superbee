@@ -17,7 +17,7 @@ export async function buildCliRuntime({ preparedInputs, source = currentSourceFa
   const runtimeBuild = await build({
     metafile: true,
     absWorkingDir: root,
-    entryPoints: ["index", "workspace-reader", "view-actions", "temporary-view-reader"].map(name => resolve(root, `src/${name}.ts`)),
+    entryPoints: ["index", "workspace-reader", "view-actions", "temporary-view-reader", "view-workspace"].map(name => resolve(root, `src/${name}.ts`)),
     outdir: resolve(root, "dist"),
     outExtension: { ".js": ".mjs" },
     bundle: true,
@@ -37,7 +37,7 @@ export async function buildCliRuntime({ preparedInputs, source = currentSourceFa
   // The facade has explicit closed signatures. Generate declarations from these signatures instead
   // of publishing declarations for internal engine, transport, and command implementations.
   await mkdir(resolve(root, "dist"), { recursive: true });
-  for (const name of ["index", "public-types", "runtime-types", "host-command-error", "resources", "workspace-reader", "view-actions", "temporary-view-reader"]) {
+  for (const name of ["index", "public-types", "runtime-types", "host-command-error", "resources", "workspace-reader", "view-actions", "temporary-view-reader", "view-workspace"]) {
     let source = await readFile(resolve(root, `src/${name}.ts`), "utf8");
     if(name==="index")source=source.replace('export { createCliRuntime, createPosixCliRuntime } from \'./runtime.js\';', 'import type { CliRuntime, CliRuntimeOptions, CliDistribution } from "./runtime-types.js";\nexport declare function createCliRuntime(options:CliRuntimeOptions):CliRuntime;\nexport declare function createPosixCliRuntime(distribution:CliDistribution):CliRuntime;');
     const result = ts.transpileDeclaration(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.NodeNext }, fileName: `${name}.ts` });

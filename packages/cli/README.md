@@ -42,7 +42,7 @@ The supported API is what the package exports:
 - the adapter contract types exported beside them (`CliRuntimeOptions`, `CliDistribution`,
   `HostCommands`, `PrivateStateHost`, `FilesystemHostPolicy`, `BoardHostPolicy` and the types
   they reference);
-- the `@superbee/cli/workspace-reader/v1`, `@superbee/cli/view-actions/v1`, `@superbee/cli/temporary-view-reader/v1` and `@superbee/cli/resources` subpaths;
+- the `@superbee/cli/workspace-reader/v1`, `@superbee/cli/view-actions/v1`, `@superbee/cli/temporary-view-reader/v1`, `@superbee/cli/view-workspace/v1` and `@superbee/cli/resources` subpaths;
 - the `@superbee/cli/embedded-engine.json` data file.
 
 `runManagedUiWorker` and `runUpdateRefreshWorker` are exported for first-party distributions

@@ -533,7 +533,7 @@ export async function proveCliTarball(tarball, { checkSource, execute = exec } =
       assert.deepEqual(embeddedEngineErrors(record, await embeddedInventory(path.join(library, "dist/index.mjs")), await workspaceManifests(), treeFacts()), []);
       // Compare actual installed bytes; the workspace cannot stand in for the retained artifact.
       assert.equal(createHash("sha256").update(await readFile(path.join(library, "dist/index.mjs"))).digest("hex"), createHash("sha256").update(await readFile(path.join(root, "packages/cli/dist/index.mjs"))).digest("hex"), "packed runtime differs from the proved build");
-      for (const file of ["dist/workspace-reader.mjs", "dist/view-actions.mjs", "dist/temporary-view-reader.mjs"]) {
+      for (const file of ["dist/workspace-reader.mjs", "dist/view-actions.mjs", "dist/temporary-view-reader.mjs", "dist/view-workspace.mjs"]) {
         const packed = await readFile(path.join(library, file));
         const built = await readFile(path.join(root, "packages/cli", file));
         assert.ok(packed.equals(built), `packed ${file} differs from the proved build`);
@@ -583,6 +583,7 @@ export async function proveCliTarball(tarball, { checkSource, execute = exec } =
   await import('@superbee/cli/workspace-reader/v1');
   await import('@superbee/cli/view-actions/v1');
   await import('@superbee/cli/temporary-view-reader/v1');
+  await import('@superbee/cli/view-workspace/v1');
   const resources = await import('@superbee/cli/resources');
   const rendered = resources.getDistributionResources({packageName:'@fixture/cli',binName:'fixture'});
   assert.ok(rendered.skill.includes('fixture setup'));
@@ -665,6 +666,9 @@ await assert.rejects(openWorkspaceReader('catalog', 'missing-workspace'));
       await copyFile(path.join(root, "scripts/fixtures/packed-temporary-view.mjs"), temporaryReader);
       await run([temporaryReader, bundle], cwd, env);
       await provePackedViewActions({ scratch, cwd, bundle, entry, env, run });
+      const viewHost = path.join(scratch, "view-workspace.mjs");
+      await copyFile(path.join(root, "scripts/fixtures/packed-view-workspace.mjs"), viewHost);
+      await run([viewHost], cwd, env);
       // Exercise the serialized child from the installed tarball, outside the checkout and
       // without tools or package imports in the accepted self-contained operation entry.
       if (process.platform === "darwin" || process.platform === "linux") {
