@@ -10,11 +10,12 @@ import { CONVENTIONAL_BUNDLE_DIR_NAME, resolveExistingGitBoardRoute, resolveLoca
 import { cliInvocation } from "./invocation.js";
 import { commandLiteral, type CommandText } from "./command-text.js";
 import { CliError } from "./errors.js";
-import { bindingForPath } from "./hosted/binding.js";
+import { bindingForPath, checkoutLockName, type CheckoutBinding } from "./hosted/binding.js";
 import { readCheckoutMarker } from "./hosted/marker.js";
 import { unsafeProjectDir } from "./no-bundle-guidance.js";
 import { assertBundleOutsidePrivateState } from "./private-state-bundle-boundary.js";
 import { currentExistingGitBoard } from "./runtime-context.js";
+import { cliPushRoleLocks } from "./filesystem-runtime.js";
 
 async function inspectProjectAncestors(root: string): Promise<boolean> {
   let gitMarker = false;
@@ -76,14 +77,29 @@ export async function resolveOnboardingRoute(
 }
 
 /** The scoped CLI accepts an explicit Hosted root only while its local binding is valid. */
-export async function scopedHostedCheckoutRoute(dir: string | undefined): Promise<ScopedBundleRoute | null> {
+export async function scopedHostedCheckoutRoute(dir: string | undefined): Promise<{ route: ScopedBundleRoute; binding: CheckoutBinding } | null> {
   if (!currentExistingGitBoard()?.hostedOnboarding || !dir?.trim()) return null;
   const root = path.resolve(dir);
   const canonicalRoot = await realpath(root).catch((error: unknown) => {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   });
-  if (canonicalRoot === null || !await bindingForPath(homedir(), canonicalRoot, true)) return null;
+  if (canonicalRoot === null) return null;
+  const binding = await bindingForPath(homedir(), canonicalRoot, true);
+  if (!binding) return null;
   assertBundleOutsidePrivateState(canonicalRoot);
-  return scopedLocalRoute({ root, canonicalRoot, selectedBy: "explicit-dir" });
+  const route = await scopedLocalRoute({ root, canonicalRoot, selectedBy: "explicit-dir" });
+  return { route, binding };
+}
+
+/** Release and adoption use this same role; input must already have been read. */
+export function withScopedHostedCheckoutMutation<T>(binding: CheckoutBinding, mutate: () => Promise<T>): Promise<T> {
+  return cliPushRoleLocks().request(checkoutLockName(binding.path), { ifAvailable: true }, async (lock) => {
+    if (!lock) throw new CliError("CONFLICT", "Another command is using this Hosted checkout. Retry after it finishes.");
+    const current = await bindingForPath(homedir(), binding.path, true);
+    if (current?.checkout_id !== binding.checkout_id) {
+      throw new CliError("CONFLICT", "The Hosted checkout changed while preparing the edit. Open its current document and retry.");
+    }
+    return mutate();
+  });
 }

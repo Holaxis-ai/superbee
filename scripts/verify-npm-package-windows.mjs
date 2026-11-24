@@ -192,7 +192,7 @@ async function proveLocalOnboarding(installed, project, env) {
   assert.deepEqual([read.id, read.body.trimEnd(), read.head_version], [written.id, body, written.version]);
 }
 
-async function proveWorkspaceProvider({ scratch, npm, env, prefix, install, board }) {
+async function proveWorkspaceProvider({ scratch, npm, env, prefix, install, board, hostedFixture }) {
   const expected = process.env.SUPERBEE_CLI_TARBALL_SHA256;
   assert.match(expected ?? "", /^[a-f0-9]{64}$/);
   const archive = fileURLToPath(retainedProvider);
@@ -288,6 +288,8 @@ async function proveWorkspaceProvider({ scratch, npm, env, prefix, install, boar
     await assert.rejects(catalog.listOperations("window-hosted"), { code: "AUTH_REQUIRED" });
     assert.deepEqual(requests, []);
     const sessionFile = process.argv[2];
+    const { protectWindowsAuthRecord } = await import(process.argv[4]);
+    const sessionKey = process.argv[5] + "/session.json";
     const config = {
       schema: 1, host: "https://checkout.example.invalid", audience: "https://checkout.example.invalid/mcp",
       issuer: "https://checkout.example.invalid/", token_endpoint: "https://checkout.example.invalid/oauth/token",
@@ -295,6 +297,9 @@ async function proveWorkspaceProvider({ scratch, npm, env, prefix, install, boar
       access_token: fixture, access_token_expires_at_ms: Date.now() + 600_000, subject: {}, signed_in_at_ms: 0,
     };
     await writeFile(sessionFile, JSON.stringify(config));
+    await assert.rejects(catalog.listOperations("window-hosted"), { code: "AUTH_REQUIRED" });
+    assert.deepEqual(requests, [], "an unprotected session record must not authorize a Hosted request");
+    await writeFile(sessionFile, await protectWindowsAuthRecord(sessionKey, JSON.stringify(config)));
     const available = await catalog.listOperations("window-hosted");
     assert.ok(available.ok);
     assert.ok(available.listing.operations.some((row) => row.operationId === "documents.history.v1"));
@@ -305,7 +310,7 @@ async function proveWorkspaceProvider({ scratch, npm, env, prefix, install, boar
     assert.deepEqual(requests.splice(0), ["/sync/v1/whoami"]);
 
     config.access_token_expires_at_ms = 0;
-    await writeFile(sessionFile, JSON.stringify(config));
+    await writeFile(sessionFile, await protectWindowsAuthRecord(sessionKey, JSON.stringify(config)));
     await assert.rejects(catalog.listOperations("window-hosted"), { code: "AUTH_REQUIRED" });
     assert.deepEqual(requests, []);
     const host = await catalog.open("window-hosted");
@@ -357,7 +362,7 @@ async function proveWorkspaceProvider({ scratch, npm, env, prefix, install, boar
     assert.equal((await reopened.document("tasks/one")).frontmatter.status, "done");
     assert.equal((await reopened.open({ viewId: "views-registry/editor" })).authorized, true);
   `;
-  await run("node", ["--input-type=module", "-e", program, bundle, sessionFile, operationFixture.response.body], {
+  await run("node", ["--input-type=module", "-e", program, bundle, sessionFile, operationFixture.response.body, hostedFixture.href, authKey], {
     cwd: prefix, env: { ...env, SUPERBEE_ACCESS_TOKEN: "" },
   });
   console.log("WINDOWS_PROOF_WORKSPACE_PROVIDER opened local, Git and Hosted working copies, confirmed a versioned edit, and refused a signed-out Hosted call and an edit in an unbound copy.");
@@ -610,17 +615,18 @@ async function prove({ expectedDigest, expectedSource, scratch }) {
   } finally {
     await acl("/remove:d", account);
   }
-  await proveWorkspaceProvider({ scratch, npm, env, prefix, install: installed, board: cloneB });
   // The fixture bundle shares the existing test helpers' location so their golden paths resolve.
   const hostedFixture = new URL("../packages/cli/test/support/.installed-hosted-onboarding.mjs", import.meta.url);
   await cp(new URL("../out/windows-proof/installed-hosted-onboarding.mjs", import.meta.url), hostedFixture);
   try {
+    await proveWorkspaceProvider({ scratch, npm, env, prefix, install: installed, board: cloneB, hostedFixture });
     const { proveInstalledHostedOnboarding } = await import(hostedFixture.href);
     const hostedEnv = {
       ...Object.fromEntries(Object.entries(env).filter(([key]) => !/^SUPERBEE_/iu.test(key))),
       ...windowsProfile(path.join(scratch, "Fresh Hosted profile")),
     };
     await mkdir(hostedEnv.LOCALAPPDATA, { recursive: true });
+    await run("icacls", [hostedEnv.LOCALAPPDATA, "/grant", "*S-1-1-0:(OI)(CI)(RX)"], { cwd: scratch, env });
     await proveInstalledHostedOnboarding({
       folder: path.join(scratch, "Native Hosted checkout"),
       stateRoot: path.join(hostedEnv.LOCALAPPDATA, "Superbee"),

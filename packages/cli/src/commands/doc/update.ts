@@ -16,6 +16,7 @@ import {
 import {
   assertResolvedLocalRouteIdentity,
   boardAttributionForRoute,
+  existingGitBoardRoute,
   resolveExistingGitBoardRoute,
   resolveLocalBundleRoute,
 } from "../../bundle.js";
@@ -26,7 +27,7 @@ import { CliError } from "../../errors.js";
 import { render, resolveMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import { writeFindings, writeFindingsHelp } from "../../write-findings.js";
-import { mutateDoc } from "../../mutate.js";
+import { mutateDoc, type MutateDocOptions } from "../../mutate.js";
 import { isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../../legacy-page.js";
 import { boardPostPersistHook } from "../../board-attribution.js";
 import { resolveActor } from "../../actor.js";
@@ -42,7 +43,7 @@ import {
 import { docReadCommand } from "../../doc-read-command.js";
 import { commandLiteral, commandToken } from "../../command-text.js";
 import { currentExistingGitBoard } from "../../runtime-context.js";
-import { scopedHostedCheckoutRoute } from "../../local-onboarding.js";
+import { scopedHostedCheckoutRoute, withScopedHostedCheckoutMutation } from "../../local-onboarding.js";
 import { assertStaleAfterEdition, parseStaleAfter } from "../../stale-after.js";
 
 const UPDATE_HELP = commandLiteral("doc update --help");
@@ -297,9 +298,9 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   const staleAfter = parseStaleAfter(p.staleAfter);
 
   // A scoped command must validate its target before opening any optional input channel.
-  const scopedRoute = boardOnly
-    ? await scopedHostedCheckoutRoute(p.dir) ?? await resolveExistingGitBoardRoute(p.dir, UPDATE_HELP)
-    : undefined;
+  const board = scope?.hostedOnboarding ? await existingGitBoardRoute(p.dir) : null;
+  const hosted = board ? null : await scopedHostedCheckoutRoute(p.dir);
+  const scopedRoute = board ?? hosted?.route ?? (boardOnly ? await resolveExistingGitBoardRoute(p.dir, UPDATE_HELP) : undefined);
   const readHelp = (docId: string) => recovery.read(docId, scopedRoute?.bundle.root);
 
   // A patchable field OTHER than body, given via a flag — title/description/type/kind fields.
@@ -375,8 +376,8 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   // doc, so `existing` below is guaranteed defined.
   // The version this patch replaced (the winning attempt's): findings are those it introduced.
   let prior: OkfDocument | undefined;
-  await assertResolvedLocalRouteIdentity(route);
-  const result = await mutateDoc({
+  const hostedBody = hosted && p.body === undefined && p.bodyFile ? await readExternalTextFile(p.bodyFile) : undefined;
+  const options: MutateDocOptions = {
     bundle,
     id,
     mode: "patch",
@@ -414,6 +415,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
 
       let nextBody = existing.body;
       if (p.body !== undefined) nextBody = p.body;
+      else if (hostedBody !== undefined) nextBody = hostedBody;
       else if (p.bodyFile) {
         nextBody = await readExternalTextFile(p.bodyFile);
         if (scopedRoute) await assertResolvedLocalRouteIdentity(scopedRoute);
@@ -506,7 +508,12 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
           { help: readHelp(id), details: { expected: err.expected, actual: err.actual } },
         ),
     },
-  });
+  };
+  const persist = async () => {
+    await assertResolvedLocalRouteIdentity(route);
+    return mutateDoc(options);
+  };
+  const result = hosted ? await withScopedHostedCheckoutMutation(hosted.binding, persist) : await persist();
 
   const receipt: Record<string, unknown> = {
     doc: "updated",

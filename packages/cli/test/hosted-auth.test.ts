@@ -851,7 +851,8 @@ test("store policy: native Windows protection by default and explicit file opt-i
   const base = { home: "/nonexistent", directoryFor: (a: string) => a };
   assert.equal(selectSecretStore({ ...base, env: {}, platform: "darwin" }).kind, "macos-keychain");
   assert.equal(selectSecretStore({ ...base, env: {}, platform: "linux" }).kind, "secret-service");
-  assert.equal(selectSecretStore({ ...base, env: { [CREDENTIAL_STORE_ENV]: "file" }, platform: "win32" }).kind, "file");
+  assert.equal(selectSecretStore({ ...base, env: { [CREDENTIAL_STORE_ENV]: "file" }, platform: "linux" }).kind, "file");
+  assert.throws(() => selectSecretStore({ ...base, env: { [CREDENTIAL_STORE_ENV]: "file" }, platform: "win32" }), (e: CliError) => e.code === "USAGE");
   assert.equal(selectSecretStore({ ...base, env: {}, platform: "win32" }).kind, "windows-dpapi");
   assert.throws(() => selectSecretStore({ ...base, env: { [CREDENTIAL_STORE_ENV]: "plaintext" }, platform: "linux" }), (e: CliError) => e.code === "USAGE");
 });

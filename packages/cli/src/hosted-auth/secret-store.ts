@@ -201,6 +201,26 @@ export function fileSecretStore(home: string, directoryFor: (account: string) =>
   };
 }
 
+export async function transformWindowsAuthData(
+  method: "Protect" | "Unprotect",
+  scope: string,
+  bytes: Buffer,
+  env: NodeJS.ProcessEnv = process.env,
+  run: ToolRunner = runTool,
+): Promise<Buffer> {
+  const kind = "windows-dpapi" as const;
+  const result = await runWindowsDataProtection(method, `${KEYCHAIN_SERVICE}\0${scope}`, bytes.toString("base64"), env, run, STORE_CALL_TIMEOUT_MS);
+  if (result === null) {
+    throw credentialStoreUnavailable("the Windows system directory is unavailable", kind);
+  }
+  const output = Buffer.from(result.stdout, "base64");
+  if (result.code !== 0 || result.stderr || output.length === 0 || output.toString("base64") !== result.stdout) {
+    // Process diagnostics can contain secret material. Keep them inside this adapter.
+    throw credentialStoreUnavailable(result.timedOut ? "Windows data protection timed out" : "Windows data protection failed", kind);
+  }
+  return output;
+}
+
 /** DPAPI ties the protected token to the Windows user and the existing host/audience account. */
 export function windowsSecretStore(
   home: string,
@@ -208,31 +228,18 @@ export function windowsSecretStore(
   env: NodeJS.ProcessEnv,
   run: ToolRunner = runTool,
 ): SecretStore {
-  const kind = "windows-dpapi" as const;
   const file = "refresh-token.dpapi";
-  async function transform(method: "Protect" | "Unprotect", account: string, data: string): Promise<Buffer> {
-    const result = await runWindowsDataProtection(method, `${KEYCHAIN_SERVICE}\0${account}`, data, env, run, STORE_CALL_TIMEOUT_MS);
-    if (result === null) {
-      throw credentialStoreUnavailable("the Windows system directory is unavailable", kind);
-    }
-    const output = Buffer.from(result.stdout, "base64");
-    if (result.code !== 0 || result.stderr || output.length === 0 || output.toString("base64") !== result.stdout) {
-      // Process diagnostics can contain secret material. Keep them inside this adapter.
-      throw credentialStoreUnavailable(result.timedOut ? "Windows data protection timed out" : "Windows data protection failed", kind);
-    }
-    return output;
-  }
   return {
-    kind,
+    kind: "windows-dpapi",
     async get(account) {
       const raw = await readUserStateFile(home, join(directoryFor(account), file), 128 * 1024).catch((error: unknown) => {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw error;
       });
-      return raw === null ? null : (await transform("Unprotect", account, raw.trim())).toString("utf8");
+      return raw === null ? null : (await transformWindowsAuthData("Unprotect", `refresh:${account}`, Buffer.from(raw, "base64"), env, run)).toString("utf8");
     },
     async set(account, secret) {
-      const protectedBytes = await transform("Protect", account, Buffer.from(secret, "utf8").toString("base64"));
+      const protectedBytes = await transformWindowsAuthData("Protect", `refresh:${account}`, Buffer.from(secret, "utf8"), env, run);
       await writeUserStateFileAtomic0600(home, directoryFor(account), file, `${protectedBytes.toString("base64")}\n`);
     },
     async delete(account) {
@@ -262,11 +269,14 @@ export interface SelectStoreOptions {
 export function selectSecretStore(options: SelectStoreOptions): SecretStore {
   const env = options.env ?? process.env;
   const requested = (env[CREDENTIAL_STORE_ENV] ?? "").trim().toLowerCase();
+  const platform = options.platform ?? process.platform;
+  if (platform === "win32" && requested === "file") {
+    throw new CliError("USAGE", `Native Windows sign-in uses Windows user data protection. Unset ${CREDENTIAL_STORE_ENV} before signing in.`);
+  }
   if (requested === "file") return fileSecretStore(options.home, options.directoryFor);
   if (requested !== "" && requested !== "keychain") {
     throw new CliError("USAGE", `${CREDENTIAL_STORE_ENV} must be 'keychain' or 'file' (got '${requested}')`);
   }
-  const platform = options.platform ?? process.platform;
   if (platform === "darwin") return macosKeychainStore(options.run);
   if (platform === "linux" || platform === "freebsd" || platform === "openbsd") return secretServiceStore(options.run);
   if (platform === "win32") return windowsSecretStore(options.home, options.directoryFor, env, options.run);

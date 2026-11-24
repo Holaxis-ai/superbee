@@ -107,13 +107,26 @@ If the document has changed, the update exits 5 with `STALE_HEAD`. Read the curr
 and review your intended change before retrying. A successful update edits the local checkout.
 Use `superbee sync` with the same board root when you are ready to share the edit.
 
-Native Windows mode is experimental. Use WSL2 for the full CLI, including agent-host integrations, hosted
-checkouts, board establishment, and boards with a configured pre-push sync gate. If such a gate
+Native Windows supports existing standalone Git boards. Use WSL2 for board establishment and
+boards with a configured pre-push sync gate. If such a gate
 would run, native sync keeps the
 commit locally and refuses the push. The Windows install uses `%LOCALAPPDATA%\Superbee` by
 default. A launcher can set `SUPERBEE_BOARD_STATE_DIR` to an absolute, writable directory
 outside the board to keep Git board state across restarts when that default is unavailable.
 This setting applies to Git board state only.
+
+### Hosted checkouts on Windows
+
+Open PowerShell and run `superbee login --host https://mcp.getsuperbee.com`. Open the sign-in link
+and confirm access, then run the same command again. Windows protects your Hosted credentials
+using your Windows account. Use `superbee whoami` to check the session and `superbee logout` to
+remove it.
+
+Check out a bundle you can access with `superbee checkout <workspace>/<bundle> --dir <folder>`.
+Use the exact bundle reference and a new folder. Open the Markdown files in your editor or use
+`superbee list --dir <folder> --json` and `superbee doc read <id> --dir <folder> --json`.
+Run `superbee sync --dir <folder>` to share edits. `doc update` requires the `head_version` from
+`doc read` as `--expected-version`, just as it does when updating a Git board on Windows.
 
 Run `superbee version` to see which build you have. `superbee version --check` is not available on published builds yet: it exits 1 with `policy_disabled` and makes no network request. Check the npm page or `npm view superbee version` for the current release.
 
