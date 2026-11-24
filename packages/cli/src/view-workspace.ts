@@ -1,3 +1,4 @@
+import { realpath } from "node:fs/promises";
 import { readDocVersioned, versionOfBytes, type Bundle } from "@superbee/core";
 import { backendFor } from "@superbee/core/bundle-ops";
 import {
@@ -21,8 +22,10 @@ import {
   saveTransientView,
   parseDocumentSetFieldAction,
   type PageLaunch,
+  type RegisteredPageLaunch,
 } from "@superbee/view-runtime";
 import { assertActorAcceptedByBundle, resolveActor } from "./actor.js";
+import { folderIdentity } from "./folder-identity.js";
 import {
   MAX_WORKSPACE_CATALOG_PAGE as catalogLimit,
   WORKSPACE_HOMES as workspaceHomes,
@@ -47,6 +50,17 @@ export interface ActiveView {
   contentType: string;
   registration?: { id: string; entry: string };
   authorized: boolean;
+}
+/** Transport only through the trusted host's receipt channel. This carries no approval. */
+export interface RegisteredViewReceipt {
+  readonly schemaVersion: "superbee.registered-view-receipt.v1";
+  readonly workingCopy: string;
+  readonly viewId: string;
+  readonly title: string;
+  readonly registryVersion: string;
+  readonly contentVersion: string;
+  readonly contentType: string;
+  readonly access: "bundle-read" | "bundle-propose";
 }
 export interface ViewWorkspace {
   name: string;
@@ -77,6 +91,8 @@ export interface ViewWorkspace {
     nextAfterId?: string;
   }>;
   open(input: ViewInput): Promise<ActiveView>;
+  captureRegisteredView(viewId: string): Promise<RegisteredViewReceipt>;
+  reopenRegisteredView(receipt: RegisteredViewReceipt): Promise<ActiveView>;
   inspect(id: string): Promise<ActiveView | null>;
   approve(id: string): Promise<ActiveView>;
   resume(id: string): Promise<ActiveView>;
@@ -143,6 +159,39 @@ async function bindViewWorkspace(
   return createViewWorkspace(context, actor);
 }
 
+async function currentWorkingCopy(root: string): Promise<string | null> {
+  try {
+    const canonicalRoot = await realpath(root);
+    const identity = await folderIdentity(canonicalRoot);
+    return identity &&
+      versionOfBytes(JSON.stringify([canonicalRoot, identity.dev, identity.ino, identity.birth ?? null]));
+  } catch {
+    return null;
+  }
+}
+
+function registeredHandoffChanged(): Error {
+  return new Error(
+    "The working copy or registered View changed. Reopen the View to inspect its current source and access. If you replaced a directly configured folder, restart the client first.",
+  );
+}
+
+function registeredReceipt(launch: RegisteredPageLaunch, workingCopy: string): RegisteredViewReceipt {
+  if (launch.capability === "none") {
+    throw new Error("The registered View must declare bundle-read or bundle-propose access.");
+  }
+  return {
+    schemaVersion: "superbee.registered-view-receipt.v1",
+    workingCopy,
+    viewId: launch.registryId,
+    title: launch.registryTitle,
+    registryVersion: launch.registryVersion,
+    contentVersion: launch.contentVersion,
+    contentType: launch.contentType,
+    access: launch.capability,
+  };
+}
+
 function createViewWorkspace(
   { bundle, name, viewAuthorization }: WorkspaceContext,
   actor?: string,
@@ -159,6 +208,13 @@ function createViewWorkspace(
     authorizations: viewAuthorization,
     actor,
     renderDocument: renderDocumentToStaticHtml,
+  });
+  // A workspace that has accepted a handoff stays on that working copy for subsequent View
+  // navigation and resume. Its existing, path-backed provider owns all access and confirmation.
+  let handoffWorkingCopy: string | undefined;
+  const pinWorkingCopy = (identity: string) => ({
+    identity,
+    isCurrent: async () => await currentWorkingCopy(bundle.root) === identity,
   });
   async function describe(
     launch: PageLaunch,
@@ -191,7 +247,10 @@ function createViewWorkspace(
   }
   async function open(input: ViewInput): Promise<ActiveView> {
     if ("viewId" in input) {
-      const launch = await mintActiveViewLaunch(bundle, launches, input.viewId);
+      const launch = await mintActiveViewLaunch(
+        bundle, launches, input.viewId,
+        handoffWorkingCopy === undefined ? undefined : pinWorkingCopy(handoffWorkingCopy),
+      );
       if (launch.capability === "none") {
         bridge.revoke(launch.launchId);
         throw new Error(
@@ -226,6 +285,40 @@ function createViewWorkspace(
     name,
     open,
     inspect,
+    async captureRegisteredView(viewId) {
+      const workingCopy = await currentWorkingCopy(bundle.root);
+      if (!workingCopy || (handoffWorkingCopy !== undefined && handoffWorkingCopy !== workingCopy))
+        throw registeredHandoffChanged();
+      const launch = await mintActiveViewLaunch(bundle, launches, viewId, pinWorkingCopy(workingCopy));
+      try {
+        return registeredReceipt(launch, workingCopy);
+      } finally {
+        bridge.revoke(launch.launchId);
+      }
+    },
+    async reopenRegisteredView(receipt) {
+      if (receipt.schemaVersion !== "superbee.registered-view-receipt.v1" ||
+          (handoffWorkingCopy !== undefined && handoffWorkingCopy !== receipt.workingCopy))
+        throw registeredHandoffChanged();
+      const launch = await mintActiveViewLaunch(bundle, launches, receipt.viewId, pinWorkingCopy(receipt.workingCopy));
+      try {
+        const current = registeredReceipt(launch, receipt.workingCopy);
+        if (current.viewId !== receipt.viewId ||
+            current.registryVersion !== receipt.registryVersion ||
+            current.contentVersion !== receipt.contentVersion ||
+            current.contentType !== receipt.contentType ||
+            current.access !== receipt.access ||
+            current.title !== receipt.title) throw registeredHandoffChanged();
+        const view = await describe(launch);
+        if (handoffWorkingCopy !== undefined && handoffWorkingCopy !== receipt.workingCopy)
+          throw registeredHandoffChanged();
+        handoffWorkingCopy = current.workingCopy;
+        return view;
+      } catch (error) {
+        bridge.revoke(launch.launchId);
+        throw error;
+      }
+    },
     async document(id) {
       const { doc, version } = await readDocVersioned(bundle, id);
       return {

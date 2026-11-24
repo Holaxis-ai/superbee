@@ -9,13 +9,16 @@
 //   hosted-checkouts/<checkout id>/store/         the working copy's log store (`FileJournaledBackend`)
 //   hosted-checkouts/paths/<sha256 of path>.json  the path index: folder path -> checkout id
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, readdir, rm, stat, unlink } from "node:fs/promises";
+import { lstat, readdir, rm, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { HostedDefinitionWrites } from "@superbee/core/hosted-transport";
 
+import { folderIdentity, sameFolder, type FolderIdentity } from "../folder-identity.js";
 import { readUserStateFile, userStateDir, writeUserStateFileAtomic0600 } from "../user-state.js";
 import { hostedBundleReferenceText, isWorkspaceSlug, type HostedBundleReference } from "./reference.js";
+
+export { folderIdentity, sameFolder, type FolderIdentity } from "../folder-identity.js";
 
 export const BINDING_SCHEMA = 1;
 const MAX_RECORD_BYTES = 64 * 1024;
@@ -107,29 +110,6 @@ export async function recordHostStatement(home: string, binding: CheckoutBinding
   const next = withHostStatement(current, stated);
   await writeBinding(home, next);
   return next;
-}
-
-export interface FolderIdentity {
-  readonly dev: number;
-  readonly ino: number;
-  /** Birth time in milliseconds; absent or 0 where the filesystem does not report one. */
-  readonly birth?: number;
-}
-
-/** True when two identities name the same folder: device and inode, and birth time when both know it. */
-export function sameFolder(a: FolderIdentity, b: FolderIdentity): boolean {
-  return a.dev === b.dev && a.ino === b.ino && (!a.birth || !b.birth || a.birth === b.birth);
-}
-
-/** The identity a folder has now, or null when nothing is there. */
-export async function folderIdentity(folder: string): Promise<FolderIdentity | null> {
-  try {
-    const info = await stat(folder);
-    return info.isDirectory() ? { dev: info.dev, ino: info.ino, ...(info.birthtimeMs > 0 ? { birth: info.birthtimeMs } : {}) } : null;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR") return null;
-    throw error;
-  }
 }
 
 export function hostedCheckoutsRoot(home: string): string {

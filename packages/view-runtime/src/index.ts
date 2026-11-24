@@ -103,6 +103,7 @@ export interface RegisteredPageLaunch extends BasePageLaunch {
   registryVersion: Version;
   registryTitle: string;
   entryKey: string;
+  workingCopy?: { identity: string; isCurrent: () => Promise<boolean> };
 }
 
 export interface TransientPageLaunch extends BasePageLaunch {
@@ -173,7 +174,12 @@ export function pageLaunchAuthorizationSubject(launch: PageLaunch): ViewAuthoriz
     policyVersion: ACTIVE_VIEW_POLICY_VERSION,
   } as const;
   return launch.sourceKind === "registered"
-    ? { ...common, sourceKind: "registered", registryId: launch.registryId }
+    ? {
+        ...common,
+        sourceKind: "registered",
+        registryId: launch.registryId,
+        ...(launch.workingCopy && { workingCopy: launch.workingCopy.identity }),
+      }
     : { ...common, sourceKind: "transient", bundleIdentity: launch.bundleIdentity };
 }
 
@@ -335,6 +341,7 @@ export async function launchIsCurrent(bundle: Bundle, launch: PageLaunch): Promi
     );
   }
   try {
+    if (launch.workingCopy && !(await launch.workingCopy.isCurrent())) return false;
     const registryRead = await readDocVersioned(bundle, launch.registryId);
     if (registryRead.version !== launch.registryVersion) return false;
     const registration = parseRegistration(registryRead.doc.id, registryRead.doc.frontmatter);
@@ -352,7 +359,8 @@ export async function launchIsCurrent(bundle: Bundle, launch: PageLaunch): Promi
     const admitted = admitActiveView(blob.bytes, blob.contentType);
     return (
       admitted.contentType === launch.contentType &&
-      blobVersion(admitted.bytes) === launch.contentVersion
+      blobVersion(admitted.bytes) === launch.contentVersion &&
+      (!launch.workingCopy || await launch.workingCopy.isCurrent())
     );
   } catch {
     return false;
@@ -368,7 +376,15 @@ export async function mintActiveViewLaunch(
   bundle: Bundle,
   launches: PageLaunchRegistry,
   registryId: string,
+  workingCopy?: RegisteredPageLaunch["workingCopy"],
 ): Promise<RegisteredPageLaunch> {
+  if (workingCopy && !(await workingCopy.isCurrent())) {
+    throw new RegisteredViewLaunchError(
+      "VIEW_CHANGED_DURING_PREPARATION",
+      "the working copy changed before the View could be opened",
+      registryId,
+    );
+  }
   let registryRead;
   try {
     registryRead = await readDocVersioned(bundle, registryId);
@@ -445,6 +461,7 @@ export async function mintActiveViewLaunch(
     contentVersion: blobVersion(admitted.bytes),
     bytes: admitted.bytes,
     capability: resolveDeclaredAccess(registryRead.doc.frontmatter),
+    ...(workingCopy && { workingCopy }),
   });
   if (!(await launchIsCurrent(bundle, launch))) {
     launches.revoke(launch.launchId);
