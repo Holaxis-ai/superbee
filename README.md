@@ -21,8 +21,8 @@ npm install -g superbee
 superbee setup
 ```
 
-Use Node.js 22.14.0 or later in the 22 line, Node.js 24, or Node.js 26. On Windows, use
-Node.js 22.17.0 or later in the 22 line, 24.2.0 or later in the 24 line, or Node.js 26.
+Use a supported Node.js 22, 24, or 26 release (22.14.0 minimum). On Windows, use Node.js 22.17.0
+or later in the 22 line, 24.2.0 or later in the 24 line, or Node.js 26.
 From PowerShell you can set up a local bundle, sync an existing Git board, or
 sign in and work in a Hosted checkout. [Windows instructions](packages/superbee/README.md#native-windows-local-projects)
 
