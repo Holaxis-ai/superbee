@@ -1,6 +1,6 @@
 {
   "name": "@superbee/cli",
-  "version": "0.1.0-pre.4",
+  "version": "0.1.0-pre.5",
   "type": "module",
   "description": "Reusable process-oriented Superbee command runtime.",
   "license": "Apache-2.0",
@@ -55,13 +55,11 @@
     "prepublishOnly": "node -e \"console.error('Direct publish is disabled. Use release-cli-library.yml (cli/v<version>) and human npm approval; see CONTRIBUTING.md.'); process.exit(1)\""
   },
   "devDependencies": {
-    "@modelcontextprotocol/client": "^2.4.0",
     "@superbee/board-git": "*",
     "@superbee/browser-local": "*",
     "@superbee/bundle-descriptor": "*",
     "@superbee/core": "*",
     "@superbee/markdown-renderer": "*",
-    "@superbee/mcp-app": "*",
     "@superbee/publication": "*",
     "@superbee/server": "*",
     "@superbee/ui-server": "*",

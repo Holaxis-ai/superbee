@@ -1,4 +1,3 @@
-import { distributionPackageName, distributionBinName } from "../runtime-context.js";
 import { renderUsage } from "../output.js";
 // `superbee version [--check [--tag latest|next]] [--json]` — local identity plus an optional,
 // bounded read-only comparison against the exact public npm release track.
@@ -9,7 +8,7 @@ import { buildIdentityEnvelope } from "../build-identity.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, resolveMode } from "../output.js";
-import { stableMcpLaunchGuidance } from "../integration-guidance.js";
+import { MCP_APP_INSTALL } from "../integration-guidance.js";
 import {
   checkSupportedRelease,
   parseStrictSemver,
@@ -32,7 +31,8 @@ when the build enables supported-release checks. Published builds currently ship
 The selected dist-tag is authoritative even when it names a rollback. It never installs a package,
 changes a dist-tag, writes preferences, or modifies integrations or bundle content.
 
-${stableMcpLaunchGuidance(distributionPackageName(),distributionBinName())}
+${MCP_APP_INSTALL.description}
+${MCP_APP_INSTALL.guide}
 
 Options:
   --check             Compare the exact release selected by npm (default track: latest)

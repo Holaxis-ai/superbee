@@ -1,9 +1,9 @@
-// The local MCP server over a hosted checkout (designs/seamless-multi-backend-cli, section 4.3):
+// The workspace provider over a hosted checkout (designs/seamless-multi-backend-cli, section 4.3):
 // the checkout is served through its folder. Reads are served and kept fresh by the automatic
 // pull; a document write sync can send lands in the folder and the next `sync` sends it; a write
 // sync would hold (a View's entry blob, conventions, reserved files, a retype, an oversize
 // document) is refused before the file changes, with the reason the sync scan would record. Both
-// open paths (the catalog resolver and `mcp --dir`) serve the same guarded bundle.
+// open paths (the catalog and fixed-folder resolver) serve the same guarded bundle.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -11,18 +11,14 @@ import { access, cp, mkdtemp, readFile, realpath, rm, unlink, writeFile } from "
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { inventoryGuardFor, InventoryGuardUnsupported, deleteDoc, queryHeads, readDoc, writeBlob, writeDoc, type Bundle } from "@superbee/core";
+import { inventoryGuardFor, InventoryGuardUnsupported, deleteDoc, queryHeads, readDoc, writeBlob, writeDoc } from "@superbee/core";
 import { CURRENT_HOST_DOCUMENT_INPUT_BYTES } from "@superbee/core/hosted-transport";
-import { createMcpAppServer, type McpWorkspaceResolver } from "@superbee/mcp-app";
-import { Client } from "@modelcontextprotocol/client";
-import { InMemoryTransport } from "@modelcontextprotocol/client";
 import { decode } from "@toon-format/toon";
 
 import { addCatalogEntry, listCatalogEntries } from "../src/catalog.js";
 import { openBundle } from "../src/bundle.js";
 import { catalog, CATALOG_HOSTED_BUDGET_MS } from "../src/commands/catalog.js";
 import { checkout } from "../src/commands/checkout.js";
-import { mcp } from "../src/commands/mcp.js";
 import { status } from "../src/commands/status.js";
 import { sync } from "../src/commands/sync.js";
 import { CliError } from "../src/errors.js";
@@ -31,9 +27,8 @@ import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/s
 import { bindingForPath } from "../src/hosted/binding.js";
 import { IN_PLACE_JOURNAL, IN_PLACE_STAGING } from "../src/hosted/export-archive.js";
 import { recordPulled } from "../src/hosted/freshness.js";
-import { assertAllowedInHostedCheckout } from "../src/hosted/refusals.js";
 import { servedBundle } from "../src/hosted/served-bundle.js";
-import { createCatalogWorkspaceResolver } from "../src/workspace-resolver.js";
+import { createCatalogWorkspaceResolver, serveWorkspace } from "../src/workspace-resolver.js";
 import { openWorkspaceReader } from "../src/workspace-reader.js";
 import { withIsolatedUserEnv } from "./support/user-env.js";
 import { BUNDLE, FakeHost, HOST, syncFixture, TOKEN, type OperationDescriptor } from "./support/fake-hosted-sync.js";
@@ -51,9 +46,9 @@ interface Checkout {
 
 async function hostedCheckout(before?: (home: string) => Promise<void>): Promise<Checkout> {
   const host = new FakeHost();
-  const home = await mkdtemp(path.join(tmpdir(), "sb-mcp-hosted-home-"));
+  const home = await mkdtemp(path.join(tmpdir(), "sb-workspace-hosted-home-"));
   await before?.(home);
-  const cwd = await realpath(await mkdtemp(path.join(tmpdir(), "sb-mcp-hosted-cwd-")));
+  const cwd = await realpath(await mkdtemp(path.join(tmpdir(), "sb-workspace-hosted-cwd-")));
   const auth = defaultHostedAuthDeps(home, {
     env: { SUPERBEE_ACCESS_TOKEN: TOKEN },
     fetch: async () => {
@@ -97,7 +92,7 @@ async function syncState(c: Checkout): Promise<{ state: string; held_files: numb
   return (decode(out.trim()) as { sync: { state: string; held_files: number; unsent: number } }).sync;
 }
 
-test("local MCP over a cataloged hosted checkout: reads served, a sendable document write synced, held writes refused before the file changes", async () => {
+test("workspace provider over a cataloged hosted checkout: reads served, a sendable document write synced, held writes refused before the file changes", async () => {
   const c = await hostedCheckout();
   assert.deepEqual({ ...(c.receipt.catalog as Record<string, unknown>), id: undefined }, { registered: true, label: BUNDLE, id: undefined, home: "hosted" });
   const context = await createCatalogWorkspaceResolver({ home: c.home }).open(BUNDLE);
@@ -122,27 +117,27 @@ test("local MCP over a cataloged hosted checkout: reads served, a sendable docum
   assert.equal(await exists(path.join(c.folder, "conventions", "probe.md")), false);
   const clean = await syncState(c);
   assert.deepEqual([clean.state, clean.held_files, clean.unsent], ["clean", 0, 0], "nothing is left for sync to hold");
-  assert.equal(c.host.requests.length, 0, "no MCP write reaches the host");
+  assert.equal(c.host.requests.length, 0, "no provider write reaches the host");
 
   // A document write sync can send lands in the folder, as `doc update` would, and the next sync sends it.
-  await writeDoc(context.bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha through MCP" }, body: alpha.body });
-  assert.match(await readFile(alphaFile, "utf8"), /Alpha through MCP/);
+  await writeDoc(context.bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha through the provider" }, body: alpha.body });
+  assert.match(await readFile(alphaFile, "utf8"), /Alpha through the provider/);
   assert.equal((await syncState(c)).unsent, 1);
-  assert.equal((await readDoc(context.bundle, "notes/alpha")).frontmatter.title, "Alpha through MCP");
-  assert.notEqual(c.host.docs.get("notes/alpha")?.frontmatter.title, "Alpha through MCP");
+  assert.equal((await readDoc(context.bundle, "notes/alpha")).frontmatter.title, "Alpha through the provider");
+  assert.notEqual(c.host.docs.get("notes/alpha")?.frontmatter.title, "Alpha through the provider");
   await withIsolatedUserEnv(c.home, async () => {
     const reader = await openWorkspaceReader("catalog", BUNDLE);
     const pending = await reader.read("notes/alpha");
-    assert.equal(pending.frontmatter.title, "Alpha through MCP");
+    assert.equal(pending.frontmatter.title, "Alpha through the provider");
     assert.equal((await reader.queryHeads()).find(row => row.id === pending.id)?.version, pending.version);
   });
   await runSync(c);
-  assert.equal(c.host.docs.get("notes/alpha")?.frontmatter.title, "Alpha through MCP");
+  assert.equal(c.host.docs.get("notes/alpha")?.frontmatter.title, "Alpha through the provider");
   assert.deepEqual(c.host.applied, ["notes/alpha"]);
   assert.equal((await syncState(c)).state, "clean");
 });
 
-test("an MCP write while sync holds the checkout does not wait, keeps the file, and the next sync sends it", async () => {
+test("a provider write while sync holds the checkout does not wait, keeps the file, and the next sync sends it", async () => {
   const c = await hostedCheckout();
   const context = await createCatalogWorkspaceResolver({ home: c.home }).open(BUNDLE);
   const beta = await readDoc(context.bundle, "notes/beta");
@@ -166,26 +161,26 @@ test("an MCP write while sync holds the checkout does not wait, keeps the file, 
   assert.equal(c.host.docs.get("notes/beta")?.frontmatter.title, "Beta during sync");
 });
 
-test("an MCP write landing while sync places the host's change to the same document is kept, as a conflict, never overwritten", async () => {
+test("a provider write landing while sync places the host's change to the same document is kept, as a conflict, never overwritten", async () => {
   const c = await hostedCheckout();
   const context = await createCatalogWorkspaceResolver({ home: c.home }).open(BUNDLE);
   const alpha = await readDoc(context.bundle, "notes/alpha");
   c.host.put("notes/alpha", { type: "Note", title: "Alpha from the app" }, "Changed on the host.\n");
   let wrote = false;
-  // The host's change is pulled, then placed with the pre-image guard (replaceGuarded); the MCP
+  // The host's change is pulled, then placed with the pre-image guard (replaceGuarded); the provider
   // write lands after the pull read the listing and before the placement.
   const during: typeof c.host.fetch = async (input, init) => {
     const response = await c.host.fetch(input, init);
     const route = new URL(String(input)).pathname.split("/").pop();
     if (!wrote && (route === "run" || route === "snapshot")) {
       wrote = true;
-      await writeDoc(context.bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha through MCP" }, body: alpha.body });
+      await writeDoc(context.bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha through the provider" }, body: alpha.body });
     }
     return response;
   };
   await runSync(c, during).catch((error: unknown) => assert.ok(error instanceof CliError && error.code === "CONFLICT", String(error)));
   assert.ok(wrote);
-  assert.match(await readFile(path.join(c.folder, "notes", "alpha.md"), "utf8"), /Alpha through MCP/, "the MCP write is kept");
+  assert.match(await readFile(path.join(c.folder, "notes", "alpha.md"), "utf8"), /Alpha through the provider/, "the provider write is kept");
   assert.equal(c.host.docs.get("notes/alpha")?.frontmatter.title, "Alpha from the app", "the host's change is not overwritten");
   await assert.rejects(runSync(c), (error: unknown) => error instanceof CliError && error.code === "CONFLICT");
 });
@@ -210,7 +205,7 @@ test("the guard: an unknown storage method is refused, an unsafe id is unsafe_pa
   assert.equal(c.host.docs.has("notes/beta"), false, "the delete reached the host");
 });
 
-test("an MCP write that changes verified is refused before the file changes; an ordinary edit carries it and is sent", async () => {
+test("a provider write that changes verified is refused before the file changes; an ordinary edit carries it and is sent", async () => {
   const c = await hostedCheckout();
   const reviewed = { by: "human:reviewer", at: "2026-09-26T12:00:00Z" };
   c.host.put("notes/alpha", { type: "Note", title: "Alpha", verified: [reviewed] }, "Alpha body.\n");
@@ -260,7 +255,7 @@ test("an MCP write that changes verified is refused before the file changes; an 
   assert.deepEqual(c.host.applied, ["notes/alpha"]);
 });
 
-/** The `unbound_copy` refusal an MCP write gets in a copy of a checkout, naming the adopt command. */
+/** The `unbound_copy` refusal a provider write gets in a copy of a checkout, naming the adopt command. */
 function refusedAsCopy(folder: string) {
   return (error: unknown): true => {
     assert.ok(error instanceof CliError, `expected a CliError, got ${String(error)}`);
@@ -273,7 +268,7 @@ function refusedAsCopy(folder: string) {
   };
 }
 
-test("an unbound copy of a checkout is served for reading, and every MCP write is refused until it is adopted or its marker goes", async () => {
+test("an unbound copy of a checkout is served for reading, and every provider write is refused until it is adopted or its marker goes", async () => {
   const c = await hostedCheckout();
   await cp(c.folder, path.join(c.cwd, "copy"), { recursive: true });
   const copy = await realpath(path.join(c.cwd, "copy"));
@@ -281,14 +276,9 @@ test("an unbound copy of a checkout is served for reading, and every MCP write i
   const alphaFile = path.join(copy, "notes", "alpha.md");
   const before = await readFile(alphaFile, "utf8");
 
-  // Both open paths: the catalog resolver and `mcp --dir`.
+  // Both open paths: the catalog and fixed-folder resolver.
   const cataloged = (await createCatalogWorkspaceResolver({ home: c.home }).open("copy")).bundle;
-  let direct: Bundle | undefined;
-  const { withIsolatedUserEnv } = await import("./support/user-env.js");
-  await withIsolatedUserEnv(c.home, () =>
-    mcp(["--dir", copy, "--actor", "process:test"], { stdout: () => {}, stderr: () => {}, startServer: async (options) => void (direct = (options as { bundle: Bundle }).bundle) }),
-  );
-  assert.ok(direct);
+  const { bundle: direct } = await serveWorkspace(await openBundle(copy), "process:test", c.home);
   for (const bundle of [cataloged, direct]) {
     const alpha = await readDoc(bundle, "notes/alpha");
     assert.ok((await queryHeads(bundle)).length > 0, "reads are served");
@@ -366,7 +356,7 @@ async function rejects(promise: Promise<unknown>): Promise<CliError> {
   throw new assert.AssertionError({ message: "expected a refusal" });
 }
 
-test("a Git board that carries a checkout marker syncs through Git, so local MCP serves it unguarded", async () => {
+test("a Git board that carries a checkout marker syncs through Git, so the workspace provider serves it unguarded", async () => {
   const c = await hostedCheckout();
   await cp(c.folder, path.join(c.cwd, "board"), { recursive: true });
   const board = await realpath(path.join(c.cwd, "board"));
@@ -377,23 +367,16 @@ test("a Git board that carries a checkout marker syncs through Git, so local MCP
   assert.match(await readFile(path.join(board, "notes", "alpha.md"), "utf8"), /Alpha on the board/);
 });
 
-test("mcp --dir on a checkout serves the same guarded bundle, and mcp is no longer refused in a checkout", async () => {
+test("the fixed-folder provider serves the same guarded checkout as the catalog", async () => {
   const c = await hostedCheckout();
-  await assertAllowedInHostedCheckout("mcp", ["--dir", c.folder], { home: c.home, cwd: c.cwd });
-  await assertAllowedInHostedCheckout("mcp", [], { home: c.home, cwd: c.folder });
-  let served: Bundle | undefined;
-  const { withIsolatedUserEnv } = await import("./support/user-env.js");
-  await withIsolatedUserEnv(c.home, () =>
-    mcp(["--dir", c.folder, "--actor", "process:test"], { stdout: () => {}, stderr: () => {}, startServer: async (options) => void (served = (options as { bundle: Bundle }).bundle) }),
-  );
-  assert.ok(served);
-  await assert.rejects(writeBlob(served, "views/probe.html", new TextEncoder().encode("<p/>"), "text/html"), refusedAs("not_a_document", true));
-  const alpha = await readDoc(served, "notes/alpha");
-  await writeDoc(served, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha via --dir" }, body: alpha.body });
+  const { bundle } = await serveWorkspace(await openBundle(c.folder), "process:test", c.home);
+  await assert.rejects(writeBlob(bundle, "views/probe.html", new TextEncoder().encode("<p/>"), "text/html"), refusedAs("not_a_document", true));
+  const alpha = await readDoc(bundle, "notes/alpha");
+  await writeDoc(bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha from the fixed folder" }, body: alpha.body });
   assert.equal((await syncState(c)).unsent, 1);
 });
 
-test("an MCP read of a stale checkout pulls first, once per stale window in the process", async () => {
+test("a provider read of a stale checkout pulls first, once per stale window in the process", async () => {
   const c = await hostedCheckout();
   const binding = (await bindingForPath(c.home, c.folder))!;
   await recordPulled(c.home, binding.checkout_id, new Date(Date.now() - 10 * 60 * 1000));
@@ -409,9 +392,9 @@ test("an MCP read of a stale checkout pulls first, once per stale window in the 
   assert.deepEqual(notes, []);
 });
 
-test("a local bundle in the catalog stays writable through local MCP", async () => {
-  const home = await mkdtemp(path.join(tmpdir(), "sb-mcp-local-home-"));
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), "sb-mcp-local-bundle-")));
+test("a local bundle in the catalog stays writable through the provider", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "sb-workspace-local-home-"));
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "sb-workspace-local-bundle-")));
   const { initBundle } = await import("@superbee/core");
   await initBundle(root);
   await addCatalogEntry("local", root, { home });
@@ -438,7 +421,7 @@ test("catalog list names each entry's home, and a hosted entry's host, bundle an
 
 test("checkout takes the next free catalog label when the bundle id is already a label", async () => {
   const { initBundle } = await import("@superbee/core");
-  const other = await realpath(await mkdtemp(path.join(tmpdir(), "sb-mcp-other-")));
+  const other = await realpath(await mkdtemp(path.join(tmpdir(), "sb-workspace-other-")));
   await initBundle(other);
   const { home, folder, receipt } = await hostedCheckout(async (dir) => void (await addCatalogEntry(BUNDLE, other, { home: dir })));
   assert.equal((receipt.catalog as { label: string }).label, `${BUNDLE}-2`);
@@ -526,7 +509,7 @@ test("catalog list: a host that does not answer in time leaves the folders liste
   assert.match(String(listed.note), /were not listed \(no answer in time\); list them with: .*catalog list --hosted --host/);
 });
 
-test("list_workspaces names the reachable hosted bundles with no folder here, from one answer a minute; an ambiguous id points at the full listing", async () => {
+test("the workspace resolver names the reachable hosted bundles with no folder here, from one answer a minute; an ambiguous id points at the full listing", async () => {
   const c = await hostedCheckout();
   let asked = 0;
   let clock = 0;
@@ -572,164 +555,56 @@ test("catalog --local is only for list, and never with --hosted", async () => {
   }
 });
 
-// list_operations and run_operation (designs/seamless-multi-backend-cli, G3): the host's reads by
-// id, through the catalog resolver's optional methods and the one checkout connection `op` uses,
-// over the real MCP server. No code here names an operation but the golden one.
-
-type ToolAnswer = { isError?: boolean; content: { type: string; text: string }[]; structuredContent?: Record<string, unknown> };
-
-async function mcpClient(resolver: McpWorkspaceResolver): Promise<{ call: (name: string, args: Record<string, unknown>) => Promise<ToolAnswer>; close: () => Promise<void> }> {
-  const server = createMcpAppServer({ workspaceResolver: resolver, version: "test" });
-  const client = new Client({ name: "operations-test", version: "test" }, { capabilities: {} });
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await server.connect(serverTransport);
-  await client.connect(clientTransport);
-  return {
-    call: async (name, args) => (await client.callTool({ name, arguments: args })) as ToolAnswer,
-    close: async () => {
-      await client.close();
-      await server.close();
-    },
-  };
-}
-
 const historyDescriptor = (): OperationDescriptor => (JSON.parse(syncFixture("operations-200").response.body) as { operations: OperationDescriptor[] }).operations.find((operation) => operation.operationId === "documents.history.v1")!;
 
-test("list_operations and run_operation reach a hosted checkout's host reads by id, the run's answer passed through unchanged", async () => {
+test("the provider scopes hosted operations to the checkout and stops before requesting folder reads or foreign bundles", async () => {
   const c = await hostedCheckout();
-  const id = [...c.host.docs.keys()][0]!;
-  c.host.put(id, { type: "Note" }, "edited on the host");
-  const mcp = await mcpClient(createCatalogWorkspaceResolver({ home: c.home, hosted: { auth: c.auth, fetch: c.host.fetch } }));
-  try {
-    const listed = await mcp.call("list_operations", { workspace: BUNDLE });
-    assert.equal(listed.isError, undefined, listed.content[0]?.text);
-    const golden = historyDescriptor();
-    const operations = listed.structuredContent!.operations as Record<string, unknown>[];
-    assert.deepEqual(operations.map((operation) => operation.operationId), ["documents.history.v1"]);
-    assert.equal(operations[0]!.title, golden.title);
-    const schema = operations[0]!.inputJsonSchema as { properties: Record<string, unknown>; required: string[] };
-    assert.equal(Object.hasOwn(schema.properties, "bundleId"), false, "bundleId is the workspace's");
-    assert.equal(schema.required.includes("bundleId"), false);
-    assert.ok(Object.hasOwn(schema.properties, "documentId"));
-    assert.deepEqual(c.host.requests.map((request) => request.path), ["/sync/v1/whoami", "/sync/v1/operations"]);
-    assert.deepEqual(c.host.requests[1]!.body, { bundleId: BUNDLE });
-    assert.doesNotMatch(JSON.stringify(listed), new RegExp(c.folder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "no path");
+  const history = historyDescriptor();
+  c.host.operationsListing = [{ ...history, operationId: "documents.read.v1" }, history];
+  const resolver = createCatalogWorkspaceResolver({ home: c.home, hosted: { auth: c.auth, fetch: c.host.fetch } });
+  const listed = await resolver.listOperations(BUNDLE);
+  assert.ok("ok" in listed && listed.ok);
+  assert.deepEqual(listed.listing.operations, [history]);
+  assert.deepEqual(c.host.requests.map(({ path }) => path), ["/sync/v1/whoami", "/sync/v1/operations"]);
+  assert.deepEqual(c.host.requests[1]!.body, { bundleId: BUNDLE });
 
-    c.host.requests.length = 0;
-    const ran = await mcp.call("run_operation", { workspace: BUNDLE, operationId: "documents.history.v1", input: { documentId: id } });
-    assert.equal(ran.isError, undefined, ran.content[0]?.text);
-    const direct = (await (await c.host.fetch(`${HOST}/sync/v1/history`, { method: "POST", headers: { Authorization: `Bearer ${TOKEN}` }, body: JSON.stringify({ bundleId: BUNDLE, documentId: id }) })).json()) as { data: unknown };
-    assert.deepEqual(ran.structuredContent, { workspace: BUNDLE, operationId: "documents.history.v1", result: direct.data });
-    assert.deepEqual(JSON.parse(ran.content[0]!.text.split("\n").slice(1).join("\n")), ran.structuredContent, "the text repeats the structured answer");
-    assert.deepEqual(c.host.requests.slice(0, 2).map((request) => request.path), ["/sync/v1/whoami", "/sync/v1/run"], "one run request, never the history route");
-    assert.deepEqual(c.host.requests[1]!.body, { bundleId: BUNDLE, operationId: "documents.history.v1", input: { bundleId: BUNDLE, documentId: id } });
+  c.host.requests.length = 0;
+  assert.deepEqual(await resolver.runOperation(BUNDLE, "documents.read.v1", { documentId: "notes/alpha" }), {
+    stop: "folder_answers", operationId: "documents.read.v1",
+  });
+  const mismatch = await resolver.runOperation(BUNDLE, history.operationId, { bundleId: "team.other" });
+  assert.ok("ok" in mismatch && !mismatch.ok);
+  assert.equal(mismatch.refusal.code, "invalid_input");
+  assert.equal(c.host.requests.length, 0);
 
-    // The host's own refusal is a tool error naming its code.
-    c.host.requests.length = 0;
-    const unknown = await mcp.call("run_operation", { workspace: BUNDLE, operationId: "documents.replace.v1", input: {} });
-    assert.equal(unknown.isError, true);
-    assert.match(unknown.content[0]!.text, /refused documents\.replace\.v1 \(unknown_operation\).*Call list_operations/);
-  } finally {
-    await mcp.close();
-  }
+  const ran = await resolver.runOperation(BUNDLE, history.operationId, { documentId: "notes/alpha" });
+  assert.ok("ok" in ran && ran.ok);
+  assert.deepEqual(c.host.requests.map(({ path }) => path), ["/sync/v1/whoami", "/sync/v1/run"]);
+  assert.deepEqual(c.host.requests[1]!.body, {
+    bundleId: BUNDLE, operationId: history.operationId, input: { bundleId: BUNDLE, documentId: "notes/alpha" },
+  });
 });
 
-test("a hosted checkout's reads the folder answers are neither listed nor run, and an input naming another bundle is refused, with no request at all", async () => {
-  const c = await hostedCheckout();
-  c.host.operationsListing = [{ ...historyDescriptor(), operationId: "documents.read.v1" }, { ...historyDescriptor(), operationId: "documents.query.v1" }, historyDescriptor()];
-  const mcp = await mcpClient(createCatalogWorkspaceResolver({ home: c.home, hosted: { auth: c.auth, fetch: c.host.fetch } }));
-  try {
-    const listed = await mcp.call("list_operations", { workspace: BUNDLE });
-    assert.deepEqual((listed.structuredContent!.operations as { operationId: string }[]).map((row) => row.operationId), ["documents.history.v1"]);
-    assert.deepEqual(listed.structuredContent!.notes, [
-      "documents.read.v1 is not listed: the folder answers it, which sees unsent edits",
-      "documents.query.v1 is not listed: the folder answers it, which sees unsent edits",
-    ]);
-    for (const operationId of ["documents.read.v1", "documents.query.v1"]) {
-      c.host.requests.length = 0;
-      const refused = await mcp.call("run_operation", { workspace: BUNDLE, operationId, input: { documentId: "notes/alpha" } });
-      assert.equal(refused.isError, true);
-      assert.match(refused.content[0]!.text, /answers documents\.(read|query)\.v1 from its folder.*show_document/);
-      assert.deepEqual(c.host.requests, [], operationId);
-    }
-    c.host.requests.length = 0;
-    const mismatch = await mcp.call("run_operation", { workspace: BUNDLE, operationId: "documents.history.v1", input: { bundleId: "team.other", documentId: "notes/alpha" } });
-    assert.equal(mismatch.isError, true);
-    assert.match(mismatch.content[0]!.text, /\(invalid_input\): the input names another bundle/);
-    assert.deepEqual(c.host.requests, []);
-  } finally {
-    await mcp.close();
-  }
-});
-
-test("a gateway from before the operations routes is the tool error saying the host does not offer them yet", async () => {
-  const host = new FakeHost({ operations: false });
-  const c = await hostedCheckout();
-  const mcp = await mcpClient(createCatalogWorkspaceResolver({ home: c.home, hosted: { auth: c.auth, fetch: host.fetch } }));
-  try {
-    for (const [name, args] of [["list_operations", { workspace: BUNDLE }], ["run_operation", { workspace: BUNDLE, operationId: "documents.history.v1", input: { documentId: "notes/alpha" } }]] as const) {
-      const answer = await mcp.call(name, args);
-      assert.equal(answer.isError, true, name);
-      assert.match(answer.content[0]!.text, /\(NOT_IMPLEMENTED\)\. The workspace's host does not offer operations by id yet\.$/);
-    }
-  } finally {
-    await mcp.close();
-  }
-});
-
-test("a local workspace has no host operations: an empty listing naming the typed tools, and a run refused, with no request", async () => {
-  const home = await mkdtemp(path.join(tmpdir(), "sb-mcp-ops-local-home-"));
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), "sb-mcp-ops-local-bundle-")));
-  const { initBundle } = await import("@superbee/core");
-  await initBundle(root);
-  await addCatalogEntry("local", root, { home });
-  const mcp = await mcpClient(createCatalogWorkspaceResolver({ home, hosted: { auth: defaultHostedAuthDeps(home), fetch: async () => assert.fail("a local workspace makes no request") } }));
-  try {
-    const listed = await mcp.call("list_operations", { workspace: "local" });
-    assert.equal(listed.isError, undefined);
-    assert.deepEqual(listed.structuredContent, { workspace: "local", operations: [], notes: ["a local bundle has no host operations; use show_document, list_views and show_view"] });
-    const ran = await mcp.call("run_operation", { workspace: "local", operationId: "documents.history.v1", input: {} });
-    assert.equal(ran.isError, true);
-    assert.match(ran.content[0]!.text, /is a local bundle: it has no host operations\. Use show_document/);
-    const unknown = await mcp.call("list_operations", { workspace: "missing" });
-    assert.equal(unknown.isError, true);
-    assert.equal(unknown.content[0]!.text, "Could not list the host's operations for workspace 'missing' (NOT_FOUND). Call list_workspaces and retry with an available exact ID or label.");
-    assert.doesNotMatch(JSON.stringify([listed, ran, unknown]), new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "no path");
-  } finally {
-    await mcp.close();
-  }
-});
-
-test("a hosted workspace with no session answers the one sign-in link to relay, never a prompt, with no request to the host", async () => {
+test("a signed-out hosted provider returns one sign-in link without reaching the host", async () => {
   const issuer = await new FakeIssuer().start();
   try {
     const host = new FakeHost({ origin: issuer.base });
-    const home = await mkdtemp(path.join(tmpdir(), "sb-mcp-ops-auth-"));
-    const cwd = await realpath(await mkdtemp(path.join(tmpdir(), "sb-mcp-ops-cwd-")));
+    const home = await mkdtemp(path.join(tmpdir(), "sb-workspace-auth-"));
+    const cwd = await realpath(await mkdtemp(path.join(tmpdir(), "sb-workspace-cwd-")));
     const signedIn = defaultHostedAuthDeps(home, { env: { SUPERBEE_ACCESS_TOKEN: host.token } });
     await checkout([BUNDLE, "--host", issuer.base, "--dir", "team"], { stdout: () => {}, auth: signedIn, cwd, fetch: host.fetch });
     host.requests.length = 0;
     const signedOut = defaultHostedAuthDeps(home, { env: { [CREDENTIAL_STORE_ENV]: "file" } });
-    const mcp = await mcpClient(createCatalogWorkspaceResolver({ home, hosted: { auth: signedOut, fetch: host.fetch } }));
-    try {
-      for (const [name, args] of [["list_operations", { workspace: BUNDLE }], ["run_operation", { workspace: BUNDLE, operationId: "documents.history.v1", input: { documentId: "notes/alpha" } }]] as const) {
-        const answer = await mcp.call(name, args);
-        assert.equal(answer.isError, true, name);
-        assert.match(answer.content[0]!.text, new RegExp(`is required: ask the person to open http://127\\.0\\.0\\.1:\\d+/activate\\?user_code=\\S+ and confirm the code \\S+, then call ${name} again\\.$`));
-        assert.doesNotMatch(answer.content[0]!.text, new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "no path");
-      }
-      // Stops decided on this machine come first, signed in or not.
-      const folder = await mcp.call("run_operation", { workspace: BUNDLE, operationId: "documents.read.v1", input: { documentId: "notes/alpha" } });
-      assert.match(folder.content[0]!.text, /answers documents\.read\.v1 from its folder/);
-      assert.deepEqual(host.requests, [], "no host request before sign-in");
-    } finally {
-      await mcp.close();
-    }
+    const resolver = createCatalogWorkspaceResolver({ home, hosted: { auth: signedOut, fetch: host.fetch } });
+    const stopped = await resolver.listOperations(BUNDLE);
+    assert.ok("stop" in stopped && stopped.stop === "sign_in_required");
+    assert.equal(new URL(stopped.signInUrl).origin, issuer.base);
+    assert.ok(stopped.userCode);
+    assert.deepEqual(host.requests, []);
   } finally {
     await issuer.stop();
   }
 });
-
 
 test("hosted served wrapper explicitly omits the local inventory guard", async () => {
   const c = await hostedCheckout();

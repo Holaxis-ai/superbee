@@ -18,7 +18,8 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { commandToken } from "../command-text.js";
 import { CliError } from "../errors.js";
 import { emitDeprecationNotice } from "../deprecation-notices.js";
-import { inspectMcpHosts, MCP_INSTALL_TARGETS, type McpHostStatus, type McpInstallTarget, type McpInstallTargetId } from "../mcp-install-targets.js";
+import { SETUP_HOSTS, type SetupHost, type SetupHostId } from "../setup-hosts.js";
+import { MCP_APP_INSTALL } from "../integration-guidance.js";
 import { normalizeInstallScope, type InstallScope } from "../install-scope.js";
 import { resolvePersistentInstallAuthority, type PersistentInstallAuthority } from "../install-authority.js";
 import { cliInvocation } from "../invocation.js";
@@ -68,7 +69,7 @@ Setup is an agent-driven workflow. The calling agent selects its exact host, exe
 next action, reports what it is doing, requests approval when \`approval.required\` is true, and
 reruns setup until status is ready. Do not ask the user to copy or run setup commands unless the
 agent cannot execute them. With --host, setup composes the existing distribution, Agent Skill,
-SessionStart hook, MCP registration, local bundle, and private catalog inspectors into one
+SessionStart hook, local bundle, and private catalog inspectors into one
 deterministic plan. It never writes configuration or treats detected software as mutation
 authority. \`--json\` returns argv arrays plus mutation and approval metadata; a command template is
 not executable until its placeholder value is chosen.
@@ -83,8 +84,8 @@ only. Run each returned argv from its action.cwd.
 
 status, ready and complete describe configured readiness on disk, not live host activation.
 Keep restart_required action receipts until the host is actually restarted/reloaded; a later ready
-inspection cannot observe or clear that requirement. Verify live MCP access after restart before
-reporting it active.
+inspection cannot observe or clear that requirement. The MCP app has a separate opt-in installer.
+${MCP_APP_INSTALL.guide}
 
 Without --host, the command reports private-state health plus the four bounded supported host
 surfaces. A required state remedy comes first; otherwise the calling agent selects the exact host.
@@ -95,7 +96,7 @@ It never moves bundles or deletes legacy bytes. Sync state and sync conflict cop
 they stay in the legacy folder, and the receipt's left_behind names where. The explicit command is
 the authorization event.
 
-A catalog entry preserves a workspace for explicit MCP selection; it never selects that workspace
+A catalog entry preserves a workspace for explicit selection; it never selects that workspace
 as the current project's context. Do not read, write, orient from, or sync a cataloged workspace
 unless the current checkout resolves to it or the user explicitly selects it. If this checkout has
 no bundle, setup reports that state without borrowing one from another project.
@@ -142,7 +143,6 @@ export interface SetupInspection {
   projectHookUnavailable?: boolean;
   /** The launch directory's project hook, read only to warn about a legacy hook; never planned on. */
   launchProjectHook?: HookStatusInspection;
-  mcp: readonly McpHostStatus[];
   workspace: SetupWorkspaceState;
   state: UserStateMigrationInspection;
 }
@@ -154,7 +154,6 @@ export interface SetupDeps {
   inspectDistribution: () => PersistentInstallAuthority;
   inspectSkill: (scope: InstallScope) => SkillStatusInspection;
   inspectHook: (scope: InstallScope) => HookStatusInspection;
-  inspectMcp: (targets: readonly McpInstallTarget[]) => readonly McpHostStatus[];
   resolveBundle: (startDir: string) => Promise<LocalBundleTarget>;
   inspectBoard: (startDir: string) => Promise<ChannelDetection>;
   listCatalog: (home: string) => Promise<CatalogEntryView[]>;
@@ -166,13 +165,13 @@ export interface SetupDeps {
   isDirectory: (dir: string) => boolean;
 }
 
-function setupHost(value: string | undefined): McpInstallTargetId | undefined {
-  return MCP_INSTALL_TARGETS.find((target) => target.id === value)?.id;
+function setupHost(value: string | undefined): SetupHostId | undefined {
+  return SETUP_HOSTS.find((target) => target.id === value)?.id;
 }
 
 function skillForHost(
   inspection: SkillStatusInspection | undefined,
-  host: McpInstallTargetId,
+  host: SetupHostId,
 ): SetupSkillHostState | undefined {
   if (!inspection) return undefined;
   if (host === "codex") return inspection.hosts.codex;
@@ -183,7 +182,7 @@ function skillForHost(
 
 function hookForHost(
   inspection: HookStatusInspection | undefined,
-  host: McpInstallTargetId,
+  host: SetupHostId,
 ): SetupHookHostState | undefined {
   if (!inspection || host === "claude-desktop") return undefined;
   return host === "codex"
@@ -195,15 +194,13 @@ function hookForHost(
 
 function planForHost(
   inspection: SetupInspection,
-  host: McpInstallTargetId,
+  host: SetupHostId,
   scope: InstallScope,
   invocation: readonly string[],
   projectSelection: SetupProjectSelection,
   cwd: string,
   cwdOfferable = true,
 ): SetupPlan {
-  const mcp = inspection.mcp.find((row) => row.host === host);
-  if (!mcp) throw new Error(`missing setup MCP inspection for ${host}`);
   return buildSetupPlan({
     host,
     scope,
@@ -220,7 +217,6 @@ function planForHost(
     hook: hookForHost(inspection.hook, host),
     projectHook: scope === "user" ? hookForHost(inspection.projectHook, host) : undefined,
     projectHookUnavailable: scope === "user" && inspection.projectHookUnavailable === true,
-    mcp,
     workspace: inspection.workspace,
     state: inspection.state,
     invocation,
@@ -295,7 +291,7 @@ async function inspectWorkspace(deps: SetupDeps, projectSelection: SetupProjectS
 
 async function inspectAll(
   scope: InstallScope,
-  targets: readonly McpInstallTarget[],
+  targets: readonly SetupHost[],
   deps: SetupDeps,
   projectSelection: SetupProjectSelection,
 ): Promise<SetupInspection> {
@@ -336,10 +332,7 @@ async function inspectAll(
       launchProjectHook = undefined;
     }
   }
-  const [mcp, state] = await Promise.all([
-    Promise.resolve(deps.inspectMcp(targets)),
-    deps.inspectState(deps.home()),
-  ]);
+  const state = await deps.inspectState(deps.home());
   return {
     distribution: deps.inspectDistribution(),
     skill,
@@ -347,7 +340,6 @@ async function inspectAll(
     projectHook,
     projectHookUnavailable,
     launchProjectHook,
-    mcp,
     workspace,
     state,
   };
@@ -492,7 +484,7 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
   const requestedHost = setupHost(values.host);
   if (values.host !== undefined && !requestedHost) {
     throw new CliError("USAGE", `unknown setup host '${values.host}'`, {
-      details: { supported_hosts: MCP_INSTALL_TARGETS.map(({ id }) => id) },
+      details: { supported_hosts: SETUP_HOSTS.map(({ id }) => id) },
       help: `${cliInvocation()} setup --host <id>`,
     });
   }
@@ -514,7 +506,6 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
     inspectDistribution: injected.inspectDistribution ?? (() => resolvePersistentInstallAuthority()),
     inspectSkill: injected.inspectSkill ?? ((selectedScope) => inspectSkillStatus(selectedScope, { cwd })),
     inspectHook: injected.inspectHook ?? ((selectedScope) => inspectHookStatus(selectedScope, { cwd })),
-    inspectMcp: injected.inspectMcp ?? ((targets) => inspectMcpHosts(targets)),
     resolveBundle: injected.resolveBundle ?? ((startDir) => resolveLocalBundleTarget(undefined, startDir)),
     inspectBoard: injected.inspectBoard ?? inspectSetupBoard,
     listCatalog: injected.listCatalog ?? listCatalogEntries,
@@ -552,25 +543,24 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
     return;
   }
   if (requestedHost) {
-    const target = MCP_INSTALL_TARGETS.find((candidate) => candidate.id === requestedHost)!;
+    const target = SETUP_HOSTS.find((candidate) => candidate.id === requestedHost)!;
     const inspection = await inspectAll(scope, [target], deps, projectSelection);
     emitSetupDeprecationNotices(inspection);
     stdout(render({ setup: planForHost(inspection, requestedHost, scope, deps.invocation().split(/\s+/), projectSelection, cwd, cwdOfferable) }, resolveMode(values)));
     return;
   }
-  const inspection = await inspectAll(scope, MCP_INSTALL_TARGETS, deps, projectSelection);
+  const inspection = await inspectAll(scope, SETUP_HOSTS, deps, projectSelection);
   emitSetupDeprecationNotices(inspection);
   const invocation = deps.invocation().split(/\s+/);
   const state = setupStateCapability(inspection.state);
   const stateNext = setupNextForCapability(state, invocation, cwd);
-  const hosts = MCP_INSTALL_TARGETS.map((target) => {
+  const hosts = SETUP_HOSTS.map((target) => {
     const plan = planForHost(inspection, target.id, scope, invocation, projectSelection, cwd, cwdOfferable);
     return {
       id: target.id,
       label: target.label,
       ready: plan.ready,
       complete: plan.complete,
-      mcp_state: inspection.mcp.find((row) => row.host === target.id)!.state,
       action: {
         action: "run" as const,
         command: [...invocation, "setup", "--host", target.id, "--scope", scope, ...setupProjectArgs(projectSelection, cwd), "--json"],
@@ -589,6 +579,7 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
       agent_instruction: AGENT_SETUP_INSTRUCTION,
       mode: "select_host",
       scope,
+      optional_mcp_app: MCP_APP_INSTALL,
       verification: SETUP_VERIFICATION,
       verify: {
         action: "run",

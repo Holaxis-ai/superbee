@@ -309,14 +309,14 @@ test("the npm Skill keeps the AXI setup conductor and mutation boundary eager", 
   assert.match(renderedNpm, /calling agent selects its exact host, executes\s+the returned argv action/);
   assert.match(renderedNpm, /approval\.required: true/);
   assert.match(renderedNpm, /Do not ask the user to copy or run a setup command/);
-  assert.match(renderedNpm, /restarts after Skill, Hook, or MCP changes/);
+  assert.match(renderedNpm, /restarts after Skill or Hook changes/);
   assert.match(renderedNpm, /never makes that workspace the current project/);
   assert.match(renderedNpm, /--project <dir>/);
   assert.match(renderedNpm, /--no-project/);
   assert.match(renderedNpm, /literal action\.cwd/);
   assert.match(renderedNpm, /Empty and non-code folders are valid/);
   assert.match(renderedNpm, /launch directory alone is not a project choice/);
-  assert.match(renderedNpm, /configured readiness, not a host restart or live MCP activation/);
+  assert.match(renderedNpm, /Install the MCP app separately/);
   assert.match(renderedNpm, /Remember restart_required action receipts/);
   assert.doesNotMatch(renderedNpm, /intended purpose, privacy, participants, and sharing boundary before creating/);
 });

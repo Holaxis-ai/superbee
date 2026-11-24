@@ -174,11 +174,6 @@
       "owner": "distribution"
     },
     {
-      "id": "mcp-browser",
-      "command": "npm run test:browser -w @superbee/mcp-app",
-      "owner": "browser"
-    },
-    {
       "id": "ui-end-to-end",
       "command": "npm run e2e:gate -w @superbee/ui",
       "owner": "browser"
@@ -251,7 +246,6 @@
       "display_name": "browser and UI",
       "script": "ci:browser",
       "components": [
-        "mcp-browser",
         "ui-end-to-end",
         "browser-local-chromium"
       ],

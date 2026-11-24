@@ -157,7 +157,7 @@ export function staticBuildIdentity(): StaticBuildIdentity {
     package: sourcePackageIdentity(),
     source: { commit: null, dirty: null },
     artifact: { channel: "local-dev" },
-    compatibility_contracts: { skill: 1, hook: 1, mcp: 1 },
+    compatibility_contracts: { skill: 1, hook: 1, mcp: null },
   });
   return staticIdentityCache;
 }

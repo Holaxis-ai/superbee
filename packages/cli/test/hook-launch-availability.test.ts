@@ -53,7 +53,6 @@ test("hook launch availability agrees across status and setup without changing g
           state: { state: "ready", reason: "current", records: 0 },
           skill: { canonical: { state: "installed" } },
           hook: observed,
-          mcp: { state: "owned_current", reason: "current" },
           workspace: { bundle: "selected", catalog: "ready", selected_registered: true },
         });
         const capability = plan.capabilities.find((item) => item.id === "hook");
@@ -70,7 +69,6 @@ test("hook launch availability agrees across status and setup without changing g
             skill: { canonical: { state: "installed" } },
             hook: { ...observed, launchAvailability: { state: "available", reason: "user launch files are accessible" } },
             projectHook: observed,
-            mcp: { state: "owned_current", reason: "current" },
             workspace: { bundle: "selected", catalog: "ready", selected_registered: true },
           });
           const overlapCapability = overlap.capabilities.find((item) => item.id === "hook");
@@ -127,7 +125,6 @@ test("missing user launch files never bypass project hook overlap or inspection 
         installed: true, compatibility: { state: "current", reason: "generated" },
         launchAvailability: { state: "unavailable", reason: "Node launcher is missing or inaccessible" },
       },
-      mcp: { state: "owned_current", reason: "current" },
       workspace: { bundle: "selected", catalog: "ready", selected_registered: true },
     };
     for (const project of [

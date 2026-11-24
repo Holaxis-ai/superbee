@@ -19,7 +19,6 @@ const READY: SetupPlanInput = {
   state: { state: "ready", reason: "fixture", records: 0 },
   skill: { canonical: { state: "installed" } },
   hook: { installed: true, compatibility: { state: "current", reason: "fixture" } },
-  mcp: { state: "owned_current", reason: "fixture" },
   workspace: { bundle: "absent", catalog: "empty", selected_registered: false },
 };
 

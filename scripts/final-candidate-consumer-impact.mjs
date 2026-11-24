@@ -81,7 +81,7 @@ export function inspectConsumerImpact({ candidateRoot, candidateSha, pluginRoot,
     const abi = single(bundle, /^\s*(?:var )?SOURCE_PLUGIN_CORE_VERSION = "([^"]+)";$/gm, 'packed CLI plugin ABI')[1];
     // This intentionally recognizes only the current unminified esbuild literal. Format drift
     // refuses; it must never silently substitute the checkout's identity for the packed bytes.
-    const identity = single(bundle, /^\s*(?:var )?define_SUPERBEE_BUILD_IDENTITY_default = \{ schema: "superbee\.build-identity\.v1", package: \{ name: "superbee", version: "([^"]+)" \}, source: \{ commit: "([a-f0-9]{40})", dirty: false \}, artifact: \{ channel: "npm-package" \}, compatibility_contracts: \{ skill: 1, hook: 1, mcp: 1 \} \};$/gm, 'packed CLI build identity');
+    const identity = single(bundle, /^\s*(?:var )?define_SUPERBEE_BUILD_IDENTITY_default = \{ schema: "superbee\.build-identity\.v1", package: \{ name: "superbee", version: "([^"]+)" \}, source: \{ commit: "([a-f0-9]{40})", dirty: false \}, artifact: \{ channel: "npm-package" \}, compatibility_contracts: \{ skill: 1, hook: 1, mcp: (?:1|null) \} \};$/gm, 'packed CLI build identity');
     assert.equal(identity[1], cli.version, 'packed CLI version differs from candidate');
     assert.equal(identity[2], candidateSha, 'packed CLI source changed; discard prior impact evidence');
     assert.equal(abi, sourceCore, 'packed CLI Core ABI differs from final source');

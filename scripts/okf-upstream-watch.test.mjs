@@ -414,17 +414,3 @@ test("the workflow isolates upstream content from write permissions and the issu
   assert.match(runs(document.jobs.check), /npm run build[\s\S]*okf-upstream-watch\.mjs --collect/);
   assert.ok(yaml.safeLoad(text));
 });
-
-test("MCP SDK drift is delegated to a daily, grouped Dependabot npm updater that keeps majors", () => {
-  const config = yaml.safeLoad(readFileSync(path.join(root, ".github", "dependabot.yml"), "utf8"));
-  const npm = config.updates.filter((entry) => entry["package-ecosystem"] === "npm");
-  assert.equal(npm.length, 1);
-  assert.deepEqual(npm[0], {
-    "package-ecosystem": "npm",
-    directory: "/",
-    schedule: { interval: "daily" },
-    allow: [{ "dependency-name": "@modelcontextprotocol/*" }],
-    groups: { "mcp-sdk": { patterns: ["@modelcontextprotocol/*"] } },
-    labels: ["dependencies", "javascript"],
-  }, "no ignore rules and no update-types filter, so major versions open PRs");
-});

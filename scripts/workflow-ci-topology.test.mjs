@@ -122,7 +122,6 @@ test("CLI mutation keeps source policies pristine and all runtime files instrume
 const workflow = readFileSync(path.join(root, ".github", "workflows", "ci-tests.yml"), "utf8");
 const packageLock = JSON.parse(readFileSync(path.join(root, "package-lock.json"), "utf8"));
 const rootPackage = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
-const mcpAppPackage = JSON.parse(readFileSync(path.join(root, "packages", "mcp-app", "package.json"), "utf8"));
 const browserLocalPackage = JSON.parse(readFileSync(path.join(root, "packages", "browser-local", "package.json"), "utf8"));
 const uiPackage = JSON.parse(readFileSync(path.join(root, "packages", "ui", "package.json"), "utf8"));
 const workspacePackages = readdirSync(path.join(root, "packages"), { withFileTypes: true })
@@ -339,15 +338,9 @@ function assertRuntimeShards(job, lane) {
 
 function validateBrowserScripts(packages) {
   const rootCommand = packages.root.scripts["ci:browser"];
-  const mcpCommand = packages.mcpApp.scripts["test:browser"];
   const uiCommand = packages.ui.scripts["e2e:gate"];
   const browserLocalCommand = packages.browserLocal.scripts["test:browser"];
   assert.equal(typeof rootCommand, "string", "ci:browser must remain declared");
-  assert.equal(
-    mcpCommand,
-    "playwright install chromium && playwright test --config playwright.config.ts",
-    "MCP browser coverage must retain its complete reviewed command",
-  );
   assert.equal(
     uiCommand,
     "playwright install chromium webkit && playwright test e2e/pages.spec.ts e2e/security.spec.ts e2e/personal-task-system.spec.ts e2e/view-delivery.spec.ts --project=chromium && playwright test e2e/view-delivery.spec.ts --project=webkit",
@@ -360,7 +353,7 @@ function validateBrowserScripts(packages) {
   );
 
   const packageByName = new Map(workspacePackages.map((pkg) => [pkg.name, pkg]));
-  for (const pkg of [packages.root, packages.mcpApp, packages.ui, packages.browserLocal]) packageByName.set(pkg.name, pkg);
+  for (const pkg of [packages.root, packages.ui, packages.browserLocal]) packageByName.set(pkg.name, pkg);
   const completed = new Set();
   const active = new Set();
   const reachableCommands = [];
@@ -428,8 +421,8 @@ function validateBrowserScripts(packages) {
   }).join("\n");
   assert.equal(
     (reachable.match(/\bplaywright install\b/g) ?? []).length,
-    3,
-    "the ci:browser chain permits exactly three Playwright install checks",
+    2,
+    "the ci:browser chain permits exactly two Playwright install checks",
   );
   assert.doesNotMatch(
     reachable,
@@ -477,7 +470,7 @@ function validateBrowserJob(job, packages) {
 function validateCiTopology(
   text,
   candidate = manifest,
-  browserPackages = { root: rootPackage, mcpApp: mcpAppPackage, ui: uiPackage, browserLocal: browserLocalPackage },
+  browserPackages = { root: rootPackage, ui: uiPackage, browserLocal: browserLocalPackage },
 ) {
   const jobs = extractJobs(text);
   const parsed = parseActionDocument(text, "CI workflow", { identities: validateIdentities(candidate.github_actions.identities) }).document;
@@ -630,7 +623,7 @@ test("native Windows cannot substitute a rebuilt artifact or mask a skipped or f
 
 test("browser CI pins a complete no-download Playwright environment", () => {
   const jobs = validateCiTopology(workflow);
-  validateBrowserJob(jobs.browser, { root: rootPackage, mcpApp: mcpAppPackage, ui: uiPackage, browserLocal: browserLocalPackage });
+  validateBrowserJob(jobs.browser, { root: rootPackage, ui: uiPackage, browserLocal: browserLocalPackage });
 });
 
 test("browser container and reachable install-policy mutations fail closed", () => {
@@ -648,20 +641,10 @@ test("browser container and reachable install-policy mutations fail closed", () 
     assert.throws(() => validateCiTopology(changed), error, name);
   }
 
-  const forced = structuredClone(mcpAppPackage);
-  forced.scripts["test:browser"] = forced.scripts["test:browser"].replace(
-    "playwright install chromium",
-    "playwright install chromium --force",
-  );
-  assert.throws(
-    () => validateCiTopology(workflow, manifest, { root: rootPackage, mcpApp: forced, ui: uiPackage, browserLocal: browserLocalPackage }),
-    /complete reviewed command/,
-  );
-
   const extra = structuredClone(uiPackage);
   extra.scripts["e2e:gate"] += " && playwright install chromium";
   assert.throws(
-    () => validateCiTopology(workflow, manifest, { root: rootPackage, mcpApp: mcpAppPackage, ui: extra, browserLocal: browserLocalPackage }),
+    () => validateCiTopology(workflow, manifest, { root: rootPackage, ui: extra, browserLocal: browserLocalPackage }),
     /complete reviewed command/,
   );
 
@@ -669,7 +652,7 @@ test("browser container and reachable install-policy mutations fail closed", () 
   nested.scripts.prebuild = "npm run browser-environment";
   nested.scripts["browser-environment"] = "apt-get update";
   assert.throws(
-    () => validateCiTopology(workflow, manifest, { root: nested, mcpApp: mcpAppPackage, ui: uiPackage, browserLocal: browserLocalPackage }),
+    () => validateCiTopology(workflow, manifest, { root: nested, ui: uiPackage, browserLocal: browserLocalPackage }),
     /cannot install system dependencies/,
   );
 
@@ -678,15 +661,8 @@ test("browser container and reachable install-policy mutations fail closed", () 
   alternateRoot.scripts.prebuild = "npm --workspace @superbee/ui run browser-environment";
   alternateUi.scripts["browser-environment"] = "apt-get update";
   assert.throws(
-    () => validateCiTopology(workflow, manifest, { root: alternateRoot, mcpApp: mcpAppPackage, ui: alternateUi, browserLocal: browserLocalPackage }),
+    () => validateCiTopology(workflow, manifest, { root: alternateRoot, ui: alternateUi, browserLocal: browserLocalPackage }),
     /cannot install system dependencies/,
-  );
-
-  const hooked = structuredClone(mcpAppPackage);
-  hooked.scripts["pretest:browser"] = "playwright install chromium --force";
-  assert.throws(
-    () => validateCiTopology(workflow, manifest, { root: rootPackage, mcpApp: hooked, ui: uiPackage, browserLocal: browserLocalPackage }),
-    /exactly three Playwright install checks|force downloads/,
   );
 
   const forcedLocal = structuredClone(browserLocalPackage);
@@ -695,7 +671,7 @@ test("browser container and reachable install-policy mutations fail closed", () 
     "playwright install chromium --force",
   );
   assert.throws(
-    () => validateCiTopology(workflow, manifest, { root: rootPackage, mcpApp: mcpAppPackage, ui: uiPackage, browserLocal: forcedLocal }),
+    () => validateCiTopology(workflow, manifest, { root: rootPackage, ui: uiPackage, browserLocal: forcedLocal }),
     /complete reviewed command/,
   );
 });

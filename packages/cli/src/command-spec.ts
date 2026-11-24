@@ -601,20 +601,15 @@ export const CLI_COMMAND_GROUPS = [
       },
       {
         id: "mcp",
-        leaves: [
-          publicLeaf("mcp", "mcp", zero, 20, DIR_SURFACE),
-          publicLeaf("mcpInstall", "mcp install", zero),
-          publicLeaf("mcpStatus", "mcp status", zero),
-          publicLeaf("mcpUninstall", "mcp uninstall", zero),
-        ],
-        usage: "mcp [install|status|uninstall | --dir <path>]",
-        summary: "Run the local MCP Apps adapter, or explicitly install, inspect, and uninstall its user-level registration for Codex/ChatGPT, Claude Code, Claude Desktop, and OpenCode",
+        leaves: [publicLeaf("mcp", "mcp", zero, 20)],
+        usage: "mcp --help",
+        summary: "Find the separate Superbee MCP app installer and migration guide",
       },
       {
         id: "viewList",
         leaves: [publicLeaf("viewList", "view list", zero, 26, DIR_SURFACE)],
         usage: "view list [--limit <n>] [--dir <path>]",
-        summary: "List the bundle's registered durable Views from the same catalog used by the web launcher and MCP list_views",
+        summary: "List the bundle's registered durable Views from the same catalog used by the web launcher and the optional MCP app",
       },
       {
         id: "viewOpen",
@@ -700,7 +695,7 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("setupHosted", "setup hosted", zero),
         ],
         usage: "setup [--host codex|claude-code|claude-desktop|opencode] [--scope project|user] [--project <dir> | --no-project] [--json] | setup migrate-state|harden-state|quarantine-state [--json] | setup hosted [--url <hosted-url>] [--workspace <id>] [--json]",
-        summary: "Agent-driven setup: inspect npm, private state, Skill, Hook, MCP, bundle, and catalog readiness, then return one deterministic action for the calling agent to execute; `setup hosted` signs in to hosted Superbee (relay the AUTH_REQUIRED link, then re-run) and records the default hosted workspace in one step",
+        summary: "Agent-driven setup: inspect npm, private state, Skill, Hook, bundle, and catalog readiness, then return one deterministic action for the calling agent to execute; `setup hosted` signs in to hosted Superbee (relay the AUTH_REQUIRED link, then re-run) and records the default hosted workspace in one step",
       },
     ],
   },

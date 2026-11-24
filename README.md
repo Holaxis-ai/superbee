@@ -14,10 +14,10 @@ owned by you.
 
 ## Install
 
-Install the standard CLI on macOS, Linux or Windows. Run these commands from your project folder:
+Try the opt-in MCP cutover prerelease on macOS, Linux or Windows from your project folder.
 
 ```sh
-npm install -g superbee
+npm install -g superbee@next
 superbee setup
 ```
 
@@ -35,8 +35,7 @@ custom Claude config root requires separate documented host paths.
 
 On macOS, Linux, or WSL2, bare and host-scoped `setup` are read-only. Without flags it reports private-state
 health and lists the four supported hosts; after the agent selects its exact host, it inspects npm,
-Agent Skill, SessionStart hook, MCP registration,
-current bundle, and private workspace catalog, then returns one safe `next.command`. Fill any
+Agent Skill, SessionStart hook, current bundle, and private workspace catalog, then returns one safe `next.command`. Fill any
 explicit placeholder it identifies, run the command, restart the named host after integration
 changes, and rerun the same setup command until the plan is complete. It never guesses a host as
 permission to edit configuration.
@@ -69,14 +68,8 @@ replaces exact historical AgentState marketplace hooks rather than leaving two S
 
 ### MCP Apps
 
-On macOS, Linux, or WSL2, use `superbee mcp install --host <id>` to register the bundled server.
-Run `superbee mcp --help` to see the supported clients.
-
-In Claude Desktop on macOS, the experimental extension can display a document or a registered
-View inside a chat. Select the local bundle folder. For a View, review its access and approve it
-in the panel. The guide includes the extension and an offline installer for other clients on
-macOS and Linux with Node 24. You can keep your existing server while trying it.
-[Experimental MCP App installation guide](https://github.com/Holaxis-ai/superbee-plugins/blob/ebf1dcc931560282de75f44ef21ab5167d327e96/apps/mcp/README.md)
+The optional MCP app opens Superbee documents and interactive Views in supported AI clients.
+Install it separately using the [MCP app installation and migration guide](https://github.com/Holaxis-ai/superbee-plugins/blob/main/apps/mcp/README.md).
 
 ## Quickstart
 

@@ -21,8 +21,8 @@
 //
 // The guard sits on the storage backend, the one path every MCP write takes, so no tool goes around
 // it. Every backend method is classified as a read or a write at compile time; a method the table
-// does not name is refused. `mcp-app` stays free of hosted knowledge: the CLI hands it the bundle
-// already wrapped, from both open paths (the catalog resolver and `mcp --dir`).
+// does not name is refused. The workspace provider hands its consumers the guarded bundle
+// for both catalog and fixed-folder access.
 import { homedir } from "node:os";
 import path from "node:path";
 

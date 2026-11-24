@@ -338,7 +338,7 @@ test("finalize holds no npm credential, verifies provider state, and creates the
   assert.match(job, /manifest\.readme, readme/, "finalize proves the attested tarball carries the installed README bytes");
   assert.match(job, /registry\.engines, manifest\.engines/, "finalize proves npm exposes the installed Node requirement");
   assert.match(job, /registry\.os, manifest\.os/, "finalize proves npm exposes the installed platform metadata");
-  assert.match(job, /installed by your agent,\\s\+not by hand/, "finalize proves setup is routed through the agent");
+  assert.match(job, /your agent can install the Agent Skill/, "finalize proves setup is routed through the agent");
   assert.match(job, /Run `superbee setup` and follow its instructions/, "finalize dogfoods the agent-run setup instruction");
   assert.doesNotMatch(job, /Windows\[\\s\\S\]\{0,240\}/, "stable documentation cannot use a bounded proximity guard");
   const relocatedStaleCommand = `Windows\n${"x".repeat(321)}\nnpm install -g superbee@next\n`;

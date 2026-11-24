@@ -224,10 +224,6 @@ adapt Superbee if needed, and bump the pin in the same PR. Locally,
 `node scripts/okf-upstream-watch.mjs --dry-run` (after `npm run build`) prints the report without
 filing anything.
 
-MCP SDK drift arrives as a Dependabot PR instead: `.github/dependabot.yml` checks
-`@modelcontextprotocol/*` daily, including major versions, and groups them into one PR. That PR's
-CI is the compatibility check. A failing one is the drift signal; adapt Superbee in that PR.
-
 ### GitHub Action pin renewal
 
 Every remote action reference uses a full lowercase commit SHA plus its exact `vX.Y.Z` release
@@ -264,7 +260,7 @@ CI coverage and broader local reproduction commands by reach (not the default bu
 | --- | --- |
 | Package source or tests | `npm run ci:runtime` |
 | `package.json`, `scripts/`, or packaging code | `npm run ci:distribution` and `npm run ci:scripts` |
-| `packages/ui`, `packages/mcp-app`, `packages/browser-local`, or embedded browser code | `npm run ci:browser` |
+| `packages/ui`, `packages/browser-local`, or embedded browser code | `npm run ci:browser` |
 | Workflow topology or `scripts/ci-lanes.json` | `npm run ci:scripts`; for CodeQL-only iteration, start with `node --test scripts/workflow-codeql-topology.test.mjs` |
 | Host-class-dependent tests (case or normalization fixtures, the identity lock) | `npm run ci:aliasing-host` |
 | `.github/workflows/release*.yml` | `npm run ci:scripts` (workflow invariant test), then one rehearsal against a disposable package before first live use |

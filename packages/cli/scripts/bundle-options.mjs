@@ -72,7 +72,6 @@ export const workspaceAliases = {
       // The experimental conversational View adapter is private workspace source. It is bundled
       // into the npm CLI exactly like the other internal packages, leaving no runtime workspace
       // dependency for users to install or resolve.
-      "@superbee/mcp-app": r("../mcp-app/src/index.ts"),
       // Shared human-surface primitives are private workspace source too. Alias them explicitly
       // so a clean npm build never depends on sibling dist/ directories existing.
       "@superbee/markdown-renderer/static": r("../markdown-renderer/src/static.tsx"),

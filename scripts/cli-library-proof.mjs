@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { Client } from "@modelcontextprotocol/client";
-import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
@@ -10,7 +8,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { init, parse } from "es-module-lexer";
-import { build } from "esbuild";
 import ts from "typescript";
 import { versionPattern } from "./package-version-policy.mjs";
 const exec = promisify(execFile);
@@ -400,18 +397,10 @@ export const workspaceManifests = async () => {
 };
 const walk = async directory => (await readdir(directory, { withFileTypes: true, recursive: true })).filter(entry => entry.isFile()).map(entry => path.join(entry.parentPath, entry.name));
 // What the built artifact embeds, located without the build's own list: the runtime metafile, the
-// MCP resources' modules bundled again here, and the UI files whose gzip payloads sit in the bundle.
+// and the UI files whose gzip payloads sit in the bundle.
 export const embeddedInventory = async (bundleFile = path.join(root, "packages/cli/dist/index.mjs")) => {
   const runtime = await readJson(path.join(root, "out/cli-runtime-metafile.json"));
   const assets = new Set();
-  const mcpRoot = path.join(root, "packages/mcp-app");
-  for (const entry of ["view", "document"]) {
-    const result = await build({ entryPoints: [path.join(mcpRoot, "src", `${entry}.ts`)], bundle: true, platform: "browser", format: "iife", target: "es2022", write: false, logLevel: "silent", metafile: true, absWorkingDir: mcpRoot });
-    for (const input of Object.keys(result.metafile.inputs)) {
-      const parts = path.relative(root, path.resolve(mcpRoot, input)).split(path.sep);
-      if (parts[0] === "packages" && !parts.includes("node_modules")) assets.add(parts.join("/"));
-    }
-  }
   const bundle = await readFile(bundleFile, "utf8");
   const payloads = new Set([...bundle.matchAll(/gzipBase64: "([A-Za-z0-9+/=]+)"/g)].map(([, base64]) => createHash("sha256").update(gunzipSync(Buffer.from(base64, "base64"))).digest("hex")));
   const uiDist = path.join(root, "packages/ui/dist");
@@ -468,7 +457,7 @@ export function validateCliTarEntries(entries) {
 
 // Approve the synthetic View using an existing host, then run the independent installed
 // consumer. The consumer never manufactures an approval or imports a private workspace.
-async function provePackedViewActions({ scratch, cwd, bundle, entry, env, run }) {
+async function provePackedViewActions({ scratch, cwd, bundle, env, run }) {
   const fixtures = {
     "conventions/ticket.md": "---\ntype: Convention\ntitle: Ticket\ngoverns: Ticket\npath: tickets/\nfields:\n  required: [title, state]\n  values:\n    state: [todo, done]\n---\n",
     "tickets/one.md": "---\ntype: Ticket\ntitle: One\nstate: todo\n---\nPending.\n",
@@ -484,20 +473,17 @@ async function provePackedViewActions({ scratch, cwd, bundle, entry, env, run })
   await copyFile(path.join(root, "scripts/fixtures/packed-view-actions.mjs"), consumer);
   await run([consumer, bundle, "unapproved"], cwd, env);
 
-  const client = new Client({ name: "fixture-approval", version: "1" });
-  try {
-    await client.connect(new StdioClientTransport({
-      command: process.execPath, args: [entry, "mcp", "--dir", bundle], cwd, env, stderr: "pipe",
-    }));
-    const shown = await client.callTool({ name: "show_view", arguments: { viewId: "views-registry/editor" } });
-    assert.ok(!shown.isError, JSON.stringify(shown.content));
-    const approved = await client.callTool({
-      name: "authorize_durable_view", arguments: { launchId: shown.structuredContent.launch.launchId },
-    });
-    assert.ok(!approved.isError, JSON.stringify(approved.content));
-  } finally {
-    await client.close();
-  }
+  const approval = path.join(scratch, "approve-view.mjs");
+  await writeFile(approval, `
+    import assert from "node:assert/strict";
+    import { openViewWorkspace } from "@superbee/cli/view-workspace/v1";
+    const workspace = await openViewWorkspace("directory", process.argv[2]);
+    const view = await workspace.open({ viewId: "views-registry/editor" });
+    assert.equal(view.authorized, false);
+    assert.equal((await workspace.approve(view.id)).authorized, true);
+    workspace.close(view.id);
+  `);
+  await run([approval, bundle], cwd, env);
   await run([consumer, bundle, "approved"], cwd, env);
 }
 
@@ -678,7 +664,7 @@ await assert.rejects(openWorkspaceReader('catalog', 'missing-workspace'));
       const temporaryReader = path.join(scratch, "temporary-view-reader.mjs");
       await copyFile(path.join(root, "scripts/fixtures/packed-temporary-view.mjs"), temporaryReader);
       await run([temporaryReader, bundle], cwd, env);
-      await provePackedViewActions({ scratch, cwd, bundle, entry, env, run });
+      await provePackedViewActions({ scratch, cwd, bundle, env, run });
       const viewHost = path.join(scratch, "view-workspace.mjs");
       await copyFile(path.join(root, "scripts/fixtures/packed-view-workspace.mjs"), viewHost);
       const fixtureHost = path.join(root, "scripts/fixtures/packed-view-fake-host.mjs");

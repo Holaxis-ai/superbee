@@ -1,5 +1,4 @@
-// Report drift in the upstream OKF specification: SPEC.md in its canonical repository, plus its
-// sample bundles read through the built CLI. (MCP SDK drift arrives as Dependabot PRs instead.)
+// Report drift in the upstream OKF specification: SPEC.md and its samples in the canonical repository.
 //
 // Usage:
 //   node scripts/okf-upstream-watch.mjs [--collect FILE | --dry-run]
