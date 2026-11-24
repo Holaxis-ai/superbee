@@ -131,7 +131,7 @@ states.
 
 ```sh
 superbee blobs --prefix views/
-superbee pull --doc-key views/review-workflow/reviews.html --out my-view.html
+superbee pull --doc-key views/roadmap.html --out my-view.html
 ```
 
 Keep HTML, CSS and JavaScript self-contained with no external hosts. A data View embeds the bridge
