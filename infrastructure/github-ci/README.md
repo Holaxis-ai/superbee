@@ -19,9 +19,8 @@ is clean. The receipt identifies each reviewed blob. The exact reviewed SHA and
 checkout root recorded in the private activation runbook remain authoritative.
 It also verifies successful current
 main-push CI and CodeQL evidence (every runtime shard, maintained proof lane,
-both security analyses, and their stable aggregate statuses), existing protection
-invariants, and the absence
-of a Windows queue.
+both security analyses, and their stable aggregate statuses) and existing protection
+invariants for the Superbee repository.
 
 The legacy smoke requirement uses the maintained engines-floor lane's display
 name from `scripts/ci-lanes.json`, with GitHub Actions ownership preserved.
