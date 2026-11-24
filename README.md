@@ -14,10 +14,10 @@ owned by you.
 
 ## Install
 
-Install the standard CLI on macOS, Linux or Windows. Run these commands from your project folder:
+Try the opt-in MCP cutover prerelease on macOS, Linux or Windows from your project folder.
 
 ```sh
-npm install -g superbee
+npm install -g superbee@next
 superbee setup
 ```
 
