@@ -152,34 +152,6 @@ function relativeFileInventory(root: string, prefix = ""): string[] {
   });
 }
 
-test("the shipped review-workflow references exactly mirror the complete recipe folder", () => {
-  const sourcePrefix = "examples/recipes/review-workflow/";
-  const destPrefix = "recipes/review-workflow/";
-  const inventory = relativeFileInventory(path.join(REPO_ROOT, sourcePrefix)).sort();
-  const expected = inventory.map((relative) => ({
-    src: `${sourcePrefix}${relative}`,
-    dest: `${destPrefix}${relative}`,
-  }));
-  const actual = NPM_RESOURCES
-    .filter(({ src, dest }) => src.startsWith(sourcePrefix) || dest.startsWith(destPrefix))
-    .sort((a, b) => a.src.localeCompare(b.src));
-  assert.deepEqual(actual, expected);
-});
-
-test("the portable recipe carries the canonical View convention byte-for-byte", () => {
-  const canonical = readFileSync(path.join(REPO_ROOT, "examples/views/conventions/view.md"));
-  const portable = readFileSync(path.join(REPO_ROOT, "examples/recipes/review-workflow/conventions/view.md"));
-  assert.deepEqual(portable, canonical);
-});
-
-test("the portable recipe carries the canonical bundle-native View authoring reference byte-for-byte", () => {
-  const canonical = readFileSync(path.join(REPO_ROOT, "examples/views/references/view-authoring-v0.md"));
-  const portable = readFileSync(
-    path.join(REPO_ROOT, "examples/recipes/review-workflow/references/view-authoring-v0.md"),
-  );
-  assert.deepEqual(portable, canonical);
-});
-
 test("the View authoring reference documents hello grants for both read and proposal capabilities", () => {
   const reference = readFileSync(
     path.join(REPO_ROOT, "examples/views/references/view-authoring-v0.md"),
@@ -257,6 +229,7 @@ test("the npm Skill progressively discloses one focused modeling reference", () 
   assert.match(renderedNpm, /normally with one representative example/);
   assert.match(renderedNpm, /remove temporary authoring\s+files/);
   assert.match(renderedNpm, /Use `--body-file` for multiline Markdown/);
+  assert.match(renderedNpm, /Superbee Plugins catalog.*superbee-plugins#recipe-index.*`superbee recipe add --help`/);
   assert.match(renderedNpm, /Read only what the accepted work requires/);
 });
 

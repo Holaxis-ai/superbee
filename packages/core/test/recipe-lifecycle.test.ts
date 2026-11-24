@@ -4,10 +4,9 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { initBundle } from "../src/bundle.js";
 import { readBlob, readBundleOkfVersion, readDoc, writeBlob, writeDoc } from "../src/bundle-ops.js";
@@ -44,11 +43,10 @@ import {
   RecipeLifecycleError,
 } from "../src/recipe-lifecycle/index.js";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
 const NOW = "2026-10-14T12:00:00.000Z";
 
 // The scenario of packages/cli/test/recipe-evolve-golden.test.ts, first case.
-const GOLDEN = path.resolve(here, "../../cli/test/fixtures/recipe-evolve-golden/plans.txt");
+const GOLDEN = path.resolve(import.meta.dirname, "../../cli/test/fixtures/recipe-evolve-golden/plans.txt");
 const manifest = (version: string): string =>
   `---\ntype: Recipe\nid: widget-workflow\ntitle: Widget workflow\nversion: "${version}"\nsummary: Widget definitions.\n---\n`;
 const convention = (fields: string, extra = ""): string =>
@@ -790,22 +788,6 @@ test("T8: a stamped install plans no removal and re-adds as already applied, wit
   assert.equal((await installRecipe(bundle, trio("2"), { now: NOW })).stamp, "stale");
 });
 
-async function exampleRecipe(name: string): Promise<LoadedRecipe> {
-  const root = path.resolve(here, "../../../examples/recipes", name);
-  const files: Array<{ path: string; bytes: string }> = [];
-  const walk = async (dir: string): Promise<void> => {
-    for (const entry of await readdir(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) await walk(full);
-      else files.push({ path: path.relative(root, full).split(path.sep).join("/"), bytes: await readFile(full, "utf8") });
-    }
-  };
-  await walk(root);
-  const loaded = parseRecipeFiles(files, `example:${name}`, { okfVersion: "0.2" });
-  assert.ok(loaded.ok, loaded.ok ? "" : loaded.error.message);
-  return loaded.recipe;
-}
-
 test("T9: the definition digest before the write equals the digest read back, on both backends, LF and CRLF", async () => {
   const nested = kindRecipe("nested", "0.20.0", [
     kindDoc(
@@ -816,7 +798,7 @@ test("T9: the definition digest before the write equals the digest read back, on
     ),
     kindDoc("Entry", { required: ["title"] }, {}, "# Entry\n\nOne line.\n"),
   ]);
-  const recipes = [nested, await exampleRecipe("claims"), await exampleRecipe("review-workflow")];
+  const recipes = [nested, galleryRecipe("1")];
   const dirs: string[] = [];
   try {
     for (const recipe of recipes) {

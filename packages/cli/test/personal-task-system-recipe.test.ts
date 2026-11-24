@@ -27,15 +27,15 @@ const PERSONAL_TASK_SYSTEM_RECIPE = path.resolve(
 );
 const CANONICAL_VIEW_CONVENTION = path.resolve(
   import.meta.dirname,
-  "../../../examples/recipes/review-workflow/conventions/view.md",
+  "../../../examples/views/conventions/view.md",
 );
-const CANONICAL_VIEW_REFERENCE = path.resolve(
+const PORTABLE_VIEW_REFERENCE = path.resolve(
   import.meta.dirname,
-  "../../../examples/recipes/review-workflow/references/view-authoring-v0.md",
+  "fixtures/review-workflow-v1/references/view-authoring-v0.md",
 );
 const REVIEW_WORKFLOW_RECIPE = path.resolve(
   import.meta.dirname,
-  "../../../examples/recipes/review-workflow",
+  "fixtures/review-workflow-v1",
 );
 
 async function tempDir(): Promise<string> {
@@ -155,7 +155,7 @@ test("Personal Task System parses strictly and installs its kinds plus interacti
   );
   assert.equal(
     await readFile(path.join(PERSONAL_TASK_SYSTEM_RECIPE, "references/view-authoring-v0.md"), "utf8"),
-    await readFile(CANONICAL_VIEW_REFERENCE, "utf8"),
+    await readFile(PORTABLE_VIEW_REFERENCE, "utf8"),
     "View-bearing recipes must carry the same authoring contract their convention links",
   );
 

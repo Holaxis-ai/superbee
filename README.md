@@ -255,11 +255,10 @@ no access or authority; see
 - **Recipes install capability as text.** A recipe is a folder of definitions, applied
   idempotently — it seeds schemas and may carry explicitly declared static References and
   self-contained Views, then the bundle owns them. A `definitions-only` package rejects instance
-  data and undeclared files. Three
-  recipes ship built-in (`context-notes`, `work-tracking`, `roadmap`);
-  `examples/recipes/claims` is the minimal custom-Kind example, while
-  `examples/recipes/review-workflow` is a complete content-free cognitive ecosystem: a
-  self-describing Review Request kind plus a generic live View, with no review instances.
+  data and undeclared files. Three recipes ship built-in (`context-notes`, `work-tracking`,
+  `roadmap`). Find optional recipes in the
+  [Superbee Plugins catalog](https://github.com/Holaxis-ai/superbee-plugins#recipe-index) and
+  use `superbee recipe add --help` for installation.
 
 ### Prepare a cookbook with explicit Kind bindings
 
