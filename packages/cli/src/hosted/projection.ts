@@ -17,6 +17,7 @@ import { assertSafeBlobKey, isWriteRequestId } from "@superbee/core/storage";
 import { createHash, randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { currentHost } from "../runtime-context.js";
 
 import { assertSafeConceptId, foldPath, pathFromConceptId, FilesystemBackend, probeFilesystemPath, InvalidInputError, type JournaledBackend } from "@superbee/core";
 
@@ -39,6 +40,9 @@ function sibling(file: string, label: string): string {
 }
 
 async function syncDir(dir: string): Promise<void> {
+  // As in the Hosted journal, the Windows filesystem owns directory metadata durability.
+  // The projected file's bytes are still flushed before publishing its name.
+  if (currentHost().id === "win32") return;
   const handle = await fs.open(dir, "r");
   try {
     await handle.sync();

@@ -587,7 +587,7 @@ export function storeForSession(session: SessionRecord, deps: HostedAuthDeps): S
     case "secret-service":
       return secretServiceStore(deps.run);
     case "windows-dpapi":
-      return windowsSecretStore(deps.home, directoryForAccount(deps.home), deps.env, deps.run);
+      return windowsSecretStore(deps.home, directoryForAccount(deps.home), deps.run);
   }
 }
 

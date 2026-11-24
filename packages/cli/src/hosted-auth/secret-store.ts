@@ -205,14 +205,10 @@ export async function transformWindowsAuthData(
   method: "Protect" | "Unprotect",
   scope: string,
   bytes: Buffer,
-  env: NodeJS.ProcessEnv = process.env,
   run: ToolRunner = runTool,
 ): Promise<Buffer> {
   const kind = "windows-dpapi" as const;
-  const result = await runWindowsDataProtection(method, `${KEYCHAIN_SERVICE}\0${scope}`, bytes.toString("base64"), env, run, STORE_CALL_TIMEOUT_MS);
-  if (result === null) {
-    throw credentialStoreUnavailable("the Windows system directory is unavailable", kind);
-  }
+  const result = await runWindowsDataProtection(method, `${KEYCHAIN_SERVICE}\0${scope}`, bytes.toString("base64"), run, STORE_CALL_TIMEOUT_MS);
   const output = Buffer.from(result.stdout, "base64");
   if (result.code !== 0 || result.stderr || output.length === 0 || output.toString("base64") !== result.stdout) {
     // Process diagnostics can contain secret material. Keep them inside this adapter.
@@ -225,7 +221,6 @@ export async function transformWindowsAuthData(
 export function windowsSecretStore(
   home: string,
   directoryFor: (account: string) => string,
-  env: NodeJS.ProcessEnv,
   run: ToolRunner = runTool,
 ): SecretStore {
   const file = "refresh-token.dpapi";
@@ -236,10 +231,10 @@ export function windowsSecretStore(
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw error;
       });
-      return raw === null ? null : (await transformWindowsAuthData("Unprotect", `refresh:${account}`, Buffer.from(raw, "base64"), env, run)).toString("utf8");
+      return raw === null ? null : (await transformWindowsAuthData("Unprotect", `refresh:${account}`, Buffer.from(raw, "base64"), run)).toString("utf8");
     },
     async set(account, secret) {
-      const protectedBytes = await transformWindowsAuthData("Protect", `refresh:${account}`, Buffer.from(secret, "utf8"), env, run);
+      const protectedBytes = await transformWindowsAuthData("Protect", `refresh:${account}`, Buffer.from(secret, "utf8"), run);
       await writeUserStateFileAtomic0600(home, directoryFor(account), file, `${protectedBytes.toString("base64")}\n`);
     },
     async delete(account) {
@@ -279,7 +274,7 @@ export function selectSecretStore(options: SelectStoreOptions): SecretStore {
   }
   if (platform === "darwin") return macosKeychainStore(options.run);
   if (platform === "linux" || platform === "freebsd" || platform === "openbsd") return secretServiceStore(options.run);
-  if (platform === "win32") return windowsSecretStore(options.home, options.directoryFor, env, options.run);
+  if (platform === "win32") return windowsSecretStore(options.home, options.directoryFor, options.run);
   throw credentialStoreUnavailable(`no supported OS credential store on ${platform}`);
 }
 
