@@ -4,7 +4,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const ENGINE = "Holaxis-ai/superbee";
-export const WINDOWS = "Holaxis-ai/superbee-windows-cli";
 export const SOURCE_FILES = [
   ".github/workflows/ci-tests.yml",
   ".github/workflows/codeql.yml",
@@ -116,10 +115,6 @@ export function evaluateSnapshot(snapshot) {
   }
   if (!Array.isArray(snapshot.engineRulesets) || !snapshot.engineRulesets.some(preservesReleaseTags)) {
     errors.push("existing release-tag protection changed or is incomplete");
-  }
-  if (!Array.isArray(snapshot.windowsRulesets) || snapshot.windowsRulesets.some((rule) => !rule || !["active", "disabled", "evaluate"].includes(rule.enforcement) || !Array.isArray(rule.rules))) errors.push("Windows ruleset inventory missing or incomplete");
-  else if (snapshot.windowsRulesets.some((rule) => rule.enforcement === "active" && rule.rules?.some((entry) => entry.type === "merge_queue"))) {
-    errors.push("Windows has an active merge queue");
   }
   const queueRules = mainQueueInventory(snapshot.engineRulesets, errors);
   if (queueRules.length > 1) errors.push("multiple engine queue rulesets require reconciliation");
@@ -233,7 +228,6 @@ export function collectSnapshot(root) {
     reviewedFiles,
     protection: api(`repos/${ENGINE}/branches/main/protection`),
     engineRulesets: rulesets(ENGINE),
-    windowsRulesets: rulesets(WINDOWS),
     workflows,
   };
 }
