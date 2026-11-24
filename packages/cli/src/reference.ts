@@ -4,6 +4,7 @@
 // ordering live in command-spec.ts. This module owns only reference rendering.
 import { CLI_COMMAND_GROUPS, type PublicLeafPath } from "./command-spec.js";
 import type { CommandPrefix } from "./command-text.js";
+import { MCP_APP_INSTALL } from "./integration-guidance.js";
 
 export type { PublicLeafPath } from "./command-spec.js";
 
@@ -47,8 +48,8 @@ export const COMMAND_GROUPS: readonly CommandGroup[] = Object.freeze(
  * this one static line, paired with the live `kinds` command, closed that gap.
  *
  * Takes the RESOLVED invocation prefix as a plain string argument rather than resolving it itself
- * (that would mean importing `invocation.ts`'s filesystem/PATH resolution into this module, breaking
- * its "NO I/O, NO imports beyond TypeScript types" contract) — every call site already resolves one
+ * (that would mean importing `invocation.ts`'s filesystem/PATH resolution into this pure module) —
+ * every call site already resolves one
  * (`cliInvocation()` in `cli.ts`, `deps.invocation()` in `home.ts`) for its OTHER emitted hints, so
  * this is purely a projection of a value the caller already has.
  */
@@ -185,6 +186,9 @@ export function helpIndexText(invocation: CommandPrefix): string {
     "  when required, and repeats setup until ready. Do not ask the user to copy or run setup",
     "  commands unless execution is unavailable. Prefer the resolved project binary or",
     "  `npx --no-install superbee`; do not use a download-permitting npx invocation for setup guidance.",
+    "",
+    wrapText(MCP_APP_INSTALL.description),
+    MCP_APP_INSTALL.guide,
   );
   lines.push("", wrapText(ref.kinds), "", wrapText(ref.remoteEnv));
   return `${lines.join("\n")}\n`;

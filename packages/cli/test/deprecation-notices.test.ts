@@ -286,7 +286,6 @@ for (const [label, args] of [
   ["doc read --field", ["doc", "read", "absent/doc", "--dir", "bundle", "--field", "head_version"]],
   ["doc read --out -", ["doc", "read", "absent/doc", "--dir", "bundle", "--out", "-"]],
   ["pull --out -", ["pull", "--doc-key", "absent/doc", "--dir", "bundle", "--out", "-"]],
-  ["mcp", ["mcp", "--bogus"]],
 ] as const) {
   test(`${label} refuses a retired variable on its stderr error channel, leaving stdout empty`, () => withFixture(async ({ home, project }) => {
     const clean = await run([...args], project, cleanEnv(home));
@@ -345,7 +344,6 @@ test("commands whose stderr is a contract are reserved, in every flag spelling",
     ["doc", "read", "a", "--rendered-out", "-"],
     ["doc", "read", "a", "--field", "head_version"],
     ["catalog", "resolve", "a", "--field=path"],
-    ["mcp"],
   ]) assert.equal(stderrIsReserved(argv), true, argv.join(" "));
   for (const argv of [["publish"], ["doc", "read", "a", "--out", "file"], ["list", "--json", "--field", "a=b"], []]) {
     assert.equal(stderrIsReserved(argv), false, argv.join(" "));

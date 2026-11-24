@@ -76,8 +76,8 @@ for (const head of await reader.queryHeads()) {
 }
 ```
 
-Use `openWorkspaceReader('directory', directory)` for the same explicit directory selection as
-`superbee mcp --dir`. The session exposes its display name, document heads in ID order, and
+Use `openWorkspaceReader('directory', directory)` to open an explicit bundle directory.
+The session exposes its display name, document heads in ID order, and
 document reads with parsed frontmatter, Markdown body and an opaque version. Calls observe
 the working copy independently. A document can change or disappear between calls. Hosted
 checkouts use the CLI's existing freshness policy and include pending local edits.

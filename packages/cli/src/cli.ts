@@ -33,7 +33,6 @@ import { recipe } from "./commands/recipe.js";
 import { source } from "./commands/source.js";
 import { status } from "./commands/status.js";
 import { ui } from "./commands/ui.js";
-import { mcp } from "./commands/mcp.js";
 import { sync } from "./commands/sync.js";
 import { home, homeCommand } from "./commands/home.js";
 import { hook } from "./commands/hook.js";
@@ -66,7 +65,7 @@ import { cliInvocation } from "./invocation.js";
 import { PUBLIC_COMMAND_NAMES, type PublicCommandName } from "./command-spec.js";
 import { parseArgs } from "node:util";
 import { commandWords } from "./command-text.js";
-import { openDeprecationNotices, refuseLeadingRetiredFlag, refuseRetiredEnv, refuseRetiredInput } from "./deprecation-notices.js";
+import { isRetiredCommand, openDeprecationNotices, refuseLeadingRetiredFlag, refuseRetiredEnv, refuseRetiredInput } from "./deprecation-notices.js";
 import { currentExistingGitBoard } from "./runtime-context.js";
 export { cliVersion } from "./build-identity.js";
 
@@ -135,7 +134,6 @@ const publicHandlers = {
   recipe,
   status,
   ui,
-  mcp,
   hook,
   skill,
   "session-start": sessionStart,
@@ -263,13 +261,14 @@ export function hoistLeadingGlobalFlags(argv: string[]): string[] | null {
   const firstPositional = tokens?.find((t) => t.kind === "positional");
   if (!firstPositional) return null;
   const cmd = argv[firstPositional.index];
-  if (cmd === undefined || !(KNOWN_COMMANDS as readonly string[]).includes(cmd)) return null;
+  if (cmd === undefined || (!(KNOWN_COMMANDS as readonly string[]).includes(cmd) && !isRetiredCommand(cmd))) return null;
   // Move the leading global-flag block (everything BEFORE the subcommand) to the END, after the full
   // command path — so `--dir x doc read y` becomes `doc read y --dir x`, not `doc --dir x read y`.
   return [...argv.slice(firstPositional.index), ...argv.slice(0, firstPositional.index)];
 }
 
 export async function main(argv: string[]): Promise<void> {
+  if (refuseRetiredInput(argv)) return;
   const command = argv[0];
   const board = currentExistingGitBoard();
   if (board && !isBareVersionFlag(command)) {
@@ -315,9 +314,6 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
 
-  // A removed command word fails before any routing.
-  if (refuseRetiredInput(argv)) return;
-
   // A leading flag (e.g. `axi --dir <path> list`) is a common mistake: options are per-command and
   // must FOLLOW the subcommand. Give an actionable hint rather than the opaque "unknown command:
   // --dir". (Version and help aliases are handled above; this is for the rest.) Exit 2.
@@ -333,7 +329,7 @@ export async function main(argv: string[]): Promise<void> {
     }
     // `[global flags] <known-subcommand> …` (e.g. `--dir x list`) is a common ordering mistake — hoist
     // the subcommand to the front and run it, so `--dir x list` behaves like `list --dir x` instead of
-    // erroring. Only fires for a KNOWN command; a genuinely malformed leading flag still gets the
+    // erroring. Only fires for a known or retired command; a genuinely malformed leading flag still gets the
     // USAGE error below. The reordered argv leads with a command, so this recursion can't loop.
     const hoisted = hoistLeadingGlobalFlags(argv);
     if (hoisted) {

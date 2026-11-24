@@ -366,7 +366,7 @@ escaped; the default output removes them and adds a note. A local or Git bundle 
 `op run` is refused with `NOT_IMPLEMENTED`. A host from before these routes answers
 `NOT_IMPLEMENTED` too.
 
-The local MCP app (`superbee mcp`) offers the same two as tools for a catalog workspace:
+The optional local MCP app offers the same two as tools for a catalog workspace:
 `list_operations` and `run_operation` (with `operationId` and an `input` object). They run as the
 checkout's own person, and refuse the folder-answered reads the same way (use `show_document`). A
 missing sign-in is a tool error carrying the one link to relay to the person; call the tool again
@@ -540,8 +540,8 @@ person asks for it.
 kept. `superbee catalog remove <label>` forgets any other entry, such as one `catalog list`
 reports `available: false` (its folder is gone); it never touches the folder or the checkout. It
 refuses (`unsent_changes`, exit 5) a checkout whose folder holds changes sync has not sent: run
-`superbee sync --dir <folder>` first. The local MCP app (`superbee mcp`) serves it through the folder, by that label or
-with the session opened in it: a document written through a View lands in the folder and reaches
+`superbee sync --dir <folder>` first. The optional local MCP app serves the checkout by catalog label
+or explicit folder. A document written through a View lands in the folder and reaches
 the host at the next `superbee sync`. A write sync could not send (a View save, a convention, a
 retype, a document over the size limit, a change to `verified`) is refused before the file
 changes; View saves, conventions and verification are for the person to do in the Superbee app.

@@ -132,7 +132,6 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
     sourceSnapshotCheck: simple(CLI_LEAVES.sourceSnapshotCheck,["source","snapshot","check"],[ctx.scratch],["--inputs-file",ctx.scratch]),
     sourceTest: simple(CLI_LEAVES.sourceTest, ["source", "test"], [ctx.scratch], ["--fixture", ctx.scratch]),
     ui: simple(CLI_LEAVES.ui, ["ui"], [], [...dir, "--port", "0"]),
-    mcp: simple(CLI_LEAVES.mcp, ["mcp"], [], [], "stderr"),
     viewList: simple(CLI_LEAVES.viewList, ["view", "list"], [], dir),
     viewOpen: simple(CLI_LEAVES.viewOpen, ["view", "open"], ["existing"], [...dir, "--no-open", "--json"]),
     viewRead: simple(CLI_LEAVES.viewRead, ["view", "read"], ["existing"], dir),
@@ -247,16 +246,6 @@ function decodedError(result: Pick<CommandResult, "stdout" | "stderr">, row: Lea
   return decode(output.trim()) as unknown as DecodedError;
 }
 
-test("legacy MCP launches keep stdout empty and direct users to the app installer", () => {
-  const ctx = createFixture();
-  for (const args of [[], ["--dir", ctx.bundle, "--actor", "process:test"], ["install", "--host", "codex"]]) {
-    const result = run(["mcp", ...args], ctx.scratch, ctx.env);
-    assert.equal(result.status, 2);
-    assert.equal(result.stdout, "");
-    assert.match(result.stderr, /superbee-plugins.*apps\/mcp\/README\.md/);
-  }
-});
-
 test("documented paths, runtime top-level registration, arity, and executable rows agree bidirectionally", () => {
   const paths = COMMAND_GROUPS.flatMap((group) => group.commands.flatMap((command) => command.paths));
   const ctx = { scratch: "", bundle: "bundle", initTarget: "target", artifactFile: "artifact", env: {} };
@@ -305,11 +294,7 @@ test("built key owners and review sentinels reject surplus with the exact envelo
       surplus: 1,
       first_unexpected: SURPLUS,
     }, path);
-    if (id === "mcp") {
-      assert.match(envelope.error.help ?? "", /superbee-plugins.*apps\/mcp\/README\.md/);
-    } else {
-      assert.equal(envelope.error.help?.endsWith(`${row.leaf.canonical.path} --help`), true, `${path}: canonical leaf help`);
-    }
+    assert.equal(envelope.error.help?.endsWith(`${row.leaf.canonical.path} --help`), true, `${path}: canonical leaf help`);
   }
 
   assert.equal(existsSync(ctx.initTarget), false);
@@ -348,7 +333,7 @@ test("built runtime batches prove missing and help precedence, with executable p
     ];
   });
   const results = runCommandBatch(batchRows, { cwd: ctx.scratch, home: ctx.env.HOME!, env: ctx.env });
-  for (const id of ["new:missing", "new:help", "docUpdate:help", "kindFieldAdd:missing", "blobs:help", "docRead:missing", "catalogResolve:missing", "mcp:help"]) {
+  for (const id of ["new:missing", "new:help", "docUpdate:help", "kindFieldAdd:missing", "blobs:help", "docRead:missing", "catalogResolve:missing"]) {
     const row = batchRows.find((candidate) => candidate.id === id)!;
     const built = run(row.argv, ctx.scratch, ctx.env);
     assert.ifError(built.error);

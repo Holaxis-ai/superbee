@@ -152,7 +152,6 @@ export const BEHAVIOR_ASSIGNMENTS = [
   ordinary("sourceSnapshotRun", 1),
   ordinary("sourceSnapshotCheck", 1),
   ordinary("ui", 0),
-  ordinary("mcp", 0, { errorChannel: "stderr" }),
   selector("viewList", "leading-navigation", 0),
   selector("viewOpen", "leading-navigation", 1),
   ordinary("viewRead", 1),
@@ -219,7 +218,6 @@ export const BUILT_KEY_REPRESENTATIVE_IDS = [
   "kindFieldAdd",
   "kindDraft",
   "hookInstall",
-  "mcp",
   "export",
   "notify",
 ] as const satisfies readonly PublicLeafId[];

@@ -1,4 +1,4 @@
-/** Built-CLI proof that removed remote inputs refuse actionably and bundle resolution stays local. */
+/** Built-CLI proof that retired inputs give actionable errors and bundle resolution stays local. */
 import test, { before } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
@@ -127,12 +127,22 @@ test("built CLI: --remote is refused before any work, wherever it appears", asyn
   }
 });
 
-test("built CLI: an MCP host started with --remote sees the refusal on stderr, never on the protocol stream", async () => {
-  const result = await run(["mcp", "--remote", SECRET_URL], repoRoot);
-  assert.equal(result.code, 2);
-  assert.equal(result.stdout, "");
-  assert.match(result.stderr, /code: RETIRED_FLAG/);
-  assert.doesNotMatch(result.stderr, /secret-token/);
+test("built CLI: an old MCP launch receives the installer link on stderr", async () => {
+  for (const argv of [
+    ["mcp"],
+    ["mcp", "--help"],
+    ["mcp", "install", "--host", "codex"],
+    ["--dir", sampleBundle, "mcp", "--actor", "process:tester"],
+    ["mcp", "--remote", SECRET_URL],
+  ]) {
+    const result = await run(argv, repoRoot, SECRET_URL);
+    assert.equal(result.code, 2);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /code: RETIRED_COMMAND/);
+    assert.match(result.stderr, /input: mcp/);
+    assert.match(result.stderr, /superbee-plugins.*apps\/mcp\/README\.md/);
+    assert.doesNotMatch(result.stderr, /secret-token/);
+  }
 });
 
 test("built CLI: superbee serve is refused with the local and pinned routes", async () => {
