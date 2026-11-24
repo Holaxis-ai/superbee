@@ -72,12 +72,13 @@ export const REFRESH_SKEW_MS = 120_000;
 export const REFRESH_REUSE_LEEWAY_MS = 30_000;
 /**
  * How long a caller waits for another process holding the session lock before reporting the
- * session busy. It must exceed the worst-case hold so parallel agent commands queue behind one
- * slow refresh instead of failing: a refresh holds the lock for up to two store reads and one
+ * session busy. On macOS and Linux the budget covers a slow refresh or device poll restart so
+ * parallel agent commands normally queue behind them. A refresh uses up to two store reads and one
  * store write (STORE_CALL_TIMEOUT_MS each, 5s) plus two token calls (HTTP_TIMEOUT_MS each, 10s),
  * about 35s; a device poll that restarts sign-in holds it for the poll, a store write probe (two
  * store calls), three metadata fetches and the device call, about 60s in the worst case. Waiters
- * past this still get a retryable TRANSIENT.
+ * past this get a retryable TRANSIENT. On a cold Windows host several PowerShell calls can
+ * extend a hold beyond the wait budget; another invocation can retry without breaking the lock.
  */
 export const SESSION_LOCK_WAIT_MS = 65_000;
 /**

@@ -4,6 +4,8 @@ import type { RunResult, ToolRunner } from "../runtime-types.js";
 
 // This kernel link names the installed Windows directory regardless of drive or user environment.
 const POWERSHELL = String.raw`\\?\GLOBALROOT\SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`;
+// Starting PowerShell and loading DPAPI on a cold Windows host can take more than five seconds.
+const DPAPI_CALL_TIMEOUT_MS = 15_000;
 
 /** Keep secrets and the account binding out of argv, including when Windows logs process creation. */
 export async function runWindowsDataProtection(
@@ -11,7 +13,6 @@ export async function runWindowsDataProtection(
   account: string,
   data: string,
   run: ToolRunner,
-  timeoutMs: number,
 ): Promise<RunResult> {
   let executable = POWERSHELL;
   if (process.platform === "win32") {
@@ -34,5 +35,5 @@ export async function runWindowsDataProtection(
   `;
   const encodedScript = Buffer.from(script, "utf16le").toString("base64");
   const entropy = createHash("sha256").update(account).digest("base64");
-  return run(executable, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedScript], `${entropy}\n${data}\n`, timeoutMs);
+  return run(executable, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedScript], `${entropy}\n${data}\n`, DPAPI_CALL_TIMEOUT_MS);
 }
