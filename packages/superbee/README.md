@@ -47,7 +47,7 @@ Skill, an instruction file your agent loads, that teaches it how to use the tool
 
 ## Install
 
-Use macOS, Linux, or WSL2 for the full CLI. It requires a supported Node.js 22, 24, or 26 release (22.14.0 minimum).
+Install the standard npm package on macOS, Linux or Windows.
 
 ```sh
 npm install -g superbee
@@ -55,18 +55,16 @@ npm install -g superbee
 
 Stable releases publish on npm's `latest` tag and prereleases on `next`.
 
+Use macOS, Linux, or WSL2 for the full CLI. These environments require
+a supported Node.js 22, 24, or 26 release (22.14.0 minimum).
+
 ### Native Windows local projects
 
-Prerelease `superbee@0.4.8-pre.1` adds local project setup on Windows. Stable `superbee@0.4.7`
-supports existing standalone Git boards. To try local setup, install the prerelease from npm's
-`next` channel in PowerShell.
-
-Local project and Git board operations on native Windows require Node.js 22.17.0 or
+Local projects, Git boards and Hosted checkouts on native Windows require Node.js 22.17.0 or
 later in the 22 line, 24.2.0 or later in the 24 line, or Node.js 26. These versions include
 libuv's Windows file identity fix. [libuv changelog](https://github.com/libuv/libuv/blob/v1.51.0/ChangeLog)
 
 ```powershell
-npm install -g superbee@next
 cd "C:\path to\your project"
 superbee setup
 ```
@@ -108,8 +106,7 @@ and review your intended change before retrying. A successful update edits the l
 Use `superbee sync` with the same board root when you are ready to share the edit.
 
 Native Windows supports existing standalone Git boards. Use WSL2 for board establishment and
-boards with a configured pre-push sync gate. If such a gate
-would run, native sync keeps the
+boards with a configured pre-push sync gate. If such a gate would run, native sync keeps the
 commit locally and refuses the push. The Windows install uses `%LOCALAPPDATA%\Superbee` by
 default. A launcher can set `SUPERBEE_BOARD_STATE_DIR` to an absolute, writable directory
 outside the board to keep Git board state across restarts when that default is unavailable.
