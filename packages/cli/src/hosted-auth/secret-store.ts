@@ -15,6 +15,7 @@ import { unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import { CliError } from "../errors.js";
+import type { RunResult, ToolRunner } from "../runtime-types.js";
 import { readUserStateFile, writeUserStateFileAtomic0600 } from "../user-state.js";
 import { runWindowsDataProtection } from "../windows/data-protection.js";
 
@@ -32,17 +33,6 @@ export interface SecretStore {
   /** True when something was removed. */
   delete(account: string): Promise<boolean>;
 }
-
-export interface RunResult {
-  readonly code: number | null;
-  readonly stdout: string;
-  readonly stderr: string;
-  /** The tool is not installed (spawn ENOENT). */
-  readonly missing?: boolean;
-  readonly timedOut?: boolean;
-}
-
-export type ToolRunner = (command: string, args: readonly string[], stdin: string, timeoutMs: number) => Promise<RunResult>;
 
 /** Spawn a system tool with a hard timeout; stdout/stderr are captured, never inherited. */
 export const runTool: ToolRunner = (command, args, stdin, timeoutMs) =>

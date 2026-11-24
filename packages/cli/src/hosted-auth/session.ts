@@ -54,8 +54,8 @@ import {
   windowsSecretStore,
   type SecretStore,
   type SecretStoreKind,
-  type ToolRunner,
 } from "./secret-store.js";
+import type { ToolRunner } from "../runtime-types.js";
 
 export const ACCESS_TOKEN_ENV = "SUPERBEE_ACCESS_TOKEN";
 export const HOST_ENV = "SUPERBEE_HOST";

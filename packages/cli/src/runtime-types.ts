@@ -53,6 +53,19 @@ export interface HostCommandDeps {
     },
   ) => string;
 }
+export interface RunResult {
+  readonly code: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly missing?: boolean;
+  readonly timedOut?: boolean;
+}
+export type ToolRunner = (
+  command: string,
+  args: readonly string[],
+  stdin: string,
+  timeoutMs: number,
+) => Promise<RunResult>;
 export interface LexicalHookToken {
   readonly raw: string;
   readonly value: string;

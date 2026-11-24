@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
-import type { RunResult, ToolRunner } from "../hosted-auth/secret-store.js";
+import type { RunResult, ToolRunner } from "../runtime-types.js";
 
 // This kernel link names the installed Windows directory regardless of drive or user environment.
 const POWERSHELL = String.raw`\\?\GLOBALROOT\SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`;

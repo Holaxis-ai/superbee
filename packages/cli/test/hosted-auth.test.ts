@@ -38,9 +38,8 @@ import {
   secretServiceStore,
   selectSecretStore,
   windowsSecretStore,
-  type RunResult,
-  type ToolRunner,
 } from "../src/hosted-auth/secret-store.js";
+import type { RunResult, ToolRunner } from "../src/runtime-types.js";
 import { loopbackSignIn } from "../src/hosted-auth/loopback.js";
 import { withSessionLock, HOST_ENV, SESSION_LOCK_ORPHAN_MS } from "../src/hosted-auth/session.js";
 import { createServer } from "node:http";
