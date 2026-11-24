@@ -1,7 +1,7 @@
 import { checkSupportedRelease } from "../src/update-check.js";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +33,11 @@ import {
 import { canonicalUserStateDir } from "../src/user-state.js";
 import { commandToken, commandQuoted } from "../src/command-text.js";
 import type { CliRuntimeOptions } from "../src/runtime-types.js";
+import { checkout } from "../src/commands/checkout.js";
+import { docUpdate } from "../src/commands/doc/update.js";
+import { defaultHostedAuthDeps } from "../src/hosted-auth/session.js";
+import { BUNDLE, FakeHost } from "./support/fake-hosted-sync.js";
+import { withIsolatedUserEnv } from "./support/user-env.js";
 
 const distribution: CliRuntimeOptions["distribution"] = {
   identity: {
@@ -82,6 +87,40 @@ function options(label: string, seen: string[]): CliRuntimeOptions {
     },
   };
 }
+
+test("a scoped Hosted edit cannot persist after its checkout is released during input", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "sb-hosted-release-race-"));
+  const accountRoot = await realpath(scratch);
+  const folder = join(accountRoot, "checkout");
+  const file = join(folder, "notes", "windows.md");
+  const fake = new FakeHost();
+  fake.put("notes/windows", { type: "Note", title: "Unchanged" }, "Before release.\n");
+  const auth = defaultHostedAuthDeps(accountRoot, { env: { SUPERBEE_ACCESS_TOKEN: fake.token } });
+  const deps = { auth, fetch: fake.fetch, cwd: accountRoot, stdout: () => {} };
+  try {
+    await withIsolatedUserEnv(accountRoot, async () => {
+      await checkout([BUNDLE, "--host", fake.origin, "--dir", folder], deps);
+      const original = await readFile(file, "utf8");
+      const { versionOfBytes } = await import("@superbee/core/versioning");
+      const context = snapshotRuntimeOptions({
+        ...options("", []),
+        existingGitBoard: { usage: "Scoped CLI", localOnboarding: true, hostedOnboarding: true },
+      });
+      await assert.rejects(runWithRuntime(context, () => docUpdate([
+        "notes/windows", "--dir", folder, "--expected-version", versionOfBytes(original), "--json",
+      ], {
+        readStdin: async () => {
+          await checkout(["--release", folder], deps);
+          return "An edit after release.\n";
+        },
+        stdout: () => assert.fail("a stale checkout must not report an edit"),
+      })), { code: "CONFLICT", message: /checkout changed/ });
+      assert.equal(await readFile(file, "utf8"), original);
+    });
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
 test("immutable execution snapshots isolate host methods across overlapping awaits", async () => {
   const seen: string[] = [];
   const a = options("A", seen),

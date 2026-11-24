@@ -260,7 +260,6 @@ test("root README teaches the literal create-only quickstart; npm README teaches
     "npm README must advertise the full Node runtime policy",
   );
   assert.match(npmReadme, /^### Native Windows Git boards$/m);
-  assert.match(npmReadme, /Native Windows mode is experimental/);
   assert.match(npmReadme, /Use macOS, Linux, or WSL2 for the full CLI/);
   const windowsLocal = npmReadme.match(/^### Native Windows local projects\n([\s\S]*?)(?=^#{1,3} )/m)?.[1] ?? "";
   const windowsBoard = npmReadme.match(/^### Native Windows Git boards\n([\s\S]*?)(?=^#{1,3} )/m)?.[1] ?? "";

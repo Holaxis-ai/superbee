@@ -19,7 +19,7 @@
 // carries on.
 import { mkdir, readdir, realpath, stat, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { basename, join } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 
 import { FilesystemMutationLockError } from "@superbee/core";
 
@@ -30,6 +30,8 @@ import { cliInvocation } from "../invocation.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { cliFilesystemRuntime, withCliFilesystemMutationLock } from "../filesystem-runtime.js";
 import { ensureUserStateRoot, readUserStateFile, userStateDir, userStateWriteRefusal, writeUserStateFileAtomic0600 } from "../user-state.js";
+import { currentPrivateStateHost } from "../runtime-context.js";
+import { protectWindowsAuthRecord, unprotectWindowsAuthRecord } from "./auth-record.js";
 import {
   REQUESTED_SCOPE,
   discoverHosted,
@@ -49,10 +51,11 @@ import {
   probeSecretStore,
   secretServiceStore,
   selectSecretStore,
+  windowsSecretStore,
   type SecretStore,
   type SecretStoreKind,
-  type ToolRunner,
 } from "./secret-store.js";
+import type { ToolRunner } from "../runtime-types.js";
 
 export const ACCESS_TOKEN_ENV = "SUPERBEE_ACCESS_TOKEN";
 export const HOST_ENV = "SUPERBEE_HOST";
@@ -204,18 +207,31 @@ export function hostArgument(target: Pick<HostedTarget, "origin" | "audience">):
 
 async function readRecord<T>(home: string, file: string): Promise<T | null> {
   let raw: string;
+  const windows = currentPrivateStateHost().id === "win32";
   try {
-    raw = await readUserStateFile(home, file, MAX_RECORD_BYTES);
+    raw = await readUserStateFile(home, file, windows ? MAX_RECORD_BYTES * 2 : MAX_RECORD_BYTES);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
+  const text = windows ? await unprotectWindowsAuthRecord(authRecordKey(home, file), raw) : raw;
+  if (text === null) return null;
   try {
-    const parsed: unknown = JSON.parse(raw);
+    const parsed: unknown = JSON.parse(text);
     return parsed !== null && typeof parsed === "object" ? (parsed as T) : null;
   } catch {
     return null;
   }
+}
+
+function authRecordKey(home: string, file: string): string {
+  return relative(hostedAuthRoot(home), file).split(sep).join("/");
+}
+
+async function writeAuthRecord(home: string, file: string, value: unknown): Promise<void> {
+  const text = `${JSON.stringify(value)}\n`;
+  const record = currentPrivateStateHost().id === "win32" ? await protectWindowsAuthRecord(authRecordKey(home, file), text) : text;
+  await writeUserStateFileAtomic0600(home, dirname(file), basename(file), record);
 }
 
 async function removeFile(file: string): Promise<boolean> {
@@ -262,7 +278,7 @@ export async function readPending(home: string, target: HostedTarget): Promise<P
 }
 
 async function writeRecord(home: string, target: HostedTarget, file: string, value: unknown): Promise<void> {
-  await writeUserStateFileAtomic0600(home, sessionDirFor(home, sessionAccount(target)), file, `${JSON.stringify(value)}\n`);
+  await writeAuthRecord(home, join(sessionDirFor(home, sessionAccount(target)), file), value);
 }
 
 export async function readDefaultHost(home: string): Promise<string | null> {
@@ -271,7 +287,7 @@ export async function readDefaultHost(home: string): Promise<string | null> {
 }
 
 export async function writeDefaultHost(home: string, host: string): Promise<void> {
-  await writeUserStateFileAtomic0600(home, hostedAuthRoot(home), DEFAULT_HOST_FILE, `${JSON.stringify({ host })}\n`);
+  await writeAuthRecord(home, join(hostedAuthRoot(home), DEFAULT_HOST_FILE), { host });
 }
 
 /**
@@ -570,6 +586,8 @@ export function storeForSession(session: SessionRecord, deps: HostedAuthDeps): S
       return macosKeychainStore(deps.run);
     case "secret-service":
       return secretServiceStore(deps.run);
+    case "windows-dpapi":
+      return windowsSecretStore(deps.home, directoryForAccount(deps.home), deps.run);
   }
 }
 

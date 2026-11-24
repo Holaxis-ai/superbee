@@ -1,7 +1,7 @@
 // Where the hosted refresh token lives.
 //
 // The OS credential store is reached through its own system tool (macOS `/usr/bin/security`,
-// Linux `secret-tool`), never a native addon: no new dependency, and on macOS the keychain item's
+// Linux `secret-tool`, Windows PowerShell), never a native addon. On macOS the keychain item's
 // ACL names the stable `security` binary rather than whichever `node` ran the CLI, so a Node
 // upgrade does not trigger a fresh keychain prompt. Secrets never travel in argv: macOS gets
 // hex-encoded input over `security -i` stdin, and `secret-tool store` reads the secret from stdin.
@@ -9,21 +9,22 @@
 //
 // There is no silent plaintext fallback. When no OS store is usable the caller gets
 // CREDENTIAL_STORE_UNAVAILABLE with the remedy; the 0600 file store is an explicit opt-in via
-// SUPERBEE_CREDENTIAL_STORE=file. Windows gets no new package: it uses the file opt-in until a
-// native store is separately approved.
+// SUPERBEE_CREDENTIAL_STORE=file.
 import { spawn } from "node:child_process";
 import { unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import { CliError } from "../errors.js";
+import type { RunResult, ToolRunner } from "../runtime-types.js";
 import { readUserStateFile, writeUserStateFileAtomic0600 } from "../user-state.js";
+import { runWindowsDataProtection } from "../windows/data-protection.js";
 
 export const CREDENTIAL_STORE_ENV = "SUPERBEE_CREDENTIAL_STORE";
 export const KEYCHAIN_SERVICE = "superbee-cli";
 export const STORE_CALL_TIMEOUT_MS = 5_000;
 const MACOS_SECURITY = "/usr/bin/security";
 
-export type SecretStoreKind = "macos-keychain" | "secret-service" | "file";
+export type SecretStoreKind = "macos-keychain" | "secret-service" | "windows-dpapi" | "file";
 
 export interface SecretStore {
   readonly kind: SecretStoreKind;
@@ -32,17 +33,6 @@ export interface SecretStore {
   /** True when something was removed. */
   delete(account: string): Promise<boolean>;
 }
-
-export interface RunResult {
-  readonly code: number | null;
-  readonly stdout: string;
-  readonly stderr: string;
-  /** The tool is not installed (spawn ENOENT). */
-  readonly missing?: boolean;
-  readonly timedOut?: boolean;
-}
-
-export type ToolRunner = (command: string, args: readonly string[], stdin: string, timeoutMs: number) => Promise<RunResult>;
 
 /** Spawn a system tool with a hard timeout; stdout/stderr are captured, never inherited. */
 export const runTool: ToolRunner = (command, args, stdin, timeoutMs) =>
@@ -80,8 +70,9 @@ export const runTool: ToolRunner = (command, args, stdin, timeoutMs) =>
 export function credentialStoreUnavailable(reason: string, kind?: SecretStoreKind): CliError {
   return new CliError("CREDENTIAL_STORE_UNAVAILABLE", `cannot use the OS credential store: ${reason}`, {
     details: { ...(kind ? { store: kind } : {}), reason },
-    help:
-      `unlock or install the OS credential store and retry, or opt in to a 0600 file under the Superbee state directory with ${CREDENTIAL_STORE_ENV}=file`,
+    help: kind === "windows-dpapi"
+      ? "Retry from your own Windows account with Windows PowerShell and your profile available."
+      : `unlock or install the OS credential store and retry, or opt in to a 0600 file under the Superbee state directory with ${CREDENTIAL_STORE_ENV}=file`,
   });
 }
 
@@ -200,6 +191,55 @@ export function fileSecretStore(home: string, directoryFor: (account: string) =>
   };
 }
 
+export async function transformWindowsAuthData(
+  method: "Protect" | "Unprotect",
+  scope: string,
+  bytes: Buffer,
+  run: ToolRunner = runTool,
+): Promise<Buffer> {
+  const kind = "windows-dpapi" as const;
+  const result = await runWindowsDataProtection(method, `${KEYCHAIN_SERVICE}\0${scope}`, bytes.toString("base64"), run, STORE_CALL_TIMEOUT_MS);
+  if (result.missing) throw credentialStoreUnavailable("Windows PowerShell was not found", kind);
+  const output = Buffer.from(result.stdout, "base64");
+  if (result.code !== 0 || result.stderr || output.length === 0 || output.toString("base64") !== result.stdout) {
+    // Process diagnostics can contain secret material. Keep them inside this adapter.
+    throw credentialStoreUnavailable(result.timedOut ? "Windows data protection timed out" : "Windows data protection failed", kind);
+  }
+  return output;
+}
+
+/** DPAPI ties the protected token to the Windows user and the existing host/audience account. */
+export function windowsSecretStore(
+  home: string,
+  directoryFor: (account: string) => string,
+  run: ToolRunner = runTool,
+): SecretStore {
+  const file = "refresh-token.dpapi";
+  return {
+    kind: "windows-dpapi",
+    async get(account) {
+      const raw = await readUserStateFile(home, join(directoryFor(account), file), 128 * 1024).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      });
+      return raw === null ? null : (await transformWindowsAuthData("Unprotect", `refresh:${account}`, Buffer.from(raw, "base64"), run)).toString("utf8");
+    },
+    async set(account, secret) {
+      const protectedBytes = await transformWindowsAuthData("Protect", `refresh:${account}`, Buffer.from(secret, "utf8"), run);
+      await writeUserStateFileAtomic0600(home, directoryFor(account), file, `${protectedBytes.toString("base64")}\n`);
+    },
+    async delete(account) {
+      try {
+        await unlink(join(directoryFor(account), file));
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw error;
+      }
+    },
+  };
+}
+
 export interface SelectStoreOptions {
   readonly home: string;
   readonly directoryFor: (account: string) => string;
@@ -215,13 +255,17 @@ export interface SelectStoreOptions {
 export function selectSecretStore(options: SelectStoreOptions): SecretStore {
   const env = options.env ?? process.env;
   const requested = (env[CREDENTIAL_STORE_ENV] ?? "").trim().toLowerCase();
+  const platform = options.platform ?? process.platform;
+  if (platform === "win32" && requested === "file") {
+    throw new CliError("USAGE", `Native Windows sign-in uses Windows user data protection. Unset ${CREDENTIAL_STORE_ENV} before signing in.`);
+  }
   if (requested === "file") return fileSecretStore(options.home, options.directoryFor);
   if (requested !== "" && requested !== "keychain") {
     throw new CliError("USAGE", `${CREDENTIAL_STORE_ENV} must be 'keychain' or 'file' (got '${requested}')`);
   }
-  const platform = options.platform ?? process.platform;
   if (platform === "darwin") return macosKeychainStore(options.run);
   if (platform === "linux" || platform === "freebsd" || platform === "openbsd") return secretServiceStore(options.run);
+  if (platform === "win32") return windowsSecretStore(options.home, options.directoryFor, options.run);
   throw credentialStoreUnavailable(`no supported OS credential store on ${platform}`);
 }
 

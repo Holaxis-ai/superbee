@@ -53,6 +53,19 @@ export interface HostCommandDeps {
     },
   ) => string;
 }
+export interface RunResult {
+  readonly code: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly missing?: boolean;
+  readonly timedOut?: boolean;
+}
+export type ToolRunner = (
+  command: string,
+  args: readonly string[],
+  stdin: string,
+  timeoutMs: number,
+) => Promise<RunResult>;
 export interface LexicalHookToken {
   readonly raw: string;
   readonly value: string;
@@ -173,11 +186,13 @@ export interface PrivateStateHost {
  */
 export interface CliRuntimeOptions {
   readonly distribution: CliDistribution;
-  /** Limits dispatch to existing Git board operations and local reads of an explicit checkout. */
+  /** Limits dispatch to explicit Git boards and the additional admitted workspace modes. */
   readonly existingGitBoard?: {
     readonly usage: string;
     /** Also allow setup and create-only operations in ordinary local project folders. */
     readonly localOnboarding?: boolean;
+    /** Also allow account onboarding and synchronization of Hosted checkouts. */
+    readonly hostedOnboarding?: boolean;
     readonly requirements?: string;
     readonly unavailableReason?: string;
   };
