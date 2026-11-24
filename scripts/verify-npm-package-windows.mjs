@@ -408,6 +408,13 @@ async function prove({ expectedDigest, expectedSource, scratch }) {
   const entrypoint = await realpath(path.join(prefix, "node_modules", "superbee", "dist", "superbee.mjs"));
   const installed = (args, options = {}) => run("node", [entrypoint, ...args], { cwd: scratch, env, ...options });
   const cli = async (args, options) => JSON.parse((await installed([...args, "--json"], options)).stdout);
+  const installerGuide = /superbee-plugins.*apps\/mcp\/README\.md/;
+  const help = await installed(["--help"]);
+  assert.match(help.stdout, installerGuide);
+  const retiredMcp = await installed(["--dir", scratch, "mcp"], { expected: 2 });
+  assert.equal(retiredMcp.stdout, "");
+  assert.match(retiredMcp.stderr, /code: RETIRED_COMMAND/);
+  assert.match(retiredMcp.stderr, installerGuide);
   assertIdentity(identity, {
     package: { name: "superbee" },
     source: { commit: expectedSource, dirty: false },
