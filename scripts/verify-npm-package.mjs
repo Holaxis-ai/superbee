@@ -644,7 +644,7 @@ async function runInstalledProof(spec) {
     await assertArtifact(installedEntrypoint, preferredIdentity.identity.artifact.sha256);
     const installedEntrypointRealPath = await realpath(installedEntrypoint);
     assert.equal(preferredIdentity.identity.runtime.executable_path, installedEntrypointRealPath);
-    assert.deepEqual(preferredIdentity.identity.compatibility_contracts, { skill: 1, hook: 1, mcp: 1 });
+    assert.deepEqual(preferredIdentity.identity.compatibility_contracts, { skill: 1, hook: 1, mcp: null });
     assert.deepEqual(preferredIdentity.drift, {
       adjacent_package_version: manifest.version,
       version_mismatch: false,
@@ -1112,7 +1112,7 @@ async function runInstalledProof(spec) {
       `${manifest.license} \u00a9 2026 Holaxis`,
       "the installed README license notice must agree with the published package metadata",
     );
-    assert.match(normalizedInstalledReadme, /installed by your agent,\s+not by hand/);
+    assert.match(normalizedInstalledReadme, /your agent can install the Agent Skill/);
     assert.match(normalizedInstalledReadme, /Run `superbee setup` and follow its instructions/);
     assert.match(normalizedInstalledReadme, /You rarely type Superbee commands yourself/);
     assert.match(normalizedInstalledReadme, /translates the\s+request into CLI calls/i);

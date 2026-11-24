@@ -3,8 +3,8 @@ import type { ChannelDetection } from "@superbee/board-git";
 // Pure AXI setup planning. Host/file inspection lives at the command boundary; this module owns
 // only the bounded capability matrix, deterministic ordering, and one-next-command projection.
 
-import { OPTIONAL_MCP_PREVIEW } from "./integration-guidance.js";
-import { CURRENT_MCP_REGISTRATION, MCP_INSTALL_TARGETS, type McpInstallTargetId, type McpRegistrationState } from "./mcp-install-targets.js";
+import { MCP_APP_INSTALL } from "./integration-guidance.js";
+import { SETUP_HOSTS, type SetupHostId } from "./setup-hosts.js";
 import type {
   PersistentInstallAuthorityFailure,
   PersistentInstallAuthorityState,
@@ -44,14 +44,12 @@ export interface SetupAction {
 }
 
 export const AGENT_SETUP_INSTRUCTION =
-  "The calling agent executes the returned action as argv from action.cwd, reports what it is doing, requests approval when approval.required is true, then reruns setup until configuration status is ready. When the action offers choices, pick one with the user: --project <dir> names the folder for this project's notes, and --no-project sets that up later. Configuration readiness does not prove the host has restarted or activated MCP. The calling agent must not relay the command to the user unless execution is unavailable.";
+  "The calling agent executes the returned action as argv from action.cwd, reports what it is doing, requests approval when approval.required is true, then reruns setup until configuration status is ready. When the action offers choices, pick one with the user: --project <dir> names the folder for this project's notes, and --no-project sets that up later. Configuration readiness does not prove the host has restarted. The calling agent must not relay the command to the user unless execution is unavailable.";
 
 export const SETUP_VERIFICATION = { configured_only: true, live_host_activation: "not_observed" } as const;
 
 export interface SetupCapability {
-  readonly id: "distribution" | "state" | "skill" | "mcp" | "hook" | "bundle" | "catalog";
-  readonly bundled_registration?: typeof CURRENT_MCP_REGISTRATION;
-  readonly optional_preview?: typeof OPTIONAL_MCP_PREVIEW;
+  readonly id: "distribution" | "state" | "skill" | "hook" | "bundle" | "catalog";
   readonly requirement: SetupRequirement;
   readonly state: SetupCapabilityState;
   readonly reason: string;
@@ -88,7 +86,7 @@ export interface SetupWorkspaceState {
 }
 
 export interface SetupPlanInput {
-  readonly host: McpInstallTargetId;
+  readonly host: SetupHostId;
   readonly scope: InstallScope;
   /** Omitted pure-planner inputs conservatively require a choice unless a bundle is resolved. */
   readonly projectSelection?: SetupProjectSelection;
@@ -108,7 +106,6 @@ export interface SetupPlanInput {
   readonly hook?: SetupHookHostState;
   readonly projectHook?: SetupHookHostState;
   readonly projectHookUnavailable?: boolean;
-  readonly mcp: { readonly state: McpRegistrationState; readonly reason: string };
   readonly workspace: SetupWorkspaceState;
   /** Resolved launcher for follow-up actions; defaults to the portable installed bin. */
   readonly invocation?: readonly string[];
@@ -179,7 +176,7 @@ function commandArgv(command: string, invocation: readonly string[]): readonly s
 function mutatesCapability(capability: SetupCapability): boolean {
   const command = capability.command ?? "";
   if (capability.id === "distribution") return command.startsWith("npm install ");
-  if (capability.id === "skill" || capability.id === "mcp" || capability.id === "hook") {
+  if (capability.id === "skill" || capability.id === "hook") {
     return command.includes(" install ");
   }
   if (capability.id === "bundle") return command.startsWith("superbee init ") || command.startsWith("superbee sync ");
@@ -221,7 +218,6 @@ function approvalFor(capability: SetupCapability, mutates: boolean): SetupApprov
 function actionDescription(capability: SetupCapability): string {
   const command = capability.command ?? "";
   if (command.startsWith("superbee skill install")) return "Install Superbee's Agent Skill for the selected scope.";
-  if (command.startsWith("superbee mcp install")) return `Register the bundled '${CURRENT_MCP_REGISTRATION}' MCP server in the selected host.`;
   if (command.startsWith("superbee hook install")) return "Install Superbee's SessionStart hook for the selected scope.";
   if (command.startsWith("superbee setup migrate-state")) return "Migrate validated legacy private state into Superbee's canonical user-state directory.";
   if (command.startsWith("superbee setup harden-state")) return "Repair permissions on Superbee's recognized private-state directory.";
@@ -293,7 +289,7 @@ export interface SetupPlan {
   readonly protocol: "agent_setup_v1";
   readonly status: "ready" | "action_required" | "blocked";
   readonly agent_instruction: string;
-  readonly host: McpInstallTargetId;
+  readonly host: SetupHostId;
   readonly scope: InstallScope;
   readonly ready: boolean;
   readonly complete: boolean;
@@ -307,11 +303,12 @@ export interface SetupPlan {
   readonly capabilities: readonly SetupCapability[];
   readonly next?: SetupAction;
   readonly verify: SetupAction;
-  readonly restart: { readonly after: readonly ("skill" | "mcp" | "hook")[] };
+  readonly restart: { readonly after: readonly ("skill" | "hook")[] };
+  readonly optional_mcp_app: typeof MCP_APP_INSTALL;
   readonly verification: { readonly configured_only: true; readonly live_host_activation: "not_observed" };
 }
 
-type ProjectPlanInput = Pick<SetupPlanInput, "workspace" | "cwd" | "cwdOfferable" | "projectSelection" | "scope"> & { host?: McpInstallTargetId };
+type ProjectPlanInput = Pick<SetupPlanInput, "workspace" | "cwd" | "cwdOfferable" | "projectSelection" | "scope"> & { host?: SetupHostId };
 function selectedProject(input: ProjectPlanInput): SetupProjectSelection | "existing_bundle" {
   if (input.projectSelection === "deferred") return "deferred";
   if (input.projectSelection === "confirmed") return "confirmed";
@@ -332,11 +329,11 @@ function inspectAgain(input: ProjectPlanInput): Pick<SetupCapability, "command" 
   return { command: argv.join(" "), argv };
 }
 
-function hostLabel(host: McpInstallTargetId): string {
-  return MCP_INSTALL_TARGETS.find((target) => target.id === host)?.label ?? host;
+function hostLabel(host: SetupHostId): string {
+  return SETUP_HOSTS.find((target) => target.id === host)?.label ?? host;
 }
 
-export function setupVerifyDescription(host: McpInstallTargetId | undefined): string {
+export function setupVerifyDescription(host: SetupHostId | undefined): string {
   return `Check setup again. This reads files on disk only. Restart ${host ? hostLabel(host) : "your agent host"} to load Superbee.`;
 }
 
@@ -436,33 +433,6 @@ function skillCapability(input: SetupPlanInput): SetupCapability {
           ? "the Superbee Agent Skill is absent from OpenCode's Claude-compatible discovery path"
           : "the Superbee Agent Skill is absent",
     command: `superbee skill install --scope ${input.scope}`,
-  };
-}
-
-function mcpCapability(input: SetupPlanInput): SetupCapability {
-  if (input.mcp.state === "owned_current") {
-    return {
-      id: "mcp",
-      requirement: "required",
-      state: "ready",
-      reason: `the bundled '${CURRENT_MCP_REGISTRATION}' registration matches this durable Superbee install`,
-    };
-  }
-  if (input.mcp.state === "absent" || input.mcp.state === "owned_stale") {
-    return {
-      id: "mcp",
-      requirement: "required",
-      state: "needs_action",
-      reason: input.mcp.reason,
-      command: `superbee mcp install --host ${input.host}`,
-    };
-  }
-  return {
-    id: "mcp",
-    requirement: "required",
-    state: "blocked",
-    reason: input.mcp.reason,
-    command: `superbee mcp status --host ${input.host}`,
   };
 }
 
@@ -642,7 +612,7 @@ function catalogCapability(input: SetupPlanInput): SetupCapability {
       requirement: "required",
       state: "ready",
       reason: input.workspace.bundle === "selected"
-        ? "the selected bundle is registered for bundle-unbound MCP access"
+        ? "the selected bundle is registered in the private workspace catalog"
         : "the private workspace catalog has at least one explicitly selectable bundle; cataloging does not select current project context",
     };
   }
@@ -660,7 +630,7 @@ function catalogCapability(input: SetupPlanInput): SetupCapability {
     requirement: "required",
     state: "needs_action",
     reason: input.workspace.bundle === "selected"
-      ? "the selected bundle is not registered for bundle-unbound MCP access; if it moved, inspect catalog list --local and explicitly use catalog relocate <label-or-id> --dir <replacement-bundle>; sameness is not inferred"
+      ? "the selected bundle is not registered in the private workspace catalog; if it moved, inspect catalog list --local and explicitly use catalog relocate <label-or-id> --dir <replacement-bundle>; sameness is not inferred"
       : "the private workspace catalog has no available bundles",
     // Run from the project folder: by then setup's bundle row has created or selected its bundle.
     ...(input.workspace.catalog_label
@@ -677,7 +647,6 @@ export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
     setupStateCapability(input.state),
     ...(needsProjectBeforeInstall ? [bundle] : []),
     skillCapability(input),
-    { ...mcpCapability(input), bundled_registration: CURRENT_MCP_REGISTRATION, optional_preview: OPTIONAL_MCP_PREVIEW },
     hookCapability(input),
     ...(!needsProjectBeforeInstall ? [bundle] : []),
     catalogCapability(input),
@@ -691,8 +660,8 @@ export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
   const ready = required.every((capability) => capability.state === "ready");
   const complete = capabilities.every((capability) => capability.state === "ready" || capability.state === "not_applicable");
   const restartAfter = capabilities
-    .filter((capability): capability is SetupCapability & { id: "skill" | "mcp" | "hook" } =>
-      (capability.id === "skill" || capability.id === "mcp" || capability.id === "hook")
+    .filter((capability): capability is SetupCapability & { id: "skill" | "hook" } =>
+      (capability.id === "skill" || capability.id === "hook")
       && capability.state === "needs_action",
     )
     .map((capability) => capability.id);
@@ -723,6 +692,7 @@ export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
       approval: { required: false, reason: null },
     },
     restart: { after: restartAfter },
+    optional_mcp_app: MCP_APP_INSTALL,
     verification: SETUP_VERIFICATION,
   };
 }

@@ -633,7 +633,7 @@ test("lane ownership is pinned to executing scripts", () => {
   const scriptMutations = [
     ["ci:distribution", "npm run verify:npm-package", /skill-drift-proof/],
     ["ci:scripts", "npm run build", /script-tests/],
-    ["ci:browser", "npm run build && npm run test:browser -w @superbee\/mcp-app", /ui-end-to-end/],
+    ["ci:browser", "npm run build && npm run e2e:gate -w @superbee/ui", /browser-local-chromium/],
   ];
   for (const [script, replacement, error] of scriptMutations) {
     const changedPackage = structuredClone(pkg);

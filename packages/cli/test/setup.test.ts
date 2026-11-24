@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { decode } from "@toon-format/toon";
-import { inspectMcpHost } from "../src/mcp-install-targets.js";
 import type { SetupPlan } from "../src/setup-plan.js";
 import { CliError } from "../src/errors.js";
 import { setup, type SetupDeps } from "../src/commands/setup.js";
@@ -43,10 +42,6 @@ function deps(write: (text: string) => void): SetupDeps {
         opencode: { installed: true, compatibility: { state: "current", reason: "current" } },
       },
     }),
-    inspectMcp: (targets) => targets.map((target) => ({
-      host: target.id, label: target.label, state: "owned_current", config: "/Users/private/config.json",
-      reason: "current", docs_url: target.docs_url,
-    })),
     resolveBundle: async () => ({ root: "/Users/private/project/.superbee", canonicalRoot: "/Users/private/project/.superbee", selectedBy: "discovery" }),
     inspectBoard: async () => ({ kind: "channel", channel: { mode: "local-only" } }),
     listCatalog: async () => [{
@@ -330,51 +325,16 @@ test("setup defaults to TOON rather than JSON", async () => {
   assert.doesNotMatch(output, /^\{/);
 });
 
-test("an OpenCode preview-only config reports the bundled registration separately in JSON and TOON", async () => {
-  const config = JSON.stringify({ mcp: { "superbee-experimental": { type: "local", command: ["superbee-mcp"], enabled: true } } });
+test("a complete local setup offers MCP as a separate action in JSON and TOON", async () => {
   for (const json of [false, true]) {
     let output = "";
-    const injected = deps((text) => { output += text; });
-    injected.inspectMcp = (targets) => targets.map((target) => inspectMcpHost(target, {
-      environment: { home: "/fixture", platform: "linux", env: { OPENCODE_CONFIG: "/fixture/opencode.json" } },
-      authority: injected.inspectDistribution,
-      readFile: () => config,
-    }));
-    await setup(["--host", "opencode", ...(json ? ["--json"] : [])], injected);
+    await setup(["--host", "claude-desktop", ...(json ? ["--json"] : [])], deps((text) => { output += text; }));
     const { setup: plan } = (json ? JSON.parse(output) : decode(output)) as { setup: SetupPlan };
-    const capability = plan.capabilities.find((row) => row.id === "mcp");
-    assert.equal(capability?.bundled_registration, "superbee");
-    assert.equal(capability.state, "needs_action");
-    assert.equal(capability.reason, "the bundled 'superbee' registration is absent");
-    assert.ok(capability.optional_preview!.description.includes('"$mcp" status --host <id>'));
-    assert.deepEqual(plan.next?.command, ["superbee", "mcp", "install", "--host", "opencode"]);
-    assert.equal(plan.next?.approval.required, true);
+    assert.equal(plan.status, "ready");
+    assert.equal(plan.next, undefined);
+    assert.match(plan.optional_mcp_app.description, /optional Superbee MCP app/);
+    assert.match(plan.optional_mcp_app.guide, /superbee-plugins.*apps\/mcp\/README\.md$/);
   }
-});
-
-test("user-level integration actions require approval while diagnostic actions do not", async () => {
-  let output = "";
-  const injected = deps((text) => { output += text; });
-  injected.inspectMcp = (targets) => targets.map((target) => ({
-    host: target.id, label: target.label, state: "absent", config: null, reason: "absent", docs_url: target.docs_url,
-  }));
-  await setup(["--host", "claude-desktop", "--json"], injected);
-  const action = (JSON.parse(output) as { setup: { next: { command: string[]; mutates: boolean; approval: { required: boolean } } } }).setup.next;
-  assert.deepEqual(action.command, ["superbee", "mcp", "install", "--host", "claude-desktop"]);
-  assert.equal(action.mutates, true);
-  assert.equal(action.approval.required, true);
-
-  output = "";
-  injected.inspectMcp = (targets) => targets.map((target) => ({
-    host: target.id, label: target.label, state: "known_legacy", config: "~/.claude.json",
-    reason: "registration 'aslite-views' is a legacy candidate; inspect it before migration", docs_url: target.docs_url,
-  }));
-  await setup(["--host", "claude-code", "--json"], injected);
-  const inspection = (JSON.parse(output) as { setup: { status: string; next: { action: string; mutates: boolean; approval: { required: boolean } } } }).setup;
-  assert.equal(inspection.status, "blocked");
-  assert.equal(inspection.next.action, "inspect");
-  assert.equal(inspection.next.mutates, false);
-  assert.equal(inspection.next.approval.required, false);
 });
 
 test("setup validates state leaves and delegates execution to the calling agent", async () => {

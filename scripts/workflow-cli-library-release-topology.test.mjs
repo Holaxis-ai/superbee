@@ -207,7 +207,6 @@ test('release topology isolates payload execution from credentials and retains e
   const proof=read('scripts/cli-library-proof.mjs');
   assert.doesNotMatch(proof,/\[npm, "(?:pack|run)"/);
   assert.match(proof,/embeddedInventory\(path.join\(library, "dist\/index.mjs"\)\)/);
-  assert.match(proof,/write: false/);
   assert.match(JSON.parse(read('package.json')).scripts['test:scripts'],/verify-cli-library.test.mjs.*workflow-cli-library-release-topology.test.mjs/);
 });
 

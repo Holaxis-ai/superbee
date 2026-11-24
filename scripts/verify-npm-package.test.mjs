@@ -241,7 +241,7 @@ test("root README teaches the literal create-only quickstart; npm README teaches
   );
   assert.match(
     npmReadme,
-    /installed by your agent,\s+not by hand[\s\S]+Run `superbee setup` and follow its instructions/,
+    /your agent can install the Agent Skill[\s\S]+Run `superbee setup` and follow its instructions/,
     "npm README must route setup through the agent",
   );
   assert.match(

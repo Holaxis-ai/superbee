@@ -133,14 +133,14 @@ function renderSkill(input: {packageName:string;binName:string}, internal: boole
   lines.push(`Persistent integrations require \`npm install -g ${NPM_COORDINATE}\` followed by \`superbee setup\`. Fresh cloud containers need the CLI provisioned before agent tool use and container-valid hook paths; copied laptop hooks do not provision them. Startup pulls are best-effort; inspect sync receipts to verify publication.`);
   lines.push("Setup is an agent-driven read-only conductor: the calling agent selects its exact host, executes");
   lines.push("the returned argv action from its literal action.cwd, reports what it is doing, requests approval only when the action says");
-  lines.push("`approval.required: true`, restarts after Skill, Hook, or MCP changes, and reruns setup to verify.");
+  lines.push("`approval.required: true`, restarts after Skill or Hook changes, and reruns setup to verify.");
   lines.push("Do not ask the user to copy or run a setup command unless execution is unavailable. A catalog entry");
   lines.push("preserves a workspace for explicit selection; it never makes that workspace the current project.");
   lines.push("Before setup creates a first notes folder, pick one with the user: --project <dir> (absolute or .),");
   lines.push("or --no-project to finish user setup and pick later. Project scope needs a project folder.");
-  lines.push("Setup ready/complete describe configured readiness, not a host restart or live MCP activation.");
+  lines.push("Setup readiness describes configuration on disk. Install the MCP app separately if the user wants it.");
   lines.push("Remember restart_required action receipts even after a later setup inspection is ready; report");
-  lines.push("integration as active only after an actual restart/reload and live MCP evidence. If restart is");
+  lines.push("integration as active after an actual restart and verification. If restart is");
   lines.push("pending, name the host and exact setup command to resume. Defer deeper modeling until real work needs it.");
   lines.push("If home or SessionStart reports `skill_update`, run its exact scope-specific command, restart the");
   lines.push("host, and continue; Superbee never rewrites an installed Skill automatically.");

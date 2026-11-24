@@ -103,14 +103,14 @@ When the tone fits, a single 🐝 may mark a successful Superbee outcome.
 Persistent integrations require `npm install -g superbee` followed by `superbee setup`. Fresh cloud containers need the CLI provisioned before agent tool use and container-valid hook paths; copied laptop hooks do not provision them. Startup pulls are best-effort; inspect sync receipts to verify publication.
 Setup is an agent-driven read-only conductor: the calling agent selects its exact host, executes
 the returned argv action from its literal action.cwd, reports what it is doing, requests approval only when the action says
-`approval.required: true`, restarts after Skill, Hook, or MCP changes, and reruns setup to verify.
+`approval.required: true`, restarts after Skill or Hook changes, and reruns setup to verify.
 Do not ask the user to copy or run a setup command unless execution is unavailable. A catalog entry
 preserves a workspace for explicit selection; it never makes that workspace the current project.
 Before setup creates a first notes folder, pick one with the user: --project <dir> (absolute or .),
 or --no-project to finish user setup and pick later. Project scope needs a project folder.
-Setup ready/complete describe configured readiness, not a host restart or live MCP activation.
+Setup readiness describes configuration on disk. Install the MCP app separately if the user wants it.
 Remember restart_required action receipts even after a later setup inspection is ready; report
-integration as active only after an actual restart/reload and live MCP evidence. If restart is
+integration as active after an actual restart and verification. If restart is
 pending, name the host and exact setup command to resume. Defer deeper modeling until real work needs it.
 If home or SessionStart reports `skill_update`, run its exact scope-specific command, restart the
 host, and continue; Superbee never rewrites an installed Skill automatically.

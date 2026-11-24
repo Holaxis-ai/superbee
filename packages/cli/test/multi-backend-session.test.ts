@@ -1,18 +1,15 @@
 // The multi-backend rehearsal (designs/seamless-multi-backend-cli, section 7): one agent, in one
 // session opened in a project, reads, edits, searches, links and syncs across a Git board (the
 // project's `.superbee`), a local bundle and a hosted checkout, with the same commands (only the
-// folder differs) and the same MCP tools. Every command runs the BUILT CLI from the project root.
+// folder differs). Every command runs the built CLI from the project root.
 //
-// `STEPS` is this surface's per-row agreement table (CONTRIBUTING.md): one row per step and
-// surface (the CLI, or the MCP app), run once per home. A CLI step is one argv template in which
-// only the folder varies, so "the same commands" is structural; an MCP step is one tool call in
-// which only the workspace varies.
+// Each step runs one argv template per applicable home. Only the folder varies.
 //
 // The hosted checkout talks to the golden-pinned `FakeHost` through a loopback bridge. The
 // deny-network preload admits only the bridge's port and logs every connection, so a local or Git
 // step is checked to make none at all, and a hosted step to reach only the fake.
 //
-// `KNOWN_GAPS` names each (step, surface, home) cell that does not hold yet, the design slice that
+// `KNOWN_GAPS` names each (step, home) cell that does not hold yet, the design slice that
 // owns it, and exactly how it fails today. Every row is checked to still fail in exactly that way,
 // so an unrelated regression is not absorbed; a fixing PR deletes its rows. The table only shrinks:
 // when it is empty, the scenario is enforced end to end.
@@ -24,8 +21,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { readDocVersioned, writeDoc } from "@superbee/core";
-import { Client } from "@modelcontextprotocol/client";
-import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { decode } from "@toon-format/toon";
 
 import { CliError } from "../src/errors.js";
@@ -35,13 +30,12 @@ import { startFakeHostBridge, type FakeHostBridge } from "./support/fake-host-br
 import { BUNDLE, FakeHost } from "./support/fake-hosted-sync.js";
 import { FakeIssuer } from "./support/fake-issuer.js";
 import { seedHostedSession } from "./support/hosted-session.js";
-import { BUILT_CLI, ensureBuiltCli, readNetworkLog, runSandboxed, sandboxEnv, type NetworkLine } from "./support/network-sandbox.js";
+import { ensureBuiltCli, readNetworkLog, runSandboxed, sandboxEnv, type NetworkLine } from "./support/network-sandbox.js";
 
 const DEBUG = process.env.SUPERBEE_REHEARSAL_DEBUG === "1";
 
 const HOMES = ["git", "local", "hosted"] as const;
 type Home = (typeof HOMES)[number];
-type Surface = "cli" | "mcp";
 
 /** The slices of designs/seamless-multi-backend-cli section 8 a gap row may name. */
 const SLICES: ReadonlySet<string> = new Set(["S1", "S2", "S3", "S4", "S5", "S6", "G1", "G2", "G3"]);
@@ -62,7 +56,7 @@ const UNCHECKED = "team.archive";
 const SYNC_ENVELOPE = ["home", "sent", "received", "conflicts", "held", "next"] as const;
 
 /**
- * Keyed `<step>/<surface>/<home>`. Only ever shrinks; a PR that makes a cell hold deletes its row.
+ * Keyed `<step>/<home>`. Only ever shrinks; a PR that makes a cell hold deletes its row.
  */
 const KNOWN_GAPS: Readonly<Record<string, { readonly slice: string; readonly failure: Failure }>> = {
   // Empty since S4: every cell holds, so the scenario is enforced end to end. A later slice that
@@ -78,7 +72,7 @@ interface Rehearsal {
   project: string;
   /** Each home's folder, as the agent names it with `--dir` from the project root. */
   dirs: Record<Home, string>;
-  /** Each home's catalog label, as the agent names it to an MCP tool. */
+  /** Each home's catalog label, as the agent names it in the workspace catalog. */
   labels: Record<Home, string>;
   origin: string;
   host: FakeHost;
@@ -87,9 +81,9 @@ interface Rehearsal {
   bridge: FakeHostBridge;
   env: NodeJS.ProcessEnv;
   log: string;
-  /** Documents edited in the hosted checkout, through the folder or MCP; the host must receive each. */
+  /** Documents edited in the hosted checkout, through the folder; the host must receive each. */
   hostedEdits: Set<string>;
-  /** Every CLI and MCP output of the run, for the sign-in invariant. */
+  /** Every CLI output of the run, for the sign-in invariant. */
   transcript: string[];
 }
 
@@ -109,7 +103,6 @@ before(async () => {
 });
 
 after(async () => {
-  await catalogMcp?.client.close();
   await r?.bridge.close();
   await r?.issuer.stop();
   if (r && !DEBUG) await rm(r.root, { recursive: true, force: true });
@@ -139,7 +132,7 @@ function git(cwd: string, ...args: string[]): string {
 
 const folder = (home: Home): string => path.resolve(r.project, r.dirs[home]);
 
-/** The Kind every home declares for its Notes: MCP View actions need a declared Kind. */
+/** The Kind every home declares for its Notes: the same Kind applies in each home. */
 const NOTE_KIND = { type: "Convention", title: "Note", governs: "Note", fields: { required: ["title"], optional: ["tags", "owner"] } };
 /** The tag the search step filters on; one Note in every home carries it. */
 const TOPIC = "rehearsal";
@@ -233,41 +226,6 @@ async function ageFreshness(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// MCP
-
-interface Mcp {
-  client: Client;
-  stderr: () => string;
-}
-
-let catalogMcp: Mcp | undefined;
-
-/** `superbee mcp` over stdio in `cwd`, as a host starts it, under the same preload and HOME. */
-async function startMcp(cwd: string): Promise<Mcp> {
-  const transport = new StdioClientTransport({ command: process.execPath, args: [BUILT_CLI, "mcp"], cwd, env: r.env as Record<string, string>, stderr: "pipe" });
-  let err = "";
-  transport.stderr?.on("data", (chunk: Buffer) => void (err += chunk.toString("utf8")));
-  const client = new Client({ name: "rehearsal", version: "test" }, { capabilities: {} });
-  try {
-    await client.connect(transport);
-  } catch (error) {
-    await client.close().catch(() => {});
-    throw error;
-  }
-  return { client, stderr: () => err };
-}
-
-async function mcp(): Promise<Mcp> {
-  catalogMcp ??= await startMcp(r.project);
-  return catalogMcp;
-}
-
-async function callTool(name: string, args: Record<string, unknown>): Promise<{ isError?: boolean; structuredContent?: unknown; content: unknown }> {
-  const result = (await (await mcp()).client.callTool({ name, arguments: args })) as { isError?: boolean; structuredContent?: unknown; content: unknown };
-  r.transcript.push(JSON.stringify(result));
-  return result;
-}
-
 /** The code and `details.reason` of the CLI error envelope one of `texts` is, or null. */
 function refusalOf(...texts: string[]): { code: string; reason: string } | null {
   for (const text of texts) {
@@ -288,49 +246,6 @@ function refusalOf(...texts: string[]): { code: string; reason: string } | null 
   return null;
 }
 
-/**
- * Update a Note's title through a transient View action, confirmed through the trusted tools, as a
- * person using a View would. View actions report any storage refusal only as `failed`, so a failed
- * commit is followed by the same write through the same served bundle in process, whose refusal
- * (code and reason) is the cell's failure; the file must be unchanged either way.
- */
-async function mcpSetTitle(home: Home, id: string, title: string): Promise<Failure | null> {
-  return viewSetTitle(r.labels[home], folder(home), id, title);
-}
-
-/** {@link mcpSetTitle} for any cataloged folder, by its label. */
-async function viewSetTitle(label: string, dir: string, id: string, title: string): Promise<Failure | null> {
-  const file = path.join(dir, `${id}.md`);
-  const before = await readFile(file, "utf8");
-  const launched = await callTool("show_view", { workspace: label, mode: "transient", title: "Rehearsal editor", html: "<!doctype html><title>Rehearsal editor</title>", access: "bundle-propose" });
-  if (launched.isError) return { invariant: "show_view", detail: JSON.stringify(launched.content) };
-  const launchId = (launched.structuredContent as { launch: { launchId: string } }).launch.launchId;
-  await callTool("authorize_durable_view", { launchId });
-  const target = await readDocVersioned({ root: dir }, id);
-  const prepared = await callTool("prepare_view_action", {
-    launchId,
-    requestId: `rehearsal-${label}-${id}`,
-    action: { kind: "document.set-field", docId: id, field: "title", value: title, expectedVersion: target.version },
-  });
-  const result = (prepared.structuredContent as { result?: { status: string; approvalToken?: string; message?: string } } | undefined)?.result;
-  if (result?.status !== "prepared") return { invariant: "prepare_view_action", detail: JSON.stringify(prepared.structuredContent ?? prepared.content) };
-  const finished = await callTool("finish_view_action", { launchId, approvalToken: result.approvalToken, decision: "commit" });
-  const outcome = (finished.structuredContent as { result?: { status: string; message?: string } } | undefined)?.result;
-  if (outcome?.status === "committed") return null;
-  if ((await readFile(file, "utf8")) !== before) return { invariant: "a failed View action left the file unchanged", detail: `${outcome?.status}: ${outcome?.message}` };
-  if (outcome?.status !== "failed") return { invariant: "finish_view_action", detail: outcome ? `${outcome.status}: ${outcome.message ?? ""}` : JSON.stringify(finished.content) };
-  try {
-    const context = await createCatalogWorkspaceResolver({ home: r.home }).open(label);
-    await writeDoc(context.bundle, { id, frontmatter: { ...target.doc.frontmatter, title }, body: target.doc.body });
-    return { invariant: "finish_view_action", detail: "failed, but the same write in process succeeds" };
-  } catch (error) {
-    if (!(error instanceof CliError)) return { invariant: "finish_view_action", detail: String(error) };
-    if ((await readFile(file, "utf8")) !== before) return { invariant: "a refused write left the file unchanged", detail: error.message };
-    return { code: error.code, reason: String((error.details as { reason?: unknown } | undefined)?.reason ?? "") };
-  }
-}
-
-// ---------------------------------------------------------------------------------------------
 // The step table
 
 interface Cell {
@@ -344,7 +259,6 @@ interface Cell {
 
 interface Step {
   readonly name: string;
-  readonly surface: Surface;
   readonly homes: readonly Home[];
   /** `discover` and `start` name `checkout` for bundles with no folder and may reach the host (section 7). */
   readonly exempt?: true;
@@ -376,17 +290,8 @@ async function cliCell(args: string[], check: (json: unknown, run: Run) => Failu
   return { failure: await check(json, run), output, network: run.network };
 }
 
-/** An MCP cell: its failure, every tool result it saw, and the network lines the servers wrote meanwhile. */
-async function mcpCell(action: () => Promise<Failure | null>): Promise<Cell> {
-  const seen = (await networkLines()).length;
-  const said = r.transcript.length;
-  const failure = await action();
-  return { failure, output: r.transcript.slice(said).join("\n"), network: (await networkLines()).slice(seen) };
-}
-
 let catalogListing: Promise<Run> | undefined;
 const listing = () => (catalogListing ??= cli(["catalog", "list", "--json"]));
-let workspaceListing: Promise<unknown> | undefined;
 let sessionStart: Promise<Run> | undefined;
 let teammateReady = false;
 
@@ -403,7 +308,6 @@ async function teammate(): Promise<string> {
 const STEPS: readonly Step[] = [
   {
     name: "discover",
-    surface: "cli",
     homes: HOMES,
     exempt: true,
     async run(home) {
@@ -414,22 +318,7 @@ const STEPS: readonly Step[] = [
     },
   },
   {
-    name: "discover",
-    surface: "mcp",
-    homes: HOMES,
-    exempt: true,
-    run: (home) =>
-      mcpCell(async () => {
-        const listed = (await (workspaceListing ??= callTool("list_workspaces", {}).then((result) => result.structuredContent))) as { workspaces: { label: string; home?: string }[] };
-        const entry = listed.workspaces.find((row) => row.label === r.labels[home]);
-        if (!entry) return { missing: [r.labels[home]] };
-        if (entry.home === undefined) return { missing: ["home"] };
-        return entry.home === home ? null : { invariant: "home", detail: String(entry.home) };
-      }),
-  },
-  {
     name: "discover-remote",
-    surface: "cli",
     homes: ["hosted"],
     exempt: true,
     async run() {
@@ -441,20 +330,7 @@ const STEPS: readonly Step[] = [
     },
   },
   {
-    name: "discover-remote",
-    surface: "mcp",
-    homes: ["hosted"],
-    exempt: true,
-    run: () =>
-      mcpCell(async () => {
-        const listed = (await (workspaceListing ??= callTool("list_workspaces", {}).then((result) => result.structuredContent))) as { reachable?: { id: string; home: string; command: string }[] };
-        const row = (listed.reachable ?? []).find((entry) => entry.id === UNCHECKED);
-        return row?.home === "hosted" && /checkout team\.archive --host/.test(row.command) ? null : { missing: [UNCHECKED] };
-      }),
-  },
-  {
     name: "start",
-    surface: "cli",
     homes: HOMES,
     exempt: true,
     async run(home) {
@@ -469,48 +345,12 @@ const STEPS: readonly Step[] = [
     },
   },
   {
-    name: "start",
-    surface: "mcp",
-    homes: HOMES,
-    run: (home) =>
-      // `superbee mcp` as a host starts it with the session opened in this home's folder.
-      mcpCell(async () => {
-        let started: Mcp;
-        try {
-          started = await startMcp(folder(home));
-        } catch (error) {
-          // A refusal is printed before the MCP transport starts; run the same command bare to read it.
-          const refused = await runSandboxed(["mcp"], folder(home), r.env);
-          r.transcript.push(refused.stdout, refused.stderr);
-          return refusalOf(refused.stdout, refused.stderr) ?? { invariant: "start", detail: String(error) };
-        }
-        try {
-          const tools = await started.client.listTools();
-          return tools.tools.some((tool) => tool.name === "list_workspaces") ? null : { missing: ["list_workspaces"] };
-        } finally {
-          await started.client.close();
-        }
-      }),
-  },
-  {
     name: "read",
-    surface: "cli",
     homes: HOMES,
     run: (home) => cliCell(["doc", "read", "notes/alpha", "--dir", r.dirs[home], "--json"], (json) => missingKeys(json, ["id", "type", "title", "head_version", "body"])),
   },
   {
-    name: "read",
-    surface: "mcp",
-    homes: HOMES,
-    run: (home) =>
-      mcpCell(async () => {
-        const shown = await callTool("show_document", { workspace: r.labels[home], docId: "notes/alpha" });
-        return shown.isError ? { invariant: "show_document", detail: JSON.stringify(shown.content) } : null;
-      }),
-  },
-  {
     name: "edit",
-    surface: "cli",
     homes: HOMES,
     async run(home) {
       const cell = await cliCell(["doc", "update", "notes/alpha", "--title", `Alpha, edited in ${home}`, "--dir", r.dirs[home], "--json"], (json) => missingKeys(json, ["doc", "id", "version"]));
@@ -519,18 +359,7 @@ const STEPS: readonly Step[] = [
     },
   },
   {
-    name: "edit",
-    surface: "mcp",
-    homes: HOMES,
-    async run(home) {
-      const cell = await mcpCell(() => mcpSetTitle(home, "notes/beta", `Beta, edited through MCP in ${home}`));
-      if (home === "hosted" && cell.failure === null) r.hostedEdits.add("notes/beta");
-      return cell;
-    },
-  },
-  {
     name: "search",
-    surface: "cli",
     homes: HOMES,
     run: (home) =>
       cliCell(["list", "--type", "Note", "--field", `tags=${TOPIC}`, "--dir", r.dirs[home], "--json"], (json) => {
@@ -541,7 +370,6 @@ const STEPS: readonly Step[] = [
   },
   {
     name: "link",
-    surface: "cli",
     homes: HOMES,
     async run(home) {
       const added = await cli(["link", "add", "notes/alpha", "notes/beta", "--dir", r.dirs[home]]);
@@ -556,7 +384,6 @@ const STEPS: readonly Step[] = [
   },
   {
     name: "remote-change",
-    surface: "cli",
     homes: ["git", "hosted"],
     async run(home) {
       // Someone else adds a document; after the stale window the next read pulls it.
@@ -573,7 +400,6 @@ const STEPS: readonly Step[] = [
   },
   {
     name: "conflict",
-    surface: "cli",
     homes: ["git", "hosted"],
     async run(home) {
       // The agent's unsent edit of notes/alpha (the edit step) meets someone else's change to it.
@@ -622,13 +448,11 @@ const STEPS: readonly Step[] = [
   },
   {
     name: "sync",
-    surface: "cli",
     homes: HOMES,
     run: (home) => cliCell(["sync", "--dir", r.dirs[home], "--json"], (json) => missingKeys(json, SYNC_ENVELOPE)),
   },
   {
     name: "turn-end",
-    surface: "cli",
     homes: ["git", "hosted"],
     async run(home) {
       // The agent edits notes/beta in this home with --dir and stops; the Stop hook runs from the
@@ -662,7 +486,7 @@ const STEPS: readonly Step[] = [
   },
 ];
 
-const cellKey = (step: Step, home: Home) => `${step.name}/${step.surface}/${home}`;
+const cellKey = (step: Step, home: Home) => `${step.name}/${home}`;
 
 // ---------------------------------------------------------------------------------------------
 // Tests
@@ -698,7 +522,7 @@ test("every known gap is a cell of the step table and names a design slice", () 
   }
 });
 
-test("one session across a Git board, a local bundle and a hosted checkout: same commands, same tools", async () => {
+test("one session across a Git board, a local bundle and a hosted checkout: same commands", async () => {
   const problems: string[] = [];
   for (const step of STEPS) {
     for (const home of step.homes) {
@@ -729,7 +553,7 @@ test("one session across a Git board, a local bundle and a hosted checkout: same
   }
   assert.deepEqual(problems, []);
 
-  // Invariant 5: every document edited in the checkout, through the folder or through MCP, reached
+  // Invariant 5: every document edited in the checkout reached
   // the host, and nothing else did (the fake applies each write identity once).
   await ok(["sync", "--dir", r.dirs.hosted]);
   const applied = new Set(r.host.applied);
@@ -745,18 +569,15 @@ test("one session across a Git board, a local bundle and a hosted checkout: same
 // the same command: a copied checkout is a fourth folder, not a home, and `verified` is hosted-only.
 test("in the same session, a copied checkout and an edit of verified are refused up front, and neither reaches the host", async () => {
   const applied = [...r.host.applied];
-  // The checkout copied to a new folder is not bound: sync and an MCP View action both refuse it,
-  // and its file is unchanged.
+  // Sync refuses a copied checkout until it has an explicit binding.
   const copy = path.join(r.root, "team-copy");
   execFileSync("cp", ["-R", folder("hosted"), copy]);
   const synced = await cli(["sync", "--dir", copy, "--json"]);
   assert.deepEqual(refusalOf(synced.stdout, synced.stderr), { code: "USAGE", reason: "unbound_copy" }, synced.stdout + synced.stderr);
   assert.match(synced.stdout + synced.stderr, /checkout --adopt/);
-  await ok(["catalog", "add", "team-copy", "--dir", copy]);
-  assert.deepEqual(await viewSetTitle("team-copy", copy, "notes/beta", "Beta, edited in the copy"), { code: "FORBIDDEN", reason: "unbound_copy" });
 
-  // An edit that changes only verified (a managed field sync never sends) is refused before the
-  // file changes. No View action can make it; the served bundle is the one path every write takes.
+  // The workspace provider refuses an edit to verified before changing the file. Sync never sends
+  // that managed field.
   const context = await createCatalogWorkspaceResolver({ home: r.home }).open(r.labels.hosted);
   const gammaFile = path.join(folder("hosted"), "notes", "gamma.md");
   const before = await readFile(gammaFile, "utf8");

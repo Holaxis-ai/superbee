@@ -264,7 +264,7 @@ CI coverage and broader local reproduction commands by reach (not the default bu
 | --- | --- |
 | Package source or tests | `npm run ci:runtime` |
 | `package.json`, `scripts/`, or packaging code | `npm run ci:distribution` and `npm run ci:scripts` |
-| `packages/ui`, `packages/mcp-app`, `packages/browser-local`, or embedded browser code | `npm run ci:browser` |
+| `packages/ui`, `packages/browser-local`, or embedded browser code | `npm run ci:browser` |
 | Workflow topology or `scripts/ci-lanes.json` | `npm run ci:scripts`; for CodeQL-only iteration, start with `node --test scripts/workflow-codeql-topology.test.mjs` |
 | Host-class-dependent tests (case or normalization fixtures, the identity lock) | `npm run ci:aliasing-host` |
 | `.github/workflows/release*.yml` | `npm run ci:scripts` (workflow invariant test), then one rehearsal against a disposable package before first live use |

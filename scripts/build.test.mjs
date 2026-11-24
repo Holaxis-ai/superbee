@@ -21,7 +21,7 @@ function stages(failAt) {
       compile: async workspace => record(`compile:${workspace}`),
       prepare: async ({ compiledWorkspaces }) => {
         record("prepare", compiledWorkspaces);
-        const inputs = { inputs: [`fresh-ui-${assets.length}`, `fresh-mcp-${assets.length}`] };
+        const inputs = { inputs: [`fresh-ui-${assets.length}`] };
         assets.push(inputs);
         return inputs;
       },
@@ -35,12 +35,11 @@ test("root builds each workspace once and shares fresh assets and provenance onl
   const fixture = stages();
   await buildWorkspace(fixture.operations);
   await buildWorkspace(fixture.operations);
-  const expected = ["validate", ...TSC_WORKSPACES.flatMap(workspace => workspace === "mcp-app"
-    ? ["prepare", `compile:${workspace}`] : [`compile:${workspace}`]), "runtime", "distribution"];
+  const expected = ["validate", ...TSC_WORKSPACES.map(workspace => `compile:${workspace}`), "prepare", "runtime", "distribution"];
   assert.deepEqual(fixture.events.map(([event]) => event), [...expected, ...expected]);
   for (let invocation = 0; invocation < 2; invocation++) {
     const events = fixture.events.slice(invocation * expected.length, (invocation + 1) * expected.length);
-    assert.deepEqual(events.find(([name]) => name === "prepare")[1], TSC_WORKSPACES.slice(0, TSC_WORKSPACES.indexOf("mcp-app")));
+    assert.deepEqual(events.find(([name]) => name === "prepare")[1], TSC_WORKSPACES);
     const runtime = events.find(([name]) => name === "runtime")[1];
     const distribution = events.find(([name]) => name === "distribution")[1];
     assert.equal(runtime.preparedInputs, fixture.assets[invocation]);
@@ -90,7 +89,7 @@ test("replaced lifecycle hooks have an explicit parity contract that rejects new
     assert.doesNotThrow(() => assertBuildLifecycle(workspace, scripts));
     assert.throws(() => assertBuildLifecycle(workspace, { ...scripts, prebuild: "node extra-check.mjs" }), /lifecycle changed/);
     assert.throws(() => assertBuildLifecycle(workspace, { ...scripts, postbuild: "node extra-check.mjs" }), /lifecycle changed/);
-    if (["mcp-app", "cli", "superbee"].includes(workspace)) {
+    if (["cli", "superbee"].includes(workspace)) {
       assert.throws(() => assertBuildLifecycle(workspace, { ...scripts, build: scripts.build + " && node extra-check.mjs" }), /lifecycle changed/);
     }
   }

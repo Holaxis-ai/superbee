@@ -10,17 +10,9 @@ import {
   type ReadResult,
 } from "@superbee/core";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
-import {
-  AUTHORIZE_DURABLE_VIEW_TOOL_NAME,
-  DURABLE_VIEW_BRIDGE_TOOL_NAME,
-  SHOW_VIEW_TOOL_NAME,
-  createMcpAppServer,
-} from "@superbee/mcp-app";
 import { createBundleRouter } from "../../ui-server/dist/bundle-router.js";
-import { bootUiServer } from "@superbee/ui-server";
 import { SessionViewAuthorizationStore } from "@superbee/view-runtime";
-import { Client } from "@modelcontextprotocol/client";
-import { InMemoryTransport } from "@modelcontextprotocol/client";
+import { bootUiServer } from "@superbee/ui-server";
 
 const T = "2026-08-02T00:00:00.000Z";
 const SECRET = "render-document-agreement-secret";
@@ -165,78 +157,6 @@ async function webSurface(): Promise<Surface> {
   };
 }
 
-async function mcpSurface(): Promise<Surface> {
-  const { bundle, backend } = await seed();
-  const server = createMcpAppServer({
-    bundle,
-    version: "agreement",
-    viewAuthorization: new SessionViewAuthorizationStore(),
-  });
-  const client = new Client({ name: "agreement", version: "test" }, { capabilities: {} });
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await server.connect(serverTransport);
-  await client.connect(clientTransport);
-  const shown = await client.callTool({
-    name: SHOW_VIEW_TOOL_NAME,
-    arguments: { viewId: "views-registry/agreement" },
-  });
-  const launchId = (shown.structuredContent as { launch: { launchId: string } }).launch.launchId;
-  return {
-    async authorize() {
-      const result = await client.callTool({
-        name: AUTHORIZE_DURABLE_VIEW_TOOL_NAME,
-        arguments: { launchId },
-      });
-      assert.equal(result.isError, undefined);
-    },
-    async request(docId) {
-      const result = await client.callTool({
-        name: DURABLE_VIEW_BRIDGE_TOOL_NAME,
-        arguments: {
-          launchId,
-          request: { bridge: "v0", type: "render-document", id: docId, docId },
-        },
-      });
-      return (result.structuredContent as { outcome: { reply: Record<string, any> } }).outcome.reply;
-    },
-    async navigate() {
-      const result = await client.callTool({
-        name: DURABLE_VIEW_BRIDGE_TOOL_NAME,
-        arguments: {
-          launchId,
-          request: {
-            bridge: "v0",
-            type: "open-page",
-            id: "open-target",
-            pageId: "views-registry/target",
-          },
-        },
-      });
-      const structured = result.structuredContent as {
-        outcome: { openPageId?: string };
-        navigation?: {
-          status?: string;
-          view?: {
-            source?: { viewId?: string };
-            launch?: { authorization?: { authorized?: boolean } };
-          };
-        };
-      };
-      return {
-        openPageId: structured.outcome.openPageId,
-        navigationStatus: structured.navigation?.status,
-        targetViewId: structured.navigation?.view?.source?.viewId,
-        targetAuthorized: structured.navigation?.view?.launch?.authorization?.authorized,
-      };
-    },
-    armLaunchChange: () => backend.armLaunchChange(),
-    async close() {
-      await client.close();
-      await server.close();
-    },
-  };
-}
-
 type Scenario = "denial" | "success" | "not-found" | "bounded" | "changed-launch";
 
 async function runScenario(factory: () => Promise<Surface>, scenario: Scenario): Promise<unknown> {
@@ -268,13 +188,11 @@ async function runScenario(factory: () => Promise<Surface>, scenario: Scenario):
   }
 }
 
-test("web and MCP durable Views agree on every render-document outcome", async (t) => {
+test("web durable Views preserve every render-document outcome", async (t) => {
   const scenarios: Scenario[] = ["denial", "success", "not-found", "bounded", "changed-launch"];
   for (const scenario of scenarios) {
     await t.test(scenario, async () => {
       const web = await runScenario(webSurface, scenario);
-      const mcp = await runScenario(mcpSurface, scenario);
-      assert.deepEqual(web, mcp);
       if (scenario === "denial") assert.deepEqual(web, { type: "error", code: "FORBIDDEN" });
       if (scenario === "not-found") assert.deepEqual(web, { type: "error", code: "NOT_FOUND" });
       if (scenario === "changed-launch") assert.deepEqual(web, { type: "error", code: "REVOKED" });
@@ -294,23 +212,13 @@ test("web and MCP durable Views agree on every render-document outcome", async (
   }
 });
 
-test("web and MCP select the same registered target for open-page", async () => {
+test("a web durable View opens its registered navigation target", async () => {
   const web = await webSurface();
-  const mcp = await mcpSurface();
   try {
     await web.authorize();
-    await mcp.authorize();
-    const webSelection = await web.navigate();
-    const mcpSelection = await mcp.navigate();
-    assert.equal(webSelection.openPageId, "views-registry/target");
-    assert.deepEqual(mcpSelection, {
-      openPageId: webSelection.openPageId,
-      navigationStatus: "opened",
-      targetViewId: webSelection.openPageId,
-      targetAuthorized: false,
-    });
+    const selection = await web.navigate();
+    assert.equal(selection.openPageId, "views-registry/target");
   } finally {
     await web.close();
-    await mcp.close();
   }
 });

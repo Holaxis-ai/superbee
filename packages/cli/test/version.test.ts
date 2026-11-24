@@ -63,11 +63,9 @@ test("version is registered in command discovery", () => {
   );
 });
 
-test("version help carries bounded stable-MCP verification guidance", () => {
-  assert.match(VERSION_USAGE, /npm install -g superbee/);
-  assert.match(VERSION_USAGE, /`superbee mcp install --host <id>`/);
-  assert.match(VERSION_USAGE, /never an npx cache or one bundle directory/);
-  assert.match(VERSION_USAGE, /`superbee mcp status --host <id>`/);
+test("version help links the optional app and explains the release check", () => {
+  assert.match(VERSION_USAGE, /optional Superbee MCP app/);
+  assert.match(VERSION_USAGE, /superbee-plugins.*apps\/mcp\/README\.md/);
   assert.match(VERSION_USAGE, /--check performs one read-only, two-second comparison/);
   assert.match(VERSION_USAGE, /--tag latest\|next/);
   assert.match(VERSION_USAGE, /never installs a package/);
@@ -103,7 +101,7 @@ test("the BUILT CLI exposes the exact complete envelope in JSON and TOON", () =>
   assert.match(envelope.identity.artifact.sha256, /^sha256:[a-f0-9]{64}$/);
   assert.equal(envelope.identity.runtime.executable_path, cliBin);
   assert.ok(["direct", "path"].includes(envelope.identity.runtime.launch_mode));
-  assert.deepEqual(envelope.identity.compatibility_contracts, { skill: 1, hook: 1, mcp: 1 });
+  assert.deepEqual(envelope.identity.compatibility_contracts, { skill: 1, hook: 1, mcp: null });
   assert.deepEqual(envelope.drift, { adjacent_package_version: pkgVersion, version_mismatch: false });
 
   const toon = runCli(cliBin, ["version"]);

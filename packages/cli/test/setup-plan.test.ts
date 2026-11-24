@@ -12,7 +12,6 @@ function input(overrides: Partial<SetupPlanInput> = {}): SetupPlanInput {
     host: "codex", scope: "user",
     distribution: { allowed: true, state: "durable_global", reason: "durable", persistent: true },
     state: { state: "ready", reason: "current", records: 0 }, skill: CURRENT_SKILL, hook: CURRENT_HOOK,
-    mcp: { state: "owned_current", reason: "current" },
     workspace: { bundle: "selected", catalog: "ready", selected_registered: true }, version: VERSION, ...overrides,
   };
 }
@@ -31,7 +30,7 @@ test("setup plan agreement: every supported host has a ready agent protocol", ()
     assert.match(plan.agent_instruction, /calling agent executes the returned action/, host);
     assert.equal(plan.ready, true, host);
     assert.equal(plan.complete, true, host);
-    assert.equal(plan.capabilities.find((row) => row.id === "mcp")?.bundled_registration, "superbee", host);
+    assert.match(plan.optional_mcp_app.guide, /superbee-plugins.*apps\/mcp\/README\.md$/, host);
     assert.equal(plan.next, undefined, host);
     assert.deepEqual(plan.verify, {
       action: "run", command: ["superbee", "setup", "--host", host, "--scope", "user", "--json"],
@@ -39,18 +38,6 @@ test("setup plan agreement: every supported host has a ready agent protocol", ()
       approval: { required: false, reason: null },
     });
     assert.match(plan.verify.description, /^Check setup again\. This reads files on disk only\. Restart .+ to load Superbee\.$/, host);
-  }
-});
-
-test("the MCP preview guide is informational for each bundled registration state", () => {
-  for (const state of ["owned_current", "absent", "owned_stale", "foreign"] as const) {
-    const plan = buildSetupPlan(input({ mcp: { state, reason: state } }));
-    const previews = plan.capabilities.filter((row) => row.optional_preview);
-    assert.deepEqual(previews.map((row) => row.id), ["mcp"]);
-    assert.match(previews[0]!.optional_preview!.guide, /^https:\/\/github\.com\/Holaxis-ai\/superbee-plugins\/blob\/[a-f0-9]{40}\/apps\/mcp\/README\.md$/);
-    const expected = state === "owned_current" ? undefined
-      : ["superbee", "mcp", state === "foreign" ? "status" : "install", "--host", "codex"];
-    assert.deepEqual(plan.next?.command, expected);
   }
 });
 
@@ -93,11 +80,6 @@ test("mutating setup actions are argv-based and declare their approval scope", (
   assert.equal(projectSkill.mutates, true);
   assert.deepEqual(projectSkill.approval, { required: false, reason: null });
 
-  const mcp = next(buildSetupPlan(input({ host: "claude-desktop", mcp: { state: "absent", reason: "absent" } })));
-  assert.deepEqual(mcp.command, ["superbee", "mcp", "install", "--host", "claude-desktop"]);
-  assert.equal(mcp.mutates, true);
-  assert.equal(mcp.approval.required, true);
-  assert.match(mcp.approval.reason ?? "", /user-level host configuration/);
 });
 
 test("follow-up actions retain a no-download local invocation", () => {
@@ -176,7 +158,7 @@ test("recognized state-permission repair remains a user-approved mutation", () =
 test("dependency order still yields exactly one action", () => {
   const distribution = next(buildSetupPlan(input({
     distribution: { allowed: false, state: "unknown", reason: "transient", persistent: false },
-    skill: { canonical: { state: "absent" } }, mcp: { state: "absent", reason: "absent" },
+    skill: { canonical: { state: "absent" } },
   })));
   assert.deepEqual(distribution.command, ["npm", "install", "-g", `superbee@${VERSION}`]);
   assert.equal(distribution.approval.required, true);
@@ -200,20 +182,6 @@ test("foreign integrations fail closed onto unapproved read-only inspection", ()
   assert.deepEqual(skill.command, ["superbee", "skill", "status", "--scope", "user"]);
   assert.equal(skill.mutates, false);
   assert.deepEqual(skill.approval, { required: false, reason: null });
-});
-
-test("an absent Codex CLI blocks setup on the same truthful MCP state", () => {
-  const plan = buildSetupPlan(input({
-    mcp: { state: "cli_absent", reason: "codex was not found on PATH" },
-  }));
-  assert.equal(plan.status, "blocked");
-  assert.deepEqual(next(plan), {
-    action: "inspect",
-    command: ["superbee", "mcp", "status", "--host", "codex"],
-    description: "codex was not found on PATH",
-    mutates: false,
-    approval: { required: false, reason: null },
-  });
 });
 
 test("bundle creation and catalog templates remain distinguishable to the agent", () => {

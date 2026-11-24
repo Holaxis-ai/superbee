@@ -146,7 +146,7 @@ jobs:
           assert.match(readme, /supported Node\.js 22, 24, or 26 release \(22\.14\.0 minimum\)/);
           assert.match(readme, /^### Native Windows Git boards$/m);
           assert.match(readme, /Use macOS, Linux, or WSL2 for the full CLI/);
-          assert.match(readme, /installed by your agent,\s+not by hand/);
+          assert.match(readme, /your agent can install the Agent Skill/);
           assert.match(readme, /Run `superbee setup` and follow its instructions/);
           assert.match(readme, /`latest`[\s\S]+`next`|`next`[\s\S]+`latest`/);
           if (version.includes("-")) {
