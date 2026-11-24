@@ -103,6 +103,7 @@ export interface RegisteredPageLaunch extends BasePageLaunch {
   registryVersion: Version;
   registryTitle: string;
   entryKey: string;
+  workingCopyIsCurrent?: () => Promise<boolean>;
 }
 
 export interface TransientPageLaunch extends BasePageLaunch {
@@ -335,6 +336,7 @@ export async function launchIsCurrent(bundle: Bundle, launch: PageLaunch): Promi
     );
   }
   try {
+    if (launch.workingCopyIsCurrent && !(await launch.workingCopyIsCurrent())) return false;
     const registryRead = await readDocVersioned(bundle, launch.registryId);
     if (registryRead.version !== launch.registryVersion) return false;
     const registration = parseRegistration(registryRead.doc.id, registryRead.doc.frontmatter);
@@ -352,7 +354,8 @@ export async function launchIsCurrent(bundle: Bundle, launch: PageLaunch): Promi
     const admitted = admitActiveView(blob.bytes, blob.contentType);
     return (
       admitted.contentType === launch.contentType &&
-      blobVersion(admitted.bytes) === launch.contentVersion
+      blobVersion(admitted.bytes) === launch.contentVersion &&
+      (!launch.workingCopyIsCurrent || await launch.workingCopyIsCurrent())
     );
   } catch {
     return false;
@@ -368,7 +371,15 @@ export async function mintActiveViewLaunch(
   bundle: Bundle,
   launches: PageLaunchRegistry,
   registryId: string,
+  workingCopyIsCurrent?: () => Promise<boolean>,
 ): Promise<RegisteredPageLaunch> {
+  if (workingCopyIsCurrent && !(await workingCopyIsCurrent())) {
+    throw new RegisteredViewLaunchError(
+      "VIEW_CHANGED_DURING_PREPARATION",
+      "the working copy changed before the View could be opened",
+      registryId,
+    );
+  }
   let registryRead;
   try {
     registryRead = await readDocVersioned(bundle, registryId);
@@ -445,6 +456,7 @@ export async function mintActiveViewLaunch(
     contentVersion: blobVersion(admitted.bytes),
     bytes: admitted.bytes,
     capability: resolveDeclaredAccess(registryRead.doc.frontmatter),
+    ...(workingCopyIsCurrent && { workingCopyIsCurrent }),
   });
   if (!(await launchIsCurrent(bundle, launch))) {
     launches.revoke(launch.launchId);

@@ -1,4 +1,4 @@
-import { appendFile } from "node:fs/promises";
+import { appendFile, cp, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import assert from "node:assert/strict";
 import {
@@ -93,6 +93,46 @@ assert.deepEqual(
   await catalog.runOperation(local.id, "documents.history.v1", {}),
   { stop: "no_host_operations", home: "local" },
 );
+
+// Different working copies can contain identical registrations, HTML and document bytes.
+const viewId = "views-registry/editor";
+const receipt = await workspace.captureRegisteredView(viewId);
+const target = await catalog.open(local.id);
+const reopened = await target.reopenRegisteredView(JSON.parse(JSON.stringify(receipt)));
+assert.equal(reopened.contentVersion, receipt.contentVersion);
+assert.equal(reopened.authorized, false);
+await target.approve(reopened.id);
+assert.equal((await target.request(reopened.id, request)).reply.type, "render-document:result");
+const editor = await target.reopenRegisteredView(receipt);
+const targetDocument = await target.document(docId);
+const pending = await target.prepare(editor.id, {
+  ...action,
+  value: targetDocument.frontmatter.state === "todo" ? "done" : "todo",
+  expectedVersion: targetDocument.version,
+});
+assert.equal(pending.status, "prepared");
+const copy = process.argv[2] + "-identical";
+await cp(process.argv[2], copy, { recursive: true });
+const otherCopy = await openViewWorkspace("directory", copy, { actor: "process:host-proof" });
+await assert.rejects(otherCopy.reopenRegisteredView(receipt), /working copy changed/);
+
+// Replace the original folder at the same path after the handoff, keeping all bytes identical.
+const original = process.argv[2] + "-original";
+await rename(process.argv[2], original);
+await rename(copy, process.argv[2]);
+try {
+  assert.equal((await target.request(reopened.id, request)).reply.type, "error");
+  assert.notEqual((await target.finish(editor.id, pending.approvalToken, "commit")).status, "committed");
+  assert.equal((await target.document(docId)).version, targetDocument.version);
+  await assert.rejects(
+    (await catalog.open(local.id)).reopenRegisteredView(receipt),
+    /working copy changed/,
+  );
+} finally {
+  await rm(process.argv[2], { recursive: true });
+  await rename(original, process.argv[2]);
+}
+target.close(reopened.id);
 
 let requests = 0;
 globalThis.fetch = async () => {
