@@ -4,7 +4,7 @@ import { windowsFilesystemHostPolicy } from "./filesystem.js";
 import { createWindowsHostCommands } from "./host.js";
 import { windowsPrivateStateHost } from "./private-state.js";
 
-const windowsUsage = "Native Windows supports local project setup, existing standalone Git boards, and Hosted checkouts.";
+const windowsUsage = "Native Windows supports local project setup, existing standalone Git boards, and Hosted checkouts. Use WSL2 for the full CLI.";
 const requirements = "Native Windows file operations require Node.js 22.17.0 or later in the 22 line, 24.2.0 or later in the 24 line, or Node.js 26.";
 
 // libuv 1.51 made Windows path and handle stats agree on the volume serial used for file identity.

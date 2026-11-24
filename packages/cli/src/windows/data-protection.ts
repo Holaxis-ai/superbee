@@ -16,6 +16,7 @@ export function runWindowsDataProtection(
   const powershell = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   const script = `
     $ErrorActionPreference = 'Stop'
+    $ProgressPreference = 'SilentlyContinue'
     Add-Type -AssemblyName System.Security
     $entropy = [Convert]::FromBase64String([Console]::In.ReadLine())
     $data = [Convert]::FromBase64String([Console]::In.ReadLine())

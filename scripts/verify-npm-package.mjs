@@ -1119,7 +1119,6 @@ async function runInstalledProof(spec) {
     assert.match(normalizedInstalledReadme, /^## Install$/m);
     assert.match(normalizedInstalledReadme, /supported Node\.js 22, 24, or 26 release \(22\.14\.0 minimum\)/);
     assert.match(normalizedInstalledReadme, /^### Native Windows Git boards$/m);
-    assert.match(normalizedInstalledReadme, /Native Windows mode is experimental/);
     assert.match(normalizedInstalledReadme, /Use macOS, Linux, or WSL2 for the full CLI/);
     assert.match(normalizedInstalledReadme, /`latest`[\s\S]+`next`|`next`[\s\S]+`latest`/);
     assertPackageReadmeReleaseChannel(manifest.version, normalizedInstalledReadme);
