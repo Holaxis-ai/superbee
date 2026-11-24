@@ -16,17 +16,15 @@ ${MCP_APP_INSTALL.guide}`;
     if (!["install", "status", "uninstall"].includes(argv[0] ?? "")) {
       parseLeafOrUsage(() => parseArgs({
         args: argv,
-        options: { dir: { type: "string" }, actor: { type: "string" } },
         allowPositionals: true,
       }), CLI_LEAVES.mcp);
     }
-    throw new CliError("USAGE", "The local MCP app is installed separately", {
-      help: MCP_APP_INSTALL.guide,
-    });
+    throw new CliError("USAGE", "The local MCP app is installed separately");
   } catch (error) {
     // Old clients still start this command over stdio. Keep stdout free of error text.
     const handled = asHandled(error);
-    process.stderr.write(renderErrorEnvelope(toEnvelope(handled)));
+    const { error: diagnostic } = toEnvelope(handled);
+    process.stderr.write(renderErrorEnvelope({ error: { ...diagnostic, help: MCP_APP_INSTALL.guide } }));
     throw handled;
   }
 }
