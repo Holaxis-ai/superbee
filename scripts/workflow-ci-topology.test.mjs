@@ -257,7 +257,11 @@ function assertNativeWindowsJob(floor, windows, candidate) {
   assert.equal(upload.id, "retain");
   assert.deepEqual(upload.with, {
     name: "superbee-installed-windows-input",
-    path: [candidate.lanes["smoke-node-22"].superbee_tarball, candidate.lanes["smoke-node-22"].cli_tarball].join("\n") + "\n",
+    path: [
+      candidate.lanes["smoke-node-22"].superbee_tarball,
+      candidate.lanes["smoke-node-22"].cli_tarball,
+      "out/node-floor/installed-hosted-onboarding.mjs",
+    ].join("\n") + "\n",
     "if-no-files-found": "error",
     overwrite: true,
     "retention-days": 7,

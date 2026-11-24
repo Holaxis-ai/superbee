@@ -43,6 +43,7 @@ export class FakeIssuer {
   readonly devices = new Map<string, DeviceGrant>();
   readonly refreshTokens = new Map<string, RefreshEntry>();
   readonly revokedFamilies = new Set<string>();
+  lastAccessToken: string | undefined;
   /** Process the next refresh (rotate) but drop the response. */
   dropNextRefreshResponse = false;
   /** Merged over the protected-resource metadata, issuer metadata and device response (negative tests). */
@@ -118,8 +119,9 @@ export class FakeIssuer {
     const fam = family ?? `fam-${randomBytes(6).toString("hex")}`;
     this.refreshTokens.set(refreshToken, { family: fam, clientId, audience, state: "current" });
     const exp = Math.floor(now / 1000) + this.opts.accessTokenTtlSeconds;
+    this.lastAccessToken = jwt({ sub: "auth0|mike", aud: audience, azp: clientId, exp, jti: randomBytes(6).toString("hex") });
     this.json(res, 200, {
-      access_token: jwt({ sub: "auth0|mike", aud: audience, azp: clientId, exp, jti: randomBytes(6).toString("hex") }),
+      access_token: this.lastAccessToken,
       id_token: jwt({ sub: "auth0|mike", email: "mike@example.com", name: "Mike" }),
       refresh_token: refreshToken,
       token_type: "Bearer",

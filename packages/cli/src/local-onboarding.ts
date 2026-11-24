@@ -14,6 +14,7 @@ import { bindingForPath } from "./hosted/binding.js";
 import { readCheckoutMarker } from "./hosted/marker.js";
 import { unsafeProjectDir } from "./no-bundle-guidance.js";
 import { assertBundleOutsidePrivateState } from "./private-state-bundle-boundary.js";
+import { currentExistingGitBoard } from "./runtime-context.js";
 
 async function inspectProjectAncestors(root: string): Promise<boolean> {
   let gitMarker = false;
@@ -72,4 +73,17 @@ export async function resolveOnboardingRoute(
   if (path.relative(source, target.canonicalRoot) !== "") await inspectProjectAncestors(source);
   if (await inspectLocalProjectFolder(target.canonicalRoot, "select") === "git") return resolveExistingGitBoardRoute(dir, usage);
   return scopedLocalRoute(target);
+}
+
+/** The scoped CLI accepts an explicit Hosted root only while its local binding is valid. */
+export async function scopedHostedCheckoutRoute(dir: string | undefined): Promise<ScopedBundleRoute | null> {
+  if (!currentExistingGitBoard()?.hostedOnboarding || !dir?.trim()) return null;
+  const root = path.resolve(dir);
+  const canonicalRoot = await realpath(root).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
+  if (canonicalRoot === null || !await bindingForPath(homedir(), canonicalRoot, true)) return null;
+  assertBundleOutsidePrivateState(canonicalRoot);
+  return scopedLocalRoute({ root, canonicalRoot, selectedBy: "explicit-dir" });
 }

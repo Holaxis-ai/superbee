@@ -42,6 +42,7 @@ import {
 import { docReadCommand } from "../../doc-read-command.js";
 import { commandLiteral, commandToken } from "../../command-text.js";
 import { currentExistingGitBoard } from "../../runtime-context.js";
+import { scopedHostedCheckoutRoute } from "../../local-onboarding.js";
 import { assertStaleAfterEdition, parseStaleAfter } from "../../stale-after.js";
 
 const UPDATE_HELP = commandLiteral("doc update --help");
@@ -257,7 +258,8 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
   const readStdin = deps.readStdin ?? defaultReadStdin;
 
-  const boardOnly = currentExistingGitBoard() !== undefined;
+  const scope = currentExistingGitBoard();
+  const boardOnly = scope !== undefined;
   const recovery = updateRecovery(boardOnly);
   const p = parseDocUpdateArgs(argv, boardOnly, recovery);
   if (p.help) {
@@ -286,7 +288,8 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     );
   }
   if (boardOnly && p.expectedVersion === undefined) {
-    throw new CliError("USAGE", "An existing standalone Git board update requires --expected-version from a local doc read.", {
+    const target = scope?.hostedOnboarding ? "A checkout update" : "An existing standalone Git board update";
+    throw new CliError("USAGE", `${target} requires --expected-version from a local doc read.`, {
       help: recovery.read(id, p.dir),
     });
   }
@@ -294,8 +297,10 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   const staleAfter = parseStaleAfter(p.staleAfter);
 
   // A scoped command must validate its target before opening any optional input channel.
-  const boardRoute = boardOnly ? await resolveExistingGitBoardRoute(p.dir, UPDATE_HELP) : undefined;
-  const readHelp = (docId: string) => recovery.read(docId, boardRoute?.bundle.root);
+  const scopedRoute = boardOnly
+    ? await scopedHostedCheckoutRoute(p.dir) ?? await resolveExistingGitBoardRoute(p.dir, UPDATE_HELP)
+    : undefined;
+  const readHelp = (docId: string) => recovery.read(docId, scopedRoute?.bundle.root);
 
   // A patchable field OTHER than body, given via a flag — title/description/type/kind fields.
   // Computed BEFORE the stdin read below: a FIELD-ONLY patch (one of these given, no --body/
@@ -347,7 +352,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     );
   }
 
-  const route = boardRoute ?? await resolveLocalBundleRoute(p.dir);
+  const route = scopedRoute ?? await resolveLocalBundleRoute(p.dir);
   const bundle = route.bundle;
   await assertResolvedLocalRouteIdentity(route);
   id = await resolveConceptIdCliArgument(bundle, rawId);
@@ -411,7 +416,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
       if (p.body !== undefined) nextBody = p.body;
       else if (p.bodyFile) {
         nextBody = await readExternalTextFile(p.bodyFile);
-        if (boardRoute) await assertResolvedLocalRouteIdentity(boardRoute);
+        if (scopedRoute) await assertResolvedLocalRouteIdentity(scopedRoute);
       }
       else if (stdinBody !== undefined) nextBody = stdinBody;
 

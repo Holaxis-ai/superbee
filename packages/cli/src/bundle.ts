@@ -1760,11 +1760,11 @@ export async function resolveExistingGitBoardRoute(dir: string | undefined, usag
 }
 
 /** Compute mutation attribution before persistence; post-persist code receives only this value. */
-export function boardAttributionForRoute(route: ResolvedLocalRoute | StandaloneBoardRoute): BoardAttribution {
+export function boardAttributionForRoute(route: ResolvedLocalRoute | ScopedBundleRoute): BoardAttribution {
   if (route.kind === "bound-board") {
     return route.readiness === "ready" ? { kind: "board", stateKey: route.owner.stateKey } : { kind: "none" };
   }
-  if (route.kind === "bound-local") return { kind: "none" };
+  if (route.kind === "bound-local" || route.kind === "scoped-local") return { kind: "none" };
   // Standalone board scope grants access to the checkout. Use the same conventional-root
   // criterion as ordinary explicit updates for optional self-attribution.
   if (!BUNDLE_DIRS.includes(path.basename(route.bundle.root) as (typeof BUNDLE_DIRS)[number])) return { kind: "none" };

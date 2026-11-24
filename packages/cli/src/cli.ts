@@ -112,6 +112,8 @@ export type PublicHandlerMap = { readonly [Command in PublicCommandName]: Public
 // These routes run on both the full CLI and the existing-board runtime. The doc dispatcher
 // selects its shared read handler before considering document operations that need the full CLI.
 const BOARD_HANDLERS = Object.freeze({ sync, version: versionCommand, list, query: list, doc });
+const LOCAL_ONBOARDING_COMMANDS = new Set(["setup", "init", "catalog"]);
+const HOSTED_ONBOARDING_COMMANDS = new Set(["login", "whoami", "logout", "checkout"]);
 
 /** Exact public handler ownership: catalog additions and removals are compile-time obligations. */
 const publicHandlers = {
@@ -170,7 +172,8 @@ const guarded =
   (name: PublicCommandName, fn: PublicHandler): PublicHandler =>
   async (args: string[]) => {
     // Scoped document dispatch refuses unsupported operations before a hosted target lookup.
-    if (name !== "doc" || !currentExistingGitBoard()) await assertAllowedInHostedCheckout(name, args);
+    const scope = currentExistingGitBoard();
+    if (name !== "doc" || !scope || scope.hostedOnboarding) await assertAllowedInHostedCheckout(name, args);
     await fn(args);
   };
 
@@ -274,10 +277,14 @@ export async function main(argv: string[]): Promise<void> {
       const inv = cliInvocation();
       process.stdout.write(`${board.usage}\n${board.requirements ? `${board.requirements}\n` : ""}`
         + (board.localOnboarding ? `Start in your project folder with ${inv} setup. Manage the MCP workspace catalog with ${inv} catalog.\n` : "")
+        + (board.hostedOnboarding ? `Use ${inv} login, ${inv} checkout and ${inv} sync to work with Hosted bundles.\n` : "")
         + `Board command help includes ${inv} sync --help, ${inv} list --help, ${inv} doc read --help, and ${inv} doc update --help.\n`);
       return;
     }
-    const refusal = !(Object.hasOwn(BOARD_HANDLERS, command) || (board.localOnboarding && (command === "setup" || command === "init" || command === "catalog")))
+    const allowed = Object.hasOwn(BOARD_HANDLERS, command)
+      || (board.localOnboarding && LOCAL_ONBOARDING_COMMANDS.has(command))
+      || (board.hostedOnboarding && HOSTED_ONBOARDING_COMMANDS.has(command));
+    const refusal = !allowed
       ? board.usage
       : command === "version" ? undefined : board.unavailableReason;
     if (refusal !== undefined) {

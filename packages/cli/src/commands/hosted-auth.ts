@@ -74,7 +74,7 @@ The host is --host, then ${HOST_ENV}, then the host of the last sign-in. A works
 session is kept for that gateway (reported as host_from: workspace-origin). The issuer comes from
 the host's protected-resource metadata. The CLI client id comes from --client-id, then
 ${CLIENT_ID_ENV}, then the host's metadata. The refresh token is kept in the OS credential store
-(macOS Keychain, Linux Secret Service); ${CREDENTIAL_STORE_ENV}=file opts in to a 0600 file
+(macOS Keychain, Linux Secret Service, Windows user data protection); ${CREDENTIAL_STORE_ENV}=file opts in to a private file
 instead. ${ACCESS_TOKEN_ENV} (for CI) is used as given by hosted commands and is never stored.
 
 Options:
@@ -442,9 +442,9 @@ export async function logout(argv: string[], partial: Partial<HostedAuthCommandD
   }
   if (result.revocation === "failed") notes.push("the issuer did not confirm revocation; the local copy was deleted anyway");
   if (result.revocation === "store_unavailable") {
-    notes.push(`the OS credential store could not be reached, so the refresh token was neither revoked nor deleted; the local session was removed. Unlock the store and run logout again, or remove the 'superbee-cli' keychain item`);
+    notes.push("the OS credential store could not be reached, so the refresh token was neither revoked nor deleted. The local session was removed. Restore access to the OS credential store, then run logout again or remove the stored Superbee credential.");
   } else if (result.store_cleared === false) {
-    notes.push(`the OS credential store could not delete the refresh token (it is ${result.revoked ? "already revoked at the issuer" : "not revoked"}); the local session was removed. Remove the 'superbee-cli' keychain item once the store is unlocked`);
+    notes.push(`the OS credential store could not delete the refresh token (it is ${result.revoked ? "already revoked at the issuer" : "not revoked"}). The local session was removed. Remove the stored Superbee credential once the store is accessible.`);
   }
   if (deps.auth.env[ACCESS_TOKEN_ENV]) notes.push(`${ACCESS_TOKEN_ENV} is set; unset it to stop hosted commands using it`);
   deps.stdout(render({ ...result, ...(notes.length ? { notes } : {}) }, resolveMode(values)));

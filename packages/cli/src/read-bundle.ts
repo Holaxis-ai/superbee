@@ -3,7 +3,7 @@ import { hasEnclosingGitMarker } from "@superbee/board-git";
 import { existingGitBoardRoute, openBundle, resolveExistingGitBoardRoute } from "./bundle.js";
 import type { CommandText } from "./command-text.js";
 import { currentExistingGitBoard } from "./runtime-context.js";
-import { resolveOnboardingRoute } from "./local-onboarding.js";
+import { resolveOnboardingRoute, scopedHostedCheckoutRoute } from "./local-onboarding.js";
 
 export async function openReadBundle(
   dir: string | undefined,
@@ -14,7 +14,7 @@ export async function openReadBundle(
   if (allowLocal) {
     // An already qualified board read works even when private user state is inaccessible.
     const board = dir && hasEnclosingGitMarker(dir) ? await existingGitBoardRoute(dir) : null;
-    return (board ?? await resolveOnboardingRoute(dir, usage)).bundle;
+    return (board ?? await scopedHostedCheckoutRoute(dir) ?? await resolveOnboardingRoute(dir, usage)).bundle;
   }
   if (currentExistingGitBoard()) return (await resolveExistingGitBoardRoute(dir, usage)).bundle;
 

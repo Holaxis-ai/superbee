@@ -287,7 +287,8 @@ jobs:
           npm pack -w @superbee/cli --ignore-scripts --json --pack-destination out/node-floor > out/node-floor/cli-pack.json
           CLI_PACKED="$(node -p 'require("./out/node-floor/cli-pack.json")[0].filename')"
           mv -- "out/node-floor/$CLI_PACKED" out/node-floor/superbee-cli.tgz
-          sha256sum out/node-floor/superbee.tgz out/node-floor/superbee-cli.tgz > out/node-floor/before.sha256
+          ./node_modules/.bin/esbuild packages/cli/test/support/installed-hosted-onboarding.mjs --bundle --platform=node --format=esm --target=node22 --outfile=out/node-floor/installed-hosted-onboarding.mjs
+          sha256sum out/node-floor/superbee.tgz out/node-floor/superbee-cli.tgz out/node-floor/installed-hosted-onboarding.mjs > out/node-floor/before.sha256
           read -r SUPERBEE_SHA256 _ < out/node-floor/before.sha256
           CLI_SHA256="$(sha256sum out/node-floor/superbee-cli.tgz | cut -d ' ' -f 1)"
           printf 'superbee_sha256=%s\n' "$SUPERBEE_SHA256" >> "$GITHUB_OUTPUT"
@@ -309,6 +310,7 @@ jobs:
           path: |
             out/node-floor/superbee.tgz
             out/node-floor/superbee-cli.tgz
+            out/node-floor/installed-hosted-onboarding.mjs
           if-no-files-found: error
           overwrite: true
           retention-days: 7

@@ -173,11 +173,13 @@ export interface PrivateStateHost {
  */
 export interface CliRuntimeOptions {
   readonly distribution: CliDistribution;
-  /** Limits dispatch to existing Git board operations and local reads of an explicit checkout. */
+  /** Limits dispatch to explicit Git boards and the additional admitted workspace modes. */
   readonly existingGitBoard?: {
     readonly usage: string;
     /** Also allow setup and create-only operations in ordinary local project folders. */
     readonly localOnboarding?: boolean;
+    /** Also allow account onboarding and synchronization of Hosted checkouts. */
+    readonly hostedOnboarding?: boolean;
     readonly requirements?: string;
     readonly unavailableReason?: string;
   };

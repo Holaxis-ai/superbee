@@ -413,7 +413,7 @@ async function prove({ expectedDigest, expectedSource, scratch }) {
   await assertArtifact(entrypoint, identity.artifact.sha256);
   console.log(`WINDOWS_PROOF_INSTALLED superbee@${identity.package.version} ${expectedSource} sha256:${expectedDigest}`);
   const unsupported = await installed(["ui"], { expected: 1 });
-  assert.match(unsupported.stdout, /code: RUNTIME[\s\S]*Use WSL2 for the full CLI/);
+  assert.match(unsupported.stdout, /code: RUNTIME[\s\S]*Native Windows supports/);
   assert.deepEqual(await readdir(home.LOCALAPPDATA), [], "unsupported UI must not start a worker or create private state");
 
   const probe = path.join(home.LOCALAPPDATA, "file identity probe");
@@ -611,6 +611,25 @@ async function prove({ expectedDigest, expectedSource, scratch }) {
     await acl("/remove:d", account);
   }
   await proveWorkspaceProvider({ scratch, npm, env, prefix, install: installed, board: cloneB });
+  // The fixture bundle shares the existing test helpers' location so their golden paths resolve.
+  const hostedFixture = new URL("../packages/cli/test/support/.installed-hosted-onboarding.mjs", import.meta.url);
+  await cp(new URL("../out/windows-proof/installed-hosted-onboarding.mjs", import.meta.url), hostedFixture);
+  try {
+    const { proveInstalledHostedOnboarding } = await import(hostedFixture.href);
+    const hostedEnv = {
+      ...Object.fromEntries(Object.entries(env).filter(([key]) => !/^SUPERBEE_/iu.test(key))),
+      ...windowsProfile(path.join(scratch, "Fresh Hosted profile")),
+    };
+    await mkdir(hostedEnv.LOCALAPPDATA, { recursive: true });
+    await proveInstalledHostedOnboarding({
+      folder: path.join(scratch, "Native Hosted checkout"),
+      stateRoot: path.join(hostedEnv.LOCALAPPDATA, "Superbee"),
+      cli: (args, expected) => installed(args, { env: hostedEnv, expected: expected ?? 0 }),
+    });
+    console.log("WINDOWS_PROOF_HOSTED_ONBOARDING signed in, rotated the protected refresh token, checked out a bundle, synced a confirmed edit, and logged out.");
+  } finally {
+    await unlink(hostedFixture);
+  }
   return identity.package.version;
 }
 

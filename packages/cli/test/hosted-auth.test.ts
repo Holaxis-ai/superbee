@@ -37,6 +37,7 @@ import {
   macosKeychainStore,
   secretServiceStore,
   selectSecretStore,
+  windowsSecretStore,
   type RunResult,
   type ToolRunner,
 } from "../src/hosted-auth/secret-store.js";
@@ -846,13 +847,51 @@ test("Linux Secret Service: secret on stdin; a missing secret-tool or D-Bus is C
   await assert.rejects(noBus.get("a b"), (e: CliError) => e.code === "CREDENTIAL_STORE_UNAVAILABLE" && /D-Bus/.test(e.message));
 });
 
-test("store policy: explicit file opt-in, no Windows package, no silent plaintext fallback", () => {
+test("store policy: native Windows protection by default and explicit file opt-in", () => {
   const base = { home: "/nonexistent", directoryFor: (a: string) => a };
   assert.equal(selectSecretStore({ ...base, env: {}, platform: "darwin" }).kind, "macos-keychain");
   assert.equal(selectSecretStore({ ...base, env: {}, platform: "linux" }).kind, "secret-service");
   assert.equal(selectSecretStore({ ...base, env: { [CREDENTIAL_STORE_ENV]: "file" }, platform: "win32" }).kind, "file");
-  assert.throws(() => selectSecretStore({ ...base, env: {}, platform: "win32" }), (e: CliError) => e.code === "CREDENTIAL_STORE_UNAVAILABLE");
+  assert.equal(selectSecretStore({ ...base, env: {}, platform: "win32" }).kind, "windows-dpapi");
   assert.throws(() => selectSecretStore({ ...base, env: { [CREDENTIAL_STORE_ENV]: "plaintext" }, platform: "linux" }), (e: CliError) => e.code === "USAGE");
+});
+
+test("Windows credential storage binds ciphertext to its account and redacts system errors", async () => {
+  const h = await harness();
+  const account = "https://windows.example https://windows.example/mcp";
+  const secret = "fixture-refresh-secret";
+  const cipher = Buffer.from("fixture protected output").toString("base64");
+  let protectedFor: string | undefined;
+  try {
+    const store = windowsSecretStore(h.home, (key) => sessionDirFor(h.home, key), { SystemRoot: "C:\\Windows" }, fakeRunner((command, args, stdin) => {
+      assert.equal(command, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+      assert.ok(args.includes("-NoProfile") && args.includes("-NonInteractive"));
+      assert.ok(args.every((arg) => !arg.includes(secret) && !arg.includes(account)));
+      const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
+      assert.match(script, /DataProtectionScope\]::CurrentUser/);
+      const [binding, data] = stdin.split("\n");
+      if (script.includes("::Protect(")) {
+        assert.equal(Buffer.from(data!, "base64").toString("utf8"), secret);
+        protectedFor = binding;
+        return { code: 0, stdout: cipher, stderr: "" };
+      }
+      if (binding !== protectedFor) return { code: 1, stdout: "", stderr: secret };
+      assert.equal(data, cipher);
+      return { code: 0, stdout: Buffer.from(secret).toString("base64"), stderr: "" };
+    }));
+    const other = "https://other.example https://other.example/mcp";
+    assert.equal(await store.get(account), null);
+    await store.set(account, secret);
+    assert.equal(await readFile(path.join(sessionDirFor(h.home, account), "refresh-token.dpapi"), "utf8"), `${cipher}\n`);
+    assert.equal(await store.get(account), secret);
+    await writeUserStateFileAtomic0600(h.home, sessionDirFor(h.home, other), "refresh-token.dpapi", `${cipher}\n`);
+    await assert.rejects(store.get(other), (error: CliError) =>
+      error.code === "CREDENTIAL_STORE_UNAVAILABLE" && !error.message.includes(secret));
+    assert.equal(await store.delete(account), true);
+    assert.equal(await store.get(account), null);
+  } finally {
+    await h.cleanup();
+  }
 });
 
 test("a missing keychain refuses sign-in before anyone is asked to open a link", async () => {

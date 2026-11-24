@@ -18,7 +18,7 @@ import { gitConflictVerb, hostedOnlyVerbError, requestsConflictVerb, requestsHos
 import { sync as gitSync, SYNC_USAGE } from "./sync/orchestrate.js";
 import { bundleHomeAt, unboundLocalCopyAt, type UnboundCopy } from "../bundle-home.js";
 import { resolveLocalBundleTarget } from "../bundle.js";
-import { syncExistingGitBoardsOnly } from "../runtime-context.js";
+import { currentExistingGitBoard, syncExistingGitBoardsOnly } from "../runtime-context.js";
 import { writeCheckoutMarker } from "../hosted/marker.js";
 import { unboundCopyRefusal } from "../hosted/refusals.js";
 
@@ -45,7 +45,7 @@ export async function sync(argv: string[], deps: UnifiedSyncDeps = {}): Promise<
   const home = deps.auth?.home ?? homedir();
   const binding = await hostedCheckoutFor(argv, home, deps.cwd ?? process.cwd());
   if (binding) {
-    if (syncExistingGitBoardsOnly()) {
+    if (syncExistingGitBoardsOnly() && !currentExistingGitBoard()?.hostedOnboarding) {
       throw new CliError("RUNTIME", "Native Windows supports Git boards. Use WSL2 to sync a hosted checkout.");
     }
     // A checkout made before the folder marker existed gets one (best effort; it never routes).

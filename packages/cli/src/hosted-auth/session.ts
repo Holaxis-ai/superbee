@@ -49,6 +49,7 @@ import {
   probeSecretStore,
   secretServiceStore,
   selectSecretStore,
+  windowsSecretStore,
   type SecretStore,
   type SecretStoreKind,
   type ToolRunner,
@@ -570,6 +571,8 @@ export function storeForSession(session: SessionRecord, deps: HostedAuthDeps): S
       return macosKeychainStore(deps.run);
     case "secret-service":
       return secretServiceStore(deps.run);
+    case "windows-dpapi":
+      return windowsSecretStore(deps.home, directoryForAccount(deps.home), deps.env, deps.run);
   }
 }
 
