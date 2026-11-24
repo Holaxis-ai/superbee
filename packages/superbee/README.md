@@ -47,10 +47,10 @@ Skill, an instruction file your agent loads, that teaches it how to use the tool
 
 ## Install
 
-Try the opt-in MCP cutover prerelease on macOS, Linux or Windows.
+Install the Superbee CLI on macOS, Linux or Windows.
 
 ```sh
-npm install -g superbee@next
+npm install -g superbee
 ```
 
 Stable releases publish on npm's `latest` tag and prereleases on `next`.
