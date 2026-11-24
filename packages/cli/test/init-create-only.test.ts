@@ -99,11 +99,11 @@ test("a fresh explicit target initializes with every supported recipe form", asy
       "work-tracking",
     ]);
     assert.equal(named.recipe, "work-tracking");
-    // A path-form recipe folder — the shipped worked example, exercising the external RecipeSource.
-    const recipeDir = path.resolve(here, "../../superbee", "references", "recipes", "claims");
+    // A path-form recipe folder exercises the external RecipeSource.
+    const recipeDir = path.resolve(here, "fixtures", "example-recipe");
     const fromPath = await runInit(["--create-only", "--dir", path.join(base, "d"), "--recipe", recipeDir]);
     assert.equal(fromPath.init, "ok");
-    assert.equal(fromPath.recipe, "claims");
+    assert.equal(fromPath.recipe, "example");
     // Deep target whose intermediate ancestors do not exist yet.
     const deep = await runInit(["--create-only", "--dir", path.join(base, "x", "y", "z")]);
     assert.equal(deep.init, "ok");
