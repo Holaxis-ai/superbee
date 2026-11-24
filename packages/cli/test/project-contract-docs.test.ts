@@ -98,7 +98,7 @@ test("AXI contract has ten ordered rows, live proof anchors, and a separate idem
   );
   assert.match(
     normalized,
-    /For `mcp`, stdout remains the JSON-RPC transport and every CLI startup or runtime error envelope goes to stderr/,
+    /The legacy `mcp` command reserves stdout for existing stdio clients and sends its migration diagnostic to stderr/,
   );
 
   const rowsById = new Map(numberedRows.map((line) => {
@@ -116,12 +116,11 @@ test("AXI contract has ten ordered rows, live proof anchors, and a separate idem
     "packages/cli/src/output.ts::Errors are ALWAYS TOON regardless of --json",
     "packages/cli/src/errors.ts::The 0/1/2/4/5/6 exit taxonomy is PRESERVED",
     "packages/cli/src/commands/doc/read.ts::makes the channel invariant unconditional",
-    "packages/cli/src/commands/mcp.ts::must be routed once to stderr",
+    "packages/cli/src/commands/mcp.ts::Old clients still start this command over stdio",
     "packages/cli/test/arity-built.test.ts::must keep its reserved non-error channel byte-clean",
     "packages/cli/test/error-boundary.test.ts::error matrix: a CliError instance passes through",
     "packages/cli/test/doc-cli-integration.test.ts::built CLI: raw doc-read channels route early missing-id and unknown-option envelopes only to stderr",
-    "packages/cli/test/mcp.test.ts::mcp routes every pre-initialize failure to stderr and marks it handled",
-    "packages/cli/test/mcp-stdio.test.ts::built npm CLI keeps MCP stdout byte-empty for usage and bundle startup failures",
+    "packages/cli/test/arity-built.test.ts::legacy MCP launches keep stdout empty and direct users to the app installer",
   ]);
 
   assertNamedTestContains(
@@ -158,23 +157,9 @@ test("AXI contract has ten ordered rows, live proof anchors, and a separate idem
     ],
   );
   assertNamedTestContains(
-    "packages/cli/test/mcp.test.ts",
-    "mcp routes every pre-initialize failure to stderr and marks it handled",
-    [
-      'name: "server startup"',
-      'code: "RUNTIME"',
-      'assert.equal(stdout, "", `${row.name}: protocol stdout`)',
-      "assert.match(stderr, /^error:\\n/",
-    ],
-  );
-  assertNamedTestContains(
-    "packages/cli/test/mcp-stdio.test.ts",
-    "built npm CLI keeps MCP stdout byte-empty for usage and bundle startup failures",
-    [
-      'assert.equal(result.stdout, "", `${row.name}: JSON-RPC stdout must remain pristine`)',
-      "assert.match(result.stderr, /^error:\\n/",
-      "assert.equal(result.code, row.code",
-    ],
+    "packages/cli/test/arity-built.test.ts",
+    "legacy MCP launches keep stdout empty and direct users to the app installer",
+    ['assert.equal(result.stdout, "")', "assert.equal(result.status, 2)", "assert.match(result.stderr,"],
   );
 });
 

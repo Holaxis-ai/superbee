@@ -1,0 +1,621 @@
+// The workspace provider over a hosted checkout (designs/seamless-multi-backend-cli, section 4.3):
+// the checkout is served through its folder. Reads are served and kept fresh by the automatic
+// pull; a document write sync can send lands in the folder and the next `sync` sends it; a write
+// sync would hold (a View's entry blob, conventions, reserved files, a retype, an oversize
+// document) is refused before the file changes, with the reason the sync scan would record. Both
+// open paths (the catalog and fixed-folder resolver) serve the same guarded bundle.
+import test from "node:test";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { access, cp, mkdtemp, readFile, realpath, rm, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import { inventoryGuardFor, InventoryGuardUnsupported, deleteDoc, queryHeads, readDoc, writeBlob, writeDoc } from "@superbee/core";
+import { CURRENT_HOST_DOCUMENT_INPUT_BYTES } from "@superbee/core/hosted-transport";
+import { decode } from "@toon-format/toon";
+
+import { addCatalogEntry, listCatalogEntries } from "../src/catalog.js";
+import { openBundle } from "../src/bundle.js";
+import { catalog, CATALOG_HOSTED_BUDGET_MS } from "../src/commands/catalog.js";
+import { checkout } from "../src/commands/checkout.js";
+import { status } from "../src/commands/status.js";
+import { sync } from "../src/commands/sync.js";
+import { CliError } from "../src/errors.js";
+import { CREDENTIAL_STORE_ENV } from "../src/hosted-auth/secret-store.js";
+import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
+import { bindingForPath } from "../src/hosted/binding.js";
+import { IN_PLACE_JOURNAL, IN_PLACE_STAGING } from "../src/hosted/export-archive.js";
+import { recordPulled } from "../src/hosted/freshness.js";
+import { servedBundle } from "../src/hosted/served-bundle.js";
+import { createCatalogWorkspaceResolver, serveWorkspace } from "../src/workspace-resolver.js";
+import { openWorkspaceReader } from "../src/workspace-reader.js";
+import { withIsolatedUserEnv } from "./support/user-env.js";
+import { BUNDLE, FakeHost, HOST, syncFixture, TOKEN, type OperationDescriptor } from "./support/fake-hosted-sync.js";
+import { FakeIssuer } from "./support/fake-issuer.js";
+import { seedHostedSession } from "./support/hosted-session.js";
+
+interface Checkout {
+  home: string;
+  cwd: string;
+  folder: string;
+  host: FakeHost;
+  auth: HostedAuthDeps;
+  receipt: Record<string, unknown>;
+}
+
+async function hostedCheckout(before?: (home: string) => Promise<void>): Promise<Checkout> {
+  const host = new FakeHost();
+  const home = await mkdtemp(path.join(tmpdir(), "sb-workspace-hosted-home-"));
+  await before?.(home);
+  const cwd = await realpath(await mkdtemp(path.join(tmpdir(), "sb-workspace-hosted-cwd-")));
+  const auth = defaultHostedAuthDeps(home, {
+    env: { SUPERBEE_ACCESS_TOKEN: TOKEN },
+    fetch: async () => {
+      throw new Error("the sign-in module must not be reached");
+    },
+  });
+  let out = "";
+  await checkout([BUNDLE, "--host", HOST, "--dir", "team", "--json"], { stdout: (text) => void (out += text), auth, cwd, fetch: host.fetch });
+  host.requests.length = 0;
+  return { home, cwd, folder: path.join(cwd, "team"), host, auth, receipt: JSON.parse(out) as Record<string, unknown> };
+}
+
+async function runSync(c: Checkout, fetch: typeof c.host.fetch = c.host.fetch): Promise<void> {
+  await sync(["--dir", c.folder], { stdout: () => {}, auth: c.auth, cwd: c.cwd, fetch, write: { sleep: async () => {}, lookupDelayMs: 0 }, sleep: async () => {} });
+}
+
+async function exists(file: string): Promise<boolean> {
+  return access(file).then(
+    () => true,
+    () => false,
+  );
+}
+
+/** The held refusal, with the reason the sync scan records; `app` when only the Superbee app can do it. */
+function refusedAs(heldReason: string, app: boolean) {
+  return (error: unknown): true => {
+    assert.ok(error instanceof CliError, `expected a CliError, got ${String(error)}`);
+    assert.equal(error.code, "FORBIDDEN");
+    const details = error.details as { reason?: string; held_reason?: string; bundle_id?: string; do_this_in?: string };
+    assert.equal(details.reason, "not_syncable");
+    assert.equal(details.held_reason, heldReason);
+    assert.equal(details.bundle_id, BUNDLE);
+    assert.equal(details.do_this_in, app ? "app" : undefined);
+    return true;
+  };
+}
+
+async function syncState(c: Checkout): Promise<{ state: string; held_files: number; unsent: number }> {
+  let out = "";
+  await status(["--dir", c.folder], { stdout: (text) => void (out += text), autoPull: async () => undefined, home: c.home });
+  return (decode(out.trim()) as { sync: { state: string; held_files: number; unsent: number } }).sync;
+}
+
+test("workspace provider over a cataloged hosted checkout: reads served, a sendable document write synced, held writes refused before the file changes", async () => {
+  const c = await hostedCheckout();
+  assert.deepEqual({ ...(c.receipt.catalog as Record<string, unknown>), id: undefined }, { registered: true, label: BUNDLE, id: undefined, home: "hosted" });
+  const context = await createCatalogWorkspaceResolver({ home: c.home }).open(BUNDLE);
+
+  // Reads work exactly as before.
+  const heads = await queryHeads(context.bundle);
+  assert.ok(heads.length > 0, "the checkout's documents are readable");
+  const alpha = await readDoc(context.bundle, "notes/alpha");
+  const alphaFile = path.join(c.folder, "notes", "alpha.md");
+  const before = await readFile(alphaFile, "utf8");
+
+  // What a View saves (its entry blob), conventions and reserved files: only the app changes them.
+  await assert.rejects(writeBlob(context.bundle, "views/probe/index.html", new TextEncoder().encode("<p>probe</p>"), "text/html"), refusedAs("not_a_document", true));
+  await assert.rejects(writeDoc(context.bundle, { id: "conventions/probe", frontmatter: { type: "Convention", title: "Probe", governs: "Probe" }, body: "" }), refusedAs("convention_folder", true));
+  await assert.rejects(context.bundle.backend!.writeReserved("", "log.md", "# Log\n"), refusedAs("reserved_file", true));
+  await assert.rejects(deleteDoc(context.bundle, "conventions/probe"), refusedAs("convention_folder", true));
+  // A document sync would hold: a retype, and one over the bound a sync write carries.
+  await assert.rejects(writeDoc(context.bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, type: "Project" }, body: alpha.body }), refusedAs("type_change", false));
+  await assert.rejects(writeDoc(context.bundle, { id: "notes/alpha", frontmatter: alpha.frontmatter, body: "x".repeat(CURRENT_HOST_DOCUMENT_INPUT_BYTES + 1) }), refusedAs("too_large", false));
+  assert.equal(await readFile(alphaFile, "utf8"), before, "a refused write leaves the file as it was");
+  assert.equal(await exists(path.join(c.folder, "views", "probe", "index.html")), false);
+  assert.equal(await exists(path.join(c.folder, "conventions", "probe.md")), false);
+  const clean = await syncState(c);
+  assert.deepEqual([clean.state, clean.held_files, clean.unsent], ["clean", 0, 0], "nothing is left for sync to hold");
+  assert.equal(c.host.requests.length, 0, "no provider write reaches the host");
+
+  // A document write sync can send lands in the folder, as `doc update` would, and the next sync sends it.
+  await writeDoc(context.bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha through the provider" }, body: alpha.body });
+  assert.match(await readFile(alphaFile, "utf8"), /Alpha through the provider/);
+  assert.equal((await syncState(c)).unsent, 1);
+  assert.equal((await readDoc(context.bundle, "notes/alpha")).frontmatter.title, "Alpha through the provider");
+  assert.notEqual(c.host.docs.get("notes/alpha")?.frontmatter.title, "Alpha through the provider");
+  await withIsolatedUserEnv(c.home, async () => {
+    const reader = await openWorkspaceReader("catalog", BUNDLE);
+    const pending = await reader.read("notes/alpha");
+    assert.equal(pending.frontmatter.title, "Alpha through the provider");
+    assert.equal((await reader.queryHeads()).find(row => row.id === pending.id)?.version, pending.version);
+  });
+  await runSync(c);
+  assert.equal(c.host.docs.get("notes/alpha")?.frontmatter.title, "Alpha through the provider");
+  assert.deepEqual(c.host.applied, ["notes/alpha"]);
+  assert.equal((await syncState(c)).state, "clean");
+});
+
+test("a provider write while sync holds the checkout does not wait, keeps the file, and the next sync sends it", async () => {
+  const c = await hostedCheckout();
+  const context = await createCatalogWorkspaceResolver({ home: c.home }).open(BUNDLE);
+  const beta = await readDoc(context.bundle, "notes/beta");
+  c.host.put("notes/alpha", { type: "Note", title: "Alpha from the app" }, "Changed on the host.\n");
+  let wrote = false;
+  // The write lands between the pull and the placement of the host's change, with the lock held.
+  const during: typeof c.host.fetch = async (input, init) => {
+    if (!wrote && new URL(String(input)).pathname.endsWith("/heads")) {
+      wrote = true;
+      await writeDoc(context.bundle, { id: "notes/beta", frontmatter: { ...beta.frontmatter, title: "Beta during sync" }, body: beta.body });
+      // A retype is still refused while the lock is held: the folder's file is the comparison.
+      await assert.rejects(writeDoc(context.bundle, { id: "notes/beta", frontmatter: { ...beta.frontmatter, type: "Project" }, body: beta.body }), refusedAs("type_change", false));
+    }
+    return c.host.fetch(input, init);
+  };
+  await runSync(c, during);
+  assert.ok(wrote);
+  assert.match(await readFile(path.join(c.folder, "notes", "beta.md"), "utf8"), /Beta during sync/, "the write is kept");
+  assert.match(await readFile(path.join(c.folder, "notes", "alpha.md"), "utf8"), /Changed on the host/, "the host's change is placed");
+  await runSync(c);
+  assert.equal(c.host.docs.get("notes/beta")?.frontmatter.title, "Beta during sync");
+});
+
+test("a provider write landing while sync places the host's change to the same document is kept, as a conflict, never overwritten", async () => {
+  const c = await hostedCheckout();
+  const context = await createCatalogWorkspaceResolver({ home: c.home }).open(BUNDLE);
+  const alpha = await readDoc(context.bundle, "notes/alpha");
+  c.host.put("notes/alpha", { type: "Note", title: "Alpha from the app" }, "Changed on the host.\n");
+  let wrote = false;
+  // The host's change is pulled, then placed with the pre-image guard (replaceGuarded); the provider
+  // write lands after the pull read the listing and before the placement.
+  const during: typeof c.host.fetch = async (input, init) => {
+    const response = await c.host.fetch(input, init);
+    const route = new URL(String(input)).pathname.split("/").pop();
+    if (!wrote && (route === "run" || route === "snapshot")) {
+      wrote = true;
+      await writeDoc(context.bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha through the provider" }, body: alpha.body });
+    }
+    return response;
+  };
+  await runSync(c, during).catch((error: unknown) => assert.ok(error instanceof CliError && error.code === "CONFLICT", String(error)));
+  assert.ok(wrote);
+  assert.match(await readFile(path.join(c.folder, "notes", "alpha.md"), "utf8"), /Alpha through the provider/, "the provider write is kept");
+  assert.equal(c.host.docs.get("notes/alpha")?.frontmatter.title, "Alpha from the app", "the host's change is not overwritten");
+  await assert.rejects(runSync(c), (error: unknown) => error instanceof CliError && error.code === "CONFLICT");
+});
+
+test("the guard: an unknown storage method is refused, an unsafe id is unsafe_path, a document delete is admitted and synced", async () => {
+  const c = await hostedCheckout();
+  const context = await createCatalogWorkspaceResolver({ home: c.home }).open(BUNDLE);
+  const backend = context.bundle.backend as unknown as Record<string, unknown>;
+  // A method the guard's table does not name is refused, whatever it would do.
+  const unguarded = (await openBundle(c.folder)).backend as unknown as Record<string, unknown>;
+  const probe = Object.getPrototypeOf(unguarded) as Record<string, unknown>;
+  probe.rewrite = async () => "written";
+  try {
+    assert.throws(() => (backend.rewrite as () => unknown)(), /does not know the storage method 'rewrite'/);
+  } finally {
+    delete probe.rewrite;
+  }
+  await assert.rejects(context.bundle.backend!.write("../outside", { id: "../outside", frontmatter: { type: "Note" }, body: "" }), refusedAs("unsafe_path", false));
+  await deleteDoc(context.bundle, "notes/beta");
+  assert.equal(await exists(path.join(c.folder, "notes", "beta.md")), false);
+  await runSync(c);
+  assert.equal(c.host.docs.has("notes/beta"), false, "the delete reached the host");
+});
+
+test("a provider write that changes verified is refused before the file changes; an ordinary edit carries it and is sent", async () => {
+  const c = await hostedCheckout();
+  const reviewed = { by: "human:reviewer", at: "2026-09-26T12:00:00Z" };
+  c.host.put("notes/alpha", { type: "Note", title: "Alpha", verified: [reviewed] }, "Alpha body.\n");
+  await runSync(c);
+  const context = await createCatalogWorkspaceResolver({ home: c.home }).open(BUNDLE);
+  const alpha = await readDoc(context.bundle, "notes/alpha");
+  assert.deepEqual(alpha.frontmatter.verified, [reviewed], "the host's verification is in the folder");
+  const alphaFile = path.join(c.folder, "notes", "alpha.md");
+  const before = await readFile(alphaFile, "utf8");
+  c.host.requests.length = 0;
+
+  const managed = (error: unknown): true => {
+    assert.ok(error instanceof CliError, `expected a CliError, got ${String(error)}`);
+    assert.equal(error.code, "FORBIDDEN");
+    const details = error.details as Record<string, unknown>;
+    assert.deepEqual([details.reason, details.command, details.field, details.bundle_id, details.do_this_in], ["not_syncable", "mcp write", "verified", BUNDLE, "app"]);
+    assert.match(error.message, /verification is a managed field the host records/);
+    return true;
+  };
+  // Only verified changes: appended, replaced, removed. And a new document that carries it.
+  await assert.rejects(writeDoc(context.bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, verified: [reviewed, { by: "human:someone", at: "2026-09-27T09:00:00Z" }] }, body: alpha.body }), managed);
+  await assert.rejects(writeDoc(context.bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, verified: [{ by: "human:someone", at: "2026-09-27T09:00:00Z" }] }, body: alpha.body }), managed);
+  const { verified: _dropped, ...unverified } = alpha.frontmatter;
+  await assert.rejects(context.bundle.backend!.write("notes/alpha", { id: "notes/alpha", frontmatter: unverified, body: alpha.body }), managed);
+  await assert.rejects(writeDoc(context.bundle, { id: "notes/claimed", frontmatter: { type: "Note", title: "Claimed", verified: [reviewed] }, body: "" }), managed);
+  assert.equal(await readFile(alphaFile, "utf8"), before, "a refused write leaves the file as it was");
+  assert.equal(await exists(path.join(c.folder, "notes", "claimed.md")), false);
+  assert.deepEqual([(await syncState(c)).state, (await syncState(c)).unsent], ["clean", 0]);
+
+  // A write made against an older version meets the version check first: a conflict the caller
+  // retries, not a final refusal (a pull may have brought the new verification in meanwhile).
+  await assert.rejects(
+    context.bundle.backend!.write("notes/alpha", { id: "notes/alpha", frontmatter: unverified, body: alpha.body }, { expectedVersion: "stale-version" }),
+    (error: unknown) => {
+      assert.ok(!(error instanceof CliError), `a version conflict, not a refusal: ${String(error)}`);
+      assert.match(String(error), /version|conflict/i);
+      return true;
+    },
+  );
+  assert.equal(await readFile(alphaFile, "utf8"), before);
+
+  // An ordinary edit of the verified document carries verified forward unchanged, and is sent.
+  await writeDoc(context.bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha, retitled" }, body: alpha.body });
+  assert.match(await readFile(alphaFile, "utf8"), /Alpha, retitled/);
+  await runSync(c);
+  assert.equal(c.host.docs.get("notes/alpha")?.frontmatter.title, "Alpha, retitled");
+  assert.deepEqual(c.host.applied, ["notes/alpha"]);
+});
+
+/** The `unbound_copy` refusal a provider write gets in a copy of a checkout, naming the adopt command. */
+function refusedAsCopy(folder: string) {
+  return (error: unknown): true => {
+    assert.ok(error instanceof CliError, `expected a CliError, got ${String(error)}`);
+    assert.equal(error.code, "FORBIDDEN");
+    const details = error.details as Record<string, unknown>;
+    assert.deepEqual([details.reason, details.command, details.folder, details.marker_bundle_id, details.marker_host], ["unbound_copy", "mcp write", folder, BUNDLE, HOST]);
+    assert.equal(details.or, `to use it as a plain local bundle instead, delete ${path.join(folder, ".superbee", "checkout.json")}`);
+    assert.match(error.help ?? "", /checkout --adopt .* --host https:\/\/hosted\.example/);
+    return true;
+  };
+}
+
+test("an unbound copy of a checkout is served for reading, and every provider write is refused until it is adopted or its marker goes", async () => {
+  const c = await hostedCheckout();
+  await cp(c.folder, path.join(c.cwd, "copy"), { recursive: true });
+  const copy = await realpath(path.join(c.cwd, "copy"));
+  await addCatalogEntry("copy", copy, { home: c.home });
+  const alphaFile = path.join(copy, "notes", "alpha.md");
+  const before = await readFile(alphaFile, "utf8");
+
+  // Both open paths: the catalog and fixed-folder resolver.
+  const cataloged = (await createCatalogWorkspaceResolver({ home: c.home }).open("copy")).bundle;
+  const { bundle: direct } = await serveWorkspace(await openBundle(copy), "process:test", c.home);
+  for (const bundle of [cataloged, direct]) {
+    const alpha = await readDoc(bundle, "notes/alpha");
+    assert.ok((await queryHeads(bundle)).length > 0, "reads are served");
+    await assert.rejects(writeDoc(bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha in the copy" }, body: alpha.body }), refusedAsCopy(copy));
+    await assert.rejects(writeDoc(bundle, { id: "notes/new", frontmatter: { type: "Note", title: "New" }, body: "" }), refusedAsCopy(copy));
+    await assert.rejects(deleteDoc(bundle, "notes/beta"), refusedAsCopy(copy));
+    await assert.rejects(writeBlob(bundle, "views/probe/index.html", new TextEncoder().encode("<p/>"), "text/html"), refusedAsCopy(copy));
+    await assert.rejects(bundle.backend!.writeReserved("", "log.md", "# Log\n"), refusedAsCopy(copy));
+  }
+  assert.equal(await readFile(alphaFile, "utf8"), before, "a refused write leaves the file as it was");
+  assert.equal(await exists(path.join(copy, "notes", "new.md")), false);
+  assert.equal(await exists(path.join(copy, "notes", "beta.md")), true);
+  assert.equal(c.host.requests.length, 0, "nothing reaches the host");
+  // The original checkout is still served through its own guard, and still writable.
+  const original = (await createCatalogWorkspaceResolver({ home: c.home }).open(BUNDLE)).bundle;
+  const alpha = await readDoc(original, "notes/alpha");
+  await writeDoc(original, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha in the checkout" }, body: alpha.body });
+
+  // Adopted mid-session: the same served bundle takes the checkout's guard, with no reopen.
+  await checkout(["--adopt", copy, "--host", HOST, "--json"], { stdout: () => {}, auth: c.auth, cwd: c.cwd, fetch: c.host.fetch });
+  const adopted = await readDoc(cataloged, "notes/alpha");
+  await writeDoc(cataloged, { id: "notes/alpha", frontmatter: { ...adopted.frontmatter, title: "Alpha, adopted" }, body: adopted.body });
+  assert.match(await readFile(alphaFile, "utf8"), /Alpha, adopted/);
+  await assert.rejects(writeDoc(cataloged, { id: "conventions/probe", frontmatter: { type: "Convention", title: "Probe", governs: "Probe" }, body: "" }), refusedAs("convention_folder", true));
+
+  // Deleting the marker keeps a copy as a plain local bundle: writes work at once, no reopen.
+  await cp(c.folder, path.join(c.cwd, "kept"), { recursive: true });
+  const kept = await realpath(path.join(c.cwd, "kept"));
+  const local = await servedBundle(await openBundle(kept), { home: c.home });
+  await assert.rejects(writeDoc(local, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha, kept" }, body: alpha.body }), refusedAsCopy(kept));
+  await unlink(path.join(kept, ".superbee", "checkout.json"));
+  await writeDoc(local, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha, kept" }, body: alpha.body });
+  assert.match(await readFile(path.join(kept, "notes", "alpha.md"), "utf8"), /Alpha, kept/);
+});
+
+test("a copy made a Git board mid-session is written as sync takes it; a stopped in-place export names its resume, not deleting the marker", async () => {
+  const c = await hostedCheckout();
+  await cp(c.folder, path.join(c.cwd, "copy"), { recursive: true });
+  const copy = await realpath(path.join(c.cwd, "copy"));
+  const bundle = await servedBundle(await openBundle(copy), { home: c.home });
+  const alpha = await readDoc(bundle, "notes/alpha");
+  await assert.rejects(writeDoc(bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha" }, body: "x" }), refusedAsCopy(copy));
+
+  // An in-place export that stopped part way leaves the marker and no binding: the refusal names the
+  // resume, and never suggests deleting the marker, which would abandon it.
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(path.join(copy, IN_PLACE_STAGING), { recursive: true });
+  await writeFile(path.join(copy, IN_PLACE_STAGING, IN_PLACE_JOURNAL), "{}\n");
+  await assert.rejects(writeDoc(bundle, { id: "notes/alpha", frontmatter: alpha.frontmatter, body: "x" }), (error: unknown) => {
+    assert.ok(error instanceof CliError);
+    const details = error.details as Record<string, unknown>;
+    assert.equal(details.reason, "unbound_copy");
+    assert.equal("or" in details, false);
+    assert.match(error.help ?? "", /export --in-place --dir /);
+    return true;
+  });
+  const refused = await rejects(sync(["--dir", copy], { auth: c.auth, cwd: c.cwd }));
+  assert.equal("or" in (refused.details ?? {}), false);
+  await rm(path.join(copy, IN_PLACE_STAGING), { recursive: true });
+
+  // Made a Git board (as sync --establish leaves it): sync takes it through Git, so the same served
+  // bundle writes to it with no reopen.
+  execFileSync("git", ["init", "-q", "-b", "board"], { cwd: copy, stdio: "ignore" });
+  await writeDoc(bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha on the board" }, body: alpha.body });
+  assert.match(await readFile(path.join(copy, "notes", "alpha.md"), "utf8"), /Alpha on the board/);
+});
+
+async function rejects(promise: Promise<unknown>): Promise<CliError> {
+  try {
+    await promise;
+  } catch (error) {
+    assert.ok(error instanceof CliError, String(error));
+    return error;
+  }
+  throw new assert.AssertionError({ message: "expected a refusal" });
+}
+
+test("a Git board that carries a checkout marker syncs through Git, so the workspace provider serves it unguarded", async () => {
+  const c = await hostedCheckout();
+  await cp(c.folder, path.join(c.cwd, "board"), { recursive: true });
+  const board = await realpath(path.join(c.cwd, "board"));
+  execFileSync("git", ["init", "-q", "-b", "board"], { cwd: board, stdio: "ignore" });
+  const bundle = await servedBundle(await openBundle(board), { home: c.home });
+  const alpha = await readDoc(bundle, "notes/alpha");
+  await writeDoc(bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha on the board" }, body: alpha.body });
+  assert.match(await readFile(path.join(board, "notes", "alpha.md"), "utf8"), /Alpha on the board/);
+});
+
+test("the fixed-folder provider serves the same guarded checkout as the catalog", async () => {
+  const c = await hostedCheckout();
+  const { bundle } = await serveWorkspace(await openBundle(c.folder), "process:test", c.home);
+  await assert.rejects(writeBlob(bundle, "views/probe.html", new TextEncoder().encode("<p/>"), "text/html"), refusedAs("not_a_document", true));
+  const alpha = await readDoc(bundle, "notes/alpha");
+  await writeDoc(bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha from the fixed folder" }, body: alpha.body });
+  assert.equal((await syncState(c)).unsent, 1);
+});
+
+test("a provider read of a stale checkout pulls first, once per stale window in the process", async () => {
+  const c = await hostedCheckout();
+  const binding = (await bindingForPath(c.home, c.folder))!;
+  await recordPulled(c.home, binding.checkout_id, new Date(Date.now() - 10 * 60 * 1000));
+  c.host.put("notes/alpha", { type: "Note", title: "Alpha from the app" }, "Pulled.\n");
+  const notes: string[] = [];
+  const bundle = await servedBundle(await openBundle(c.folder), { home: c.home, autoPull: { env: {}, stderr: (text) => void notes.push(text), sync: { auth: c.auth, fetch: c.host.fetch } } });
+  assert.equal((await readDoc(bundle, "notes/alpha")).frontmatter.title, "Alpha from the app");
+  const pulls = c.host.requests.filter((request) => request.path.endsWith("/heads")).length;
+  assert.equal(pulls, 1);
+  await recordPulled(c.home, binding.checkout_id, new Date(Date.now() - 10 * 60 * 1000));
+  await readDoc(bundle, "notes/beta");
+  assert.equal(c.host.requests.filter((request) => request.path.endsWith("/heads")).length, pulls, "no second pull in the same stale window");
+  assert.deepEqual(notes, []);
+});
+
+test("a local bundle in the catalog stays writable through the provider", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "sb-workspace-local-home-"));
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "sb-workspace-local-bundle-")));
+  const { initBundle } = await import("@superbee/core");
+  await initBundle(root);
+  await addCatalogEntry("local", root, { home });
+  const context = await createCatalogWorkspaceResolver({ home }).open("local");
+  await writeDoc(context.bundle, { id: "notes/ok", frontmatter: { type: "Note", title: "OK" }, body: "" });
+  assert.equal((await readDoc(context.bundle, "notes/ok")).frontmatter.title, "OK");
+});
+
+test("catalog list names each entry's home, and a hosted entry's host, bundle and checkout time", async () => {
+  const { home, folder } = await hostedCheckout();
+  const [entry] = await listCatalogEntries(home);
+  assert.equal(entry!.locator.path, folder);
+  assert.equal(entry!.home, "hosted");
+  assert.equal(entry!.available, true);
+
+  let out = "";
+  await catalog(["list", "--json"], { stdout: (text) => void (out += text), home: () => home });
+  const listed = JSON.parse(out) as { entries: Record<string, unknown>[] };
+  const row = listed.entries[0]!;
+  assert.equal(row.home, "hosted");
+  assert.deepEqual(row.hosted, { host: HOST, bundle_id: BUNDLE, checked_out_at: (row.hosted as { checked_out_at: string }).checked_out_at });
+  assert.ok(!Number.isNaN(Date.parse((row.hosted as { checked_out_at: string }).checked_out_at)));
+});
+
+test("checkout takes the next free catalog label when the bundle id is already a label", async () => {
+  const { initBundle } = await import("@superbee/core");
+  const other = await realpath(await mkdtemp(path.join(tmpdir(), "sb-workspace-other-")));
+  await initBundle(other);
+  const { home, folder, receipt } = await hostedCheckout(async (dir) => void (await addCatalogEntry(BUNDLE, other, { home: dir })));
+  assert.equal((receipt.catalog as { label: string }).label, `${BUNDLE}-2`);
+  const entries = await listCatalogEntries(home);
+  assert.deepEqual(entries.map((entry) => [entry.label, entry.home, entry.locator.path]), [
+    [BUNDLE, "local", other],
+    [`${BUNDLE}-2`, "hosted", folder],
+  ]);
+});
+
+// ------------------------------------------------------------------------ one discovery (S3)
+
+/** `catalog list --json` with the checkout's home and the fake's fetch for the host's routes. */
+async function listCatalog(c: Checkout, extra: string[] = [], auth: HostedAuthDeps = defaultHostedAuthDeps(c.home, { env: {}, fetch: async () => { throw new Error("no sign-in may start"); } }), fetch: typeof c.host.fetch = c.host.fetch): Promise<Record<string, unknown>> {
+  let out = "";
+  await catalog(["list", ...extra, "--json"], { stdout: (text) => void (out += text), home: () => c.home, auth, fetch });
+  return JSON.parse(out) as Record<string, unknown>;
+}
+
+test("catalog list: signed out it lists the folders alone and asks no host; signed in it adds the hosted bundles with no folder here", async () => {
+  const c = await hostedCheckout();
+  // No stored sign-in (the checkout used an environment token): exactly the folders, no request.
+  const signedOut = await listCatalog(c);
+  assert.deepEqual(signedOut, await listCatalog(c, ["--local"]));
+  assert.equal("hosted" in signedOut, false);
+  assert.equal(c.host.requests.length, 0);
+  // An expired session with nothing to refresh it is signed out too: nothing starts a sign-in.
+  await seedHostedSession(c.home, { host: HOST, accessToken: TOKEN, expiresAtMs: 0 });
+  assert.equal("hosted" in (await listCatalog(c)), false);
+  assert.equal(c.host.requests.length, 0);
+
+  // An access token in the environment that is for another host: that host is not asked, and
+  // nothing is said about it.
+  const otherHostToken = defaultHostedAuthDeps(c.home, { env: { SUPERBEE_ACCESS_TOKEN: new FakeHost({ origin: "https://other.example" }).token }, fetch: async () => { throw new Error("no sign-in may start"); } });
+  assert.deepEqual(await listCatalog(c, [], otherHostToken), signedOut);
+  assert.equal(c.host.requests.length, 0);
+
+  // Signed in: the bundles the host lists that have no folder here, each with its checkout command;
+  // an id two of the person's workspaces hold gets none (checkout refuses it).
+  // An id the host lists once per workspace, by reference, gets one checkout command per reference.
+  const signedIn = new FakeHost({ bundles: [BUNDLE, "team.archive", "team.shared", "team.shared", "north/team.dup", "south/team.dup"] });
+  await seedHostedSession(c.home, { host: HOST, accessToken: TOKEN, expiresAtMs: Date.now() + 3_600_000 });
+  const merged = await listCatalog(c, [], undefined, signedIn.fetch);
+  assert.deepEqual((merged.entries as unknown[]).length, 1, "the checkout stays one folder entry");
+  const hosted = merged.hosted as { host: string; bundles: { bundle_id: string; folder: null; checkout: string }[] }[];
+  assert.equal(hosted.length, 1);
+  assert.equal(hosted[0]!.host, HOST);
+  assert.deepEqual(hosted[0]!.bundles.map((row) => [row.bundle_id, row.folder]), [["team.dup", null], ["team.dup", null], ["team.archive", null], ["team.shared", null]]);
+  assert.match(hosted[0]!.bundles[0]!.checkout, /checkout north\/team\.dup --host /);
+  assert.match(hosted[0]!.bundles[1]!.checkout, /checkout south\/team\.dup --host /);
+  assert.match(hosted[0]!.bundles[2]!.checkout, /checkout team\.archive --host /);
+  assert.equal("checkout" in hosted[0]!.bundles[3]!, false);
+  // --local never asks.
+  signedIn.requests.length = 0;
+  assert.equal("hosted" in (await listCatalog(c, ["--local"], undefined, signedIn.fetch)), false);
+  assert.equal(signedIn.requests.length, 0);
+});
+
+test("catalog list: a host that does not answer in time leaves the folders listed, with one note", { timeout: 10_000 }, async (t) => {
+  const c = await hostedCheckout();
+  await seedHostedSession(c.home, { host: HOST, accessToken: TOKEN, expiresAtMs: Date.now() + 3_600_000 });
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  let requestStarted!: () => void;
+  const requested = new Promise<void>((resolve) => { requestStarted = resolve; });
+  let aborted = false;
+  const hanging = (async (_input: unknown, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      assert.ok(signal, "the host request carries its deadline signal");
+      signal.addEventListener("abort", () => {
+        aborted = true;
+        reject(signal.reason);
+      });
+      requestStarted();
+    })) as typeof fetch;
+  const started = Date.now();
+  const listing = listCatalog(c, [], undefined, hanging);
+  await requested;
+  t.mock.timers.tick(CATALOG_HOSTED_BUDGET_MS);
+  const listed = await listing;
+  assert.equal(aborted, true, "the request deadline aborts the hanging host");
+  assert.ok(Date.now() - started < 4_500, "inside the 3-second budget");
+  assert.equal((listed.entries as unknown[]).length, 1);
+  assert.deepEqual(listed.hosted, []);
+  assert.match(String(listed.note), /were not listed \(no answer in time\); list them with: .*catalog list --hosted --host/);
+});
+
+test("the workspace resolver names the reachable hosted bundles with no folder here, from one answer a minute; an ambiguous id points at the full listing", async () => {
+  const c = await hostedCheckout();
+  let asked = 0;
+  let clock = 0;
+  const resolver = createCatalogWorkspaceResolver({
+    home: c.home,
+    now: () => clock,
+    reachable: async () => {
+      asked += 1;
+      return {
+        hosts: [{
+          host: HOST,
+          complete: true,
+          ask: "superbee catalog list --hosted --host hosted.example",
+          bundles: [
+            { bundle_id: "team.archive", reference: "team.archive", name: "Archive", lifecycle: "active", folder: null, ambiguous: false, checkout: "superbee checkout team.archive --host hosted.example" },
+            { bundle_id: "team.shared", reference: "team.shared", name: "Shared", lifecycle: "active", folder: null, ambiguous: true },
+          ],
+        }],
+        notes: ["a note"],
+      };
+    },
+  });
+  assert.deepEqual(await resolver.reachable!(), {
+    workspaces: [
+      { id: "team.archive", name: "Archive", home: "hosted", location: HOST, command: "superbee checkout team.archive --host hosted.example" },
+      { id: "team.shared", name: "Shared", home: "hosted", location: HOST, command: "superbee catalog list --hosted --host hosted.example" },
+    ],
+    notes: ["a note"],
+  });
+  await resolver.reachable!();
+  assert.equal(asked, 1, "reused within the minute");
+  clock = 60_000;
+  await resolver.reachable!();
+  assert.equal(asked, 2);
+  // Such a bundle is not a workspace here: opening it by name is refused like any unknown label.
+  await assert.rejects(resolver.open("team.archive"));
+});
+
+test("catalog --local is only for list, and never with --hosted", async () => {
+  const c = await hostedCheckout();
+  for (const argv of [["add", "x", "--local"], ["resolve", BUNDLE, "--local"], ["list", "--local", "--hosted"]]) {
+    await assert.rejects(catalog(argv, { stdout: () => {}, home: () => c.home }), (error: unknown) => error instanceof CliError && error.code === "USAGE", argv.join(" "));
+  }
+});
+
+const historyDescriptor = (): OperationDescriptor => (JSON.parse(syncFixture("operations-200").response.body) as { operations: OperationDescriptor[] }).operations.find((operation) => operation.operationId === "documents.history.v1")!;
+
+test("the provider scopes hosted operations to the checkout and stops before requesting folder reads or foreign bundles", async () => {
+  const c = await hostedCheckout();
+  const history = historyDescriptor();
+  c.host.operationsListing = [{ ...history, operationId: "documents.read.v1" }, history];
+  const resolver = createCatalogWorkspaceResolver({ home: c.home, hosted: { auth: c.auth, fetch: c.host.fetch } });
+  const listed = await resolver.listOperations(BUNDLE);
+  assert.ok("ok" in listed && listed.ok);
+  assert.deepEqual(listed.listing.operations, [history]);
+  assert.deepEqual(c.host.requests.map(({ path }) => path), ["/sync/v1/whoami", "/sync/v1/operations"]);
+  assert.deepEqual(c.host.requests[1]!.body, { bundleId: BUNDLE });
+
+  c.host.requests.length = 0;
+  assert.deepEqual(await resolver.runOperation(BUNDLE, "documents.read.v1", { documentId: "notes/alpha" }), {
+    stop: "folder_answers", operationId: "documents.read.v1",
+  });
+  const mismatch = await resolver.runOperation(BUNDLE, history.operationId, { bundleId: "team.other" });
+  assert.ok("ok" in mismatch && !mismatch.ok);
+  assert.equal(mismatch.refusal.code, "invalid_input");
+  assert.deepEqual(c.host.requests, []);
+
+  const ran = await resolver.runOperation(BUNDLE, history.operationId, { documentId: "notes/alpha" });
+  assert.ok("ok" in ran && ran.ok);
+  assert.deepEqual(c.host.requests.map(({ path }) => path), ["/sync/v1/whoami", "/sync/v1/run"]);
+  assert.deepEqual(c.host.requests[1]!.body, {
+    bundleId: BUNDLE, operationId: history.operationId, input: { bundleId: BUNDLE, documentId: "notes/alpha" },
+  });
+});
+
+test("a signed-out hosted provider returns one sign-in link without reaching the host", async () => {
+  const issuer = await new FakeIssuer().start();
+  try {
+    const host = new FakeHost({ origin: issuer.base });
+    const home = await mkdtemp(path.join(tmpdir(), "sb-workspace-auth-"));
+    const cwd = await realpath(await mkdtemp(path.join(tmpdir(), "sb-workspace-cwd-")));
+    const signedIn = defaultHostedAuthDeps(home, { env: { SUPERBEE_ACCESS_TOKEN: host.token } });
+    await checkout([BUNDLE, "--host", issuer.base, "--dir", "team"], { stdout: () => {}, auth: signedIn, cwd, fetch: host.fetch });
+    host.requests.length = 0;
+    const signedOut = defaultHostedAuthDeps(home, { env: { [CREDENTIAL_STORE_ENV]: "file" } });
+    const resolver = createCatalogWorkspaceResolver({ home, hosted: { auth: signedOut, fetch: host.fetch } });
+    const stopped = await resolver.listOperations(BUNDLE);
+    assert.ok("stop" in stopped && stopped.stop === "sign_in_required");
+    assert.equal(new URL(stopped.signInUrl).origin, issuer.base);
+    assert.ok(stopped.userCode);
+    assert.deepEqual(host.requests, []);
+  } finally {
+    await issuer.stop();
+  }
+});
+
+test("hosted served wrapper explicitly omits the local inventory guard", async () => {
+  const c = await hostedCheckout();
+  try {
+    const raw = await openBundle(c.folder);
+    assert.ok(inventoryGuardFor(raw.backend!));
+    const served = await servedBundle(raw, { home: c.home });
+    assert.equal(served.backend!.inventoryGuard, undefined);
+    assert.throws(() => inventoryGuardFor(served.backend!), InventoryGuardUnsupported);
+  } finally {
+    await rm(c.home, { recursive: true, force: true });
+    await rm(c.cwd, { recursive: true, force: true });
+  }
+});

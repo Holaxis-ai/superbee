@@ -247,6 +247,16 @@ function decodedError(result: Pick<CommandResult, "stdout" | "stderr">, row: Lea
   return decode(output.trim()) as unknown as DecodedError;
 }
 
+test("legacy MCP launches keep stdout empty and direct users to the app installer", () => {
+  const ctx = createFixture();
+  for (const args of [[], ["--dir", ctx.bundle, "--actor", "process:test"], ["install", "--host", "codex"]]) {
+    const result = run(["mcp", ...args], ctx.scratch, ctx.env);
+    assert.equal(result.status, 2);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /superbee-plugins.*apps\/mcp\/README\.md/);
+  }
+});
+
 test("documented paths, runtime top-level registration, arity, and executable rows agree bidirectionally", () => {
   const paths = COMMAND_GROUPS.flatMap((group) => group.commands.flatMap((command) => command.paths));
   const ctx = { scratch: "", bundle: "bundle", initTarget: "target", artifactFile: "artifact", env: {} };

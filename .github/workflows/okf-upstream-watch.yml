@@ -2,8 +2,7 @@ name: OKF upstream watch
 
 # Notices when the upstream OKF specification moves, instead of hearing it from users. Weekly, it
 # compares the latest SPEC.md commit in the canonical OKF repository with the reviewed pin in
-# scripts/okf-upstream-watch.json and reads every upstream sample bundle with the built CLI's
-# `status --json`. (MCP SDK drift arrives as Dependabot PRs, see .github/dependabot.yml.)
+# scripts/okf-upstream-watch.json and reads every upstream sample bundle with the built CLI.
 #
 # DELIBERATELY NOT A PR GATE: this workflow only reports. It never commits, pushes or opens PRs.
 # Drift opens at most one `upstream-drift` issue per drift key (a hidden marker in the body); an

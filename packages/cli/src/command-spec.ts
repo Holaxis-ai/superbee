@@ -695,7 +695,7 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("setupHosted", "setup hosted", zero),
         ],
         usage: "setup [--host codex|claude-code|claude-desktop|opencode] [--scope project|user] [--project <dir> | --no-project] [--json] | setup migrate-state|harden-state|quarantine-state [--json] | setup hosted [--url <hosted-url>] [--workspace <id>] [--json]",
-        summary: "Agent-driven setup: inspect npm, private state, Skill, Hook, MCP, bundle, and catalog readiness, then return one deterministic action for the calling agent to execute; `setup hosted` signs in to hosted Superbee (relay the AUTH_REQUIRED link, then re-run) and records the default hosted workspace in one step",
+        summary: "Agent-driven setup: inspect npm, private state, Skill, Hook, bundle, and catalog readiness, then return one deterministic action for the calling agent to execute; `setup hosted` signs in to hosted Superbee (relay the AUTH_REQUIRED link, then re-run) and records the default hosted workspace in one step",
       },
     ],
   },

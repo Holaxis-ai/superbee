@@ -35,8 +35,7 @@ custom Claude config root requires separate documented host paths.
 
 On macOS, Linux, or WSL2, bare and host-scoped `setup` are read-only. Without flags it reports private-state
 health and lists the four supported hosts; after the agent selects its exact host, it inspects npm,
-Agent Skill, SessionStart hook, MCP registration,
-current bundle, and private workspace catalog, then returns one safe `next.command`. Fill any
+Agent Skill, SessionStart hook, current bundle, and private workspace catalog, then returns one safe `next.command`. Fill any
 explicit placeholder it identifies, run the command, restart the named host after integration
 changes, and rerun the same setup command until the plan is complete. It never guesses a host as
 permission to edit configuration.
