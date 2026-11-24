@@ -575,7 +575,7 @@ test("the provider scopes hosted operations to the checkout and stops before req
   const mismatch = await resolver.runOperation(BUNDLE, history.operationId, { bundleId: "team.other" });
   assert.ok("ok" in mismatch && !mismatch.ok);
   assert.equal(mismatch.refusal.code, "invalid_input");
-  assert.deepEqual(c.host.requests, []);
+  assert.equal(c.host.requests.length, 0);
 
   const ran = await resolver.runOperation(BUNDLE, history.operationId, { documentId: "notes/alpha" });
   assert.ok("ok" in ran && ran.ok);
