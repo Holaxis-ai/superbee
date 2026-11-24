@@ -209,6 +209,7 @@ export async function transformWindowsAuthData(
 ): Promise<Buffer> {
   const kind = "windows-dpapi" as const;
   const result = await runWindowsDataProtection(method, `${KEYCHAIN_SERVICE}\0${scope}`, bytes.toString("base64"), run, STORE_CALL_TIMEOUT_MS);
+  if (result.missing) throw credentialStoreUnavailable("Windows PowerShell was not found", kind);
   const output = Buffer.from(result.stdout, "base64");
   if (result.code !== 0 || result.stderr || output.length === 0 || output.toString("base64") !== result.stdout) {
     // Process diagnostics can contain secret material. Keep them inside this adapter.

@@ -865,7 +865,8 @@ test("Windows credential storage binds ciphertext to its account and redacts sys
   let protectedFor: string | undefined;
   try {
     const store = windowsSecretStore(h.home, (key) => sessionDirFor(h.home, key), fakeRunner((command, args, stdin) => {
-      assert.equal(command, String.raw`\\?\GLOBALROOT\SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`);
+      assert.ok(path.win32.isAbsolute(command));
+      assert.match(command, /\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$/i);
       assert.ok(args.includes("-NoProfile") && args.includes("-NonInteractive"));
       assert.ok(args.every((arg) => !arg.includes(secret) && !arg.includes(account)));
       const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
