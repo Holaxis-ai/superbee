@@ -14,6 +14,7 @@ interface ActiveViewAuthorizationSubject {
 export interface RegisteredViewAuthorizationSubject extends ActiveViewAuthorizationSubject {
   sourceKind: "registered";
   registryId: string;
+  workingCopy?: string;
 }
 
 export interface TransientViewAuthorizationSubject extends ActiveViewAuthorizationSubject {
@@ -41,7 +42,7 @@ function stableSubject(subject: ViewAuthorizationSubject): string {
   };
   return JSON.stringify(
     subject.sourceKind === "registered"
-      ? { ...common, registryId: subject.registryId }
+      ? { ...common, registryId: subject.registryId, workingCopy: subject.workingCopy }
       : { ...common, bundleIdentity: subject.bundleIdentity },
   );
 }

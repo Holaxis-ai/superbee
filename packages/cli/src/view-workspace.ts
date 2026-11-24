@@ -171,7 +171,9 @@ async function currentWorkingCopy(root: string): Promise<string | null> {
 }
 
 function registeredHandoffChanged(): Error {
-  return new Error("The working copy or registered View changed. Reopen the View to inspect its current source and access.");
+  return new Error(
+    "The working copy or registered View changed. Reopen the View to inspect its current source and access. If you replaced a directly configured folder, restart the client first.",
+  );
 }
 
 function registeredReceipt(launch: RegisteredPageLaunch, workingCopy: string): RegisteredViewReceipt {
@@ -210,8 +212,10 @@ function createViewWorkspace(
   // A workspace that has accepted a handoff stays on that working copy for subsequent View
   // navigation and resume. Its existing, path-backed provider owns all access and confirmation.
   let handoffWorkingCopy: string | undefined;
-  const stillWorkingCopy = (expected: string) =>
-    async () => await currentWorkingCopy(bundle.root) === expected;
+  const pinWorkingCopy = (identity: string) => ({
+    identity,
+    isCurrent: async () => await currentWorkingCopy(bundle.root) === identity,
+  });
   async function describe(
     launch: PageLaunch,
     approve = false,
@@ -245,7 +249,7 @@ function createViewWorkspace(
     if ("viewId" in input) {
       const launch = await mintActiveViewLaunch(
         bundle, launches, input.viewId,
-        handoffWorkingCopy === undefined ? undefined : stillWorkingCopy(handoffWorkingCopy),
+        handoffWorkingCopy === undefined ? undefined : pinWorkingCopy(handoffWorkingCopy),
       );
       if (launch.capability === "none") {
         bridge.revoke(launch.launchId);
@@ -285,7 +289,7 @@ function createViewWorkspace(
       const workingCopy = await currentWorkingCopy(bundle.root);
       if (!workingCopy || (handoffWorkingCopy !== undefined && handoffWorkingCopy !== workingCopy))
         throw registeredHandoffChanged();
-      const launch = await mintActiveViewLaunch(bundle, launches, viewId, stillWorkingCopy(workingCopy));
+      const launch = await mintActiveViewLaunch(bundle, launches, viewId, pinWorkingCopy(workingCopy));
       try {
         return registeredReceipt(launch, workingCopy);
       } finally {
@@ -296,7 +300,7 @@ function createViewWorkspace(
       if (receipt.schemaVersion !== "superbee.registered-view-receipt.v1" ||
           (handoffWorkingCopy !== undefined && handoffWorkingCopy !== receipt.workingCopy))
         throw registeredHandoffChanged();
-      const launch = await mintActiveViewLaunch(bundle, launches, receipt.viewId, stillWorkingCopy(receipt.workingCopy));
+      const launch = await mintActiveViewLaunch(bundle, launches, receipt.viewId, pinWorkingCopy(receipt.workingCopy));
       try {
         const current = registeredReceipt(launch, receipt.workingCopy);
         if (current.viewId !== receipt.viewId ||

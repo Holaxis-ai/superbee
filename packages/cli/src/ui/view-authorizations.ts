@@ -19,7 +19,9 @@ interface StoredAuthorization {
 
 function stableRecord(bundle: string, subject: RegisteredViewAuthorizationSubject): StoredAuthorization {
   return {
-    bundle,
+    // A handed-off View is approved for the physical working copy. A path-only
+    // record remains byte-identical and cannot authorize a newly reopened View.
+    bundle: subject.workingCopy === undefined ? bundle : `working-copy:v1:${subject.workingCopy}`,
     subject: {
       sourceKind: "registered",
       registryId: subject.registryId,
