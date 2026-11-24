@@ -1,13 +1,12 @@
 import { CLI_COMMAND_GROUPS } from "./command-spec.js";
 import { commandName } from "./reference.js";
 
-// One inventory owns the npm package's auxiliary contracts, portable recipes, examples, and
+// One inventory owns the npm package's auxiliary contracts, examples, and
 // fixtures. Source files remain authoritative; packages/superbee/references/ is the committed projection
 // shipped in the tarball via package.json's files allowlist.
 
 export const RESOURCE_ROLES = [
   "operating-reference",
-  "portable-recipe",
   "worked-example",
   "interop-fixture",
 ] as const;
@@ -58,30 +57,6 @@ export const DISTRIBUTION_RESOURCES: DistributionResource[] = [
     ["examples/views/views-registry/about.md", "views/views-registry/about.md"],
   ]),
 
-  // Installable definitions: the Claims example and the complete Review Workflow package.
-  ...npmResources("portable-recipe", [
-    ["examples/recipes/claims/recipe.md", "recipes/claims/recipe.md"],
-    ["examples/recipes/claims/conventions/claim.md", "recipes/claims/conventions/claim.md"],
-    ["examples/recipes/review-workflow/recipe.md", "recipes/review-workflow/recipe.md"],
-    [
-      "examples/recipes/review-workflow/conventions/review-request.md",
-      "recipes/review-workflow/conventions/review-request.md",
-    ],
-    ["examples/recipes/review-workflow/conventions/view.md", "recipes/review-workflow/conventions/view.md"],
-    [
-      "examples/recipes/review-workflow/views-registry/review-workflow-reviews.md",
-      "recipes/review-workflow/views-registry/review-workflow-reviews.md",
-    ],
-    [
-      "examples/recipes/review-workflow/views/review-workflow/reviews.html",
-      "recipes/review-workflow/views/review-workflow/reviews.html",
-    ],
-    [
-      "examples/recipes/review-workflow/references/view-authoring-v0.md",
-      "recipes/review-workflow/references/view-authoring-v0.md",
-    ],
-  ]),
-
   // Externally-shaped OKF interoperability fixture; never installed into an ordinary bundle.
   ...npmResources("interop-fixture", [
     ["examples/sample-bundle/index.md", "sample-bundle/index.md"],
@@ -113,7 +88,6 @@ export const NPM_RESOURCES: ProjectedResource[] = DISTRIBUTION_RESOURCES.map(({ 
  * graph, so a newly advertised row cannot be omitted from this resource inventory.
  */
 const SKILL_COMMAND_RESOURCE_OVERRIDES = {
-  "recipe add": ["recipes/claims/recipe.md", "recipes/review-workflow/recipe.md"],
   ui: ["views/references/view-authoring-v0.md"],
 } as const satisfies Partial<Record<string, readonly string[]>>;
 
@@ -148,9 +122,5 @@ export const SKILL_CAPABILITY_PATTERNS: SkillCapabilityPattern[] = [
     // mentioning it (even a legacy note) must ship the authoring reference alongside.
     pattern: /type:\s*View|type:\s*Page|bundle view|postMessage|sandboxed iframe/i,
     requires: ["views/references/view-authoring-v0.md"],
-  },
-  {
-    pattern: /recipe/i,
-    requires: ["recipes/claims/recipe.md", "recipes/review-workflow/recipe.md"],
   },
 ];

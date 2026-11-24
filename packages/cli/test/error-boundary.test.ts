@@ -365,7 +365,7 @@ test("probe: a local EACCES on the doc-write path is RUNTIME (exit 1), not USAGE
 
 const builtCliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../superbee");
 const builtCli = path.join(builtCliRoot, "dist", "superbee.mjs");
-const REVIEW_WORKFLOW_RECIPE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../examples/recipes/review-workflow");
+const REVIEW_WORKFLOW_RECIPE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "fixtures/review-workflow-v1");
 
 /** Run the built CLI; error envelopes render as TOON on stdout (`code: X`, `message: ...`). */
 function runBuiltCli(args: string[]): { status: number | null; stdout: string } {

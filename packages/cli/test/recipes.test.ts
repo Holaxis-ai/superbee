@@ -92,7 +92,7 @@ import { testInvocation } from "./support/command-prefix.js";
 
 const T = "2026-07-01T00:00:00.000Z";
 const EXAMPLE_RECIPE_FIXTURE = path.resolve(import.meta.dirname, "fixtures/example-recipe");
-const REVIEW_WORKFLOW_RECIPE = path.resolve(import.meta.dirname, "../../../examples/recipes/review-workflow");
+const REVIEW_WORKFLOW_RECIPE = path.resolve(import.meta.dirname, "fixtures/review-workflow-v1");
 
 function widgetRecipe(
   version: string,
@@ -2714,38 +2714,6 @@ test("Fork-4: 'new \"Context Note\" <id>' creates a governed instance under the 
   }
 });
 
-// ── The SHIPPED example recipe (examples/recipes/claims) — a drift gate for the public example ──
-
-const SHIPPED_CLAIMS_RECIPE = path.resolve(import.meta.dirname, "../../../examples/recipes/claims");
-
-test("SHIPPED example recipe (examples/recipes/claims): applies cleanly, declares the Claim kind with the full lifecycle enum, and is idempotent — the repo's public example cannot rot", async () => {
-  const dir = await tempDir();
-  try {
-    await initBundle(dir);
-    const result = await runJson(recipe, ["add", SHIPPED_CLAIMS_RECIPE, "--dir", dir]);
-    assert.equal(result.recipe, "added");
-    assert.equal(result.id, "claims");
-    assert.equal(result.version, "1.0.0");
-    assert.equal(result.changed, true);
-    const docs = result.docs as Array<Record<string, unknown>>;
-    assert.equal(docs.length, 1);
-    assert.equal(docs[0]!.id, "conventions/claim");
-
-    const bundle: Bundle = { root: dir };
-    const registry = await loadKinds(bundle);
-    const claim = registry.kinds.get("Claim");
-    assert.ok(claim, "the Claim kind must be declared after applying the shipped example recipe");
-    assert.deepEqual(claim!.fields.required, ["title", "superbee_progress_status", "reason"]);
-    assert.deepEqual(claim!.fields.values?.superbee_progress_status, ["active", "challenged", "locked", "deprecated"]);
-    assert.deepEqual(claim!.links, { supersedes: "Claim" }, "the example recipe declares the supersession edge type");
-
-    const again = await runJson(recipe, ["add", SHIPPED_CLAIMS_RECIPE, "--dir", dir]);
-    assert.equal(again.changed, false, "re-applying the shipped recipe must be an idempotent no-op");
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 // ── North star: one vocabulary in fresh bundles (decisions/single-vocabulary-north-star) ───────
 
 /**
@@ -2773,7 +2741,7 @@ function assertTeachesNoLegacyVocabulary(docs: Array<{ id: string; frontmatter: 
   }
 }
 
-test("NORTH STAR: a FRESH bundle built from the shipped recipes (review-workflow included) teaches no legacy vocabulary as current", async () => {
+test("NORTH STAR: a FRESH bundle built from built-in recipes and a portable View recipe teaches no legacy vocabulary as current", async () => {
   // Acceptance pin for decisions/single-vocabulary-north-star (Brian, 2026-07-24): a newly
   // installed bundle never introduces Page/bridge as current vocabulary. This pin is red on the
   // pre-phase-3 reference text ("type: Page docs still resolve during the migration window…")

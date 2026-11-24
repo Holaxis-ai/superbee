@@ -124,7 +124,6 @@ test("first-party workflow Views prefer the logical progress_status projection",
   for (const relative of [
     "examples/views/pulse.html",
     "examples/views/roadmap.html",
-    "examples/recipes/review-workflow/views/review-workflow/reviews.html",
   ]) {
     const html = source(relative);
     assert.match(html, /progress_status/, `${relative} bypasses the logical workflow field`);

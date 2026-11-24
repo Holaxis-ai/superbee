@@ -43,7 +43,7 @@ const RUNNING_VERSION = cliVersion();
 const ASSET_FILES: Record<string, string> = {
   "SKILL.md": "---\nname: superbee\n---\n# superbee\n",
   "references/views/view-authoring.md": "# views contract\n",
-  "references/recipes/claims/recipe.md": "# claims recipe\n",
+  "references/views/example.html": "<p>Example View</p>\n",
 };
 
 /** Build a fake npm-layout distribution root; returns its dist executable path. */

@@ -119,7 +119,7 @@ test("resolveRecipe: loads a real external recipe folder end to end (the fixture
 });
 
 test("resolveRecipe: loads the content-free Review Workflow package with its declared View", async () => {
-  const fixture = path.resolve(import.meta.dirname, "../../../examples/recipes/review-workflow");
+  const fixture = path.resolve(import.meta.dirname, "fixtures/review-workflow-v1");
   const result = await resolveRecipe(fixture);
   assert.equal(result.ok, true);
   if (!result.ok) return;
