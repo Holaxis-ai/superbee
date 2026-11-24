@@ -60,7 +60,7 @@ test("serial built runtime matches standalone bytes across error/help/error and 
     { id: "error-before", argv: ["list", "--dir"] },
     { id: "help", argv: ["list", "--help"] },
     { id: "raw", argv: ["doc", "read", "probe", "surplus", "--out", "-"] },
-    { id: "mcp", argv: ["mcp", "surplus"] },
+    { id: "retired-mcp", argv: ["mcp", "--dir", "bundle"] },
     { id: "negative", argv: ["list", "--output"] },
     { id: "error-after", argv: ["list", "--dir"] },
   ];

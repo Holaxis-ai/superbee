@@ -108,7 +108,7 @@ Do not ask the user to copy or run a setup command unless execution is unavailab
 preserves a workspace for explicit selection; it never makes that workspace the current project.
 Before setup creates a first notes folder, pick one with the user: --project <dir> (absolute or .),
 or --no-project to finish user setup and pick later. Project scope needs a project folder.
-Setup readiness describes configuration on disk. Install the MCP app separately if the user wants it.
+Setup readiness describes configuration on disk. If the user asks to open documents or Views in their AI client, find the optional MCP app installation guide in setup's `optional_mcp_app.guide`.
 Remember restart_required action receipts even after a later setup inspection is ready; report
 integration as active after an actual restart and verification. If restart is
 pending, name the host and exact setup command to resume. Defer deeper modeling until real work needs it.

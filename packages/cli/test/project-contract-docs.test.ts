@@ -116,11 +116,11 @@ test("AXI contract has ten ordered rows, live proof anchors, and a separate idem
     "packages/cli/src/output.ts::Errors are ALWAYS TOON regardless of --json",
     "packages/cli/src/errors.ts::The 0/1/2/4/5/6 exit taxonomy is PRESERVED",
     "packages/cli/src/commands/doc/read.ts::makes the channel invariant unconditional",
-    "packages/cli/src/commands/mcp.ts::Old clients still start this command over stdio",
+    "packages/cli/src/deprecation-notices.ts::const stderr = argv[0] === \"mcp\"",
     "packages/cli/test/arity-built.test.ts::must keep its reserved non-error channel byte-clean",
     "packages/cli/test/error-boundary.test.ts::error matrix: a CliError instance passes through",
     "packages/cli/test/doc-cli-integration.test.ts::built CLI: raw doc-read channels route early missing-id and unknown-option envelopes only to stderr",
-    "packages/cli/test/arity-built.test.ts::legacy MCP launches keep stdout empty and direct users to the app installer",
+    "packages/cli/test/local-only-cli-integration.test.ts::built CLI: an old MCP launch receives the installer link on stderr",
   ]);
 
   assertNamedTestContains(
@@ -157,9 +157,9 @@ test("AXI contract has ten ordered rows, live proof anchors, and a separate idem
     ],
   );
   assertNamedTestContains(
-    "packages/cli/test/arity-built.test.ts",
-    "legacy MCP launches keep stdout empty and direct users to the app installer",
-    ['assert.equal(result.stdout, "")', "assert.equal(result.status, 2)", "assert.match(result.stderr,"],
+    "packages/cli/test/local-only-cli-integration.test.ts",
+    "built CLI: an old MCP launch receives the installer link on stderr",
+    ['assert.equal(result.stdout, "")', "assert.equal(result.code, 2)", "assert.match(result.stderr, /code: RETIRED_COMMAND/)"],
   );
 });
 

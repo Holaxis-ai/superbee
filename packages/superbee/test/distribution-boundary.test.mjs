@@ -60,7 +60,6 @@ test("the native Windows runtime dispatches local reads and guarded updates and 
     [["setup", "hosted"], "1.51.0", 2, /local project setup/],
     [["setup", "--host", "codex"], "1.51.0", 2, /local project setup/],
     [["setup", "quarantine-state"], "1.51.0", 2, /local project setup/],
-    [["mcp", "--help"], "1.51.0", 1, /Use WSL2 for the full CLI/],
     [["search", "--help"], "1.51.0", 1, /Use WSL2 for the full CLI/],
     [["__managed-ui-v1"], "1.51.0", 1, /Use WSL2 for the full CLI/],
     [["__update-refresh-v1", "token"], "1.51.0", 1, /Use WSL2 for the full CLI/],

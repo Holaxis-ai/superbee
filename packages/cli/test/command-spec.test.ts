@@ -44,7 +44,7 @@ test("public command order preserves the user-facing unknown-command diagnostic"
   assert.deepEqual(PUBLIC_COMMAND_NAMES, [
     "init", "bundle", "catalog", "index", "doc", "promote", "pull", "blobs", "delete",
     "link", "list", "query", "new", "artifact", "kinds", "kind", "recipes", "recipe",
-    "status", "ui", "mcp", "sync", "hook", "skill", "session-start", "version", "view", "setup",
+    "status", "ui", "sync", "hook", "skill", "session-start", "version", "view", "setup",
     "login", "whoami", "logout", "checkout", "turn-end", "export", "publish", "op", "access", "deps", "notify", "inbox", "search", "source", "workload",
   ]);
 });

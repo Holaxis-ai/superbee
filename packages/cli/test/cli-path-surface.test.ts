@@ -117,7 +117,7 @@ test("registry path flags: the built runtime accepts declared flags and rejects 
     return { leaf, flag, acceptance: classify(output), output };
   });
   // Ordinary, selector, schema and dynamic parsers, including negative path candidates.
-  for (const id of ["list:dir", "list:output", "catalogResolve:dir", "new:body-file", "docUpdate:output", "mcp:dir"]) {
+  for (const id of ["list:dir", "list:output", "catalogResolve:dir", "new:body-file", "docUpdate:output"]) {
     const row = batchRows.find((candidate) => candidate.id === id)!;
     assert.ok(row, `missing executable sentinel: ${id}`);
     const built = runCli(row.argv, workspace);

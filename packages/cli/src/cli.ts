@@ -33,7 +33,6 @@ import { recipe } from "./commands/recipe.js";
 import { source } from "./commands/source.js";
 import { status } from "./commands/status.js";
 import { ui } from "./commands/ui.js";
-import { mcp } from "./commands/mcp.js";
 import { sync } from "./commands/sync.js";
 import { home, homeCommand } from "./commands/home.js";
 import { hook } from "./commands/hook.js";
@@ -62,11 +61,12 @@ import { cliVersion, isBareVersionFlag } from "./build-identity.js";
 import { CliError, toEnvelope, toExit } from "./errors.js";
 import { renderErrorEnvelope } from "./output.js";
 import { DESCRIPTION, helpIndexText } from "./reference.js";
+import { MCP_APP_INSTALL } from "./integration-guidance.js";
 import { cliInvocation } from "./invocation.js";
 import { PUBLIC_COMMAND_NAMES, type PublicCommandName } from "./command-spec.js";
 import { parseArgs } from "node:util";
 import { commandWords } from "./command-text.js";
-import { openDeprecationNotices, refuseLeadingRetiredFlag, refuseRetiredEnv, refuseRetiredInput } from "./deprecation-notices.js";
+import { isRetiredCommand, openDeprecationNotices, refuseLeadingRetiredFlag, refuseRetiredEnv, refuseRetiredInput } from "./deprecation-notices.js";
 import { currentExistingGitBoard } from "./runtime-context.js";
 export { cliVersion } from "./build-identity.js";
 
@@ -135,7 +135,6 @@ const publicHandlers = {
   recipe,
   status,
   ui,
-  mcp,
   hook,
   skill,
   "session-start": sessionStart,
@@ -237,8 +236,7 @@ function isGlobalOnlyHomeInvocation(argv: string[]): boolean {
  * field`) whose sub-dispatch reads its OWN first positional: `--dir x doc read` must not become
  * `doc --dir x read` and fail with "unknown doc subcommand: --dir". Returns the
  * reordered argv, or null when it isn't that shape (leaving the existing USAGE error to fire).
- * Guarded to a KNOWN command as the first positional: a stray non-global flag before the command
- * leaks a positional that fails the known-command check, so nothing is mis-hoisted.
+ * The first positional must name a known or retired command. Otherwise nothing is hoisted.
  */
 export function hoistLeadingGlobalFlags(argv: string[]): string[] | null {
   let tokens;
@@ -263,7 +261,7 @@ export function hoistLeadingGlobalFlags(argv: string[]): string[] | null {
   const firstPositional = tokens?.find((t) => t.kind === "positional");
   if (!firstPositional) return null;
   const cmd = argv[firstPositional.index];
-  if (cmd === undefined || !(KNOWN_COMMANDS as readonly string[]).includes(cmd)) return null;
+  if (cmd === undefined || (!(KNOWN_COMMANDS as readonly string[]).includes(cmd) && !isRetiredCommand(cmd))) return null;
   // Move the leading global-flag block (everything BEFORE the subcommand) to the END, after the full
   // command path — so `--dir x doc read y` becomes `doc read y --dir x`, not `doc --dir x read y`.
   return [...argv.slice(firstPositional.index), ...argv.slice(0, firstPositional.index)];
@@ -271,14 +269,20 @@ export function hoistLeadingGlobalFlags(argv: string[]): string[] | null {
 
 export async function main(argv: string[]): Promise<void> {
   const command = argv[0];
+  const help = command === "--help" || command === "-h" || command === "help";
+  const version = isBareVersionFlag(command);
+  const hoisted = command?.startsWith("-") && !help && !version ? hoistLeadingGlobalFlags(argv) : null;
+  if (refuseRetiredInput(hoisted ?? argv)) return;
+
   const board = currentExistingGitBoard();
-  if (board && !isBareVersionFlag(command)) {
-    if (command === undefined || command === "--help" || command === "-h" || command === "help") {
+  if (board && !version) {
+    if (command === undefined || help) {
       const inv = cliInvocation();
       process.stdout.write(`${board.usage}\n${board.requirements ? `${board.requirements}\n` : ""}`
-        + (board.localOnboarding ? `Start in your project folder with ${inv} setup. Manage the MCP workspace catalog with ${inv} catalog.\n` : "")
+        + (board.localOnboarding ? `Start in your project folder with ${inv} setup. Manage registered workspaces with ${inv} catalog.\n` : "")
         + (board.hostedOnboarding ? `Use ${inv} login, ${inv} checkout and ${inv} sync to work with Hosted bundles.\n` : "")
-        + `Board command help includes ${inv} sync --help, ${inv} list --help, ${inv} doc read --help, and ${inv} doc update --help.\n`);
+        + `Board command help includes ${inv} sync --help, ${inv} list --help, ${inv} doc read --help, and ${inv} doc update --help.\n`
+        + `${MCP_APP_INSTALL.description}\n${MCP_APP_INSTALL.guide}\n`);
       return;
     }
     const allowed = Object.hasOwn(BOARD_HANDLERS, command)
@@ -303,20 +307,17 @@ export async function main(argv: string[]): Promise<void> {
   }
 
   // `--help` / `-h` / `help`: the COMMAND_GROUPS reference (TOON), offline, exit 0.
-  if (command === "--help" || command === "-h" || command === "help") {
+  if (help) {
     process.stdout.write(helpReference());
     return;
   }
 
   // `--version` / `-v` / `-V`: the CLI's own version string, offline, exit 0. Handled BEFORE the
   // leading-flag USAGE path below, which would otherwise reject `--version` as a misplaced option.
-  if (isBareVersionFlag(command)) {
+  if (version) {
     process.stdout.write(`${cliVersion()}\n`);
     return;
   }
-
-  // A removed command word fails before any routing.
-  if (refuseRetiredInput(argv)) return;
 
   // A leading flag (e.g. `axi --dir <path> list`) is a common mistake: options are per-command and
   // must FOLLOW the subcommand. Give an actionable hint rather than the opaque "unknown command:
@@ -333,9 +334,8 @@ export async function main(argv: string[]): Promise<void> {
     }
     // `[global flags] <known-subcommand> …` (e.g. `--dir x list`) is a common ordering mistake — hoist
     // the subcommand to the front and run it, so `--dir x list` behaves like `list --dir x` instead of
-    // erroring. Only fires for a KNOWN command; a genuinely malformed leading flag still gets the
+    // erroring. Only fires for a known or retired command; a genuinely malformed leading flag still gets the
     // USAGE error below. The reordered argv leads with a command, so this recursion can't loop.
-    const hoisted = hoistLeadingGlobalFlags(argv);
     if (hoisted) {
       await main(hoisted);
       return;

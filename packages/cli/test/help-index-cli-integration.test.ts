@@ -60,6 +60,8 @@ for (const argv of [["--help"], ["-h"], ["help"]]) {
     assert.match(out, /\n {2}hook install\|status\|uninstall/);
     assert.match(out, /\nAgent setup:\n/);
     assert.match(out, /The calling agent executes the returned action/);
+    assert.match(out, /Install the optional Superbee MCP app/);
+    assert.match(out, /superbee-plugins.*apps\/mcp\/README\.md/);
     assert.match(out, /npx --no-install superbee/);
     assert.ok(out.includes(`    ${heading[1]} setup --host <host> --scope <scope> --json`));
     assert.doesNotMatch(out, /npx -y superbee/);

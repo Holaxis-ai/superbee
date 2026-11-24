@@ -316,7 +316,7 @@ test("the npm Skill keeps the AXI setup conductor and mutation boundary eager", 
   assert.match(renderedNpm, /literal action\.cwd/);
   assert.match(renderedNpm, /Empty and non-code folders are valid/);
   assert.match(renderedNpm, /launch directory alone is not a project choice/);
-  assert.match(renderedNpm, /Install the MCP app separately/);
+  assert.match(renderedNpm, /optional MCP app installation guide in setup's `optional_mcp_app\.guide`/);
   assert.match(renderedNpm, /Remember restart_required action receipts/);
   assert.doesNotMatch(renderedNpm, /intended purpose, privacy, participants, and sharing boundary before creating/);
 });

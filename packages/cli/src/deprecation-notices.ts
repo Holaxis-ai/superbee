@@ -9,6 +9,7 @@
 import { SUPERBEE_NO_AUTOPULL_ENV } from "@superbee/board-git";
 import { SUPERBEE_ACTOR_ENV, SUPERBEE_NO_UPDATE_CHECK_ENV } from "./env-policy.js";
 import { CliError, toEnvelope } from "./errors.js";
+import { MCP_APP_INSTALL } from "./integration-guidance.js";
 import { cliInvocation } from "./invocation.js";
 import { renderErrorEnvelope } from "./output.js";
 
@@ -102,8 +103,8 @@ const LAST_REMOTE_RELEASE = "superbee@0.4.5";
  * {@link retiredFlagInParse}, and the CLI entry's leading-flag handling through
  * {@link refuseLeadingRetiredFlag}, so an option VALUE spelled `--remote` is never mistaken for it.
  */
-export function retiredInput(argv: readonly string[]): "serve" | undefined {
-  return argv[0] === "serve" ? "serve" : undefined;
+export function isRetiredCommand(command: string | undefined): command is "serve" | "mcp" {
+  return command === "serve" || command === "mcp";
 }
 
 /**
@@ -118,8 +119,14 @@ export function retiredFlagInParse(outcome: { error: unknown } | { values: objec
   return outcome.values !== undefined && Object.hasOwn(outcome.values, "remote");
 }
 
-/** The refusal for {@link retiredInput}. The URL is never echoed: it may carry credentials. */
-export function retiredInputRefusal(input: "--remote" | "serve"): CliError {
+/** The refusal for a retired input. A URL passed to the CLI may carry credentials, so omit it. */
+export function retiredInputRefusal(input: "--remote" | "serve" | "mcp"): CliError {
+  if (input === "mcp") {
+    return new CliError("USAGE", "The local MCP app is installed separately.", {
+      help: MCP_APP_INSTALL.guide,
+      details: { code: "RETIRED_COMMAND", input },
+    });
+  }
   const cli = cliInvocation();
   if (input === "serve") {
     return new CliError("USAGE", "superbee serve was removed.", {
@@ -155,10 +162,8 @@ export function refuseLeadingRetiredFlag(argv: readonly string[]): void {
 
 /** The CLI entry's refusal for a removed command word, before any work. */
 export function refuseRetiredInput(argv: readonly string[]): boolean {
-  // The hook commands own their streams and must not fail a session.
-  if (argv[0] === "session-start" || argv[0] === "turn-end") return false;
-  const input = retiredInput(argv);
-  if (!input) return false;
+  const [input] = argv;
+  if (!isRetiredCommand(input)) return false;
   writeEntryRefusal(argv, retiredInputRefusal(input));
   return true;
 }
@@ -170,8 +175,7 @@ function writeEntryRefusal(argv: readonly string[], error: CliError): void {
 }
 
 /**
- * The CLI entry's refusal for retired environment names, before any work. The envelope goes where
- * the command puts its errors: stderr for `mcp` and the byte and raw value channels, else stdout.
+ * The CLI entry's refusal for retired environment names, before any work.
  */
 export function refuseRetiredEnv(
   argv: readonly string[],
@@ -243,14 +247,13 @@ function requestsRawField(argv: readonly string[]): boolean {
 
 /**
  * Commands that must carry no notice. A host runs `session-start` and `turn-end` and owns what their
- * streams mean, and neither writes to stderr today. A byte or raw value channel and `mcp` put their
+ * streams mean, and neither writes to stderr today. A byte or raw value channel puts its
  * parseable receipt or error envelope on stderr, and `publish --json` puts progress there as JSON
  * lines.
  */
 export function stderrIsReserved(argv: readonly string[]): boolean {
   const command = argv[0];
   if (command === "session-start" || command === "turn-end") return true;
-  if (command === "mcp") return true;
   if (command === "publish" && argv.includes("--json")) return true;
   if ((command === "catalog" || (command === "doc" && argv[1] === "read")) && requestsRawField(argv)) return true;
   return requestsByteChannel(argv);
