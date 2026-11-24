@@ -47,10 +47,10 @@ Skill, an instruction file your agent loads, that teaches it how to use the tool
 
 ## Install
 
-Install the standard npm package on macOS, Linux or Windows.
+Try the opt-in MCP cutover prerelease on macOS, Linux or Windows.
 
 ```sh
-npm install -g superbee
+npm install -g superbee@next
 ```
 
 Stable releases publish on npm's `latest` tag and prereleases on `next`.

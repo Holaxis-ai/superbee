@@ -305,7 +305,11 @@ test("built key owners and review sentinels reject surplus with the exact envelo
       surplus: 1,
       first_unexpected: SURPLUS,
     }, path);
-    assert.equal(envelope.error.help?.endsWith(`${row.leaf.canonical.path} --help`), true, `${path}: canonical leaf help`);
+    if (id === "mcp") {
+      assert.match(envelope.error.help ?? "", /superbee-plugins.*apps\/mcp\/README\.md/);
+    } else {
+      assert.equal(envelope.error.help?.endsWith(`${row.leaf.canonical.path} --help`), true, `${path}: canonical leaf help`);
+    }
   }
 
   assert.equal(existsSync(ctx.initTarget), false);
