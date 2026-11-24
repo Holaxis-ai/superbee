@@ -842,14 +842,6 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
     argv: (t) => ["ui", "--dir", t, "--port", "0"],
     controlSkip: "the control would boot the long-lived loopback UI host",
   },
-  {
-    leaf: "mcp",
-    surface: "--dir",
-    argv: (t) => ["mcp", "--dir", t],
-    // stdout is the JSON-RPC transport, so mcp's envelopes go to STDERR by design.
-    channel: "stderr",
-    controlSkip: "the control would hold a long-lived stdio JSON-RPC session open",
-  },
   { leaf: "viewList", surface: "--dir", argv: (t) => ["view", "list", "--dir", t, "--json"] },
   { leaf: "viewOpen", surface: "--dir", argv: (t) => ["view", "open", "views-registry/missing", "--dir", t, "--no-open", "--json"],
     controlExit: 6 },

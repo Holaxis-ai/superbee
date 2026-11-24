@@ -132,7 +132,7 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
     sourceSnapshotCheck: simple(CLI_LEAVES.sourceSnapshotCheck,["source","snapshot","check"],[ctx.scratch],["--inputs-file",ctx.scratch]),
     sourceTest: simple(CLI_LEAVES.sourceTest, ["source", "test"], [ctx.scratch], ["--fixture", ctx.scratch]),
     ui: simple(CLI_LEAVES.ui, ["ui"], [], [...dir, "--port", "0"]),
-    mcp: simple(CLI_LEAVES.mcp, ["mcp"], [], dir, "stderr"),
+    mcp: simple(CLI_LEAVES.mcp, ["mcp"], [], [], "stderr"),
     viewList: simple(CLI_LEAVES.viewList, ["view", "list"], [], dir),
     viewOpen: simple(CLI_LEAVES.viewOpen, ["view", "open"], ["existing"], [...dir, "--no-open", "--json"]),
     viewRead: simple(CLI_LEAVES.viewRead, ["view", "read"], ["existing"], dir),
