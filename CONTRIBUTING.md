@@ -224,10 +224,6 @@ adapt Superbee if needed, and bump the pin in the same PR. Locally,
 `node scripts/okf-upstream-watch.mjs --dry-run` (after `npm run build`) prints the report without
 filing anything.
 
-MCP SDK drift arrives as a Dependabot PR instead: `.github/dependabot.yml` checks
-`@modelcontextprotocol/*` daily, including major versions, and groups them into one PR. That PR's
-CI is the compatibility check. A failing one is the drift signal; adapt Superbee in that PR.
-
 ### GitHub Action pin renewal
 
 Every remote action reference uses a full lowercase commit SHA plus its exact `vX.Y.Z` release
