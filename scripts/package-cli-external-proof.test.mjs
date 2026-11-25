@@ -117,6 +117,8 @@ test("embedded engine check rejects an incomplete record, non-source engine inpu
     ["missing asset-only contributor", { ...record, packages: record.packages.filter(row => row.name !== "@superbee/ui") }, inventory, /^packages: bundle contributor @superbee\/ui is missing from the record$/],
     ["installed core", record, rerouted("../../node_modules/@superbee/core/dist/index.js"), /^input \S+: @superbee\/core resolves to an installed package, not workspace source$/],
     ["built core", record, rerouted("../core/dist/index.js"), /^input \S+: @superbee\/core resolves outside workspace source$/],
+    ["core test in runtime", record, rerouted("../core/test/fixture.ts"), /^input \S+: @superbee\/core resolves outside workspace source$/],
+    ["server test in UI", record, { ...inventory, uiModules: [...inventory.uiModules, path.join(root, "packages/server/test/fixture.ts")] }, /^UI module .+: embeds library test content$/],
     ["core outside the repository", record, rerouted("../../../elsewhere/core/src/index.ts"), /^input \S+: resolves outside the repository$/],
     ["foreign asset", record, { ...inventory, assets: [...inventory.assets, "node_modules/@superbee/ui/dist/index.html"] }, /^asset \S+: not @superbee workspace content$/],
     ["uncontributing row", { ...record, packages: [...record.packages, { name: "@superbee/publication", version: "0.0.0", release_tag: null }] }, inventory, /^packages\[\d+\]: @superbee\/publication contributes no bundle input$/],

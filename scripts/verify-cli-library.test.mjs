@@ -15,10 +15,13 @@ function fixture() {
   const manifests = new Map();
   for (const name of ['core', 'server']) {
     mkdirSync(path.join(root, 'packages', name, 'src'), { recursive: true });
+    mkdirSync(path.join(root, 'packages', name, 'test', 'fixtures'), { recursive: true });
     const manifest = { name: `@superbee/${name}`, version: '1.2.3' }; manifests.set(name, manifest);
     writeFileSync(path.join(root, 'packages', name, 'package.json'), JSON.stringify(manifest));
     writeFileSync(path.join(root, 'packages', name, 'README.md'), 'documentation');
     writeFileSync(path.join(root, 'packages', name, 'src', 'index.ts'), 'export {};');
+    writeFileSync(path.join(root, 'packages', name, 'tsconfig.json'), '{}');
+    writeFileSync(path.join(root, 'packages', name, 'test', 'fixtures', 'sample.md'), 'test fixture');
   }
   const commit = () => { git('add', '.'); git('commit', '-qm', 'fixture'); return git('rev-parse', 'HEAD'); };
   const sha = commit(); git('tag', 'libraries/v1.2.3');
@@ -90,14 +93,41 @@ test('release source requires known clean exact HEAD and GitHub SHA', () => {
   } finally { f.close(); }
 });
 
-test('whole committed library directories, including non-source files, must equal named tags', () => {
-  for (const file of ['src/index.ts','README.md','package.json']) {
+test('Core and Server test-only edits can share the existing release tag', () => {
+  const f = fixture();
+  try {
+    writeFileSync(path.join(f.root, 'packages/core/test/recipe-lifecycle.test.ts'), 'new test');
+    writeFileSync(path.join(f.root, 'packages/core/test/fixtures/sample.md'), 'updated fixture');
+    rmSync(path.join(f.root, 'packages/server/test/fixtures/sample.md'));
+    f.record.source.commit = f.commit();
+    f.verify();
+  } finally { f.close(); }
+});
+
+test('committed library inputs outside test subtrees must equal named tags', () => {
+  for (const file of ['src/index.ts', 'README.md', 'package.json', 'tsconfig.json', 'test-config.mjs']) {
     const f = fixture();
     try {
       writeFileSync(path.join(f.root,'packages/core',file), 'changed');
       f.record.source.commit = f.commit(); assert.throws(() => f.verify(), /differs/);
     } finally { f.close(); }
   }
+});
+
+test('moving a test fixture into source or replacing the test directory with a symlink refuses', () => {
+  const f = fixture();
+  try {
+    const core = path.join(f.root, 'packages/core');
+    renameSync(path.join(core, 'test/fixtures/sample.md'), path.join(core, 'src/sample.md'));
+    f.record.source.commit = f.commit();
+    assert.throws(() => f.verify(), /differs/);
+
+    f.git('reset', '--hard', 'libraries/v1.2.3');
+    rmSync(path.join(core, 'test'), { recursive: true });
+    symlinkSync('src', path.join(core, 'test'), 'dir');
+    f.record.source.commit = f.commit();
+    assert.throws(() => f.verify(), /differs/);
+  } finally { f.close(); }
 });
 
 test('missing tags, missing directories, malformed versions and wrong record tags refuse', () => {
