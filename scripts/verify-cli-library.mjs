@@ -5,7 +5,7 @@ import { versionPattern } from './package-version-policy.mjs';
 import { proveCliTarball } from './cli-library-proof.mjs';
 
 // Check committed package inputs, including manifests, build configuration and packed documentation.
-// Tests under the package-root test/ directory are outside the released engine.
+// Exempt only the entry files selected by each library's Node test command.
 export function verifyReleaseSource(record, { root, githubSha, manifestOf }) {
   const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   assert.match(record.source?.commit ?? '', /^[a-f0-9]{40}$/);
@@ -30,9 +30,9 @@ export function verifyReleaseSource(record, { root, githubSha, manifestOf }) {
     }
     const changedInputs = git([
       'diff', '--name-only', '--no-renames', '--no-ext-diff', '--no-textconv', '--ignore-submodules=none',
-      tagCommit, record.source.commit, '--', packagePath, `:(top,glob,exclude)${packagePath}/test/**`,
+      tagCommit, record.source.commit, '--', packagePath, `:(top,glob,exclude)${packagePath}/test/*.test.ts`,
     ]);
-    assert.equal(changedInputs, '', `${packagePath} differs from ${row.release_tag} outside test/; release the updated libraries first`);
+    assert.equal(changedInputs, '', `${packagePath} differs from ${row.release_tag} outside test/*.test.ts; release the updated libraries first`);
   }
 }
 

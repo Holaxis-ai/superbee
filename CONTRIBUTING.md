@@ -414,10 +414,11 @@ checks that the retained original still equals those bytes before returning.
 The shared installed-consumer proof covers the facade, declarations, inert imports, resources,
 executable identity and offline create/write/read behavior. It reads the packed runtime and v2
 embedded record and requires clean source equal to HEAD and `GITHUB_SHA`. It compares each committed
-Core/Server package to its named `libraries/v<version>` tag, excluding only files under each
-package-root `test/` directory. Runtime inputs must come from workspace source, and the embedded
-UI must also exclude those test files. This comparison proves source-tree parity for the checked
-paths. Missing tags or changes to any other library path require a library release first.
+Core/Server package to its named `libraries/v<version>` tag, excluding only the top-level
+`test/*.test.ts` entries selected by each library's test runner. Test fixtures, support files,
+manifests, build configuration and packed documentation remain in the comparison. The runtime
+and embedded UI module inventories reject imports from the exempt test paths. Missing tags or
+changes to other library paths require a library release first.
 
 The independent `cli/v<version>` path in `release-cli-library.yml` builds the root once, packs once,
 and retains those bytes through digest checks, attestation and OIDC publication with npm

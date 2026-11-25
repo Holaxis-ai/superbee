@@ -21,6 +21,7 @@ function fixture() {
     writeFileSync(path.join(root, 'packages', name, 'README.md'), 'documentation');
     writeFileSync(path.join(root, 'packages', name, 'src', 'index.ts'), 'export {};');
     writeFileSync(path.join(root, 'packages', name, 'tsconfig.json'), '{}');
+    writeFileSync(path.join(root, 'packages', name, 'test', 'existing.test.ts'), 'existing test');
     writeFileSync(path.join(root, 'packages', name, 'test', 'fixtures', 'sample.md'), 'test fixture');
   }
   const commit = () => { git('add', '.'); git('commit', '-qm', 'fixture'); return git('rev-parse', 'HEAD'); };
@@ -97,15 +98,15 @@ test('Core and Server test-only edits can share the existing release tag', () =>
   const f = fixture();
   try {
     writeFileSync(path.join(f.root, 'packages/core/test/recipe-lifecycle.test.ts'), 'new test');
-    writeFileSync(path.join(f.root, 'packages/core/test/fixtures/sample.md'), 'updated fixture');
-    rmSync(path.join(f.root, 'packages/server/test/fixtures/sample.md'));
+    writeFileSync(path.join(f.root, 'packages/core/test/existing.test.ts'), 'updated test');
+    rmSync(path.join(f.root, 'packages/server/test/existing.test.ts'));
     f.record.source.commit = f.commit();
     f.verify();
   } finally { f.close(); }
 });
 
-test('committed library inputs outside test subtrees must equal named tags', () => {
-  for (const file of ['src/index.ts', 'README.md', 'package.json', 'tsconfig.json', 'test-config.mjs']) {
+test('committed library inputs outside test entry files must equal named tags', () => {
+  for (const file of ['src/index.ts', 'README.md', 'package.json', 'tsconfig.json', 'test/fixtures/sample.md', 'test/fixtures/nested.test.ts']) {
     const f = fixture();
     try {
       writeFileSync(path.join(f.root,'packages/core',file), 'changed');
@@ -114,15 +115,18 @@ test('committed library inputs outside test subtrees must equal named tags', () 
   }
 });
 
-test('moving a test fixture into source or replacing the test directory with a symlink refuses', () => {
+test('moving a test entry into source or replacing the test directory with a symlink refuses', () => {
   const f = fixture();
   try {
     const core = path.join(f.root, 'packages/core');
-    renameSync(path.join(core, 'test/fixtures/sample.md'), path.join(core, 'src/sample.md'));
+    renameSync(path.join(core, 'test/existing.test.ts'), path.join(core, 'src/existing.test.ts'));
     f.record.source.commit = f.commit();
     assert.throws(() => f.verify(), /differs/);
 
     f.git('reset', '--hard', 'libraries/v1.2.3');
+    rmSync(path.join(core, 'test/fixtures'), { recursive: true });
+    f.commit();
+    f.git('tag', '-f', 'libraries/v1.2.3');
     rmSync(path.join(core, 'test'), { recursive: true });
     symlinkSync('src', path.join(core, 'test'), 'dir');
     f.record.source.commit = f.commit();
