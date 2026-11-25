@@ -184,8 +184,9 @@ refusals are tripwires; npm's require-2FA/disallow-tokens setting is the boundar
 
 The reusable `@superbee/cli` uses `cli/v<version>`, `release-cli-library.yml` and the read-only
 `release-cli-library-finalize.yml`; its first `0.1.0-pre.1` needed human bootstrap on `next`.
-Whole committed Core/Server directories must equal their library tags. The finalizer binds
-registry bytes to workflow, tag and packed commit without a GitHub Release. CONTRIBUTING.md owns
+Committed Core/Server files must match their library tags except for top-level `test/*.test.ts`
+entries. The finalizer binds registry bytes to workflow, tag and packed commit without a GitHub
+Release. CONTRIBUTING.md owns
 prerequisites, the rehearsal, and Mike's one-time npmjs.com setup: per package, trusted publisher
 `Holaxis-ai/superbee`, its workflow file, environment `release`, with `npm publish` allowed.
 Transitionally, a failed publish falls back to `npm stage publish` and prints the human

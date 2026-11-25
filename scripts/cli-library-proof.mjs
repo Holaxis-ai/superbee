@@ -340,7 +340,7 @@ export async function assertClosedCliImports(text) {
 // runtime bundle's metafile (inputs relative to packages/cli); `assets` are repo-relative paths
 // the proof located in the asset stages; `manifestOf` maps a packages/ directory to its manifest;
 // `head` is this tree's {commit, dirty}, or null facts when git is unavailable.
-export function embeddedEngineErrors(record, { runtime, assets }, manifestOf, head) {
+export function embeddedEngineErrors(record, { runtime, assets, uiModules }, manifestOf, head) {
   const errors = [];
   const contributors = new Map();
   for (const input of Object.keys(runtime.inputs ?? {})) {
@@ -360,6 +360,13 @@ export function embeddedEngineErrors(record, { runtime, assets }, manifestOf, he
     const manifest = parts[0] === "packages" && !parts.includes("node_modules") && parts[1] !== "cli" ? manifestOf(parts[1]) : undefined;
     if (!manifest?.name?.startsWith("@superbee/")) errors.push(`asset ${asset}: not @superbee workspace content`);
     else contributors.set(manifest.name, manifest.version);
+  }
+  // Library release parity omits package tests. UI bundle imports must honor that same boundary.
+  for (const module of uiModules) {
+    const parts = path.relative(root, module).split(path.sep);
+    if (parts[0] === "packages" && ["core", "server"].includes(parts[1]) && parts[2] === "test") {
+      errors.push(`UI module ${module}: embeds library test content`);
+    }
   }
   if (record?.schema !== "superbee.cli-embedded-engine.v2") errors.push(`schema: found ${JSON.stringify(record?.schema)}`);
   if (/match|identical/i.test(JSON.stringify(record))) errors.push("record asserts equality with a release; it may only name what it embeds");
@@ -396,10 +403,10 @@ export const workspaceManifests = async () => {
   return directory => manifests.get(directory);
 };
 const walk = async directory => (await readdir(directory, { withFileTypes: true, recursive: true })).filter(entry => entry.isFile()).map(entry => path.join(entry.parentPath, entry.name));
-// What the built artifact embeds, located without the build's own list: the runtime metafile, the
-// and the UI files whose gzip payloads sit in the bundle.
+// The runtime inputs, rendered UI modules, and UI files whose gzip payloads sit in the bundle.
 export const embeddedInventory = async (bundleFile = path.join(root, "packages/cli/dist/index.mjs")) => {
   const runtime = await readJson(path.join(root, "out/cli-runtime-metafile.json"));
+  const uiModules = await readJson(path.join(root, "packages/ui/build-meta/bundled-modules.json"));
   const assets = new Set();
   const bundle = await readFile(bundleFile, "utf8");
   const payloads = new Set([...bundle.matchAll(/gzipBase64: "([A-Za-z0-9+/=]+)"/g)].map(([, base64]) => createHash("sha256").update(gunzipSync(Buffer.from(base64, "base64"))).digest("hex")));
@@ -410,7 +417,7 @@ export const embeddedInventory = async (bundleFile = path.join(root, "packages/c
     assert.ok(payloads.has(createHash("sha256").update(await readFile(file)).digest("hex")), `${file} is not embedded in the bundle`);
     assets.add(path.relative(root, file).split(path.sep).join("/"));
   }
-  return { runtime, assets: [...assets].sort() };
+  return { runtime, assets: [...assets].sort(), uiModules };
 };
 
 // Read the opened inode, never a pathname checked earlier. O_NONBLOCK also lets fstat
